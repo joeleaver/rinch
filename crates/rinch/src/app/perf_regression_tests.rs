@@ -467,8 +467,11 @@ fn row_count(app: &RinchApp) -> usize {
 ///   its **bottom** edge, where the scroller's own box ends at y=408. Rows the
 ///   change moved below the scroller's viewport, invisible, still name damage.
 ///   Clipped, it would be about 304 x 408.
-/// - **Two clip masks cover 426 408 px** for that 182 400 px repaint: the
-///   damage's own clip and the scroller's, each filled over its bounds.
+/// - **Two clip masks cover 305 004 px** for that 182 400 px repaint: the
+///   damage's own clip (183 600 with its pad) and the scroller's (121 404),
+///   each filled over its bounds. The scroller's used to be intersected with
+///   the damage's as well (426 408); since #907 it is not, because the damage
+///   is 255 wherever the scroller's mask can be non-zero.
 /// - **#914, fixed:** the moved row is neither re-cascaded nor re-shaped
 ///   (`elements_cascaded` 0, `shape_*` 0): a move within one parent keeps its
 ///   style (`keeps_style_across_move`) and its own IFC layout
@@ -504,7 +507,7 @@ fn a_keyed_for_moves_one_row() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 159),
             (ClipMasks, 2),
-            (ClipMaskPx, 426408),
+            (ClipMaskPx, 305004),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -557,7 +560,7 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 158),
             (ClipMasks, 2),
-            (ClipMaskPx, 426408),
+            (ClipMaskPx, 305004),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -595,7 +598,7 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 158),
             (ClipMasks, 2),
-            (ClipMaskPx, 426408),
+            (ClipMaskPx, 305004),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -638,7 +641,7 @@ fn a_keyed_for_replaces_every_row() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 192),
             (ClipMasks, 2),
-            (ClipMaskPx, 426408),
+            (ClipMaskPx, 305004),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -717,7 +720,7 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (StackingOrderBuilds, 2),
             (GlyphCacheHits, 121),
             (ClipMasks, 2),
-            (ClipMaskPx, 367044),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (HitTests, 2),
             (HitTestNodesVisited, 8),

@@ -37,6 +37,12 @@
 //! | the intersect walk is narrowed to the parent's bounds, so a child clip wider than its parent keeps coverage outside it | `clips_and_scrollers` (439 px, first paint), `partial_repaints`, `one_painter_many_documents` |
 //! | the end-of-frame pool trim releases nothing | `the_pool_is_trimmed_to_recent_use` |
 //! | the bookkeeping pad is negative | six of the oracle tests (measured when there were eleven) |
+//! | a skipped clip (#907) ignores the transform's rotation | `partial_repaints_through_clips` ("above the rotated clip's edge") |
+//! | a skipped clip ignores a rounded rect's radii | `partial_repaints_through_clips` ("in the rounded corner"), `a_partial_repaint_inside_a_clip_fills_only_the_damage_mask` |
+//! | a fully covered rect is compared on one axis only | `partial_repaints`, `partial_repaints_through_clips` |
+//! | a mask's fully covered rect is not narrowed by its parent's | `partial_repaints_through_clips` ("across both edges, over the small clip") |
+//! | no clip is ever skipped / no intersection is ever skipped / an intersection is skipped on the parent's *bounds* | `a_partial_repaint_inside_a_clip_fills_only_the_damage_mask` |
+//! | a shape edge on the surface's own edge keeps the one-pixel margin | the `for` and wheel scenarios in `rinch`'s `perf_regression_tests` (the scroller's clip is intersected again) |
 //! | the cached premultiply rounds with `+128` | `images`, `one_painter_many_documents` — which needed reference mode to keep its *own* copy of the old premultiply; sharing the function let this mutant through |
 //!
 //! Two mutants survive. A pad of **0** instead of 2: in every fixture the
@@ -47,6 +53,19 @@
 //! **parent's** rather than the intersection is equivalent: it only
 //! over-states where the mask can be non-zero, which costs zeroing and never
 //! a pixel.
+//!
+//! The fully covered rect's one-pixel margin (#907) is not pinned by pixels
+//! in this file either way. Moving it a pixel *outward* is caught here only by
+//! the debug assertions in `push_clip` (and by pixels in a release run of
+//! `skia_painter_clip_differential_tests`), which check every skipped clip and every skipped
+//! intersection against the mask itself: a mask's recorded bounds carry the
+//! painter's two-pixel pad, so the pixels the mutant misjudges are ones the
+//! damage clip already zeroes. Dropping the margin is equivalent — the first
+//! whole pixel inside an edge is fully covered — and the margin is insurance
+//! against the rasteriser's fixed-point edges. A cloned mask that forgets its
+//! fully covered rect is equivalent too: the only caller of `clone_mask` is
+//! `push_clip`'s give-up branch for a shape it cannot build, which no shape in
+//! the workspace reaches, in either mode.
 //!
 //! There is no sub-pixel offset in the glyph key and deliberately none to
 //! drop: this painter rasterises every glyph at the origin and places the
@@ -725,4 +744,279 @@ fn faces_of_one_collection() {
     doc.resolve_layout(VW, VH);
     let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
     check("collection faces", &mut doc, &mut painter);
+}
+
+// ── A clip around a partial repaint (#907) ─────────────────────────────────
+
+/// What `RinchApp::build_pixels` does for a partial frame over several damage
+/// rects: each cleared on its own, the paint culled to them, and one clip —
+/// a `Rect` for one rect, their union as a `BezPath` for more.
+fn partial_paint_rects(doc: &mut RinchDocument, painter: &mut TinySkiaPainter, rects: &[Rect]) {
+    let mut damage = rinch_dom::paint::damage::DamageRegion::new(VW as f64, VH as f64);
+    for r in rects {
+        damage.add(*r);
+    }
+    assert!(!damage.is_full(), "fixture: a partial region");
+    for r in damage.rects() {
+        painter.clear_rect_white(
+            r.x0 as u32,
+            r.y0 as u32,
+            r.width() as u32,
+            r.height() as u32,
+        );
+    }
+    rinch_dom::paint::set_dirty_rects(Some(damage.rects()));
+    let shape = match damage.rects() {
+        [one] => PaintShape::Rect(*one),
+        _ => PaintShape::BezPath(damage.clip_path()),
+    };
+    painter.push_clip(peniko::Fill::NonZero, Affine::IDENTITY, &shape);
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        painter,
+        1.0,
+        (VW, VH),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+}
+
+/// Clips a partial repaint lands inside, across, beside and outside of:
+///
+/// - a rounded scroller at a fractional position (`20.5, 30.25`, 300x200,
+///   radius 16) holding a square `overflow: hidden` box (device
+///   `32.5..308.5 x 42.25..192.25`) that holds text and a translucent layer,
+///   and whose content overflows it on all four sides — so a clip wrongly
+///   skipped at any edge paints something the reference does not — and an
+///   absolute child over the scroller's rounded top-left corner, and a small
+///   clip inside the box (`250.5..300.5 x 120.25..170.25`);
+/// - a rounded clip under a `rotate` (content overflowing its top and right
+///   edges), where no axis-aligned rect is the clip's interior;
+/// - a square clip under a `scale`, which keeps it axis-aligned;
+/// - a square clip in the surface's bottom-left corner (`0..200 x 250..400`),
+///   whose edges lie on the surface's own.
+fn damage_clips_doc() -> RinchDocument {
+    let mut rows = String::new();
+    for i in 0..8 {
+        rows.push_str(&format!("<div>row {i}: {LOREM}</div>"));
+    }
+    doc_with(
+        "",
+        &format!(
+            "<div style=\"position: absolute; left: 20.5px; top: 30.25px; width: 300px; \
+               height: 200px; overflow: auto; border-radius: 16px; \
+               background: rgb(230, 235, 245)\">\
+               <div style=\"position: absolute; left: -10px; top: -10px; width: 60px; \
+                 height: 60px; background: rgb(40, 160, 40)\"></div>\
+               <div style=\"position: relative; margin: 12px; height: 150px; \
+                 overflow: hidden; background: rgb(250, 240, 220)\">\
+                 <div style=\"position: absolute; left: 218px; top: 78px; width: 50px; \
+                   height: 50px; overflow: hidden; background: rgb(255, 255, 255)\">\
+                   {rows}</div>\
+                 <div style=\"margin: -20px -20px 0; height: 30px; \
+                   background: rgb(200, 40, 40)\"></div>\
+                 <div style=\"opacity: 0.6; background: rgb(40, 120, 200); \
+                   color: white\">translucent in two clips</div>\
+                 {rows}\
+               </div>\
+               <div style=\"height: 400px\">tall</div>\
+             </div>\
+             <div style=\"position: absolute; left: 360px; top: 40px; width: 200px; \
+               height: 150px; transform: rotate(9deg)\">\
+               <div style=\"position: relative; width: 180px; height: 120px; \
+                 overflow: hidden; border-radius: 10px; background: rgb(220, 250, 220)\">\
+                 <div style=\"position: absolute; left: -20px; top: -30px; width: 220px; \
+                   height: 40px; background: rgb(200, 40, 40)\"></div>{rows}</div>\
+             </div>\
+             <div style=\"position: absolute; left: 380px; top: 250px; width: 150px; \
+               height: 100px; overflow: hidden; transform: scale(1.25); \
+               background: rgb(250, 220, 240)\">{rows}</div>\
+             <div style=\"position: absolute; left: 0; top: 250px; width: 200px; \
+               height: 150px; overflow: hidden; background: rgb(240, 240, 200)\">{rows}</div>"
+        ),
+    )
+}
+
+/// Every partial repaint of [`damage_clips_doc`] draws the reference
+/// painter's pixels, whichever clips its region is inside.
+#[test]
+fn partial_repaints_through_clips() {
+    let regions: &[(&str, &[Rect])] = &[
+        ("inside both clips", &[Rect::new(60.0, 60.0, 200.0, 120.0)]),
+        (
+            "across the rounded corner",
+            &[Rect::new(10.0, 20.0, 60.0, 70.0)],
+        ),
+        // Inside the scroller's rect, but in its rounded corner.
+        (
+            "in the rounded corner",
+            &[Rect::new(24.0, 34.0, 34.0, 44.0)],
+        ),
+        (
+            "outside every clip",
+            &[Rect::new(560.0, 360.0, 590.0, 390.0)],
+        ),
+        // Its padded bounds meet the surface's left and bottom edges, which
+        // are the corner clip's own.
+        (
+            "in the clip at the surface's corner",
+            &[Rect::new(0.0, 330.0, 50.0, 400.0)],
+        ),
+        // Across the scroller's and the box's right edges, over the small
+        // clip: both big clips are intersected with the damage, so neither
+        // is 255 over the small clip, and its intersection must not be
+        // skipped on the strength of their shapes alone.
+        (
+            "across both edges, over the small clip",
+            &[Rect::new(290.0, 100.0, 330.0, 140.0)],
+        ),
+        // Around whole clips: the damage is 255 wherever they can be
+        // non-zero, so the intersection is skipped instead of the clip.
+        (
+            "around the whole scroller",
+            &[Rect::new(10.0, 20.0, 330.0, 240.0)],
+        ),
+        (
+            "around the whole scaled clip",
+            &[Rect::new(350.0, 230.0, 560.0, 370.0)],
+        ),
+        (
+            "from the surface's edge, around the scroller",
+            &[Rect::new(0.0, 0.0, 340.0, 245.0)],
+        ),
+        (
+            "across the inner clip's edge",
+            &[Rect::new(300.0, 100.0, 315.0, 140.0)],
+        ),
+        // Its padded bounds end exactly one pixel inside the inner clip's
+        // first fully covered row and column.
+        (
+            "at the inner clip's edge",
+            &[Rect::new(36.0, 48.0, 60.0, 70.0)],
+        ),
+        // The first column past the edge is partly covered (`32.5`).
+        (
+            "one pixel past the inner clip's edge",
+            &[Rect::new(34.0, 48.0, 60.0, 70.0)],
+        ),
+        (
+            "across the inner clip's bottom",
+            &[Rect::new(100.0, 180.0, 160.0, 200.0)],
+        ),
+        // Across the rotated clip's right edge, where its rows overflow — and
+        // inside the box its transform's scale alone would give it.
+        (
+            "across the rotated clip's edge",
+            &[Rect::new(544.0, 58.0, 553.0, 82.0)],
+        ),
+        // Above the rotated clip's top edge, and inside the box its
+        // transform's scale and translation alone would give it.
+        (
+            "above the rotated clip's edge",
+            &[Rect::new(495.0, 20.0, 505.0, 35.0)],
+        ),
+        (
+            "inside the rotated clip",
+            &[Rect::new(420.0, 100.0, 470.0, 140.0)],
+        ),
+        (
+            "inside the scaled clip",
+            &[Rect::new(420.0, 280.0, 480.0, 320.0)],
+        ),
+        (
+            "two rects inside both clips",
+            &[
+                Rect::new(60.0, 60.0, 120.0, 90.0),
+                Rect::new(150.0, 130.0, 200.0, 160.0),
+            ],
+        ),
+        (
+            "one rect inside, one in another clip",
+            &[
+                Rect::new(60.0, 60.0, 120.0, 90.0),
+                Rect::new(420.0, 280.0, 480.0, 320.0),
+            ],
+        ),
+    ];
+    let mut doc = damage_clips_doc();
+    let mut reference = reference_painter();
+    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    full_paint(&mut doc, &mut reference);
+    assert_inked("damage clips", reference.pixels());
+    full_paint(&mut doc, &mut painter);
+    // Twice: the second round meets pooled masks the first left behind.
+    for round in 0..2 {
+        for (name, rects) in regions {
+            partial_paint_rects(&mut doc, &mut reference, rects);
+            partial_paint_rects(&mut doc, &mut painter, rects);
+            assert_same(
+                &format!("{name}, round {round}"),
+                reference.pixels(),
+                painter.pixels(),
+            );
+        }
+    }
+}
+
+/// A partial repaint inside a clip costs the damage clip's own mask, not the
+/// clips' (#907). The region `60..200 x 60..120` is inside both of the
+/// scroller's clips; its padded bounds are `58..202 x 58..122`, 144x64.
+///
+/// Across a clip's edge the clip is filled as before — so a painter that
+/// skipped every clip inside a partial repaint fails here too, not only in
+/// the pixels.
+#[test]
+fn a_partial_repaint_inside_a_clip_fills_only_the_damage_mask() {
+    let mut doc = damage_clips_doc();
+    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    full_paint(&mut doc, &mut painter);
+    painter.take_stats();
+
+    partial_paint_rects(
+        &mut doc,
+        &mut painter,
+        &[Rect::new(60.0, 60.0, 200.0, 120.0)],
+    );
+    let inside = painter.take_stats();
+    // The damage clip, then the scroller's and the box's clips — each
+    // pushed again in the clip chains of the entries hoisted out of them —
+    // every one but the first skipped.
+    assert!(inside.clip_masks >= 3, "{inside:?}");
+    assert_eq!(inside.clip_mask_px, 144 * 64, "{inside:?}");
+
+    partial_paint_rects(
+        &mut doc,
+        &mut painter,
+        &[Rect::new(300.0, 100.0, 315.0, 140.0)],
+    );
+    let across = painter.take_stats();
+    assert!(
+        across.clip_mask_px > 10_000,
+        "the inner clip is filled and intersected: {across:?}"
+    );
+
+    // Around the whole scroller the damage clip (`8..332 x 18..242`, 72 576)
+    // is 255 wherever the scroller's clip (`18..323 x 28..233`, 62 525) can
+    // be non-zero, so that clip is filled and not intersected — each of the
+    // three times it is pushed here (its own bracket, and the clip chains of
+    // the entries hoisted out of it). The box's clip (`30..311 x 40..195`,
+    // 43 555), pushed twice, is filled and intersected: the scroller's
+    // rounded mask is not 255 over all of it. The small clip
+    // (`248..303 x 118..173`, 3 025) lies where the damage, the scroller and
+    // the box are all 255: filled, not intersected.
+    partial_paint_rects(
+        &mut doc,
+        &mut painter,
+        &[Rect::new(10.0, 20.0, 330.0, 240.0)],
+    );
+    let around = painter.take_stats();
+    assert_eq!(around.clip_masks, 7, "{around:?}");
+    assert_eq!(
+        around.clip_mask_px,
+        72_576 + 3 * 62_525 + 2 * (2 * 43_555) + 3_025,
+        "{around:?}"
+    );
 }
