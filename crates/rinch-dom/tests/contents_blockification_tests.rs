@@ -208,14 +208,11 @@ fn abs_box(doc: &RinchDocument, id: NodeId) -> (f32, f32, f32, f32) {
 /// sibling: Chrome gives `g2.x == g1.width + 10`, 40 wide, both 20 tall. The
 /// sibling's own width is text-measured and so is not pinned.
 ///
-/// **A guard, not a fail-first fixture**: these boxes came out the same before
-/// #998 (measured at `eb820ab3`), because rinch already laid an unblockified
-/// inline item of a flex container out as a flex item. What the fix moves is
-/// the text inside such an item — an IFC root now, where it was a Taffy text
-/// leaf — and the restyle of one to `display: inline`, which no longer orphans
-/// it (`scoped_ifc_oracle_tests`' former known divergence). This pins that
-/// the change of path did not move the boxes of the everyday `Stack`/`Group`
-/// shapes.
+/// **A guard, not a fail-first fixture**: for these *text-only* items the boxes
+/// came out the same before #998 (measured at `eb820ab3`), because rinch laid
+/// an unblockified inline item holding only text out as a flex item holding a
+/// text leaf. An item with **element** children was wrong before and is fixed —
+/// [`a_wrapped_item_with_element_children_lays_out_as_one_inline_run`].
 #[test]
 fn wrapped_items_lay_out_as_chromes_blockified_items() {
     let mut doc = RinchDocument::new();
@@ -255,4 +252,84 @@ fn wrapped_items_lay_out_as_chromes_blockified_items() {
     assert_eq!((g1x, g1y, g1h), (0.0, 0.0, 20.0));
     assert!(g1w > 10.0, "the padded span has its text's width: {g1w}");
     assert_eq!((g2x, g2y, g2w, g2h), (g1w + 10.0, 0.0, 40.0, 20.0));
+}
+
+/// The span's box, and the same span as a **direct** flex item (no wrapper) —
+/// the oracle: a wrapper generates no box, so the two must lay out alike.
+fn wrapped_and_direct(
+    container: &str,
+    span_style: &str,
+    fill: impl Fn(&mut RinchDocument, NodeId),
+) -> ((f32, f32), (f32, f32)) {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let a = el(&mut doc, body, "div", container);
+    let w = el(&mut doc, a, "div", "display: contents");
+    let wrapped = el(&mut doc, w, "span", span_style);
+    fill(&mut doc, wrapped);
+    let b = el(&mut doc, body, "div", container);
+    let direct = el(&mut doc, b, "span", span_style);
+    fill(&mut doc, direct);
+    doc.resolve_layout(VW, VH);
+    let size = |id: NodeId| {
+        let (_, _, w, h) = abs_box(&doc, id);
+        (w, h)
+    };
+    (size(wrapped), size(direct))
+}
+
+/// **Fail-first** (reviewer's shapes, PR #1006): a wrapped inline item with
+/// *element* children was laid out wrong before #998, because the unblockified
+/// span's children were Taffy flex children of it rather than its inline
+/// content. Chrome 153: `span(ab <b>cd</b> ef gh ij kl)` in a 100px column is
+/// 40px tall (two 20px lines); main gave 60. A span holding
+/// `x<inline-block 30x30>y` is one line (Chrome 46x35 with its fonts); main
+/// gave 30x70, the three children stacked in a column. Each shape is also
+/// compared with the same span as a direct flex item, which main got right.
+#[test]
+fn a_wrapped_item_with_element_children_lays_out_as_one_inline_run() {
+    let ((ww, wh), (dw, dh)) = wrapped_and_direct(
+        "display: flex; flex-direction: column; width: 100px; font-size: 16px; line-height: 20px",
+        "",
+        |doc, s| {
+            let t = doc.create_text("ab ");
+            doc.append_child(s, t);
+            let b = el(doc, s, "b", "");
+            let t = doc.create_text("cd");
+            doc.append_child(b, t);
+            let t = doc.create_text(" ef gh ij kl");
+            doc.append_child(s, t);
+        },
+    );
+    assert_eq!((ww, wh), (dw, dh), "wrapped vs direct");
+    assert_eq!(wh, 40.0, "two 20px lines, as Chrome");
+
+    let ((ww, wh), (dw, dh)) = wrapped_and_direct(
+        "display: flex; font-size: 16px; line-height: 20px",
+        "",
+        |doc, s| {
+            let t = doc.create_text("x");
+            doc.append_child(s, t);
+            el(
+                doc,
+                s,
+                "span",
+                "display: inline-block; width: 30px; height: 30px",
+            );
+            let t = doc.create_text("y");
+            doc.append_child(s, t);
+        },
+    );
+    assert_eq!((ww, wh), (dw, dh), "wrapped vs direct");
+    // One line, not three stacked boxes: the line box's exact height depends
+    // on the host font's descent under the baseline-aligned chip (Chrome 35
+    // with its fonts), so only "one line" is pinned.
+    assert!(
+        (30.0..40.0).contains(&wh),
+        "one line box around the 30px chip: {wh}"
+    );
+    assert!(
+        ww > 30.0 && ww < 60.0,
+        "x, the chip and y on one line: {ww}"
+    );
 }
