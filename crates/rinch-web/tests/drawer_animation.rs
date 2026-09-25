@@ -164,7 +164,12 @@ fn first_animation(el: &web_sys::Element) -> JsValue {
     arr.get(0)
 }
 
+/// `v[key]`, or `undefined` when `v` is not an object — so a failure message
+/// about a missing animation reports it rather than throwing.
 fn prop(v: &JsValue, key: &str) -> JsValue {
+    if !v.is_object() {
+        return JsValue::UNDEFINED;
+    }
     js_sys::Reflect::get(v, &JsValue::from_str(key)).unwrap()
 }
 
