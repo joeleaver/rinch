@@ -106,6 +106,25 @@ impl Hasher for ObserverIdHasher {
 /// count.set(1); // Prints: "Count is now: 1"
 /// count.set(2); // Prints: "Count is now: 2"
 /// ```
+///
+/// # An effect does not wake itself
+///
+/// A write that reaches the effect *while its own body is running* is dropped
+/// for that effect, not queued (issue #343). A write made with no batch open
+/// flushes at once — and every run a flush makes is in that state — so the
+/// flush reaches this effect one frame down its own stack and skips it. The
+/// write lands and every other observer runs; this effect keeps what it
+/// computed and sees the value on its next run for another reason. That
+/// includes a write made by code the body calls, most often an
+/// [`on_cleanup`](super::on_cleanup) of a scope the body disposes.
+///
+/// It is deliberate: queued instead, an effect that disposes a scope on every
+/// run whose cleanup writes a signal it reads would re-run without end.
+///
+/// A body running while a batch is **open** — [`Effect::new`] or
+/// [`Effect::run`] called inside [`batch`](super::batch), which includes every
+/// event handler — queues its writes instead, and the effect does run again
+/// for its own write when the batch flushes.
 pub struct Effect {
     id: ObserverId,
 }
@@ -462,7 +481,11 @@ pub(super) fn run_effect(id: ObserverId) {
         // Skipping is deliberate over re-queuing: re-queuing an effect that is
         // still running turns a self-triggering body into a hang, which is
         // strictly harder to debug than a stale value. The effect re-runs on the
-        // next genuine change.
+        // next genuine change. The wake is not parked anywhere for later: this
+        // run was dequeued before it got here. User-facing statement of the
+        // rule, and its batch-open exception (a write queued rather than
+        // flushed is still pending when the body returns): `Effect`'s docs and
+        // the guide, issue #343; pinned by `self_wake_tests`.
         //
         // The borrow is taken *before* the observer is pushed, and that order is
         // load-bearing: a tracking push also releases the previous run's
@@ -1311,5 +1334,38 @@ mod self_wake_tests {
         assert!(!is_pending(effect.id()));
         batch(|| {});
         assert_eq!(runs.get(), 1, "nothing picks the dropped wake up later");
+    }
+
+    /// [`Effect::run`] inside a batch is the same kept case as `Effect::new`
+    /// there: the body's self-write is queued, and the batch's flush runs the
+    /// effect again (issue #343).
+    #[test]
+    fn a_self_write_during_a_manual_run_inside_a_batch_is_kept() {
+        let signal = Signal::new(0);
+        let armed = Rc::new(Cell::new(false));
+        let runs = Rc::new(Cell::new(0));
+
+        let (a, r) = (armed.clone(), runs.clone());
+        let effect = Effect::new(move || {
+            let v = signal.get();
+            r.set(r.get() + 1);
+            if a.get() && v == 0 {
+                signal.set(1);
+            }
+        });
+        assert_eq!(runs.get(), 1);
+
+        armed.set(true);
+        batch(|| {
+            effect.run();
+            assert_eq!(runs.get(), 2);
+        });
+        assert_eq!(runs.get(), 3, "the batch's flush ran the queued self-wake");
+
+        // Control: a re-run caused by a change runs inside a flush, with the
+        // batch closed, so the same self-write there is dropped.
+        signal.set(0); // runs (4), writes 1 in its body: not run again
+        assert_eq!(runs.get(), 4);
+        assert_eq!(signal.get(), 1);
     }
 }

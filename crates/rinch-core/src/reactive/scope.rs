@@ -223,9 +223,11 @@ impl Scope {
     /// Cleanups run **after** every effect this scope owns has been disposed,
     /// and after the whole subtree beneath it has been marked disposed — so a
     /// cleanup cannot resurrect a disposed effect, and writing a signal from one
-    /// wakes only observers outside the tree coming down. They run **before**
-    /// the scope's memos and signals are freed, so a cleanup may still read
-    /// them. See [`run_dispose_fixpoint`].
+    /// wakes only observers outside the tree coming down — and not the effect
+    /// doing the disposing, if an effect's body is what called `dispose`: a
+    /// running effect does not wake itself (see [`Effect`](super::Effect),
+    /// issue #343). They run **before** the scope's memos and signals are
+    /// freed, so a cleanup may still read them. See [`run_dispose_fixpoint`].
     ///
     /// A cleanup registered by another cleanup on the same scope still runs:
     /// the fixpoint takes the list out before running any of it, then loops.
@@ -924,6 +926,10 @@ pub(crate) fn record_handler(id: EventHandlerId) {
 ///
 /// Cleanups run *before* the scope's signals and memos are freed (see
 /// [`run_dispose_fixpoint`]), so a cleanup may still read them.
+///
+/// A cleanup that writes a signal wakes that signal's observers — except an
+/// effect whose own body is disposing the scope, which does not re-run for it
+/// (see [`Effect`](super::Effect), issue #343).
 ///
 /// Returns `false` when there is no live ambient owner — outside any render, or
 /// under [`unowned`] — in which case the caller's resource keeps **app

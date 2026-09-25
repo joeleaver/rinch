@@ -138,6 +138,42 @@ Two related guarantees follow from the same queue:
 
 Effects are still de-duplicated per flush: an effect observing two signals that both change in one `batch()` runs once, at the position of its first enqueue.
 
+### An effect does not wake itself
+
+There is one exception to "queued behind the current flush": a write that reaches **the effect that is running** is, for that effect, usually dropped rather than queued.
+
+A write made while no batch is open flushes at once — and every effect body a flush runs is in that state, because a flush runs with the batch closed. So the flush happens while the body that made the write is still on the stack. It reaches the running effect, finds it running, and skips it. The write itself lands, and every *other* effect that reads the signal runs for it. The running effect keeps what it computed on this pass, the wake is not left in the queue for later, and the effect sees the new value the next time something else re-runs it.
+
+"A write the body made" includes code the body calls, and the common case is a scope's cleanup. An effect that disposes a scope runs that scope's `on_cleanup` callbacks inside its own body — `rsx!`'s `if`, `match` and `for` all do when they swap a branch or remove a row — so a cleanup that writes a signal the disposing effect reads does not re-run it. For example, a `for` row whose cleanup writes a signal the list's collection closure reads does not make the list reconcile a second time.
+
+```rust
+let trigger = Signal::new(0);
+let tally = Signal::new(0);
+let child = Scope::new();
+child.on_cleanup(move || tally.update(|n| *n += 1));
+let child = RefCell::new(Some(child));
+
+Effect::new(move || {
+    let t = trigger.get();
+    let seen = tally.get();
+    if t == 1 {
+        let scope = child.borrow_mut().take();
+        if let Some(scope) = scope {
+            scope.dispose(); // its cleanup writes `tally`, which this effect read
+        }
+    }
+    println!("saw tally = {seen}");
+});              // prints "saw tally = 0"
+
+trigger.set(1);  // prints "saw tally = 0"; tally is now 1, and this
+                 // effect does not run again for it
+trigger.set(2);  // prints "saw tally = 1"
+```
+
+This is deliberate, and it is what lets such an effect settle. Were the wake queued instead, an effect that disposes a scope on every run, whose cleanup writes a signal the effect reads, would schedule itself again on every run and never stop. So do not rely on an effect observing a write made by its own cleanup: have a different effect read that signal, or read the signal *after* the disposal in the same body.
+
+The exception has an exception. When the body runs while a batch is **open** — an `Effect::new` or `Effect::run` called directly from an event handler, which is a batch, or inside `batch()` — its writes are queued rather than flushed, the queue drains only after the body has returned, and the effect does run again for its own write.
+
 ## Batching Updates
 
 Outside a batch, effects run after each update. To avoid redundant runs, use `batch()`:
