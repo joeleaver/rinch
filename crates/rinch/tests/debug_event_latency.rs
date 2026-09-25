@@ -88,9 +88,10 @@ fn probe_binary() -> PathBuf {
         .parent()
         .and_then(|deps| deps.parent())
         .expect("a test binary lives in <target>/<profile>/deps/");
-    let probe = profile_dir
-        .join("examples")
-        .join(format!("debug_click_latency{}", std::env::consts::EXE_SUFFIX));
+    let probe = profile_dir.join("examples").join(format!(
+        "debug_click_latency{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     assert!(
         probe.is_file(),
         "probe example not found at {} — build it first with the same \
