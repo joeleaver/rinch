@@ -937,7 +937,7 @@ pub enum PointerEventsValue {
 }
 
 /// A single text-shadow value.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TextShadowValue {
     pub offset_x: f32,
     pub offset_y: f32,
