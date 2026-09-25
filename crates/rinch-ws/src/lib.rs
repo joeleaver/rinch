@@ -675,6 +675,40 @@ mod tests {
         });
     }
 
+    /// The callback runs under the document whose code registered it (issue
+    /// #963), not under whichever document the delivery happens to be nested in
+    /// — so an interceptor it registers or clears is that document's. Delivered
+    /// here from inside document 2, off the fixed point where "inherit" and
+    /// "record" agree; a registration made outside any document answers none.
+    #[test]
+    fn a_callback_runs_under_the_document_that_registered_it() {
+        use rinch_core::{current_dispatching_doc, push_dispatching_doc};
+
+        let seen: Rc<RefCell<Vec<Option<u64>>>> = Rc::new(RefCell::new(Vec::new()));
+        for (id, doc) in [(424_250u64, 1u64), (424_251, 0)] {
+            HANDLERS.with(|h| h.borrow_mut().insert(id, Handlers::default()));
+            let _registrar = push_dispatching_doc(doc);
+            let s = seen.clone();
+            install(
+                id,
+                |h| &mut h.on_open,
+                Box::new(move |()| s.borrow_mut().push(current_dispatching_doc())),
+            );
+        }
+        {
+            let _deliverer = push_dispatching_doc(2);
+            dispatch(424_250, WsEvent::Open);
+            dispatch(424_251, WsEvent::Open);
+            assert_eq!(current_dispatching_doc(), Some(2));
+        }
+        assert_eq!(*seen.borrow(), [Some(1), None]);
+
+        HANDLERS.with(|h| {
+            h.borrow_mut().remove(&424_250);
+            h.borrow_mut().remove(&424_251);
+        });
+    }
+
     /// The owner is per **callback**, not per connection. Two components may
     /// share one handle — a message list and a connection-status badge — and the
     /// badge staying mounted must not keep the list's dead `on_message` armed.

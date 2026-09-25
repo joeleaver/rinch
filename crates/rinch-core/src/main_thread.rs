@@ -321,6 +321,38 @@ mod tests {
         );
     }
 
+    /// A parked continuation runs under the document that parked it (issue
+    /// #963), not under whichever document — or none — happens to be current
+    /// when it resumes. Resumed here from inside document 2, off the fixed point
+    /// where "inherit" and "record" agree: a callback parked in document 1 must
+    /// answer 1, and one parked outside any document must answer none, not 2.
+    #[test]
+    fn a_parked_callback_resumes_under_the_document_that_parked_it() {
+        use crate::context::{current_dispatching_doc, push_dispatching_doc};
+
+        let seen: Rc<RefCell<Vec<Option<u64>>>> = Rc::new(RefCell::new(Vec::new()));
+        let ids: Vec<MainCallbackId> = [1u64, 0]
+            .into_iter()
+            .map(|doc| {
+                let _parker = push_dispatching_doc(doc);
+                let s = seen.clone();
+                park_main_callback::<()>(move |()| s.borrow_mut().push(current_dispatching_doc()))
+            })
+            .collect();
+        {
+            let _resumer = push_dispatching_doc(2);
+            for id in ids {
+                resume_main_callback(id, ());
+            }
+            assert_eq!(
+                current_dispatching_doc(),
+                Some(2),
+                "the resumer's document is restored after each callback"
+            );
+        }
+        assert_eq!(*seen.borrow(), [Some(1), None]);
+    }
+
     #[test]
     fn ids_are_distinct_and_independent() {
         let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
