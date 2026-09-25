@@ -172,6 +172,13 @@ struct Slot<T> {
     /// since been disposed means the component is gone and [`invoke`] must prune
     /// rather than call. `Owner` is a `Weak`, so this keeps nothing alive.
     owner: Option<Owner>,
+    /// The document whose code registered this callback, as a raw `doc_key`
+    /// (`0` = none), re-entered around every call (issue #963). Delivery is
+    /// drained between events on native and comes straight from the socket on
+    /// the web, so without it the callback ran under no document — or another
+    /// embedded context's — and an interceptor it registered or cleared
+    /// reached every document on the thread.
+    doc: u64,
     cb: Box<dyn FnMut(T)>,
 }
 
@@ -184,6 +191,7 @@ impl<T> Slot<T> {
     fn new(cb: Box<dyn FnMut(T)>) -> Self {
         Self {
             owner: current_owner(),
+            doc: rinch_core::current_dispatching_doc().unwrap_or(0),
             cb,
         }
     }
@@ -254,7 +262,7 @@ pub(crate) fn dispatch(id: u64, event: WsEvent) {
 /// nested inside.
 fn invoke<T: 'static>(id: u64, arg: T, select: impl Fn(&mut Handlers) -> &mut Option<Slot<T>>) {
     let taken = HANDLERS.with(|h| h.borrow_mut().get_mut(&id).and_then(|hs| select(hs).take()));
-    let Some(Slot { owner, mut cb }) = taken else {
+    let Some(Slot { owner, doc, mut cb }) = taken else {
         return;
     };
 
@@ -276,16 +284,21 @@ fn invoke<T: 'static>(id: u64, arg: T, select: impl Fn(&mut Handlers) -> &mut Op
     // (`rinch_core::batch`). On native this is already inside the main-thread
     // drain's batch and joins it; on the web `dispatch` is called straight from
     // the socket's JS callback, so this is the only one.
-    match &owner {
-        Some(owner) => rinch_core::batch(|| owner.run(|| cb(arg))),
-        None => rinch_core::batch(|| unowned(|| cb(arg))),
+    //
+    // It runs under the document that registered it (issue #963).
+    {
+        let _doc = rinch_core::push_dispatching_doc(doc);
+        match &owner {
+            Some(owner) => rinch_core::batch(|| owner.run(|| cb(arg))),
+            None => rinch_core::batch(|| unowned(|| cb(arg))),
+        }
     }
 
     HANDLERS.with(|h| {
         if let Some(hs) = h.borrow_mut().get_mut(&id) {
             let slot = select(hs);
             if slot.is_none() {
-                *slot = Some(Slot { owner, cb });
+                *slot = Some(Slot { owner, doc, cb });
             }
         }
     });

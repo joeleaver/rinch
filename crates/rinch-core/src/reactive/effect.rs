@@ -148,7 +148,7 @@ pub(super) struct EffectInner {
     /// a `Drag`, registering a keyboard/paste/selection interceptor, asking
     /// `Drag::is_active` — must be attributed to the document the effect
     /// belongs to, not to whichever one was dispatching. Raw `doc_key`: `0`
-    /// (created outside any document — `main`, a timer, rinch-web) re-enters
+    /// (created outside any document — `main`, a timer armed there, rinch-web) re-enters
     /// "no document", which every consumer reads as "nobody's" — never a
     /// borrowed document.
     pub(super) doc: u64,
