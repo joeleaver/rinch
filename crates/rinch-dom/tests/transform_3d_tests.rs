@@ -981,6 +981,12 @@ fn a_singular_transform_is_neither_drawn_nor_hit() {
         ("scaleZ(0) rotateX(45deg)", false, false),
         ("rotateY(20deg) scaleZ(0)", false, false),
         ("rotateX(30deg) scaleZ(0) rotateY(20deg)", false, false),
+        // Row 0 reaches every column, so the Laplace signs matter (review of #1055).
+        (
+            "rotate3d(1,2,3,37deg) scaleZ(0) rotate3d(3,1,2,53deg)",
+            false,
+            false,
+        ),
         ("matrix3d(1,0,0,0, 0,1,0,0, 0,0,0,0, 0,0,0,1)", false, false),
         ("matrix3d(1,0,0,0, 0,1,0,0, 1,0,0,0, 0,0,0,1)", false, false),
         ("perspective(100px) scaleZ(0)", false, false),
