@@ -595,6 +595,7 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (DamageRects, 1),
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
+            (RemovalDamageSteps, 9),
             (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 137),
@@ -638,6 +639,7 @@ fn a_keyed_for_replaces_every_row() {
             (DamageRects, 1),
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
+            (RemovalDamageSteps, 1800),
             (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 168),
@@ -649,6 +651,58 @@ fn a_keyed_for_replaces_every_row() {
         ],
     );
 }
+
+/// Recording a removal's old pixels costs what was removed, not what else is
+/// pending (#909's review). `rows` plain 20px rows in a scroller, every one
+/// restyled (so every one is pending paint-dirty), then removed one at a time
+/// in the same frame. Returns that frame's `removal_damage_steps`.
+fn clear_rows_one_by_one(rows: usize) -> u64 {
+    let out: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let out2 = out.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let scroller = scope.create_element("div");
+        scroller.set_attribute("style", "width: 300px; height: 400px; overflow-y: auto");
+        let mut v = Vec::new();
+        for _ in 0..rows {
+            let row = scope.create_element("div");
+            row.set_attribute("style", "height: 20px; background: rgb(0, 0, 200)");
+            scroller.append_child(&row);
+            v.push(row);
+        }
+        root.append_child(&scroller);
+        *out2.borrow_mut() = v;
+        root
+    });
+    let rows_h = out.borrow().clone();
+    let s = interaction(&mut app, |_| {
+        for r in &rows_h {
+            r.set_style("background", "rgb(0, 200, 0)");
+        }
+        for r in &rows_h {
+            r.remove();
+        }
+    });
+    assert!(
+        s.get(RemovalDamageSteps) > 0,
+        "positive control: removals recorded"
+    );
+    s.get(RemovalDamageSteps)
+}
+
+/// **Linear, pinned at two sizes.** Each removed row records itself (1) and
+/// walks its clip chain — the scroller, the root, the body (3) — whatever
+/// else is pending: 4 steps a row at 100 rows and at 400. Round one of #958
+/// rebuilt a set of every pending paint-dirty node per removal, O(n²) in a
+/// list clear, and no counter saw it. This one sees the walk the path does
+/// now; work added to it later has to count itself in the same counter, or
+/// it is as invisible as that set was.
+#[test]
+fn clearing_a_list_row_by_row_costs_linear_removal_damage() {
+    assert_eq!(clear_rows_one_by_one(100), 100 * STEPS_PER_ROW);
+    assert_eq!(clear_rows_one_by_one(400), 400 * STEPS_PER_ROW);
+}
+const STEPS_PER_ROW: u64 = 4;
 
 // ── Scroll ─────────────────────────────────────────────────────────────────
 
@@ -684,12 +738,12 @@ fn mount_scroller() -> (RinchApp, NodeHandle) {
 /// One wheel notch over a 500-row scroller: the scroller's box repaints, no
 /// element is restyled, nothing is laid out, nothing is shaped.
 ///
-/// **Finding, pinned as it is — #911 (hit tests); a fix must LOWER this
-/// number, and its PR updates the pin:** the notch runs **two** hit tests and
-/// recomputes **498** subtree extents — the scroll invalidates the hit cache
-/// (it has to: the rows moved), and the next test rebuilds every row's extent
-/// rather than the handful under the pointer. Paint visits **24** nodes for the
-/// ~20 rows on screen; it visited all 504 until #910.
+/// **One hit test** routes the notch (#911 — the render-surface check and the
+/// scroll routing used to run one each). It finds the hit cache **cold** — the
+/// mount's layout dropped it and nothing has probed since — so it computes
+/// **498** extents, once: the next notch keeps them (see
+/// `a_second_wheel_notch_recomputes_no_extent`). Paint visits **24** nodes for
+/// the ~20 rows on screen; it visited all 504 until #910.
 #[test]
 fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
     let (mut app, scroller) = mount_scroller();
@@ -723,9 +777,66 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
-            (HitTests, 2),
-            (HitTestNodesVisited, 8),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
             (HitExtentsComputed, 498),
+        ],
+    );
+}
+
+fn wheel_notch(app: &mut RinchApp) {
+    app.handle_event(
+        PlatformEvent::MouseWheel {
+            x: 50.0,
+            y: 100.0,
+            delta_x: 0.0,
+            delta_y: -100.0,
+        },
+        SIZE,
+        1.0,
+    );
+}
+
+/// The **second** notch of a scroll: the one every notch after the first is.
+/// The first notch found the hit cache cold (the mount's layout dropped it)
+/// and filled it; this one must not rebuild it.
+///
+/// #911: a scroll moves the scroller's rows, but no row's *own* extent — an
+/// extent is relative to its node's origin, and the scroll offset is applied
+/// by the scroller when it places its children — and not the scroller's
+/// either, since a box that clips keeps its extent to its own box. So the
+/// scroll drops only the stacking sequences, the frame's paint-only layout
+/// pass drops nothing, and the notch computes **no** extent at all. It was 2
+/// hit tests and 493 extents.
+#[test]
+fn a_second_wheel_notch_recomputes_no_extent() {
+    let (mut app, scroller) = mount_scroller();
+    interaction(&mut app, wheel_notch);
+    let first = scroller.scroll_top();
+    assert!(first > 0.0, "positive control: the first notch scrolled");
+    let s = interaction(&mut app, wheel_notch);
+    assert!(
+        scroller.scroll_top() > first,
+        "positive control: the second notch scrolled further"
+    );
+    expect_frame(
+        "second wheel notch, 500 rows",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 122816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 24),
+            (StackingOrderBuilds, 2),
+            (GlyphCacheHits, 126),
+            (ClipMasks, 2),
+            (ClipMaskPx, 245640),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
         ],
     );
 }
@@ -811,9 +922,10 @@ fn ten_queued_drag_moves_lay_out_once() {
 /// A dark-mode toggle: the document restyles in full and the frame repaints in
 /// full, for the theme reason.
 ///
-/// **A finding, pinned as it is — #913; a fix must LOWER this number, and its PR updates the pin.** Every paragraph's paint layout is rebuilt
-/// (`shape_ifc_build` 211: every row and side-scroller row) — a full restyle drops them — though the one
-/// variable the toggle changes is used by no text here.
+/// No paint layout is rebuilt (`shape_ifc_build` 0, #913): the one variable the
+/// toggle changes is used by no text here, and the full restyle drops an IFC's
+/// layout only when that IFC's typography moved. It used to drop all of them —
+/// 211, every row and side-scroller row.
 #[cfg(feature = "theme")]
 #[test]
 fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
@@ -836,7 +948,6 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (FullRestyleTheme, 1),
             (FullStyleWalks, 1),
             (TaffyStyleSyncs, 216),
-            (ShapeIfcBuild, 211),
             (ShapePaint, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),

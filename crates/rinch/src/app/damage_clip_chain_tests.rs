@@ -540,3 +540,83 @@ fn a_row_moved_between_clippers_is_cleared_where_it_was() {
     resolve(&mut app);
     assert_cleared(&mut app, (0, 70, 40, 100));
 }
+
+const CLIPPER: &str = "width: 200px; height: 100px; overflow: hidden;";
+
+/// The same move by `insert_before` (review of #958, q10).
+///
+/// Kills: `insert_before` not recording the moved row's old pixels.
+#[test]
+fn a_row_inserted_before_into_a_clipper_is_cleared_where_it_was() {
+    let (mut app, h) = mount_with(Box::new(|s, o| {
+        let c = el(s, o, CLIPPER);
+        let first = el(
+            s,
+            &c,
+            "width: 20px; height: 20px; background: rgb(0, 200, 0);",
+        );
+        let r = el(s, o, ROW40);
+        vec![c, first, r]
+    }));
+    assert!(
+        ink_in(&full_frame(&mut app), (0, 100, 40, 140)) > 1000,
+        "positive control"
+    );
+    h[0].insert_before(&h[2], &h[1]);
+    resolve(&mut app);
+    assert_cleared(&mut app, (0, 100, 40, 140));
+}
+
+/// The same move by `DomDocument::insert_child` (review of #958, q13).
+///
+/// Kills: `insert_child` not recording the moved row's old pixels.
+#[test]
+fn a_row_inserted_as_child_into_a_clipper_is_cleared_where_it_was() {
+    let (mut app, h) = mount_with(Box::new(|s, o| {
+        let c = el(s, o, CLIPPER);
+        el(
+            s,
+            &c,
+            "width: 20px; height: 20px; background: rgb(0, 200, 0);",
+        );
+        let r = el(s, o, ROW40);
+        vec![c, r]
+    }));
+    assert!(
+        ink_in(&full_frame(&mut app), (0, 100, 40, 140)) > 1000,
+        "positive control"
+    );
+    {
+        use rinch_core::dom::DomDocument;
+        let doc = app.doc.as_ref().unwrap().clone();
+        doc.borrow_mut()
+            .insert_child(h[0].node_id(), h[1].node_id(), 0);
+    }
+    resolve(&mut app);
+    assert_cleared(&mut app, (0, 100, 40, 140));
+}
+
+/// A row from outside a clipper `replace_with`s a node inside it (review of
+/// #958, q4): the incoming node's old pixels are recorded under its old chain.
+///
+/// Kills: `replace_node` not recording its incoming node's old pixels.
+#[test]
+fn a_row_replacing_a_node_inside_a_clipper_is_cleared_where_it_was() {
+    let (mut app, h) = mount_with(Box::new(|s, o| {
+        let c = el(s, o, CLIPPER);
+        let old = el(
+            s,
+            &c,
+            "width: 40px; height: 40px; background: rgb(200, 0, 0);",
+        );
+        let r = el(s, o, ROW40);
+        vec![c, old, r]
+    }));
+    assert!(
+        ink_in(&full_frame(&mut app), (0, 100, 40, 140)) > 1000,
+        "positive control"
+    );
+    h[1].replace_with(&h[2]);
+    resolve(&mut app);
+    assert_cleared(&mut app, (0, 100, 40, 140));
+}

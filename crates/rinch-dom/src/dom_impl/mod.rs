@@ -670,13 +670,19 @@ impl RinchDocument {
             // to clear. Asked of the chain as it was painted, which is still
             // in place — the children below are recorded before this node's
             // painted state is forgotten, for the same reason.
-            let r =
-                r.map(
-                    |r| match crate::paint::clip_chain_bounds(&self.tree, node_id, 1.0, true) {
-                        Some(clip) => r.intersect(clip),
-                        None => r,
-                    },
+            let r = r.map(|r| {
+                let mut steps = 1;
+                let clip = crate::paint::clip_chain_bounds_counted(
+                    &self.tree, node_id, 1.0, true, &mut steps,
                 );
+                self.tree
+                    .perf
+                    .add(crate::perf::Counter::RemovalDamageSteps, steps);
+                match clip {
+                    Some(clip) => r.intersect(clip),
+                    None => r,
+                }
+            });
             if let Some(r) = r
                 && r.width() > 0.0
                 && r.height() > 0.0
@@ -710,11 +716,15 @@ impl RinchDocument {
     /// whether it did.
     ///
     /// A reorder within one parent pays nothing: the chain is the same. Nor
-    /// does a subtree that was never painted — every route that takes a node
-    /// out of a painted tree forgets its descendants' painted state with it,
-    /// so an unpainted root has nothing painted below it. That keeps building
-    /// a tree (`rsx!` adopting a component site's children out of its scratch
-    /// template) free.
+    /// does a node with no parent, or one that was never painted, which keeps
+    /// building a tree (`rsx!` adopting a component site's children out of its
+    /// scratch template) free. That is exact for the removal and move verbs,
+    /// which forget the painted state of everything they take out, so an
+    /// unpainted root has nothing painted below it. It is not exact for the
+    /// three detaches that do not forget — `set_text_content`'s orphans,
+    /// `replace_node`'s displaced node, `set_inner_html`'s freed children —
+    /// whose old pixels this does not reach when they come back (#966,
+    /// pre-existing).
     pub(crate) fn record_pixels_left_by_move(&mut self, child: usize, new_parent: usize) -> bool {
         let Some(node) = self.tree.nodes.get(child) else {
             return false;

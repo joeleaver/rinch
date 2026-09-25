@@ -347,13 +347,17 @@ pub fn compute_damage(
 /// and box **as it was painted** (`PaintedState`, `prev_layout`), placed by
 /// [`Frame::Painted`], and it answers `None` — no clip — the moment a node on
 /// the walk was never painted. It walks the **current** parents, which is
-/// sound only because a node never sits under parents it was not painted
-/// under while it still carries a painted state: a move to another parent
-/// records its old rects under the old chain and forgets its painted state
-/// first (`record_pixels_left_by_move`), as a removal does. Two gaps remain,
-/// both pre-existing: `Frame::Painted` places a box by its *current*
-/// `position` (a same-frame static↔fixed change, #961), and a replaced node's
-/// own pixels are not recorded by `replace_node`.
+/// right for a node still under the parents it was painted under. The moves
+/// see to that: a move from one parent to another records the subtree's old
+/// rects under the old chain and forgets its painted state first
+/// (`record_pixels_left_by_move`), as a removal does. **Not every detach
+/// forgets**, and these are gaps, all pre-existing (#966): `set_text_content`
+/// orphans an element's children with `parent = None` and their painted state
+/// kept, `replace_node` does the same to the node it displaces, and
+/// `set_inner_html` frees children without recording their rects. Such a
+/// node, attached again, has its old rect placed along its new parents.
+/// `Frame::Painted` also places a box by its *current* `position` (a
+/// same-frame static↔fixed change, #961).
 ///
 /// Without `painted` the question is the next paint's, and the current state
 /// is exactly what that paint clips with.
@@ -362,6 +366,17 @@ pub(crate) fn clip_chain_bounds(
     node_id: RawNodeId,
     scale: f64,
     painted: bool,
+) -> Option<Rect> {
+    clip_chain_bounds_counted(tree, node_id, scale, painted, &mut 0)
+}
+
+/// [`clip_chain_bounds`], adding to `steps` one per ancestor it walks.
+pub(crate) fn clip_chain_bounds_counted(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    painted: bool,
+    steps: &mut u64,
 ) -> Option<Rect> {
     let frame = if painted {
         Frame::Painted
@@ -388,6 +403,7 @@ pub(crate) fn clip_chain_bounds(
             _ => {}
         }
         let Some(id) = current else { break };
+        *steps += 1;
         let ancestor = tree.get(id)?;
         let a = style(ancestor)?;
         // The containing block ends the escape, and its own clip applies: a
