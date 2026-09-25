@@ -369,3 +369,183 @@ fn an_inset_spread_past_the_middle_fills_the_whole_padding_box() {
     assert_alpha(&p, LEFT + 50, TOP + 50, 1.0, "the middle");
     assert_alpha(&p, LEFT - 1, TOP + 50, 0.0, "outside the box");
 }
+
+// ── The crop (round 2 of #1014's review) ───────────────────────────────────
+
+const B: &str = "position: absolute; box-sizing: border-box;";
+
+/// `html` inside a margin-less body, laid out and painted at `w`x`h` over
+/// white.
+fn painted_at(html: &str, w: u32, h: u32) -> TinySkiaPainter {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let wrap = doc.create_element("div");
+    doc.set_inner_html(wrap, html);
+    doc.append_child(body, wrap);
+    doc.resolve_layout(w as f32, h as f32);
+    let mut p = TinySkiaPainter::new(w, h);
+    p.fill_white();
+    let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut p,
+        1.0,
+        (w as f32, h as f32),
+        &mut doc.font_cx,
+        &mut lcx,
+    );
+    p
+}
+
+/// The blurred shadow's image is cropped to what the frame can show, and the
+/// crop must change no pixel. So the same document painted into a 500x450
+/// window and into a 1600x1400 one agrees wherever the small one can see.
+/// Each case puts a shadow edge or rounded corner just past the small
+/// window's cull edge, within the blur's reach — where a crop that forgot the
+/// translation, grew the corner patch short of the margin, or pulled the
+/// visible rect back wrongly would show. Rotated and scaled boxes differ by a
+/// few anti-aliasing bytes between window sizes with no shadow at all (the
+/// review measured the controls), so those are held to a bound, not zero.
+#[test]
+fn the_crop_changes_no_pixel() {
+    let cases = [
+        (
+            "corner past the right edge",
+            format!(
+                "<div style=\"{B} left:200px; top:100px; width:400px; height:200px; border-radius: 30px; box-shadow: inset 0 0 90px rgb(0,0,0)\"></div>"
+            ),
+        ),
+        (
+            "translated, corner past the right edge",
+            format!(
+                "<div style=\"{B} left:0; top:0; width:400px; height:200px; transform: translate(200px, 100px); border-radius: 30px; box-shadow: inset 0 0 90px rgb(0,0,0)\"></div>"
+            ),
+        ),
+        (
+            "translated off the left",
+            format!(
+                "<div style=\"{B} left:0; top:0; width:400px; height:200px; transform: translate(-150px, 100px); border-radius: 30px; box-shadow: inset 0 0 40px rgb(0,0,0)\"></div>"
+            ),
+        ),
+        (
+            "placed right, translated back left",
+            format!(
+                "<div style=\"{B} left:700px; top:100px; width:400px; height:200px; transform: translate(-400px, 0); border-radius: 30px; box-shadow: inset 0 0 40px rgb(0,0,0)\"></div>"
+            ),
+        ),
+        (
+            "a big corner sliver just past the crop",
+            format!(
+                "<div style=\"{B} left:220px; top:60px; width:400px; height:330px; border-radius: 100px; box-shadow: inset 0 0 80px rgb(0,0,0)\"></div>"
+            ),
+        ),
+        (
+            "rotated off the right",
+            format!(
+                "<div style=\"{B} left:350px; top:120px; width:700px; height:200px; transform: rotate(10deg); box-shadow: inset 0 0 30px rgb(0,0,0)\"></div>"
+            ),
+        ),
+        (
+            "rotated, big",
+            format!(
+                "<div style=\"{B} left:100px; top:50px; width:600px; height:300px; transform: rotate(20deg); border-radius: 30px; box-shadow: inset 0 0 40px rgb(0,0,0)\"></div>"
+            ),
+        ),
+        (
+            "scaled",
+            format!(
+                "<div style=\"{B} left:100px; top:50px; width:300px; height:150px; transform: scale(2); border-radius: 30px; box-shadow: inset 0 0 40px rgb(0,0,0)\"></div>"
+            ),
+        ),
+    ];
+    let mut bad = Vec::new();
+    for (name, html) in cases {
+        let small = painted_at(&html, 500, 450);
+        let large = painted_at(&html, 1600, 1400);
+        let mut differ = 0;
+        for y in 0..450u32 {
+            for x in 0..500u32 {
+                let i = ((y * 500 + x) * 4) as usize;
+                let j = ((y * 1600 + x) * 4) as usize;
+                differ += (0..4)
+                    .filter(|k| small.pixels()[i + k] != large.pixels()[j + k])
+                    .count();
+            }
+        }
+        let aa_noise = name.contains("rotated") || name.contains("scaled");
+        if (differ > 0 && !aa_noise) || differ > 200 {
+            bad.push((name, differ));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "the crop changed pixels (bytes differing): {bad:?}"
+    );
+}
+
+/// A large radius and a small blur: the rounded hole's shadow along the arc
+/// lies inside the region where the *rect's* blur leaves no shadow (the arc
+/// is ~17.6px in along the diagonal, the blur reaches ~6px). The image is cut
+/// into rings around that clear middle, and the middle has to be shrunk for
+/// the corners, or the shadow along the arc is never drawn.
+#[test]
+fn a_small_blur_under_a_large_radius_keeps_the_arcs_shadow() {
+    let p = painted_at(
+        &format!(
+            "<div style=\"{B} left:150px; top:50px; width:200px; height:200px; border-radius: 60px; box-shadow: inset 0 0 4px rgb(0,0,0)\"></div>"
+        ),
+        500,
+        450,
+    );
+    // Over white: 1 - red/255 is the shadow's alpha.
+    let a = |x: u32, y: u32| 1.0 - p.pixels()[((y * 500 + x) * 4) as usize] as f64 / 255.0;
+    let on_arc = a(150 + 18, 50 + 18);
+    assert!(
+        on_arc > 0.2,
+        "the shadow along the rounded corner's arc is missing: alpha {on_arc:.3}"
+    );
+}
+
+/// The standard normal CDF (Abramowitz & Stegun 7.1.26), for the oracle.
+fn phi(x: f64) -> f64 {
+    let z = x / std::f64::consts::SQRT_2;
+    let t = 1.0 / (1.0 + 0.327_591_1 * z.abs());
+    let y = 1.0
+        - (((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736) * t
+            + 0.254_829_592)
+            * t
+            * (-z * z).exp();
+    0.5 * (1.0 + if z >= 0.0 { y } else { -y })
+}
+
+/// The blurred profile against the analytic Gaussian — §7.1's definition,
+/// exact for a square hole — to about one alpha level in a hundred, at blur
+/// 6, 20 and 60 (a sampled kernel for the first, three box blurs for the
+/// others). The Chrome samples above allow 0.04, which an off-by-one in the
+/// box blur's running sum gets through; this does not.
+#[test]
+fn the_blurred_profile_is_the_gaussian_to_one_percent() {
+    for blur in [6.0f64, 20.0, 60.0] {
+        let sigma = blur / 2.0;
+        let p = painted_at(
+            &format!(
+                "<div style=\"{B} left:150px; top:50px; width:300px; height:300px; box-shadow: inset 0 0 {blur}px rgb(0,0,0)\"></div>"
+            ),
+            600,
+            450,
+        );
+        let covered = |t: f64| phi(t / sigma) - phi((t - 300.0) / sigma);
+        let mut worst: f64 = 0.0;
+        for d in 0..150u32 {
+            let (x, y) = (150 + d, 200);
+            let got = 1.0 - p.pixels()[((y * 600 + x) * 4) as usize] as f64 / 255.0;
+            let want = 1.0 - covered(d as f64 + 0.5) * covered(150.0);
+            worst = worst.max((got - want).abs());
+        }
+        assert!(
+            worst <= 0.012,
+            "blur {blur}: the profile is {worst:.4} from the Gaussian at worst"
+        );
+    }
+}

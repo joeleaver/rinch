@@ -21,6 +21,8 @@
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::Text` | [`an_inline_flex_holding_a_text_leaf`] |
 //! | `pseudo_element_passes` | `resolve.rs`, `::before` | [`only_before_rules`] |
 //! | `pseudo_element_passes` | `resolve.rs`, `::after` | [`only_after_rules`] |
+//! | `inset_shadow_mask_px` | `paint/borders.rs`, blurred inset shadow (full repaint: cropped to the window) | [`a_blurred_inset_shadow_builds_its_visible_area`] |
+//! | `inset_shadow_mask_px` | the same, partial repaint (cropped to the damage) | [`a_partial_repaint_builds_only_the_damaged_part_of_an_inset_shadow`] |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
 //! exact, anything unlisted `0` (`support/perf_expect.rs`). A failure prints the
@@ -641,6 +643,87 @@ fn only_after_rules() {
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 2),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── inset_shadow_mask_px ───────────────────────────────────────────────────
+
+/// A 300x200 panel with a blurred inset shadow, half of it past the right
+/// edge of the 400x300 window.
+fn inset_shadow_panel() -> RinchDocument {
+    let mut doc = doc_with(
+        ".panel { position: absolute; left: 250px; top: 50px; width: 300px; height: 200px; \
+         box-shadow: inset 0 0 12px rgb(0, 0, 0); }",
+    );
+    let body = doc.body();
+    el(&mut doc, body, "div", "panel");
+    doc
+}
+
+/// A full repaint builds the blurred shadow over the part of the panel the
+/// window can show: 300x200 at x = 250 in a 400px window whose cull reaches
+/// 64px past its edge (the ink margin), so 214 columns of the 300 — 214 x
+/// 200 = 42,800 pixels, not the panel's 60,000.
+#[test]
+fn a_blurred_inset_shadow_builds_its_visible_area() {
+    let mut doc = inset_shadow_panel();
+    let s = repaint_frame(&mut doc);
+    expect(
+        "blurred inset shadow, full repaint",
+        &s,
+        &[
+            (InsetShadowMaskPx, 42_800),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A 20x20 partial repaint inside the same panel — a caret blinking in it —
+/// builds 20x20 pixels of shadow. Round 2 of #1014's review measured the
+/// mask ignoring the damage (it lives outside the painter's clip tracking):
+/// the whole visible panel, rebuilt every frame, 34 MB of it at 4K.
+#[test]
+fn a_partial_repaint_builds_only_the_damaged_part_of_an_inset_shadow() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = inset_shadow_panel();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let damage = Rect::new(300.0, 100.0, 320.0, 120.0);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::set_dirty_rects(Some(&[damage]));
+    painter.push_clip(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        &PaintShape::Rect(damage),
+    );
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "blurred inset shadow, 20x20 partial repaint",
+        &s,
+        &[
+            (InsetShadowMaskPx, 400),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
         ],
