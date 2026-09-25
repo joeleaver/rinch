@@ -12,8 +12,8 @@ use crate::node::{RsxElseBranch, RsxForLoop, RsxIfBlock, RsxMatchBlock, RsxNode}
 
 use super::DomCodegenContext;
 use super::captures::{
-    collect_body_captures, collect_capture_idents, collect_pat_idents, contested_names,
-    shadow_clones, wrap_site,
+    collect_body_captures, collect_capture_idents, collect_pat_ident_tokens, collect_pat_idents,
+    contested_names, shadow_clones, wrap_site,
 };
 
 /// Generate DOM code for a Fragment (just renders children in an invisible wrapper).
@@ -62,8 +62,21 @@ pub fn generate_if_block(
     let when_closure = if if_block.is_if_let {
         // if let Some(x) = expr { ... }
         // Condition: move || matches!(expr, Pattern)
+        //
+        // `matches!` only asks whether the pattern fits, so every name the
+        // pattern binds is unused *here* — and rustc would report it at the
+        // author's own `if let`, even though the branch closure below
+        // re-destructures and uses it (issue #391). The lint is allowed on this
+        // statement alone: the branch's `let #pattern = …` carries none, so a
+        // binding the branch genuinely never reads still warns, once, there.
         let pattern = if_block.pattern.as_ref().unwrap();
-        quote! { move || matches!(#condition, #pattern) }
+        quote! {
+            move || {
+                #[allow(unused_variables)]
+                let __rsx_if_let_matched = matches!(#condition, #pattern);
+                __rsx_if_let_matched
+            }
+        }
     } else {
         // Plain if: move || condition
         quote! { move || { #condition } }
@@ -201,6 +214,23 @@ fn generate_children_closure(
 /// in a `display:contents` div. Leading `let` statements are emitted before
 /// the RSX content.
 fn generate_children_body(children: &[RsxNode], ctx: &mut DomCodegenContext) -> TokenStream2 {
+    generate_children_body_acking(children, ctx, &HashSet::new())
+}
+
+/// [`generate_children_body`], acknowledging the names in `acks` that a leading
+/// `let` binds: each gets a `let _ = &name;` right after the `let` that binds
+/// it, which counts as a use for `unused_variables` and does nothing else.
+///
+/// A `for` body's leading `let`s run in the view closure *and* — the ones the
+/// key reads — in the key closure (issue #394): a `let` whose binding only
+/// `key:` reads is used there and unused here. Right after its own `let` is
+/// the one place the borrow is always legal: nothing later in the prologue can
+/// have moved it yet.
+fn generate_children_body_acking(
+    children: &[RsxNode],
+    ctx: &mut DomCodegenContext,
+    acks: &HashSet<String>,
+) -> TokenStream2 {
     // Partition into leading statements and trailing RSX nodes
     let mut statements = Vec::new();
     let mut rsx_children = Vec::new();
@@ -220,7 +250,16 @@ fn generate_children_body(children: &[RsxNode], ctx: &mut DomCodegenContext) -> 
         rsx_children.push(child);
     }
 
-    let stmt_code: Vec<TokenStream2> = statements.iter().map(|stmt| quote! { #stmt }).collect();
+    let stmt_code: Vec<TokenStream2> = statements
+        .iter()
+        .map(|stmt| {
+            let acked = match stmt {
+                syn::Stmt::Local(local) => acknowledgements(&local.pat, acks),
+                _ => TokenStream2::new(),
+            };
+            quote! { #stmt #acked }
+        })
+        .collect();
 
     if rsx_children.is_empty() {
         quote! {
@@ -301,7 +340,20 @@ fn generate_children_body(children: &[RsxNode], ctx: &mut DomCodegenContext) -> 
 /// initialiser reads `a`, both are kept. Non-`let` statements are kept
 /// unconditionally — they bind nothing to trace and may carry side effects the
 /// key relies on.
+#[cfg(test)]
 fn key_relevant_leading_stmts(for_loop: &RsxForLoop, key_fn: &TokenStream2) -> Vec<TokenStream2> {
+    key_relevant_leading_stmt_refs(for_loop, key_fn)
+        .into_iter()
+        .map(|stmt| quote! { #stmt })
+        .collect()
+}
+
+/// The statements [`key_relevant_leading_stmts`] keeps, unrendered, so the
+/// caller can follow each kept `let` with its acknowledgements (issue #394).
+fn key_relevant_leading_stmt_refs<'a>(
+    for_loop: &'a RsxForLoop,
+    key_fn: &TokenStream2,
+) -> Vec<&'a syn::Stmt> {
     let leading: Vec<&syn::Stmt> = for_loop
         .children
         .iter()
@@ -340,8 +392,80 @@ fn key_relevant_leading_stmts(for_loop: &RsxForLoop, key_fn: &TokenStream2) -> V
         .into_iter()
         .zip(keep)
         .filter(|&(_, keep)| keep)
-        .map(|(stmt, _)| quote! { #stmt })
+        .map(|(stmt, _)| stmt)
         .collect()
+}
+
+/// The identifiers `tokens` may *read*: [`token_idents`], minus the names a
+/// `let` pattern binds, the `let _ = &name;` acknowledgements codegen emits, and
+/// field and method names (`row.id`).
+///
+/// Used to decide which of a `for` loop's bindings one closure should
+/// acknowledge on its sibling's behalf (issue #394). Every generated body
+/// contains its own leading `let`s, so a plain token scan would find every
+/// let-bound name "read" by the very statement that binds it — and a
+/// codegen-emitted acknowledgement would feed back as a read of its own.
+/// Still an over-approximation otherwise (path segments, struct-literal field
+/// names, scaffolding, closure parameters), which can only make a closure stay
+/// silent about a name its sibling still reports.
+fn read_idents(tokens: &TokenStream2) -> HashSet<String> {
+    use proc_macro2::TokenTree;
+
+    fn is_punct(tree: Option<&TokenTree>, ch: char) -> bool {
+        matches!(tree, Some(TokenTree::Punct(p)) if p.as_char() == ch)
+    }
+
+    let mut out = HashSet::new();
+    let mut stack: Vec<TokenStream2> = vec![tokens.clone()];
+    while let Some(stream) = stack.pop() {
+        let trees: Vec<TokenTree> = stream.into_iter().collect();
+        let mut i = 0;
+        while i < trees.len() {
+            match &trees[i] {
+                TokenTree::Ident(id) if id == "let" => {
+                    // `let _ = &name;` — an acknowledgement, not a read.
+                    if matches!(trees.get(i + 1), Some(TokenTree::Ident(u)) if u == "_")
+                        && is_punct(trees.get(i + 2), '=')
+                        && is_punct(trees.get(i + 3), '&')
+                        && matches!(trees.get(i + 4), Some(TokenTree::Ident(_)))
+                        && is_punct(trees.get(i + 5), ';')
+                    {
+                        i += 6;
+                        continue;
+                    }
+                    // Skip the pattern (and any type ascription) up to `=`/`;`.
+                    i += 1;
+                    while i < trees.len()
+                        && !is_punct(trees.get(i), '=')
+                        && !is_punct(trees.get(i), ';')
+                    {
+                        i += 1;
+                    }
+                }
+                TokenTree::Ident(id) => {
+                    // `row.id` / `row.len()` name a field or a method, never a
+                    // local — unless the dot is the second of `..` (`0..n`).
+                    let field = i >= 1
+                        && is_punct(trees.get(i - 1), '.')
+                        && !(i >= 2 && is_punct(trees.get(i - 2), '.'));
+                    if !field {
+                        out.insert(id.to_string());
+                    }
+                    i += 1;
+                }
+                TokenTree::Group(g) => {
+                    stack.push(g.stream());
+                    i += 1;
+                }
+                TokenTree::Literal(lit) => {
+                    collect_inline_format_args(&lit.to_string(), &mut out);
+                    i += 1;
+                }
+                TokenTree::Punct(_) => i += 1,
+            }
+        }
+    }
+    out
 }
 
 /// Every identifier that *might* be referenced by `tokens`.
@@ -426,37 +550,78 @@ pub fn generate_for_loop(
     let iter_expr = &for_loop.iter_expr;
 
     // Try to extract key from first child element's `key:` prop
-    let (key_fn, key_source) = extract_key_expr(for_loop);
+    let (key_fn, key_source, explicit_key) = extract_key_expr(for_loop);
 
     // Leading `let`s the key expression depends on, so `key:` can reference a
     // let-bound value. Deliberately filtered — see `key_relevant_leading_stmts`.
-    let leading_stmts = key_relevant_leading_stmts(for_loop, &key_fn);
+    let leading_stmts = key_relevant_leading_stmt_refs(for_loop, &key_fn);
 
     // The loop pattern binds the item for the key and view closures, so neither
     // captures it and neither may shadow-clone it.
     let mut item_bound = HashSet::new();
     collect_pat_idents(pattern, &mut item_bound);
 
+    // Key closure: include leading let statements so key: can reference
+    // let-bound values. Each kept `let` is followed by its acknowledgements of
+    // what the view reads (below; issue #394): the filter keeps a `let` whose
+    // name the key merely *spells* — `let id = item.id;` beside `key: item.id`
+    // — so the key closure can bind a name only the view uses.
+    let key_body_acking = |acks: &HashSet<String>| {
+        let stmts = leading_stmts.iter().map(|stmt| {
+            let acked = match stmt {
+                syn::Stmt::Local(local) => acknowledgements(&local.pat, acks),
+                _ => TokenStream2::new(),
+            };
+            quote! { #stmt #acked }
+        });
+        quote! { { #(#stmts)* ::std::string::ToString::to_string(&#key_fn) } }
+    };
+    let key_body = key_body_acking(&HashSet::new());
+
+    // The key and view closures each bind the loop pattern (and the view every
+    // leading `let`), so a name only one of them reads is unused in the other,
+    // and rustc reports it at the author's own pattern (issue #394). Each
+    // closure therefore acknowledges the names its sibling reads — and only
+    // those, so a name that *neither* reads still warns. Not a blanket
+    // `#[allow]`: that would hide the author's own unused bindings too.
+    //
+    // The view acknowledges what an **explicit** `key:` reads. A fabricated
+    // key (`format!("{:?}", item)`) reads the whole item by construction, so
+    // acknowledging it would silence a loop whose author never names the item.
+    let key_reads = if explicit_key {
+        read_idents(&key_body)
+    } else {
+        HashSet::new()
+    };
+
     // Build the view closure body from children
     ctx.push_closure_frame(item_bound.clone());
-    let body = generate_children_body(&for_loop.children, ctx);
+    let body = generate_children_body_acking(&for_loop.children, ctx, &key_reads);
     ctx.pop_closure_frame();
+
+    // Over-approximate on purpose: `body` is generated code, so a pattern name
+    // that happens to spell a scaffolding identifier is taken as read. That can
+    // only silence the key closure's half of a warning the view still gives.
+    let view_reads = read_idents(&body);
+    let key_acks = acknowledgements(pattern, &view_reads);
+    let view_acks = acknowledgements(pattern, &key_reads);
+    let key_body = key_body_acking(&view_reads);
 
     // Collection closure: move || iter_expr.into_iter().collect::<Vec<_>>()
     let collection = quote! {
         move || (#iter_expr).into_iter().collect::<Vec<_>>()
     };
 
-    // Key closure: include leading let statements so key: can reference let-bound values
-    let key_body = if leading_stmts.is_empty() {
-        quote! { ::std::string::ToString::to_string(&#key_fn) }
-    } else {
-        quote! { { #(#leading_stmts)* ::std::string::ToString::to_string(&#key_fn) } }
+    let key_closure = quote! {
+        move |#pattern| {
+            #key_acks
+            #key_body
+        }
     };
-    let key_closure = quote! { move |#pattern| #key_body };
 
     let view_closure = quote! {
         move |#pattern, __child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
+            #view_acks
             let __scope = __child_scope;
             #body
         }
@@ -490,6 +655,34 @@ pub fn generate_for_loop(
     }
 }
 
+/// `let _ = &name;` for every name `pat` binds that is also in `reads`, in a
+/// stable order.
+///
+/// A borrow dropped on the spot: it counts as a use for `unused_variables`, and
+/// moves, copies and evaluates nothing. Emitted immediately after the binding
+/// is introduced, before any statement could move it.
+///
+/// Each acknowledgement is the pattern's own identifier token, never a name
+/// rebuilt from its string: inside a user's `macro_rules!` (`for $it in …`)
+/// only the original token carries the hygiene that resolves to the binding.
+///
+/// `reads` is compared by **string**, which ignores hygiene: two different
+/// `item`s from two syntax contexts count as one. That is safe in the one
+/// direction it can err — it can only add an acknowledgement, and the
+/// acknowledgement names the pattern's own token, so it always resolves to
+/// this binding. It never misses one (a read of this binding has this
+/// binding's string). The cost is a lost `unused variable` warning in that
+/// case — the same kind of over-approximation `read_idents` makes for path
+/// segments.
+fn acknowledgements(pat: &syn::Pat, reads: &HashSet<String>) -> TokenStream2 {
+    let mut idents = Vec::new();
+    collect_pat_ident_tokens(pat, &mut idents);
+    idents.retain(|id| reads.contains(&id.to_string()));
+    idents.sort_by_key(|id| id.to_string());
+    idents.dedup_by_key(|id| id.to_string());
+    quote! { #( let _ = &#idents; )* }
+}
+
 /// Drop the names `bound` introduces from a capture list — they are the
 /// closure's own parameters, not values reaching it from the enclosing scope.
 fn without(caps: Vec<syn::Ident>, bound: &HashSet<String>) -> Vec<syn::Ident> {
@@ -506,12 +699,13 @@ fn without(caps: Vec<syn::Ident>, bound: &HashSet<String>) -> Vec<syn::Ident> {
 /// `for_each_dom` that a repeat of such a key is not a user error: `for tag in
 /// ["rust", "rust", "gui"]` is an ordinary list, so the fabricated key is
 /// uniquified by occurrence ordinal rather than the row being dropped (issue
-/// #185).
+/// #185). The `bool` is `true` for an explicit `key:` — the same fact as the
+/// marker, in a form codegen can branch on.
 ///
 /// Note: The `key:` prop is left on the element. HTML codegen treats `key`
 /// as a special attribute and skips it (it would just become a harmless
 /// `set_attribute("key", ...)` otherwise).
-fn extract_key_expr(for_loop: &RsxForLoop) -> (TokenStream2, TokenStream2) {
+fn extract_key_expr(for_loop: &RsxForLoop) -> (TokenStream2, TokenStream2, bool) {
     // Look for key: prop on the first child element (skip leading let statements)
     let first_element = for_loop
         .children
@@ -525,6 +719,7 @@ fn extract_key_expr(for_loop: &RsxForLoop) -> (TokenStream2, TokenStream2) {
         return (
             quote! { #key_expr },
             quote! { rinch::core::KeySource::Explicit },
+            true,
         );
     }
 
@@ -533,6 +728,7 @@ fn extract_key_expr(for_loop: &RsxForLoop) -> (TokenStream2, TokenStream2) {
     (
         quote! { format!("{:?}", #pattern) },
         quote! { rinch::core::KeySource::Fallback },
+        false,
     )
 }
 
@@ -568,9 +764,14 @@ pub fn generate_match_block(
         })
         .collect();
 
+    // The discriminant only picks an arm, so every name an arm's pattern binds
+    // is unused here; the arm's own closure below re-matches and is where a
+    // binding is read or not. `unused_variables` is therefore allowed on this
+    // match and NOT on the arm's, so a used binding stays silent and a binding
+    // the arm never reads still warns, once, from the arm (issue #391's shape).
     let discriminant = quote! {
         move || -> usize {
-            #[allow(unreachable_patterns)]
+            #[allow(unreachable_patterns, unused_variables)]
             match #scrutinee {
                 #(#discriminant_arms)*
                 _ => #num_arms, // out-of-range = no branch rendered
@@ -597,7 +798,7 @@ pub fn generate_match_block(
             ctx.pop_closure_frame();
 
             let arm_body = quote! {
-                #[allow(unreachable_patterns, unused_variables, irrefutable_let_patterns)]
+                #[allow(unreachable_patterns, irrefutable_let_patterns)]
                 match #scrutinee {
                     #pat #guard_check => { #body }
                     _ => unreachable!()

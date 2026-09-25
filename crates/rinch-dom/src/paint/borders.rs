@@ -396,6 +396,36 @@ pub(super) fn paint_outline(
     }
 }
 
+/// The corner radius of an outer shadow's shape, for a border radius `r`
+/// grown by `spread` (css-backgrounds-3 §7.1.1, "Shadow Shape, Spread, and
+/// Knockout").
+///
+/// The radius grows with the spread, as the rect does, and a negative spread
+/// shrinks it, floored at zero. But where `r` is less than the spread, the
+/// spread is first multiplied by `1 + (r/spread - 1)^3` — so a square corner
+/// (`r == 0`, a factor of `0`) stays square however far it is spread, and a
+/// small radius grows continuously out of it instead of jumping to
+/// `r + spread`. Chrome 153 paints exactly this (#351, measured in
+/// `tests/box_shadow_spread_radius_tests.rs`).
+pub(super) fn spread_corner_radius(r: f64, spread: f64) -> f64 {
+    if spread > 0.0 && r < spread {
+        let ratio = r / spread;
+        r + spread * (1.0 + (ratio - 1.0).powi(3))
+    } else {
+        (r + spread).max(0.0)
+    }
+}
+
+/// [`spread_corner_radius`] for all four corners.
+fn spread_radii(radii: RoundedRectRadii, spread: f64) -> RoundedRectRadii {
+    RoundedRectRadii::new(
+        spread_corner_radius(radii.top_left, spread),
+        spread_corner_radius(radii.top_right, spread),
+        spread_corner_radius(radii.bottom_right, spread),
+        spread_corner_radius(radii.bottom_left, spread),
+    )
+}
+
 /// Paint CSS box-shadow from typed computed values.
 /// Approximates blur by drawing expanded, semi-transparent rounded rects.
 #[allow(clippy::too_many_arguments)]
@@ -502,10 +532,29 @@ pub(super) fn paint_box_shadow(
         // centres are `d` apart, so the layer's radius has to beat the hole's
         // by at least that much. A square layer corner (`or == 0`) cuts
         // nothing off, so there the rect check above is the whole story.
-        let corner = |hc: (f64, f64), hr: f64, oc: (f64, f64), or: f64| {
-            or <= 0.0 || (hc.0 - oc.0).hypot(hc.1 - oc.1) + hr <= or + 1e-6
+        //
+        // Nor does a layer corner the hole never reaches. The layer's arc
+        // only cuts the quadrant beyond its own centre — for the top-left,
+        // `x < oc.0 && y < oc.1` — and a hole whose rect starts at or past
+        // that centre on either axis has no point there at all. That is the
+        // shape a small radius under a large spread takes (#351): the spread
+        // ratio rule makes the shadow's corner *sharper* than `r + spread`, so
+        // its arc's centre sits outside the element and the arc-in-arc test
+        // below, which assumes the two arcs face each other, fails a hole that
+        // is plainly inside.
+        //
+        // `inward` is the corner's direction into the box: `(1, 1)` for the
+        // top-left, `(-1, 1)` for the top-right, and so on.
+        let corner = |inward: (f64, f64), hc: (f64, f64), hr: f64, oc: (f64, f64), or: f64| {
+            // The hole's rect edges at this corner.
+            let edge = (hc.0 - inward.0 * hr, hc.1 - inward.1 * hr);
+            or <= 0.0
+                || (edge.0 - oc.0) * inward.0 >= 0.0
+                || (edge.1 - oc.1) * inward.1 >= 0.0
+                || (hc.0 - oc.0).hypot(hc.1 - oc.1) + hr <= or + 1e-6
         };
         corner(
+            (1.0, 1.0),
             (
                 hole_rect.x0 + hole_radii.top_left,
                 hole_rect.y0 + hole_radii.top_left,
@@ -517,6 +566,7 @@ pub(super) fn paint_box_shadow(
             ),
             outer_radii.top_left,
         ) && corner(
+            (-1.0, 1.0),
             (
                 hole_rect.x1 - hole_radii.top_right,
                 hole_rect.y0 + hole_radii.top_right,
@@ -528,6 +578,7 @@ pub(super) fn paint_box_shadow(
             ),
             outer_radii.top_right,
         ) && corner(
+            (-1.0, -1.0),
             (
                 hole_rect.x1 - hole_radii.bottom_right,
                 hole_rect.y1 - hole_radii.bottom_right,
@@ -539,6 +590,7 @@ pub(super) fn paint_box_shadow(
             ),
             outer_radii.bottom_right,
         ) && corner(
+            (1.0, -1.0),
             (
                 hole_rect.x0 + hole_radii.bottom_left,
                 hole_rect.y1 - hole_radii.bottom_left,
@@ -569,6 +621,7 @@ pub(super) fn paint_box_shadow(
         let offset_y = shadow.offset_y as f64 * scale;
         let blur = shadow.blur_radius as f64 * scale;
         let spread = shadow.spread_radius as f64 * scale;
+        let spread_shape_radii = spread_radii(radii, spread);
         // `peniko::Color` *is* `AlphaColor<Srgb>`, so the `to_rgba8` round trip
         // this used to do was a re-snap of a value already in the painter's
         // colour space. It was **redundant, not lossy**: a shadow colour
@@ -620,11 +673,17 @@ pub(super) fn paint_box_shadow(
                 }
                 let layer_color = color.multiply_alpha(alpha_scale as f32);
                 let (outer_radii, outer) = if has_radius {
+                    // The spread shape's radius, then grown (or shrunk, for
+                    // the inner layers) by how far this layer's blur takes it
+                    // past the spread. Where `r >= spread` this is the
+                    // `r + layer_expand` it always was; it differs only where
+                    // the spread ratio rule sharpens a small corner (#351).
+                    let grow = |r: f64| (r + layer_expand - spread).max(0.0);
                     let expanded_radii = RoundedRectRadii::new(
-                        radii.top_left + layer_expand,
-                        radii.top_right + layer_expand,
-                        radii.bottom_right + layer_expand,
-                        radii.bottom_left + layer_expand,
+                        grow(spread_shape_radii.top_left),
+                        grow(spread_shape_radii.top_right),
+                        grow(spread_shape_radii.bottom_right),
+                        grow(spread_shape_radii.bottom_left),
                     );
                     (
                         expanded_radii,
@@ -654,7 +713,12 @@ pub(super) fn paint_box_shadow(
                 y + h + offset_y + total_expand,
             );
             let (outer_radii, outer) = if has_radius {
-                (radii, shadow_rect.to_rounded_rect(radii).into_path(0.1))
+                (
+                    spread_shape_radii,
+                    shadow_rect
+                        .to_rounded_rect(spread_shape_radii)
+                        .into_path(0.1),
+                )
             } else {
                 (SQUARE, shadow_rect.into_path(0.1))
             };
