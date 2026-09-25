@@ -2618,6 +2618,9 @@ pub struct PaintedState {
     pub clips: bool,
     /// Its `position`, which decides which clippers above it it escapes.
     pub position: crate::computed_style::PositionValue,
+    /// Whether it was a containing block for absolute descendants
+    /// ([`Node::establishes_abs_containing_block`]), which ends their escape.
+    pub contains_abs: bool,
 }
 
 /// A painted transform: the value and its resolved origin, in CSS px.
@@ -2646,6 +2649,7 @@ impl PaintedState {
             clips: node.clips_overflow()
                 && cs.display != crate::computed_style::DisplayValue::Contents,
             position: cs.position,
+            contains_abs: node.establishes_abs_containing_block(),
         }
     }
 }
