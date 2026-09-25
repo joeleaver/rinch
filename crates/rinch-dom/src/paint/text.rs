@@ -573,6 +573,12 @@ pub(super) fn render_text(
 /// Draws all glyph runs at the given offset with the specified shadow color,
 /// ignoring the original brush from the layout styles. A hidden glyph casts no
 /// shadow (`mask`, #829).
+///
+/// `x`/`y` are physical px, and `scale` scales the glyphs exactly as
+/// [`render_text`] does, so a shadow is the main pass's glyphs at the main
+/// pass's size (#409). It used to take no `scale` and drew the glyphs at the
+/// layout's logical size — invisible at scale 1, half size at scale 2.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_text_shadow_pass(
     painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
@@ -580,8 +586,10 @@ pub(super) fn render_text_shadow_pass(
     y: f64,
     shadow_color: AlphaColor<Srgb>,
     css_transform: Affine,
+    scale: f64,
     mask: Option<&TextMask>,
 ) {
+    let sf = scale as f32;
     let transform = css_transform * Affine::translate((x, y));
     let shadow_brush = Brush::Solid(shadow_color);
     for line in layout.lines() {
@@ -591,11 +599,11 @@ pub(super) fn render_text_shadow_pass(
                 continue;
             };
             let flags = run_flags(&mut cursor, &glyph_run, mask);
-            let mut gx = glyph_run.offset();
-            let gy = glyph_run.baseline();
+            let mut gx = glyph_run.offset() * sf;
+            let gy = glyph_run.baseline() * sf;
             let run = glyph_run.run();
             let font = run.font();
-            let font_size = run.font_size();
+            let font_size = run.font_size() * sf;
             let synthesis = run.synthesis();
             let glyph_xform = synthesis
                 .skew()
@@ -605,9 +613,9 @@ pub(super) fn render_text_shadow_pass(
                 .glyphs()
                 .enumerate()
                 .filter_map(|(i, glyph)| {
-                    let px = gx + glyph.x;
-                    let py = gy + glyph.y;
-                    gx += glyph.advance;
+                    let px = gx + glyph.x * sf;
+                    let py = gy + glyph.y * sf;
+                    gx += glyph.advance * sf;
                     if flags.as_ref().is_some_and(|f| f[i]) {
                         return None;
                     }
@@ -661,9 +669,20 @@ pub(super) fn render_text_with_shadow(
         let shadow_color = shadow.color.unwrap_or_else(|| {
             AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255) // default: black
         });
-        let sx = x + shadow.offset_x as f64;
-        let sy = y + shadow.offset_y as f64;
-        render_text_shadow_pass(painter, layout, sx, sy, shadow_color, css_transform, mask);
+        // The offset is CSS px and `x`/`y` are physical: scale it like every
+        // other length on its way to the painter (#409).
+        let sx = x + shadow.offset_x as f64 * scale;
+        let sy = y + shadow.offset_y as f64 * scale;
+        render_text_shadow_pass(
+            painter,
+            layout,
+            sx,
+            sy,
+            shadow_color,
+            css_transform,
+            scale,
+            mask,
+        );
     }
 
     // Render the main text on top
