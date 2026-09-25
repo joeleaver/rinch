@@ -720,8 +720,9 @@ fn a_cached_shadow_mask_is_never_stale() {
     );
 
     // The text changes — only its last glyph, after a space (no kerning pair
-    // to move it), so every glyph keeps its position and only a glyph id
-    // tells the two masks apart. The text node
+    // to move it), and 6 and 9 share an advance: every glyph keeps its
+    // position, the mask keeps its size, and only a glyph id tells the two
+    // masks apart. The text node
     // is the div's only child.
     let body = doc.body();
     let div = doc.tree.get(body.0).unwrap().children[0];
