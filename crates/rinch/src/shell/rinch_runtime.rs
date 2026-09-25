@@ -135,8 +135,10 @@ pub(crate) fn send_native_event(event: RinchNativeEvent) {
 /// then the queued native events (`drain_native`, which re-arms the
 /// `ReRender` coalescing in [`NativeEventQueue::drain`]).
 ///
-/// A free function over the steps so a test can put a second thread's
-/// `run_on_main_thread` exactly between them (issue #988).
+/// A callback queued between the two halves is owed a wake of its own, which
+/// the end of this function pays (issue #988). A free function over the steps
+/// so a test can put a second thread's `run_on_main_thread` exactly between
+/// them.
 fn drain_wake_queues<S>(
     state: &mut S,
     run_queued: impl FnOnce(&mut S),
@@ -144,6 +146,16 @@ fn drain_wake_queues<S>(
 ) {
     run_queued(state);
     drain_native(state);
+    // A callback queued after `run_queued` emptied the main-thread queue and
+    // before `drain_native` re-armed the coalescing saw "was empty" and sent
+    // a `ReRender` — which folded into the one this wake just consumed and
+    // asked for no wake of its own (issue #988). It is still queued; owe it a
+    // wake now. The flag is down, so this queues and wakes. A callback queued
+    // after the re-arm woke the loop itself, and one queued before
+    // `run_queued` ran in it.
+    if rinch_core::main_callbacks_pending() {
+        send_native_event(RinchNativeEvent::ReRender);
+    }
 }
 
 /// Queue a closure to run on the main (UI) thread.
