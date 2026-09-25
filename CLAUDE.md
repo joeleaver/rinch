@@ -2033,6 +2033,17 @@ went stale on class toggles, insertions and removals. Now:
   `HAS_EMPTY_SELECTOR` flags say an insertion or removal can reach, and an
   `<ol>`'s later `<li>` markers. `:empty` follows the spec: no element child
   (generated boxes aside) and no non-empty text.
+- **A move within one parent keeps its style and its own text layout** (#914)
+  — a keyed `for` reorder, which moves a live row with `insert_before`. Its
+  ancestor chain is unchanged, so only a positional selector can see the move,
+  and the two `note_child_list_changed` calls (old index, new index) mark the
+  moved node itself whenever the parent's flags say one can
+  (`keeps_style_across_move`). Nor does a move drop the node's **own** IFC
+  layout, only the one it was a member of (`invalidate_ifc_left_by`): a
+  typography change its new position brings arrives through the cascade's
+  text-input comparison like any other. A move to **another** parent still
+  re-cascades the subtree. Before, every moved row was re-cascaded and
+  re-shaped — twice per row on a reversed list.
 - **The cascade propagates, it does not blanket.** `resolve_styles_recursive`
   cascades a node that has no style or a hint, then asks `child_cascade(old,
   new)`: children follow when an inherited struct, a custom property, the
@@ -3402,7 +3413,9 @@ cascade's `serif`. And connectivity is asked at **resolve** time, not where the
 entry was pushed, so a node classed while detached and spliced in before the next
 layout is still styled by that same entry. Entering the document is what styles a
 node, through `recompute_node_styles_recursive`, which every insertion route ends
-in (`append_child`, `insert_before`, `insert_child`, `replace_node`).
+in (`append_child`, `insert_before`, `insert_child`, `replace_node`) — except a
+styled node moved within its own parent, which never left and keeps its style
+(#914, see **Style invalidation**).
 
 **A subtree that leaves the document loses its before-change style** (#699) —
 the same rule as above, read from the other end. A node styled while it was

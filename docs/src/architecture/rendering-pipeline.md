@@ -409,6 +409,11 @@ unlink a node from its old parent with the same lines `remove_child` uses, but
 the node is back in the document before the call returns, so it never stopped
 being rendered and a mid-flight transition goes on running — which is what a
 keyed `for` reorder depends on, since it moves rows with `insert_after`.
+A move **within one parent** is not re-cascaded either (#914): its ancestor
+chain is the one it was styled against, and the selector flags on the parent
+restyle it when a positional selector (`:nth-child`, `+`, `~`, …) can see the
+move. Nor does it drop its own shaped text — only the inline formatting context
+it was a member of, if any. A move to another parent re-cascades the subtree.
 
 **Unless the destination is itself detached** (#702). A mounted node moved into
 a parent that is not connected to `tree.root_id` has left the document while
