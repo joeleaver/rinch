@@ -317,3 +317,64 @@ fn a_hoisted_child_of_a_pruned_row_is_still_drawn() {
     // line (820..840), moved up 700: 120..140.
     assert_eq!(count_rgb(&p, 150, 190, 122, 138, [0, 255, 0]), 40 * 16);
 }
+
+/// **Nested clips intersect.** An inner 150x400 scroller sits at y=150 inside
+/// an outer 200x200 one, so the outer clip cuts it off at 200. Its rows past
+/// the *outer* clip are pruned too: the cull is the intersection of every clip
+/// open, not the innermost one.
+///
+/// Kills: a clip pushed onto the cull stack without intersecting the one below
+/// (the inner clip alone lets the inner rows down to 614 through: 28 visits).
+#[test]
+fn a_scroller_inside_a_scroller_is_culled_by_both_clips() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let outer = child(
+        &mut doc,
+        body,
+        "width: 200px; height: 200px; overflow-y: auto",
+    );
+    child(&mut doc, outer, "height: 150px");
+    let inner = child(
+        &mut doc,
+        outer,
+        "width: 150px; height: 400px; overflow-y: auto",
+    );
+    for _ in 0..100 {
+        child(&mut doc, inner, ROW);
+    }
+    doc.resolve_layout(VW, VH);
+    let (p, visits) = paint(&mut doc);
+    assert_eq!(count_rgb(&p, 10, 140, 152, 198, [0, 0, 255]), 130 * 46);
+    assert_eq!(visits, VISITS_NESTED, "paint visited {visits} nodes");
+}
+const VISITS_NESTED: u64 = 10;
+
+/// **A layer is not a clip, and does not forget one.** A translucent block
+/// (`opacity: 0.5`, so painted through a layer) holding 100 rows sits in a
+/// 200px scroller. Inside the layer the scroller's clip still culls: only the
+/// rows it lets through are visited.
+///
+/// Kills: `push_layer` resetting the cull instead of carrying the one below
+/// (every row inside the layer is visited: 47).
+#[test]
+fn rows_inside_a_translucent_block_in_a_scroller_are_culled() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let s = child(
+        &mut doc,
+        body,
+        "width: 200px; height: 200px; overflow-y: auto",
+    );
+    let layer = child(&mut doc, s, "opacity: 0.5");
+    for _ in 0..100 {
+        child(&mut doc, layer, ROW);
+    }
+    doc.resolve_layout(VW, VH);
+    let (p, visits) = paint(&mut doc);
+    // Positive control: the visible rows were drawn, at half strength.
+    let px = pixel_at(&p, 100, 190);
+    assert!(px[2] > 100 && px[2] < 255 && px[0] < 10, "{px:?}");
+    assert_eq!(visits, VISITS_LAYER, "paint visited {visits} nodes");
+}
+const VISITS_LAYER: u64 = 17;
