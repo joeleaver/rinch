@@ -357,8 +357,9 @@ A `text-shadow` with a blur radius is rasterised into a coverage mask, blurred
 and filled once per shadowed block of text (#980). The masks are kept between
 paints, so a repaint of shadowed text that has not changed, and is not cut by
 the edge of the window, a clip or the damage, pays only the fill — a scroll
-included, once each of the four quarter-pixel phases a scroll can put the
-text at has been drawn. A shadow the window, a clip or the damage cuts is
+included, once each whole-pixel position a scroll can put each glyph at has
+been drawn (a sub-pixel scroll changes a line's mask only where it moves a
+glyph to another pixel). A shadow the window, a clip or the damage cuts is
 rasterised again whenever that cut moves across it. The
 `text_shadow_masks_rasterised` counter says how many a frame rasterised. The first
 paint of a page of blurred shadows costs about twice what the same page with an
@@ -398,7 +399,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |
 | `dom::shadow_paint.fields_40` | A full `TinySkiaPainter` paint of 40 input-like boxes, each with a 1px border, a 6px radius and a blurred `inset` shadow (#974: a blurred mask built and drawn per box) |
 | `dom::text_shadow_paint.paragraphs_40` | The same 40 paragraphs with `text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4)` on each, painted again: every blurred mask is served from the cache (#980) |
-| `dom::text_shadow_paint.paragraphs_40_cold` | The same page restyled to a 4.01px blur first, so no mask is cached: every shadow is rasterised into a coverage mask, blurred and filled |
+| `dom::text_shadow_paint.paragraphs_40_cold` | The same page restyled to a 4.01px blur first, so no mask is cached: every visible shadow is rasterised into a coverage mask, blurred and filled |
 | `shell::pointer_move_warm.warm_x50` | 50 pointer moves inside one row of a 500-row scroller, each followed by `AboutToWait` |
 | `shell::pointer_move_cold.cold` | The first move after a layout, which builds the hit-test cache |
 | `shell::hover_frame.partial_repaint` | A move onto another row, then the frame: layout and a partial software repaint |

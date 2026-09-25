@@ -311,20 +311,18 @@ fn draw_masked(
     } else {
         (x, y, css_transform)
     };
-    // The text's sub-pixel phase, snapped to a quarter pixel: a scroll by a
-    // fraction of a physical pixel (a fling, `scroll_to_fraction`, a CSS
-    // pixel at 1.25x) then lands on one of 16 phases, each rasterised once,
-    // instead of missing the cache for every shadow on screen every frame
-    // (review of #1020, round 2, F2). The shift is at most 1/8 px, under a
-    // blur of at least 1/4 px.
-    let snap = |v: f64| (v * 4.0).round() / 4.0;
-    let (ox, oy) = (snap(ox), snap(oy));
     let ext = text_extent(layout, scale);
+    // The mask's frame is anchored to the pixel the text's origin rounds to,
+    // not to its exact position, so a sub-pixel move changes the mask's size
+    // and origin only when it moves that pixel: the key (which includes the
+    // size) then changes only where the glyphs' pixels do. Every glyph pixel
+    // is within a pixel of its exact extent from that anchor.
+    let (ax, ay) = ((ox - 0.5).ceil(), (oy - 0.5).ceil());
     let mut area = Rect::new(
-        ox + ext.x0 - pad,
-        oy + ext.y0 - pad,
-        ox + ext.x1 + pad,
-        oy + ext.y1 + pad,
+        ax + ext.x0.floor() - pad - 1.0,
+        ay + ext.y0.floor() - pad - 1.0,
+        ax + ext.x1.ceil() + pad + 1.0,
+        ay + ext.y1.ceil() + pad + 1.0,
     );
     if translate_only && let Some(visible) = super::visible_device_rect() {
         area = area.intersect(visible.inflate(pad, pad));
@@ -343,9 +341,13 @@ fn draw_masked(
         return false;
     }
 
-    // Every call the copy would make, hashed in the mask's own space: the
-    // same calls rasterise to the same coverage, wherever on the surface the
-    // mask lands (a scroll by whole pixels, a repaint of an unchanged page).
+    // Every call the copy would make, hashed in the mask's own space and in
+    // the terms that decide its pixels: the same key rasterises to the same
+    // coverage, wherever on the surface the mask lands (a scroll by whole
+    // pixels, a repaint of an unchanged page). The copy itself is drawn at
+    // its true offset; only the key is quantised ([`CallHasher`]), so a
+    // scroll by a fraction of a pixel that moves no glyph to another pixel
+    // hits (review of #1020, rounds 2 and 3).
     let key = {
         let mut hasher = CallHasher::default();
         draw_shadow_copy(
@@ -568,8 +570,66 @@ mod cache_tests {
 #[derive(Default)]
 struct CallHasher(rustc_hash::FxHasher);
 
+/// How far from a half pixel a position has to be for [`CallHasher`] to key
+/// it by the pixel it rounds to rather than by its exact value. Closer than
+/// this, float error in the painter could round it either way.
+#[cfg(feature = "software-renderer")]
+const TIE_GUARD_PX: f64 = 1.0 / 64.0;
+
 #[cfg(feature = "software-renderer")]
 impl CallHasher {
+    /// A glyph's device position as the software painter places it: it
+    /// blits each glyph image by nearest-neighbour sampling, so the image
+    /// lands on the pixel `ceil(p - 0.5)` and the fraction of `p` is in no
+    /// pixel. Near a tie the exact value is keyed too, so an ambiguous
+    /// position misses rather than reuses the other rounding.
+    fn glyph_pos(&mut self, p: f64) {
+        use std::hash::Hasher;
+        self.0.write_i64((p - 0.5).ceil() as i64);
+        let frac = p - p.floor();
+        if (frac - 0.5).abs() < TIE_GUARD_PX {
+            self.0.write_u64(p.to_bits());
+        }
+    }
+
+    /// An anti-aliased coordinate (a decoration's stroke or fill), keyed to
+    /// a quarter pixel: two copies with one key differ by at most 1/8 px
+    /// there, under a blur of at least a quarter pixel.
+    fn aa_pos(&mut self, p: f64) {
+        use std::hash::Hasher;
+        self.0.write_i64((p * 4.0).round() as i64);
+    }
+
+    /// The translation of `a` when it is a pure translation.
+    fn translation(a: Affine) -> Option<(f64, f64)> {
+        let c = a.as_coeffs();
+        (c[0] == 1.0 && c[1] == 0.0 && c[2] == 0.0 && c[3] == 1.0).then_some((c[4], c[5]))
+    }
+
+    /// A shape drawn under `transform`: its device coordinates to a quarter
+    /// pixel when the transform is a translation, else exactly.
+    fn placed_shape(&mut self, transform: Affine, shape: &PaintShape) {
+        use std::hash::Hasher;
+        let Some((tx, ty)) = Self::translation(transform) else {
+            self.affine(transform);
+            self.shape(shape);
+            return;
+        };
+        self.0.write_u8(0xA0);
+        let b = shape.bounding_box();
+        for (v, t) in [(b.x0, tx), (b.y0, ty), (b.x1, tx), (b.y1, ty)] {
+            self.aa_pos(v + t);
+        }
+        if let PaintShape::BezPath(p) = shape {
+            for el in p.elements() {
+                if let Some(pt) = el.end_point() {
+                    self.aa_pos(pt.x + tx);
+                    self.aa_pos(pt.y + ty);
+                }
+            }
+        }
+    }
+
     fn affine(&mut self, a: Affine) {
         use std::hash::Hasher;
         for c in a.as_coeffs() {
@@ -600,8 +660,7 @@ impl Painter for CallHasher {
     fn fill(&mut self, fill: peniko::Fill, transform: Affine, _: &Brush, shape: &PaintShape) {
         use std::hash::Hasher;
         self.0.write_u8(1 + fill as u8);
-        self.affine(transform);
-        self.shape(shape);
+        self.placed_shape(transform, shape);
     }
     fn stroke(
         &mut self,
@@ -613,8 +672,7 @@ impl Painter for CallHasher {
         use std::hash::Hasher;
         self.0.write_u8(3);
         self.0.write_u64(stroke.width.to_bits());
-        self.affine(transform);
-        self.shape(shape);
+        self.placed_shape(transform, shape);
     }
     fn draw_glyphs(
         &mut self,
@@ -632,7 +690,11 @@ impl Painter for CallHasher {
         self.0.write_u64(font.data.id());
         self.0.write_u32(font.index);
         self.0.write_u32(font_size.to_bits());
-        self.affine(transform);
+        let place = Self::translation(transform);
+        match place {
+            Some(_) => self.0.write_u8(0xA1),
+            None => self.affine(transform),
+        }
         if let Some(g) = glyph_transform {
             self.affine(g);
         }
@@ -643,8 +705,18 @@ impl Painter for CallHasher {
         self.0.write_usize(glyphs.len());
         for g in glyphs {
             self.0.write_u32(g.id);
-            self.0.write_u32(g.x.to_bits());
-            self.0.write_u32(g.y.to_bits());
+            match place {
+                // The painter adds the image's whole-pixel bearing to this,
+                // which moves the rounding with it.
+                Some((tx, ty)) => {
+                    self.glyph_pos(tx + g.x as f64);
+                    self.glyph_pos(ty + g.y as f64);
+                }
+                None => {
+                    self.0.write_u32(g.x.to_bits());
+                    self.0.write_u32(g.y.to_bits());
+                }
+            }
         }
     }
     fn draw_image(&mut self, _: &super::painter::PaintImage<'_>, transform: Affine) {

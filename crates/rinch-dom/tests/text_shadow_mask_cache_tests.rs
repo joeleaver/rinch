@@ -276,16 +276,18 @@ fn a_cached_mask_is_never_stale() {
     assert!(stale.is_empty(), "stale masks served: {stale:?}");
 }
 
-/// A scroll by a fraction of a physical pixel keeps the cache: the text's
-/// sub-pixel phase is snapped to a quarter pixel, so a scroll to `k + 0.1`
-/// after one to `k` rasterises no mask for a shadow wholly inside the
-/// scroller (review of #1020, round 2, F2: every frame of a fling used to
-/// re-rasterise every shadow on screen) — and draws within a step of what a
-/// cold paint draws there.
+/// A scroll by fractions of a physical pixel keeps the cache wherever it
+/// moves no glyph to another pixel: the key is the pixel each glyph rounds
+/// to, as the software painter places it, not its exact position. Over a
+/// sweep of nine tenth-pixel steps a line's baseline crosses a half pixel at
+/// most once, so the sweep rasterises at most one new mask per shadow; a
+/// second sweep rasterises none; and every warm paint equals a cold one.
 ///
-/// Kills: the phase not snapped.
+/// Kills: the key hashing exact positions (every step rasterises every
+/// shadow: nine times the bound); the key rounding differently from the
+/// painter (a warm paint differs from the cold one).
 #[test]
-fn a_fractional_scroll_rasterises_no_mask() {
+fn a_sub_pixel_scroll_rasterises_only_where_a_glyph_moves_pixel() {
     let mut html = String::new();
     for i in 0..30 {
         html.push_str(&format!("<p>{i}: {LOREM}</p>"));
@@ -307,32 +309,270 @@ fn a_fractional_scroll_rasterises_no_mask() {
     for scale in [1.0, 1.25] {
         let (w, h) = ((1200.0 * scale) as u32, (800.0 * scale) as u32);
         let mut p = TinySkiaPainter::new(w, h);
-        for k in 1..=4 {
-            d.set_scroll_top(s, k as f64 / scale);
+        let at = |j: usize| (1.0 + j as f64 / 10.0) / scale;
+        rinch_dom::paint::clear_text_shadow_cache();
+        d.set_scroll_top(s, at(0));
+        d.tree.perf.reset();
+        full(&mut d, &mut p, 1200.0, 800.0, scale);
+        let visible = d.tree.perf.get(Counter::TextShadowMasksRasterised);
+        assert!(
+            visible > 10,
+            "positive control: {visible} shadows on screen"
+        );
+        d.tree.perf.reset();
+        for j in 1..10 {
+            d.set_scroll_top(s, at(j));
             full(&mut d, &mut p, 1200.0, 800.0, scale);
+        }
+        let swept = d.tree.perf.get(Counter::TextShadowMasksRasterised);
+        assert!(
+            swept <= visible,
+            "scale {scale}: a sub-pixel sweep rasterised {swept} masks for {visible} shadows"
+        );
+        let mut warm = vec![];
+        for j in 0..10 {
+            d.set_scroll_top(s, at(j));
             d.tree.perf.reset();
-            d.set_scroll_top(s, (k as f64 + 0.1) / scale);
             full(&mut d, &mut p, 1200.0, 800.0, scale);
-            let warm = p.pixels().to_vec();
             let n = d.tree.perf.get(Counter::TextShadowMasksRasterised);
             assert_eq!(
                 n, 0,
-                "scale {scale}: a scroll of 0.1 physical px from {k} rasterised {n} masks"
+                "scale {scale}: step {j} of a second sweep rasterised {n}"
             );
+            warm.push(p.pixels().to_vec());
+        }
+        for (j, warm) in warm.iter().enumerate() {
+            d.set_scroll_top(s, at(j));
             rinch_dom::paint::clear_text_shadow_cache();
-            d.tree.perf.reset();
             full(&mut d, &mut p, 1200.0, 800.0, scale);
-            assert!(
-                d.tree.perf.get(Counter::TextShadowMasksRasterised) > 10,
-                "positive control: a cold paint rasterises every visible shadow"
-            );
-            let cold = p.pixels().to_vec();
             assert_eq!(
-                diff(&warm, &cold).2,
+                diff(warm, p.pixels()).0,
                 0,
-                "the served masks are the cold paint's"
+                "scale {scale}, step {j}: a served mask is not the cold paint's"
             );
         }
+    }
+}
+
+/// Weighted centroid of the pixels leaning to one channel: red (`r - b`)
+/// or blue (`b - r`).
+fn centroid(px: &[u8], w: u32, blue: bool) -> (f64, f64) {
+    let (mut sx, mut sy, mut sw) = (0.0, 0.0, 0.0);
+    for (i, c) in px.as_chunks::<4>().0.iter().enumerate() {
+        let lean = if blue {
+            c[2] as f64 - c[0] as f64
+        } else {
+            c[0] as f64 - c[2] as f64
+        };
+        if lean > 0.0 {
+            let (x, y) = ((i as u32 % w) as f64, (i as u32 / w) as f64);
+            sx += x * lean;
+            sy += y * lean;
+            sw += lean;
+        }
+    }
+    assert!(
+        sw > 0.0,
+        "positive control: some {} ink",
+        if blue { "blue" } else { "red" }
+    );
+    (sx / sw, sy / sw)
+}
+
+/// A blurred shadow sits exactly where its text is, plus its offset, at any
+/// sub-pixel position: the mask is rasterised at the text's true offset, so
+/// each glyph lands on the pixel the text's own glyph does. And a mask served
+/// from the cache — rasterised at another position — is the one a cold
+/// paint rasterises here.
+///
+/// Kills: the phase snapped before rasterising (review of #1020, round 3, F2:
+/// a line's shadow moved 1.04 px against its text at 1.1x); a key that
+/// shares a mask between positions that round differently.
+#[test]
+fn a_shadow_is_drawn_where_its_text_is_at_any_sub_pixel_position() {
+    for scale in [1.0, 1.1, 2.0] {
+        for blur in [0.5, 3.0] {
+            let (vw, vh) = (220.0f32, 90.0f32);
+            let (w, h) = ((vw as f64 * scale) as u32, (vh as f64 * scale) as u32);
+            let base = format!(
+                "margin: 10px 0 0 10px; font-size: 20px; line-height: 24px; \
+                 color: rgb(255,0,0); text-shadow: 0 30px {blur}px rgb(0,0,255)"
+            );
+            let mut d = doc(vw, vh, "", &format!("<p style=\"{base}\">Hxgl fiv</p>"));
+            let body = d.body();
+            let el = NodeId(d.tree.get(body.0).unwrap().children[0]);
+            let mut p = TinySkiaPainter::new(w, h);
+            rinch_dom::paint::clear_text_shadow_cache();
+            for f in [0.0, 0.1, 0.3, 0.45, 0.5, 0.55, 0.7, 0.9, 0.3, 0.0] {
+                d.set_attribute(
+                    el,
+                    "style",
+                    &format!("{base}; transform: translate({f}px, {f}px)"),
+                );
+                d.resolve_layout(vw, vh + 1.0);
+                d.resolve_layout(vw, vh);
+                full(&mut d, &mut p, vw, vh, scale);
+                let warm = p.pixels().to_vec();
+                rinch_dom::paint::clear_text_shadow_cache();
+                full(&mut d, &mut p, vw, vh, scale);
+                let cold = p.pixels().to_vec();
+                assert_eq!(
+                    diff(&warm, &cold).0,
+                    0,
+                    "scale {scale} blur {blur} at {f}: a served mask is not the cold paint's"
+                );
+                let text = centroid(&cold, w, false);
+                let shadow = centroid(&cold, w, true);
+                let (dx, dy) = (
+                    shadow.0 - text.0,
+                    shadow.1 - text.1 - (30.0 * scale).round(),
+                );
+                assert!(
+                    dx.abs() <= 0.15 && dy.abs() <= 0.15,
+                    "scale {scale} blur {blur} at {f}: the shadow is ({dx:.2}, {dy:.2}) px off its text"
+                );
+            }
+        }
+    }
+}
+
+/// Damage over a box's own ink but not its box, partial against full: the
+/// worst count of pixels differing by more than a step, with a positive
+/// control that the strip holds ink.
+fn bleed_partial_vs_full(css: &str, html: &str, strip: Rect, scale: f64) -> usize {
+    let (vw, vh) = (400.0f32, 300.0f32);
+    let mut d = doc(vw, vh, css, html);
+    let (w, h) = ((vw as f64 * scale) as u32, (vh as f64 * scale) as u32);
+    let mut p = TinySkiaPainter::new(w, h);
+    full(&mut d, &mut p, vw, vh, scale);
+    let a = p.pixels().to_vec();
+    let r = Rect::new(
+        (strip.x0 * scale).floor(),
+        (strip.y0 * scale).floor(),
+        (strip.x1 * scale).ceil(),
+        (strip.y1 * scale).ceil(),
+    );
+    let mut inked = 0;
+    for y in r.y0 as u32..r.y1 as u32 {
+        for x in r.x0 as u32..r.x1 as u32 {
+            let i = ((y * w + x) * 4) as usize;
+            if a[i..i + 3] != [255, 255, 255] {
+                inked += 1;
+            }
+        }
+    }
+    assert!(
+        inked > 0,
+        "positive control: the strip holds ink ({inked} px)"
+    );
+    partial(&mut d, &mut p, vw, vh, scale, r);
+    diff(&a, &p.pixels().to_vec()).2
+}
+
+/// The prune's ink check covers `box-shadow` and `outline`, not only
+/// `text-shadow`, in every placement (the review's fixtures, round 3).
+///
+/// Kills: `box-shadow` or `outline` left out of the ink check (1,152 to
+/// 3,720 px wrong per case).
+#[test]
+fn damage_over_a_box_shadows_or_outlines_bleed_repaints_it() {
+    let b = "position: absolute; left: 100px; top: 60px; width: 120px; height: 50px; \
+             background: #eee;";
+    let cases: &[(&str, String, &str, Rect)] = &[
+        (
+            "box-shadow blur+spread",
+            format!("#b {{ {b} box-shadow: 0 0 12px 8px rgb(0,0,200); }}"),
+            "<div id=b></div>",
+            Rect::new(90.0, 112.0, 240.0, 120.0),
+        ),
+        (
+            "box-shadow negative spread, offset",
+            format!("#b {{ {b} box-shadow: 0 20px 12px -4px rgb(0,0,200); }}"),
+            "<div id=b></div>",
+            Rect::new(90.0, 112.0, 240.0, 125.0),
+        ),
+        (
+            "outline + offset",
+            format!("#b {{ {b} outline: 4px solid rgb(0,150,0); outline-offset: 6px; }}"),
+            "<div id=b></div>",
+            Rect::new(90.0, 113.0, 240.0, 119.0),
+        ),
+        (
+            "static box",
+            "#b { margin: 60px 0 0 100px; width: 120px; height: 50px; background: #eee; \
+             box-shadow: 0 0 12px 8px rgb(0,0,200); }"
+                .into(),
+            "<div id=b></div><div style=\"height:20px\"></div>",
+            Rect::new(90.0, 112.0, 240.0, 120.0),
+        ),
+        (
+            "rotated 30deg",
+            "#b { position: absolute; left: 140px; top: 100px; width: 120px; height: 50px; \
+             background: #eee; transform: rotate(30deg); box-shadow: 0 0 14px 6px rgb(0,0,200); }"
+                .into(),
+            "<div id=b></div>",
+            Rect::new(100.0, 190.0, 320.0, 200.0),
+        ),
+        (
+            "hoisted z-index",
+            "#w { width: 300px; height: 200px; } #b { position: relative; z-index: 3; \
+             left: 30px; top: 30px; width: 120px; height: 50px; background: #eee; \
+             box-shadow: 0 0 12px 8px rgb(0,0,200); }"
+                .into(),
+            "<div id=w><div id=b></div></div>",
+            Rect::new(20.0, 82.0, 170.0, 90.0),
+        ),
+        (
+            "fixed",
+            format!("#b {{ {b} position: fixed; box-shadow: 0 0 12px 8px rgb(0,0,200); }}"),
+            "<div id=b></div>",
+            Rect::new(90.0, 112.0, 240.0, 120.0),
+        ),
+        (
+            "child of a clipping parent",
+            "#p { position: absolute; left: 50px; top: 30px; width: 300px; height: 200px; \
+             overflow: hidden; padding: 30px; } #b { width: 120px; height: 50px; \
+             background: #eee; box-shadow: 0 0 12px 8px rgb(0,0,200); }"
+                .into(),
+            "<div id=p><div id=b></div></div>",
+            Rect::new(70.0, 112.0, 220.0, 120.0),
+        ),
+    ];
+    let mut bad = vec![];
+    for (name, css, html, strip) in cases {
+        for scale in [1.0, 1.5] {
+            let n = bleed_partial_vs_full(css, html, *strip, scale);
+            if n > 0 {
+                bad.push(format!("{name} @{scale}: {n}"));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "the strip lost the ink painted in it: {bad:?}"
+    );
+}
+
+/// The ink reach is scaled to device pixels: at 2x a strip 25 to 35 CSS px
+/// below a box whose hard shadow spreads 40px is inside the reach, and would
+/// be outside it (20 CSS px) if the outsets were taken as device pixels.
+///
+/// Kills: the outsets not scaled.
+#[test]
+fn the_ink_reach_is_scaled_to_the_device() {
+    let css = "#b { position: absolute; left: 100px; top: 40px; width: 120px; height: 50px; \
+               background: #eee; box-shadow: 0 0 0 40px rgb(0,0,200); }";
+    for scale in [1.0, 2.0] {
+        let n = bleed_partial_vs_full(
+            css,
+            "<div id=b></div>",
+            Rect::new(80.0, 115.0, 240.0, 125.0),
+            scale,
+        );
+        assert_eq!(
+            n, 0,
+            "scale {scale}: the strip lost the shadow painted in it"
+        );
     }
 }
 

@@ -623,8 +623,34 @@ pub fn setup_text_shadow_paint_cold() -> PaintFixture {
     let mut f = text_shadow_page("4");
     f.doc
         .load_css("p { text-shadow: 0 1px 4.01px rgba(0, 0, 0, 0.4); }");
+    // `load_css` queues no restyle: without this the paragraphs keep their
+    // 4px blur and every mask is a cache hit (review of #1020, round 3, F1).
+    f.doc.recompute_all_styles_full();
     f.doc.resolve_layout(VP.0, VP.1);
     f
+}
+
+#[cfg(test)]
+mod text_shadow_bench_tests {
+    use rinch_dom::perf::Counter;
+
+    /// The cold benchmark is cold: its measured paint rasterises the mask of
+    /// every paragraph on the 800x600 page (17 of the 40; they wrap), and the
+    /// warm one rasterises none.
+    ///
+    /// Kills: the restyle left out of the cold setup (it measured the warm
+    /// paint, 0 masks rasterised).
+    #[test]
+    fn the_cold_text_shadow_paint_rasterises_every_mask() {
+        let mut f = super::setup_text_shadow_paint_cold();
+        f.doc.tree.perf.reset();
+        let mut f = super::op_text_shadow_paint(f);
+        let n = f.doc.tree.perf.get(Counter::TextShadowMasksRasterised);
+        assert_eq!(n, 17, "the cold paint rasterised {n} masks");
+        f.doc.tree.perf.reset();
+        let f = super::op_text_shadow_paint(f);
+        assert_eq!(f.doc.tree.perf.get(Counter::TextShadowMasksRasterised), 0);
+    }
 }
 
 // ── rinch (shell): a RinchApp on the software painter ──────────────────────
