@@ -797,8 +797,13 @@ build on, with this menu as the fallback.
   registered from `main` is the thread-global fallback that intercepts for
   every document without its own — so two windows that each register at mount
   or from their own event handling no longer clobber each other. Registrations
-  made outside any document (from `main`, a timer, or on rinch-web, which marks
-  no document) still share the single fallback slot, last-wins. Its *lifetime* does match the arbiter's, though:
+  made outside any document (from `main`, a timer, a `run_on_main_thread`
+  callback, or on rinch-web, which marks no document) still share the single
+  fallback slot, last-wins. A document is served whichever of its own hook and
+  the fallback was registered **later**, so a single-window app keeps
+  last-registration-wins wherever it registers from; `clear_keyboard_interceptor`
+  from outside any document clears every entry, and from inside one leaves that
+  document with none. Its *lifetime* does match the arbiter's, though:
   registering it during a render releases it when that component unmounts,
   exactly as a `FocusEntry` is deregistered (issue #183). Registering it from
   `main` keeps app lifetime. For **Escape**, use

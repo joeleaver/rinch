@@ -180,8 +180,11 @@ consequences are worth knowing:
   share a thread (issues #340, #478): a registration made while a document's
   code is running — its event dispatch, its mount, or an effect it owns
   (issue #295) — belongs to that document, one made outside any document
-  (from `main`, a timer, on rinch-web) is the thread-global fallback every
-  document without its own reaches. The release only reclaims the slot if it
+  (from `main`, a timer, on rinch-web) is the thread-global fallback, and each
+  document is served whichever of its own and the fallback is **newer** — so
+  the last registration wins in a single-document app wherever it was made. A
+  clear from outside any document clears every entry; one from inside a
+  document leaves that document with nothing. The release only reclaims the slot if it
   is still holding the callback that registered it.
 - **Register once per component, not once per event.** Each call from inside a
   live component queues its own release, and those accumulate until the component
