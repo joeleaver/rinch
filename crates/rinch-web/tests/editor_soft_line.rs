@@ -461,3 +461,31 @@ fn end_inside_a_broken_word_stays_on_its_line() {
 }
 
 const LONG_WORD: &str = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij";
+
+/// A paragraph with padding and a border: the probes go just inside its
+/// CONTENT box, not its border box, so both edges still resolve.
+#[wasm_bindgen_test]
+fn a_padded_paragraph_finds_both_edges() {
+    let sheet = document().create_element("style").unwrap();
+    // Not `HOST_MARKER`: mounting sweeps those away.
+    sheet.set_attribute("data-test-sheet-soft-line", "").unwrap();
+    sheet.set_text_content(Some(
+        "[data-test-host-soft-line] [data-pm-editor] p { padding: 0 60px; border: 0 solid; border-width: 0 7px; }",
+    ));
+    document().head().unwrap().append_child(&sheet).unwrap();
+    let (f, start, caret, next) = middle_line(TEXT, "width: 300px;");
+    let p = f.para();
+    assert!(
+        p.client_left() == 7,
+        "positive control: the padding and border apply"
+    );
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), start);
+    f.caret_at(caret);
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), next);
+    f.teardown();
+    sheet.remove();
+}
