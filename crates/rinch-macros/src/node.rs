@@ -347,64 +347,86 @@ impl Parse for RsxMatchArm {
     }
 }
 
-/// What a braced `match` arm body opens with, which decides how it parses.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ArmBodyStart {
-    /// `let`, a string literal, or `Name {` — rsx children, committed.
-    Children,
-    /// `if` / `for` / `match` — rsx children if the whole body parses as them,
-    /// otherwise the single braced node #221 handles (and diagnoses).
-    ControlFlow,
-    /// Anything else — the one braced expression it has always been.
-    Expr,
-}
-
 /// Parse `=> { … }`, a braced arm body (issue #395).
 ///
-/// The **first token** decides, mirroring [`RsxNode::parse`]'s own dispatch:
-/// `let`, a string literal, `if`/`for`/`match`, or an element/component
-/// (`Name {`) opens rsx children — several nodes, as an `if`/`for` body holds,
-/// collapsed into one `NodeHandle` by `generate_children_body`. Anything else is
-/// a braced expression, exactly as before: `{ section(__scope) }` (ui-zoo's
-/// routing), `{a.clone()}`, `{|| …}`. Parsing every braced arm as children
-/// would have broken those — `section(__scope)` is not an rsx node.
+/// An arm holds rsx children — several nodes, as an `if`/`for` body holds,
+/// collapsed into one `NodeHandle` by `generate_children_body` — when its body
+/// opens with an rsx node that is **not the whole story**:
 ///
-/// A consequence worth knowing: `{ Point { x: 1 } }` is a component now, as
-/// `Point { x: 1 }` unbraced always was. A path (`geom::Point { … }`) is not an
-/// element name and stays an expression.
+/// - `let` always opens children.
+/// - A string literal, `Name {` (element or component), `if`/`for`/`match` or a
+///   braced interpolation `{ … }` is the *head*. When the head is followed by
+///   another token that starts an rsx node ([`starts_rsx_node`]), the body is
+///   children, and a typo anywhere in it is reported where it is.
+/// - A literal or `Name {` head that is alone, or that fails to parse as rsx,
+///   is children too (one node, or the rsx error at the typo).
+/// - Everything else is the single braced node it always was: a lone control
+///   flow construct (#221's transparent brace, diagnostic included), a lone
+///   `{ … }`, a head followed by `.` or an operator (`"a".to_string()`,
+///   `Foo { a: 1 }.into_node(__scope)`, `if … {} else {} .len()`), and every
+///   body that opens with anything else — `{ section(__scope) }` (ui-zoo's
+///   routing), `{a.clone()}`, `{|| …}`.
 ///
-/// Control flow is tried as children on a fork and falls back to the single
-/// braced node, so `{ match y { … } }` alone keeps #221's transparent brace and
-/// `{ if c { helper() } else { other() } }` keeps #221's diagnostic.
+/// Parsing every braced arm as children would have broken those last ones:
+/// `section(__scope)` is not an rsx node.
+///
+/// `{ Point { x: 1 } }` is a component, as `Point { x: 1 }` unbraced always
+/// was. A path (`geom::Point { … }`) is not an element name and stays an
+/// expression.
 fn parse_braced_arm_body(input: ParseStream) -> Result<Vec<RsxNode>> {
     let ahead = input.fork();
     let inner;
     syn::braced!(inner in ahead);
 
-    let start = if inner.peek(Token![let])
-        || inner.peek(LitStr)
-        || (inner.peek(syn::Ident) && inner.peek2(token::Brace))
-    {
-        ArmBodyStart::Children
-    } else if inner.peek(Token![if]) || inner.peek(Token![for]) || inner.peek(Token![match]) {
-        ArmBodyStart::ControlFlow
-    } else {
-        ArmBodyStart::Expr
+    let children = |input: ParseStream| -> Result<Vec<RsxNode>> {
+        let content;
+        syn::braced!(content in input);
+        parse_rsx_children(&content)
     };
 
-    match start {
-        ArmBodyStart::Children => {
-            let content;
-            syn::braced!(content in input);
-            parse_rsx_children(&content)
-        }
-        ArmBodyStart::ControlFlow if parse_rsx_children(&inner).is_ok() => {
-            let content;
-            syn::braced!(content in input);
-            parse_rsx_children(&content)
-        }
-        ArmBodyStart::ControlFlow | ArmBodyStart::Expr => Ok(vec![input.parse::<RsxNode>()?]),
+    if inner.peek(Token![let]) {
+        return children(input);
     }
+    let rsx_head = inner.peek(LitStr) || (inner.peek(syn::Ident) && inner.peek2(token::Brace));
+    let other_head = inner.peek(Token![if])
+        || inner.peek(Token![for])
+        || inner.peek(Token![match])
+        || inner.peek(token::Brace);
+    if !rsx_head && !other_head {
+        return Ok(vec![input.parse::<RsxNode>()?]);
+    }
+
+    // Parse the head alone, on the fork.
+    let head_ok = inner.parse::<RsxNode>().is_ok();
+    let commit = if !head_ok {
+        // A literal / element head is rsx: report its error. Control flow or a
+        // braced head falls back, so #221 can diagnose its own case.
+        rsx_head
+    } else if inner.is_empty() {
+        rsx_head
+    } else {
+        starts_rsx_node(&inner)
+    };
+
+    if commit {
+        children(input)
+    } else {
+        Ok(vec![input.parse::<RsxNode>()?])
+    }
+}
+
+/// Whether the next token in a braced arm body starts another rsx node (or is
+/// the `,` that separates two), i.e. the head before it was not the end of a
+/// Rust expression such as `… .len()` or `… == d`.
+fn starts_rsx_node(input: ParseStream) -> bool {
+    input.peek(LitStr)
+        || input.peek(token::Brace)
+        || input.peek(Token![if])
+        || input.peek(Token![for])
+        || input.peek(Token![match])
+        || input.peek(Token![let])
+        || input.peek(Token![,])
+        || (input.peek(syn::Ident) && input.peek2(token::Brace))
 }
 
 // ============================================================================
@@ -944,7 +966,8 @@ mod tests {
         assert_eq!(msg, "expected curly braces");
         let msg = arm_error(r#"{ if c.get() { "a" } span { "b" "c" d } }"#);
         assert!(!msg.contains("renders once"), "{msg}");
-        assert_eq!(msg, "expected curly braces");
+        // `d` is the last token of `span { … }`, so the element runs out of input.
+        assert_eq!(msg, "unexpected end of input, expected curly braces");
     }
 
     /// Control flow followed by something that starts no rsx node (a method
