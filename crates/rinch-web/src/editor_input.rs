@@ -2487,6 +2487,12 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // click — arrives through none of them either (#1001): the handle owes an
     // overlay pass, and this runs it once the current task's code is done.
     registry::set_overlay_pass_scheduler(schedule_overlay_pass);
+    // A selection moved before this ran — during the first mount's build —
+    // was owed with no scheduler to tell, and a later owe of an already-owed
+    // document tells none either: run that pass now it can be scheduled.
+    if registry::any_overlay_pass_owed() {
+        schedule_overlay_pass();
+    }
     // `EditorHandle::focus`: the keyboard reaches an editor only through the
     // capture textarea, so a programmatic focus has to go through the same
     // steps a press does.
