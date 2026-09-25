@@ -151,3 +151,22 @@ fn the_last_clone_of_a_sink_releases_the_surface() {
     drop(other);
     assert_eq!(surfaces_named(name), 0, "the last clone releases it");
 }
+
+// ── review of PR #1015 ──────────────────────────────────────────────────────
+
+/// After cleanup the surface (and its last frame) is gone, but has_frame is
+/// still true, so VideoViewport stamps data-viewport-ready="true" over a
+/// viewport nothing fills (#186 shape) — until the replay's first frame.
+#[test]
+fn cleanup_forgets_the_frame_it_released() {
+    let player = player();
+    let name = player.viewport_id();
+    player.play();
+    player.has_frame.set(true); // a frame was delivered
+    player.cleanup();
+    assert_eq!(surfaces_named(&name), 0);
+    assert!(
+        !player.has_frame.get(),
+        "has_frame still true after cleanup released the surface"
+    );
+}

@@ -81,3 +81,27 @@ fn a_sink_dropped_inside_a_render_callback_releases_its_surface() {
         registered_viewport_names()
     );
 }
+
+/// review-1015: a release queued for an old sink must not unregister a new
+/// surface of the same name registered before the drain (ids are never reused).
+#[test]
+fn a_queued_release_does_not_take_a_new_surface_of_the_same_name() {
+    let _queue = MAIN_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    let name = "video-363-reuse";
+    let old = create_video_frame_sink(name);
+    std::thread::spawn(move || drop(old)).join().unwrap();
+    let new = create_video_frame_sink(name);
+    assert_eq!(
+        surfaces_named(name),
+        2,
+        "old not yet released, new registered"
+    );
+    rinch_core::drain_main_callbacks();
+    assert_eq!(
+        surfaces_named(name),
+        1,
+        "the queued release took the wrong one"
+    );
+    drop(new);
+    assert_eq!(surfaces_named(name), 0);
+}
