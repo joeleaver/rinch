@@ -143,7 +143,7 @@ fn no_unmasked_draw_escapes_the_damage() {
         );
         let mut region = DamageRegion::new(W as f64, H as f64);
         region.add(d0);
-        if rng.next() % 3 == 0 {
+        if rng.next().is_multiple_of(3) {
             region.add(Rect::new(0.0, 0.0, 6.0, 5.0));
         }
         let ts = transform(&mut rng);
@@ -157,12 +157,12 @@ fn no_unmasked_draw_escapes_the_damage() {
         let inv = ts.inverse();
         let local = inv.transform_rect_bbox(dev);
         let sh = shape(&mut rng, local);
-        let stroke_it = matches!(sh, PaintShape::Line(_)) || rng.next() % 2 == 0;
+        let stroke_it = matches!(sh, PaintShape::Line(_)) || rng.next().is_multiple_of(2);
         let st = Stroke::new(rng.pick(&[0.0, 0.3, 1.0, 2.5, 6.0]))
             .with_join(rng.pick(&[Join::Miter, Join::Round, Join::Bevel]))
             .with_miter_limit(rng.pick(&[1.0, 4.0, 10.0]))
             .with_caps(rng.pick(&[Cap::Butt, Cap::Square, Cap::Round]));
-        let layer = rng.next() % 4 == 0;
+        let layer = rng.next().is_multiple_of(4);
         let brush = Brush::Solid(Color::from_rgba8(250, 10, 250, rng.pick(&[255u8, 128])));
         let draw = |p: &mut TinySkiaPainter| {
             if layer {
