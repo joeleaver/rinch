@@ -307,6 +307,7 @@ impl RinchApp {
             }
         }
         self.focus_target = target;
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
         self.scene_dirty = true;
         let has_work = pending.input_commit.is_some() || pending.focus_lost.is_some();
         (true, has_work.then_some(pending))
