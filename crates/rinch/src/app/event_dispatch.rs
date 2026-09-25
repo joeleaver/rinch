@@ -3698,9 +3698,9 @@ impl RinchApp {
     }
 
     /// Which side of a soft wrap a caret placed at `pos` by a hit at window
-    /// `y` belongs to (#301), and its point on that side: `Upstream` when only
-    /// the upstream caret's line contains `y` — a hit past a wrapped line's
-    /// end, which lands on the wrap point — else `Downstream`. Anywhere but a
+    /// `y` belongs to (#301), and its point on that side: `Upstream` when the
+    /// upstream caret is nearer `y` than the downstream one — a hit past a
+    /// wrapped line's end, which lands on the wrap point — else `Downstream`. Anywhere but a
     /// wrap point both sides are one caret, and the answer is `Downstream`.
     pub(crate) fn editor_hit_affinity(
         &self,
@@ -3709,12 +3709,18 @@ impl RinchApp {
         y: f32,
     ) -> (rinch_core::dom::CaretAffinity, Option<(f32, f32, f32)>) {
         use rinch_core::dom::CaretAffinity;
-        let contains =
-            |r: Option<(f32, f32, f32)>| r.is_some_and(|(_, ry, rh)| ry <= y && y <= ry + rh);
+        // Nearness, not containment: a caret rect covers the glyphs, not the
+        // line box, so a hit in the leading above or below them lies in neither.
+        // Distance from `y` to the rect's vertical span, 0 inside it.
+        let distance = |r: Option<(f32, f32, f32)>| {
+            r.map_or(f32::INFINITY, |(_, ry, rh)| {
+                (ry - y).max(y - (ry + rh)).max(0.0)
+            })
+        };
         let down = self.editor_caret_point_with(handle, pos, CaretAffinity::Downstream);
-        if !contains(down) {
+        if distance(down) > 0.0 {
             let up = self.editor_caret_point_with(handle, pos, CaretAffinity::Upstream);
-            if contains(up) {
+            if distance(up) < distance(down) {
                 return (CaretAffinity::Upstream, up);
             }
         }

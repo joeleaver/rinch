@@ -2197,10 +2197,15 @@ fn vertical_step(
 }
 
 /// Which side of a soft wrap a caret placed at `pos` by a hit at viewport `y`
-/// belongs to (#301), and its rect on that side: `Upstream` when only the
-/// upstream caret's line contains `y` — a hit past a wrapped line's end, which
-/// lands on the wrap point — else `Downstream`. Anywhere but a wrap point both
-/// sides are one caret and the answer is `Downstream`.
+/// belongs to (#301), and its rect on that side: `Upstream` when the upstream
+/// caret is **nearer** `y` than the downstream one — a hit past a wrapped
+/// line's end, which lands on the wrap point — else `Downstream`. Anywhere but
+/// a wrap point both sides are one caret and the answer is `Downstream`.
+///
+/// Nearness, not containment: a caret rect covers the glyphs, not the line
+/// box, so a hit in the leading above or below them lies in neither rect.
+/// Vertical motion probes 1.5 caret heights below the caret's top, which on a
+/// face with a short caret in a tall line is exactly there.
 fn hit_affinity(
     handle: &EditorHandle,
     pos: Pos,
@@ -2211,12 +2216,18 @@ fn hit_affinity(
             .caret_rect_with_affinity(pos, affinity)
             .map(|r| (r.x, r.y, r.height))
     };
-    let contains =
-        |r: Option<(f32, f32, f32)>| r.is_some_and(|(_, ry, rh)| ry <= y && y <= ry + rh);
+    // Nearness, not containment: a caret rect covers the glyphs, not the
+    // line box, so a hit in the leading above or below them lies in neither.
+    // Distance from `y` to the rect's vertical span, 0 inside it.
+    let distance = |r: Option<(f32, f32, f32)>| {
+        r.map_or(f32::INFINITY, |(_, ry, rh)| {
+            (ry - y).max(y - (ry + rh)).max(0.0)
+        })
+    };
     let down = rect(CaretAffinity::Downstream);
-    if !contains(down) {
+    if distance(down) > 0.0 {
         let up = rect(CaretAffinity::Upstream);
-        if contains(up) {
+        if distance(up) < distance(down) {
             return (CaretAffinity::Upstream, up);
         }
     }
