@@ -723,7 +723,9 @@ impl RinchDocument {
     /// PERFORMANCE: Only processes nodes in `style_dirty_nodes` (set by resolve_styles).
     pub fn apply_stylo_styles_to_taffy(&mut self) {
         use crate::transition::{
-            TransitionSpec, apply_value_to_style, diff_animatable, start_transitions,
+            AnimatableValue, TransitionProperty, TransitionSpec, apply_value_to_style,
+            cancel_unmatched_transitions, diff_animatable, propagate_inherited_visibility,
+            start_transitions,
         };
 
         // Take the dirty nodes list - only these need Taffy sync
@@ -746,6 +748,10 @@ impl RinchDocument {
         // Absolute descendants of a node that stopped or started being their
         // containing block; re-synced after this pass.
         let mut resync_absolutes: Vec<usize> = Vec::new();
+        // Nodes that ran, started or lost a `visibility` transition on this
+        // pass: each hands its value down to the descendants that inherit it
+        // once the loop is done (#759). Empty unless one is involved.
+        let mut visibility_roots: Vec<usize> = Vec::new();
 
         for node_id in dirty_node_ids {
             // Skip root and html nodes - their Taffy styles are manually set
@@ -968,6 +974,86 @@ impl RinchDocument {
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].transition_specs = transition_specs;
 
+            // An inheriting node that declares its own `visibility` transition
+            // takes its parent's **animated** visibility as its after-change
+            // value, not the one Stylo computed from the parent's after-change
+            // style (#759; review of #991, F1). Without this, such a node
+            // (`transition: all`, as `Checkbox` and `Radio` declare) diffed
+            // Stylo's `hidden` against its `visible` on the very pass a drawer
+            // started closing and began its own hide at t = 0 — vanishing
+            // mid-slide while the drawer was still on screen.
+            //
+            // Only such a node: for every other inheriting node the value
+            // before the transition logic matters to nothing, and the hand-down
+            // after this loop overwrites it with the same answer. Reading every
+            // descendant's rule chain here on a close pass cost `drawer_toggle`
+            // +0.8% instructions for no effect (round-2 review of #991).
+            // The value is read from the nearest ancestor that is not itself
+            // inheriting it (`animated_inherited_visibility`), not from the
+            // parent: a parent that declares no visibility transition has not
+            // been handed the held value yet on this pass.
+            if !self.tree.active_transitions.is_empty()
+                && crate::transition::find_matching_spec(
+                    &self.tree.nodes[node_id].transition_specs,
+                    TransitionProperty::Visibility,
+                )
+                .is_some()
+                && crate::transition::visibility_is_inherited(&self.tree, node_id)
+                && let Some(held) =
+                    crate::transition::animated_inherited_visibility(&self.tree, node_id)
+                && held != new_style.visibility
+            {
+                new_style.visibility = held;
+            }
+
+            // css-transitions-1 §3 item 3 (#693): a running transition whose
+            // property the new specs no longer match is cancelled — before the
+            // gate below, which a node that stopped declaring any `transition`
+            // at all does not pass. A node touching a `visibility` transition
+            // either way is recorded for the inheritance hand-down after the
+            // loop (#759). Both skipped outright while nothing runs anywhere.
+            if !self.tree.active_transitions.is_empty() {
+                let had_visibility = self
+                    .tree
+                    .active_transitions
+                    .get(&node_id)
+                    .is_some_and(|m| m.contains_key(&TransitionProperty::Visibility));
+                cancel_unmatched_transitions(
+                    &mut self.tree.active_transitions,
+                    node_id,
+                    &self.tree.nodes[node_id].transition_specs,
+                );
+                if had_visibility {
+                    visibility_roots.push(node_id);
+                    // css-transitions-1 §3 item 4.1, for the one discrete
+                    // property: a running `visibility` transition whose current
+                    // value already equals the after-change value is cancelled
+                    // when that value is not its end value. `diff_animatable`
+                    // sees no change there — the node reads the animated
+                    // `visible` and the reopened style says `visible` — so the
+                    // transition logic below never reaches the retarget that
+                    // would cancel it, and it ran on to `hidden` in a reopened
+                    // overlay (round-2 review of #991, F2: a `Checkbox`
+                    // reopened during its own hide; a two-way `transition:
+                    // visibility` root reopened mid-close). A continuous
+                    // property can meet the same condition only by landing on
+                    // the exact value, which the retarget arm handles.
+                    let current = self.tree.nodes[node_id].computed_style.visibility;
+                    if let Some(map) = self.tree.active_transitions.get_mut(&node_id)
+                        && let Some(t) = map.get(&TransitionProperty::Visibility)
+                        && current == new_style.visibility
+                        && !t
+                            .to
+                            .same_computed_value(&AnimatableValue::Visibility(new_style.visibility))
+                    {
+                        map.remove(&TransitionProperty::Visibility);
+                        if map.is_empty() {
+                            self.tree.active_transitions.remove(&node_id);
+                        }
+                    }
+                }
+            }
+
             // --- Transition logic ---
             let specs = &self.tree.nodes[node_id].transition_specs;
             let node_has_been_styled = self.tree.nodes[node_id].has_been_styled
@@ -1003,6 +1089,9 @@ impl RinchDocument {
 
                     let transitioning =
                         start_transitions(transitions_map, &specs_clone, &diffs, current_time_ms);
+                    if transitioning.contains(&TransitionProperty::Visibility) {
+                        visibility_roots.push(node_id);
+                    }
 
                     // Apply new_style to computed_style, but for transitioning
                     // properties, keep the current interpolated value
@@ -1453,6 +1542,39 @@ impl RinchDocument {
             u64::from(taffy_style_changed_count.get()),
         );
         perf.add_elapsed(crate::perf::Counter::TimeStyleNs, t_style);
+
+        // Hand every running `visibility` transition's value down to the
+        // descendants that inherit it (#759). Not only from the nodes this pass
+        // restyled: a descendant re-cascaded on its own is reset to Stylo's
+        // after-change value, and its transitioning ancestor may not be dirty.
+        // Outermost first, so a nested root hands down what the outer one gave
+        // it. Nothing to do — and no walk — while no such transition runs.
+        if !self.tree.active_transitions.is_empty() {
+            visibility_roots.extend(
+                self.tree
+                    .active_transitions
+                    .iter()
+                    .filter(|(_, m)| m.contains_key(&TransitionProperty::Visibility))
+                    .map(|(id, _)| *id),
+            );
+        }
+        if !visibility_roots.is_empty() {
+            visibility_roots.sort_unstable();
+            visibility_roots.dedup();
+            let depth = |tree: &crate::node::NodeTree, mut id: usize| {
+                let mut d = 0usize;
+                while let Some(p) = tree.nodes.get(id).and_then(|n| n.parent) {
+                    d += 1;
+                    id = p;
+                }
+                d
+            };
+            visibility_roots.sort_by_cached_key(|&id| depth(&self.tree, id));
+            for id in visibility_roots {
+                propagate_inherited_visibility(&mut self.tree, id, current_time_ms);
+            }
+        }
+
         if !resync_absolutes.is_empty() {
             self.tree.style_dirty_nodes.extend(resync_absolutes);
             self.apply_stylo_styles_to_taffy();

@@ -464,6 +464,77 @@ fn popover_animates_its_dropdown() {
     );
 }
 
+/// `Popover` fades **out** as well as in (#759): closing holds the dropdown —
+/// and the content under it, which inherits the held value — visible for the
+/// 150ms fade, then hides it.
+///
+/// It declared `visibility 150ms ease` all along, which a browser honoured and
+/// rinch dropped, so the dropdown vanished on the close pass on desktop only.
+#[test]
+fn popover_fades_its_dropdown_out() {
+    use rinch_dom::computed_style::VisibilityValue;
+    use rinch_dom::transition::TransitionProperty;
+
+    let opened = Signal::new(false);
+    let mut app = mount(move |scope| {
+        let target = PopoverTarget.render(scope, &[]);
+        let inner = scope.create_element("div");
+        inner.set_attribute("class", "fixture-popover-content");
+        let dropdown = PopoverDropdown.render(scope, &[inner]);
+        Popover {
+            opened_fn: Some(Rc::new(move || opened.get())),
+            position: "bottom".to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[target, dropdown])
+    });
+    let panel = node_with_class(&app, "rinch-popover__dropdown");
+    let content = node_with_class(&app, "fixture-popover-content");
+    let vis = |app: &RinchApp, n: usize| {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree.get(n).unwrap().computed_style.visibility
+    };
+
+    opened.set(true);
+    app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
+    assert_eq!(
+        vis(&app, panel),
+        VisibilityValue::Visible,
+        "precondition: open"
+    );
+
+    opened.set(false);
+    app.resolve_and_repaint(VIEWPORT.0 + 2.0, VIEWPORT.1);
+    assert_eq!(
+        vis(&app, panel),
+        VisibilityValue::Visible,
+        "the closing dropdown is held visible for its fade"
+    );
+    assert_eq!(
+        vis(&app, content),
+        VisibilityValue::Visible,
+        "and so is its content, which inherits the held value"
+    );
+
+    let start = {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree.active_transitions[&panel][&TransitionProperty::Visibility].start_time_ms
+    };
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        rinch_dom::transition::tick_transitions(&mut d.tree, start + 200.0);
+    }
+    assert_eq!(
+        vis(&app, panel),
+        VisibilityValue::Hidden,
+        "hidden once the fade is done"
+    );
+    assert_eq!(vis(&app, content), VisibilityValue::Hidden, "content too");
+}
+
 // ── the overlays whose open state is internal ────────────────────────────
 
 /// `Select` keeps `opened` in a `Signal` created inside `render`, so the fixture

@@ -22,6 +22,15 @@ pub fn diff_animatable(old: &ComputedStyle, new: &ComputedStyle) -> Vec<Property
         });
     }
 
+    // Visibility (#759) — discrete, interpolated by `interpolate_visibility`.
+    if old.visibility != new.visibility {
+        changes.push(PropertyChange {
+            property: TransitionProperty::Visibility,
+            old_value: AnimatableValue::Visibility(old.visibility),
+            new_value: AnimatableValue::Visibility(new.visibility),
+        });
+    }
+
     // Background color
     if let (BackgroundValue::Color(old_c), BackgroundValue::Color(new_c)) =
         (&old.background, &new.background)

@@ -36,9 +36,11 @@
 //! 2. The four things `display: none` used to buy, which `visibility: hidden`
 //!    now has to buy instead: not painted, not hit-testable, not focusable, and
 //!    no live focus trap.
-//! 3. That closing puts all four back — reached by the effect's `else` branch
-//!    rather than by the initial render, which is a different path through a
-//!    class attribute that has been rewritten twice by then.
+//! 3. That closing slides the panel **out** (#413, #759) and then puts all four
+//!    back — reached by the effect's `else` branch rather than by the initial
+//!    render, which is a different path through a class attribute that has
+//!    been rewritten twice by then — and that reopening mid-slide cancels the
+//!    pending hide.
 //!
 //! The un-hide pass is audited for every other overlay in
 //! `overlay_animation_audit_tests`, which shares the "a transitioned property
@@ -425,8 +427,8 @@ fn the_closed_drawer_paints_nothing() {
     );
 }
 
-/// Closing again puts everything back: hidden, unpainted, unclickable, out of
-/// the Tab order.
+/// Closing slides the panel out, and **then** puts everything back: hidden,
+/// unpainted, unclickable, out of the Tab order (#413, #759).
 ///
 /// **Not a restatement of the four fixtures above.** Those measure the state the
 /// component *renders into* — `Drawer::render` bakes
@@ -441,19 +443,20 @@ fn the_closed_drawer_paints_nothing() {
 ///
 /// Measured, not argued: delete `root_clone.add_class(ROOT_HIDDEN_CLASS)` from
 /// that `else` branch in `rinch-components/src/drawer.rs` and this is the
-/// **only** test in the file that fails — 5 passed, 1 failed, at `the root is
-/// hidden again`.
+/// **only** test in the file that fails.
 ///
-/// It also witnesses the one cost the #751 cure has, and is the **only** place
-/// that does: the close starts a `transform` transition that runs its full
-/// 300ms with the root already hidden, so roughly eighteen frames are
-/// interpolated and thrown away. That is what a browser does with this CSS too
-/// — `visibility` flips discretely, the transform goes on animating — and it is
-/// the same close path issue **#759** is about. When `visibility` becomes
-/// transitionable and the drawer slides *out*, the `running` assertion here is
-/// the one that should change; the four hidden-state assertions should not.
+/// # The slide-out
+///
+/// Until #759 the root went `visibility: hidden` on the close pass itself, and
+/// the panel's 300ms `transform` transition ran behind it with nothing painted
+/// — about eighteen frames interpolated and thrown away per close, and a close
+/// that snapped where the open slid. The hidden state now carries `transition:
+/// visibility 0s linear 300ms`, so for the panel's 300ms the root — and the
+/// panel under it, which inherits the held value — stays visible and the slide
+/// is on screen. The four hidden-state assertions are the same four; they hold
+/// once the 300ms are up rather than on the close pass.
 #[test]
-fn closing_the_drawer_puts_it_back_out_of_the_way() {
+fn closing_the_drawer_slides_out_and_then_puts_it_back_out_of_the_way() {
     let (mut app, opened) = mount_closed();
 
     let root = node_with_class(&app, ROOT);
@@ -485,8 +488,7 @@ fn closing_the_drawer_puts_it_back_out_of_the_way() {
     );
 
     // Let the slide finish, so the close is a retarget of a settled box rather
-    // than a reversal — the ordinary case, and the one where a `transform`
-    // left behind would be most visible.
+    // than a reversal — the ordinary case.
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
@@ -502,17 +504,94 @@ fn closing_the_drawer_puts_it_back_out_of_the_way() {
     opened.set(false);
     app.resolve_and_repaint(VIEWPORT.0 + 2.0, VIEWPORT.1);
 
-    // The four things the closed state has to buy, now reached by the effect's
-    // `else` branch rather than by the initial render.
+    // ── the slide-out ──
+    assert_eq!(
+        visibility_of(&app, root),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "the closing root is held visible for the slide (#759) — it used to go \
+         hidden on this very pass"
+    );
+    assert_eq!(
+        visibility_of(&app, panel),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "and so is the panel, which inherits the held value: Stylo computes it \
+         from the root's after-change `hidden`"
+    );
+    let (vis_start, slide_start) = {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        (
+            d.tree.active_transitions[&root][&TransitionProperty::Visibility].start_time_ms,
+            d.tree.active_transitions[&panel][&TransitionProperty::Transform].start_time_ms,
+        )
+    };
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        rinch_dom::transition::tick_transitions(&mut d.tree, slide_start.max(vis_start) + 150.0);
+    }
+    let midway = transform_of(&app, panel).1[0];
+    assert!(
+        midway > -1.0 && midway < 0.0,
+        "half way through the close the panel is between its open (0.0) and \
+         closed (-1.0) positions: got {midway}"
+    );
+    assert_eq!(
+        visibility_of(&app, panel),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "and still visible, so the slide is on screen"
+    );
+    // What "held visible" costs, as in a browser: the closing drawer is still
+    // in the Tab order for its 300ms. Its focus trap is not — that goes at the
+    // close itself, with the `opened` state.
+    assert!(
+        app.collect_focusable_nodes().contains(&close),
+        "mid-slide the close button is still reachable, as in a browser"
+    );
+    assert!(
+        !app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .get(root)
+            .unwrap()
+            .attributes
+            .contains_key("data-trap-focus"),
+        "but the focus trap is released at the close, not at the end of the slide"
+    );
+    #[cfg(software_shell)]
+    {
+        let px = pixel(&mut app, 600, 300);
+        assert_ne!(
+            px[3], 0,
+            "mid-slide the overlay still inks (600, 300): got {px:?}"
+        );
+    }
+
+    // ── then out of the way ──
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        rinch_dom::transition::tick_transitions(&mut d.tree, slide_start.max(vis_start) + 350.0);
+    }
+    assert_eq!(running(&app, root), 0, "the root's hide has run");
+    assert_eq!(running(&app, panel), 0, "and the slide has finished");
     assert_eq!(
         visibility_of(&app, root),
         rinch_dom::computed_style::VisibilityValue::Hidden,
         "the root is hidden again"
     );
+    assert_eq!(
+        visibility_of(&app, panel),
+        rinch_dom::computed_style::VisibilityValue::Hidden,
+        "and the panel under it"
+    );
     assert_ne!(
         display_of(&app, root),
         rinch_dom::computed_style::DisplayValue::None,
-        "and still rendered — the closed state is `visibility`, not `display`,          whichever path reached it"
+        "and still rendered — the closed state is `visibility`, not `display`, \
+         whichever path reached it"
     );
 
     let hit_closed = {
@@ -541,20 +620,152 @@ fn closing_the_drawer_puts_it_back_out_of_the_way() {
         "and it traps no focus again"
     );
 
-    // The cost, witnessed. The panel is heading back to `translateX(-100%)`
-    // over 300ms behind a root nobody can see — see this fixture's doc and #759.
-    assert!(
-        running(&app, panel) > 0,
-        "closing starts a transform transition that paints nothing (#759)"
-    );
-
     #[cfg(software_shell)]
     {
         let px = pixel(&mut app, 600, 300);
         assert_eq!(
             px[3], 0,
-            "and none of those frames reaches the screen: (600, 300) is empty \
-             again, got {px:?}"
+            "and nothing is painted: (600, 300) is empty again, got {px:?}"
         );
     }
+}
+
+/// Reopening before the slide-out ends cancels the pending hide: the drawer
+/// stays visible after the 300ms the close would have taken.
+///
+/// css-transitions-1 §3 item 3 (#693): the open state declares no `visibility`
+/// transition, so the running one no longer matches and is cancelled. Without
+/// that, the delayed hide stayed in the map and hid the reopened drawer.
+#[test]
+fn reopening_during_the_slide_out_keeps_the_drawer_open() {
+    let (mut app, opened) = mount_closed();
+    let root = node_with_class(&app, ROOT);
+
+    opened.set(true);
+    app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
+    opened.set(false);
+    app.resolve_and_repaint(VIEWPORT.0 + 2.0, VIEWPORT.1);
+    let vis_start = {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree.active_transitions[&root][&TransitionProperty::Visibility].start_time_ms
+    };
+
+    opened.set(true);
+    app.resolve_and_repaint(VIEWPORT.0 + 3.0, VIEWPORT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        rinch_dom::transition::tick_transitions(&mut d.tree, vis_start + 1000.0);
+    }
+    assert_eq!(
+        visibility_of(&app, root),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "the reopened drawer is still visible after the close would have ended"
+    );
+}
+
+/// A `Checkbox` in a closing drawer stays on screen for the whole slide-out
+/// (review of #991, F1).
+///
+/// Its box declares `transition: all 150ms ease`, so it has a `visibility`
+/// transition of its own. It used to start that transition on the close pass —
+/// Stylo computes it `hidden` there — and vanished at 150ms, half way through
+/// the 300ms slide, while its label went on sliding. In Chrome it inherits the
+/// drawer root's held `visible` and runs its own hide only after the root flips.
+#[test]
+fn a_checkbox_in_a_closing_drawer_slides_out_with_it() {
+    use rinch_components::Checkbox;
+    const BOX: &str = "rinch-checkbox__box";
+
+    let opened = Signal::new(false);
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let cb = Checkbox {
+            label: "Remember me".to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let drawer = Drawer {
+            opened_fn: Some(std::rc::Rc::new(move || opened.get())),
+            position: "left".to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[cb]);
+        root.append_child(&drawer);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(&rinch_components::generate_component_css());
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+    let root = node_with_class(&app, ROOT);
+    let cbox = node_with_class(&app, BOX);
+    assert!(
+        transition_specs(&app, cbox) > 0,
+        "precondition: the checkbox box declares a transition of its own"
+    );
+
+    opened.set(true);
+    app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
+    // Let the open settle — the box runs its own opening `visibility`
+    // transition too, and a close taken inside it would start from its
+    // interpolated value rather than from rest.
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        let latest = d
+            .tree
+            .active_transitions
+            .values()
+            .flat_map(|m| m.values())
+            .map(|t| t.start_time_ms + 10_000.0)
+            .fold(0.0_f64, f64::max);
+        rinch_dom::transition::tick_transitions(&mut d.tree, latest);
+    }
+    assert_eq!(
+        visibility_of(&app, cbox),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "precondition: the open drawer's checkbox is visible"
+    );
+    opened.set(false);
+    app.resolve_and_repaint(VIEWPORT.0 + 2.0, VIEWPORT.1);
+
+    let start = {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree.active_transitions[&root][&TransitionProperty::Visibility].start_time_ms
+    };
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        rinch_dom::transition::tick_transitions(&mut d.tree, start + 200.0);
+    }
+    assert_eq!(
+        visibility_of(&app, root),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "precondition: 200ms in, the drawer is still sliding out"
+    );
+    assert_eq!(
+        visibility_of(&app, cbox),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "and so is the checkbox box — it has not run its own hide early"
+    );
+
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        rinch_dom::transition::tick_transitions(&mut d.tree, start + 301.0);
+        rinch_dom::transition::tick_transitions(&mut d.tree, start + 1000.0);
+    }
+    assert_eq!(
+        visibility_of(&app, cbox),
+        rinch_dom::computed_style::VisibilityValue::Hidden,
+        "and it is hidden once the drawer's close and its own have run"
+    );
 }
