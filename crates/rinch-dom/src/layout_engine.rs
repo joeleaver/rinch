@@ -438,12 +438,6 @@ impl RinchDocument {
             self.read_layout_results_for_box(anon_id);
         }
 
-        // Clamp scroll offsets to valid range after layout.
-        // When a scroll container shrinks (e.g., window resize makes max-height
-        // smaller) or grows (content now fits), the old scroll offset may exceed
-        // the new max. Clamping here ensures paint and hit-testing use valid values.
-        self.clamp_scroll_offsets();
-
         // Build inline layouts for IFC roots (rebuild with final widths and store)
         // Temporarily take layout_cx out to avoid borrow conflict
         let t = web_time::Instant::now();
@@ -460,6 +454,16 @@ impl RinchDocument {
         let mut text_layout_cache = text_layout_cache;
         text_layout_cache.extend(std::mem::take(&mut self.tree.atomic_leaf_layouts));
         self.copy_cached_text_layouts(text_layout_cache);
+
+        // Clamp scroll offsets to the valid range after layout. When a scroll
+        // container shrinks (e.g., window resize makes max-height smaller) or
+        // grows (content now fits), the old scroll offset may exceed the new
+        // max; clamping here ensures paint and hit-testing use valid values.
+        // **After** the two text passes above: the range is `content_extents`,
+        // which reads an IFC root's and an anonymous box's `text_layout`, and
+        // before them that is last pass's lines or none (review of #1045 — a
+        // bottom-pinned text scroller snapped to 0 when text was appended).
+        self.clamp_scroll_offsets();
 
         // Arm transitions now that the first layout has completed, so nothing
         // transitions into existence on page load.
@@ -944,16 +948,12 @@ impl RinchDocument {
                 continue;
             }
             let cs = &node.computed_style;
-            let content_top = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64;
-            let mut content_height: f64 = 0.0;
-            for &child_id in &node.children {
-                if let Some(child) = self.tree.nodes.get(child_id) {
-                    let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
-                    if bottom > content_height {
-                        content_height = bottom;
-                    }
-                }
-            }
+            // The one extent walk (#995): the range the wheel, the bars and
+            // `scroll_height` answer. A walk of its own here — it was the
+            // direct `children` only — took back on every layout pass the
+            // range that one grants: an anonymous box's lines, a `display:
+            // contents` wrapper's children, an IFC root's inline content.
+            let content_height = crate::paint::scrollbar::content_extents(&self.tree, node_id).1;
             let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64;
             let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64;
             let visible_h = (node.layout.height as f64 - pad_v - border_v).max(0.0);

@@ -154,9 +154,12 @@ impl Scrollbars {
 }
 
 /// The content extent `(width, height)` along both axes, relative to the
-/// container's content box, from its children's layout rects — its direct
-/// children, and the children of any `display: contents` child, which have no
-/// box of their own to measure (issue #396; see `extend_with_children`).
+/// container's content box, from its child **boxes'** layout rects — the
+/// container's box-tree children, which besides its element children are the
+/// anonymous block boxes laying out runs of its inline content beside a block
+/// child (#995) and the out-of-flow boxes hoisted out of its inline elements
+/// (#591), and the children of any `display: contents` child, which has no box
+/// of its own to measure (issue #396; see `extend_with_children`).
 ///
 /// Only boxes the container is the **containing block** of are measured —
 /// `crate::out_of_flow::contributes_to_scrollable_overflow` is the rule, and
@@ -263,6 +266,17 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
 /// box among `parent_id`'s children that is `container_id`'s scrollable
 /// content, walking **through** `display: contents` children (issue #396).
 ///
+/// The children are the **box tree's**
+/// ([`crate::RinchDocument::box_tree_children`]), not the element tree's
+/// (issue #995). A container holding text beside a block child lays each run
+/// of its inline content out in an anonymous block box, and a split inline
+/// (#513) lays each fragment out in one; neither box is in any `children`
+/// list, and the text nodes they lay out carry no box, so a walk of
+/// `children` stopped at the last element box and every line after it was out
+/// of reach of the wheel and the bar. The same list holds an out-of-flow box
+/// hoisted out of a flowed inline element into its host (#591), which the
+/// element walk never reached either: it saw only the inline's `0x0` box.
+///
 /// A `display: contents` element generates no box. Its children are laid out
 /// in its parent's formatting context — `sync_display_contents` splices them
 /// into the parent's Taffy child list — so their `layout` rects are already in
@@ -292,22 +306,118 @@ fn extend_with_children(
     let Some(parent) = tree.get(parent_id) else {
         return;
     };
-    for &child_id in &parent.children {
+    // **The common case walks `children` once.** Where `parent` holds no
+    // anonymous box and hosts no hoisted box, its box-tree children are its
+    // `children` unless one of them is a split inline or a hoisted box — the
+    // per-child test `box_tree_children` makes before it answers. Asking it
+    // here instead folds that test into this loop rather than paying a second
+    // pass over every row of a long list per call (measured +37% per call on
+    // 500 rows with the second pass). On the first child that needs the box
+    // tree, the walk takes the box tree whole: every child measured so far is
+    // in it too, and a max over the same rect twice is the same max.
+    if parent.run_boxes.is_empty()
+        && !parent.hosts_hoisted_out_of_flow
+        && !parent.is_anonymous_block_box
+    {
+        for &child_id in &parent.children {
+            let Some(child) = tree.get(child_id) else {
+                continue;
+            };
+            if child.is_split_inline()
+                || child.hosts_hoisted_out_of_flow
+                || child.hoisted_out_of_flow_to.is_some()
+            {
+                extend_with_box_tree_children(
+                    tree,
+                    container_id,
+                    parent_id,
+                    inline_measured,
+                    right,
+                    bottom,
+                );
+                return;
+            }
+            extend_with_child(
+                tree,
+                container_id,
+                child_id,
+                child,
+                inline_measured,
+                right,
+                bottom,
+            );
+        }
+        return;
+    }
+    extend_with_box_tree_children(
+        tree,
+        container_id,
+        parent_id,
+        inline_measured,
+        right,
+        bottom,
+    );
+}
+
+/// [`extend_with_children`] over `parent_id`'s box-tree children.
+fn extend_with_box_tree_children(
+    tree: &NodeTree,
+    container_id: usize,
+    parent_id: usize,
+    inline_measured: bool,
+    right: &mut f64,
+    bottom: &mut f64,
+) {
+    for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, parent_id).iter() {
         let Some(child) = tree.get(child_id) else {
             continue;
         };
-        if child.taffy_style_owned_by_contents_splice() {
-            extend_with_children(tree, container_id, child_id, inline_measured, right, bottom);
-            continue;
-        }
-        if inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
-            continue;
-        }
-        if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, child) {
-            continue;
-        }
-        *right = right.max((child.layout.x + child.layout.width) as f64);
-        *bottom = bottom.max((child.layout.y + child.layout.height) as f64);
+        extend_with_child(
+            tree,
+            container_id,
+            child_id,
+            child,
+            inline_measured,
+            right,
+            bottom,
+        );
+    }
+}
+
+/// Grow `right`/`bottom` by one box-tree child of the walk.
+fn extend_with_child(
+    tree: &NodeTree,
+    container_id: usize,
+    child_id: usize,
+    child: &crate::node::Node,
+    inline_measured: bool,
+    right: &mut f64,
+    bottom: &mut f64,
+) {
+    if child.taffy_style_owned_by_contents_splice() {
+        extend_with_children(tree, container_id, child_id, inline_measured, right, bottom);
+        return;
+    }
+    if inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
+        return;
+    }
+    if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, child) {
+        return;
+    }
+    *right = right.max((child.layout.x + child.layout.width) as f64);
+    *bottom = bottom.max((child.layout.y + child.layout.height) as f64);
+    // An anonymous box's lines are the container's own text, so they are
+    // measured as an IFC-root container's are: a `nowrap` line wider than
+    // the box (which is the container's content width) is overflow the box
+    // rect does not show. The box has no padding or border
+    // (`ComputedStyle::for_anonymous_box`), so its lines start at its own
+    // origin. Only the width: the box's height *is* its lines' height.
+    // Only an anonymous box: a block child's lines are its own content,
+    // which the walk does not descend into (it stops at the first box).
+    if child.is_anonymous_block_box
+        && let Some(inline) = &child.text_layout
+    {
+        *right = right.max(child.layout.x as f64 + inline.layout.width() as f64);
     }
 }
 
