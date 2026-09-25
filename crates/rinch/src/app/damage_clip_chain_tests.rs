@@ -326,6 +326,7 @@ fn a_painted_state_older_than_a_whole_document_restyle_is_not_trusted() {
     let first = full_frame(&mut app);
     assert_eq!(ink_in(&first, (20, 170, 60, 210)), 0, "clipped at first");
 
+    let epoch = app.doc.as_ref().unwrap().borrow().tree.painted_style_epoch;
     let doc = app.doc.as_ref().unwrap().clone();
     {
         use rinch_core::dom::DomDocument;
@@ -342,6 +343,11 @@ fn a_painted_state_older_than_a_whole_document_restyle_is_not_trusted() {
     assert!(
         ink_in(&restyled, old) > 1000,
         "positive control: unclipped now"
+    );
+    assert_ne!(
+        app.doc.as_ref().unwrap().borrow().tree.painted_style_epoch,
+        epoch,
+        "positive control: that was a whole-document restyle"
     );
 
     clipper.set_style("background", "rgb(250, 250, 250)");

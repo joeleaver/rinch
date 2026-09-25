@@ -1708,6 +1708,13 @@ pub struct NodeTree {
     /// that consumes it repaints in full. Cleared by
     /// [`NodeTree::consume_paint_dirty`].
     pub whole_document_damaged: bool,
+    /// Bumped by every paint that consumes a whole-document restyle
+    /// ([`Self::whole_document_damaged`]). A node's [`PaintedState`] carries
+    /// the epoch it was written in: such a restyle changes styles without
+    /// pushing the nodes it changed, so a node consumed before it holds the
+    /// style it had *then*, not the one the full repaint drew it with. The
+    /// damage's clip chain (#909) refuses to read a stale one.
+    pub painted_style_epoch: u32,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
@@ -2170,6 +2177,7 @@ impl NodeTree {
             paint_dirty_nodes: Vec::new(),
             paint_dirty_removed_rects: Vec::new(),
             whole_document_damaged: false,
+            painted_style_epoch: 0,
             style_dirty_nodes: Vec::new(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
@@ -2346,11 +2354,17 @@ impl NodeTree {
     /// [`Node::painted`] — own ink reach and own transform — which is O(1) per
     /// node: nothing here walks a subtree.
     pub fn consume_paint_dirty(&mut self) {
+        if self.whole_document_damaged {
+            self.painted_style_epoch = self.painted_style_epoch.wrapping_add(1);
+        }
+        let epoch = self.painted_style_epoch;
         let nodes = &mut self.nodes;
         for id in self.paint_dirty_nodes.drain(..) {
             if let Some(node) = nodes.get_mut(id) {
                 node.prev_layout = node.layout;
-                node.painted = Some(PaintedState::of(node));
+                let mut painted = PaintedState::of(node);
+                painted.style_epoch = epoch;
+                node.painted = Some(painted);
             }
         }
         self.paint_dirty_removed_rects.clear();
@@ -2548,6 +2562,13 @@ pub struct PaintedState {
     /// The node's own transform, with its origin resolved against the box it
     /// was painted in. `None` for the identity.
     pub transform: Option<Box<PaintedTransform>>,
+    /// Whether the node clipped its content ([`Node::clips_overflow`], and a
+    /// box to clip with: not `display: contents`).
+    pub clips: bool,
+    /// Its `position`, which decides which clippers above it it escapes.
+    pub position: crate::computed_style::PositionValue,
+    /// [`NodeTree::painted_style_epoch`] when this was written.
+    pub style_epoch: u32,
 }
 
 /// A painted transform: the value and its resolved origin, in CSS px.
@@ -2573,6 +2594,10 @@ impl PaintedState {
         Self {
             ink: crate::paint::own_ink_outsets(cs),
             transform,
+            clips: node.clips_overflow()
+                && cs.display != crate::computed_style::DisplayValue::Contents,
+            position: cs.position,
+            style_epoch: 0,
         }
     }
 }

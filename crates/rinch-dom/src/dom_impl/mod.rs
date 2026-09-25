@@ -639,6 +639,16 @@ impl RinchDocument {
     /// Saves the absolute rect of each node because the nodes will be deleted
     /// from the tree before `compute_dirty_region` runs.
     pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: usize) {
+        let dirty: std::collections::HashSet<usize> =
+            self.tree.paint_dirty_nodes.iter().copied().collect();
+        self.mark_subtree_paint_dirty_in(node_id, &dirty);
+    }
+
+    fn mark_subtree_paint_dirty_in(
+        &mut self,
+        node_id: usize,
+        dirty: &std::collections::HashSet<usize>,
+    ) {
         if self.tree.contains(node_id) {
             // Save the rect the node's pixels are in before it leaves the
             // tree: compute_dirty_region won't be able to reach it after.
@@ -665,7 +675,21 @@ impl RinchDocument {
                 }
                 None => None,
             };
-            if let Some(r) = r {
+            // Only the part its clipping ancestors let through was ever on
+            // screen (#909): a row a scroller had clipped away leaves nothing
+            // to clear. Asked of the chain as it was painted, which is still
+            // in place — the children below are recorded before this node's
+            // painted state is forgotten, for the same reason.
+            let r = r.map(|r| {
+                match crate::paint::clip_chain_bounds(&self.tree, node_id, 1.0, Some(dirty)) {
+                    Some(clip) => r.intersect(clip),
+                    None => r,
+                }
+            });
+            if let Some(r) = r
+                && r.width() > 0.0
+                && r.height() > 0.0
+            {
                 self.tree
                     .paint_dirty_removed_rects
                     .push((r.x0, r.y0, r.width(), r.height()));
@@ -674,7 +698,7 @@ impl RinchDocument {
             // node's painted state, which is forgotten below.
             let children = self.tree.nodes[node_id].children.clone();
             for child_id in children {
-                self.mark_subtree_paint_dirty(child_id);
+                self.mark_subtree_paint_dirty_in(child_id, dirty);
             }
             // Its old pixels are accounted for, and after the next paint it
             // has none: a detached node re-inserted later must not carry a

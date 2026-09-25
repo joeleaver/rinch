@@ -455,19 +455,20 @@ fn row_count(app: &RinchApp) -> usize {
 ///
 /// **Findings shared by all four `for` scenarios, pinned as they are; a fix must LOWER this number, and its PR updates the pin:**
 ///
-/// - **#910, fixed: paint visits the rows the scroller shows** (28: html,
-///   body, the chain down to the scroller, and the ~23 rows its clip and ink
+/// - **#910, fixed: paint visits the rows the scroller shows** (25: html,
+///   body, the chain down to the scroller, and the rows its clip and ink
 ///   margin let through), where it visited all 205. The clip the painter has
 ///   open is a cull, and a row it cuts away is dismissed by the scroller's
-///   loop without a visit. The rows between the clip and the bottom of the
-///   damage are no longer drawn only to be clipped: `glyph_cache_hits` fell
-///   with them (201 → 159).
-/// - **#909: the damage is not clipped by the scroller.** `repainted_px` is
-///   182 400 = 304 x 600: the scroller's column from the top of the window to
-///   its **bottom** edge, where the scroller's own box ends at y=408. Rows the
-///   change moved below the scroller's viewport, invisible, still name damage.
-///   Clipped, it would be about 304 x 408.
-/// - **Two clip masks cover 426 408 px** for that 182 400 px repaint: the
+///   loop without a visit.
+/// - **#909, fixed: the damage is clipped by the scroller.** `repainted_px` is
+///   122 816 = 304 x 404 — the scroller's box and its 4px margin — where it
+///   was 182 400 = 304 x 600, down to the window's bottom edge: rows the
+///   change moved below the scroller's viewport, invisible, named damage.
+///   Each rect is now intersected with its node's clip chain
+///   (`paint::clip_chain_bounds`). The glyphs of the rows in the band that
+///   no longer repaints went with it (`glyph_cache_hits` 201 → 138 over both
+///   fixes).
+/// - **Two clip masks cover 367 044 px** for that 122 816 px repaint: the
 ///   damage's own clip and the scroller's, each filled over its bounds.
 /// - **#914 (this scenario only):** the moved row is re-cascaded and re-shaped (`elements_cascaded` 1,
 ///   `shape_measure_ifc` 1) though neither its style nor its text changed.
@@ -502,13 +503,13 @@ fn a_keyed_for_moves_one_row() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 182400),
+            (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 28),
+            (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 159),
+            (GlyphCacheHits, 138),
             (ClipMasks, 2),
-            (ClipMaskPx, 426408),
+            (ClipMaskPx, 367044),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -555,13 +556,13 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 182400),
+            (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 28),
+            (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 158),
+            (GlyphCacheHits, 137),
             (ClipMasks, 2),
-            (ClipMaskPx, 426408),
+            (ClipMaskPx, 367044),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -593,13 +594,13 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 182400),
+            (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 28),
+            (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 158),
+            (GlyphCacheHits, 137),
             (ClipMasks, 2),
-            (ClipMaskPx, 426408),
+            (ClipMaskPx, 367044),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -636,13 +637,13 @@ fn a_keyed_for_replaces_every_row() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 182400),
+            (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 28),
+            (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 192),
+            (GlyphCacheHits, 168),
             (ClipMasks, 2),
-            (ClipMaskPx, 426408),
+            (ClipMaskPx, 367044),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
