@@ -682,3 +682,44 @@ fn a_hoisted_absolute_beside_a_block_counts_only_where_the_container_holds_it() 
         );
     }
 }
+
+/// The same hoisted `absolute`, in a container holding **only** inline content
+/// — an IFC root, whose lines are measured from its inline layout — one and two
+/// inline `span`s deep. Chrome 153: 200x310 both. Unfixed: 20px, the one line.
+#[test]
+fn a_hoisted_absolute_in_a_text_scroller_is_its_content() {
+    for depth in [1, 2] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 200px; height: 100px; overflow: auto; position: relative; \
+             font-size: 16px; line-height: 20px",
+        );
+        doc.append_child(body, container);
+        let mut parent = container;
+        for _ in 0..depth {
+            let span = doc.create_element("span");
+            doc.append_child(parent, span);
+            parent = span;
+        }
+        let x = doc.create_text("x");
+        doc.append_child(parent, x);
+        let abs = doc.create_element("span");
+        doc.set_attribute(
+            abs,
+            "style",
+            "position: absolute; left: 0; top: 300px; width: 10px; height: 10px",
+        );
+        doc.append_child(parent, abs);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        let (_, y) = max_scroll(&scrollbars(&doc.tree, container.0, 1.0));
+        assert_eq!(
+            (y, doc.scroll_height(container)),
+            (Some(210.0), 310.0),
+            "{depth} span(s) deep: Chrome 310"
+        );
+    }
+}
