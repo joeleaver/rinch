@@ -213,6 +213,18 @@ impl Fixture {
         ev.default_prevented()
     }
 
+    /// A `beforeinput` `insertText` of `data`, as a keyboard types it.
+    fn before_input_text(&self, data: &str) -> bool {
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_input_type("insertText");
+        init.set_data(Some(data));
+        let ev = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        self.capture().dispatch_event(&ev).unwrap();
+        ev.default_prevented()
+    }
+
     fn key(&self, key: &str, shift: bool) -> bool {
         let init = web_sys::KeyboardEventInit::new();
         init.set_bubbles(true);
@@ -509,4 +521,166 @@ fn a_padded_paragraph_finds_both_edges() {
     assert_eq!(f.head(), next);
     f.teardown();
     sheet.remove();
+}
+
+/// Which measured line (index into `starts`) the caret's rect falls on, by its
+/// vertical middle.
+fn caret_line(f: &Fixture, starts: &[u32]) -> Option<usize> {
+    let r = f.handle.caret_rect(f.handle.selection().head())?;
+    let y = r.y as f64 + r.height as f64 / 2.0;
+    starts.iter().position(|&s| {
+        let c = f.char_rect(s);
+        y >= c.top() && y <= c.bottom()
+    })
+}
+
+/// A long word broken by `overflow-wrap`: a GLYPH wrap, with no hanging space.
+/// The caret goes on line 2 of at least four. `(f, starts, caret)`.
+fn glyph_wrapped() -> (Fixture, Vec<u32>, u32) {
+    let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
+    let starts = f.line_starts();
+    assert!(
+        starts.len() >= 4,
+        "positive control: the word breaks over 4+ lines, {starts:?}"
+    );
+    f.focus();
+    let caret = starts[1] + 3;
+    f.caret_at(caret);
+    (f, starts, caret)
+}
+
+/// Caret affinity (#301, PR #1019): End on a glyph wrap lands AT the wrap point
+/// — the same model position as the next line's start — and draws at the end of
+/// the line it was pressed on (upstream). Home from there goes back to that
+/// line's start; a second End stays.
+#[wasm_bindgen_test]
+fn end_on_a_glyph_wrap_lands_at_the_wrap_upstream() {
+    let (f, starts, caret) = glyph_wrapped();
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), starts[2], "End lands on the wrap point itself");
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(1),
+        "drawn on the line End was pressed on"
+    );
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), starts[2], "a second End stays");
+    assert_eq!(caret_line(&f, &starts), Some(1));
+    assert!(f.key("Home", false));
+    assert_eq!(
+        f.head(),
+        starts[1],
+        "End, Home comes back to the line's start"
+    );
+    assert_eq!(caret_line(&f, &starts), Some(1));
+    f.teardown();
+}
+
+/// Home on a glyph wrap: the line's start is the previous line's wrap point, and
+/// the caret draws at the start of the line Home was pressed on (downstream); a
+/// second Home stays, and End reaches the same line's end.
+#[wasm_bindgen_test]
+fn home_on_a_glyph_wrap_draws_on_its_own_line() {
+    let (f, starts, caret) = glyph_wrapped();
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), starts[1]);
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(1),
+        "drawn on the line Home was pressed on"
+    );
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), starts[1], "a second Home stays");
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), starts[2], "Home, End reaches the same line's end");
+    f.caret_at(caret);
+    assert!(f.key("Home", true));
+    assert!(f.key("End", true));
+    assert_eq!(
+        f.handle.selection(),
+        Selection::text(Pos(caret as usize + 1), Pos(starts[2] as usize + 1)),
+        "Shift+Home, Shift+End selects from the caret to the line's end"
+    );
+    f.teardown();
+}
+
+/// Typing after End on a glyph wrap inserts at the end of the upper line — at
+/// the wrap point, not one character short of it.
+#[wasm_bindgen_test]
+fn typing_after_end_on_a_glyph_wrap_appends_to_the_upper_line() {
+    let (f, starts, _) = glyph_wrapped();
+    assert!(f.key("End", false));
+    assert!(f.before_input_text("X"));
+    let n = count(LONG_WORD);
+    assert_eq!(
+        f.text(),
+        format!(
+            "{}X{}",
+            slice(LONG_WORD, 0, starts[2]),
+            slice(LONG_WORD, starts[2], n)
+        )
+    );
+    f.teardown();
+}
+
+/// The hint belongs to the selection it was set with: any other selection write
+/// clears it — here an app's `set_selection` of the very same caret, which draws
+/// downstream, at the start of the next line.
+#[wasm_bindgen_test]
+fn an_app_set_selection_clears_the_hint() {
+    let (f, starts, _) = glyph_wrapped();
+    assert!(f.key("End", false));
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(1),
+        "control: End draws upstream"
+    );
+    f.handle
+        .set_selection(Selection::cursor(Pos(starts[2] as usize + 1)));
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(2),
+        "the plain caret draws downstream"
+    );
+    f.teardown();
+}
+
+/// A click past the end of a wrapped line lands on its wrap point and draws on
+/// the clicked line (upstream); a click on the next line's first character lands
+/// on the same position and draws there (downstream).
+#[wasm_bindgen_test]
+fn a_click_past_a_wrapped_lines_end_draws_on_the_clicked_line() {
+    let f = Fixture::mounted(TEXT, "");
+    let starts = f.line_starts();
+    assert!(starts.len() >= 4, "{starts:?}");
+    f.focus();
+    // Line 2 (index 1) ends in a hanging space: click right of its last glyph,
+    // inside the paragraph.
+    let last = f.char_rect(starts[2] - 2);
+    let p = f.para().get_bounding_client_rect();
+    let x = ((last.right() + p.right()) / 2.0) as f32;
+    let y = (last.top() + last.height() / 2.0) as f32;
+    assert!(
+        x as f64 > last.right() + 2.0,
+        "positive control: the line is ragged, so there is room past its end"
+    );
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    assert_eq!(f.head(), starts[2], "the click lands on the wrap point");
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(1),
+        "and draws on the clicked line"
+    );
+    let c = f.char_rect(starts[2]);
+    let (x, y) = ((c.left() + 1.0) as f32, (c.top() + c.height() / 2.0) as f32);
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    assert_eq!(f.head(), starts[2]);
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(2),
+        "a click at the next line's start draws there"
+    );
+    f.teardown();
 }

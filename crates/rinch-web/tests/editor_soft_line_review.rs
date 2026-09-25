@@ -1,7 +1,7 @@
 //! Visual-line edges on the web (#301), from the review of PR #1019. The oracle is
 //! Chrome 153's native behaviour, measured with CDP editing commands in a
-//! `contenteditable`. `r1`-`r3` pin Home's caret affinity at a wrap point and are
-//! ignored until that design is decided; `r4` is #1025. `r5` pins the probe
+//! `contenteditable`. `r1`-`r3` pin Home's caret affinity at a wrap point; `r4`
+//! is #1025. `r5` pins the probe
 //! under `transform` and CSS `zoom`, `r6` the line's vertical middle.
 //!
 //! ```text
@@ -216,7 +216,6 @@ fn middle(style: &str) -> (F, Vec<u32>, u32) {
 /// draws it there; a second Home stays. At PR head the wrap point draws at the
 /// end of the line above and a second Home goes to line 1's start.
 #[wasm_bindgen_test]
-#[ignore = "awaiting the #301 caret-affinity decision (PR #1019 review F1)"]
 fn r1_home_draws_on_its_own_line_and_is_idempotent() {
     let (f, st, caret) = middle("");
     f.at(caret);
@@ -239,7 +238,6 @@ fn r1_home_draws_on_its_own_line_and_is_idempotent() {
 /// Chrome: Home then End reaches the END of the same line; Shift+Home then
 /// Shift+End extends to that end.
 #[wasm_bindgen_test]
-#[ignore = "awaiting the #301 caret-affinity decision (PR #1019 review F1)"]
 fn r2_home_then_end_round_trips_on_one_line() {
     let (f, st, caret) = middle("");
     f.at(caret);
@@ -261,7 +259,6 @@ fn r2_home_then_end_round_trips_on_one_line() {
 /// deleteSoftLineBackward deletes ONE character — the hanging space — not the
 /// line above.
 #[wasm_bindgen_test]
-#[ignore = "awaiting the #301 caret-affinity decision (PR #1019 review F1)"]
 fn r3_soft_back_at_a_wrapped_line_start_deletes_one_char() {
     let (f, st, caret) = middle("");
     f.at(caret);
