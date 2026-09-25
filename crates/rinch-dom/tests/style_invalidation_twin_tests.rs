@@ -332,6 +332,14 @@ enum Op {
         parent: usize,
         index: usize,
     },
+    /// [`Op::Move`] without the detach: the node goes straight from one
+    /// connected position to another through `insert_before` /
+    /// `append_child`, the way a keyed `for` reorder moves a live row (#914).
+    MoveInPlace {
+        node: usize,
+        parent: usize,
+        index: usize,
+    },
     Hover(Option<usize>),
     Focus(Option<usize>),
     Active(Option<usize>),
@@ -448,6 +456,51 @@ fn apply(spec: &mut Spec, l: &mut Live, op: &Op) {
             // Detach first so the index is the spec's.
             l.doc.remove_node(n);
             insert_at(l, *parent, index, n);
+        }
+        Op::MoveInPlace {
+            node,
+            parent,
+            index,
+        } => {
+            let old = spec.els[node].parent.unwrap();
+            spec.els
+                .get_mut(&old)
+                .unwrap()
+                .children
+                .retain(|c| c != node);
+            spec.els.get_mut(node).unwrap().parent = Some(*parent);
+            let kids = &mut spec.els.get_mut(parent).unwrap().children;
+            let index = (*index).min(kids.len());
+            kids.insert(index, *node);
+            let n = l.map[node];
+            let sub = {
+                let mut v = vec![];
+                spec.subtree(*node, &mut v);
+                v
+            };
+            clear_state_in(l, &sub);
+            for s in [&mut spec.hover, &mut spec.focus, &mut spec.active] {
+                if s.is_some_and(|h| sub.contains(&h)) {
+                    *s = None;
+                }
+            }
+            // No detach: the reference is counted without the node itself,
+            // which is the spec's index once the node has left its old slot.
+            let p = l.map[parent];
+            let element_kids: Vec<usize> = l.doc.tree.nodes[p.0]
+                .children
+                .iter()
+                .copied()
+                .filter(|&c| {
+                    c != n.0
+                        && l.doc.tree.nodes[c].is_element()
+                        && !l.doc.tree.nodes[c].is_pseudo_element
+                })
+                .collect();
+            match element_kids.get(index) {
+                Some(&before) => l.doc.insert_before(p, n, NodeId(before)),
+                None => l.doc.append_child(p, n),
+            }
         }
         Op::Hover(h) => {
             spec.hover = *h;
@@ -600,6 +653,56 @@ fn insertions_and_removals_restyle_structural_siblings() {
                 index: 0,
             },
             Op::Remove(2),
+        ],
+    );
+}
+
+/// A move between two connected positions, as a keyed `for` reorder makes
+/// one (#914): `:nth-child`, `:first-/:last-child`, `+`, `~`,
+/// `:nth-last-child` and `:only-child` all read the moved node's position,
+/// in one parent, and a move to another parent changes what it inherits
+/// (`.d { color }`) and which descendant rules match (`.a .b`, `.c .a`).
+#[test]
+fn moves_between_connected_positions_restyle_what_they_reach() {
+    let mut spec = row(&[&["a"], &["b"], &["c"], &["b"], &["d"]]);
+    // A second parent, `.d`, holding one child with a `.b` child of its own.
+    let d_kid = spec.add(5, 0, "div", &["c"]);
+    spec.add(d_kid, 0, "div", &["b"]);
+    scenario(
+        "in-place moves",
+        spec,
+        &[
+            // Last to first, in one parent.
+            Op::MoveInPlace {
+                node: 4,
+                parent: 0,
+                index: 0,
+            },
+            // First to the middle.
+            Op::MoveInPlace {
+                node: 4,
+                parent: 0,
+                index: 2,
+            },
+            // Into `.d`: inherits its colour, and `.c .a` now matches.
+            Op::MoveInPlace {
+                node: 1,
+                parent: d_kid,
+                index: 0,
+            },
+            // Back out, to the end.
+            Op::MoveInPlace {
+                node: 1,
+                parent: 0,
+                index: 9,
+            },
+            // `.c` (with its `.b` child) moved to after `.a`: `.a ~ .c`,
+            // `.a + .b` change for the siblings and the moved subtree.
+            Op::MoveInPlace {
+                node: 3,
+                parent: 0,
+                index: 1,
+            },
         ],
     );
 }
@@ -995,6 +1098,49 @@ fn random_mutation_sequences_match_a_fresh_document() {
             check_random(&spec, &l, &format!("seed {seed} step {step}: {op:?}"));
         }
     }
+}
+
+/// [`random_mutation_sequences_match_a_fresh_document`] with every move made
+/// in place — no detach between the old position and the new one, which is
+/// the path a keyed `for` reorder takes (#914). Same generator and seeds, so
+/// every other op is the same.
+#[test]
+fn random_in_place_moves_match_a_fresh_document() {
+    let seeds: u64 = std::env::var("RINCH_TWIN_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+    let first: u64 = std::env::var("RINCH_TWIN_FIRST_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let mut moves = 0;
+    for seed in first..=seeds {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x1000_0001));
+        let mut spec = random_spec(&mut rng);
+        let mut l = live(&spec);
+        check_random(&spec, &l, &format!("seed {seed}: initial"));
+        for step in 0..10 {
+            let op = match random_op(&mut rng, &spec) {
+                Op::Move {
+                    node,
+                    parent,
+                    index,
+                } => {
+                    moves += 1;
+                    Op::MoveInPlace {
+                        node,
+                        parent,
+                        index,
+                    }
+                }
+                op => op,
+            };
+            apply(&mut spec, &mut l, &op);
+            check_random(&spec, &l, &format!("seed {seed} step {step}: {op:?}"));
+        }
+    }
+    assert!(moves > 0, "positive control: no move was generated");
 }
 
 /// An absolutely positioned box whose containing block is the initial one has
