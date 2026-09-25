@@ -775,7 +775,7 @@ fn a_second_wheel_notch_recomputes_no_extent() {
             (DamageRects, 1),
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 504),
+            (PaintNodesVisited, 24),
             (StackingOrderBuilds, 2),
             (GlyphCacheHits, 126),
             (ClipMasks, 2),
