@@ -782,4 +782,88 @@ mod tests {
             h.borrow_mut().remove(&id);
         });
     }
+
+    /// A dead callback is pruned *audibly* (issue #374): an app whose socket
+    /// messages stop arriving after a route change — the handler's component
+    /// unmounted, the `WsHandle` stayed parked in a store — has one `debug!`
+    /// line to find, worded like `resume_main_callback`'s for the same reason.
+    #[test]
+    fn pruning_a_dead_callback_logs_why() {
+        let id = 424_249;
+        HANDLERS.with(|h| h.borrow_mut().insert(id, Handlers::default()));
+
+        let scope = Scope::new();
+        scope.run(|| {
+            install(id, |h| &mut h.on_message, Box::new(|_| {}));
+        });
+
+        // Positive control first: a live dispatch logs nothing, so the
+        // capture below is attributable to the prune and not to dispatch.
+        let live = capture_debug(|| {
+            dispatch(id, WsEvent::Message(WsMessage::Text("live".to_string())));
+        });
+        assert!(live.is_empty(), "a live dispatch must not log: {live:?}");
+
+        scope.dispose();
+        let lines = capture_debug(|| {
+            dispatch(id, WsEvent::Message(WsMessage::Text("dead".to_string())));
+        });
+        assert_eq!(
+            lines,
+            vec![format!(
+                "dropping socket callback on connection {id}: the component that \
+                 registered it was unmounted"
+            )],
+            "pruning must say what it dropped and why"
+        );
+
+        HANDLERS.with(|h| {
+            h.borrow_mut().remove(&id);
+        });
+    }
+
+    /// Every `DEBUG`-or-louder event's message emitted while `f` runs on this
+    /// thread. A hand-rolled subscriber rather than `tracing-subscriber`, so
+    /// this wasm-clean crate gains no dev-dependency for one assertion.
+    fn capture_debug(f: impl FnOnce()) -> Vec<String> {
+        use std::sync::{Arc, Mutex};
+        use tracing::field::{Field, Visit};
+        use tracing::span::{Attributes, Id, Record};
+        use tracing::{Event, Level, Metadata, Subscriber, subscriber::Interest};
+
+        struct Capture(Arc<Mutex<Vec<String>>>);
+        struct Message(String);
+        impl Visit for Message {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        impl Subscriber for Capture {
+            fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+                Interest::always()
+            }
+            fn enabled(&self, m: &Metadata<'_>) -> bool {
+                *m.level() <= Level::DEBUG
+            }
+            fn new_span(&self, _: &Attributes<'_>) -> Id {
+                Id::from_u64(1)
+            }
+            fn record(&self, _: &Id, _: &Record<'_>) {}
+            fn record_follows_from(&self, _: &Id, _: &Id) {}
+            fn event(&self, e: &Event<'_>) {
+                let mut m = Message(String::new());
+                e.record(&mut m);
+                self.0.lock().unwrap().push(m.0);
+            }
+            fn enter(&self, _: &Id) {}
+            fn exit(&self, _: &Id) {}
+        }
+
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        tracing::subscriber::with_default(Capture(lines.clone()), f);
+        let out = lines.lock().unwrap().clone();
+        out
+    }
 }

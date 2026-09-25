@@ -7,6 +7,9 @@ description = "Cross-platform callback-based WebSocket client for rinch (web Web
 
 [dependencies]
 rinch-core = { workspace = true }
+# For the one `debug!` when a dead socket callback is pruned (issue #374). Already
+# in the graph through `rinch-core`, and wasm-clean.
+tracing = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Synchronous WebSocket client; `tungstenite` is already in the tree (rinch-signaling).

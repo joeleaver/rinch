@@ -276,6 +276,46 @@ mod tests {
         );
     }
 
+    /// An ownerless continuation resumed from *inside* a live one must not
+    /// allocate under the live one's scope (issue #374, the #373 fix applied to
+    /// this registry). The owner stack is not an ancestor chain: running the
+    /// ownerless callback bare lets the `Signal` it creates land on whatever
+    /// owner the dispatch happens to be nested inside — freed, and panicking on
+    /// the next read, once that unrelated component unmounts.
+    #[test]
+    fn an_ownerless_callback_resumed_inside_a_live_one_does_not_allocate_under_it() {
+        use crate::reactive::{Scope, Signal};
+
+        // Parked from `main`: app lifetime. Creates a signal the app keeps.
+        let kept: Rc<Cell<Option<Signal<u32>>>> = Rc::new(Cell::new(None));
+        let k = kept.clone();
+        let ownerless = park_main_callback::<()>(move |()| k.set(Some(Signal::new(41))));
+
+        // Parked during a render: owned by `component`. Its body synchronously
+        // drives the ownerless resume, so that resume is nested in `owner.run`.
+        let component = Scope::new();
+        let owned = component.run(|| {
+            park_main_callback::<()>(move |()| resume_main_callback(ownerless, ()))
+        });
+
+        let before = component.owned_counts().signals;
+        resume_main_callback(owned, ());
+        assert_eq!(
+            component.owned_counts().signals,
+            before,
+            "the ownerless callback's signal must not be attributed to the \
+             component whose callback happened to resume it"
+        );
+
+        component.dispose();
+        let signal = kept.get().expect("the ownerless callback ran");
+        assert_eq!(
+            signal.get(),
+            41,
+            "an app-lifetime signal must survive an unrelated component unmounting"
+        );
+    }
+
     #[test]
     fn ids_are_distinct_and_independent() {
         let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
