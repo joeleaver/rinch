@@ -7002,9 +7002,33 @@ mod tests {
                         );
                     }
                 });
+                // `create_editor`'s deferred-mount path.
+                let unmounted = Rc::new(Cell::new(0u32));
+                let _unmounted = Effect::new({
+                    let (unmounted, reads) = (unmounted.clone(), reads.clone());
+                    move || {
+                        unmounted.set(unmounted.get() + 1);
+                        let s = schema();
+                        let mut plugins = default_plugins();
+                        plugins.push(Rc::new(Reads {
+                            site,
+                            reads: reads.clone(),
+                        }));
+                        let _h = EditorHandle::unmounted(
+                            Rc::new(s.clone()),
+                            doc_node(&s, vec![para(&s, "x")]),
+                            plugins,
+                        );
+                    }
+                });
                 store.set(1);
                 assert_eq!(runs.get(), 1, "add_plugin subscribed its effect");
                 assert_eq!(built.get(), 1, "EditorHandle::new subscribed its effect");
+                assert_eq!(
+                    unmounted.get(),
+                    1,
+                    "EditorHandle::unmounted subscribed its effect"
+                );
             }
         }
 
