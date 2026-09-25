@@ -4,8 +4,8 @@
 //! cannot be the containing block of anything, whatever its `position` says —
 //! and `transform` does not apply to it at all. `Node::establishes_abs_containing_block`
 //! used to key on `position`/`transform` alone, so a
-//! `display: contents; position: relative` wrapper answered `true`, and every
-//! consumer of that predicate went wrong the same way:
+//! `display: contents; position: relative` wrapper answered `true`, and three
+//! of its consumers went wrong:
 //!
 //! * `out_of_flow::out_of_flow_kind` stopped its walk at the wrapper and handed
 //!   the box back to Taffy, whose parent after the contents splice is the
@@ -14,9 +14,13 @@
 //! * `stacking::Collector::span` set `cb_depth` at the wrapper, so an
 //!   `overflow` box between the wrapper and the real containing block clipped
 //!   an absolute CSS says escapes it;
-//! * the Taffy re-sync in `style_resolution` (a node that starts or stops being
-//!   a containing block re-syncs its absolute descendants) did not fire for a
-//!   `display` flip between `block` and `contents`.
+//! * `layer_bounds`' `clipper_below_cb` was cleared at the wrapper, so the
+//!   off-window cull (#562) read such an absolute as bounded by a clipper it
+//!   escapes and skipped the stacking context holding it.
+//!
+//! `out_of_flow::contributes_to_scrollable_overflow` asks the predicate of the
+//! scroll container, never of a wrapper, so scroll ranges were already right
+//! (#990); a contents element is not a scroll container.
 //!
 //! Every expected number is **measured in Chrome 153** (`--headless=new`,
 //! `CSS1Compat`, `body { margin: 0 }`), not derived:
@@ -120,9 +124,13 @@ fn controls_a_boxed_positioned_wrapper_and_an_unpositioned_contents_one() {
 }
 
 /// A wrapper that flips between `block` and `contents` starts or stops being a
-/// containing block with no change to its `position`. The cascade's re-sync of
-/// absolute descendants keys on the predicate's before/after answer, so it has
-/// to see the flip — in both directions.
+/// containing block with no change to its `position`, in both directions.
+///
+/// Not a pin on the cascade's containing-block re-sync
+/// (`was_abs_containing_block` in `style_resolution`): a `display` flip is a
+/// structural change that re-syncs the subtree by another route, so this
+/// fixture passes with that re-sync disabled outright (measured). It pins the
+/// flip's *outcome*, which the predicate decides.
 #[test]
 fn a_display_flip_on_a_positioned_wrapper_moves_the_absolute() {
     let (mut doc, _outer, wrapper, abs) = issue_fixture("position: relative; height: 60px");
