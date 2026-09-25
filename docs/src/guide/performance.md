@@ -366,6 +366,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::append_row.list_500` / `remove_row` | Append or remove one row, then layout |
 | `dom::resize_1px.list_500` | Layout at a viewport 1px wider |
 | `dom::set_text_content.list_500` | `set_text_content` on one row's wrapped text, then layout |
+| `dom::drawer_toggle.list_500_closed` | Open, then close, a closed `Drawer` holding 500 rows, with the theme's and the component library's stylesheets loaded; each re-cascades the whole subtree. The one benchmark that sees what a component-library selector costs (#935: a pseudo-element rule is matched without a bloom filter) |
 | `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |
 | `shell::pointer_move_warm.warm_x50` | 50 pointer moves inside one row of a 500-row scroller, each followed by `AboutToWait` |
 | `shell::pointer_move_cold.cold` | The first move after a layout, which builds the hit-test cache |

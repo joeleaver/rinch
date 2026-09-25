@@ -287,6 +287,96 @@ pub fn op_set_text(mut f: ListFixture) -> ListFixture {
     f
 }
 
+// ── rinch-dom: the component library's stylesheet, under a closed Drawer ───
+
+/// The 500-row list inside a hand-built **closed** `Drawer`
+/// (`div.rinch-drawer__root.rinch-drawer__root--hidden > div.rinch-drawer`),
+/// with the default theme's CSS and `rinch_components::generate_component_css()`
+/// loaded ahead of the list's own sheet — what every app built with the
+/// `components` feature carries.
+///
+/// The other list benchmarks load only [`LIST_CSS`], so they cannot see what a
+/// component-library selector costs. This one exists because PR #929 first
+/// added `*::before` / `*::after` rules under the closed overlays: rinch-dom
+/// matches pseudo-element rules with no ancestor bloom filter (#935), so a rule
+/// whose rightmost compound is universal is tried against every element's
+/// ancestor chain, and its review measured +71% of style instructions under a
+/// closed drawer (+10% with no overlay at all) while every perf-counter
+/// baseline — which count cascades, not selector work — stayed identical.
+pub struct DrawerFixture {
+    pub list: ListFixture,
+    /// The drawer root, whose class opens and closes it.
+    pub root: NodeId,
+}
+
+const DRAWER_CLOSED: &str = "rinch-drawer__root rinch-drawer__root--hidden";
+const DRAWER_OPEN: &str = "rinch-drawer__root";
+
+fn build_drawer_list() -> DrawerFixture {
+    let mut doc = new_document();
+    doc.load_css(&rinch_theme::generate_theme_css(
+        &rinch_theme::Theme::default(),
+    ));
+    doc.load_css(&rinch_components::generate_component_css());
+    doc.load_css(LIST_CSS);
+    let body = doc.body();
+    let root = doc.create_element("div");
+    doc.set_attribute(root, "class", DRAWER_CLOSED);
+    let panel = doc.create_element("div");
+    doc.set_attribute(panel, "class", "rinch-drawer rinch-drawer--left");
+    let list = doc.create_element("div");
+    doc.set_attribute(list, "class", "list");
+    let mut rows = Vec::with_capacity(LIST_ROWS);
+    for i in 0..LIST_ROWS {
+        let row = doc.create_element("div");
+        doc.set_attribute(row, "class", "row");
+        let span = doc.create_element("span");
+        let t = doc.create_text(&format!("Row number {i} with some text"));
+        doc.append_child(span, t);
+        doc.append_child(row, span);
+        doc.append_child(list, row);
+        rows.push(row);
+    }
+    doc.append_child(panel, list);
+    doc.append_child(root, panel);
+    doc.append_child(body, root);
+    let mut list = ListFixture {
+        doc,
+        list,
+        rows,
+        texts: Vec::new(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    list.layout();
+    list.layout();
+    list.paint();
+    DrawerFixture { list, root }
+}
+
+impl DrawerFixture {
+    fn set_open(&mut self, open: bool) {
+        let class = if open { DRAWER_OPEN } else { DRAWER_CLOSED };
+        self.list.doc.set_attribute(self.root, "class", class);
+        self.list.layout();
+    }
+}
+
+/// The drawer list, opened and closed once (warms both cascades).
+pub fn setup_drawer_toggle() -> DrawerFixture {
+    let mut f = build_drawer_list();
+    f.set_open(true);
+    f.set_open(false);
+    f
+}
+
+/// Open the drawer and lay out, then close it and lay out: each re-cascades
+/// the whole 500-row subtree against the full component stylesheet.
+pub fn op_drawer_toggle(mut f: DrawerFixture) -> DrawerFixture {
+    f.set_open(true);
+    f.set_open(false);
+    f
+}
+
 // ── rinch-dom: a full software paint ───────────────────────────────────────
 
 const LOREM: &str = "The quick brown fox jumps over the lazy dog while a sphinx of black \

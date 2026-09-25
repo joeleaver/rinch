@@ -3500,8 +3500,9 @@ Three things it deliberately does not do.
   is the same answer the transition rule gives — such a box is rendered — and it
   is what a browser does, measured in Chrome. But an animation has no duration to
   expire, so the cost is not a one-off: after #751 made the closed `Drawer`
-  `visibility: hidden`, a `Loader` inside a **closed** drawer keeps animating and
-  keeps the app rendering. Measured on the software backend at 804x600, closed
+  `visibility: hidden`, a `Loader` inside a **closed** drawer kept animating and
+  kept the app rendering until #912 paused it (below). Measured before that, on
+  the software backend at 804x600, closed
   drawer, 20 idle frames: **20/20 asked for a redraw at 2.53ms per tick+paint**,
   where the `display: none` spelling asked for 0. That is accepted, not
   overlooked — the two rules cannot disagree without desktop diverging from the
@@ -3530,8 +3531,7 @@ Three things it deliberately does not do.
   not counted. **The component library declares the pause itself** (#912):
   `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
   subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
-  `animation-play-state: paused !important` — every descendant (and its
-  `::before`/`::after`, which only the web animates today: #925) rather than a
+  `animation-play-state: paused !important` — every descendant rather than a
   list of known spinners, and `!important` because the `animation` shorthand
   resets the play state and `.rinch-loader__oval` ties with the `*` rule on
   specificity. The popover and hover-card selectors use a complex `:not()` that
@@ -3541,7 +3541,14 @@ Three things it deliberately does not do.
   `perf_regression_tests::a_loader_in_a_closed_drawer_idles` and
   `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused`.
   A browser stops the spinner during a popover's or hover card's 150ms
-  fade-out, since the pause lands when the dropdown starts to close.
+  fade-out, since the pause lands when the dropdown starts to close. **No
+  `*::before` / `*::after`**, so on rinch-web a pseudo-element spinner under a
+  closed overlay still runs: desktop animates no pseudo-element (#925), and
+  rinch-dom matches pseudo-element rules with no bloom filter (#935), so those
+  selectors cost +10% of style instructions on every page loading the
+  component CSS (+71% under a closed drawer). `rinch-bench`'s `drawer_toggle`
+  bench, which loads the theme and component CSS, is there to catch that
+  class of cost.
   `LoadingOverlay` is the other `visibility: hidden` overlay and declares no
   pause: it takes no children and its own loader has no animated child (#924);
   fixing that needs the pause too.
@@ -4081,7 +4088,7 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for twelve benchmarks, on the
+It records Callgrind instruction counts (Gungraun) for thirteen benchmarks, on the
 PR's merge commit and on its first parent (the current `main` tip). The report
 is a table in the job summary and one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks

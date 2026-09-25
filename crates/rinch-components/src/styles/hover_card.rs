@@ -42,12 +42,12 @@ pub fn styles() -> String {
    dropdown is `visibility: hidden`, which is rendered — so an animation inside
    it ran, and kept the app awake, for as long as nobody hovered. The note on
    `.rinch-drawer__root--hidden *` in `styles/drawer.rs` has the reasoning, the
-   `!important`, the `*` and the pseudo-elements. The `:not()`s are the complement of the two rules
-   above; the pause lands as the close delay starts, so in a browser the
-   spinner stops while the card is still fading out. */
-.rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card__dropdown):not(:hover) *,
-.rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card__dropdown):not(:hover) *::before,
-.rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card__dropdown):not(:hover) *::after {
+   `!important`, the `*`, and why no pseudo-elements. The `:not()` is the
+   complement of the two rules above: the dropdown is a descendant of the card,
+   so a hovered dropdown is inside a hovered card and the second rule needs no
+   clause of its own. The pause lands as the close delay starts, so in a
+   browser the spinner stops while the card is still fading out. */
+.rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card__dropdown) * {
     animation-play-state: paused !important;
 }
 

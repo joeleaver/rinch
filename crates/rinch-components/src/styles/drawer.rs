@@ -61,14 +61,19 @@ pub fn styles() -> String {
    lose to any shorthand of equal or higher specificity declared after it —
    `.rinch-loader__oval` ties with this selector and `.rinch-button--loading
    .rinch-button__loader` beats it. `animation-play-state` does not inherit,
-   hence the `*` — and it does not reach a pseudo-element either, hence
-   `*::before` / `*::after`: a hand-rolled spinner is usually an `::after`.
-   Desktop runs no animation on a pseudo-element today, so those two only act
-   on rinch-web, where the browser does (measured in Chrome 153: paused while
-   closed, resumed with its `currentTime` on open). */
-.rinch-drawer__root--hidden *,
-.rinch-drawer__root--hidden *::before,
-.rinch-drawer__root--hidden *::after {
+   hence the `*`.
+
+   Not `*::before` / `*::after`, deliberately, although `animation-play-state`
+   does not inherit into a pseudo-element either: on rinch-web a spinner drawn
+   by an `::after` under a closed overlay is therefore **not** paused. Desktop
+   animates no pseudo-element at all (#925), so the selectors would pause
+   nothing there — and they are not free there: rinch-dom matches `::before` /
+   `::after` for every element with no ancestor bloom filter (#935), so two
+   rules with a universal rightmost compound cost +10% of style instructions
+   on a page with no overlay in it, and +71% under a closed drawer (measured by
+   PR #929's review). The `drawer_toggle` bench in `rinch-bench` pins this
+   stylesheet's cost. */
+.rinch-drawer__root--hidden * {
     animation-play-state: paused !important;
 }
 

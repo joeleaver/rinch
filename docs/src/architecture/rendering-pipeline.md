@@ -767,19 +767,20 @@ the three overlays that close with `visibility: hidden` and take content —
 pause every animation beneath them:
 
 ```css
-.rinch-drawer__root--hidden *,
-.rinch-drawer__root--hidden *::before,
-.rinch-drawer__root--hidden *::after { animation-play-state: paused !important; }
-.rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover__dropdown) *
-/* … and its ::before / ::after */ {
+.rinch-drawer__root--hidden * { animation-play-state: paused !important; }
+.rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover__dropdown) * {
     animation-play-state: paused !important;
 }
 ```
 
 Every descendant, not a list of known spinners, because any component or app
-rule can declare an animation; the pseudo-elements too, because
-`animation-play-state` does not inherit into them (desktop animates none today,
-#925, but a browser does — measured in Chrome 153). `!important` because the `animation` shorthand
+rule can declare an animation. Not the pseudo-elements, although
+`animation-play-state` does not inherit into them, so on rinch-web an `::after`
+spinner under a closed overlay still runs: desktop animates no pseudo-element
+(#925), and rinch-dom matches `::before`/`::after` rules with no ancestor bloom
+filter (#935), so `*::before`/`*::after` rules cost +10% of style instructions
+on every page that loads the component CSS and +71% under a closed drawer.
+`!important` because the `animation` shorthand
 resets `animation-play-state` to `running`: without it the pause loses to any
 shorthand of equal specificity declared later (`.rinch-loader__oval`) or higher
 (`.rinch-button--loading .rinch-button__loader`). An app that really wants an

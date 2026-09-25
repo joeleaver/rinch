@@ -4958,9 +4958,11 @@ dependencies = [
  "gungraun",
  "parley",
  "rinch",
+ "rinch-components",
  "rinch-core",
  "rinch-dom",
  "rinch-platform",
+ "rinch-theme",
 ]
 
 [[package]]
