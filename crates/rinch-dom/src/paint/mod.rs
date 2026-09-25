@@ -465,7 +465,7 @@ impl PaintedStyle {
 
     fn now(node: &Node) -> Self {
         Self {
-            clips: node.clips_overflow() && node.computed_style.display != DisplayValue::Contents,
+            clips: node.clips_overflow(),
             position: node.computed_style.position,
             contains_abs: node.establishes_abs_containing_block(),
         }

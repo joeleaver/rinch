@@ -1397,6 +1397,14 @@ impl Node {
         if self.is_element() && self.display_mode == DisplayMode::Inline {
             return false;
         }
+        // A `display: contents` element generates no box, so there is nothing
+        // for `overflow` to clip to (#1038; Chrome 153 clips nothing). Its
+        // `layout` is `0x0`, so a clip derived from it hid everything a
+        // descendant carried it to — hit testing's `check_children` gate, and
+        // the chain of a positioned descendant hoisted past it.
+        if self.computed_style.display == crate::computed_style::DisplayValue::Contents {
+            return false;
+        }
         !matches!(self.computed_style.overflow_x, OverflowValue::Visible)
             || !matches!(self.computed_style.overflow_y, OverflowValue::Visible)
     }
@@ -2669,8 +2677,7 @@ impl PaintedState {
         Self {
             ink: crate::paint::own_ink_outsets(cs),
             transform,
-            clips: node.clips_overflow()
-                && cs.display != crate::computed_style::DisplayValue::Contents,
+            clips: node.clips_overflow(),
             position: cs.position,
             contains_abs: node.establishes_abs_containing_block(),
         }
