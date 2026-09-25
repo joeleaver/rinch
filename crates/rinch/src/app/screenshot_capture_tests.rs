@@ -124,7 +124,10 @@ fn capture_keeps_the_frame(mut app: RinchApp, what: &str) {
         is(shot, MAGENTA),
         "the screenshot shows the {what}'s frame, not an empty box (#364), got {shot:?}"
     );
-    assert!(is(page, [255, 255, 255]), "and the page around it, got {page:?}");
+    assert!(
+        is(page, [255, 255, 255]),
+        "and the page around it, got {page:?}"
+    );
     assert!(
         is(live_pixel(&app, 140, 100), MAGENTA),
         "the capture left the live buffer's {what} frame in place (#364), got {:?}",
