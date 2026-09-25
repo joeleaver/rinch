@@ -956,7 +956,11 @@ layout pass. `run_on_main_thread` and everything riding it (`set_timeout`,
 `rinch-http`, `rinch-ws`) work in embed for the same reason. The queue itself
 lives in `rinch-core` (`queue_main_callback` / `drain_main_callbacks`) so the
 desktop shell, the Android loop and embed all share one; the shell's dispatcher
-adds the "wake the event loop" side effect that embed has no use for.
+adds the "wake the event loop" side effect that embed has no use for. That wake
+is coalesced (one pending `ReRender` at a time), so a callback queued between a
+wake's callback drain and its native-event drain would fold into the wake being
+served; the wake therefore asks `rinch_core::main_callbacks_pending()` after the
+native drain and owes itself another (`drain_wake_queues`, issue #988).
 
 ## Native Menus
 
@@ -4421,7 +4425,7 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for fourteen benchmarks, on the
+It records Callgrind instruction counts (Gungraun) for sixteen benchmarks, on the
 PR's merge commit and on its first parent (the current `main` tip). The report
 is a table in the job summary and one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks

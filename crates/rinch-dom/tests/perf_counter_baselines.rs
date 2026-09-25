@@ -234,6 +234,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         .z { position: relative; z-index: 1; }
         .vw { width: 10vw; height: 4px; }
         .gen::before { content: \"*\"; }
+        .inset { width: 20px; height: 20px; box-shadow: inset 0 0 4px rgb(0, 0, 0); }
         @media (min-width: 801px) { .mq { color: rgb(0, 0, 255); } }
         ",
     );
@@ -272,6 +273,10 @@ fn every_rinch_dom_counter_fires_somewhere() {
     let vw = doc.create_element("div");
     doc.set_attribute(vw, "class", "vw gen mq");
     doc.append_child(body, vw);
+    // A blurred inset shadow (painted as a mask).
+    let inset = doc.create_element("div");
+    doc.set_attribute(inset, "class", "inset");
+    doc.append_child(body, inset);
 
     doc.resolve_layout(VP.0, VP.1);
     // A text edit: cache retains, and hits on the second measure.
@@ -353,6 +358,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         CalcFixpointPasses,
         PaintNodesVisited,
         StackingOrderBuilds,
+        InsetShadowMaskPx,
         TimeStyleNs,
         TimeLayoutNs,
         TimeIfcSetupNs,

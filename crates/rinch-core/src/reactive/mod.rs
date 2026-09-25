@@ -429,6 +429,16 @@ pub fn drain_main_callbacks() {
     }
 }
 
+/// Whether any main-thread callback is queued.
+///
+/// For a host that coalesces its wakes: a callback queued while the host was
+/// between emptying this queue and re-arming its own wake signal can have had
+/// its wake folded into the one being served (issue #988), so the host asks
+/// this after re-arming and wakes itself again.
+pub fn main_callbacks_pending() -> bool {
+    !MAIN_QUEUE.lock().unwrap().is_empty()
+}
+
 /// Drop every queued main-thread callback without running it.
 ///
 /// For host shutdown only: a queued closure typically captures app state that is
