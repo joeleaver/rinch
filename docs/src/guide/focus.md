@@ -709,14 +709,20 @@ does on the web (issue #288).
   and a field that goes `disabled` while focused releases the keyboard instead.
 - **One key press is one undo step.** Each typed character is its own step —
   desktop does not merge a run of typing into one the way a browser does.
-  Typing over a selection is one step (the selected text comes back whole), and
-  so is a programmatic write the field adopted (a `value_fn` or any other
-  `value` write, issue #238).
+  Typing over a selection is one step: the selected text comes back whole.
 - **A keystroke and the rewrite its own `oninput` made are one step.** A
-  normalizing field — upper-casing, stripping non-digits — therefore undoes to
-  the text before the keystroke, never to the raw text the handler is about to
-  rewrite again. On the web, undo is the browser's own and follows the
-  browser's rules for a value that script set.
+  normalizing field (upper-casing, say) therefore undoes to the text before
+  the keystroke, never to the raw text the handler is about to rewrite again.
+  A keystroke the handler **rejects** — writes the field back to what it
+  showed, as a digits-only filter does with a letter — leaves no step at all.
+- **Any other write to the field's `value` clears its undo and redo
+  history** — a `value_fn` reset, a clear after `onsubmit`, a write from a
+  timer or another handler. It is the app's change, not the user's, so Ctrl+Z
+  cannot bring back text the app replaced. That is what a browser does for a
+  script write to `.value`, so desktop and the web agree here.
+- **Not with Alt, and not mid-composition.** Ctrl+Alt+Z is left alone (it is
+  AltGr on Windows, which types a character on some layouts), and Ctrl+Z does
+  nothing while an input method is showing a composition.
 - The built-in right-click menu (below) has **no Undo row**; the chords are the
   way in.
 
