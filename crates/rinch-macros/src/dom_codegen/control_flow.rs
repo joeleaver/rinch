@@ -12,8 +12,8 @@ use crate::node::{RsxElseBranch, RsxForLoop, RsxIfBlock, RsxMatchBlock, RsxNode}
 
 use super::DomCodegenContext;
 use super::captures::{
-    collect_body_captures, collect_capture_idents, collect_pat_idents, contested_names,
-    shadow_clones, wrap_site,
+    collect_body_captures, collect_capture_idents, collect_pat_ident_tokens, collect_pat_idents,
+    contested_names, shadow_clones, wrap_site,
 };
 
 /// Generate DOM code for a Fragment (just renders children in an invisible wrapper).
@@ -661,14 +661,25 @@ pub fn generate_for_loop(
 /// A borrow dropped on the spot: it counts as a use for `unused_variables`, and
 /// moves, copies and evaluates nothing. Emitted immediately after the binding
 /// is introduced, before any statement could move it.
+///
+/// Each acknowledgement is the pattern's own identifier token, never a name
+/// rebuilt from its string: inside a user's `macro_rules!` (`for $it in …`)
+/// only the original token carries the hygiene that resolves to the binding.
+///
+/// `reads` is compared by **string**, which ignores hygiene: two different
+/// `item`s from two syntax contexts count as one. That is safe in the one
+/// direction it can err — it can only add an acknowledgement, and the
+/// acknowledgement names the pattern's own token, so it always resolves to
+/// this binding. It never misses one (a read of this binding has this
+/// binding's string). The cost is a lost `unused variable` warning in that
+/// case — the same kind of over-approximation `read_idents` makes for path
+/// segments.
 fn acknowledgements(pat: &syn::Pat, reads: &HashSet<String>) -> TokenStream2 {
-    let mut bound = HashSet::new();
-    collect_pat_idents(pat, &mut bound);
-    let mut names: Vec<String> = bound.into_iter().filter(|n| reads.contains(n)).collect();
-    names.sort();
-    let idents = names
-        .iter()
-        .map(|n| syn::Ident::new(n, proc_macro2::Span::call_site()));
+    let mut idents = Vec::new();
+    collect_pat_ident_tokens(pat, &mut idents);
+    idents.retain(|id| reads.contains(&id.to_string()));
+    idents.sort_by_key(|id| id.to_string());
+    idents.dedup_by_key(|id| id.to_string());
     quote! { #( let _ = &#idents; )* }
 }
 
