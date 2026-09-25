@@ -84,7 +84,8 @@ fn highlights(app: &RinchApp) -> Vec<(f32, f32, f32, f32)> {
     doc.query_selector_all("[data-pm-selection]")
         .into_iter()
         .filter(|id| {
-            doc.tree.nodes[id.0].computed_style.display != rinch_dom::computed_style::DisplayValue::None
+            doc.tree.nodes[id.0].computed_style.display
+                != rinch_dom::computed_style::DisplayValue::None
         })
         .map(|id| painted_element_box(&doc.tree, id.0))
         .filter(|b| b.2 > 0.0 && b.3 > 0.0)
@@ -94,8 +95,12 @@ fn highlights(app: &RinchApp) -> Vec<(f32, f32, f32, f32)> {
 /// The caret overlay's painted box, if it is shown.
 fn caret_box(app: &RinchApp) -> Option<(f32, f32, f32, f32)> {
     let doc = app.doc.as_ref().unwrap().borrow();
-    let id = doc.query_selector_all("[data-pm-caret]").into_iter().next()?;
-    if doc.tree.nodes[id.0].computed_style.display == rinch_dom::computed_style::DisplayValue::None {
+    let id = doc
+        .query_selector_all("[data-pm-caret]")
+        .into_iter()
+        .next()?;
+    if doc.tree.nodes[id.0].computed_style.display == rinch_dom::computed_style::DisplayValue::None
+    {
         return None;
     }
     Some(painted_element_box(&doc.tree, id.0))
@@ -113,6 +118,9 @@ fn a_range_set_from_app_code_draws_its_highlight() {
         .set_selection(Selection::text(start_of(2), end_of(2)));
     idle(&mut page.app);
 
+    // Within 3px: the overlays are placed against the container's box, which
+    // `editor_caret_point` does not share exactly. Unfixed, nothing is drawn;
+    // a stale caret sits ~140px away.
     let rects = highlights(&page.app);
     assert_eq!(rects.len(), 1, "one line selected: {rects:?}");
     let (_, y, w, h) = rects[0];
@@ -121,7 +129,7 @@ fn a_range_set_from_app_code_draws_its_highlight() {
         .editor_caret_point(&page.handle, start_of(2))
         .expect("the third paragraph has geometry");
     assert!(
-        (y - line_y).abs() < 1.0 && (h - line_h).abs() < 1.0,
+        (y - line_y).abs() < 3.0 && (h - line_h).abs() < 1.0,
         "the highlight sits on the third line: {:?} vs caret line y {line_y} h {line_h}",
         rects[0]
     );
@@ -142,7 +150,7 @@ fn a_caret_set_from_app_code_is_drawn_where_it_now_is() {
         .expect("the fifth paragraph has geometry");
     let (x, y, _, _) = caret_box(&page.app).expect("the caret is shown");
     assert!(
-        (x - cx).abs() < 2.0 && (y - cy).abs() < 1.0,
+        (x - cx).abs() < 3.0 && (y - cy).abs() < 3.0,
         "the caret is drawn at ({x}, {y}), where the selection puts it at ({cx}, {cy})"
     );
 }

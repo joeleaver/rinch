@@ -342,6 +342,14 @@ impl EditorCore {
         self.state = next.clone();
         if let Some(view) = self.view.as_mut() {
             view.update_dom(&prev, &next);
+            // The caret and the highlight are drawn by the post-layout overlay
+            // pass, and a selection-only change dirties no DOM, so a runtime
+            // that skips a frame with nothing dirty would never run that pass
+            // for it (#1001). Owe it; the input paths that run it themselves
+            // clear this in the same turn.
+            if prev.selection != next.selection {
+                crate::registry::owe_overlay_pass(view.doc_key());
+            }
         }
         #[cfg(feature = "collaboration")]
         self.record_local(&prev, &next);
@@ -2296,7 +2304,7 @@ impl EditorHandle {
             core.reveal_misses = 0;
             doc_key
         };
-        crate::registry::owe_reveal(doc_key);
+        crate::registry::owe_overlay_pass(doc_key);
         crate::registry::request_overlay_refresh();
     }
 
