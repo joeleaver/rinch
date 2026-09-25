@@ -1868,6 +1868,7 @@ impl Painter for TinySkiaPainter {
                 mask: m,
                 bounds,
                 full: DeviceRect::EMPTY,
+                damage_only: false,
             });
             return;
         }
