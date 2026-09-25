@@ -40,9 +40,15 @@ impl DeferredWork {
 }
 
 /// Sends work to one app's inbox from any thread.
+///
+/// Its one producer today is the plain-control paste, which exists only with
+/// the `clipboard` feature; the inbox and its drain are there regardless, so
+/// a host's call to [`RinchApp::run_deferred_work`] does not depend on it.
 #[derive(Clone)]
+#[cfg_attr(not(feature = "clipboard"), allow(dead_code))]
 pub(crate) struct AppWorkSender(Weak<DeferredWork>);
 
+#[cfg_attr(not(feature = "clipboard"), allow(dead_code))]
 impl AppWorkSender {
     pub(crate) fn new(inbox: &Arc<DeferredWork>) -> Self {
         Self(Arc::downgrade(inbox))
@@ -75,6 +81,7 @@ impl AppWorkSender {
 
 impl RinchApp {
     /// A sender for work that must run with this app on a later turn.
+    #[cfg_attr(not(feature = "clipboard"), allow(dead_code))]
     pub(crate) fn app_work_sender(&self) -> AppWorkSender {
         AppWorkSender::new(&self.deferred_work)
     }

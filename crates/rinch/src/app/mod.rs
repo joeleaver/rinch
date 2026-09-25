@@ -2857,7 +2857,7 @@ impl RinchApp {
     /// read used to happen on the UI thread — no repaint, no input, for that
     /// long. Now the read runs on the clipboard worker and the insertion is
     /// [deferred work](Self::run_deferred_work) that runs with the app when it
-    /// answers ([`Self::complete_input_paste`]). Answers whether a read was
+    /// answers (`complete_input_paste`). Answers whether a read was
     /// started: the field is unchanged when this returns either way.
     ///
     /// A **read-only** field starts no read at all, as a read-only editor
@@ -2908,6 +2908,7 @@ impl RinchApp {
     /// loses the keyboard (#315), a value the app wrote meanwhile is adopted
     /// first (#238), and the paste plus its `oninput`'s rewrite is one undo
     /// step (#288).
+    #[cfg(feature = "clipboard")]
     pub(crate) fn complete_input_paste(&mut self, node_id: usize, epoch: u64, text: String) {
         if text.is_empty()
             || self.focus_target != FocusTarget::Input(node_id)
