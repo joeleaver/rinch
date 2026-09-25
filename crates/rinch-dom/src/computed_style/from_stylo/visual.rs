@@ -100,12 +100,14 @@ pub(super) fn transform_from_stylo(
         lp.map_or((0.0, 0.0), length_or_pct_split)
     };
     let translate = |x: Option<&style::values::computed::LengthPercentage>,
-                     y: Option<&style::values::computed::LengthPercentage>| {
+                     y: Option<&style::values::computed::LengthPercentage>,
+                     z: f64| {
         let (px, pct_x) = split(x);
         let (py, pct_y) = split(y);
         TransformOp::Translate {
             px: [px, py],
             pct: [pct_x, pct_y],
+            z,
         }
     };
     let functions: Vec<TransformOp> = transform
@@ -120,25 +122,53 @@ pub(super) fn transform_from_stylo(
                 mat.e as f64,
                 mat.f as f64,
             ])),
-            GenericTransformOperation::Rotate(angle) => TransformOp::Rotate(angle.radians64()),
-            GenericTransformOperation::Scale(sx, sy) => TransformOp::Scale(*sx as f64, *sy as f64),
-            GenericTransformOperation::ScaleX(sx) => TransformOp::Scale(*sx as f64, 1.0),
-            GenericTransformOperation::ScaleY(sy) => TransformOp::Scale(1.0, *sy as f64),
-            GenericTransformOperation::TranslateX(tx) => translate(Some(tx), None),
-            GenericTransformOperation::TranslateY(ty) => translate(None, Some(ty)),
-            GenericTransformOperation::Translate(tx, ty) => translate(Some(tx), Some(ty)),
-            // `translate3d()` is the 2D translate with a z the flattening
-            // drops. It is handled here rather than falling into the catch-all
-            // below *because* it carries two `LengthPercentage`s: routed to
-            // the identity arm it would silently lose the whole translation.
-            // The other 3D operations stay unimplemented (#405).
-            GenericTransformOperation::Translate3D(tx, ty, _tz) => translate(Some(tx), Some(ty)),
+            GenericTransformOperation::Matrix3D(m) => TransformOp::matrix3d(
+                [
+                    m.m11, m.m12, m.m13, m.m14, m.m21, m.m22, m.m23, m.m24, m.m31, m.m32, m.m33,
+                    m.m34, m.m41, m.m42, m.m43, m.m44,
+                ]
+                .map(f64::from),
+            ),
+            GenericTransformOperation::Rotate(angle)
+            | GenericTransformOperation::RotateZ(angle) => TransformOp::Rotate(angle.radians64()),
+            GenericTransformOperation::RotateX(angle) => {
+                TransformOp::rotate3d(1.0, 0.0, 0.0, angle.radians64())
+            }
+            GenericTransformOperation::RotateY(angle) => {
+                TransformOp::rotate3d(0.0, 1.0, 0.0, angle.radians64())
+            }
+            GenericTransformOperation::Rotate3D(x, y, z, angle) => {
+                TransformOp::rotate3d(*x as f64, *y as f64, *z as f64, angle.radians64())
+            }
+            GenericTransformOperation::Scale(sx, sy) => {
+                TransformOp::Scale(*sx as f64, *sy as f64, 1.0)
+            }
+            GenericTransformOperation::ScaleX(sx) => TransformOp::Scale(*sx as f64, 1.0, 1.0),
+            GenericTransformOperation::ScaleY(sy) => TransformOp::Scale(1.0, *sy as f64, 1.0),
+            GenericTransformOperation::ScaleZ(sz) => TransformOp::Scale(1.0, 1.0, *sz as f64),
+            GenericTransformOperation::Scale3D(sx, sy, sz) => {
+                TransformOp::Scale(*sx as f64, *sy as f64, *sz as f64)
+            }
+            GenericTransformOperation::TranslateX(tx) => translate(Some(tx), None, 0.0),
+            GenericTransformOperation::TranslateY(ty) => translate(None, Some(ty), 0.0),
+            GenericTransformOperation::Translate(tx, ty) => translate(Some(tx), Some(ty), 0.0),
+            // `translate3d()` carries two `LengthPercentage`s, and goes
+            // through the same percentage split as `translate()` (#212).
+            GenericTransformOperation::Translate3D(tx, ty, tz) => {
+                translate(Some(tx), Some(ty), tz.px() as f64)
+            }
+            GenericTransformOperation::TranslateZ(tz) => translate(None, None, tz.px() as f64),
             GenericTransformOperation::SkewX(angle) => TransformOp::SkewX(angle.radians64()),
             GenericTransformOperation::SkewY(angle) => TransformOp::SkewY(angle.radians64()),
             GenericTransformOperation::Skew(ax, ay) => {
                 TransformOp::Skew(ax.radians64(), ay.radians64())
             }
-            // 3D transforms -- flatten to 2D identity (skip)
+            GenericTransformOperation::Perspective(p) => {
+                TransformOp::perspective(p.infinity_or(|l| l.px()) as f64)
+            }
+            // `InterpolateMatrix` / `AccumulateMatrix` are stylo's own
+            // animation intermediates; rinch interpolates function lists
+            // itself (#414) and never computes one.
             _ => TransformOp::Matrix(Affine::IDENTITY),
         })
         .collect();

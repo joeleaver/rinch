@@ -78,7 +78,10 @@ const I: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
 #[test]
 fn translate3d_moves_by_its_x_and_y() {
-    check_static("translate3d(10px, 20px, 0)", [1.0, 0.0, 0.0, 1.0, 10.0, 20.0]);
+    check_static(
+        "translate3d(10px, 20px, 0)",
+        [1.0, 0.0, 0.0, 1.0, 10.0, 20.0],
+    );
     check_static(
         "translate3d(50%, 25%, 30px)",
         [1.0, 0.0, 0.0, 1.0, 50.0, 10.0],
@@ -452,7 +455,10 @@ fn a_mixed_3d_pair_interpolates_by_function() {
     check_transition(
         "rotateZ(30deg) translateZ(5px) scale3d(2, 1, 4)",
         "rotate(90deg) translate(10px, 4px) scale(1, 3)",
-        &[(0.25, [1.23744, 1.23744, -1.06066, 1.06066, 1.06066, 2.47487])],
+        &[(
+            0.25,
+            [1.23744, 1.23744, -1.06066, 1.06066, 1.06066, 2.47487],
+        )],
     );
 }
 
@@ -467,5 +473,27 @@ fn a_mismatched_3d_pair_decomposes_flat() {
         "rotateX(60deg)",
         "translate(10px)",
         &[(0.5, [1.0, 0.0, 0.0, 0.75, 5.0, 0.0])],
+    );
+}
+
+/// `@keyframes` stops are extracted from the specified value by a converter
+/// of their own, so the z of a translate and a perspective depth need pins of
+/// their own there.
+#[test]
+fn keyframes_carry_a_translate_z_and_a_perspective() {
+    check_keyframes(
+        "perspective(100px) translateZ(10px)",
+        "perspective(200px) translateZ(10px)",
+        &[(0.2, [1.098901, 0.0, 0.0, 1.098901, 0.0, 0.0])],
+    );
+    check_keyframes(
+        "rotateY(90deg) translateZ(50px)",
+        "rotateY(0deg) translateZ(50px)",
+        &[(0.5, [0.707107, 0.0, 0.0, 1.0, 35.3553, 0.0])],
+    );
+    check_keyframes(
+        "rotateX(60deg)",
+        "rotateY(60deg)",
+        &[(0.2, [0.976287, 0.0899669, 0.0899669, 0.658663, 0.0, 0.0])],
     );
 }

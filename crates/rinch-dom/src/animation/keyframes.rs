@@ -459,11 +459,11 @@ fn serialised_length_px(css: &str, font_size: f32, root_font_size: f32) -> Optio
 /// `calc()` angle into `AngleDimension::Deg`, so `Angle::radians()` handles it
 /// where `strip_suffix("deg")` could not.
 ///
-/// The 3D operations stay unimplemented and flatten to identity, matching
-/// `transform_from_stylo`'s own `_` arm (#405). `translate3d` is spelled out
-/// rather than left to that arm for the same reason it is there: it carries two
-/// `LengthPercentage`s, and dropping it silently would lose a whole
-/// translation.
+/// The 3D functions map to the same [`TransformOp`]s `transform_from_stylo`
+/// builds (#405), so a keyframed `rotateX()` interpolates exactly as a
+/// transitioned one. A `translateZ`/`translate3d` z or a `perspective()` depth
+/// in a unit this extractor cannot resolve (`vw`, a `calc()`) drops the stop,
+/// as an unresolvable translate always has.
 fn transform_ops(
     transform: &style::values::specified::Transform,
     font_size: f32,
@@ -480,13 +480,29 @@ fn transform_ops(
             StopLength::Percent(p) => Some((0.0, p as f64)),
         },
     };
-    let translate = |x: Option<&SpecLengthPercentage>, y: Option<&SpecLengthPercentage>| {
+    let translate = |x: Option<&SpecLengthPercentage>, y: Option<&SpecLengthPercentage>, z: f64| {
         let (px, pct_x) = split(x)?;
         let (py, pct_y) = split(y)?;
         Some(TransformOp::Translate {
             px: [px, py],
             pct: [pct_x, pct_y],
+            z,
         })
+    };
+    // A `<length>` (a z, a perspective depth): the same units `split`
+    // resolves, and no percentage.
+    let length = |l: &style::values::specified::Length| match l {
+        style::values::specified::Length::NoCalc(nc) => {
+            match StopLength::resolve(
+                &SpecLengthPercentage::Length(nc.clone()),
+                font_size,
+                root_font_size,
+            )? {
+                StopLength::Px(px) => Some(px as f64),
+                StopLength::Percent(_) => None,
+            }
+        }
+        style::values::specified::Length::Calc(_) => None,
     };
 
     // `transform: none` is the empty list, which pads to identity functions of
@@ -504,18 +520,49 @@ fn transform_ops(
                     mat.e.get() as f64,
                     mat.f.get() as f64,
                 ])),
-                Op::Rotate(angle) => TransformOp::Rotate(angle.radians() as f64),
-                Op::Scale(sx, sy) => TransformOp::Scale(sx.get() as f64, sy.get() as f64),
-                Op::ScaleX(sx) => TransformOp::Scale(sx.get() as f64, 1.0),
-                Op::ScaleY(sy) => TransformOp::Scale(1.0, sy.get() as f64),
+                Op::Matrix3D(m) => TransformOp::matrix3d(
+                    [
+                        &m.m11, &m.m12, &m.m13, &m.m14, &m.m21, &m.m22, &m.m23, &m.m24, &m.m31,
+                        &m.m32, &m.m33, &m.m34, &m.m41, &m.m42, &m.m43, &m.m44,
+                    ]
+                    .map(|n| n.get() as f64),
+                ),
+                Op::Rotate(angle) | Op::RotateZ(angle) => {
+                    TransformOp::Rotate(angle.radians() as f64)
+                }
+                Op::RotateX(angle) => TransformOp::rotate3d(1.0, 0.0, 0.0, angle.radians() as f64),
+                Op::RotateY(angle) => TransformOp::rotate3d(0.0, 1.0, 0.0, angle.radians() as f64),
+                Op::Rotate3D(x, y, z, angle) => TransformOp::rotate3d(
+                    x.get() as f64,
+                    y.get() as f64,
+                    z.get() as f64,
+                    angle.radians() as f64,
+                ),
+                Op::Scale(sx, sy) => TransformOp::Scale(sx.get() as f64, sy.get() as f64, 1.0),
+                Op::ScaleX(sx) => TransformOp::Scale(sx.get() as f64, 1.0, 1.0),
+                Op::ScaleY(sy) => TransformOp::Scale(1.0, sy.get() as f64, 1.0),
+                Op::ScaleZ(sz) => TransformOp::Scale(1.0, 1.0, sz.get() as f64),
+                Op::Scale3D(sx, sy, sz) => {
+                    TransformOp::Scale(sx.get() as f64, sy.get() as f64, sz.get() as f64)
+                }
                 Op::SkewX(angle) => TransformOp::SkewX(angle.radians() as f64),
                 Op::SkewY(angle) => TransformOp::SkewY(angle.radians() as f64),
                 Op::Skew(ax, ay) => TransformOp::Skew(ax.radians() as f64, ay.radians() as f64),
-                Op::TranslateX(tx) => translate(Some(tx), None)?,
-                Op::TranslateY(ty) => translate(None, Some(ty))?,
-                Op::Translate(tx, ty) => translate(Some(tx), Some(ty))?,
-                Op::Translate3D(tx, ty, _tz) => translate(Some(tx), Some(ty))?,
-                // 3D operations flatten to identity, as in the cascade (#405).
+                Op::TranslateX(tx) => translate(Some(tx), None, 0.0)?,
+                Op::TranslateY(ty) => translate(None, Some(ty), 0.0)?,
+                Op::Translate(tx, ty) => translate(Some(tx), Some(ty), 0.0)?,
+                Op::Translate3D(tx, ty, tz) => translate(Some(tx), Some(ty), length(tz)?)?,
+                Op::TranslateZ(tz) => translate(None, None, length(tz)?)?,
+                Op::Perspective(p) => match p {
+                    style::values::generics::transform::GenericPerspectiveFunction::None => {
+                        TransformOp::perspective(f64::INFINITY)
+                    }
+                    style::values::generics::transform::GenericPerspectiveFunction::Length(l) => {
+                        TransformOp::perspective(length(l)?)
+                    }
+                },
+                // stylo's own interpolation intermediates, which a specified
+                // value never holds.
                 _ => TransformOp::Matrix(Affine::IDENTITY),
             })
         })
