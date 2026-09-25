@@ -541,6 +541,25 @@ fn closing_the_drawer_slides_out_and_then_puts_it_back_out_of_the_way() {
         rinch_dom::computed_style::VisibilityValue::Visible,
         "and still visible, so the slide is on screen"
     );
+    // What "held visible" costs, as in a browser: the closing drawer is still
+    // in the Tab order for its 300ms. Its focus trap is not — that goes at the
+    // close itself, with the `opened` state.
+    assert!(
+        app.collect_focusable_nodes().contains(&close),
+        "mid-slide the close button is still reachable, as in a browser"
+    );
+    assert!(
+        !app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .get(root)
+            .unwrap()
+            .attributes
+            .contains_key("data-trap-focus"),
+        "but the focus trap is released at the close, not at the end of the slide"
+    );
     #[cfg(software_shell)]
     {
         let px = pixel(&mut app, 600, 300);

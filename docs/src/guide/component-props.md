@@ -1015,7 +1015,7 @@ Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `wi
 
 Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any window chrome rinch draws (the Linux in-app menu bar, the `BorderlessWindow` titlebar) and is flush with the top of a plain window. See [Theming](./theming.md#window-chrome-inset).
 
-**Opening slides the panel in over 300ms; closing is instant.** The closed drawer is `visibility: hidden`, not `display: none` (issue #751), which is what lets the slide run: an element that was not being rendered has no before-change style, so a `display` flip and a `transform` retarget in one style pass animate nothing — on either backend, since a browser refuses the same shape. See [The before-change style, and who has one](../architecture/rendering-pipeline.md). Hidden this way the drawer is still excluded from paint — its title and body text included, which desktop drew until issue #829 — from hit testing and from the Tab order. The close is instant because sliding *out* needs the root to stay visible for the 300ms, i.e. a transition on `visibility`, which rinch's transition engine does not carry (issue #759) — one behaviour on both backends is worth more than the slide-out.
+**Opening slides the panel in over 300ms, and closing slides it back out.** The closed drawer is `visibility: hidden`, not `display: none` (issue #751), which is what lets the slide run: an element that was not being rendered has no before-change style, so a `display` flip and a `transform` retarget in one style pass animate nothing — on either backend, since a browser refuses the same shape. See [The before-change style, and who has one](../architecture/rendering-pipeline.md). Hidden this way the drawer is still excluded from paint — its title and body text included, which desktop drew until issue #829 — from hit testing and from the Tab order. The slide-out keeps the root visible for the 300ms with `transition: visibility 0s linear 300ms` on the closed state (issues #413, #759), so for those 300ms the closing drawer paints, takes clicks and is reachable by Tab, as it is in a browser; its focus trap is released at the close itself. Reopening part way through cancels the pending hide. An app that wants the old instant close can declare `.rinch-drawer__root--hidden { transition: none !important; }`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
@@ -1255,7 +1255,8 @@ appended to each tab button; it carries `transition: background-color 150ms
 ease`, so switching tabs animates it. The tab button's own `transition: color`
 starts on a switch as well, but what it animates differs by backend: in a
 browser the label text inherits the animated colour and fades, while on desktop
-a transition on an inherited property does not reach descendants, so the label
+a transition on an inherited property does not reach descendants (`visibility`
+is the one exception, since #759), so the label
 text — which lives in a child span — snaps to its new colour.
 
 None of these hooks was live before [issue

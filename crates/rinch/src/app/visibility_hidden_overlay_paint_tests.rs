@@ -48,18 +48,14 @@ const VP: (u32, u32) = (800, 600);
 
 /// Restores the Drawer's pre-#759 close: the root hides on the close pass
 /// while the panel slides back behind it.
-const INSTANT_HIDE_DRAWER: &str =
-    ".rinch-drawer__root--hidden { transition: none !important; }";
+const INSTANT_HIDE_DRAWER: &str = ".rinch-drawer__root--hidden { transition: none !important; }";
 
 /// Restores the Popover's pre-#759 close, as desktop used to run it: the
 /// dropdown hides on the close pass while its `opacity` fades behind it.
 const INSTANT_HIDE_POPOVER: &str =
     ".rinch-popover__dropdown { transition: opacity 150ms ease, transform 150ms ease !important; }";
 
-fn mount(
-    extra_css: &str,
-    build: impl Fn(&mut RenderScope) -> NodeHandle + 'static,
-) -> RinchApp {
+fn mount(extra_css: &str, build: impl Fn(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         let child = build(scope);

@@ -220,7 +220,11 @@ fn descendants_inherit_the_transitioning_visibility() {
 #[test]
 fn a_descendant_with_its_own_visibility_is_not_reached() {
     let (mut doc, root, child, _, own_hidden) = mounted("root fade");
-    assert_eq!(vis(&doc, own_hidden), VisibilityValue::Hidden, "precondition");
+    assert_eq!(
+        vis(&doc, own_hidden),
+        VisibilityValue::Hidden,
+        "precondition"
+    );
 
     doc.set_attribute(root, "class", "root fade shut");
     doc.resolve_layout(801.0, 600.0);
@@ -317,7 +321,11 @@ fn a_transition_whose_property_stops_matching_is_cancelled() {
 
     doc.set_attribute(boxed, "class", "box anim wide");
     doc.resolve_layout(801.0, 600.0);
-    assert_eq!(running(&doc, boxed), 1, "precondition: the width transition runs");
+    assert_eq!(
+        running(&doc, boxed),
+        1,
+        "precondition: the width transition runs"
+    );
     let start = start_of(&doc, boxed, TransitionProperty::Width);
     tick(&mut doc, start + 50.0);
 

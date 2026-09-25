@@ -46,8 +46,9 @@ pub fn styles() -> String {
    has the reasoning, the `!important`, the `*`, and why no pseudo-elements.
 
    The `:not()` is the exact complement of the rule above, so the pause lands on
-   precisely the dropdowns that rule leaves hidden. Resumes on open; in a
-   browser the dropdown's 150ms fade-out shows the spinner stopped. */
+   precisely the dropdowns that rule leaves hidden. Resumes on open; the
+   dropdown's 150ms fade-out (#759) shows the spinner stopped, on both
+   backends. */
 .rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover__dropdown) * {
     animation-play-state: paused !important;
 }

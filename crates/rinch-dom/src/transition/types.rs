@@ -566,9 +566,9 @@ impl AnimatableValue {
             (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => {
                 Some(AnimatableValue::Transform(a.interpolate(b, t as f64)))
             }
-            (AnimatableValue::Visibility(a), AnimatableValue::Visibility(b)) => {
-                Some(AnimatableValue::Visibility(interpolate_visibility(*a, *b, t)))
-            }
+            (AnimatableValue::Visibility(a), AnimatableValue::Visibility(b)) => Some(
+                AnimatableValue::Visibility(interpolate_visibility(*a, *b, t)),
+            ),
             // Incompatible types — snap immediately.
             //
             // A length against a percentage lands here on purpose: CSS
@@ -631,7 +631,11 @@ impl AnimatableValue {
 /// is visible from the first step. Without a `visible` end (`hidden ↔
 /// collapse`) it is the ordinary discrete rule, which flips at 50%. A `p`
 /// outside `0..=1` (an overshooting `cubic-bezier`) is the closer endpoint.
-pub fn interpolate_visibility(from: VisibilityValue, to: VisibilityValue, p: f32) -> VisibilityValue {
+pub fn interpolate_visibility(
+    from: VisibilityValue,
+    to: VisibilityValue,
+    p: f32,
+) -> VisibilityValue {
     let either_visible = from == VisibilityValue::Visible || to == VisibilityValue::Visible;
     if either_visible {
         if p <= 0.0 {

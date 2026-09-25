@@ -62,17 +62,13 @@ pub fn find_matching_spec(
 /// the tick then writes nothing. That is the pre-existing behaviour and it
 /// snaps either way; cancelling instead would only save the idle ticks.
 ///
-/// Nor is §3 item 3 — cancel a running transition whose property has stopped
-/// matching `transition-property`. `find_matching_spec` answering `None` skips
-/// the property here and leaves any running transition running. Also
-/// pre-existing, but **not rare**: it needs the same restyle to diff that
-/// property, and while a transition runs that is the usual case rather than a
-/// narrowing one, for the reason three paragraphs up — the caller diffs the
-/// *interpolated* value against the target. Nor is it inert. The property is
-/// left out of `transitioning`, so the box snaps to the target, and the
-/// transition is still in the map, so the next tick writes its interpolated
-/// value back and the box jumps backwards: measured on a 20px → 30px 150ms
-/// transition, 30px on the restyle and 26.67px one tick later. Tracked as #693.
+/// §3 item 3 — cancel a running transition whose property has stopped
+/// matching `transition-property` — is done in two places (#693). Here, a
+/// changed property with no matching spec is removed from the map; the
+/// cascade additionally sweeps the whole running set with
+/// [`cancel_unmatched_transitions`] before it gets here, since the item applies
+/// whether or not the property changed and a node that stopped declaring any
+/// `transition` never reaches this function at all.
 pub fn start_transitions(
     active_transitions: &mut HashMap<TransitionProperty, ActiveTransition>,
     specs: &[TransitionSpec],

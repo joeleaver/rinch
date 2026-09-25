@@ -374,18 +374,21 @@ at rest is not — #415). `@keyframes` stops go through the same code.
 `tests/transform_interpolation_tests.rs` pins it against Chrome 153's
 `getComputedStyle` numbers.
 
-Two things rinch does **not** implement from §3. The **transitionability**
+One thing rinch does **not** implement from §3: the **transitionability**
 precondition, which appears in item 1 and again in item 4.2: a pair of values
 that cannot be interpolated — a length against a percentage, which needs a
 `calc()` that `ComputedStyle` cannot hold — still gets an `ActiveTransition`,
 which then idles for its whole duration because `AnimatableValue::interpolate`
 answers `None` for it. The property snaps either way; cancelling instead would
-only save the idle ticks. And **item 3**, cancelling a running transition whose
-property has stopped matching `transition-property`: rinch skips the property
-and leaves the transition running, so the box snaps to the target on the restyle
-and then jumps backwards on the next tick, which resumes writing the interpolated
-value. Any restyle that changes `transition-property` mid-transition reaches it.
-Both gaps are pre-existing; item 3 is tracked as issue #693.
+only save the idle ticks.
+
+**Item 3** is implemented (issue #693): a running transition whose property has
+stopped matching `transition-property` is cancelled on the next cascade of its
+node, whether or not the property also changed on that restyle, and the
+after-change value stands. It used to be left running, so the box snapped to the
+target on the restyle and jumped backwards on the next tick. It is also what
+makes a delayed `visibility` hide safe to reopen through (see
+[Components](../guide/components.md)).
 
 ## The before-change style, and who has one
 

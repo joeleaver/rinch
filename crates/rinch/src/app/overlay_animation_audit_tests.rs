@@ -498,7 +498,11 @@ fn popover_fades_its_dropdown_out() {
 
     opened.set(true);
     app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
-    assert_eq!(vis(&app, panel), VisibilityValue::Visible, "precondition: open");
+    assert_eq!(
+        vis(&app, panel),
+        VisibilityValue::Visible,
+        "precondition: open"
+    );
 
     opened.set(false);
     app.resolve_and_repaint(VIEWPORT.0 + 2.0, VIEWPORT.1);
@@ -523,7 +527,11 @@ fn popover_fades_its_dropdown_out() {
         let mut d = doc.borrow_mut();
         rinch_dom::transition::tick_transitions(&mut d.tree, start + 200.0);
     }
-    assert_eq!(vis(&app, panel), VisibilityValue::Hidden, "hidden once the fade is done");
+    assert_eq!(
+        vis(&app, panel),
+        VisibilityValue::Hidden,
+        "hidden once the fade is done"
+    );
     assert_eq!(vis(&app, content), VisibilityValue::Hidden, "content too");
 }
 

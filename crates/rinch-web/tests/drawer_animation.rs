@@ -350,3 +350,121 @@ async fn the_closed_drawer_is_out_of_the_way() {
         "positive control: the open drawer's close button does take focus"
     );
 }
+
+/// Resolve after `ms` of wall clock.
+async fn sleep_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(resolve.unchecked_ref(), ms)
+            .unwrap();
+    });
+    wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+}
+
+/// Wait for every animation on `el` to finish, on the browser's own clock.
+async fn all_finished(el: &web_sys::Element) {
+    let f = js_sys::Reflect::get(el, &JsValue::from_str("getAnimations")).unwrap();
+    let f: js_sys::Function = f.dyn_into().unwrap();
+    let arr: js_sys::Array = f.call0(el).unwrap().dyn_into().unwrap();
+    for a in arr.iter() {
+        let finished: js_sys::Promise = prop(&a, "finished").dyn_into().unwrap();
+        let _ = wasm_bindgen_futures::JsFuture::from(finished).await;
+    }
+}
+
+/// Opening, then letting the slide land, so the close starts from rest.
+async fn open_and_settle(opened: Signal<bool>, panel: &web_sys::Element) {
+    opened.set(true);
+    next_frame().await;
+    all_finished(panel).await;
+    next_frame().await;
+    assert_eq!(
+        computed(panel, "visibility"),
+        "visible",
+        "precondition: the drawer opened"
+    );
+}
+
+/// Closing the drawer slides it out in Chrome, and then hides it (#413, #759).
+///
+/// The closed state's `transition: visibility 0s linear 300ms` holds the root
+/// — and the panel, which inherits the held value — visible for the slide. With
+/// the sheet's old instant hide the panel read `hidden` on the first frame of
+/// the close and the slide ran unseen.
+#[wasm_bindgen_test]
+async fn the_drawer_slides_out_and_then_hides() {
+    let (opened, panel) = mount_closed_drawer();
+    let bdoc = browser_document();
+    let root = bdoc.query_selector(".rinch-drawer__root").unwrap().unwrap();
+    open_and_settle(opened, &panel).await;
+
+    opened.set(false);
+    next_frame().await;
+
+    assert_eq!(
+        computed(&panel, "visibility"),
+        "visible",
+        "one frame into the close the panel is still visible — the root's hide \
+         waits out the 300ms slide"
+    );
+    assert_eq!(
+        running_animations(&root),
+        1,
+        "the root is running its delayed `visibility` transition"
+    );
+    assert_eq!(
+        running_animations(&panel),
+        1,
+        "and the panel its slide back out"
+    );
+
+    all_finished(&root).await;
+    all_finished(&panel).await;
+    next_frame().await;
+    assert_eq!(
+        computed(&panel, "visibility"),
+        "hidden",
+        "once the slide is over the drawer is hidden again"
+    );
+    assert!(
+        translate_x(&panel) < -100.0,
+        "and back off-screen: {}",
+        translate_x(&panel)
+    );
+}
+
+/// Reopening part way through the slide-out cancels the pending hide: the open
+/// state declares no `visibility` transition, so the browser cancels the
+/// running one (css-transitions-1 §3 item 3) — the rule rinch-dom now follows
+/// too (#693).
+#[wasm_bindgen_test]
+async fn reopening_mid_slide_out_keeps_the_drawer_open() {
+    let (opened, panel) = mount_closed_drawer();
+    let bdoc = browser_document();
+    let root = bdoc.query_selector(".rinch-drawer__root").unwrap().unwrap();
+    open_and_settle(opened, &panel).await;
+
+    opened.set(false);
+    next_frame().await;
+    assert_eq!(
+        running_animations(&root),
+        1,
+        "precondition: the delayed hide is running"
+    );
+
+    opened.set(true);
+    next_frame().await;
+    assert_eq!(
+        running_animations(&root),
+        0,
+        "reopening cancels the pending hide"
+    );
+
+    sleep_ms(500).await;
+    assert_eq!(
+        computed(&panel, "visibility"),
+        "visible",
+        "and the drawer is still open well after the close would have ended"
+    );
+}

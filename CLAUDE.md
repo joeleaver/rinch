@@ -3622,10 +3622,24 @@ Three things it deliberately does not do.
   testing still skips the whole hidden subtree, so it is drawn and not
   clickable (**#843**).
   `rinch/src/app/overlay_animation_audit_tests.rs` holds one fixture per overlay
-  and fails the moment a transitioned property starts changing on a reveal pass;
-  the *close* is deliberately instant on both backends, because animating it
-  would need a transition on `visibility` and `TransitionProperty` has no
-  variant for one (**#759**).
+  and fails the moment a transitioned property starts changing on a reveal pass.
+  **The close animates too** (#413, #759): `TransitionProperty::Visibility`
+  interpolates by css-values-4's rule (every progress strictly between 0 and 1
+  is `visible` when an end is — `transition::interpolate_visibility`), and the
+  closed state of `Drawer`/`Popover` carries `transition: visibility 0s linear
+  <duration>`, so the root stays visible through the slide or fade and hides at
+  its end. It is the **one** transitioned property whose animated value reaches
+  descendants: rinch's children take their style from Stylo, which knows
+  nothing of rinch transitions, so `transition::propagate_inherited_visibility`
+  hands the held value down to every descendant whose `visibility` is
+  inherited (read from its Stylo rule chain; one that declares its own is not
+  reached), after every cascade pass and whenever a tick moves the value. A
+  transition on `color` or `font-size` still stops at its own node. Reopening
+  mid-close works because §3 item 3 is implemented now (#693,
+  `transition::cancel_unmatched_transitions`): a running transition whose
+  property no longer matches `transition-property` is cancelled on the next
+  cascade of its node. The #912 pause applies from the close, so a spinner
+  slides out frozen — what a browser does with the same CSS.
 - **A `@keyframes` animation on a hidden element does not run either**
   (**#747**), and that one is not only a paint question: the desktop frame clock
   schedules another frame whenever `tree.active_animations` holds a running
