@@ -385,6 +385,12 @@ resulting `z` dropped. So `rotateX(60deg)` squashes the box to half its height,
 and `perspective(100px) translateZ(10px)` magnifies it by 100/90. A plane at or
 behind the viewer (`w <= 0`, `perspective(10px) translateZ(20px)`) is neither
 drawn nor hit, as in Chrome — it flattens to the zero matrix `scale(0)` gives.
+So is a box whose 4×4 is **singular** (`scaleZ(0)`, `scale3d(1, 1, 0)`, a
+`matrix3d()` with a zero column), although its flattening may be invertible —
+`scaleZ(0)` flattens to the identity — and its subtree with it (#1051). The cut
+is where Chrome 153's is, measured: a determinant that is not a normal `f32`,
+so `scaleZ(1e-20)` is still drawn and `scaleZ(1e-38)` is not. (Chrome's
+`getBoundingClientRect()` still reports the flattened rect for such a box.)
 Only the
 **composed** matrix is flattened — `rotateX(90deg) scaleY(2) rotateX(-90deg)` is
 the identity, where flattening each function would draw a line. For

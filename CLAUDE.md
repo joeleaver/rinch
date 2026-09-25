@@ -3990,7 +3990,13 @@ applied to `z = 0`, divided by `w`, `z` dropped, which is what Chrome draws with
 no `perspective`/`preserve-3d` ancestor — so `rotateX(60deg)` halves the height
 and `perspective(100px) translateZ(10px)` magnifies by 100/90; a plane at or
 behind the viewer (`w <= 0`) flattens to the zero matrix and is neither drawn
-nor hit, as in Chrome. A list of planar
+nor hit, as in Chrome, and so does a **singular** 4×4 (#1051: `scaleZ(0)`,
+`scale3d(1, 1, 0)`, a `matrix3d` with a zero or repeated column), even though
+its flattening can be invertible — `scaleZ(0)` flattens to the identity. The
+cut is Chrome 153's, measured: a determinant that is not a normal `f32`
+(`scaleZ(2.5e-38)` drawn, `scaleZ(1e-38)` not); only
+`compose_about_origin_z` applies it, never `compose`, which also feeds
+interpolation. A list of planar
 functions still composes as 2D affines, unchanged. Every `rotate*` interpolates
 as one primitive (common axis → angle lerp; otherwise a quaternion slerp that,
 like Chrome's, takes the shorter arc), `perspective(d)` as `1/d`, and
