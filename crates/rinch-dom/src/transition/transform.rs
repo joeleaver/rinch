@@ -235,8 +235,8 @@ impl TransformOp {
                 m.m[0][3] = px[0];
                 m.m[1][3] = px[1];
                 m.m[2][3] = *z;
-                m.pct_w = [pct[0], 0.0, 0.0];
-                m.pct_h = [0.0, pct[1], 0.0];
+                m.pct_w = Mat4::box_translation(pct[0], 0.0);
+                m.pct_h = Mat4::box_translation(0.0, pct[1]);
                 m
             }
             TransformOp::Scale(x, y, z) => {
@@ -273,8 +273,8 @@ impl TransformOp {
                         ],
                         [0.0, 0.0, 0.0, 1.0],
                     ],
-                    pct_w: [0.0; 3],
-                    pct_h: [0.0; 3],
+                    pct_w: NO_BOX,
+                    pct_h: NO_BOX,
                 }
             }
             TransformOp::Perspective(inv) => {
@@ -282,11 +282,7 @@ impl TransformOp {
                 m.m[3][2] = -inv;
                 m
             }
-            TransformOp::Matrix3D(m) => Mat4 {
-                m: *m,
-                pct_w: [0.0; 3],
-                pct_h: [0.0; 3],
-            },
+            TransformOp::Matrix3D(m) => Mat4::from_m(m),
             _ => Mat4::lift(&self.to_affine()),
         }
     }
@@ -510,22 +506,31 @@ impl ArgVec {
     }
 }
 
+/// The box-relative part of a [`Mat4`]: its first three rows, per unit of the
+/// border box's width or height.
+type BoxRows = [[f64; 4]; 3];
+
+const NO_BOX: BoxRows = [[0.0; 4]; 3];
+
 /// A 4×4 transform whose translation may depend on the element's border box,
-/// the 3D counterpart of [`Affine`]: the translation column's first three rows
-/// are `m[0..3][3] + pct_w·W + pct_h·H`.
+/// the 3D counterpart of [`Affine`]: the matrix is `m + pct_w·W + pct_h·H`.
 ///
-/// Four coefficients stay exact under composition for the same reason as in
-/// 2D: a product of two matrices whose box-relative parts sit only in their
-/// translation columns has no second-order term. What does not survive is a
-/// box-relative translation carried into the `w` row — only a `perspective()`
-/// or a `matrix3d()` with a perspective row put one there, and then the
-/// translation is no longer linear in the box's size at all; that part is
-/// dropped, with the rest of the projective terms [`Mat4::flatten`] drops.
+/// A function puts its box-relative part only in its translation column, but
+/// composition moves it: a percentage translate *before* a `perspective()`
+/// meets the perspective's `-1/d` in the `z` column, and a `translateZ` after
+/// that carries it back into the translation. So the whole of the first three
+/// rows is kept. It stays linear under composition for the reason [`Affine`]
+/// gives — a product of two box-relative parts has no second-order term,
+/// because each has a zero `w` row. What is dropped is a box-relative part the
+/// `w` row picks up (a `perspective()` after a percentage translate that a
+/// rotation turned into z), where the translation stops being linear in the
+/// box's size at all; it goes with the other projective terms
+/// [`Mat4::flatten`] drops.
 #[derive(Debug, Clone, Copy)]
 struct Mat4 {
     m: [[f64; 4]; 4],
-    pct_w: [f64; 3],
-    pct_h: [f64; 3],
+    pct_w: BoxRows,
+    pct_h: BoxRows,
 }
 
 impl Mat4 {
@@ -536,16 +541,24 @@ impl Mat4 {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],
-        pct_w: [0.0; 3],
-        pct_h: [0.0; 3],
+        pct_w: NO_BOX,
+        pct_h: NO_BOX,
     };
 
     fn from_m(m: &[[f64; 4]; 4]) -> Mat4 {
         Mat4 {
             m: *m,
-            pct_w: [0.0; 3],
-            pct_h: [0.0; 3],
+            pct_w: NO_BOX,
+            pct_h: NO_BOX,
         }
+    }
+
+    /// A translation column's box-relative part as [`BoxRows`].
+    fn box_translation(x: f64, y: f64) -> BoxRows {
+        let mut p = NO_BOX;
+        p[0][3] = x;
+        p[1][3] = y;
+        p
     }
 
     /// A 2D affine as the 4×4 that leaves z alone.
@@ -558,8 +571,8 @@ impl Mat4 {
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
-            pct_w: [a.pct_w[0], a.pct_w[1], 0.0],
-            pct_h: [a.pct_h[0], a.pct_h[1], 0.0],
+            pct_w: Self::box_translation(a.pct_w[0], a.pct_w[1]),
+            pct_h: Self::box_translation(a.pct_h[0], a.pct_h[1]),
         }
     }
 
@@ -572,20 +585,24 @@ impl Mat4 {
                 *x = (0..4).map(|k| a[r][k] * b[k][c]).sum();
             }
         }
-        // (A + W·Pa)(B + W·Pb) = AB + W·(A·Pb + Pa·B): `A·Pb` is `next`'s
-        // box-relative translation carried through `self`'s linear part, and
-        // `Pa·B` is `self`'s scaled by `next`'s `m44`.
-        let carry = |pa: [f64; 3], pb: [f64; 3]| {
-            let mut out = [0.0; 3];
-            for (r, o) in out.iter_mut().enumerate() {
-                *o = a[r][0] * pb[0] + a[r][1] * pb[1] + a[r][2] * pb[2] + pa[r] * b[3][3];
+        // (A + W·Pa)(B + W·Pb) = AB + W·(A·Pb + Pa·B), rows 0..3 of it: `A·Pb`
+        // is `next`'s box-relative part carried through `self` (`Pb` has no
+        // `w` row, so only A's first three columns meet it), `Pa·B` is
+        // `self`'s carried on through `next`.
+        let carry = |pa: &BoxRows, pb: &BoxRows| {
+            let mut out = NO_BOX;
+            for (r, row) in out.iter_mut().enumerate() {
+                for (c, x) in row.iter_mut().enumerate() {
+                    *x = (0..3).map(|k| a[r][k] * pb[k][c]).sum::<f64>()
+                        + (0..4).map(|k| pa[r][k] * b[k][c]).sum::<f64>();
+                }
             }
             out
         };
         Mat4 {
             m,
-            pct_w: carry(self.pct_w, next.pct_w),
-            pct_h: carry(self.pct_h, next.pct_h),
+            pct_w: carry(&self.pct_w, &next.pct_w),
+            pct_h: carry(&self.pct_h, &next.pct_h),
         }
     }
 
@@ -598,7 +615,9 @@ impl Mat4 {
     /// CSS's naming). When it does — a `perspective()` acting on a rotation
     /// out of the page — the figure is a trapezoid no affine can draw, and
     /// those two terms are dropped (#405). A `w` of 0 (the plane through the
-    /// viewer) is left undivided rather than dividing by zero.
+    /// viewer) is left undivided rather than dividing by zero. Of the
+    /// box-relative part only the translation is kept: anything it put in the
+    /// linear columns came from a projective `w` row too.
     fn flatten(&self) -> Affine {
         let m = &self.m;
         let w = if m[3][3] == 0.0 { 1.0 } else { m[3][3] };
@@ -611,8 +630,8 @@ impl Mat4 {
                 m[0][3] / w,
                 m[1][3] / w,
             ],
-            pct_w: [self.pct_w[0] / w, self.pct_w[1] / w],
-            pct_h: [self.pct_h[0] / w, self.pct_h[1] / w],
+            pct_w: [self.pct_w[0][3] / w, self.pct_w[1][3] / w],
+            pct_h: [self.pct_h[0][3] / w, self.pct_h[1][3] / w],
         }
     }
 }
