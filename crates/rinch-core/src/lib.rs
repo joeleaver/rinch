@@ -83,7 +83,8 @@ pub use reactive::{
     flush_pending_effects, poll_signal, queue_main_callback, register_bounds_signal,
     register_main_thread, run_on_main_thread, set_cross_thread_dispatcher,
     set_cross_thread_dispatcher_if_unset, set_on_signal_change, signals_changed,
-    subscribe_signal_change, suppress_effect_flush, unowned, untracked, update_bounds_signals,
+    subscribe_signal_change, suppress_effect_flush, unowned, untracked, untracked_handler,
+    update_bounds_signals,
 };
 
 // Re-export context for sharing state across components

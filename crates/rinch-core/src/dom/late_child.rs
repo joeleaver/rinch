@@ -412,9 +412,14 @@ fn notify(parent: &NodeHandle, subject: &NodeHandle, half: Half) {
 
     DISPATCHING.with(|d| d.set(true));
     let _guard = DispatchGuard;
-    for observer in observers {
-        observer(subject);
-    }
+    // Untracked (#931): an insertion or removal is very often made from inside
+    // an effect — every `for` reconcile, `if` branch swap and component
+    // re-render — and an observer's reads are not that effect's dependencies.
+    crate::reactive::untracked_handler(|| {
+        for observer in observers {
+            observer(subject);
+        }
+    });
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
-use rinch_core::reactive::{Owner, current_owner, unowned};
+use rinch_core::reactive::{Owner, current_owner, unowned, untracked_handler};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
@@ -165,11 +165,17 @@ impl<F: ?Sized> Hook<F> {
 
     /// Run `call` on the callback inside its owner — or not at all, answering
     /// `None`, once the owner is disposed.
+    ///
+    /// **Untracked** (#931): an app effect that moves the selection, runs a
+    /// command or offers a key calls these hooks synchronously, and what a hook
+    /// reads (a popup's own `open` signal) must not become that effect's
+    /// dependency. The whole observer stack is suspended, not only its top —
+    /// see [`untracked_handler`].
     fn invoke<R>(&self, call: impl FnOnce(&F) -> R) -> Option<R> {
         match &self.owner {
             Some(owner) if !owner.is_alive() => None,
-            Some(owner) => Some(owner.run(|| call(&self.cb))),
-            None => Some(unowned(|| call(&self.cb))),
+            Some(owner) => Some(untracked_handler(|| owner.run(|| call(&self.cb)))),
+            None => Some(untracked_handler(|| unowned(|| call(&self.cb)))),
         }
     }
 }
@@ -1092,7 +1098,8 @@ impl EditorHandle {
     /// with no internal borrow held.
     pub fn dispatch_link_click(&self, click: &LinkClick) -> bool {
         let cb = self.core().on_link_click.clone();
-        cb.is_some_and(|cb| cb(click))
+        // Untracked, like the hooks (#931).
+        cb.is_some_and(|cb| untracked_handler(|| cb(click)))
     }
 
     /// Whether an [`on_link_click`](Self::on_link_click) callback is
@@ -1140,7 +1147,8 @@ impl EditorHandle {
     pub(crate) fn notify_link_hover(&self, hover: Option<&LinkHover>) {
         let cb = self.core().on_link_hover.clone();
         if let Some(cb) = cb {
-            cb(hover);
+            // Untracked, like the hooks (#931).
+            untracked_handler(|| cb(hover));
         }
     }
 

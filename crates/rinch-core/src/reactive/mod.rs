@@ -1239,26 +1239,42 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// Run an app's event handler with **no** observer in view (issue #285).
+/// Run an app's callback with **no** observer in view (issues #285, #931).
+///
+/// Call this wherever framework or library code invokes a callback the *app*
+/// supplied — an event handler, a hook, an observer, a dismiss handler — from a
+/// place that may be inside a running effect. Handlers respond to events;
+/// effects respond to signals. Without it, every signal the callback reads is
+/// recorded as a dependency of whichever effect happened to make the call, and
+/// that effect re-runs on the app's writes to state it never read itself.
 ///
 /// Every app-callback type's `invoke` ([`Callback`](crate::Callback),
 /// [`ValueCallback`](crate::ValueCallback), [`InputCallback`](crate::InputCallback),
 /// [`FileDropCallback`](crate::FileDropCallback),
-/// [`ScrollCallback`](crate::events::ScrollCallback)) goes through here, so a
-/// component that calls its app's handler from inside one of its own effects
-/// never subscribes that effect to what the handler reads. Handlers respond to
-/// events; effects respond to signals.
+/// [`ScrollCallback`](crate::events::ScrollCallback)) goes through here, and so
+/// do the selection and selection-sync callbacks, the dismiss stack,
+/// [`Drag::cancel`](crate::events::Drag::cancel)'s `on_cancel`, the child
+/// observers ([`on_child_inserted`](crate::dom::on_child_inserted) — which every
+/// `for` reconcile reaches from inside its effect) and the rich-text editor's
+/// `EditorHandle` hooks.
 ///
 /// This suspends the **whole** observer stack, not just its top as
-/// [`untracked`] does: a component effect created inside another running
-/// effect sits two frames deep, and popping one frame would hand the handler's
-/// reads to the outer effect instead. Effects that *run* inside `f` (a handler
-/// write flushing outside a batch, an effect a handler creates) push their own
-/// observer onto the emptied stack and track normally.
+/// [`untracked`] does: an effect created inside another running effect sits
+/// two frames deep, and popping one frame would hand the callback's reads to
+/// the outer effect instead (#932). Effects that *run* inside `f` (a callback's
+/// write flushing outside a batch, an effect the callback creates) push their
+/// own observer onto the emptied stack and track normally. The stack is
+/// restored on the way out, including while unwinding.
 ///
 /// Only tracking changes. Batching, the owner stack and effect flushing are
-/// untouched: a handler's writes flush exactly when a bare call's would.
-pub(crate) fn untracked_handler<R>(f: impl FnOnce() -> R) -> R {
+/// untouched: a callback's writes flush exactly when a bare call's would, and a
+/// signal it creates belongs to whatever owner is ambient — combine with
+/// [`Owner::run`] or [`unowned`] for that.
+///
+/// Do **not** use it around code that is the caller's own synchronous work,
+/// such as the closure handed to `EditorHandle::update`: an effect that reads a
+/// signal there does mean to depend on it.
+pub fn untracked_handler<R>(f: impl FnOnce() -> R) -> R {
     let _suspended = scope::SuspendObservers::take();
     f()
 }

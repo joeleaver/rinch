@@ -372,7 +372,9 @@ impl Drag {
                     .mode
                     .map(state.start_context.mouse_x, state.start_context.mouse_y)
             });
-            crate::reactive::batch(|| on_cancel(x, y));
+            // Untracked (#931): `Drag::cancel` is public and may be called from
+            // inside an effect, which must not subscribe to what `on_cancel` reads.
+            crate::reactive::batch(|| crate::reactive::untracked_handler(|| on_cancel(x, y)));
         }
     }
 
