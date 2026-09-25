@@ -223,10 +223,24 @@ fn modified_backspace_is_left_to_the_browser() {
         ("Alt", false, true, false),
         ("Cmd", false, false, true),
     ] {
-        assert!(!f.backspace(ctrl, alt, meta), "{what}+Backspace is the browser's");
-        assert_eq!(f.text(), "Hello world one", "{what}+Backspace edits nothing");
+        assert!(
+            !f.backspace(ctrl, alt, meta),
+            "{what}+Backspace is the browser's"
+        );
+        assert_eq!(
+            f.text(),
+            "Hello world one",
+            "{what}+Backspace edits nothing"
+        );
     }
-    assert!(f.backspace(false, false, false), "control: Backspace is consumed");
-    assert_eq!(f.text(), "Hello wold one", "control: Backspace deletes a char");
+    assert!(
+        f.backspace(false, false, false),
+        "control: Backspace is consumed"
+    );
+    assert_eq!(
+        f.text(),
+        "Hello wold one",
+        "control: Backspace deletes a char"
+    );
     f.teardown();
 }

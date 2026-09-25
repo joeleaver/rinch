@@ -3104,7 +3104,11 @@ mod tests {
         assert_eq!(all_text(&back.doc), "abcd");
         assert_eq!(
             html_of(&back),
-            html_of(&html_editor("<p>ab</p><p>cd</p>", 5).run("deleteCharBackward").unwrap())
+            html_of(
+                &html_editor("<p>ab</p><p>cd</p>", 5)
+                    .run("deleteCharBackward")
+                    .unwrap()
+            )
         );
         let fwd = html_editor("<p>ab</p><p>cd</p>", 3)
             .run("deleteWordForward")
