@@ -147,9 +147,11 @@ thread_local! {
 /// Only one interceptor can be active at a time **per document**: a second
 /// call from the same document replaces the first, while another document's
 /// registration is a separate slot (issue #340). "The current document" is the
-/// one whose events are being dispatched right now; registering outside any
-/// dispatch — from `main`, a timer, or at mount — fills the thread-global
-/// fallback slot, which intercepts for every document that has no interceptor
+/// one whose code is running right now — its event dispatch, its mount, an
+/// effect it owns, or a timer / `run_on_main_thread` closure / socket callback
+/// it armed (issues #295, #963); registering outside any document — from
+/// `main`, or from a timer armed there — fills the thread-global fallback
+/// slot, which intercepts for every document that has no interceptor
 /// of its own.
 ///
 /// **Released on unmount.** Registering from inside a render ties the
