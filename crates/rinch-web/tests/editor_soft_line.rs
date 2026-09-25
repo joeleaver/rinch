@@ -481,8 +481,8 @@ fn end_inside_a_broken_word_stays_on_its_line() {
 const LONG_WORD: &str =
     "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij";
 
-/// A paragraph with padding and a border: the probes go just inside its
-/// CONTENT box, not its border box, so both edges still resolve.
+/// A paragraph with padding and a border: the probes go just inside its border
+/// box, into the padding, and still resolve to the line's edges.
 #[wasm_bindgen_test]
 fn a_padded_paragraph_finds_both_edges() {
     let sheet = document().create_element("style").unwrap();
