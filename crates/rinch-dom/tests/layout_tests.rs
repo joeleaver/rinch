@@ -2510,10 +2510,15 @@ mod inset_fast_path {
 
     /// Off the fixed point: an important rule on a *different* side leaves
     /// this side's write on the fast path, and it lands. Kills a guard that
-    /// declines whenever any important rule matched at all.
+    /// declines whenever any important rule matched at all — and, because the
+    /// same rule also declares a *normal* `left` (Stylo points a rule's normal
+    /// and important rule nodes at one block), a guard that asks the block
+    /// whether it declares `left` without asking whether that declaration is
+    /// the important one.
     #[test]
     fn an_important_rule_on_another_side_keeps_the_fast_path() {
-        let (mut doc, child) = positioned_with_sheet(".pin { top: 30px !important; }", "pin");
+        let (mut doc, child) =
+            positioned_with_sheet(".pin { left: 50px; top: 30px !important; }", "pin");
         let overrides = [("left", "120px")];
         set_and_resolve(&mut doc, child, &overrides, Path::Fast);
         assert_eq!(
@@ -2567,6 +2572,9 @@ mod inset_fast_path {
             let child_style = format!("{CHILD}; transition: {transition}");
             let (mut doc, child) = positioned(PARENT, &child_style);
             doc.set_style(child, "left", "120px");
+            // No inset is animatable today, so nothing about the transition
+            // may cost the fast path (a `transition: all` is common).
+            assert_path(&doc, child, Path::Fast);
             doc.resolve_layout(800.0, 600.0);
             // The cascade twin: the same write through a value only the
             // cascade takes (`calc`), on a fresh tree.
