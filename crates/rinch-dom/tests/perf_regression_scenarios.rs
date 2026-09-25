@@ -16,7 +16,7 @@
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
-//! | `ellipsis_builds` | `ifc.rs`, text leaf | none known since #998 — [`a_contents_wrapped_flex_item_ellipsis`] reached it until rinch blockified that span, and now pins the IFC-root site instead; [`a_text_leaf_ellipsis`] pins that a flex container's own text builds none |
+//! | `ellipsis_builds` | `ifc.rs`, text leaf — **deleted in #982** | none: [`a_text_leaf_ellipsis`] pins that a flex container's own text builds none, and [`a_contents_wrapped_flex_item_ellipsis`], the last route to the site until #998, now reaches the IFC-root one |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::InlineRoot` | [`an_inline_block_holding_an_ifc`] |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::Text` | [`an_inline_flex_holding_a_text_leaf`] |
 //! | `pseudo_element_passes` | `resolve.rs`, `::before` | [`only_before_rules`] |
@@ -219,8 +219,8 @@ fn an_ifc_root_ellipsis() {
 /// direct text child of a flex container, laid out as a leaf — build **no**
 /// ellipsis (`ellipsis_builds` 1 → 0, #904's second review): that text is an
 /// anonymous flex item, which does not clip, and Chrome 153 draws it clipped
-/// with no "…". The text-leaf rebuild site in `copy_cached_text_layouts` was
-/// reached by one other leaf until #998 — see
+/// with no "…". `copy_cached_text_layouts` had a text-leaf rebuild site of
+/// its own until #982, reached by one other leaf until #998 — see
 /// [`a_contents_wrapped_flex_item_ellipsis`].
 #[test]
 fn a_text_leaf_ellipsis() {
@@ -264,9 +264,9 @@ fn a_text_leaf_ellipsis() {
 /// its "…" is built by the IFC-root site, as [`an_ifc_root_ellipsis`]'s is.
 ///
 /// Before #998 rinch kept the span `display: inline`, its text was measured as
-/// a Taffy text leaf, and the text-leaf rebuild in `copy_cached_text_layouts`
-/// was what drew the "…" (#982). That was the only route found to that site;
-/// `ifc_root` below is what moved.
+/// a Taffy text leaf, and a text-leaf rebuild in `copy_cached_text_layouts`
+/// was what drew the "…". That was the only route found to that site, which
+/// #982 then deleted; `ifc_root` below is what moved.
 #[test]
 fn a_contents_wrapped_flex_item_ellipsis() {
     let mut doc = doc_with(
