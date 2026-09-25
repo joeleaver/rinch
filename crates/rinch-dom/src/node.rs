@@ -1403,10 +1403,30 @@ impl Node {
     /// forms neither — see [`Node::creates_stacking_context`] — so `overflow` is
     /// simply absent from both lists, and the answer here is unchanged.
     ///
+    /// A `display: contents` element answers `false` whatever its `position`
+    /// and `transform` compute to (issue #994): it generates no box, so it
+    /// establishes no containing block (css-display-3 §2.5), and `transform`
+    /// does not apply to it. Measured in Chrome 153: an `inset: 0` absolute
+    /// under a `display: contents; position: relative` wrapper fills the
+    /// initial containing block. Asking here rather than at each caller is what
+    /// keeps `out_of_flow_kind`, `contributes_to_scrollable_overflow`,
+    /// `stacking::Collector`'s `cb_depth`, `layer_bounds` and the cascade's
+    /// containing-block re-sync in agreement — each spells its own `match` on
+    /// `position` but all of them ask this for the containing-block half.
+    /// (`display: none` is not excluded: nothing under it is laid out, so the
+    /// answer there changes no box, and excluding it would make every `none`
+    /// toggle of a positioned element re-sync its absolute descendants.)
+    ///
     /// This is what stops the walk in `out_of_flow::out_of_flow_kind`, which is
     /// how issue #204's ICB case is told apart from a layout Taffy already gets
     /// right.
     pub fn establishes_abs_containing_block(&self) -> bool {
+        if matches!(
+            self.computed_style.display,
+            crate::computed_style::DisplayValue::Contents
+        ) {
+            return false;
+        }
         !matches!(
             self.computed_style.position,
             crate::computed_style::PositionValue::Static
