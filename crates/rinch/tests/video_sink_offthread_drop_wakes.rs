@@ -47,6 +47,7 @@ fn setup() -> std::sync::MutexGuard<'static, ()> {
     rinch_core::register_main_thread();
     rinch_core::set_cross_thread_dispatcher(waking_dispatcher);
     rinch_core::drain_main_callbacks();
+    WAKES.store(0, Ordering::SeqCst);
 
     // Positive control: the dispatcher is live, and wakes for a closure queued
     // from another thread onto an empty queue.
