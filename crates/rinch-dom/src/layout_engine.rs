@@ -2193,15 +2193,48 @@ impl RinchDocument {
             // The node itself IS the IFC root (block element containing inline text)
             self.invalidate_ifc_root(node_id);
         } else {
-            // Fallback: walk ancestors to find one with text_layout (the IFC root)
-            let mut cur = self.tree.nodes.get(node_id).and_then(|n| n.parent);
-            while let Some(pid) = cur {
-                if self.holds_ifc_layout(pid) {
-                    self.invalidate_ifc_root(pid);
-                    break;
-                }
-                cur = self.tree.nodes.get(pid).and_then(|n| n.parent);
+            self.invalidate_nearest_ifc_ancestor(node_id);
+        }
+    }
+
+    /// Fallback for a node with no `ifc_root` yet (before the first layout
+    /// pass): walk ancestors to the nearest one holding an IFC layout.
+    fn invalidate_nearest_ifc_ancestor(&mut self, node_id: usize) {
+        let mut cur = self.tree.nodes.get(node_id).and_then(|n| n.parent);
+        while let Some(pid) = cur {
+            if self.holds_ifc_layout(pid) {
+                self.invalidate_ifc_root(pid);
+                break;
             }
+            cur = self.tree.nodes.get(pid).and_then(|n| n.parent);
+        }
+    }
+
+    /// What a node being **moved** (or inserted) leaves behind: the IFC it
+    /// was a *member* of, which lost it — never the node's **own** IFC, if it
+    /// is a root (issue #914).
+    ///
+    /// A move does not change what a root is built from: its members, their
+    /// text and their order all travel with it. What its new position *can*
+    /// change reaches it by the two routes every other change takes. Its
+    /// typography, inherited from a new parent or matched by a positional
+    /// selector (`:nth-child`), arrives through the cascade, which compares the
+    /// old and new text inputs and drops the layout itself when they differ
+    /// (`ComputedStyle::same_text_layout_inputs`); its available width is a
+    /// key of the measure cache and of `build_ifc_layouts`' rebuild test. And
+    /// the structural pass re-signs it (the verb seeds its subtree), so a
+    /// content change it somehow missed still drops it
+    /// (`refresh_ifc_signatures`).
+    ///
+    /// [`Self::invalidate_ifc_for_node`] drops both for an atomic inline and
+    /// the node's own for a block root; that is right for a restyle of the
+    /// node, and for a move it re-shaped the moved row of every keyed `for`
+    /// reorder — twice per row on a reversed list — with nothing changed.
+    pub(crate) fn invalidate_ifc_left_by(&mut self, node_id: usize) {
+        if let Some(ifc_root_id) = self.tree.nodes.get(node_id).and_then(|n| n.ifc_root) {
+            self.invalidate_ifc_root(ifc_root_id);
+        } else if !self.holds_ifc_layout(node_id) {
+            self.invalidate_nearest_ifc_ancestor(node_id);
         }
     }
 
@@ -2655,6 +2688,48 @@ impl RinchDocument {
         if old_parent != new_parent && self.depth_if_connected(new_parent).is_none() {
             self.detach_subtree_styles(child);
         }
+    }
+
+    /// Whether moving `child` to `new_parent` may keep the style it has, and
+    /// skip the re-cascade an insertion gives a subtree (issue #914).
+    ///
+    /// Yes when the move stays **within one parent** and the child already
+    /// carries a style. Its ancestor chain is then the one it was cascaded
+    /// against, so every descendant, child and ancestor-attribute selector
+    /// answers as before, and so does everything it inherits. What its
+    /// position can change — `:nth-child`, `:first-/:last-child`, `+`, `~`,
+    /// an `<ol>`'s numbering — is exactly what the selector flags on the
+    /// parent say, and the verb's two `note_child_list_changed` calls (at the
+    /// old index and the new) restyle the moved node itself whenever they do:
+    /// `HAS_SLOW_SELECTOR*` and an `<ol>` mark every child from the insertion
+    /// index on, which includes it, and `HAS_EDGE_CHILD_SELECTOR` marks the
+    /// child at that index, which is it.
+    ///
+    /// This is **not** what a browser does for `insertBefore`: Chrome removes
+    /// and re-inserts the node and discards its computed style. It is what
+    /// `moveBefore()` does — a move that keeps the node's state — and rinch
+    /// already treats a connected move that way on purpose (a move is not a
+    /// detach: a running transition survives a keyed reorder).
+    ///
+    /// A move to **another** parent re-cascades, as an insertion always did:
+    /// both the inherited values and the ancestor chain may differ, and
+    /// comparing them to prove otherwise costs about what the cascade does.
+    /// Neither the keyed `for` reorder nor the editor's view diff moves a node
+    /// between parents.
+    ///
+    /// A child with no style yet — never styled, or its data dropped by an
+    /// earlier insertion this frame — is cascaded as before.
+    pub(crate) fn keeps_style_across_move(&self, child: usize, new_parent: usize) -> bool {
+        let Some(node) = self.tree.nodes.get(child) else {
+            return false;
+        };
+        node.parent == Some(new_parent)
+            && node.is_element()
+            && node
+                .stylo_element_data
+                .borrow()
+                .as_ref()
+                .is_some_and(|d| d.styles.primary.is_some())
     }
 
     /// Clear ifc_root on a node and all its descendants — and take each out
