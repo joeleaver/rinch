@@ -217,7 +217,9 @@ define_counters! {
     /// (`RinchApp::mark_scene_dirty`) and nothing else was damaged, so which
     /// pixels changed is unknown. Every site the framework itself owns names
     /// its damage; what is left here is an application or embedder calling
-    /// `mark_scene_dirty`, and the software `GameViewport` compositor frames.
+    /// `mark_scene_dirty`, and a window the shell has just re-created. (The
+    /// software `GameViewport` frames were here until #361 painted them inline,
+    /// with the viewport's box as their damage.)
     RepaintFullUnattributed = "repaint_full_unattributed",
     /// ...the damage covered half the surface or more (the sum of its rects).
     RepaintFullRegionTooLarge = "repaint_full_region_too_large",
@@ -273,8 +275,13 @@ define_counters! {
     PaintSurfaceTrims = "paint_surface_trims",
     /// Software painter: images premultiplied at draw time. A cached `<img>`
     /// or `background-image` is premultiplied once, on its first software
-    /// paint; a live frame source every draw.
+    /// paint; a live frame source every draw, unless its producer vouched it
+    /// opaque (then never).
     ImagePremultiplies = "image_premultiplies",
+    /// Software painter: opaque images copied straight into the surface
+    /// instead of sampled through `draw_pixmap` — a frame whose producer
+    /// vouched every pixel opaque, drawn with no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands (#361). Scaled draws count.
+    OpaqueImageCopies = "opaque_image_copies",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).

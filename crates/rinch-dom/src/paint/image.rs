@@ -27,6 +27,7 @@ pub fn paint_image(
         painter,
         &decoded.data,
         Some(decoded),
+        false,
         decoded.width,
         decoded.height,
         rect,
@@ -57,10 +58,41 @@ pub fn paint_image_data(
         painter,
         data,
         None,
+        false,
         width,
         height,
         rect,
         _scale,
+        object_fit,
+        node_transform,
+    );
+}
+
+/// [`paint_image_data`] for a live frame whose producer says whether every
+/// pixel is opaque ([`crate::paint::SurfacePixelData::opaque`]). An opaque
+/// frame skips the per-draw premultiply and, drawn onto whole pixels (at any
+/// positive scale, unrotated), is copied into the surface row by row (#361).
+#[allow(clippy::too_many_arguments)]
+pub fn paint_frame_data(
+    painter: &mut dyn Painter,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    opaque: bool,
+    rect: Rect,
+    scale: f64,
+    object_fit: ObjectFitValue,
+    node_transform: Affine,
+) {
+    paint_image_pixels(
+        painter,
+        data,
+        None,
+        opaque,
+        width,
+        height,
+        rect,
+        scale,
         object_fit,
         node_transform,
     );
@@ -71,6 +103,7 @@ fn paint_image_pixels(
     painter: &mut dyn Painter,
     data: &[u8],
     decoded: Option<&DecodedImage>,
+    opaque: bool,
     width: u32,
     height: u32,
     rect: Rect,
@@ -149,6 +182,7 @@ fn paint_image_pixels(
         width,
         height,
         decoded,
+        opaque,
     };
     painter.draw_image(&paint_image, img_transform);
 

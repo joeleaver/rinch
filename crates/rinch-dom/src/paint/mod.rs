@@ -628,12 +628,20 @@ use std::collections::{HashMap, HashSet};
 
 /// Pixel data for a render surface, keyed by surface ID.
 pub struct SurfacePixelData {
-    /// RGBA8 pixel data.
-    pub data: Vec<u8>,
+    /// RGBA8 pixel data. Shared with the surface's own buffer, so handing a
+    /// frame to paint copies nothing — a paint with no new frame used to clone
+    /// the whole frame just to have it on hand (#361).
+    pub data: std::sync::Arc<Vec<u8>>,
     /// Width in pixels.
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
+    /// Every pixel's alpha is 255 — the producer's promise, checked where the
+    /// frame was submitted (`SurfaceWriter::submit_frame`, on the submitting
+    /// thread). An opaque frame is drawn with no premultiply, and onto whole
+    /// pixels (any positive scale, unrotated) as a straight row copy (#361).
+    /// `false` promises nothing.
+    pub opaque: bool,
 }
 
 thread_local! {
@@ -870,13 +878,18 @@ pub fn set_surface_pixels(pixels: Option<HashMap<usize, SurfacePixelData>>) {
 /// Set viewport frame data for inline painting during the current paint cycle,
 /// keyed by `data-viewport` name.
 ///
-/// This is the **software** backend's video path (issue #358). A `data-viewport`
-/// node with an entry here paints its frame inline, during paint, at its own
-/// z-order — so anything drawn above it (a drawer, a modal, a dropdown) covers
-/// it by ordinary paint order. A node with no entry falls through to normal
-/// element painting, which is what leaves the GPU compositor path untouched:
-/// that backend never sets this map, so every `data-viewport` node there still
-/// paints as a plain element and gets its hole punched.
+/// This is the **software** backend's path for video (issue #358) and
+/// `GameViewport` (issue #361). A `data-viewport` node with an entry here paints
+/// its frame inline, during paint, at its own z-order — so anything drawn above
+/// it (a drawer, a modal, a dropdown, a game's HUD) covers it by ordinary paint
+/// order. A node with no entry falls through to normal element painting, which
+/// is what leaves the GPU compositor path untouched: that backend never sets
+/// this map, so every `data-viewport` node there still paints as a plain
+/// element and gets its hole punched.
+///
+/// A node that also punches a hole ([`set_active_viewports`]) paints its frame
+/// straight into that hole; one that does not paints an opaque black backdrop
+/// under it first — the letterbox a browser paints for `<video>`.
 ///
 /// Call with `Some(map)` before `paint_document()` and `None` after.
 pub fn set_viewport_pixels(pixels: Option<HashMap<String, SurfacePixelData>>) {
@@ -1566,30 +1579,7 @@ fn find_viewport_rects(
     let ny = offset_y + node.layout.y as f64 * scale;
 
     if let Some(viewport_name) = node.attributes.get("data-viewport") {
-        // If ACTIVE_VIEWPORTS is set, only cut holes for viewports with active frames
-        let active = ACTIVE_VIEWPORTS.with(|v| {
-            let guard = v.borrow();
-            match guard.as_ref() {
-                None => true, // No filter set — all viewports get holes (GPU default)
-                Some(set) => set.contains(viewport_name),
-            }
-        });
-        // A hole is only worth cutting if something will fill it. A viewport
-        // that declares itself not ready — rinch-video before its first decoded
-        // frame, or after a `PlaybackState::Error` — keeps its ancestors'
-        // backgrounds intact; otherwise a video that never loads is see-through
-        // to the desktop on a transparent window (issue #186).
-        //
-        // The attribute is an opt-OUT: a node that does not carry it punches
-        // unconditionally, which is what `GameViewport` wants — the game owns
-        // its hole from the first frame and stamps nothing. A node that does
-        // carry it must say `"true"` to punch, so a mis-stamped value fails to
-        // the safe side (an opaque placeholder, never a see-through window).
-        let ready = node
-            .attributes
-            .get("data-viewport-ready")
-            .is_none_or(|v| v == "true");
-        if active && ready {
+        if viewport_punches(node, viewport_name) {
             let vw = node.layout.width as f64 * scale;
             let vh = node.layout.height as f64 * scale;
             result.push(Rect::new(nx, ny, nx + vw, ny + vh));
@@ -1605,6 +1595,35 @@ fn find_viewport_rects(
     for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
         find_viewport_rects(tree, child_id, scale, nx - sx, ny - sy, result);
     }
+}
+
+/// Whether the `data-viewport` node `node`, named `viewport_name`, cuts a hole
+/// through its ancestors' backgrounds this paint.
+fn viewport_punches(node: &Node, viewport_name: &str) -> bool {
+    // If ACTIVE_VIEWPORTS is set, only cut holes for viewports with active frames
+    let active = ACTIVE_VIEWPORTS.with(|v| {
+        let guard = v.borrow();
+        match guard.as_ref() {
+            None => true, // No filter set — all viewports get holes (GPU default)
+            Some(set) => set.contains(viewport_name),
+        }
+    });
+    // A hole is only worth cutting if something will fill it. A viewport
+    // that declares itself not ready — rinch-video before its first decoded
+    // frame, or after a `PlaybackState::Error` — keeps its ancestors'
+    // backgrounds intact; otherwise a video that never loads is see-through
+    // to the desktop on a transparent window (issue #186).
+    //
+    // The attribute is an opt-OUT: a node that does not carry it punches
+    // unconditionally, which is what `GameViewport` wants — the game owns
+    // its hole from the first frame and stamps nothing. A node that does
+    // carry it must say `"true"` to punch, so a mis-stamped value fails to
+    // the safe side (an opaque placeholder, never a see-through window).
+    let ready = node
+        .attributes
+        .get("data-viewport-ready")
+        .is_none_or(|v| v == "true");
+    active && ready
 }
 
 /// Build a BezPath for the background shape with viewport holes cut out.
@@ -2521,8 +2540,9 @@ fn paint_node(
         //
         // The guard is the map, not the attribute: with no entry for this name
         // the node falls through to normal element painting, which is what
-        // leaves `GameViewport` and the whole GPU compositor path untouched —
-        // that backend never sets `VIEWPORT_PIXELS` at all.
+        // leaves the whole GPU compositor path untouched — that backend never
+        // sets `VIEWPORT_PIXELS` at all. A `GameViewport` takes this arm too
+        // (issue #361); what sets it apart from video is its hole, below.
         NodeKind::Element(_)
             if node
                 .attributes
@@ -2574,12 +2594,21 @@ fn paint_node(
                         (painter::PaintShape::from(rect), false)
                     }
                 };
-                painter.fill_color(
-                    Fill::NonZero,
-                    node_transform,
-                    AlphaColor::<Srgb>::BLACK,
-                    &backdrop,
-                );
+                // Except over a hole. A viewport that punches one — a
+                // `GameViewport`, which stamps no `data-viewport-ready` and is
+                // active whenever it has a frame — has had its ancestors'
+                // backgrounds cut away under it, and its letterbox *is* that
+                // hole: see-through on a transparent window, as it was when
+                // the frame was blitted over the finished pixels (#361).
+                let viewport_name = node.attributes.get("data-viewport").map(String::as_str);
+                if !viewport_name.is_some_and(|name| viewport_punches(node, name)) {
+                    painter.fill_color(
+                        Fill::NonZero,
+                        node_transform,
+                        AlphaColor::<Srgb>::BLACK,
+                        &backdrop,
+                    );
+                }
 
                 if has_radius {
                     painter.push_clip(Fill::NonZero, node_transform, &backdrop);
@@ -2597,11 +2626,12 @@ fn paint_node(
                     else {
                         return;
                     };
-                    image::paint_image_data(
+                    image::paint_frame_data(
                         painter,
                         &pixels.data[..bytes],
                         pixels.width,
                         pixels.height,
+                        pixels.opaque,
                         rect,
                         scale,
                         crate::computed_style::ObjectFitValue::Contain,
@@ -2669,11 +2699,12 @@ fn paint_node(
                                     // `DecodedImage` first: that is a whole
                                     // frame of memcpy per frame, for nothing.
                                     if surface_visible {
-                                        image::paint_image_data(
+                                        image::paint_frame_data(
                                             painter,
                                             &pixels.data,
                                             pixels.width,
                                             pixels.height,
+                                            pixels.opaque,
                                             rect,
                                             scale,
                                             crate::computed_style::ObjectFitValue::Contain,
