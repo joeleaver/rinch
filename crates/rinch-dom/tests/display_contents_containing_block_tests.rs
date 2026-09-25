@@ -76,7 +76,11 @@ fn issue_fixture(wrapper_style: &str) -> (RinchDocument, NodeId, NodeId, NodeId)
 #[test]
 fn a_positioned_contents_wrapper_is_not_the_containing_block() {
     let (doc, outer, _wrapper, abs) = issue_fixture("display: contents; position: relative");
-    assert_eq!(on_screen(&doc, outer), (50.0, 100.0), "premise: off the origin");
+    assert_eq!(
+        on_screen(&doc, outer),
+        (50.0, 100.0),
+        "premise: off the origin"
+    );
     assert_eq!(
         size(&doc, abs),
         (800.0, 600.0),
@@ -102,8 +106,7 @@ fn a_transformed_contents_wrapper_is_not_the_containing_block() {
 /// first, a fixture that always answers "the viewport" would pass above.
 #[test]
 fn controls_a_boxed_positioned_wrapper_and_an_unpositioned_contents_one() {
-    let (doc, _outer, _wrapper, abs) =
-        issue_fixture("position: relative; height: 60px");
+    let (doc, _outer, _wrapper, abs) = issue_fixture("position: relative; height: 60px");
     assert_eq!(
         size(&doc, abs),
         (200.0, 60.0),
@@ -122,8 +125,7 @@ fn controls_a_boxed_positioned_wrapper_and_an_unpositioned_contents_one() {
 /// to see the flip — in both directions.
 #[test]
 fn a_display_flip_on_a_positioned_wrapper_moves_the_absolute() {
-    let (mut doc, _outer, wrapper, abs) =
-        issue_fixture("position: relative; height: 60px");
+    let (mut doc, _outer, wrapper, abs) = issue_fixture("position: relative; height: 60px");
     assert_eq!(size(&doc, abs), (200.0, 60.0), "premise");
 
     doc.set_attribute(
@@ -261,19 +263,24 @@ mod painted {
     }
 
     /// The off-window cull (`layer_bounds::subtree_is_entirely_outside`, #562)
-    /// asks the same question: an absolute escapes a clipper only when that
-    /// clipper sits below its containing block. Put the clipper entirely below
-    /// the 600px window and the absolute — which lives at the ICB, on screen —
-    /// must not be culled with it.
+    /// asks the same question of a **stacking context** it is about to skip: an
+    /// absolute inside escapes a clipper only when that clipper sits below its
+    /// containing block. Here the stacking context (`opacity: 0.5`, which is no
+    /// containing block) and the clipper sit entirely below the 600px window,
+    /// and the absolute — which lives at the ICB, on screen — is hoisted into
+    /// that context's sequence. Treat the wrapper as a containing block and the
+    /// cull reads the absolute as bounded by the off-window clip and skips the
+    /// whole context.
     #[test]
-    fn an_offscreen_clipper_does_not_cull_the_absolute_that_escapes_it() {
+    fn an_offscreen_stacking_context_is_not_culled_past_an_escaping_absolute() {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         doc.set_attribute(body, "style", "margin: 0");
+        let sc = div(&mut doc, body, "padding-top: 700px; opacity: 0.5");
         let clip = div(
             &mut doc,
-            body,
-            "margin: 700px 0 0 60px; width: 100px; height: 100px; overflow: hidden",
+            sc,
+            "margin-left: 60px; width: 100px; height: 100px; overflow: hidden",
         );
         let wrapper = div(&mut doc, clip, "display: contents; position: relative");
         let abs = div(
@@ -284,12 +291,16 @@ mod painted {
         );
         doc.resolve_layout(800.0, 600.0);
         assert_eq!(on_screen(&doc, abs), (10.0, 20.0), "premise: on screen");
+        assert!(
+            on_screen(&doc, clip).1 >= 600.0,
+            "premise: the clipper is below the window"
+        );
         let painter = paint(&mut doc);
-        assert_eq!(
-            pixel_at(&painter, 100, 100),
-            RED,
-            "the absolute escapes the off-window clipper, so culling the \
-             clipper's subtree must not take it along"
+        let px = pixel_at(&painter, 100, 100);
+        assert!(
+            px[0] > 0 && px[3] > 0,
+            "the absolute escapes the off-window clipper, so the stacking context \
+             holding it must not be culled: got {px:?}"
         );
     }
 }
