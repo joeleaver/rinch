@@ -455,23 +455,24 @@ fn row_count(app: &RinchApp) -> usize {
 ///
 /// **Findings shared by all four `for` scenarios, pinned as they are; a fix must LOWER this number, and its PR updates the pin:**
 ///
-/// - **#910, fixed: paint visits the rows the scroller shows** (28: html,
-///   body, the chain down to the scroller, and the ~23 rows its clip and ink
+/// - **#910, fixed: paint visits the rows the scroller shows** (25: html,
+///   body, the chain down to the scroller, and the rows its clip and ink
 ///   margin let through), where it visited all 205. The clip the painter has
 ///   open is a cull, and a row it cuts away is dismissed by the scroller's
-///   loop without a visit. The rows between the clip and the bottom of the
-///   damage are no longer drawn only to be clipped: `glyph_cache_hits` fell
-///   with them (201 → 159).
-/// - **#909: the damage is not clipped by the scroller.** `repainted_px` is
-///   182 400 = 304 x 600: the scroller's column from the top of the window to
-///   its **bottom** edge, where the scroller's own box ends at y=408. Rows the
-///   change moved below the scroller's viewport, invisible, still name damage.
-///   Clipped, it would be about 304 x 408.
-/// - **Two clip masks cover 305 004 px** for that 182 400 px repaint: the
-///   damage's own clip (183 600 with its pad) and the scroller's (121 404),
-///   each filled over its bounds. The scroller's used to be intersected with
-///   the damage's as well (426 408); since #907 it is not, because the damage
-///   is 255 wherever the scroller's mask can be non-zero.
+///   loop without a visit.
+/// - **#909, fixed: the damage is clipped by the scroller.** `repainted_px` is
+///   122 816 = 304 x 404 — the scroller's box and its 4px margin — where it
+///   was 182 400 = 304 x 600, down to the window's bottom edge: rows the
+///   change moved below the scroller's viewport, invisible, named damage.
+///   Each rect is now intersected with its node's clip chain
+///   (`paint::clip_chain_bounds`). The glyphs of the rows in the band that
+///   no longer repaints went with it (`glyph_cache_hits` 201 → 138 over both
+///   fixes).
+/// - **Two clip masks cover 245 640 px** for that 122 816 px repaint: the
+///   damage's own clip (124 236 with its pad) and the scroller's (121 404),
+///   each filled over its bounds (since #907 the scroller's is not
+///   intersected with the damage's). Before #909 the damage mask alone was
+///   183 600.
 /// - **#914, fixed:** the moved row is neither re-cascaded nor re-shaped
 ///   (`elements_cascaded` 0, `shape_*` 0): a move within one parent keeps its
 ///   style (`keeps_style_across_move`) and its own IFC layout
@@ -501,13 +502,13 @@ fn a_keyed_for_moves_one_row() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 182400),
+            (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 28),
+            (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 159),
+            (GlyphCacheHits, 138),
             (ClipMasks, 2),
-            (ClipMaskPx, 305004),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -554,13 +555,13 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 182400),
+            (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 28),
+            (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 158),
+            (GlyphCacheHits, 137),
             (ClipMasks, 2),
-            (ClipMaskPx, 305004),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -592,13 +593,14 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 182400),
+            (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 28),
+            (RemovalDamageSteps, 9),
+            (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 158),
+            (GlyphCacheHits, 137),
             (ClipMasks, 2),
-            (ClipMaskPx, 305004),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -635,19 +637,72 @@ fn a_keyed_for_replaces_every_row() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 182400),
+            (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 28),
+            (RemovalDamageSteps, 1800),
+            (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 192),
+            (GlyphCacheHits, 168),
             (ClipMasks, 2),
-            (ClipMaskPx, 305004),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
         ],
     );
 }
+
+/// Recording a removal's old pixels costs what was removed, not what else is
+/// pending (#909's review). `rows` plain 20px rows in a scroller, every one
+/// restyled (so every one is pending paint-dirty), then removed one at a time
+/// in the same frame. Returns that frame's `removal_damage_steps`.
+fn clear_rows_one_by_one(rows: usize) -> u64 {
+    let out: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let out2 = out.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let scroller = scope.create_element("div");
+        scroller.set_attribute("style", "width: 300px; height: 400px; overflow-y: auto");
+        let mut v = Vec::new();
+        for _ in 0..rows {
+            let row = scope.create_element("div");
+            row.set_attribute("style", "height: 20px; background: rgb(0, 0, 200)");
+            scroller.append_child(&row);
+            v.push(row);
+        }
+        root.append_child(&scroller);
+        *out2.borrow_mut() = v;
+        root
+    });
+    let rows_h = out.borrow().clone();
+    let s = interaction(&mut app, |_| {
+        for r in &rows_h {
+            r.set_style("background", "rgb(0, 200, 0)");
+        }
+        for r in &rows_h {
+            r.remove();
+        }
+    });
+    assert!(
+        s.get(RemovalDamageSteps) > 0,
+        "positive control: removals recorded"
+    );
+    s.get(RemovalDamageSteps)
+}
+
+/// **Linear, pinned at two sizes.** Each removed row records itself (1) and
+/// walks its clip chain — the scroller, the root, the body (3) — whatever
+/// else is pending: 4 steps a row at 100 rows and at 400. Round one of #958
+/// rebuilt a set of every pending paint-dirty node per removal, O(n²) in a
+/// list clear, and no counter saw it. This one sees the walk the path does
+/// now; work added to it later has to count itself in the same counter, or
+/// it is as invisible as that set was.
+#[test]
+fn clearing_a_list_row_by_row_costs_linear_removal_damage() {
+    assert_eq!(clear_rows_one_by_one(100), 100 * STEPS_PER_ROW);
+    assert_eq!(clear_rows_one_by_one(400), 400 * STEPS_PER_ROW);
+}
+const STEPS_PER_ROW: u64 = 4;
 
 // ── Scroll ─────────────────────────────────────────────────────────────────
 
