@@ -92,7 +92,11 @@ fn assert_on_line_boxes(face: &'static [u8], name: &str) {
     assert_eq!(caret_y, second.1, "{name}: highlight and caret share a top");
     // And the glyph bounds the caret takes its height from describe that box.
     let g = doc.query_glyph_bounds(p, start_of_second).unwrap();
-    assert_eq!((g.y, g.height), (LINE, LINE), "{name}: glyph bounds on the line box");
+    assert_eq!(
+        (g.y, g.height),
+        (LINE, LINE),
+        "{name}: glyph bounds on the line box"
+    );
 }
 
 #[test]
