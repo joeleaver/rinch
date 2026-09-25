@@ -862,4 +862,88 @@ mod tests {
             "only two known-and-different keys are refused"
         );
     }
+
+    // ── effects run under the document that created them (issue #295) ────────
+
+    /// An effect created while document 1 was the current document re-runs
+    /// under document 1, whichever document happens to be dispatching when the
+    /// thread-global effect queue drains. Before #295 it ran under the flusher's
+    /// marker, so a `Drag::start()` or an interceptor registration made from it
+    /// was attributed to the wrong document.
+    #[test]
+    fn an_effect_reruns_under_the_document_it_was_created_in() {
+        use crate::reactive::{Effect, Signal};
+        let go = Signal::new(0u32);
+        let seen: Rc<RefCell<Vec<Option<u64>>>> = Rc::default();
+        let effect = {
+            let _creator = push_dispatching_doc(1);
+            let seen = seen.clone();
+            Effect::new(move || {
+                go.get();
+                seen.borrow_mut().push(current_dispatching_doc());
+            })
+        };
+        {
+            // Document 2 writes the signal; the effect flushes inside its
+            // dispatch.
+            let _flusher = push_dispatching_doc(2);
+            go.set(1);
+            assert_eq!(
+                current_dispatching_doc(),
+                Some(2),
+                "the flusher's own marker is restored after the effect ran"
+            );
+        }
+        // …and once more with nobody dispatching.
+        go.set(2);
+        assert_eq!(*seen.borrow(), vec![Some(1), Some(1), Some(1)]);
+        effect.dispose();
+    }
+
+    /// An effect created outside any document belongs to none, and says so
+    /// even when it is flushed inside some document's dispatch — "nobody's" is
+    /// permissive everywhere, where a borrowed document is a wrong answer.
+    #[test]
+    fn an_effect_created_outside_any_document_reruns_under_none() {
+        use crate::reactive::{Effect, Signal};
+        let go = Signal::new(0u32);
+        let seen: Rc<RefCell<Vec<Option<u64>>>> = Rc::default();
+        let effect = {
+            let seen = seen.clone();
+            Effect::new(move || {
+                go.get();
+                seen.borrow_mut().push(current_dispatching_doc());
+            })
+        };
+        {
+            let _flusher = push_dispatching_doc(3);
+            go.set(1);
+        }
+        assert_eq!(*seen.borrow(), vec![None, None]);
+        effect.dispose();
+    }
+
+    /// A memo's computation runs in its *reader's* frame, so it re-enters its
+    /// creation document there, as it re-enters its creation root (#136).
+    #[test]
+    fn a_memo_recomputes_under_the_document_it_was_created_in() {
+        use crate::reactive::{Memo, Signal};
+        let src = Signal::new(0u32);
+        let seen: Rc<RefCell<Vec<Option<u64>>>> = Rc::default();
+        let memo = {
+            let _creator = push_dispatching_doc(4);
+            let seen = seen.clone();
+            Memo::new(move || {
+                seen.borrow_mut().push(current_dispatching_doc());
+                src.get()
+            })
+        };
+        {
+            let _reader = push_dispatching_doc(5);
+            assert_eq!(memo.get(), 0);
+            src.set(1);
+            assert_eq!(memo.get(), 1);
+        }
+        assert_eq!(*seen.borrow(), vec![Some(4), Some(4)]);
+    }
 }

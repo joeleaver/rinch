@@ -836,3 +836,110 @@ fn a_drag_armed_in_one_context_cancels_another_contexts_live_drag() {
         drop(b);
     });
 }
+
+// ── effects flush under their own document (issue #295) ─────────────────────
+
+/// An effect owned by context B, woken by a write made in context A's event
+/// handler, runs under **B**'s document — not under A's, which is the one
+/// dispatching when the thread-global effect queue drains. And B's mount runs
+/// under B's document too, which is where that effect learned its document.
+///
+/// The observable consumer is the pointer-capture drag (#139/#293): a drag the
+/// effect arms belongs to the document it records, so before #295 B's own
+/// pointer moves could not drive it and A's could.
+#[test]
+fn an_effect_woken_from_another_contexts_handler_runs_under_its_own_document() {
+    on_ui_thread(|| {
+        use rinch::reactive::Effect;
+        use rinch_platform::{MouseButton, PlatformEvent};
+        use std::cell::RefCell;
+
+        // Written from A's handler, read by B's effect. Created outside both
+        // contexts, so it belongs to neither.
+        let go = Signal::new(false);
+
+        #[derive(Default)]
+        struct Seen {
+            b_click: Cell<Option<u64>>,
+            b_mount: Cell<Option<u64>>,
+            b_effect: RefCell<Vec<Option<u64>>>,
+            b_moves: Cell<u32>,
+        }
+        let seen = Rc::new(Seen::default());
+
+        let mut a = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            rsx! {
+                div {
+                    style: "width: 300px; height: 300px;",
+                    onclick: move || go.set(true),
+                }
+            }
+        });
+        let s = seen.clone();
+        let mut b = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            s.b_mount.set(rinch_core::current_dispatching_doc());
+            let e = s.clone();
+            // Leaked into the root scope's lifetime by the scope that owns it.
+            let _effect = Effect::new(move || {
+                let armed = go.get();
+                e.b_effect
+                    .borrow_mut()
+                    .push(rinch_core::current_dispatching_doc());
+                if armed {
+                    let m = e.clone();
+                    rinch_core::Drag::absolute()
+                        .on_move(move |_, _| m.b_moves.set(m.b_moves.get() + 1))
+                        .start();
+                }
+            });
+            let c = s.clone();
+            rsx! {
+                div {
+                    style: "width: 300px; height: 300px;",
+                    onclick: move || c.b_click.set(rinch_core::current_dispatching_doc()),
+                }
+            }
+        });
+        a.update(&[]);
+        b.update(&[]);
+
+        let press = PlatformEvent::MouseDown {
+            x: 50.0,
+            y: 50.0,
+            button: MouseButton::Left,
+        };
+        let release = PlatformEvent::MouseUp {
+            x: 50.0,
+            y: 50.0,
+            button: MouseButton::Left,
+        };
+        // B's own click tells us B's document key (the oracle).
+        b.update(&[press.clone(), release.clone()]);
+        let b_doc = seen.b_click.get();
+        assert!(b_doc.is_some(), "positive control: B's click dispatched");
+
+        // A's click writes `go`; B's effect flushes inside A's dispatch.
+        a.update(std::slice::from_ref(&press));
+        assert!(
+            rinch_core::Drag::is_active(),
+            "positive control: the effect armed a drag"
+        );
+        assert_eq!(
+            *seen.b_effect.borrow(),
+            vec![b_doc, b_doc],
+            "B's effect ran under B's document at mount and when A woke it"
+        );
+        assert_eq!(seen.b_mount.get(), b_doc, "B's mount ran under B's document");
+
+        // The drag belongs to B: A's moves do not drive it, B's do.
+        let mv = PlatformEvent::MouseMove { x: 70.0, y: 70.0 };
+        a.update(std::slice::from_ref(&mv));
+        assert_eq!(seen.b_moves.get(), 0, "A's pointer stream is not B's drag's");
+        b.update(std::slice::from_ref(&mv));
+        assert_eq!(seen.b_moves.get(), 1, "B's pointer stream drives B's drag");
+
+        rinch_core::Drag::cancel();
+        drop(a);
+        drop(b);
+    });
+}
