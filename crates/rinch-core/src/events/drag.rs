@@ -316,9 +316,10 @@ impl Drag {
     /// Activate the drag. Call from a mousedown/click handler.
     ///
     /// **A drag already live is ended first, through its `on_cancel`** (issue
-    /// #293) — whichever document armed it. There is one pointer and one drag
-    /// slot, so a new press arming a drag while another is live means the
-    /// earlier drag's release was never delivered: a `MouseUp` swallowed in its
+    /// #293) — whichever document armed it. There is one drag slot, so a
+    /// new press arming a drag while another is live usually means the
+    /// earlier drag's release was never delivered (on a touch screen it can
+    /// also be a second finger, whose drag then ends the first's): a `MouseUp` swallowed in its
     /// own document (#189), or — since the pointer is grabbed to the pressing
     /// window while a button is held — in another document on the same thread
     /// (a DevTools window, a second embedded `RinchContext`). That is the #189
@@ -329,7 +330,10 @@ impl Drag {
     ///
     /// `on_cancel` runs before the new drag is armed and with no drag active,
     /// so it may query the drag API or arm a drag of its own; a drag it arms
-    /// is superseded by this one in turn, through its own `on_cancel`.
+    /// is superseded by this one in turn, through its own `on_cancel`, up to
+    /// `MAX_SUPERSEDE_PASSES` (8) cancels, after which the leftover is dropped
+    /// silently with a warning. It runs under the superseded drag's own owner
+    /// and document, as every `on_cancel` does (see [`Drag::cancel`]).
     pub fn start(self) {
         let on_move: Rc<dyn Fn(f32, f32)> = match self.on_move {
             Some(f) => Rc::from(f),
@@ -349,13 +353,24 @@ impl Drag {
         // Every drag live at this point is superseded, after the context above
         // was captured so no `on_cancel` can disturb it. The loop covers a
         // drag armed from inside a superseded drag's `on_cancel`.
-        loop {
+        // Bounded: an `on_cancel` that re-arms a drag every time it is
+        // superseded would otherwise never let this return. What is left after
+        // the last pass is dropped silently.
+        for _ in 0..MAX_SUPERSEDE_PASSES {
             discard_if_abandoned();
             if !ACTIVE_DRAG.with(|drag| drag.borrow().is_some()) {
                 break;
             }
             tracing::debug!("a new drag supersedes a live one; cancelling it");
             Drag::cancel();
+        }
+        let leftover = ACTIVE_DRAG.with(|drag| drag.borrow_mut().take());
+        if leftover.is_some() {
+            tracing::warn!(
+                "Drag::start: a superseded drag's on_cancel kept arming new drags; \
+                 dropping the last one after {MAX_SUPERSEDE_PASSES} cancels"
+            );
+            drop(leftover);
         }
         // Nothing can sit in the slot here — the loop above emptied it and
         // nothing since has run user code — but a replace keeps the drop of
@@ -409,7 +424,16 @@ impl Drag {
                     .mode
                     .map(state.start_context.mouse_x, state.start_context.mouse_y)
             });
-            crate::reactive::batch(|| on_cancel(x, y));
+            // Under the drag's own owner and document, not whatever is ambient:
+            // a superseding `start()` calls this from another component's
+            // handler (review of #942, F1), and state `on_cancel` creates — or a
+            // store it looks up — must belong to the component that armed it.
+            let _doc = state.doc.map(crate::context::push_dispatching_doc);
+            let run = || crate::reactive::batch(|| on_cancel(x, y));
+            match &state.owner {
+                Some(owner) => owner.run(run),
+                None => crate::reactive::unowned(run),
+            }
         }
     }
 

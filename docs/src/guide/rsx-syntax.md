@@ -220,11 +220,14 @@ runs once per frame too, not once per move.
 ### One pointer-capture drag at a time
 
 `Drag::start()` ends any drag that is already live before arming its own, and
-it ends it through that drag's `on_cancel` — never its `on_end`. A press
-arming a drag while another is live means the earlier drag's release was lost
-(a context menu or a window-manager grab swallowed it, or it went to another
-rinch document on the same thread — a DevTools window, a second embedded
-`RinchContext`), so there is no trustworthy position to commit. Keep teardown
+it ends it through that drag's `on_cancel` — never its `on_end`. Usually a
+press arming a drag while another is live means the earlier drag's release was
+lost (a context menu or a window-manager grab swallowed it, or it went to
+another rinch document on the same thread — a DevTools window, a second
+embedded `RinchContext`), so there is no trustworthy position to commit. On a
+touch screen it can also be a second finger: rinch-web dispatches a second
+finger's press, and a drag it arms cancels the first finger's while that finger
+is still down — there is one drag at a time, not one per finger. Keep teardown
 in `on_cancel` and it runs on every ending but a commit — and an unmount of
 the component that armed the drag, which drops it without calling back.
 
