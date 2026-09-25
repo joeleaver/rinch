@@ -394,6 +394,7 @@ pub(super) fn paint_input_value(
             transform,
             1.0,
             None,
+            None,
         );
     }
 

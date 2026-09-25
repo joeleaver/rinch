@@ -225,7 +225,8 @@ PRs do not collide in one file.
 - `crates/rinch-dom/tests/perf_regression_scenarios.rs` has one scenario per
   **increment site** of every counter that has more than one site. `shape_paint`
   has three (a `<select>` label, an `<input>` value, and text with no cached
-  layout), `ellipsis_builds` two, `shape_atomic_inline` two and
+  layout — a constructed state since #904, when an `inline-flex` label stopped
+  reaching it), `ellipsis_builds` two (the text-leaf one unreached since #904: a flex or grid item's text never ellipsizes, as in Chrome), `shape_atomic_inline` two and
   `pseudo_element_passes` two. A per-counter check cannot see a deleted
   increment while a sibling site still fires; one document per site can.
 - `crates/rinch/src/app/perf_regression_tests.rs` drives a real `RinchApp` the
@@ -367,6 +368,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::append_row.list_500` / `remove_row` | Append or remove one row, then layout |
 | `dom::resize_1px.list_500` | Layout at a viewport 1px wider |
 | `dom::set_text_content.list_500` | `set_text_content` on one row's wrapped text, then layout |
+| `dom::flex_label_hover.list_500` | A colour-only `:hover` on one of 500 `display: flex` rows whose text is a direct child (a flex item's text leaf), then layout and paint. Paint colours a leaf itself, so no compute runs (#904) |
 | `dom::drawer_toggle.list_500_closed` | Open, then close, a closed `Drawer` holding 500 rows, with the theme's and the component library's stylesheets loaded; each re-cascades the whole subtree. The one benchmark that sees what a component-library selector costs (#935: a pseudo-element rule is matched without a bloom filter) |
 | `dom::inset_move.list_500` | One drag step of an absolute panel beside the list: `set_styles` of `left`/`top` (the inset fast path), then layout |
 | `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |

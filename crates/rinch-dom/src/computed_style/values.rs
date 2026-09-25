@@ -87,6 +87,17 @@ pub enum DisplayValue {
 }
 
 impl DisplayValue {
+    /// Whether this box is a flex or grid container (either outside): its
+    /// own text runs are anonymous flex / grid items. Such an item does not
+    /// clip, so its text never takes the container's `text-overflow`
+    /// ellipsis (#904, measured in Chrome 153).
+    pub fn is_flex_or_grid_container(self) -> bool {
+        matches!(
+            self,
+            Self::Flex | Self::InlineFlex | Self::Grid | Self::InlineGrid
+        )
+    }
+
     /// Convert to Taffy Display — the **inside** of the display value, i.e.
     /// which formatting context this box's children get.
     ///
