@@ -3642,7 +3642,9 @@ Three things it deliberately does not do.
   `display: none` while its panel transitioned `transform`, so the slide-in ran
   on desktop only until #703 and had never run on `rinch-web` at all. Its closed
   state is `visibility: hidden` now, like `Popover`'s — hidden, still rendered,
-  and still out of paint, hit testing and the Tab order on both backends.
+  and — once its close has run — out of paint, hit testing and the Tab order
+  on both backends (for the 300ms slide-out the root is held `visible` and
+  still paints, takes clicks and is tabbable, as in a browser; #759).
   **Out of paint now covers the content, not only the box** (#829): desktop used to gate only a hidden
   box's own background, border and shadow, and went on drawing the text its
   IFC laid out — so a closing `Drawer` or `Popover` left its title and body on
@@ -3664,10 +3666,42 @@ Three things it deliberately does not do.
   testing still skips the whole hidden subtree, so it is drawn and not
   clickable (**#843**).
   `rinch/src/app/overlay_animation_audit_tests.rs` holds one fixture per overlay
-  and fails the moment a transitioned property starts changing on a reveal pass;
-  the *close* is deliberately instant on both backends, because animating it
-  would need a transition on `visibility` and `TransitionProperty` has no
-  variant for one (**#759**).
+  and fails the moment a transitioned property starts changing on a reveal pass.
+  **The close animates too** (#413, #759): `TransitionProperty::Visibility`
+  interpolates by css-values-4's rule (every progress strictly between 0 and 1
+  is `visible` when an end is — `transition::interpolate_visibility`), and the
+  closed state of `Drawer`/`Popover` carries `transition: visibility 0s linear
+  <duration>`, so the root stays visible through the slide or fade and hides at
+  its end. It is the **one** transitioned property whose animated value reaches
+  descendants: rinch's children take their style from Stylo, which knows
+  nothing of rinch transitions, so `transition::propagate_inherited_visibility`
+  hands the held value down to every descendant whose `visibility` is
+  inherited (read from its Stylo rule chain, each rule at its own importance;
+  one that declares its own is not reached), after every cascade pass and
+  whenever a tick moves the value. The cascade also gives an inheriting node
+  that declares its own `visibility` transition (`Checkbox`/`Radio`'s
+  `transition: all`) the *animated* value of the ancestor it inherits from as
+  its after-change `visibility` (`transition::animated_inherited_visibility`;
+  only such nodes pay the rule-chain read — doing it for every descendant cost
+  `drawer_toggle` +0.8% for nothing), so it starts nothing on the close pass;
+  the hand-down starts that transition when the held value flips, which is
+  Chrome's order. And a running `visibility` transition whose current value
+  already equals a new after-change value that is not its end is cancelled
+  (§3 item 4.1 — `diff_animatable` sees no change there, so a reopen during a
+  checkbox's own hide, or of a two-way `transition: visibility` root, used to
+  run on to `hidden`). The cancel is made in two places: in the cascade, for a
+  node whose own after-change value arrives by restyle, and in the hand-down,
+  for a descendant whose inherited value comes back through the walk — a
+  checkbox under a two-way root reopened after the root hid: on the reopen pass
+  the checkbox inherits the root's animated value at p = 0, which is still
+  `hidden`, so its hide is retargeted rather than cancelled, and `visible` only
+  reaches it on the next tick, by the hand-down. A
+  transition on `color` or `font-size` still stops at its own node. Reopening
+  mid-close works because §3 item 3 is implemented now (#693,
+  `transition::cancel_unmatched_transitions`): a running transition whose
+  property no longer matches `transition-property` is cancelled on the next
+  cascade of its node. The #912 pause applies from the close, so a spinner
+  slides out frozen — what a browser does with the same CSS.
 - **A `@keyframes` animation on a hidden element does not run either**
   (**#747**), and that one is not only a paint question: the desktop frame clock
   schedules another frame whenever `tree.active_animations` holds a running

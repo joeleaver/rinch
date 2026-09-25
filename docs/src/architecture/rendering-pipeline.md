@@ -402,18 +402,21 @@ component and `backface-visibility: hidden` are ignored — `ComputedStyle`
 carries only an x/y origin, so `rotateY(45deg)` about `50% 50% 100px` lands
 where Chrome's does not (#997).
 
-Two things rinch does **not** implement from §3. The **transitionability**
+One thing rinch does **not** implement from §3: the **transitionability**
 precondition, which appears in item 1 and again in item 4.2: a pair of values
 that cannot be interpolated — a length against a percentage, which needs a
 `calc()` that `ComputedStyle` cannot hold — still gets an `ActiveTransition`,
 which then idles for its whole duration because `AnimatableValue::interpolate`
 answers `None` for it. The property snaps either way; cancelling instead would
-only save the idle ticks. And **item 3**, cancelling a running transition whose
-property has stopped matching `transition-property`: rinch skips the property
-and leaves the transition running, so the box snaps to the target on the restyle
-and then jumps backwards on the next tick, which resumes writing the interpolated
-value. Any restyle that changes `transition-property` mid-transition reaches it.
-Both gaps are pre-existing; item 3 is tracked as issue #693.
+only save the idle ticks.
+
+**Item 3** is implemented (issue #693): a running transition whose property has
+stopped matching `transition-property` is cancelled on the next cascade of its
+node, whether or not the property also changed on that restyle, and the
+after-change value stands. It used to be left running, so the box snapped to the
+target on the restyle and jumped backwards on the next tick. It is also what
+makes a delayed `visibility` hide safe to reopen through (see
+[Components](../guide/components.md)).
 
 ## The before-change style, and who has one
 
@@ -553,8 +556,11 @@ carried `display: none` while closed and its panel carried
 the panel in a single pass, exactly the shape above. So its 300ms slide-in ran
 on desktop only until this change, and had never run on `rinch-web` at all. Its
 closed state is `visibility: hidden` now, which is where `Popover` already was —
-hidden, still **rendered**, and still out of paint, hit testing and the Tab
-order on both backends.
+hidden, still **rendered**, and — once its close has run — out of paint, hit
+testing and the Tab order on both backends. Since issue #759 the close holds the
+root `visible` for the panel's 300ms slide-out (a delayed `visibility`
+transition), so for those 300ms it still paints, takes clicks and is tabbable,
+as in a browser.
 
 The blast radius is wider than "a control restyled in an inactive tab":
 **any component that un-hides an ancestor and retargets a transitioned property

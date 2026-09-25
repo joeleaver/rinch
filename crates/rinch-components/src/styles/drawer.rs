@@ -35,14 +35,29 @@ pub fn styles() -> String {
    other side (`styles/popover.rs`) — it has never touched `display` on the
    panel it animates.
 
-   The close is deliberately instant on both backends, exactly as it was. Making
-   the panel slide *out* needs the root to stay visible for the 300ms, i.e. a
-   transition on `visibility` itself — `rinch_dom::transition::TransitionProperty`
-   has no variant for it, so declaring one here would animate the close in a
-   browser and snap on desktop. One behaviour on both backends is worth more
-   than the slide-out; see issue #759. */
+   The close slides out too (#759, #413). The hidden state holds the root
+   `visible` for the panel's 300ms and only then hides it — `visibility 0s
+   linear 300ms`, a zero-length transition after a 300ms delay, which is the
+   canonical spelling: a browser keeps the old value through a transition's
+   delay, and css-values-4 interpolates `visibility` so that nothing strictly
+   inside a transition with a `visible` end is hidden. rinch-dom implements
+   both, and hands the held value down to the panel and everything else that
+   inherits it, so the close is the same on both backends.
+
+   Only the hidden state declares it. Opening is instant — the root has no
+   `visibility` transition to run — and reopening before the 300ms are up
+   cancels the pending hide (css-transitions-1 §3 item 3: the open state's
+   `transition-property` no longer matches `visibility`), so the panel simply
+   reverses.
+
+   While it slides out the root is visible, so for those 300ms it paints, takes
+   clicks and is in the Tab order, exactly as in a browser. Its focus trap and
+   its hold on the page scroll are released at the close itself. And the pause
+   below applies from the close, so a spinner inside a closing drawer stops
+   where it is and slides out still — also what a browser does with this CSS. */
 .rinch-drawer__root--hidden {
     visibility: hidden !important;
+    transition: visibility 0s linear 300ms;
 }
 
 /* Paused while closed (#912).
