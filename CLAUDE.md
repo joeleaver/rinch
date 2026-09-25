@@ -3689,7 +3689,13 @@ Three things it deliberately does not do.
   already equals a new after-change value that is not its end is cancelled
   (§3 item 4.1 — `diff_animatable` sees no change there, so a reopen during a
   checkbox's own hide, or of a two-way `transition: visibility` root, used to
-  run on to `hidden`). A
+  run on to `hidden`). The cancel is made in two places: in the cascade, for a
+  node whose own after-change value arrives by restyle, and in the hand-down,
+  for a descendant whose inherited value comes back through the walk — a
+  checkbox under a two-way root reopened after the root hid: on the reopen pass
+  the checkbox inherits the root's animated value at p = 0, which is still
+  `hidden`, so its hide is retargeted rather than cancelled, and `visible` only
+  reaches it on the next tick, by the hand-down. A
   transition on `color` or `font-size` still stops at its own node. Reopening
   mid-close works because §3 item 3 is implemented now (#693,
   `transition::cancel_unmatched_transitions`): a running transition whose

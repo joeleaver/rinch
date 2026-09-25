@@ -367,6 +367,31 @@ pub fn propagate_inherited_visibility(tree: &mut NodeTree, from: RawNodeId, now:
         // that same value, what its children inherit is the same, so it needs
         // neither the rule read nor a write. (The common case on an open.)
         if node.computed_style.visibility == inherited {
+            // …unless it is running a `visibility` transition of its own toward
+            // some other value and the value it now inherits is where it
+            // already is: §3 item 4.1, the same cancel the cascade applies, for
+            // the case where the new inherited value arrives through this walk
+            // rather than a cascade — a two-way `transition: visibility` root
+            // reopened while a `Checkbox` under it runs its own hide (round-3
+            // review of #991).
+            let stale = tree
+                .active_transitions
+                .get(&id)
+                .and_then(|m| m.get(&TransitionProperty::Visibility))
+                .is_some_and(|t| {
+                    !t.to
+                        .same_computed_value(&AnimatableValue::Visibility(inherited))
+                });
+            if stale
+                && visibility_is_inherited(tree, id)
+                && let Some(m) = tree.active_transitions.get_mut(&id)
+            {
+                m.remove(&TransitionProperty::Visibility);
+                if m.is_empty() {
+                    tree.active_transitions.remove(&id);
+                }
+            }
+            let node = &tree.nodes[id];
             stack.extend(node.children.iter().map(|&c| (c, inherited)));
             continue;
         }
