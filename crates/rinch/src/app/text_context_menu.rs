@@ -393,7 +393,9 @@ impl RinchApp {
                 match action {
                     TextEditAction::Cut => self.handle_cut(),
                     TextEditAction::Copy => self.handle_copy(),
-                    TextEditAction::Paste => self.handle_paste(),
+                    TextEditAction::Paste => {
+                        self.handle_paste();
+                    }
                     TextEditAction::SelectAll => self.handle_select_all(),
                 }
                 self.scene_dirty = true;

@@ -316,6 +316,15 @@ paste_text_async(move |result| {
 });
 ```
 
+The built-in fields already work this way. Ctrl+V — and the context menu's or
+Android toolbar's Paste — in the rich-text editor *and* in a plain `<input>` or
+`<textarea>` returns at once, reads on the worker, and inserts when the read
+answers (issue #149 for the editor, #328 for the plain fields). A plain field
+takes the paste at its **current** selection if it still holds the keyboard
+from the same focus gesture; if focus moved on while the read was in flight,
+the paste is dropped rather than aimed at a field the user did not paste into.
+A read-only field starts no read at all.
+
 ### Web: reaching content copied outside the app
 
 The browser has no synchronous system-clipboard read, so on `wasm32`
@@ -382,7 +391,7 @@ exactly the code its keyboard shortcut runs
 IME's paste are one path.
 
 **The `android` feature implies `clipboard`.** Paste is not optional on a
-phone, and without the feature `handle_paste` reads an empty string: a
+phone, and without the feature `handle_paste` has nothing to read: a
 hardware Ctrl+V inserts nothing and an IME's paste request is answered "done"
 with nothing pasted (the toolbar hides its Paste instead). Every route
 measured on an API 34 emulator with one Gboard build lands: the toolbar's
