@@ -63,7 +63,7 @@ thread_local! {
     static AMBIENT: Ambient = const {
         Ambient {
             root: Cell::new(GLOBAL_ROOT),
-            doc: Cell::new(None),
+            doc: Cell::new(0),
         }
     };
     /// Monotonic insertion counter. Never reused, and deliberately **not** reset
@@ -84,9 +84,12 @@ struct Ambient {
     /// The root whose namespace create/use_context resolve right now.
     root: Cell<u64>,
     /// The document whose code is running right now, if any (issues #139,
-    /// #295). Deliberately separate from `root`: that is a store *namespace*,
-    /// and desktop shells leave it at the thread-global `0`.
-    doc: Cell<Option<u64>>,
+    /// #295), as a raw `doc_key` — `0` for none, read through
+    /// [`doc_identity`]. Raw rather than `Option<u64>` so the reactive frame
+    /// saves and restores one word, not two. Deliberately separate from
+    /// `root`: that is a store *namespace*, and desktop shells leave it at the
+    /// thread-global `0`.
+    doc: Cell<u64>,
 }
 
 fn next_epoch() -> u64 {
@@ -187,7 +190,7 @@ pub fn push_context_root(root: u64) -> ContextRootGuard {
 /// nobody in particular and stays drivable by anybody. Only two **`Some`** keys
 /// that differ mean "not yours".
 pub fn current_dispatching_doc() -> Option<u64> {
-    AMBIENT.with(|a| a.doc.get())
+    doc_identity(AMBIENT.with(|a| a.doc.get()))
 }
 
 /// Read a raw `doc_key` as a document *identity*, or `None` when there is no
@@ -234,7 +237,7 @@ pub fn doc_matches(owner: Option<u64>, caller: Option<u64>) -> bool {
 /// mis-attribution is invisible until two documents share a thread.
 #[must_use = "the marker is only live while the guard is held — bind it, e.g. `let _d = …`"]
 pub struct DispatchDocGuard {
-    prev: Option<u64>,
+    prev: u64,
 }
 
 impl Drop for DispatchDocGuard {
@@ -253,7 +256,8 @@ impl Drop for DispatchDocGuard {
 ///
 /// A `doc_key` of `0` pushes `None`, not `Some(0)` — see [`doc_identity`].
 pub fn push_dispatching_doc(doc_key: u64) -> DispatchDocGuard {
-    let prev = AMBIENT.with(|a| a.doc.replace(doc_identity(doc_key)));
+    // Stored raw: `0` reads back as `None` through `doc_identity`.
+    let prev = AMBIENT.with(|a| a.doc.replace(doc_key));
     DispatchDocGuard { prev }
 }
 
@@ -261,7 +265,7 @@ pub fn push_dispatching_doc(doc_key: u64) -> DispatchDocGuard {
 /// the document it displaced.
 pub(crate) struct ReactiveFrameGuard {
     prev_root: u64,
-    prev_doc: Option<u64>,
+    prev_doc: u64,
 }
 
 impl Drop for ReactiveFrameGuard {
@@ -275,8 +279,8 @@ impl Drop for ReactiveFrameGuard {
 
 /// The context root and the document current right now, read together in one
 /// TLS access — what an effect or memo records at creation and later hands to
-/// [`enter_reactive_frame`].
-pub(crate) fn current_reactive_frame() -> (u64, Option<u64>) {
+/// [`enter_reactive_frame`]. The document is the raw `doc_key` (`0` = none).
+pub(crate) fn current_reactive_frame() -> (u64, u64) {
     AMBIENT.with(|a| (a.root.get(), a.doc.get()))
 }
 
@@ -288,9 +292,9 @@ pub(crate) fn current_reactive_frame() -> (u64, Option<u64>) {
 /// is thread-global and drains under whichever document happens to be
 /// dispatching, so an effect of document B woken by a write in document A's
 /// handler must still answer B to [`current_dispatching_doc`]. `doc` is the
-/// `Option` captured from [`current_dispatching_doc`] at creation; `None` is
-/// re-entered as `None` — "nobody's", never a borrowed document.
-pub(crate) fn enter_reactive_frame(root: u64, doc: Option<u64>) -> ReactiveFrameGuard {
+/// raw key [`current_reactive_frame`] captured at creation; `0` (no document)
+/// is re-entered as `0` — "nobody's", never a borrowed document.
+pub(crate) fn enter_reactive_frame(root: u64, doc: u64) -> ReactiveFrameGuard {
     AMBIENT.with(|a| ReactiveFrameGuard {
         prev_root: a.root.replace(root),
         prev_doc: a.doc.replace(doc),

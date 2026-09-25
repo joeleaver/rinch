@@ -128,10 +128,11 @@ pub(super) struct EffectInner {
     /// `handle_event`. Everything the body does that reads the marker — arming
     /// a `Drag`, registering a keyboard/paste/selection interceptor, asking
     /// `Drag::is_active` — must be attributed to the document the effect
-    /// belongs to, not to whichever one was dispatching. `None` (created
-    /// outside any document: `main`, a timer, rinch-web) re-enters `None`,
-    /// which every consumer reads as "nobody's" — never a borrowed document.
-    pub(super) doc: Option<u64>,
+    /// belongs to, not to whichever one was dispatching. Raw `doc_key`: `0`
+    /// (created outside any document — `main`, a timer, rinch-web) re-enters
+    /// "no document", which every consumer reads as "nobody's" — never a
+    /// borrowed document.
+    pub(super) doc: u64,
     /// The scope that owned this effect when it was created, re-entered on every
     /// run so resources the body creates are attributed to the component that
     /// built it rather than to whatever happened to be rendering when the flush

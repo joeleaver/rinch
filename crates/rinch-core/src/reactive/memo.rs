@@ -117,8 +117,8 @@ struct MemoInner<T> {
     /// The document current when this memo was created, re-entered around
     /// each recompute for the same reason `root` is — the computation runs in
     /// the reader's frame, which may be another document's dispatch (issue
-    /// #295). See `EffectInner::doc`.
-    doc: Option<u64>,
+    /// #295). Raw `doc_key`, `0` = none. See `EffectInner::doc`.
+    doc: u64,
     /// The scope that owned this memo at creation, re-entered around the lazy
     /// recompute for the same reason `root` is (issue #141). Weak by
     /// construction — see [`Owner`](super::Owner).
