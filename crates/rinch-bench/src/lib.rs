@@ -542,6 +542,41 @@ pub fn op_full_paint(mut f: PaintFixture) -> PaintFixture {
     f
 }
 
+/// 40 form fields styled the way an app styles a text input — a 1px border,
+/// a small radius and a blurred `inset` shadow — laid out and painted once
+/// (#974). An inset shadow builds and draws a blurred mask per box per paint,
+/// so this is where its cost shows.
+pub fn setup_shadow_paint() -> PaintFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; } \
+         div { position: absolute; width: 280px; height: 34px; background: rgb(255, 255, 255); \
+         border: 1px solid rgb(200, 200, 200); border-radius: 6px; \
+         box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2); }",
+    );
+    let mut html = String::new();
+    for i in 0..40 {
+        let (x, y) = ((i % 2) * 300 + 10, (i / 2) * 40 + 5);
+        html.push_str(&format!("<div style=\"left: {x}px; top: {y}px\"></div>"));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// Paint the 40 fields with the software painter.
+pub fn op_shadow_paint(mut f: PaintFixture) -> PaintFixture {
+    f.paint();
+    f
+}
+
 // ── rinch (shell): a RinchApp on the software painter ──────────────────────
 
 fn mount(component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
