@@ -1664,18 +1664,25 @@ impl RinchDomEditorView {
 /// own (`position: absolute` with a `z-index`), so the transform changes
 /// nothing about how it stacks or which clip it is under.
 ///
-/// Rounded to whole pixels, which is where the old insets were laid out: the
-/// desktop rounds a laid-out box, not a transform, and a 2px caret translated
-/// by a fraction is drawn across three columns, lighter.
+/// Rounded to whole pixels, because the desktop rounds a laid-out box but not
+/// a transform, and a 2px caret translated by a fraction is drawn across
+/// three columns, lighter. This lands **within a pixel** of where Taffy laid
+/// the old insets out, not exactly on it: Taffy rounds a box's *absolute*
+/// edges, and this rounds *container-relative* ones, so the two part only
+/// where the container itself sits at a fractional offset. It is shared, so
+/// the browser's caret is snapped to whole CSS px too, where a fractional
+/// `left` used to place it exactly (up to half a CSS px off the text).
 fn overlay_translate(x: f32, y: f32) -> String {
     format!("translate({}px, {}px)", x.round(), y.round())
 }
 
 /// The size an overlay at `(x, y)` sized `w` x `h` covers, in whole pixels:
-/// the distance between its rounded edges, which is what the old `left`/`top`
-/// plus `width`/`height` were laid out at — Taffy rounds a box's two edges,
+/// the distance between its rounded edges, after the rule Taffy applied to
+/// the old `left`/`top` plus `width`/`height` — it rounds a box's two edges,
 /// not its size, so a caret at y = 10.6 with height 20.8 covered rows 11..31,
-/// 20 rows and not `round(20.8)` = 21. Paired with [`overlay_translate`].
+/// 20 rows and not `round(20.8)` = 21. The edges here are container-relative
+/// where Taffy's were absolute, so the result is within a pixel of the old
+/// size rather than equal to it (see [`overlay_translate`]).
 fn overlay_size(x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
     ((x + w).round() - x.round(), (y + h).round() - y.round())
 }

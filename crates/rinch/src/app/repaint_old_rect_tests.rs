@@ -1032,6 +1032,95 @@ mod editor {
         );
     }
 
+    /// The node outline lands on the node it selects. Since #906 every
+    /// overlay sits at `left: 0; top: 0` and is placed by its `transform`, so
+    /// the anchor is load-bearing: without it the outline falls to its static
+    /// position after the last block (measured by the review of #953: 200px
+    /// low) and nothing else noticed. A selected `<hr>`'s outline must cover
+    /// the `<hr>`'s own painted box, within one pixel. (Measured: 1px right
+    /// of and below it, the container's border width — the offset the caret
+    /// overlay has too, which CLAUDE.md records against `caret_rect`.) The page sits at a fractional
+    /// offset (`padding: 20.3px 13.7px`) so the pin is not on the whole-px
+    /// fixed point, and the `<hr>` is below a paragraph so the translation is
+    /// not zero; a pixel check that the outline's colour is drawn there
+    /// guards the geometry read.
+    #[test]
+    fn a_selected_rule_is_outlined_where_the_rule_is_painted() {
+        let handle = crate::editor::create_editor();
+        assert!(handle.load_html("<p>above the rule</p><hr><p>below the rule</p><p>tail</p>"));
+        let h = handle.clone();
+        let ed = Rc::new(std::cell::Cell::new(0usize));
+        let ed_in = ed.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "padding: 20.3px 13.7px; width: 400px; font-size: 16px; line-height: 20px; \
+                 font-family: sans-serif",
+            );
+            let e = h.mount(scope);
+            ed_in.set(e.node_id().0);
+            root.append_child(&e);
+            root
+        });
+        app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        app.focus_target = FocusTarget::Editor(ed.get());
+        let mut p = Page { app, handle };
+        // "above the rule" is 14 chars: the paragraph spans 0..16, the rule
+        // starts at 16.
+        let doc = p.handle.doc();
+        let sel = Selection::node_at(&doc, Pos(16)).expect("a node selection at the rule");
+        assert_eq!(
+            sel.node(&doc).map(|n| n.type_name().to_string()).as_deref(),
+            Some("horizontal_rule"),
+            "precondition: the selection is the rule"
+        );
+        p.handle.set_selection(sel);
+        p.app.refresh_editor_overlays();
+        about_to_wait(&mut p.app);
+        let frame = full_frame(&mut p.app);
+        let d = p.app.doc.as_ref().unwrap().borrow();
+        let find = |pred: &dyn Fn(&rinch_dom::node::Node) -> bool| {
+            d.tree
+                .nodes
+                .iter()
+                .find(|(_, n)| pred(n))
+                .map(|(id, _)| rinch_dom::paint::painted_border_box(&d.tree, id, 1.0))
+                .expect("found")
+        };
+        let rule = find(&|n| n.tag() == Some("hr"));
+        let outline = find(&|n| n.attributes.contains_key("data-pm-selected"));
+        assert!(
+            rule.y0 > 40.0 && rule.height() > 0.0,
+            "precondition: the rule is laid out below the first paragraph: {rule:?}"
+        );
+        // Not the bottom edge: the outline is `box-sizing: border-box` with a
+        // 2px border, so over a 2px rule it is 4px tall whatever its height.
+        assert!(
+            outline.y1 >= rule.y1,
+            "the outline covers the rule's bottom"
+        );
+        for (a, b, edge) in [
+            (outline.x0, rule.x0, "left"),
+            (outline.y0, rule.y0, "top"),
+            (outline.x1, rule.x1, "right"),
+        ] {
+            assert!(
+                (a - b).abs() <= 1.0,
+                "the outline's {edge} edge {a} is off the rule's {b}: outline {outline:?}, rule {rule:?}"
+            );
+        }
+        // The outline's 2px `#1a73e8` border, drawn at its left edge.
+        let (x, y) = (outline.x0 as i32, ((outline.y0 + outline.y1) / 2.0) as i32);
+        let i = ((y * SIZE.0 as i32 + x) * 4) as usize;
+        assert!(
+            frame[i + 2] > 200 && frame[i] < 100,
+            "positive control: the outline's border is painted at ({x}, {y}): {:?}",
+            &frame[i..i + 4]
+        );
+    }
+
     /// A drag-select: the selection rects are created, grow and shrink frame
     /// by frame, and the caret goes away and comes back. Every frame is a
     /// region, and every one matches a from-scratch frame.
