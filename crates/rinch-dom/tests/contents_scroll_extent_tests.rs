@@ -834,3 +834,32 @@ fn a_clipping_block_childs_own_line_is_not_the_containers_content() {
     );
     assert_eq!(doc.scroll_width(container), 200.0, "the wheel's range too");
 }
+
+/// A split inline holding **no** inline content — a block link, `<a><div>`'s
+/// shape — mints no anonymous box, so the container's own box list holds none
+/// and only the split itself says the box tree is not `children`: the span
+/// generates no box, and the block inside it is the container's child box.
+/// Chrome 153, `B` then `span > div 120x250`: 200x300 (50 + 250).
+///
+/// Kills a walk that reads `children` whenever the container holds no
+/// anonymous box, without asking whether a child is a split inline.
+#[test]
+fn a_block_inside_a_split_inline_with_no_text_is_the_containers_content() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", SCROLLER);
+    doc.append_child(body, container);
+    build_mixed(&mut doc, container, &Mixed::Block);
+    let span = doc.create_element("span");
+    doc.append_child(container, span);
+    let tall = doc.create_element("div");
+    doc.set_attribute(tall, "style", "width: 120px; height: 250px");
+    doc.append_child(span, tall);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(
+        ranges(&doc, container.0),
+        ((120.0, 300.0), (None, Some(200.0)), (120.0, 300.0)),
+        "Chrome: 200x300"
+    );
+}
