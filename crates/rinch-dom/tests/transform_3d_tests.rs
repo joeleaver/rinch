@@ -26,7 +26,7 @@
 //! a projective transform (a `perspective()` acting on a rotation out of the
 //! page, which draws a trapezoid) is drawn with its perspective's `x`/`y`
 //! terms dropped, and a mismatched pair of lists is decomposed as flattened 2D
-//! matrices where Chrome decomposes in 3D (#1000).
+//! matrices where Chrome decomposes in 3D (#989).
 
 // The expected matrices are Chrome's printed numbers, `0.707107` among them.
 #![allow(clippy::approx_constant)]
@@ -495,7 +495,7 @@ fn a_mixed_3d_pair_interpolates_by_function() {
     );
 }
 
-/// **Not Chrome's (#1000).** `rotateX(60deg)` and `translate(10px)` do not
+/// **Not Chrome's (#989).** `rotateX(60deg)` and `translate(10px)` do not
 /// pair, so each list is composed and the two decomposed. Chrome decomposes the
 /// 4×4 matrices, which recovers the rotation and draws `rotateX(30deg)` half
 /// way (`d` = 0.866025); rinch decomposes the flattened 2D matrices, which sees
@@ -505,7 +505,10 @@ fn a_mismatched_3d_pair_decomposes_flat() {
     check_transition(
         "rotateX(60deg)",
         "translate(10px)",
-        &[(0.5, [1.0, 0.0, 0.0, 0.75, 5.0, 0.0])],
+        &[
+            (0.2, [1.0, 0.0, 0.0, 0.6, 2.0, 0.0]),
+            (0.5, [1.0, 0.0, 0.0, 0.75, 5.0, 0.0]),
+        ],
     );
 }
 

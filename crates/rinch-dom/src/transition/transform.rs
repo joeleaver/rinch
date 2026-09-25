@@ -8,14 +8,20 @@
 //!
 //! [`interpolate_lists`] is css-transforms-2 §"Interpolation of Transforms" as
 //! Chrome implements it, measured in Chrome 153 (the fixtures in
-//! `tests/transform_interpolation_tests.rs`):
+//! `tests/transform_interpolation_tests.rs`, and for the 3D functions
+//! `tests/transform_3d_tests.rs`):
 //!
 //! 1. Pair the lists function by function. Two functions pair when they share a
-//!    primitive: every `translate*` is a translate, every `scale*` a scale.
-//!    `skewX`, `skewY` and `skew` do **not** pair with one another in Chrome,
-//!    and `matrix()` pairs with `matrix()`.
+//!    primitive: every `translate*` is a translate (`translateZ` included),
+//!    every `scale*` a scale, every `rotate*` a rotation (`rotate`, `rotateX`
+//!    and `rotate3d` pair with one another). `skewX`, `skewY` and `skew` do
+//!    **not** pair with one another in Chrome, `matrix()` pairs with
+//!    `matrix()`, `matrix3d()` with `matrix3d()` and not with `matrix()`, and
+//!    `perspective()` with `perspective()`.
 //! 2. A paired function interpolates its arguments linearly — so `rotate` goes
-//!    170° → −170° through 0°, not the short way.
+//!    170° → −170° through 0°, not the short way. Two rotations about
+//!    different axes are the exception: they interpolate by quaternion slerp,
+//!    which does take the shorter arc. `perspective(d)` interpolates `1/d`.
 //! 3. Where one list runs out while every pair so far matched, it is padded
 //!    with the identity function of the other list's type. `none` is the empty
 //!    list, so it pads completely.
@@ -23,7 +29,11 @@
 //!    composed to one matrix and the two are interpolated by **decomposition**
 //!    (translation, scale, shear and rotation angle, each interpolated, then
 //!    recomposed — Chromium's decomposition, see [`interpolate_affine`]). A
-//!    `matrix()` pair is interpolated the same way.
+//!    `matrix()` pair is interpolated the same way, and so is a `matrix3d()`
+//!    pair once flattened. With a 3D function in a remainder this is **not**
+//!    Chrome's: Chrome decomposes the 4×4 before flattening it, rinch
+//!    decomposes the flattened 2D matrix, which has lost any rotation out of
+//!    the page (#989).
 //!
 //! A percentage `translate` stays exact throughout. It lives in the
 //! `Translate` function's `pct` until the list is composed, and in an
@@ -416,7 +426,7 @@ impl TransformOp {
             // Flattened and decomposed in 2D, which is exact for a
             // `matrix3d()` that draws a plane figure — the usual reason to
             // write one — and not Chrome's for one that does not: Chrome
-            // decomposes in 3D (#1000).
+            // decomposes in 3D (#989).
             (TransformOp::Matrix3D(a), TransformOp::Matrix3D(b)) => {
                 let (fa, fb) = (Mat4::from_m(a).flatten(), Mat4::from_m(b).flatten());
                 TransformOp::Matrix3D(Mat4::lift(&interpolate_affine(&fa, &fb, t)).m)
