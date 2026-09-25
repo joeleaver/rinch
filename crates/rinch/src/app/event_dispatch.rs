@@ -134,6 +134,16 @@ impl RinchApp {
             self.close_text_context_menu();
             actions.push(AppAction::RequestRedraw);
         }
+        // Where the pointer is, before anything can take the move: the desktop
+        // shell reads a press's position back out of `cursor_pos` (the move it
+        // flushed just before is what set it). The text menu below takes every
+        // move while it is open, so recording it only in the `MouseMove` arm
+        // left a real press judged where the menu was opened, inside its
+        // panel: an item never ran and a press elsewhere never closed it.
+        if let PlatformEvent::MouseMove { x, y } = event {
+            self.cursor_pos = Some((x, y));
+        }
+
         // While it is open the pointer belongs to the menu: an item press runs
         // it, any other press closes it unacted and is swallowed.
         if let Some(menu_actions) = self.text_menu_intercept_pointer(&event, vp_w, vp_h) {

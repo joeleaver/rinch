@@ -38,6 +38,17 @@ fn left_press(app: &mut RinchApp, x: f32, y: f32) -> Vec<AppAction> {
     press_with(app, x, y, MouseButton::Left)
 }
 
+/// A press as the desktop shell delivers one: the pointer's move first, then
+/// the press and release at the position the app recorded for that move
+/// (`cursor_pos`), which is all the shell passes on (`rinch_runtime.rs`).
+fn shell_press(app: &mut RinchApp, x: f32, y: f32, button: MouseButton) -> Vec<AppAction> {
+    let mut actions = ev(app, PlatformEvent::MouseMove { x, y });
+    let (x, y) = app.cursor_pos.expect("a move records where the pointer is");
+    actions.extend(ev(app, PlatformEvent::MouseDown { x, y, button }));
+    actions.extend(ev(app, PlatformEvent::MouseUp { x, y, button }));
+    actions
+}
+
 fn key_with(app: &mut RinchApp, key: KeyCode, text: Option<&str>, modifiers: Modifiers) {
     ev(
         app,
@@ -487,6 +498,50 @@ fn a_right_press_inside_the_selection_keeps_it_and_outside_moves_the_caret() {
 }
 
 // ── Pointer and keyboard on the open menu ────────────────────────────────────
+
+/// The shell's shape of a press (a move, then a press at `cursor_pos`) while
+/// the menu is open: the menu takes every move, and the position must still
+/// be recorded, or the press is judged where the menu was opened, which is
+/// inside its panel. Before the fix a real press outside never closed the
+/// menu, and a real press on an item never ran it (only focus loss closed it).
+#[test]
+fn a_real_press_outside_closes_the_menu() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    focus_and_select(&mut app, ids.input);
+    let x = x_for_offset(&mut app, ids.input, 4);
+    let (_, by, _, bh) = abs_box(&app, ids.input);
+    shell_press(&mut app, x, by + bh / 2.0, MouseButton::Right);
+    assert!(app.is_text_context_menu_open(), "precondition: open");
+
+    let (px, py, _, ph) = abs_box(&app, ids.plain);
+    shell_press(&mut app, px + 10.0, py + ph / 2.0, MouseButton::Left);
+    assert!(
+        !app.is_text_context_menu_open(),
+        "a press outside closes it"
+    );
+}
+
+#[test]
+fn a_real_press_on_an_item_runs_it_and_closes_the_menu() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    focus_and_select(&mut app, ids.input);
+    let x = x_for_offset(&mut app, ids.input, 4);
+    let (_, by, _, bh) = abs_box(&app, ids.input);
+    shell_press(&mut app, x, by + bh / 2.0, MouseButton::Right);
+
+    let (sx, sy) = row_center(&app, TextEditAction::SelectAll);
+    shell_press(&mut app, sx, sy, MouseButton::Left);
+    assert!(
+        !app.is_text_context_menu_open(),
+        "running an item closes the menu"
+    );
+    let (_, start, end) = field_state(&app, ids.input);
+    assert_eq!(
+        (start.as_str(), end.as_str()),
+        ("0", "11"),
+        "Select all ran"
+    );
+}
 
 #[test]
 fn an_outside_press_closes_the_menu_without_acting_and_is_swallowed() {
