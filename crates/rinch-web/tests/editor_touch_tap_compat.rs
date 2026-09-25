@@ -351,7 +351,8 @@ fn a_double_tap_still_selects_the_word() {
 }
 
 /// A mouse press after a tap is its own press. One at another point moves the
-/// caret; a second press at the tap's point, once the tap's compatibility
+/// caret, even while a tap whose compatibility `mousedown` never came is still
+/// recorded; a second press at the tap's point, once the tap's compatibility
 /// `mousedown` has been answered, is run in full too.
 ///
 /// Kills: matching on time alone (no position check), and a record the
@@ -360,15 +361,14 @@ fn a_double_tap_still_selects_the_word() {
 fn a_mouse_press_after_a_tap_is_unchanged() {
     let f = Fixture::mount(CONTENT);
     let (x, y) = f.point(0, 2);
+    // A tap with no compatibility `mousedown` after it (a page may not get one).
     touch_pointer(x, y);
-    mousedown(x, y, 1);
-    mouseup(x, y, 1);
     assert!(
         f.capture_focused(),
         "positive control: the tap focused the editor"
     );
 
-    // A mouse press elsewhere, straight after, with no touch contact.
+    // A mouse press elsewhere, straight after.
     let tx = f.tx.get();
     let (x2, y2) = f.point(1, 10);
     mousedown(x2, y2, 1);
@@ -384,7 +384,12 @@ fn a_mouse_press_after_a_tap_is_unchanged() {
         "and moves the caret there, got {head}"
     );
 
-    // Back at the tap's own point: the tap is spent, so this press moves the caret.
+    // A full tap at the first point, then a mouse press at that same point: the
+    // tap is spent by its compatibility `mousedown`, so this press moves nothing
+    // new but is run in full.
+    touch_pointer(x, y);
+    mousedown(x, y, 1);
+    mouseup(x, y, 1);
     let tx = f.tx.get();
     mousedown(x, y, 1);
     mouseup(x, y, 1);
@@ -396,7 +401,7 @@ fn a_mouse_press_after_a_tap_is_unchanged() {
     let head = f.handle.selection().head().0;
     assert!(
         (2..=4).contains(&head),
-        "and moves the caret back, got {head}"
+        "and the caret is at that point, got {head}"
     );
     f.teardown();
 }
