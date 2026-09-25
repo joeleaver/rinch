@@ -1313,3 +1313,37 @@ fn a_chip_moved_between_paragraphs_takes_the_new_typography() {
         |doc, (p2, chip)| doc.append_child(*p2, *chip),
     );
 }
+
+/// Width alone: a row moved from a 180px list into a 320px one, with no
+/// typography between them to change. The cascade has nothing to drop, so the
+/// re-break at the new width is the measure cache's and `build_ifc_layouts`'
+/// width key, not an invalidation.
+#[test]
+fn a_row_moved_to_a_wider_parent_rebreaks_at_its_width() {
+    twin(
+        "a_row_moved_to_a_wider_parent_rebreaks_at_its_width",
+        ".wide { width: 320px; }",
+        |doc, on| {
+            let body = doc.body();
+            let mk_row = |doc: &mut RinchDocument, label: &str| {
+                let row = doc.create_element("div");
+                doc.set_attribute(row, "class", "row");
+                let t = doc.create_text(label);
+                doc.append_child(row, t);
+                row
+            };
+            let a = doc.create_element("div");
+            doc.set_attribute(a, "class", "list box");
+            let b = doc.create_element("div");
+            doc.set_attribute(b, "class", "list wide");
+            let r0 = mk_row(doc, LABELS[0]);
+            let r1 = mk_row(doc, LABELS[2]);
+            doc.append_child(if on { b } else { a }, r0);
+            doc.append_child(a, r1);
+            doc.append_child(body, a);
+            doc.append_child(body, b);
+            (b, r0)
+        },
+        |doc, (b, r0)| doc.append_child(*b, *r0),
+    );
+}
