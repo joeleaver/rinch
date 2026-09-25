@@ -259,6 +259,13 @@ fn invoke<T: 'static>(id: u64, arg: T, select: impl Fn(&mut Handlers) -> &mut Op
     };
 
     if owner.as_ref().is_some_and(|owner| !owner.is_alive()) {
+        // Worded like `rinch_core::main_thread::resume_main_callback`'s line for
+        // the same prune: without it, a socket whose frames still arrive but
+        // reach nothing after a route change says so nowhere (issue #374).
+        tracing::debug!(
+            "dropping socket callback on connection {}: the component that registered it was unmounted",
+            id
+        );
         // Dropped here, outside the borrow above, and deliberately NOT put back.
         drop(cb);
         sweep_dead(id);

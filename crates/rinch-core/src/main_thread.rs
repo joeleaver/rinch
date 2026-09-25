@@ -137,7 +137,10 @@ pub fn park_main_callback<T: 'static>(cb: impl FnOnce(T) + 'static) -> MainCallb
 /// Also a no-op if the component that parked the callback has since been
 /// unmounted — see [`park_main_callback`]. The callback runs with that component
 /// as the ambient owner, so anything it allocates belongs to the component
-/// rather than to whatever the event loop happened to be doing.
+/// rather than to whatever the event loop happened to be doing. A callback
+/// parked outside any render runs under [`unowned`](crate::reactive::unowned)
+/// for the same reason in reverse: it has app lifetime, so what it allocates
+/// must not land on whatever owner this resume happens to be nested inside.
 ///
 /// Call on the main thread. `T` must match the type used at [`park_main_callback`];
 /// a mismatch is a programming error (debug-asserted, ignored in release).
@@ -164,7 +167,10 @@ pub fn resume_main_callback<T: 'static>(id: MainCallbackId, payload: T) {
     };
     match entry.owner {
         Some(owner) => owner.run(move || (*cb)(payload)),
-        None => (*cb)(payload),
+        // Not bare: the owner stack is not an ancestor chain, so a resume nested
+        // inside another owner's `run` would hand this app-lifetime callback's
+        // allocations to that unrelated scope (issue #374).
+        None => crate::reactive::unowned(move || (*cb)(payload)),
     }
 }
 
