@@ -2911,8 +2911,8 @@ down the one that replaced it. Two things that were silently wrong before and
 are worth knowing: **a still finger never fired the long press** on an idle
 loop, because K37's looper sleep has no deadline and nothing woke it
 (`TouchGesture::long_press_due` now feeds `poll_timeout`); and **the `android`
-feature now implies `clipboard`** — without it `handle_paste` reads an empty
-string, so a hardware Ctrl+V inserted nothing and an IME's
+feature now implies `clipboard`** — without it `handle_paste` has nothing to
+read, so a hardware Ctrl+V inserted nothing and an IME's
 `performContextMenuAction(paste)` returned `true` having pasted nothing (the
 toolbar hides its Paste). Paste is also hidden while `hasPrimaryClip()` is
 false, which reads no clip and raises no clipboard-access notice (measured),
@@ -2945,9 +2945,30 @@ rich-text `Editor` is
 `desktop`-only and is not part of an Android build (#818).
 
 **The built-in editor's Ctrl+V is asynchronous** — see the `anchor_selection` row in the
-`EditorHandle` table. The plain `<input>`/`<textarea>` paste path
-(`RinchApp::handle_paste`) is still synchronous: its completion would need `&mut
-RinchApp`, and there is no deferred-work queue that hands one back.
+`EditorHandle` table. **So is the plain `<input>`/`<textarea>` paste** (#328), and the
+chord, the context menu's Paste and Android's toolbar (`perform_text_edit`) all share it:
+`RinchApp::handle_paste` starts `paste_text_async` and returns, answering whether a read
+started (a read-only field starts none, as a read-only editor does). Its completion needs
+`&mut RinchApp` (`handle_input_edit_command`), which no main-thread callback has, so it
+rides the app's **deferred-work inbox** (`app/deferred_work.rs`): an `AppWorkSender`
+(cheap, `Send`, holds the inbox weakly — work for a dropped app is dropped with its
+captures) pushes a `Send` closure taking `&mut RinchApp` from any thread and wakes the host
+with an empty `run_on_main_thread`; `RinchApp::run_deferred_work` runs the inbox in send
+order and answers how many ran. **Every host calls it right after
+`drain_main_callbacks`** — desktop's `proxy_wake_up` (main app and DevTools), the Android
+loop, `RinchContext::update` — and repaints when it answers non-zero; a host that drives a
+`RinchApp` itself and never calls it gets no plain-control paste. The completion
+(`complete_input_paste`) lands in the field's **current** selection if the same field still
+holds the keyboard in the same focus gesture — `RinchApp::focus_epoch`, bumped by every
+`set_focus_target` transition (not by the two unmounted-editor self-heals, which clear only an
+`Editor` target), so away-and-back also drops it — and is dropped otherwise, the
+browser's rule. The rest is the ordinary edit path's: a field gone read-only refuses it, a
+disabled one loses the keyboard (#315), a value written meanwhile is adopted first (#238),
+paste plus its `oninput` rewrite is one undo step (#288), and a composition started during
+the read keeps going after the pasted text. On Android the read answers inline, so the
+paste lands later in the same loop iteration. Pins: `app/input_paste_async_tests.rs`,
+`rinch/tests/embed_input_paste.rs` (the embed host step). Desktop's and Android's host
+calls have no fixture.
 
 ### System Tray (optional)
 

@@ -33,6 +33,7 @@ mod css_hook_760_tests;
 mod damage_clip_chain_tests;
 #[cfg(feature = "debug")]
 mod debug_commands;
+mod deferred_work;
 #[cfg(test)]
 mod device_pixel_ratio_tests;
 #[cfg(test)]
@@ -74,6 +75,8 @@ mod implicit_focus_tests;
 mod input_commit_tests;
 #[cfg(test)]
 mod input_ime_tests;
+#[cfg(all(test, feature = "clipboard"))]
+mod input_paste_async_tests;
 #[cfg(test)]
 mod key_event_data_tests;
 #[cfg(test)]
@@ -552,6 +555,17 @@ pub struct RinchApp {
     /// (`focused_input_*`, the surface/editor registries) via
     /// [`Self::set_focus_target`].
     pub(crate) focus_target: FocusTarget,
+    /// Bumped by every [`Self::set_focus_target`] transition (the two
+    /// unmounted-editor self-heals that write `FocusTarget::None` directly
+    /// leave it alone; they clear only an `Editor` target, and a paste
+    /// completion also requires `Input`). A result that
+    /// arrives on a later turn (a plain-control paste, issue #328) records it
+    /// at the gesture and is dropped if it moved: a node id alone cannot tell
+    /// "still focused" from "focused away and back", nor a recycled id.
+    pub(crate) focus_epoch: u64,
+    /// Work other threads have sent this app, run by
+    /// [`Self::run_deferred_work`] (issue #328).
+    pub(crate) deferred_work: std::sync::Arc<deferred_work::DeferredWork>,
     /// Whether the window currently has **OS** focus (issue #147).
     ///
     /// Separate from [`Self::focus_target`], which is *kept* across a window
@@ -716,6 +730,8 @@ impl RinchApp {
             input_caret_generation: std::cell::Cell::new(0),
             focused_input_deferred_value: None,
             focus_target: FocusTarget::None,
+            focus_epoch: 0,
+            deferred_work: Default::default(),
             window_focused: true,
             node_activation_held: None,
             open_select: None,
@@ -2838,20 +2854,74 @@ impl RinchApp {
         }
         self.handle_input_edit_command(EditCommand::Copy);
     }
-    fn handle_paste(&mut self) {
-        let clip_text = {
-            #[cfg(feature = "clipboard")]
-            {
-                crate::clipboard::paste_text().unwrap_or_default()
+    /// Paste the clipboard's text into the focused `<input>`/`<textarea>`.
+    ///
+    /// **Asynchronous** (issue #328), as the editor's paste has been since
+    /// #149. Reading the clipboard is a request to another process; against a
+    /// hung X11 selection owner arboard waits up to four seconds, and this
+    /// read used to happen on the UI thread — no repaint, no input, for that
+    /// long. Now the read runs on the clipboard worker and the insertion is
+    /// [deferred work](Self::run_deferred_work) that runs with the app when it
+    /// answers (`complete_input_paste`). Answers whether a read was
+    /// started: the field is unchanged when this returns either way.
+    ///
+    /// A **read-only** field starts no read at all, as a read-only editor
+    /// does: the insertion would be refused, and a read is not free to make
+    /// and discard (a four-second worst case, a clipboard-access prompt on
+    /// some platforms). Neither does a field whose handler has gone or that
+    /// has become disabled.
+    ///
+    /// The chord, the built-in context menu's Paste and a shell's toolbar
+    /// (`perform_text_edit`, Android's floating toolbar) all come here.
+    pub(crate) fn handle_paste(&mut self) -> bool {
+        #[cfg(feature = "clipboard")]
+        {
+            if self.live_focused_input_handler().is_none() || self.focused_input_is_readonly() {
+                return false;
             }
-            #[cfg(not(feature = "clipboard"))]
-            {
-                String::new()
-            }
-        };
-        if !clip_text.is_empty() {
-            self.handle_input_edit_command(EditCommand::Paste(clip_text));
+            let Some(node_id) = self.focused_input_node_id else {
+                return false;
+            };
+            let epoch = self.focus_epoch;
+            let sender = self.app_work_sender();
+            crate::clipboard::paste_text_async(move |result| {
+                // Sent whatever the read answered, so the completion — not
+                // this worker-side closure — is the one place that decides.
+                let text = result.unwrap_or_default();
+                sender.send(move |app: &mut RinchApp| {
+                    app.complete_input_paste(node_id, epoch, text);
+                });
+            });
+            true
         }
+        #[cfg(not(feature = "clipboard"))]
+        {
+            false
+        }
+    }
+
+    /// The completion of [`Self::handle_paste`], on the main thread, once the
+    /// read answered.
+    ///
+    /// The browser's rule for where it lands: the field's **current**
+    /// selection, if the field that asked still holds the keyboard in the
+    /// same focus gesture (`focus_epoch`), and nowhere otherwise. Focus that
+    /// moved while the read was in flight — to another field, away and back,
+    /// or off the page's controls — drops the paste rather than aiming it at
+    /// something the user never pasted into. Everything else is the ordinary
+    /// edit path's: a field that became read-only refuses it, a disabled one
+    /// loses the keyboard (#315), a value the app wrote meanwhile is adopted
+    /// first (#238), and the paste plus its `oninput`'s rewrite is one undo
+    /// step (#288).
+    #[cfg(feature = "clipboard")]
+    pub(crate) fn complete_input_paste(&mut self, node_id: usize, epoch: u64, text: String) {
+        if text.is_empty()
+            || self.focus_target != FocusTarget::Input(node_id)
+            || self.focus_epoch != epoch
+        {
+            return;
+        }
+        self.handle_input_edit_command(EditCommand::Paste(text));
     }
     fn handle_cut(&mut self) {
         self.handle_input_edit_command(EditCommand::Cut);

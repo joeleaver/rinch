@@ -1527,7 +1527,9 @@ impl RinchApp {
                             KeyCode::End => self.handle_line_edge(true, shift, ctrl),
                             KeyCode::KeyA if ctrl => self.handle_select_all(),
                             KeyCode::KeyC if ctrl => self.handle_copy(),
-                            KeyCode::KeyV if ctrl => self.handle_paste(),
+                            KeyCode::KeyV if ctrl => {
+                                self.handle_paste();
+                            }
                             KeyCode::KeyX if ctrl => self.handle_cut(),
                             // Undo / redo on a focused `<input>`/`<textarea>`
                             // (issue #288), the browser's chords: Ctrl+Z,
