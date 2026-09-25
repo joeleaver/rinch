@@ -162,7 +162,7 @@ against the new document, with `Node::same_ref` as a fast skip — an unchanged 
 costs one pointer comparison. The diff is **not keyed**: it first matches the children
 the new node shares by reference at the start and at the end, then diffs the changed
 stretch between them positionally, inserting new children before the unchanged suffix.
-An edit changes one contiguous stretch of siblings, so that isolates it without a
+An edit typically changes one contiguous stretch of siblings, so that isolates it without a
 keyed/LIS pass. Matching the suffix is what keeps a split or join local: a purely
 positional diff re-pointed every later block at its neighbour's host and rewrote its
 text, so one Enter re-shaped every paragraph below the caret (issue #905). A node whose *kind* changed (tag or mark set)

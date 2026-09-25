@@ -459,7 +459,7 @@ impl ViewDesc {
     /// A purely positional diff re-pointed every block after a split or join
     /// at its neighbour's host, rewriting each one's text — so one Enter in a
     /// long document re-shaped every paragraph below the caret on the desktop.
-    /// A keyed/LIS pass is still not needed: an edit changes one contiguous
+    /// A keyed/LIS pass is still not needed: an edit typically changes one contiguous
     /// stretch of siblings, which is exactly what prefix + suffix isolate.
     fn diff_children(&mut self, new: &Node, doc: &DocRef) {
         let new_count = new.child_count();
@@ -2433,6 +2433,50 @@ mod tests {
             let got: Vec<String> = block_texts(&h).into_iter().map(|(_, t)| t).collect();
             assert_eq!(&got, after, "{before:?} -> {after:?}");
         }
+    }
+
+    /// A run inserted in front of an unchanged **mark-wrapped** run goes in
+    /// before the run's outermost wrapper, not inside it (issue #905's review).
+    ///
+    /// The suffix a new child is inserted before is placed by its `outer`
+    /// node; for a bold run that is the `<strong>`, while its `dom` is the text
+    /// node inside it. Inserting before `dom` would put the plain text inside
+    /// the `<strong>`. A block's `outer` and `dom` are one node, so no
+    /// block-level fixture can tell the two apart.
+    #[test]
+    fn a_run_typed_in_front_of_a_bold_run_lands_outside_its_wrapper() {
+        let h = harness();
+        let s = schema();
+        let bold = mk(&s, "bold", rinch_editor_core::Attrs::default());
+        let old = doc_node(&s, vec![marked_para(&s, "b", vec![bold])]);
+        let st = state(s.clone(), old.clone());
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let p = children(&h, h.container_id)[0];
+        let strong = children(&h, p)[0];
+        assert_eq!(tag(&h, strong).as_deref(), Some("strong"), "precondition");
+
+        // The same bold run (`same_ref`), with a plain run in front of it.
+        let bold_run = old.child(0).child(0).clone();
+        let para = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![s.text("a").unwrap(), bold_run]),
+            )
+            .unwrap();
+        let mut next = st.clone();
+        next.doc = doc_node(&s, vec![para]);
+        view.update_dom(&st, &next);
+
+        let kids = children(&h, p);
+        assert_eq!(kids.len(), 2, "a plain run and the bold run: {kids:?}");
+        assert_eq!(tag(&h, kids[0]), None, "the new run is a bare text node");
+        assert_eq!(text(&h, kids[0]).as_deref(), Some("a"));
+        assert_eq!(kids[1], strong, "the bold run keeps its wrapper");
+        assert_eq!(
+            text(&h, strong).as_deref(),
+            Some("b"),
+            "and nothing joins it"
+        );
     }
 
     #[test]
