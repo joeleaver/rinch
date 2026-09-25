@@ -635,10 +635,18 @@ callback — use it there, not `untracked`. Not wrapped, because nothing reaches
 them from inside an effect: the focus-registry callbacks and menu callbacks
 (both `pub(crate)`, run by the runtime from events or the deferred focus work),
 and Drag's `on_move`/`on_end` (pointer events). Also not yet wrapped: the
-editor's collaboration `outbound` sink, issue #948. Deliberately **not** wrapped: an
-`EditorHandle::update` `build` closure, and plugin code (`Plugin::apply`,
-`decorations`, `handle_paste`), which runs under the core borrow beside that
-closure — issue #943.
+editor's collaboration `outbound` sink, issue #948. **Editor plugin code runs
+untracked too** (issue #943), by a different route: `EditorHandle`'s core guards
+(`CoreGuard`, `CoreMutGuard`) hold a `rinch_core::reactive::suspend_tracking()`
+guard — `untracked_handler` as a value — for as long as the core is borrowed, so
+`Plugin::apply`, `init_state`, `decorations` (the view's diff), `handle_paste`, a
+plugin's command (`command` and `can_run` alike) and an input rule are untracked
+however the handle reached them, including through `add_plugin`, a load and
+`collab_receive`; the two constructors wrap `EditorState::create` and the first
+projection in `untracked_handler`. A new internal site under the guard needs
+nothing. Deliberately **not** untracked: the `EditorHandle::update` `build`
+closure, the caller's own code — `dispatch_inner` lifts the suspension for that
+closure alone.
 
 ## Component Props
 

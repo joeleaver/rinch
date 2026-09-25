@@ -267,6 +267,14 @@ you can make inside an effect (issue #931):
   (`dispatch_keyboard_event`, `dispatch_paste_event`), the dismiss stack
   (`dispatch_dismiss`) and `Drag::cancel`'s `on_cancel`.
 
+Editor **plugin** code is untracked the same way (issue #943): `apply`,
+`init_state`, `decorations`, `handle_paste`, a plugin's commands and input rules
+run under the editor's own borrow, inside whatever effect called the handle, so
+a spellchecker whose `decorations()` reads an app `spellcheck_on` signal does not
+subscribe every effect that moves the selection. A plugin that should react to a
+signal needs something that re-asks it — an effect of its own that dispatches a
+transaction when the signal changes.
+
 A closure you pass *as the call itself* is not one of these: the `build` closure
 of `EditorHandle::update(|state| …)` runs as part of your own code, and a signal
 it reads is your effect's dependency like any other.
