@@ -1600,10 +1600,33 @@ impl RinchApp {
         self.painter.scene()
     }
 
-    /// The pixels a software debug screenshot captures.
+    /// The pixels a software debug screenshot captures: the frame last
+    /// presented, read back **without repainting** (issue #364).
+    ///
+    /// The shell paints (`paint_software`) immediately before it captures,
+    /// and that paint installs the frame maps — `SURFACE_PIXELS` for each
+    /// `RenderSurface`, `VIEWPORT_PIXELS` for each inline video — and blits
+    /// the compositor frames over the result. A second `build_pixels` here has
+    /// none of that: when anything had dirtied the scene again in between, it
+    /// repainted every surface and video as an empty box, into the very buffer
+    /// the next frame presents from, so the PNG *and* the screen lost them.
+    /// Reading the buffer back instead captures exactly what is on screen and
+    /// leaves any new damage (`scene_dirty`) for the next real frame, which
+    /// paints it with its frame maps. It is also what the GPU path has always
+    /// done (`WgpuRenderer::capture_screenshot` reads the last rendered
+    /// texture back).
+    ///
+    /// The buffer's own size is returned, which is the size last presented.
+    /// Only before the first frame — no buffer yet — does this paint, at
+    /// `scale` and `size`, with no frame maps: nothing has been presented,
+    /// so no surface has been shown either.
     #[cfg(software_shell)]
     pub fn screenshot_pixels(&mut self, scale: f64, size: (u32, u32)) -> (&[u8], u32, u32) {
-        self.build_pixels(scale, size, false)
+        if self.skia_painter.is_none() {
+            return self.build_pixels(scale, size, false);
+        }
+        let painter = self.skia_painter.as_ref().unwrap();
+        (painter.pixels(), painter.width(), painter.height())
     }
 
     /// Build pixels via TinySkiaPainter for software rendering.
@@ -1657,9 +1680,11 @@ impl RinchApp {
             // frame collectors clear `needs_redraw` before this runs, so a
             // `is_surface_dirty_by_id` scan from inside `build_pixels` answers
             // "no" for every surface that just delivered a frame — and worse,
-            // on the paths that call `build_pixels` with no frame map set at
-            // all (the debug screenshot), marking the node only guarantees it
-            // repaints *without* its pixels.
+            // on a path that called `build_pixels` with no frame map set at
+            // all, marking the node would only guarantee it repaints
+            // *without* its pixels. (The debug screenshot was such a path
+            // until #364; it now reads the presented buffer back instead —
+            // see `screenshot_pixels`.)
 
             use rinch_dom::perf::{Counter, FullRepaintReason};
 

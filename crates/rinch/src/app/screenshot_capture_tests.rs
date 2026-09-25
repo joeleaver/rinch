@@ -169,3 +169,16 @@ fn a_screenshot_before_the_first_frame_paints_the_document() {
     assert_eq!((w, h), SIZE);
     assert!(is(pixel(pixels, w, 300, 250), [255, 255, 255]));
 }
+
+/// The capture answers the dimensions of the buffer it hands back — the size
+/// last presented — even when the caller's size has moved on since (a resize
+/// that has not been painted yet). A mismatch would make `encode_png` read the
+/// buffer with the wrong stride.
+#[test]
+fn a_screenshot_answers_the_presented_buffers_own_size() {
+    let mut app = mount("data-render-surface", "7");
+    paint_surface_frame(&mut app);
+    let (pixels, w, h) = app.screenshot_pixels(1.0, (500, 320));
+    assert_eq!((w, h), SIZE, "the size presented, not the size asked for");
+    assert_eq!(pixels.len(), (w * h * 4) as usize);
+}

@@ -1655,6 +1655,8 @@ impl RinchRuntime {
         }
         let scale = self.scale_factor();
         let size = self.logical_size();
+        // The frame `paint()` just presented, read back without repainting —
+        // a repaint here would have no surface or video frame maps (#364).
         let (pixels, w, h) = self.app.screenshot_pixels(scale, size);
         let png_bytes = screenshot::encode_png(pixels, w, h);
         DebugResult::Bytes {
