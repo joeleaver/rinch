@@ -966,12 +966,12 @@ mod tests {
         assert_eq!(msg, "expected curly braces");
         let msg = arm_error(r#"{ if c.get() { "a" } span { "b" "c" d } }"#);
         assert!(!msg.contains("renders once"), "{msg}");
+        // `d` is the last token of `span { … }`, so the element runs out of input.
+        assert_eq!(msg, "unexpected end of input, expected curly braces");
         // An element-led arm whose own head is the typo reports it there too,
         // not as a struct-literal error from the expression path.
         let msg = arm_error(r#"{ i { class "x" } span { "b" } }"#);
         assert_eq!(msg, "expected curly braces");
-        // `d` is the last token of `span { … }`, so the element runs out of input.
-        assert_eq!(msg, "unexpected end of input, expected curly braces");
     }
 
     /// Control flow followed by something that starts no rsx node (a method
