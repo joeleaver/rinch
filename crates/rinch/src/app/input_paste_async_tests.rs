@@ -470,3 +470,19 @@ fn a_paste_that_answers_mid_composition_lands_ahead_of_it() {
     );
     assert_eq!(field(&app, ids.input).0, "hello worldXYZ日本");
 }
+
+/// An empty clipboard (or a read that failed, which the
+/// completion also sees as "") must leave the selection alone, as the
+/// synchronous path's `!clip_text.is_empty()` guard did — `Paste("")` over a
+/// selection would delete it.
+#[test]
+fn an_empty_clipboard_leaves_the_selection_alone() {
+    let _lock = clipboard_lock();
+    let (mut app, ids, log) = page(&[]);
+    focus_and_select(&mut app, ids.input);
+    rinch_clipboard::clear().unwrap();
+    ctrl_v(&mut app);
+    assert_eq!(settle(&mut app), 1, "the completion ran");
+    assert_eq!(field(&app, ids.input), state("hello world", 2, 5));
+    assert!(log.borrow().is_empty(), "no oninput");
+}

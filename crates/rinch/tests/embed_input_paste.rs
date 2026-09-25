@@ -151,3 +151,56 @@ fn a_ctrl_v_in_an_embedded_input_lands_on_a_later_update() {
         "the paste landed through `update` ({updates} updates)"
     );
 }
+
+/// A host that calls `update` only when `needs_update()` says so
+/// (the documented "skip unchanged frames" use) must still see a pending paste.
+/// At base the paste landed inside the Ctrl+V `update`; with the async read the
+/// completion sits in the inbox, so `needs_update` has to report it.
+#[test]
+fn needs_update_reports_a_pending_paste() {
+    let (saw, landed) = on_ui_thread(|| {
+        rinch_clipboard::copy_text("XYZ").unwrap();
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let log_in = log.clone();
+        let mut ctx = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            let log = log_in.clone();
+            rsx! {
+                input {
+                    style: "display: block; width: 300px; height: 30px; padding: 0; margin: 0; \
+                            font-size: 16px; line-height: 20px",
+                    value: "hello world",
+                    oninput: move |v: String| log.borrow_mut().push(v),
+                }
+            }
+        });
+        let button = MouseButton::Left;
+        ctx.update(&[
+            PlatformEvent::MouseDown {
+                x: 2.0,
+                y: 15.0,
+                button,
+            },
+            PlatformEvent::MouseUp {
+                x: 2.0,
+                y: 15.0,
+                button,
+            },
+        ]);
+        ctx.update(&key(KeyCode::End, Modifiers::default()));
+        ctx.update(&key(KeyCode::KeyV, primary()));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut saw = false;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+            if ctx.needs_update() {
+                saw = true;
+                ctx.update(&[]);
+                break;
+            }
+        }
+        let landed = log.borrow().clone();
+        (saw, landed)
+    });
+    assert!(saw, "needs_update() never reported the pending paste");
+    assert_eq!(landed, vec!["hello worldXYZ".to_string()]);
+}
