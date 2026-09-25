@@ -6551,6 +6551,28 @@ mod tests {
             assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
         }
 
+        /// A same-length replacement before the caret in its own block leaves the
+        /// caret's position and offset alone but can re-wrap its line: the hint
+        /// is dropped.
+        #[test]
+        fn a_same_length_replacement_before_the_caret_drops_it() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            h.set_selection_with_affinity(Selection::cursor(Pos(11)), CaretAffinity::Upstream);
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                let text = state.schema().text("Q").ok()?;
+                tr.replace_with(8, 9, Fragment::from_node(text)).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(
+                h.selection(),
+                Selection::cursor(Pos(11)),
+                "control: unmoved"
+            );
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
         /// The hint is already stored when the selection-change callback runs,
         /// so a popup positioned from it sees the side the caret is drawn on.
         #[test]
