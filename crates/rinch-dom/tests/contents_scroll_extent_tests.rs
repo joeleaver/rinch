@@ -383,3 +383,72 @@ fn an_unrelated_layout_pass_keeps_a_text_scrollers_range() {
         "after a layout pass that did not rebuild the scroller's text"
     );
 }
+
+/// `white-space: nowrap` text scrolls **horizontally** by its own line's
+/// advance — the width half of the inline-layout measure. Five
+/// `wwwwwwwwww` words are over 580px in every sans face in reach (one word is
+/// 116-131px), so the assertion holds on any host; Chrome 153: 596x100 of
+/// scroll size in a 200x100 box. Unfixed, the bare case reported the proxy
+/// box's 200px (no bar) and the wrapped one nothing.
+///
+/// Kills a measure that takes the inline layout's height and not its width.
+#[test]
+fn nowrap_text_scrolls_horizontally_by_its_line() {
+    let style = "width: 200px; height: 100px; overflow: auto; font-size: 16px; \
+                 line-height: 20px; white-space: nowrap";
+    for wrapper in [None, Some("display: contents")] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", style);
+        doc.append_child(body, container);
+        let parent = match wrapper {
+            Some(s) => {
+                let span = doc.create_element("span");
+                doc.set_attribute(span, "style", s);
+                doc.append_child(container, span);
+                span
+            }
+            None => container,
+        };
+        let text = doc.create_text(&"wwwwwwwwww ".repeat(5));
+        doc.append_child(parent, text);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        let (x, y) = max_scroll(&scrollbars(&doc.tree, container.0, 1.0));
+        assert!(
+            x.is_some_and(|x| x > 380.0),
+            "Chrome: 596 - 200 of horizontal travel ({wrapper:?}): got {x:?}"
+        );
+        assert_eq!(y, None, "one 20px line fits ({wrapper:?})");
+        assert!(
+            doc.scroll_width(container) > 580.0,
+            "the wheel's range too ({wrapper:?})"
+        );
+    }
+}
+
+/// The walk goes **through** a `display: contents` wrapper and **stops at the
+/// first real box**: a scroll container nested inside one is the outer's
+/// content by its own 150x80 box, and its 700x500 content is its own to
+/// scroll. Chrome 153: the outer reports 200x100 (no overflow).
+///
+/// Kills a descent that recurses into any child with children rather than
+/// only into box-less wrappers (measured: the 700x500 leaks into the outer).
+#[test]
+fn the_walk_stops_at_a_nested_scroller() {
+    let (doc, id) = scroller(
+        SCROLLER,
+        &[El(
+            CONTENTS,
+            vec![El(
+                "width: 150px; height: 80px; overflow: auto",
+                vec![El("width: 700px; height: 500px", vec![])],
+            )],
+        )],
+    );
+    assert_eq!(
+        ranges(&doc, id),
+        ((150.0, 80.0), (None, None), (150.0, 80.0)),
+        "Chrome: 200x100, the inner scroller keeps its content"
+    );
+}
