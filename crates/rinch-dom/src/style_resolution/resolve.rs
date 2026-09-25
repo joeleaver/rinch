@@ -434,6 +434,60 @@ impl RinchDocument {
         None
     }
 
+    /// The **layout parent** style of `node_id`, given the style of its DOM
+    /// parent: that style, unless it is `display: contents`, in which case
+    /// the style of the nearest styled ancestor that is not (#998).
+    ///
+    /// Stylo's `StyleAdjuster` blockifies an element whose *layout* parent is
+    /// a flex or grid container (`blockify_if_necessary`). A
+    /// `display: contents` element generates no box, so its children are
+    /// items of *its* parent's container (css-display-3 §2.5), and Stylo's own
+    /// traversal hands the adjuster the nearest non-contents ancestor for
+    /// exactly that reason. rinch hand-rolls the cascade and used to pass the
+    /// DOM parent in both slots, so every child of an `rsx!` wrapper inside a
+    /// `Stack` or `Group` stayed `display: inline`.
+    ///
+    /// Inheritance still comes from the DOM parent — only the second slot
+    /// changes. The ancestors are read from their stored styles, which the
+    /// walk writes before it descends, so they are this pass's.
+    pub(crate) fn layout_parent_style(
+        &self,
+        node_id: usize,
+        parent_style: Option<&ServoArc<ComputedValues>>,
+    ) -> Option<ServoArc<ComputedValues>> {
+        let parent = parent_style?;
+        if !parent.clone_display().is_contents() {
+            return Some(parent.clone());
+        }
+        let start = self.tree.nodes.get(node_id).and_then(|n| n.parent);
+        self.nearest_non_contents_style(start)
+            .or_else(|| Some(parent.clone()))
+    }
+
+    /// The stored style of `start` or its nearest ancestor that has one and is
+    /// not `display: contents`.
+    pub(crate) fn nearest_non_contents_style(
+        &self,
+        start: Option<usize>,
+    ) -> Option<ServoArc<ComputedValues>> {
+        let mut current = start;
+        while let Some(id) = current {
+            let node = self.tree.nodes.get(id)?;
+            let style = node
+                .stylo_element_data
+                .borrow()
+                .as_ref()
+                .and_then(|d| d.styles.primary.clone());
+            if let Some(style) = style
+                && !style.clone_display().is_contents()
+            {
+                return Some(style);
+            }
+            current = node.parent;
+        }
+        None
+    }
+
     /// The node's depth below the document node (0 = the document node
     /// itself), or `None` when the node is **not connected to it**.
     ///
@@ -607,6 +661,11 @@ impl RinchDocument {
         // nothing. They only ever over-state a dependency, which costs a
         // snapshot that Stylo's invalidator answers with no restyle.
 
+        // The style Stylo's adjuster blockifies against: the parent's, unless
+        // the parent is `display: contents` (#998). See
+        // [`Self::layout_parent_style`].
+        let layout_parent_style = self.layout_parent_style(node_id, parent_style.as_ref());
+
         // Compute styles in a block so borrows are dropped before recursion
         let computed = {
             // Create the RinchNode wrapper for Stylo
@@ -663,6 +722,7 @@ impl RinchDocument {
 
             // Cascade to compute final styles
             let parent_style_ref = parent_style.as_deref();
+            let layout_parent_style_ref = layout_parent_style.as_deref();
             let mut rule_cache_conditions = RuleCacheConditions::default();
 
             let computed = self.stylist.cascade_style_and_visited(
@@ -674,8 +734,8 @@ impl RinchDocument {
                     flags: matching_context.extra_data.cascade_input_flags,
                 },
                 &guards,
-                parent_style_ref, // parent_style
-                parent_style_ref, // layout_parent_style
+                parent_style_ref,        // parent_style
+                layout_parent_style_ref, // layout_parent_style
                 FirstLineReparenting::No,
                 &Default::default(), // try_tactic (PositionTryFallbacksTryTactic)
                 None,                // rule_cache
@@ -789,11 +849,20 @@ impl RinchDocument {
 
         // What the new style asks of the children (`child_cascade`), then the
         // walk. Pseudo-element resolution above may have added children.
-        let cascade = if subtree {
+        let mut cascade = if subtree {
             ChildCascade::Subtree
         } else {
             child_cascade(old_style.as_deref(), &computed)
         };
+        // A `display: contents` element is not its children's layout parent:
+        // its own parent is (`layout_parent_style`, #998). So what its parent
+        // asked of it — a `display` change that makes or unmakes a flex
+        // container, which blockifies these children — has to reach them even
+        // when this element's own style did not move, and its own
+        // `child_cascade` would then say `Skip`.
+        if inherited >= ChildCascade::Cascade && computed.clone_display().is_contents() {
+            cascade = cascade.max(inherited);
+        }
         self.resolve_style_children(node_id, &computed, cascade, visit_all);
     }
 
