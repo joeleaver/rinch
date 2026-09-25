@@ -235,7 +235,8 @@ Effect::new(move || {
 ```
 
 The `build` closure you pass to `update` is the exception: it is your own code,
-and what it reads tracks as usual.
+and what it reads tracks as usual — including what plugin code *it* calls reads
+(`update(|s| { s.apply(..); … })` runs the plugins' `apply` as your code).
 
 A right press over the editor places the caret before an app's
 `data-oncontextmenu` handler runs, on both backends, so a handler that draws its

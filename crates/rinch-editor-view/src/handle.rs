@@ -466,7 +466,10 @@ impl EditorCore {
             // An empty delta means the projection produced no CRDT change at all, so
             // there is nothing for peers to apply.
             Ok(()) => match bridge.session.save_incremental() {
-                Ok(delta) if !delta.is_empty() => (bridge.outbound)(delta),
+                // App code, run inside whatever effect made the edit: untracked
+                // (#948). The core guard suspends tracking already; this keeps
+                // the sink untracked should it ever be reached from elsewhere.
+                Ok(delta) if !delta.is_empty() => untracked_handler(|| (bridge.outbound)(delta)),
                 Ok(_) => {}
                 Err(e) => bridge.last_error = Some(e),
             },
@@ -614,16 +617,19 @@ impl WeakEditorHandle {
 /// borrow that does DOM work, [`EditorHandle::set_dark_mode`], flushes itself.
 ///
 /// **Dependency tracking is suspended for as long as the borrow lives**
-/// (issue #943). Everything that runs under a borrow of the core is the
-/// editor's code or a plugin's — `Plugin::apply`, `decorations` (the view's
-/// decoration diff), `handle_paste`, `init_state`, a plugin's command, an input
-/// rule — and it runs synchronously inside whatever app effect called the
-/// handle. A plugin that reads an app signal would otherwise make that signal a
-/// dependency of every effect that moves the selection. Holding the suspension
-/// here rather than at each call site is what covers every internal site,
-/// including the ones added later. The one exception is the caller's own
-/// [`EditorHandle::update`] `build` closure, which [`EditorHandle::dispatch`]
-/// runs with the suspension lifted.
+/// (issue #943). What runs under a borrow of the core is the editor's code, a
+/// plugin's — `Plugin::apply`, `decorations` (the view's decoration diff),
+/// `handle_paste`, `init_state`, a plugin's command, an input rule — and the
+/// app's collaboration `outbound` sink (#948, which also wraps itself in
+/// `untracked_handler`), all synchronously inside whatever app effect called
+/// the handle. A plugin that reads an app signal would otherwise make that
+/// signal a dependency of every effect that moves the selection. Holding the
+/// suspension here rather than at each call site covers every site the handle
+/// reaches internally, including ones added later. The exception is the
+/// caller's own [`EditorHandle::update`] `build` closure, which
+/// [`EditorHandle::dispatch_inner`] runs with the suspension lifted — so plugin
+/// code *that closure* calls (`state.apply(..)` inside it) is tracked, as the
+/// caller's own code.
 struct CoreGuard<B> {
     borrow: B,
     _no_flush: rinch_core::reactive::EffectFlushSuppressed,
@@ -7079,6 +7085,52 @@ mod tests {
             assert!(fired.get() > 0, "control: the rebuild ran the plugin");
             store.set(1);
             assert_eq!(runs.get(), 1, "collab_receive subscribed its effect");
+        }
+
+        /// Issue #948: the collaboration `outbound` sink is app code (a
+        /// transport that may read a `connected` signal) called from
+        /// `commit`, inside whatever effect made the local edit.
+        #[cfg(feature = "collaboration")]
+        #[test]
+        fn the_outbound_sink_run_from_an_effect_subscribes_nobody() {
+            let (own, connected) = (Signal::new(0u32), Signal::new(true));
+            let sent = Rc::new(Cell::new(0u32));
+            let host = two_paragraphs();
+            host.start_collaboration_host({
+                let sent = sent.clone();
+                move |_delta| {
+                    if connected.get() {
+                        sent.set(sent.get() + 1);
+                    }
+                }
+            })
+            .unwrap();
+            let (outer, inner) = (Rc::new(Cell::new(0u32)), Rc::new(Cell::new(0u32)));
+            let slot: Rc<RefCell<Option<Effect>>> = Rc::default();
+            let _outer = Effect::new({
+                let (outer, inner, slot, host) =
+                    (outer.clone(), inner.clone(), slot.clone(), host.clone());
+                move || {
+                    outer.set(outer.get() + 1);
+                    let (inner, host) = (inner.clone(), host.clone());
+                    slot.replace(Some(Effect::new(move || {
+                        let _ = own.get();
+                        inner.set(inner.get() + 1);
+                        host.insert_text("x");
+                    })));
+                }
+            });
+            assert_eq!(sent.get(), 1, "control: the edit reached the sink");
+            connected.set(false);
+            assert_eq!(
+                (outer.get(), inner.get()),
+                (1, 1),
+                "the sink's read subscribed the effect that made the edit"
+            );
+            connected.set(true);
+            own.set(1);
+            assert_eq!(inner.get(), 2, "positive control: the app effect is live");
+            assert_eq!(sent.get(), 2, "and its edit was sent");
         }
 
         /// Positive control: the caller's own `update` build closure is the

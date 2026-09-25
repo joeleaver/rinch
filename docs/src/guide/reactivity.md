@@ -273,7 +273,10 @@ run under the editor's own borrow, inside whatever effect called the handle, so
 a spellchecker whose `decorations()` reads an app `spellcheck_on` signal does not
 subscribe every effect that moves the selection. A plugin that should react to a
 signal needs something that re-asks it — an effect of its own that dispatches a
-transaction when the signal changes.
+transaction when the signal changes. Plugin code your own `update` closure
+calls (below) is part of that closure, and tracked. The collaboration `outbound`
+sink runs untracked too (issue #948): a transport closure that reads a
+`connected` signal does not subscribe the effect that made the edit.
 
 A closure you pass *as the call itself* is not one of these: the `build` closure
 of `EditorHandle::update(|state| …)` runs as part of your own code, and a signal

@@ -1285,16 +1285,28 @@ pub fn untracked_handler<R>(f: impl FnOnce() -> R) -> R {
 ///
 /// For library code that runs app-supplied code under a borrow it holds in a
 /// guard of its own, where a closure cannot span the region — the rich-text
-/// editor's `EditorHandle` holds one beside every borrow of its core, so
-/// every plugin method it runs (`apply`, `decorations`, `handle_paste`, a
-/// plugin's command) is untracked however it was reached. Everything
+/// editor's `EditorHandle` holds one beside every borrow of its core, so the
+/// plugin methods the handle itself runs (`apply`, `decorations`,
+/// `handle_paste`, a plugin's command) are untracked. Everything
 /// [`untracked_handler`] says applies, including its warning: the caller's
-/// own synchronous code must run with the guard dropped.
+/// own synchronous code must run with the guard dropped — and so plugin code
+/// the caller's code calls in that window (an `update` closure calling
+/// `state.apply(..)`) is tracked, as the caller's.
 ///
-/// Drop guards in the reverse order they were taken, as scoped guards are.
+/// Drop guards in the reverse order they were taken, as scoped guards are, and
+/// on the thread that took them: the guard is `!Send` and `!Sync`, because the
+/// observer stack it restores is thread-local.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>(_: T) {}
+/// assert_send(rinch_core::reactive::suspend_tracking());
+/// ```
 #[must_use = "tracking resumes as soon as the guard is dropped"]
 pub struct TrackingSuspended {
     _suspended: scope::SuspendObservers,
+    /// `!Send` + `!Sync`: dropped on another thread it would restore this
+    /// thread's observers onto that thread's stack.
+    _not_send: std::marker::PhantomData<*const ()>,
 }
 
 impl std::fmt::Debug for TrackingSuspended {
@@ -1308,6 +1320,7 @@ impl std::fmt::Debug for TrackingSuspended {
 pub fn suspend_tracking() -> TrackingSuspended {
     TrackingSuspended {
         _suspended: scope::SuspendObservers::take(),
+        _not_send: std::marker::PhantomData,
     }
 }
 
