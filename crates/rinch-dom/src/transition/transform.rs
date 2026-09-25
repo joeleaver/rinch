@@ -641,7 +641,9 @@ impl Mat4 {
             return false;
         }
         let cofactor33 = det3([0, 1, 3], [0, 1, 3]);
-        cofactor33 * det < -1e-9
+        // Chrome's `kEpsilon` is float epsilon: `scale(0.015) rotateY(180deg)`
+        // (`cofactor33 · det = -s⁴ ≈ -5e-8`) still faces the viewer there.
+        cofactor33 * det < -(f32::EPSILON as f64)
     }
 
     /// Project onto the page as Chrome does for an element no ancestor gives

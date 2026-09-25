@@ -882,6 +882,8 @@ fn a_hidden_backface_is_neither_drawn_nor_hit() {
 /// viewer included — and it is the box's **own** transform that decides: a
 /// child with a hidden backface under a turned parent, with no transform of its
 /// own, is drawn. Chrome 153: the first child is not hit, the second is.
+/// (A `position: fixed` descendant is the exception, still drawn for want of
+/// containment — #386, #415; `repaint_old_rect_tests` pins it.)
 #[test]
 fn a_hidden_backface_hides_the_subtree_and_reads_only_the_own_transform() {
     let mut s = scene(
@@ -905,4 +907,39 @@ fn a_hidden_backface_hides_the_subtree_and_reads_only_the_own_transform() {
     let (red, blue) = s.painted();
     assert!(red > 0 && blue > 0, "{red} red px, {blue} blue px");
     assert!(s.hits(child, 475.0, 110.0));
+}
+
+/// Chrome 153 draws and hits `scale(0.01) rotateY(180deg)` and
+/// `scale(0.015) …` with a hidden backface — its threshold is float epsilon on
+/// `cofactor33 · det`, which is `−s⁴` here — and hides `scale(0.02) …`.
+#[test]
+fn a_tiny_turned_box_is_judged_with_chromes_epsilon() {
+    let mut bad = vec![];
+    for (s, w, h, shown) in [
+        (0.01, 10000.0, 4000.0, true),
+        (0.015, 6667.0, 2667.0, true),
+        (0.02, 5000.0, 2000.0, false),
+    ] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let el = doc.create_element("div");
+        doc.set_attribute(
+            el,
+            "style",
+            &format!(
+                "position: absolute; left: 200px; top: 100px; width: {w}px; height: {h}px; \
+                 background: red; transform-origin: 0 0; backface-visibility: hidden; \
+                 transform: scale({s}) rotateY(180deg) translateX(-{w}px)"
+            ),
+        );
+        doc.append_child(body, el);
+        doc.resolve_layout(800.0, 600.0);
+        let back = doc.tree.nodes[el.0].computed_style.transform.back_facing;
+        if back == shown {
+            bad.push(format!(
+                "scale({s}): back_facing={back}, Chrome shown={shown}"
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
 }

@@ -405,7 +405,9 @@ the flattened matrix as before — so `rotateY(45deg)` about `50% 50% 100px`
 lands where Chrome's does. `backface-visibility: hidden` hides a box whose
 **own** transform turns its back to the viewer (the `(3, 3)` entry of the
 inverse 4×4 is negative, Chrome's test): it composes to the zero matrix, so it
-and its whole subtree are neither drawn nor hit. A mirror (`scaleX(-1)`) is not
+and its whole subtree are neither drawn nor hit — except a `position: fixed`
+descendant, which rinch does not contain in a transformed ancestor (#386, #415),
+so it keeps the body's transform and is still drawn. A mirror (`scaleX(-1)`) is not
 a turn, and a child under a turned parent is judged by its own transform alone,
 as in Chrome without `transform-style: preserve-3d` (#997).
 

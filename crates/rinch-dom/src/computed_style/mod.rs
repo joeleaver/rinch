@@ -116,7 +116,8 @@ pub struct ComputedStyle {
     pub transform_origin_z: f32,
     /// `backface-visibility: hidden`: a box whose own transform turns its back
     /// to the viewer ([`TransformValue::back_facing`]) is neither drawn nor
-    /// hit, with its subtree (#997).
+    /// hit, with its subtree — except a `position: fixed` descendant, which
+    /// rinch does not contain in a transformed ancestor (#386, #415) (#997).
     pub backface_visibility_hidden: bool,
 
     // Z-index
