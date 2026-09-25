@@ -205,14 +205,28 @@ fn matching(driver: &mut dyn AppDriver, target: &Target) -> Result<Vec<NodeMatch
         .collect())
 }
 
-fn run_step(driver: &mut dyn AppDriver, step: &Step, settle_ms: u64) -> Result<(), String> {
+fn run_step(
+    driver: &mut dyn AppDriver,
+    step: &Step,
+    settle_ms: u64,
+    viewport: (u32, u32),
+) -> Result<(), String> {
     match step {
         Step::Click(target) => {
-            // A laid-out but hidden or collapsed node still answers the query;
-            // only a node with an area can be what the step means to click.
+            // A laid-out but hidden, collapsed or off-screen node still answers
+            // the query: a closed drawer's nav links report their full size at
+            // x = -260. Only a node with an area whose centre is inside the
+            // viewport can be what the step means to click.
+            let (vw, vh) = (f64::from(viewport.0), f64::from(viewport.1));
             let visible: Vec<_> = matching(driver, target)?
                 .into_iter()
-                .filter(|n| n.width > 0.0 && n.height > 0.0)
+                .filter(|n| {
+                    let (cx, cy) = (n.x + n.width / 2.0, n.y + n.height / 2.0);
+                    n.width > 0.0
+                        && n.height > 0.0
+                        && (0.0..vw).contains(&cx)
+                        && (0.0..vh).contains(&cy)
+                })
                 .collect();
             let node = match visible.as_slice() {
                 [one] => one,
@@ -256,7 +270,7 @@ pub fn capture_scenario(
     test: &TestDefinition,
 ) -> Result<Capture, String> {
     for step in config.before_each.iter().chain(&test.steps) {
-        run_step(driver, step, config.settle_ms)?;
+        run_step(driver, step, config.settle_ms, config.viewport)?;
     }
     for target in &test.expect {
         if matching(driver, target)?.is_empty() {

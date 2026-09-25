@@ -74,10 +74,11 @@ impl FakeZoo {
         b(10.0, 4.0, 28.0, 28.0, "")
     }
 
-    /// A closed drawer's links are laid out but have nowhere to be clicked.
+    /// A closed drawer's links keep their full size and are translated off
+    /// the left edge, as the real app reports them (x = -260).
     fn link(&self, i: usize) -> NodeMatch {
-        let size = if self.drawer_open { 36.0 } else { 0.0 };
-        b(0.0, 60.0 + i as f64 * 40.0, size * 7.0, size, SECTIONS[i])
+        let x = if self.drawer_open { 0.0 } else { -260.0 };
+        b(x, 60.0 + i as f64 * 40.0, 252.0, 36.0, SECTIONS[i])
     }
 
     fn open_modal_button(&self) -> NodeMatch {
@@ -336,4 +337,37 @@ fn an_expect_that_does_not_hold_fails_the_capture() {
         err.contains("expected .rinch-navlink--active with text \"Buttons\""),
         "{err}"
     );
+}
+
+/// Distinctness is checked against every earlier capture, not only the one
+/// before: scenario 3 repeating scenario 1's screen fails too.
+#[test]
+fn a_scenario_that_repeats_a_non_adjacent_earlier_screen_fails() {
+    let config = config(
+        vec![],
+        vec![
+            nav_to("a", "Overview"),
+            nav_to("b", "Buttons"),
+            nav_to("c", "Overview"),
+        ],
+    );
+    let captures = capture_all(&mut FakeZoo::at(3), &config);
+    assert!(captures[0].1.is_ok());
+    assert!(captures[1].1.is_ok());
+    let err = captures[2].1.as_ref().unwrap_err();
+    assert!(
+        err.contains("same screen") && err.contains("\"a\""),
+        "{err}"
+    );
+}
+
+/// A closed drawer's links are full-size but off-screen; a click step does
+/// not take one of them for its target.
+#[test]
+fn an_off_screen_node_is_not_a_click_target() {
+    let mut test = nav_to("a", "Buttons");
+    test.steps.remove(0); // never opens the drawer
+    let captures = capture_all(&mut FakeZoo::at(0), &config(vec![], vec![test]));
+    let err = captures[0].1.as_ref().unwrap_err();
+    assert!(err.contains("no visible node matches"), "{err}");
 }
