@@ -746,9 +746,32 @@ fn a_vertical_move_onto_a_wrap_point_draws_on_the_target_line() {
     f.caret_at(starts[1] + 3);
     assert!(f.key("End", false));
     assert_eq!(f.head(), starts[2]);
+    let before = f.handle.caret_rect(f.handle.selection().head());
     assert!(f.key("ArrowDown", false));
     assert_eq!(f.head(), starts[3], "down onto line 3's wrap point");
-    assert_eq!(caret_line(&f, &starts), Some(2), "drawn on line 3, not 4");
+    let geometry = || {
+        let s3 = Pos(starts[3] as usize + 1);
+        let r = |a| f.handle.caret_rect_with_affinity(s3, a);
+        format!(
+            "starts {starts:?}; End caret {before:?}; affinity {:?}; at the wrap: up {:?} \
+             down {:?}; char before ({}, {}, {}), char after ({}, {}, {})",
+            f.handle.caret_affinity(),
+            r(rinch_web::CaretAffinity::Upstream),
+            r(rinch_web::CaretAffinity::Downstream),
+            f.char_rect(starts[3] - 1).left(),
+            f.char_rect(starts[3] - 1).top(),
+            f.char_rect(starts[3] - 1).right(),
+            f.char_rect(starts[3]).left(),
+            f.char_rect(starts[3]).top(),
+            f.char_rect(starts[3]).right(),
+        )
+    };
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(2),
+        "drawn on line 3, not 4: {}",
+        geometry()
+    );
     assert!(f.key("ArrowUp", false));
     assert_eq!(f.head(), starts[2]);
     assert_eq!(caret_line(&f, &starts), Some(1), "back up, drawn on line 2");
