@@ -485,10 +485,14 @@ impl RinchDocument {
                         // clipped text (#904's second review). Only a block
                         // container's own text does.
                         //
-                        // A leaf's parent is always one of those, or a
-                        // `display: contents` element inside one, which
-                        // generates no box to clip — so no leaf ellipsizes and
-                        // the rebuild below is unreached (tracked separately).
+                        // The rebuild below is still reached (#982): a flex
+                        // or grid item behind a `display: contents` wrapper is
+                        // not blockified by rinch (#998), so a `span` there
+                        // stays `display: inline` and its text is measured as a
+                        // leaf whose parent is that span. Chrome blockifies it
+                        // and draws the "…", which is what this path produces —
+                        // pinned by `a_contents_wrapped_flex_item_text_leaf_ellipsis`
+                        // in `perf_regression_scenarios.rs`.
                         !parent.computed_style.display.is_flex_or_grid_container()
                             && parent.computed_style.display != DisplayValue::Contents
                             && matches!(
