@@ -944,16 +944,12 @@ impl RinchDocument {
                 continue;
             }
             let cs = &node.computed_style;
-            let content_top = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64;
-            let mut content_height: f64 = 0.0;
-            for &child_id in &node.children {
-                if let Some(child) = self.tree.nodes.get(child_id) {
-                    let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
-                    if bottom > content_height {
-                        content_height = bottom;
-                    }
-                }
-            }
+            // The one extent walk (#995): the range the wheel, the bars and
+            // `scroll_height` answer. A walk of its own here — it was the
+            // direct `children` only — took back on every layout pass the
+            // range that one grants: an anonymous box's lines, a `display:
+            // contents` wrapper's children, an IFC root's inline content.
+            let content_height = crate::paint::scrollbar::content_extents(&self.tree, node_id).1;
             let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64;
             let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64;
             let visible_h = (node.layout.height as f64 - pad_v - border_v).max(0.0);

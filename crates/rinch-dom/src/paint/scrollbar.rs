@@ -324,12 +324,13 @@ fn extend_with_children(
         // the box (which is the container's content width) is overflow the box
         // rect does not show. The box has no padding or border
         // (`ComputedStyle::for_anonymous_box`), so its lines start at its own
-        // origin.
+        // origin. Only the width: the box's height *is* its lines' height.
+        // Only an anonymous box: a block child's lines are its own content,
+        // which the walk does not descend into (it stops at the first box).
         if child.is_anonymous_block_box
             && let Some(inline) = &child.text_layout
         {
             *right = right.max(child.layout.x as f64 + inline.layout.width() as f64);
-            *bottom = bottom.max(child.layout.y as f64 + inline.layout.height() as f64);
         }
     }
 }

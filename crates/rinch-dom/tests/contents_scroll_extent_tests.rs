@@ -795,3 +795,42 @@ fn an_unrelated_layout_pass_keeps_an_offset_at_the_bottom_of_the_range() {
         );
     }
 }
+
+/// Only an **anonymous** box's lines are the container's own text. A block
+/// child's lines are its own content, and one that clips keeps them: a
+/// 100x50 `overflow: hidden` child holding a `nowrap` line over 580px wide,
+/// then a word (so the container is mixed and lays that word out in an
+/// anonymous box). Chrome 153: 200x100 — no overflow.
+///
+/// Kills a walk that measures the lines of any child carrying a
+/// `text_layout`, not only an anonymous box's.
+#[test]
+fn a_clipping_block_childs_own_line_is_not_the_containers_content() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "width: 200px; height: 100px; overflow: auto; font-size: 16px; line-height: 20px",
+    );
+    doc.append_child(body, container);
+    let clipper = doc.create_element("div");
+    doc.set_attribute(
+        clipper,
+        "style",
+        "width: 100px; height: 50px; overflow: hidden; white-space: nowrap",
+    );
+    doc.append_child(container, clipper);
+    let long = doc.create_text(WORD5);
+    doc.append_child(clipper, long);
+    let x = doc.create_text("x");
+    doc.append_child(container, x);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(
+        max_scroll(&scrollbars(&doc.tree, container.0, 1.0)),
+        (None, None),
+        "Chrome: 200x100, no bars"
+    );
+    assert_eq!(doc.scroll_width(container), 200.0, "the wheel's range too");
+}
