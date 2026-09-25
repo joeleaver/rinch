@@ -460,6 +460,10 @@ impl RinchApp {
         vp_h: f32,
         actions: &mut Vec<AppAction>,
     ) -> Option<TextEditState> {
+        // A shell may call this outside `handle_event`, which is where the
+        // shared hit-test memo is otherwise dropped (#908): a tick since the
+        // last event may have moved a transform without moving the generation.
+        self.hit_memo.set(None);
         let target = self.text_target_at(x, y)?;
         self.prepare_target(
             target,

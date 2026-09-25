@@ -181,3 +181,96 @@ fn a_release_after_a_transform_tick_is_judged_where_the_box_is_now() {
          moved away"
     );
 }
+
+/// Review of #1003: a `data-onmousedown` handler that scrolls the scroller the
+/// press is over. `set_scroll_top` moves the generation (`mark_scrolled`), so
+/// the click that follows in the same `MouseDown` must land on the row that is
+/// under the pointer after the scroll, as a fresh hit test would.
+#[test]
+fn a_mousedown_that_scrolls_clicks_the_row_now_under_the_pointer() {
+    let clicks: Vec<Rc<Cell<u32>>> = (0..6).map(|_| Rc::new(Cell::new(0))).collect();
+    let c2 = clicks.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let scroller = scope.create_element("div");
+        scroller.set_attribute(
+            "style",
+            "overflow-y: auto; width: 200px; height: 100px; display: block",
+        );
+        for (i, c) in c2.iter().enumerate() {
+            let row = scope.create_element("div");
+            row.set_attribute("style", "height: 50px; width: 200px; display: block");
+            row.set_attribute("data-rid", &counter(scope, c));
+            if i == 0 {
+                let s = scroller.clone();
+                let h = scope.register_handler(move || s.set_scroll_top(100.0));
+                row.set_attribute("data-onmousedown", &h.0.to_string());
+            }
+            scroller.append_child(&row);
+        }
+        root.append_child(&scroller);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    frame(&mut app);
+    let (x, y) = (50.0, 25.0);
+    let button = MouseButton::Left;
+    app.handle_event(PlatformEvent::MouseDown { x, y, button }, SIZE, 1.0);
+    app.handle_event(PlatformEvent::MouseUp { x, y, button }, SIZE, 1.0);
+    let got: Vec<u32> = clicks.iter().map(|c| c.get()).collect();
+    assert_eq!(got, vec![0, 0, 1, 0, 0, 0], "click went to {got:?}");
+}
+
+/// Review of #1003: one event asks about two points. A release under the drag
+/// threshold fires `data-onmouseup` at the release point, then the deferred
+/// click at the *press* point; the memo must not answer the second from the
+/// first (mutant: drop the point from the key).
+#[test]
+fn a_release_asks_two_points_and_each_gets_its_own_answer() {
+    let a = Rc::new(Cell::new(0u32));
+    let b = Rc::new(Cell::new(0u32));
+    let (a2, b2) = (a.clone(), b.clone());
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "position: relative; width: 400px; height: 200px");
+        let left = scope.create_element("div");
+        left.set_attribute(
+            "style",
+            "position: absolute; left: 0px; top: 0px; width: 100px; height: 100px",
+        );
+        left.set_attribute("draggable", "true");
+        left.set_attribute("data-rid", &counter(scope, &a2));
+        root.append_child(&left);
+        let right = scope.create_element("div");
+        right.set_attribute(
+            "style",
+            "position: absolute; left: 100px; top: 0px; width: 100px; height: 100px",
+        );
+        right.set_attribute("data-rid", &counter(scope, &b2));
+        right.set_attribute("data-onmouseup", &counter(scope, &Rc::new(Cell::new(0))));
+        root.append_child(&right);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    frame(&mut app);
+    let button = MouseButton::Left;
+    app.handle_event(
+        PlatformEvent::MouseDown {
+            x: 98.0,
+            y: 50.0,
+            button,
+        },
+        SIZE,
+        1.0,
+    );
+    app.handle_event(
+        PlatformEvent::MouseUp {
+            x: 101.0,
+            y: 50.0,
+            button,
+        },
+        SIZE,
+        1.0,
+    );
+    assert_eq!((a.get(), b.get()), (1, 0));
+}
