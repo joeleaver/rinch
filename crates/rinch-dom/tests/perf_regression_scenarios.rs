@@ -16,7 +16,7 @@
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
-//! | `ellipsis_builds` | `ifc.rs`, text leaf | **unreached since #904** — [`a_text_leaf_ellipsis`] pins that a flex item's text builds none |
+//! | `ellipsis_builds` | `ifc.rs`, text leaf | [`a_contents_wrapped_flex_item_text_leaf_ellipsis`] (reached only because rinch does not blockify it, #998); [`a_text_leaf_ellipsis`] pins that a flex container's own text builds none |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::InlineRoot` | [`an_inline_block_holding_an_ifc`] |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::Text` | [`an_inline_flex_holding_a_text_leaf`] |
 //! | `pseudo_element_passes` | `resolve.rs`, `::before` | [`only_before_rules`] |
@@ -217,9 +217,9 @@ fn an_ifc_root_ellipsis() {
 /// direct text child of a flex container, laid out as a leaf — build **no**
 /// ellipsis (`ellipsis_builds` 1 → 0, #904's second review): that text is an
 /// anonymous flex item, which does not clip, and Chrome 153 draws it clipped
-/// with no "…". A leaf's parent is always a flex or grid container (or a
-/// `display: contents` element in one), so the text-leaf rebuild site in
-/// `copy_cached_text_layouts` is no longer reached; this frame pins that.
+/// with no "…". The text-leaf rebuild site in `copy_cached_text_layouts` is
+/// still reached, by a different leaf — see
+/// [`a_contents_wrapped_flex_item_text_leaf_ellipsis`].
 #[test]
 fn a_text_leaf_ellipsis() {
     let mut doc = doc_with(
@@ -251,6 +251,66 @@ fn a_text_leaf_ellipsis() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 4),
             (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The text-leaf site **is** reached (#982): a `span` that is a flex item
+/// only through a `display: contents` wrapper. CSS blockifies it — Chrome 153
+/// computes `display: block`, a 60px box, and draws the "…" — but rinch keeps
+/// it `display: inline` (#998), so its text is measured as a Taffy text leaf
+/// with no IFC root, and `copy_cached_text_layouts` builds the truncation.
+/// The "…" is therefore right, and this leaf path is what draws it: deleting
+/// the path clips the line with no "…" and fails here. When #998 lands the span
+/// becomes an IFC root and the other site builds it — the frame moves then,
+/// and so should the table above.
+#[test]
+fn a_contents_wrapped_flex_item_text_leaf_ellipsis() {
+    let mut doc = doc_with(
+        ".flex { display: flex; } .c { display: contents; }
+         .clip { width: 60px; overflow: hidden; white-space: nowrap;
+                 text-overflow: ellipsis; }",
+    );
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let flex = el(&mut doc, body, "div", "flex");
+    let wrapper = el(&mut doc, flex, "div", "c");
+    let clip = el(&mut doc, wrapper, "span", "clip");
+    let t = text(&mut doc, clip, "a line much too long for sixty pixels");
+    let s = cold_frame(&mut doc);
+    let leaf = doc.tree.get(t.0).unwrap();
+    assert!(
+        leaf.ifc_root.is_none(),
+        "the text is a leaf, not IFC content"
+    );
+    let w = leaf
+        .cached_text_parley
+        .as_ref()
+        .expect("the leaf keeps a layout")
+        .width();
+    assert!(w <= 60.0, "the painted line is truncated to the box: {w}");
+    expect(
+        "ellipsis (text leaf behind display: contents)",
+        &s,
+        &[
+            (StyleResolves, 4),
+            (ElementsCascaded, 5),
+            (StyleNodesVisited, 18),
+            (FullStyleWalks, 4),
+            (TaffyStyleSyncs, 9),
+            (TaffyStyleChanges, 4),
+            (ShapeMeasureText, 3),
+            (EllipsisBuilds, 1),
+            (IfcMeasureInvalidations, 4),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 3),
+            (PaintNodesVisited, 5),
             (StackingOrderBuilds, 1),
         ],
     );

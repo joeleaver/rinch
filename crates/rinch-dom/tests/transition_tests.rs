@@ -631,6 +631,7 @@ fn transform_interpolation_carries_the_percentage_coefficients() {
             functions: vec![TransformOp::Translate {
                 px: [0.0, 0.0],
                 pct: [x, y],
+                z: 0.0,
             }],
         })
     };

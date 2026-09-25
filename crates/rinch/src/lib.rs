@@ -1,4 +1,10 @@
 #![allow(clippy::collapsible_if)]
+// See the identical attribute (and its rationale) in `rinch-core/src/lib.rs`
+// (#598, #372): Android's target spec has no native ELF thread-local support,
+// so `std::sys::thread_local` erases the const/non-const distinction
+// `missing_const_for_thread_local` checks for before the lint ever runs, and it
+// fires on this target on statics that are already `const { .. }`.
+#![cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
 //! Rinch - A lightweight cross-platform GUI library for Rust.
 //!
 //! Rinch provides a reactive GUI framework using HTML/CSS for layout

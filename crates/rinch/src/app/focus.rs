@@ -14,6 +14,10 @@ use super::*;
 /// ([`crate::shell`]) diffs this against the window's current IME state each tick
 /// and issues a winit `request_ime_update` only on change — so enable/disable and
 /// candidate-box placement follow focus and the caret uniformly across targets.
+// Read only by the desktop shell (`shell::rinch_runtime`, which applies it to the
+// winit window) and by tests: the Android shell and embed drive no platform IME
+// from the arbiter yet (#372).
+#[cfg(any(feature = "desktop", test))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ImeState {
     /// Whether a text target is focused and wants IME composition.
@@ -317,6 +321,7 @@ impl RinchApp {
     /// target, disabled otherwise. The runtime applies it via the window. This is
     /// the single bridge from focus → the platform IME surface (see
     /// [`ImeState`]).
+    #[cfg(any(feature = "desktop", test))]
     pub(crate) fn ime_state(&self) -> ImeState {
         // A blurred window drives no IME, whatever holds the in-document claim
         // (issue #147): the claim is deliberately *kept* across a window blur,

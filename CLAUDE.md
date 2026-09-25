@@ -3908,6 +3908,24 @@ and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
 path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
 153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
 
+**The 3D transform functions are drawn flat** (#405; they used to compute to the
+identity, `translate3d` aside). A list holding any of them is composed as 4×4
+matrices (`transition::transform::Mat4`) and **only the result** is flattened —
+applied to `z = 0`, divided by `w`, `z` dropped, which is what Chrome draws with
+no `perspective`/`preserve-3d` ancestor — so `rotateX(60deg)` halves the height
+and `perspective(100px) translateZ(10px)` magnifies by 100/90; a plane at or
+behind the viewer (`w <= 0`) flattens to the zero matrix and is neither drawn
+nor hit, as in Chrome. A list of planar
+functions still composes as 2D affines, unchanged. Every `rotate*` interpolates
+as one primitive (common axis → angle lerp; otherwise a quaternion slerp that,
+like Chrome's, takes the shorter arc), `perspective(d)` as `1/d`, and
+`matrix3d()` pairs with `matrix3d()` only. Not Chrome's: the `perspective` and
+`transform-style` properties do nothing; a projective result (`perspective(200px)
+rotateY(30deg)`, a trapezoid) loses its `m14`/`m24`; a mismatched remainder
+with a 3D function in it is decomposed flat (#989); and `transform-origin`'s z
+and `backface-visibility: hidden` are ignored (#997).
+`crates/rinch-dom/tests/transform_3d_tests.rs` pins Chrome 153.
+
 ### Native Control Flow (if / for / match)
 
 The `rsx!` macro supports native Rust control flow. All control flow is **always reactive** — conditions, iterators, and scrutinees are automatically wrapped in closures and tracked by Effects.
