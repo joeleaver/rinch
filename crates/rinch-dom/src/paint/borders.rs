@@ -743,24 +743,23 @@ pub(super) fn paint_box_shadow(
 /// half of §7.1.1 — a negative spread grows them by the ratio rule outer
 /// shadows use). First shadow on top.
 ///
-/// Each shadow is **one** draw through **one** clip — the padding box's
+/// Each shadow reaches each pixel **once**, through **one** clip — the padding box's
 /// rounded shape, less any `viewport_holes` (a `data-viewport` hole shows the
 /// layer beneath, so the shadow is cut out of it exactly as the background
-/// is). One draw matters on the software painter: tiny-skia applies the clip
+/// is). Once matters on the software painter: tiny-skia applies the clip
 /// mask per draw, so a stack of translucent fills through one rounded clip
 /// multiplies the clip's edge coverage into itself and leaves a dark rim
 /// along the curve (review of #1014, F1), where Vello composites the clip
 /// once.
 ///
 /// - **Unblurred**: the ring is a vector fill (`EvenOdd`, hole cut out).
-/// - **Blurred**: the hole's coverage is rasterised into a mask, blurred by a
-///   Gaussian of `sigma = blur / 2` (three box blurs per axis, as browsers
-///   do), and the shadow drawn as an image whose alpha is the colour's alpha
-///   times one minus that — the definition in §7.1, so corners, rounded holes
-///   and a blur wider than the box come out as in Chrome 153
-///   (`tests/box_shadow_inset_tests.rs`). The mask is built in the paint's
-///   device pixels, cropped to what can be seen when the transform is a plain
-///   translation.
+/// - **Blurred**: the shadow is drawn as images whose alpha is the colour's
+///   alpha times one minus the hole's coverage blurred by a Gaussian of
+///   `sigma = blur / 2` — the definition in §7.1 — so corners and rounded
+///   holes come out as in Chrome 153 (`tests/box_shadow_inset_tests.rs`).
+///   See [`blurred_inset_images`] for how, and for what it costs. A blur as
+///   wide as the box or wider comes out darker than Chrome's (the centre of
+///   `inset 0 0 200px` on a 100px box: alpha 0.87 here, 0.74 in Chrome 153).
 ///
 /// Nothing is drawn outside the border box, so no ink reach, layer bound or
 /// damage rect needs to know about an inset shadow (`own_ink_outsets` and
