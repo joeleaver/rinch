@@ -70,6 +70,9 @@ fn arboard_wayland_data_control_is_enabled() {
     // session. This file holds one test, so nothing races the environment.
     std::env::set_var("WAYLAND_DISPLAY", "rinch-275-no-such-wayland-socket");
     std::env::remove_var("DISPLAY");
+    // An inherited WAYLAND_SOCKET (an fd handed over by a compositor) would be
+    // tried before WAYLAND_DISPLAY and can abort the process; drop it too.
+    std::env::remove_var("WAYLAND_SOCKET");
     let _ = arboard::Clipboard::new();
 
     let records = RECORDS.lock().unwrap().clone();
