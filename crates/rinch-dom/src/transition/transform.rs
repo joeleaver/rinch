@@ -450,11 +450,18 @@ fn interpolate_rotations(
         let (s, c) = (angle / 2.0).sin_cos();
         [axis[0] * s, axis[1] * s, axis[2] * s, c]
     };
-    let (qa, qb) = (quat(axis_a, angle_a), quat(axis_b, angle_b));
-    // Chromium's `Quaternion::Slerp`, which (like css-transforms-2's
-    // pseudo-code) does not negate one end to take the shorter arc.
-    let dot = (qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3]).clamp(-1.0, 1.0);
-    let q = if (dot.abs() - 1.0).abs() < 1e-9 {
+    let (qa, mut qb) = (quat(axis_a, angle_a), quat(axis_b, angle_b));
+    // Chromium's slerp, which takes the shorter arc: a negative dot product
+    // negates one end (`q` and `-q` are the same rotation). Measured —
+    // `rotateX(300deg)` → `rotateY(60deg)` goes the short way in Chrome 153,
+    // where css-transforms-2's pseudo-code, which negates nothing, would not.
+    let mut dot = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3];
+    if dot < 0.0 {
+        qb = qb.map(|x| -x);
+        dot = -dot;
+    }
+    let dot = dot.min(1.0);
+    let q = if (dot - 1.0).abs() < 1e-9 {
         qa
     } else {
         let theta = dot.acos();

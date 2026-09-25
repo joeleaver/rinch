@@ -356,6 +356,34 @@ fn rotations_about_different_axes_slerp() {
     );
 }
 
+/// A common axis interpolates the angle, whatever length the axis is written
+/// with — so a turn goes the way it is written, through 0°, where a slerp
+/// would take the short way through 180°.
+#[test]
+fn rotations_about_one_axis_interpolate_their_angle() {
+    check_transition(
+        "rotateX(-170deg)",
+        "rotateX(170deg)",
+        &[(0.25, [1.0, 0.0, 0.0, 0.0871557, 0.0, 0.0])],
+    );
+    check_transition(
+        "rotate3d(1, 2, 0, 20deg)",
+        "rotate3d(2, 4, 0, 80deg)",
+        &[(0.5, [0.71423, 0.142885, 0.142885, 0.928558, 0.0, 0.0])],
+    );
+}
+
+/// Two quaternions whose dot product is negative: Chrome's slerp negates one
+/// and takes the shorter arc, which css-transforms-2's pseudo-code does not.
+#[test]
+fn a_slerp_takes_the_shorter_arc() {
+    check_transition(
+        "rotateX(300deg)",
+        "rotateY(60deg)",
+        &[(0.3, [0.94711, -0.119144, -0.119144, 0.731607, 0.0, 0.0])],
+    );
+}
+
 #[test]
 fn translate_z_pairs_with_translate() {
     check_transition(
@@ -371,6 +399,11 @@ fn translate_z_pairs_with_translate() {
         "rotateY(90deg) translateZ(50px)",
         "rotateY(0deg) translateZ(50px)",
         &[(0.5, [0.707107, 0.0, 0.0, 1.0, 35.3553, 0.0])],
+    );
+    check_transition(
+        "rotateY(90deg) translateZ(0px)",
+        "rotateY(90deg) translateZ(40px)",
+        &[(0.25, [0.0, 0.0, 0.0, 1.0, 10.0, 0.0])],
     );
 }
 
