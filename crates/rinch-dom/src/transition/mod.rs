@@ -227,11 +227,29 @@ pub(crate) fn visibility_is_inherited(tree: &NodeTree, node_id: RawNodeId) -> bo
     use style::properties::{CSSWideKeyword, LonghandId, PropertyDeclarationId};
 
     let data = tree.nodes[node_id].stylo_element_data.borrow();
-    let Some(rules) = data
-        .as_ref()
-        .and_then(|d| d.styles.get_primary())
-        .and_then(|cv| cv.rules.as_ref())
-    else {
+    let Some(primary) = data.as_ref().and_then(|d| d.styles.get_primary()) else {
+        return true;
+    };
+
+    // Fast path: Stylo shares an inherited style struct with the parent until
+    // a declaration in it is applied, so a node whose `InheritedBox` *is* its
+    // parent's declared nothing in it — `visibility` included. That answers
+    // the common case without reading a single rule; the rule walk below is
+    // for a node that declared some other property of the struct, or whose
+    // parent was re-cascaded into a fresh struct without it.
+    if let Some(parent) = tree.nodes[node_id].parent.and_then(|p| tree.nodes.get(p)) {
+        let parent_data = parent.stylo_element_data.borrow();
+        if let Some(parent_primary) = parent_data.as_ref().and_then(|d| d.styles.get_primary())
+            && std::ptr::eq(
+                primary.get_inherited_box(),
+                parent_primary.get_inherited_box(),
+            )
+        {
+            return true;
+        }
+    }
+
+    let Some(rules) = primary.rules.as_ref() else {
         return true;
     };
     let guard = tree.guard.read();
@@ -343,6 +361,13 @@ pub fn propagate_inherited_visibility(tree: &mut NodeTree, from: RawNodeId, now:
             continue;
         };
         if !node.is_element() {
+            continue;
+        }
+        // Already at the handed-down value: whether it inherits or declared
+        // that same value, what its children inherit is the same, so it needs
+        // neither the rule read nor a write. (The common case on an open.)
+        if node.computed_style.visibility == inherited {
+            stack.extend(node.children.iter().map(|&c| (c, inherited)));
             continue;
         }
         let own_transition = tree

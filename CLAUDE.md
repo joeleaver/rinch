@@ -3679,10 +3679,17 @@ Three things it deliberately does not do.
   inherited (read from its Stylo rule chain, each rule at its own importance;
   one that declares its own is not reached), after every cascade pass and
   whenever a tick moves the value. The cascade also gives an inheriting node
-  its parent's *animated* value as its after-change `visibility`, so a
-  descendant with its own `visibility` transition (`Checkbox`/`Radio`'s
-  `transition: all`) starts nothing on the close pass; the hand-down starts
-  that transition when the held value flips, which is Chrome's order. A
+  that declares its own `visibility` transition (`Checkbox`/`Radio`'s
+  `transition: all`) the *animated* value of the ancestor it inherits from as
+  its after-change `visibility` (`transition::animated_inherited_visibility`;
+  only such nodes pay the rule-chain read — doing it for every descendant cost
+  `drawer_toggle` +0.8% for nothing), so it starts nothing on the close pass;
+  the hand-down starts that transition when the held value flips, which is
+  Chrome's order. And a running `visibility` transition whose current value
+  already equals a new after-change value that is not its end is cancelled
+  (§3 item 4.1 — `diff_animatable` sees no change there, so a reopen during a
+  checkbox's own hide, or of a two-way `transition: visibility` root, used to
+  run on to `hidden`). A
   transition on `color` or `font-size` still stops at its own node. Reopening
   mid-close works because §3 item 3 is implemented now (#693,
   `transition::cancel_unmatched_transitions`): a running transition whose
