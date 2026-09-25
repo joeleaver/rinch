@@ -695,10 +695,22 @@ fn open_clip_cull() -> Option<Rect> {
 
 /// The rect, in the paint's device pixels, that anything drawn right now can
 /// be seen in: the render target (grown by the ink margin) intersected with
-/// every open clip. `None` when neither is known (`paint_subtree`, no clip).
+/// every open clip and with the bounds of a partial repaint's damage. `None`
+/// when none is known (`paint_subtree`, no clip, no damage).
 pub(super) fn visible_paint_rect() -> Option<Rect> {
     let target = VIEWPORT.with(|v| v.get().map(|vp| vp.cull));
-    match (target, open_clip_cull()) {
+    let visible = match (target, open_clip_cull()) {
+        (Some(a), Some(b)) => Some(a.intersect(b)),
+        (a, b) => a.or(b),
+    };
+    // A partial repaint's damage clip is pushed outside `paint_document`'s
+    // `ClipTrackingPainter`, so `CLIP_CULL` never sees it; its rects are here.
+    let damage = DIRTY_REGION.with(|v| {
+        v.borrow()
+            .as_ref()
+            .and_then(|rects| rects.iter().copied().reduce(|a, b| a.union(b)))
+    });
+    match (visible, damage) {
         (Some(a), Some(b)) => Some(a.intersect(b)),
         (a, b) => a.or(b),
     }
@@ -3082,6 +3094,7 @@ fn paint_node(
                         node,
                         node_transform,
                         &viewport_holes,
+                        &tree.perf,
                     );
                 }
 

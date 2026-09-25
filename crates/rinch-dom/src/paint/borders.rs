@@ -777,6 +777,7 @@ pub(super) fn paint_inset_box_shadow(
     node: &Node,
     transform: Affine,
     viewport_holes: &[Rect],
+    perf: &crate::perf::PerfCounters,
 ) {
     if !shadows.iter().any(|s| s.inset) {
         return;
@@ -857,7 +858,8 @@ pub(super) fn paint_inset_box_shadow(
         let hole_empty = hole.width() <= 0.0 || hole.height() <= 0.0;
 
         if blur > 0.0 && !hole_empty {
-            let images = blurred_inset_images(pad, hole, hole_radii, blur * 0.5, color, transform);
+            let images =
+                blurred_inset_images(pad, hole, hole_radii, blur * 0.5, color, transform, perf);
             if !images.is_empty() {
                 painter.push_clip(clip_fill, transform, &clip);
                 for (origin, image) in &images {
@@ -912,9 +914,9 @@ struct ShadowImage {
 }
 
 /// The largest blurred inset shadow built, in image pixels. Past it the
-/// shadow is not drawn. The image is cropped to what can be seen first
-/// (under a translation), so only a rotated or scaled box this large reaches
-/// it.
+/// shadow is not drawn. The image is cropped to what can be seen first, so
+/// only a box this large painted with no known visible rect (`paint_subtree`
+/// into a pixmap of its own) or under a singular transform reaches it.
 const MAX_INSET_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
 
 /// Past this `sigma` a 1-D blur is three box blurs rather than a sampled
@@ -940,15 +942,21 @@ fn blurred_inset_images(
     sigma: f64,
     color: AlphaColor<Srgb>,
     transform: Affine,
+    perf: &crate::perf::PerfCounters,
 ) -> Vec<(Vec2, ShadowImage)> {
     // The image covers `pad` on whole device pixels, cropped to what can be
-    // seen when the transform is a translation (a rotated or scaled box keeps
-    // its whole padding box).
+    // seen: the render target, every clip the painter has open, and the
+    // damage of a partial repaint, pulled back through the box's transform
+    // (its bounding box, so a rotated crop keeps every pixel the rotated image
+    // can land on). A pixel's value does not depend on the crop — each is
+    // computed from lines grown by the blur's reach — so the crop changes no
+    // pixel, only how many are computed. Without the damage, a caret blink in
+    // a large panel rebuilt the panel's whole mask every frame (review of
+    // #1014, round 2).
     let mut area = Rect::new(pad.x0.floor(), pad.y0.floor(), pad.x1.ceil(), pad.y1.ceil());
-    let c = transform.as_coeffs();
-    if c[0] == 1.0 && c[1] == 0.0 && c[2] == 0.0 && c[3] == 1.0 {
+    if transform.determinant().abs() > 1e-9 {
         if let Some(visible) = super::visible_paint_rect() {
-            let visible = visible - Vec2::new(c[4], c[5]);
+            let visible = transform.inverse().transform_rect_bbox(visible);
             area = area.intersect(Rect::new(
                 visible.x0.floor(),
                 visible.y0.floor(),
@@ -964,6 +972,7 @@ fn blurred_inset_images(
     if iw.saturating_mul(ih) > MAX_INSET_IMAGE_PIXELS {
         return Vec::new();
     }
+    perf.add(crate::perf::Counter::InsetShadowMaskPx, (iw * ih) as u64);
     let blur = Blur1d::new(sigma);
     let reach = blur.reach();
 
