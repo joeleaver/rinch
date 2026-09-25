@@ -23,6 +23,7 @@
 //! | `pseudo_element_passes` | `resolve.rs`, `::after` | [`only_after_rules`] |
 //! | `inset_shadow_mask_px` | `paint/borders.rs`, blurred inset shadow (full repaint: cropped to the window) | [`a_blurred_inset_shadow_builds_its_visible_area`] |
 //! | `inset_shadow_mask_px` | the same, partial repaint (cropped to the damage) | [`a_partial_repaint_builds_only_the_damaged_part_of_an_inset_shadow`] |
+//! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
 //!
@@ -724,6 +725,61 @@ fn a_partial_repaint_builds_only_the_damaged_part_of_an_inset_shadow() {
         &s,
         &[
             (InsetShadowMaskPx, 400),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── text_shadow_masks_rasterised ───────────────────────────────────────────
+
+/// A line with a blurred `text-shadow` rasterises its mask on its first
+/// paint and serves it from the cache on the next (#980): 1, then none
+/// (unlisted, so asserted 0).
+#[test]
+fn a_blurred_text_shadow_is_rasterised_once() {
+    let mut doc = doc_with(".t { text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); }");
+    let body = doc.body();
+    let t = el(&mut doc, body, "div", "t");
+    text(&mut doc, t, "Shadowed");
+    rinch_dom::paint::clear_text_shadow_cache();
+    let s = cold_frame(&mut doc);
+    expect(
+        "blurred text-shadow, first paint",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 5),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+            (TextShadowMasksRasterised, 1),
+        ],
+    );
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "blurred text-shadow, repaint",
+        &s,
+        &[
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 2),

@@ -1148,6 +1148,113 @@ mod editor {
     }
 }
 
+// ── `text-shadow` is ink too (#980) ──────────────────────────────────────
+
+/// A box at (20, 150) holding a line of text whose `text-shadow` falls 60px
+/// below it and is blurred by 6px — wholly outside the box and past the 4px
+/// dirty margin, so only the shadow's own ink reach can name its pixels.
+fn text_panel(shadow: &str) -> (RinchApp, NodeHandle) {
+    let shadow = shadow.to_string();
+    let (app, hs) = mount_with(move |scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let root = el(
+            scope,
+            &outer,
+            "position: relative; width: 10px; height: 10px",
+        );
+        let b = el(
+            scope,
+            &root,
+            &format!(
+                "position: absolute; left: 20px; top: 150px; width: 200px; height: 20px; \
+                 font-size: 16px; line-height: 20px; color: rgb(0, 0, 0); \
+                 text-shadow: {shadow}"
+            ),
+        );
+        let t = scope.create_text("HHHH HHHH");
+        b.append_child(&t);
+        (outer, vec![b])
+    });
+    (app, hs[0].clone())
+}
+
+/// The band the shadow of [`text_panel`]'s text is painted in.
+const TEXT_SHADOW_BAND: (i32, i32, i32, i32) = (20, 206, 80, 234);
+
+/// A **static** row shifted down by reflow (a spacer above it grows), its
+/// text's shadow 60px below its box: nothing walks a static box's subtree, so
+/// only the row's own text-shadow ink names where the old shadow was painted.
+/// (A moved *positioned* box is grown by its subtree's reach already, so it
+/// cannot tell whether the shadow is ink — review of #1020, F6.)
+#[test]
+fn a_static_row_shifted_by_reflow_clears_its_old_text_shadow() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let col = el(scope, &outer, "width: 300px");
+        let spacer = el(scope, &col, "height: 100px");
+        let row = el(
+            scope,
+            &col,
+            "height: 20px; font-size: 16px; line-height: 20px; color: rgb(0, 0, 0); \
+             text-shadow: 0 60px 6px rgb(255, 0, 0)",
+        );
+        let t = scope.create_text("HHHH HHHH");
+        row.append_child(&t);
+        (outer, vec![spacer])
+    });
+    // The text at y 100..120 casts its shadow at 160..180, softened by 6px.
+    assert_clean_after(&mut app, (0, 154, 90, 186), |app| {
+        hs[0].set_style("height", "40px");
+        resolve(app);
+    });
+}
+
+/// A widely blurred shadow's soft edge reaches past the hard shadow and the
+/// 4px dirty margin: only the blur's share of the ink names it (review of
+/// #1020, F5).
+#[test]
+fn a_widely_blurred_text_shadow_dropped_in_place_is_cleared() {
+    let (mut app, b) = text_panel("0 60px 20px rgb(255, 0, 0)");
+    // The hard shadow is at y 210..230; its blurred tail is checked at 236..250.
+    assert_clean_after(&mut app, (20, 236, 120, 250), |app| {
+        b.set_style("text-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// A text-shadow dropped in place is cleared.
+#[test]
+fn a_text_shadow_dropped_in_place_is_cleared() {
+    let (mut app, b) = text_panel("0 60px 6px rgb(255, 0, 0)");
+    assert_clean_after(&mut app, TEXT_SHADOW_BAND, |app| {
+        b.set_style("text-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// A text-shadow added in place is painted whole, blur and all.
+#[test]
+fn a_text_shadow_added_in_place_is_painted_whole() {
+    let (mut app, b) = text_panel("none");
+    let _ = full_frame(&mut app);
+    b.set_style("text-shadow", "0 60px 6px rgb(255, 0, 0)");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert!(
+        ink_in(&full, TEXT_SHADOW_BAND) > 100,
+        "positive control: the new shadow is there"
+    );
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
 // ── #997: backface-visibility and transform-origin z ─────────────────────────
 /// A change that hides or shows a box through its backface, or moves it by its
 /// origin's z, repaints incrementally and matches a full frame. The first pins

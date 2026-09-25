@@ -355,6 +355,24 @@ out why a number moved, run the same interaction in a live app:
 Or set `RINCH_PERF=1` and read the one line each frame prints. Close DevTools
 before you read the reactive counters (see the limits above).
 
+## What a blurred `text-shadow` costs
+
+A `text-shadow` with a blur radius is rasterised into a coverage mask, blurred
+and filled once per shadowed block of text (#980). The masks are kept between
+paints, so a repaint of shadowed text that has not changed, and is not cut by
+the edge of the window, a clip or the damage, pays only the fill — a scroll
+included, once each whole-pixel position a scroll can put each glyph at has
+been drawn (a sub-pixel scroll changes a line's mask only where it moves a
+glyph to another pixel). A shadow the window, a clip or the damage cuts is
+rasterised again whenever that cut moves across it. The
+`text_shadow_masks_rasterised` counter says how many a frame rasterised. The first
+paint of a page of blurred shadows costs about twice what the same page with an
+unblurred shadow does, and more the larger the blur and the display scale: the
+mask is the text grown by one and a half blur radii on every side, in physical
+pixels. On a build with no software rasteriser (`embed` without
+`software-renderer`) a blurred shadow is drawn as up to 13 copies — fewer, or
+none, for a shadow of more than 153 glyphs, decided by that shadow alone.
+
 ## CI regression job
 
 Counters say *what* a frame did; they do not say how much it cost. The `Perf`
@@ -384,6 +402,8 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::inset_move.list_500` | One drag step of an absolute panel beside the list: `set_styles` of `left`/`top` (the inset fast path), then layout |
 | `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |
 | `dom::shadow_paint.fields_40` | A full `TinySkiaPainter` paint of 40 input-like boxes, each with a 1px border, a 6px radius and a blurred `inset` shadow (#974: a blurred mask built and drawn per box) |
+| `dom::text_shadow_paint.paragraphs_40` | The same 40 paragraphs with `text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4)` on each, painted again: every blurred mask is served from the cache (#980) |
+| `dom::text_shadow_paint.paragraphs_40_cold` | The same page restyled to a 4.01px blur first, so no mask is cached: every visible shadow is rasterised into a coverage mask, blurred and filled |
 | `shell::pointer_move_warm.warm_x50` | 50 pointer moves inside one row of a 500-row scroller, each followed by `AboutToWait` |
 | `shell::pointer_move_cold.cold` | The first move after a layout, which builds the hit-test cache |
 | `shell::hover_frame.partial_repaint` | A move onto another row, then the frame: layout and a partial software repaint |
