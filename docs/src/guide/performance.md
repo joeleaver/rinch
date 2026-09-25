@@ -366,6 +366,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::append_row.list_500` / `remove_row` | Append or remove one row, then layout |
 | `dom::resize_1px.list_500` | Layout at a viewport 1px wider |
 | `dom::set_text_content.list_500` | `set_text_content` on one row's wrapped text, then layout |
+| `dom::inset_move.list_500` | One drag step of an absolute panel beside the list: `set_styles` of `left`/`top` (the inset fast path), then layout |
 | `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |
 | `shell::pointer_move_warm.warm_x50` | 50 pointer moves inside one row of a 500-row scroller, each followed by `AboutToWait` |
 | `shell::pointer_move_cold.cold` | The first move after a layout, which builds the hit-test cache |

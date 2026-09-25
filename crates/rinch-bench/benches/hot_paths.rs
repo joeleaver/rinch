@@ -47,6 +47,12 @@ list_bench!(resize_1px, setup_resize, op_resize);
 list_bench!(set_text_content, setup_set_text, op_set_text);
 
 #[library_benchmark]
+#[bench::list_500(setup = setup_inset_move)]
+fn inset_move(f: InsetFixture) -> InsetFixture {
+    black_box(measure(black_box(f), op_inset_move))
+}
+
+#[library_benchmark]
 #[bench::text_page_warm(setup = setup_full_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
@@ -91,6 +97,7 @@ library_benchmark_group!(
         remove_row,
         resize_1px,
         set_text_content,
+        inset_move,
         full_paint
     ]
 );
