@@ -385,3 +385,81 @@ fn up_onto_a_shorter_soft_wrapped_line_stays_on_it() {
     key(&mut app, KeyCode::ArrowDown, false);
     assert_eq!(caret(&app, id), text.len(), "and the goal brings it back");
 }
+
+/// The goal is dropped by any other change to the caret, even one that puts
+/// the field back exactly as the vertical move left it (Blink's rule; review
+/// of #937). `abcdef`⏎`ab`⏎`abcdef`: Up clamps to the end of `ab` with the
+/// goal at column 6; Left then Right returns to the same caret, and the next Up
+/// measures from column 2 — Chrome 153 answers 2, a stale goal 6.
+#[test]
+fn a_horizontal_round_trip_drops_the_goal() {
+    let (mut app, id) = mount("textarea", None, 200);
+    type_str(&mut app, "abcdef\nab\nabcdef");
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 9, "the end of `ab`");
+    key(&mut app, KeyCode::ArrowLeft, false);
+    key(&mut app, KeyCode::ArrowRight, false);
+    assert_eq!(caret(&app, id), 9, "back where the vertical move left it");
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 2, "column 2, not the stale column 6");
+}
+
+/// Same, through an edit that undoes itself: a typed `z` and Backspace leave
+/// the text and caret as they were, and the goal is still gone.
+#[test]
+fn an_edit_round_trip_drops_the_goal() {
+    let (mut app, id) = mount("textarea", None, 200);
+    type_str(&mut app, "abcdef\nab\nabcdef");
+    key(&mut app, KeyCode::ArrowUp, false);
+    type_str(&mut app, "z");
+    key(&mut app, KeyCode::Backspace, false);
+    assert_eq!(value(&app, id), "abcdef\nab\nabcdef");
+    assert_eq!(caret(&app, id), 9);
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 2, "column 2, not the stale column 6");
+}
+
+/// And through a click that lands on the caret the vertical move left.
+#[test]
+fn a_click_on_the_same_caret_drops_the_goal() {
+    let (mut app, id) = mount("textarea", None, 200);
+    type_str(&mut app, "abcdef\nab\nabcdef");
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 9);
+    let (x, y, _, h) = caret_rect(&mut app, id, 9);
+    for ev in [
+        PlatformEvent::MouseDown {
+            x: x + 1.0,
+            y: y + h / 2.0,
+            button: MouseButton::Left,
+        },
+        PlatformEvent::MouseUp {
+            x: x + 1.0,
+            y: y + h / 2.0,
+            button: MouseButton::Left,
+        },
+    ] {
+        app.handle_event(ev, (800, 600), 1.0);
+    }
+    app.resolve_and_repaint(800.0, 600.0);
+    assert_eq!(caret(&app, id), 9, "the click put the caret back at 9");
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 2, "column 2, not the stale column 6");
+}
+
+/// A caret *at* a soft-wrap point paints at the start of the lower line, so
+/// ArrowUp from it moves to the line above that one (review of #937: the
+/// Upstream-affinity mutant survived every other fixture). Three `abcd `
+/// words, one per 70px line.
+#[test]
+fn up_from_a_soft_wrap_point_moves_from_the_lower_line() {
+    let (mut app, id) = mount("textarea", None, 70);
+    type_str(&mut app, "abcd abcd abcd");
+    key(&mut app, KeyCode::Home, false);
+    assert_eq!(caret(&app, id), 0);
+    key(&mut app, KeyCode::ArrowDown, false);
+    key(&mut app, KeyCode::ArrowDown, false);
+    assert_eq!(caret(&app, id), 10, "start of the third visual line");
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 5, "start of the second visual line, not 0");
+}

@@ -519,14 +519,21 @@ pub struct RinchApp {
     /// `data-preedit` attribute) and never part of the input's committed value.
     pub(crate) focused_input_preedit: Option<(String, Option<(usize, usize)>)>,
     /// The horizontal goal of the last ArrowUp/ArrowDown in a `<textarea>`
-    /// (issue #307): `(node, selection after the move, text length, x)`. A
-    /// run of vertical moves keeps aiming at the column it started from, as a
+    /// (issue #307): `(node, caret generation after the move, x)`. A run of
+    /// vertical moves keeps aiming at the column it started from, as a
     /// browser does, so a short line in between does not pull the caret left
-    /// for good. It holds only while nothing else has moved the caret or
-    /// changed the text since — any other edit, click or key leaves a
-    /// selection that no longer matches, and the next vertical move measures
-    /// afresh — so nothing has to remember to clear it.
-    pub(crate) input_vertical_goal: Option<(usize, Selection, usize, f32)>,
+    /// for good. Blink's rule: the goal holds only while the last change to
+    /// the field's caret or text was a vertical move. That is decided by
+    /// [`Self::input_caret_generation`], not by comparing the selection: a
+    /// Left then Right, or a typed character then Backspace, puts the field
+    /// back exactly as the vertical move left it and must still drop the goal.
+    pub(crate) input_vertical_goal: Option<(usize, u64, f32)>,
+    /// Bumped by every [`Self::sync_input_cursor_to_dom`] — the one place a
+    /// focused field's caret, selection or text reaches the DOM from an edit
+    /// command, a click, a focus change, an IME commit or an adopted
+    /// programmatic `value` write. A vertical move records the generation its
+    /// own sync produced; any later sync invalidates its goal.
+    pub(crate) input_caret_generation: std::cell::Cell<u64>,
     /// A programmatic `value` write to the focused `<input>` that arrived while
     /// an IME composition was in flight (issue #238). Adopting it then would
     /// move the caret under the composition, so it is held here and applied
@@ -698,6 +705,7 @@ impl RinchApp {
             focused_input_node_id: None,
             focused_input_preedit: None,
             input_vertical_goal: None,
+            input_caret_generation: std::cell::Cell::new(0),
             focused_input_deferred_value: None,
             focus_target: FocusTarget::None,
             window_focused: true,
@@ -2514,13 +2522,14 @@ impl RinchApp {
 
         let mut goal_x = None;
         let target = if is_textarea {
-            // The goal carries over only from a vertical move that left the
-            // field exactly as it is now.
+            // The goal carries over only when nothing has touched the field's
+            // caret or text since the last vertical move (read after the
+            // adopt above, which bumps the generation if it took a write).
+            let generation = self.input_caret_generation.get();
             let carried = self
                 .input_vertical_goal
-                .as_ref()
-                .filter(|(n, sel, l, _)| *n == node_id && *sel == selection && *l == len)
-                .map(|(.., x)| *x);
+                .filter(|&(n, g, _)| n == node_id && g == generation)
+                .map(|(.., x)| x);
             let d = doc.borrow();
             match Self::input_text_layout(
                 &d.tree,
@@ -2550,8 +2559,9 @@ impl RinchApp {
         } else {
             Selection::cursor(target)
         };
-        self.input_vertical_goal = goal_x.map(|x| (node_id, state.selection.clone(), len, x));
         self.sync_input_cursor_to_dom();
+        let generation = self.input_caret_generation.get();
+        self.input_vertical_goal = goal_x.map(|x| (node_id, generation, x));
     }
 
     /// Where a vertical move from byte `origin` lands in `layout` (laid out
@@ -2718,6 +2728,9 @@ impl RinchApp {
 
     /// Write cursor/selection attributes to the focused input's DOM node.
     fn sync_input_cursor_to_dom(&self) {
+        // Any caret/text change invalidates a vertical move's goal x (#307).
+        self.input_caret_generation
+            .set(self.input_caret_generation.get().wrapping_add(1));
         let Some(node_id) = self.focused_input_node_id else {
             return;
         };
