@@ -515,6 +515,14 @@ let menu = Menu::new()
     .item(MenuItem::new("Quit").on_click(close_current_window));
 ```
 
+### Lifetime and Threads
+
+The tray lives exactly as long as the `TrayIcon` that `build()` returned. Dropping it removes the icon from the panel and then releases its menu callbacks, so an icon that can still be on screen keeps working items. On Linux the drop shuts ksni's D-Bus service down and waits up to one second for it to close its connection, which on a healthy desktop takes a few milliseconds. If the tray host has stopped answering, the drop returns after that second anyway. The callbacks then stay registered until the service has closed, and are released by the next tray build or drop on the same thread. Keep the handle for as long as you want the tray, for example as a local in `main` that lives until the event loop exits: `let _tray = …` keeps it, while a bare `let _ = …` drops it at once.
+
+A `TrayIcon` is **neither `Send` nor `Sync`**, on every platform. Keep it on the thread that built it. A `static OnceLock<TrayIcon>`, an `Arc<Mutex<TrayIcon>>`, or moving it into `std::thread::spawn` does not compile; a `thread_local!` works. This is deliberate. Menu callbacks capture `Signal`s (which are `!Send`) and always run on the main thread, so they live in a thread-local registry, and dropping the tray releases them from the registry of the thread it is dropped on. Dropped on another thread, it would release nothing. On Linux this has been the case since the tray started releasing its callbacks on drop (issue #183); before that the Linux handle was `Send`.
+
+A disabled item (`MenuItem::new("…").enabled(false)`) is shown greyed out and registers no callback. Its `on_click` never runs.
+
 ### Minimize-to-Tray Pattern
 
 Combine system tray with `on_close_requested` to hide instead of quit:

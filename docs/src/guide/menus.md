@@ -120,7 +120,7 @@ fn main() {
 
 A callback may rebuild the menu it was dispatched from — including registering new items and shortcuts — from inside its own handler.
 
-Menu ids are also released when the menu that registered them goes away: building a new native menu bar releases the previous bar's, and dropping a `TrayIcon` releases that tray's. Keep the `TrayIcon` for as long as you want its menu to work.
+Menu ids are also released when the menu that registered them goes away: building a new native menu bar releases the previous bar's, and dropping a `TrayIcon` releases that tray's after taking its icon off the panel. Keep the `TrayIcon` for as long as you want the tray. See [System Tray](platform.md#lifetime-and-threads) for why it has to stay on the thread that built it.
 
 A shortcut consumes the keystroke only when a callback actually runs. A chord belonging to a disabled item, to an item given a `shortcut` but no `on_click`, or to a component that has since unmounted falls through to the app instead of being swallowed — and never shadows a live duplicate of the same chord.
 

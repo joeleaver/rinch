@@ -1163,7 +1163,7 @@ fn key_code_name(key: KeyCode) -> Option<&'static str> {
 /// callback is inert, just never removed — so the tests below assert on the size
 /// of the registry directly.
 #[cfg(test)]
-fn callback_count() -> usize {
+pub(crate) fn callback_count() -> usize {
     MENU_CALLBACKS.with(|map| map.borrow().len())
 }
 
