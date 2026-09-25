@@ -60,20 +60,34 @@ pub type TrayResult<T> = Result<T, TrayError>;
 /// On non-Linux: the tray icon is created on the main thread. Menu events
 /// are handled by the global push-based handler — no polling thread.
 ///
-/// On Linux: a background thread runs the ksni D-Bus event loop.
+/// On Linux: ksni runs the StatusNotifierItem D-Bus service on a background
+/// thread of its own.
 ///
-/// Dropping this struct removes the tray icon, and releases the menu callbacks
-/// it registered — so replacing a tray reclaims the previous one's ids rather
-/// than leaving them in the registry forever (issue #183).
+/// **Dropping this struct removes the tray icon**, and releases the menu
+/// callbacks it registered — so replacing a tray reclaims the previous one's ids
+/// rather than leaving them in the registry forever (issue #183). Keep the
+/// handle for as long as you want the tray. On Linux the drop shuts the ksni
+/// service down and waits for it to close its D-Bus connection, which is what
+/// takes the icon off the panel; the callbacks are released only after that,
+/// so an icon that is still on screen never has dead items (issue #377).
 ///
-/// Keep the handle for as long as you want the tray. On Linux the icon itself
-/// currently outlives a dropped handle (the ksni thread is detached and parks
-/// forever), but its menu items no longer do anything once the callbacks are
-/// released — the icon lingering there is the pre-existing bug, not the release.
+/// # Threads
+///
+/// A `TrayIcon` that carries a menu is **neither `Send` nor `Sync`**: keep it
+/// on the thread that built it (the main thread), for example in a local of
+/// `main` or in a `thread_local!`, not in a `static OnceLock` or an
+/// `Arc<Mutex<_>>`, and do not move it into a spawned thread. This is
+/// deliberate. The menu's callbacks live in a thread-local registry (they
+/// capture `Signal`s, which are `!Send`, and always run on the main thread),
+/// and dropping the tray releases them from *that thread's* registry — dropped
+/// anywhere else, it would reclaim nothing. The handle holds `Rc`s for exactly
+/// that reason, so the compiler enforces it. On Linux this became true with
+/// issue #183 (the handle had held only a `JoinHandle` before, and was `Send`);
+/// on other platforms `tray-icon`'s own handle was never `Send`.
 pub struct TrayIcon {
-    /// On Linux: background thread running ksni.
-    /// On non-Linux: None (tray icon lives on main thread).
-    _thread: Option<std::thread::JoinHandle<()>>,
+    /// On Linux: the running ksni service, shut down on drop.
+    #[cfg(target_os = "linux")]
+    service: Option<Box<dyn TrayService>>,
     /// On non-Linux: the tray-icon handle (must be kept alive).
     #[cfg(not(target_os = "linux"))]
     _tray: Option<tray_icon::TrayIcon>,
@@ -83,7 +97,53 @@ pub struct TrayIcon {
     /// only grew: a tray rebuilt at runtime left its whole previous menu behind,
     /// and on Linux it could not even overwrite, because each build mints fresh
     /// `ksni-{N}` ids from a monotonic counter.
+    ///
+    /// Declared after `service`, and released after [`TrayIcon`]'s `Drop` has
+    /// shut the service down: the icon leaves the panel before its items stop
+    /// working, never the other way round.
     _menu: Option<crate::menu::MenuRegistration>,
+}
+
+/// The running Linux tray service, as [`TrayIcon`] needs it: something to shut
+/// down. A trait rather than the ksni handle itself only so the drop order can
+/// be pinned without a D-Bus session.
+#[cfg(target_os = "linux")]
+trait TrayService {
+    /// Stop the service and return once it has closed its D-Bus connection —
+    /// the moment the StatusNotifierWatcher drops the item and the panel
+    /// removes the icon.
+    fn shutdown(&self);
+}
+
+#[cfg(target_os = "linux")]
+impl TrayService for ksni::blocking::Handle<RinchKsniTray> {
+    fn shutdown(&self) {
+        // Sending the request never blocks. Waiting for it does: ksni's
+        // `wait` is a `block_on` on ksni's own runtime, which panics when the
+        // calling thread is already inside a tokio runtime — and an app may well
+        // have entered one on its main thread. So the wait runs on a thread of
+        // its own, which is inside no runtime whatever the caller is. Joining it
+        // keeps the promise the drop makes: when it returns the icon is gone.
+        let awaiter = ksni::blocking::Handle::shutdown(self);
+        let _ = std::thread::Builder::new()
+            .name("rinch-tray-shutdown".into())
+            .spawn(move || awaiter.wait())
+            .map(|waiter| waiter.join());
+    }
+}
+
+impl Drop for TrayIcon {
+    fn drop(&mut self) {
+        // The icon first, the callbacks after (they are released when `_menu`
+        // drops, once this returns). ksni's own `Handle` does not stop the
+        // service when dropped — its loop ignores a closed request channel and
+        // runs until told to shut down — so without this the icon stayed on the
+        // panel for the life of the process, with every item dead (#377).
+        #[cfg(target_os = "linux")]
+        if let Some(service) = self.service.take() {
+            service.shutdown();
+        }
+    }
 }
 
 /// Builder for creating a system tray icon.
@@ -201,7 +261,6 @@ impl TrayIconBuilder {
         }));
 
         Ok(TrayIcon {
-            _thread: None,
             _tray: Some(tray),
             _menu: registration,
         })
@@ -247,31 +306,20 @@ impl TrayIconBuilder {
             menu_entries,
         };
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(), TrayError>>(1);
-
-        let thread = std::thread::Builder::new()
+        // `spawn` runs ksni's service on a thread ksni starts itself, but it
+        // first `block_on`s the D-Bus setup on ksni's runtime — which panics on
+        // a thread that is already inside a tokio runtime. Doing the spawn on a
+        // short-lived thread keeps the caller's runtime context out of it.
+        let handle = std::thread::Builder::new()
             .name("rinch-tray".into())
-            .spawn(move || {
-                match tray.spawn() {
-                    Ok(_handle) => {
-                        let _ = tx.send(Ok(()));
-                        // Block forever — ksni runs its own D-Bus event loop.
-                        loop {
-                            std::thread::sleep(std::time::Duration::from_secs(3600));
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(TrayError::CreateFailed(e.to_string())));
-                    }
-                }
-            })
-            .map_err(|e| TrayError::CreateFailed(format!("failed to spawn tray thread: {}", e)))?;
-
-        rx.recv()
-            .map_err(|e| TrayError::CreateFailed(format!("tray thread died: {}", e)))??;
+            .spawn(move || tray.spawn())
+            .map_err(|e| TrayError::CreateFailed(format!("failed to spawn tray thread: {}", e)))?
+            .join()
+            .map_err(|_| TrayError::CreateFailed("tray thread panicked".into()))?
+            .map_err(|e| TrayError::CreateFailed(e.to_string()))?;
 
         Ok(TrayIcon {
-            _thread: Some(thread),
+            service: Some(Box::new(handle)),
             _menu: registration,
         })
     }
@@ -328,6 +376,12 @@ fn convert_menu_entries_inner(
                 callback,
                 callback_owner,
             } => {
+                // A disabled item fires nothing: ksni never activates one. Minting
+                // an id and registering its callback anyway left a registry entry
+                // that could never be dispatched, holding the closure's captures
+                // alive for the life of the tray (#377) — the muda side returns
+                // early in `build_muda_item` for the same reason.
+                let callback = callback.filter(|_| enabled);
                 let menu_id = callback.map(|cb| {
                     let id = format!(
                         "ksni-{}",
@@ -471,7 +525,11 @@ mod tests {
 
         let mut ids = Vec::new();
         registered_ids(&entries, &mut ids);
-        assert_eq!(ids.len(), 3, "only the three enabled items get an id: {ids:?}");
+        assert_eq!(
+            ids.len(),
+            3,
+            "only the three enabled items get an id: {ids:?}"
+        );
         assert_eq!(
             crate::menu::callback_count() - before,
             3,
@@ -503,6 +561,70 @@ mod tests {
         assert_eq!(crate::menu::callback_count(), before);
     }
 
+    /// Issue #377 (1), without a D-Bus session: dropping a `TrayIcon` shuts its
+    /// service down — once — and does so while the menu callbacks are still
+    /// registered, so the icon never outlives its items.
+    ///
+    /// The live fixture below is what shows `shutdown` actually removes the
+    /// icon; this one pins that the drop calls it, and the order.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_the_tray_shuts_the_service_down_before_releasing_the_callbacks() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct Probe {
+            shutdowns: Rc<Cell<u32>>,
+            callbacks_at_shutdown: Rc<Cell<Option<usize>>>,
+        }
+        impl TrayService for Probe {
+            fn shutdown(&self) {
+                self.shutdowns.set(self.shutdowns.get() + 1);
+                self.callbacks_at_shutdown
+                    .set(Some(crate::menu::callback_count()));
+            }
+        }
+
+        let before = crate::menu::callback_count();
+        let (_entries, registration) = convert_menu_to_ksni_entries(
+            Menu::new()
+                .item(MenuItem::new("a").on_click(|| {}))
+                .item(MenuItem::new("b").on_click(|| {})),
+        );
+        let shutdowns = Rc::new(Cell::new(0));
+        let callbacks_at_shutdown = Rc::new(Cell::new(None));
+        let tray = TrayIcon {
+            service: Some(Box::new(Probe {
+                shutdowns: shutdowns.clone(),
+                callbacks_at_shutdown: callbacks_at_shutdown.clone(),
+            })),
+            _menu: Some(registration),
+        };
+        assert_eq!(
+            shutdowns.get(),
+            0,
+            "nothing shuts down while the handle lives"
+        );
+
+        drop(tray);
+
+        assert_eq!(
+            shutdowns.get(),
+            1,
+            "the drop shuts the service down exactly once"
+        );
+        assert_eq!(
+            callbacks_at_shutdown.get(),
+            Some(before + 2),
+            "the service is shut down while its callbacks are still registered"
+        );
+        assert_eq!(
+            crate::menu::callback_count(),
+            before,
+            "and the callbacks are released after"
+        );
+    }
+
     /// Issue #377 (1), live: a dropped `TrayIcon` must take its icon with it.
     ///
     /// Needs a session bus with a StatusNotifierWatcher and a registered host
@@ -531,7 +653,9 @@ mod tests {
                 .expect("busctl runs");
             assert!(out.status.success(), "busctl: {out:?}");
             let needle = format!("StatusNotifierItem-{}-", std::process::id());
-            String::from_utf8_lossy(&out.stdout).matches(&needle).count()
+            String::from_utf8_lossy(&out.stdout)
+                .matches(&needle)
+                .count()
         }
         fn wait_for(want: usize) -> usize {
             let mut seen = ours();
