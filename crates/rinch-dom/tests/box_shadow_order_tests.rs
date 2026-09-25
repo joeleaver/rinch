@@ -102,7 +102,13 @@ fn three_offset_shadows_stack_first_on_top() {
     let mid = TOP + 50;
     let right = LEFT + BOX;
     assert_px(&p, right + 2, mid, RED, "all three cover: the first");
-    assert_px(&p, right + 7, mid, GREEN, "the second and third cover: the second");
+    assert_px(
+        &p,
+        right + 7,
+        mid,
+        GREEN,
+        "the second and third cover: the second",
+    );
     assert_px(&p, right + 15, mid, BLUE, "only the third covers");
     assert_px(&p, right + 21, mid, NONE, "none covers");
 }
