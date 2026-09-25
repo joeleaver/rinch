@@ -220,9 +220,9 @@ impl HitCache {
     ///
     /// `extent_reads_scroll` is whether `id`'s own extent reads its scroll
     /// offset at all: a box that clips confines its extent to its own box and
-    /// never folds its children in, so scrolling one — which is every real
-    /// scroll container — changes no extent anywhere, and nothing is dropped
-    /// but the sequences. The hit tester's `flow_extent` is the authority on
+    /// never folds its children in, so scrolling one — which is every scroll
+    /// container but a non-atomic inline one — changes no extent anywhere,
+    /// and nothing is dropped but the sequences. The hit tester's `flow_extent` is the authority on
     /// that rule; `NodeTree::mark_scrolled` passes `!clips_overflow()`, the
     /// same predicate it reads.
     ///

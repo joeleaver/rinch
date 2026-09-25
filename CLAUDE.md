@@ -2506,9 +2506,11 @@ drag, `apply_scroll_into_view` (every `scroll_into_view` and
 generation still moves (so `move_hit` re-tests) and every stacking sequence is
 dropped, but extents are kept. An extent is relative to its own node and reads
 only its **own** scroll offset, never an ancestor's, and a box that clips — every
-real scroll container — does not fold its children in at all, so scrolling one
+scroll container but an inline span — does not fold its children in at all, so scrolling one
 changes no extent anywhere. A box that does not clip and has a scroll offset
-anyway (only `set_scroll_top` gives one that) drops its own extent and the chain
+anyway (`set_scroll_top` can give one that, and so can the wheel, which finds a
+non-atomic inline `overflow: auto` span as a scroll container) drops its own
+extent and the chain
 folded out of it, which `flow_extent` records with `note_extent_parent`. A new
 input to `flow_extent` that is not relative to its node breaks this. (Layout's
 own clamp and the `display: none` reset are inside passes that invalidate in

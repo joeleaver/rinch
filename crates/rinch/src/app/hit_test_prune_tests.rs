@@ -333,8 +333,9 @@ fn a_scrolled_list_hits_identically() {
 ///
 /// A real scroller clips, so its extent is its own box and no extent anywhere
 /// moves when it scrolls. The chain half is reached only by a box that does
-/// **not** clip and still has a scroll offset — which only a programmatic
-/// `set_scroll_top` gives one — so `wrapper` is that box, and a chain that
+/// **not** clip and still has a scroll offset — `set_scroll_top` gives one
+/// here (the wheel can too, on an inline `overflow: auto` span, which never
+/// clips) — so `wrapper` is that box, and a chain that
 /// stops one link short leaves `plain`, its parent, answering from before its
 /// scroll.
 ///

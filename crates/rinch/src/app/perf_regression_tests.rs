@@ -778,7 +778,7 @@ fn a_second_wheel_notch_recomputes_no_extent() {
             (StackingOrderBuilds, 2),
             (GlyphCacheHits, 126),
             (ClipMasks, 2),
-            (ClipMaskPx, 367044),
+            (ClipMaskPx, 245640),
             (HitTests, 1),
             (HitTestNodesVisited, 4),
         ],
