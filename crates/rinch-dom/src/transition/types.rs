@@ -5,6 +5,7 @@ use peniko::Color;
 use style::values::computed::TransitionProperty as StyloTransitionProperty;
 use style::values::generics::easing::TimingKeyword;
 
+use super::transform::{Affine, TransformOp, compose, interpolate_lists, lists_equivalent};
 use crate::computed_style::{
     DimensionValue, LengthPercentageAutoValue, LengthPercentageValue, TransformValue,
 };
@@ -409,46 +410,33 @@ pub enum AnimatableValue {
     LengthPercentage(LengthPercentageValue),
     LengthPercentageAuto(LengthPercentageAutoValue),
     Transform(AnimatableTransform),
-    /// Component-based transform for correct interpolation of rotate, scale, etc.
-    ///
-    /// The percentage translate rides alongside the ops rather than inside
-    /// them: a `TransformOp` is resolved by `compose_matrices`, which has no
-    /// box to resolve a percentage against.
-    TransformComponents {
-        ops: Vec<TransformOp>,
-        pct_translate_w: [f64; 2],
-        pct_translate_h: [f64; 2],
-    },
 }
 
-/// A transform captured for interpolation.
+/// A transform captured for interpolation: the computed **function list**
+/// (#414).
 ///
-/// The composed matrix **plus** the percentage-translate coefficients that
-/// `TransformValue` deliberately keeps outside it, because a percentage
-/// translate cannot be resolved until the element's border box is known
-/// (#212).
-///
-/// Carrying only the matrix — which is what the transition machinery used to do
-/// — makes every percentage translate read as `0` for the whole duration of a
-/// transition (#403). Since the final translation is *linear* in these four
-/// coefficients, interpolating them alongside the six matrix entries is exact;
-/// there is no need to resolve them against the box first, and no way to, since
-/// diffing happens before layout.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// It used to be the composed matrix plus the percentage-translate
+/// coefficients (#403), lerped entry by entry. That kept a percentage
+/// translate alive but made every rotation shrink toward its midpoint; the
+/// function list is what CSS interpolates, and a percentage translate rides
+/// inside its `Translate` function (see [`super::transform`]).
+#[derive(Debug, Clone, PartialEq)]
 pub struct AnimatableTransform {
-    pub matrix: [f64; 6],
-    pub pct_translate_w: [f64; 2],
-    pub pct_translate_h: [f64; 2],
+    /// The functions, in list order. Empty is `none`.
+    pub functions: Vec<TransformOp>,
 }
 
 impl AnimatableTransform {
     /// The interpolable projection of a computed transform.
     pub fn from_style(tf: &TransformValue) -> Self {
         Self {
-            matrix: tf.matrix,
-            pct_translate_w: tf.pct_translate_w,
-            pct_translate_h: tf.pct_translate_h,
+            functions: tf.functions.clone(),
         }
+    }
+
+    /// The composed transform, percentage coefficients included.
+    pub fn composed(&self) -> Affine {
+        compose(&self.functions)
     }
 
     /// Write an interpolated transform back into a computed style.
@@ -457,38 +445,22 @@ impl AnimatableTransform {
     /// a transform even on the frame where it happens to compose to the
     /// identity, and the flag also decides whether the element establishes a
     /// stacking context — which must not flicker across the animation.
-    pub fn to_style(self) -> TransformValue {
+    pub fn to_style(&self) -> TransformValue {
+        let c = self.composed();
         TransformValue {
-            matrix: self.matrix,
+            matrix: c.matrix,
             is_identity: false,
-            pct_translate_w: self.pct_translate_w,
-            pct_translate_h: self.pct_translate_h,
+            pct_translate_w: c.pct_w,
+            pct_translate_h: c.pct_h,
+            functions: self.functions.clone(),
         }
     }
 
-    fn lerp(&self, to: &AnimatableTransform, t: f64) -> Self {
-        let mix = |a: f64, b: f64| a + (b - a) * t;
+    fn interpolate(&self, to: &AnimatableTransform, t: f64) -> Self {
         Self {
-            matrix: std::array::from_fn(|i| mix(self.matrix[i], to.matrix[i])),
-            pct_translate_w: std::array::from_fn(|i| {
-                mix(self.pct_translate_w[i], to.pct_translate_w[i])
-            }),
-            pct_translate_h: std::array::from_fn(|i| {
-                mix(self.pct_translate_h[i], to.pct_translate_h[i])
-            }),
+            functions: interpolate_lists(&self.functions, &to.functions, t),
         }
     }
-}
-
-/// Individual transform operations for component-wise interpolation.
-#[derive(Debug, Clone)]
-pub enum TransformOp {
-    Rotate(f64),         // radians
-    Scale(f64, f64),     // sx, sy
-    Translate(f64, f64), // tx, ty in px
-    SkewX(f64),          // radians
-    SkewY(f64),          // radians
-    Matrix([f64; 6]),    // fallback
 }
 
 impl AnimatableValue {
@@ -581,26 +553,7 @@ impl AnimatableValue {
                 LengthPercentageValue::Zero,
             )),
             (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => {
-                Some(AnimatableValue::Transform(a.lerp(b, t as f64)))
-            }
-            (
-                AnimatableValue::TransformComponents {
-                    ops: a,
-                    pct_translate_w: aw,
-                    pct_translate_h: ah,
-                },
-                AnimatableValue::TransformComponents {
-                    ops: b,
-                    pct_translate_w: bw,
-                    pct_translate_h: bh,
-                },
-            ) => {
-                let mix = |x: f64, y: f64| x + (y - x) * t as f64;
-                Some(AnimatableValue::TransformComponents {
-                    ops: TransformOp::interpolate_lists(a, b, t as f64),
-                    pct_translate_w: [mix(aw[0], bw[0]), mix(aw[1], bw[1])],
-                    pct_translate_h: [mix(ah[0], bh[0]), mix(ah[1], bh[1])],
-                })
+                Some(AnimatableValue::Transform(a.interpolate(b, t as f64)))
             }
             // Incompatible types — snap immediately.
             //
@@ -630,11 +583,8 @@ impl AnimatableValue {
     /// compares only against a percentage — resolving one needs a containing
     /// block, which style resolution does not have at diff time.
     ///
-    /// [`AnimatableValue::TransformComponents`] always compares unequal: it is
-    /// produced only by the `@keyframes` extractor, and animations do not come
-    /// through [`PropertyChange`], which `diff_animatable` is the sole producer
-    /// of. Should one ever arrive, "unequal" means the transition restarts,
-    /// which is what it did before this comparison existed.
+    /// Two transforms are the same value when interpolating between them would
+    /// hold still — see [`lists_equivalent`](super::transform::lists_equivalent).
     pub fn same_computed_value(&self, other: &AnimatableValue) -> bool {
         use super::diff::{approx_eq, colors_equal};
         match (self, other) {
@@ -649,7 +599,7 @@ impl AnimatableValue {
                 AnimatableValue::LengthPercentageAuto(b),
             ) => length_percentage_auto_eq(a, b),
             (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => {
-                animatable_transform_eq(a, b)
+                lists_equivalent(&a.functions, &b.functions)
             }
             _ => false,
         }
@@ -702,22 +652,6 @@ fn length_percentage_auto_eq(a: &LengthPercentageAutoValue, b: &LengthPercentage
         ) => approx_eq(*px1, *px2) && approx_eq(*pct1, *pct2),
         _ => false,
     }
-}
-
-fn animatable_transform_eq(a: &AnimatableTransform, b: &AnimatableTransform) -> bool {
-    let close = |x: f64, y: f64| (x - y).abs() < 0.001;
-    a.matrix
-        .iter()
-        .zip(b.matrix.iter())
-        .all(|(x, y)| close(*x, *y))
-        && a.pct_translate_w
-            .iter()
-            .zip(b.pct_translate_w.iter())
-            .all(|(x, y)| close(*x, *y))
-        && a.pct_translate_h
-            .iter()
-            .zip(b.pct_translate_h.iter())
-            .all(|(x, y)| close(*x, *y))
 }
 
 /// Linearly interpolate between two colors in sRGB space.
@@ -902,102 +836,6 @@ impl ActiveTransition {
         let elapsed = current_time_ms - self.start_time_ms;
         elapsed >= self.delay_ms + self.duration_ms
     }
-}
-
-impl TransformOp {
-    /// Convert a single transform operation to a 2D affine matrix [a, b, c, d, e, f].
-    pub fn to_matrix(&self) -> [f64; 6] {
-        match self {
-            TransformOp::Rotate(rad) => {
-                let cos = rad.cos();
-                let sin = rad.sin();
-                [cos, sin, -sin, cos, 0.0, 0.0]
-            }
-            TransformOp::Scale(sx, sy) => [*sx, 0.0, 0.0, *sy, 0.0, 0.0],
-            TransformOp::Translate(tx, ty) => [1.0, 0.0, 0.0, 1.0, *tx, *ty],
-            TransformOp::SkewX(rad) => [1.0, 0.0, rad.tan(), 1.0, 0.0, 0.0],
-            TransformOp::SkewY(rad) => [1.0, rad.tan(), 0.0, 1.0, 0.0, 0.0],
-            TransformOp::Matrix(m) => *m,
-        }
-    }
-
-    /// Interpolate between two transform op lists component-wise.
-    /// If lists have matching operations, interpolate each pair.
-    /// If lists differ in length/type, fall back to matrix interpolation.
-    pub fn interpolate_lists(a: &[TransformOp], b: &[TransformOp], t: f64) -> Vec<TransformOp> {
-        if a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.same_type(y)) {
-            a.iter()
-                .zip(b.iter())
-                .map(|(x, y)| x.interpolate(y, t))
-                .collect()
-        } else {
-            // Fall back: compose each list to matrix, interpolate matrices
-            let ma = compose_matrices(a);
-            let mb = compose_matrices(b);
-            let mut result = [0.0_f64; 6];
-            for i in 0..6 {
-                result[i] = ma[i] + (mb[i] - ma[i]) * t;
-            }
-            vec![TransformOp::Matrix(result)]
-        }
-    }
-
-    fn same_type(&self, other: &TransformOp) -> bool {
-        matches!(
-            (self, other),
-            (TransformOp::Rotate(_), TransformOp::Rotate(_))
-                | (TransformOp::Scale(_, _), TransformOp::Scale(_, _))
-                | (TransformOp::Translate(_, _), TransformOp::Translate(_, _))
-                | (TransformOp::SkewX(_), TransformOp::SkewX(_))
-                | (TransformOp::SkewY(_), TransformOp::SkewY(_))
-                | (TransformOp::Matrix(_), TransformOp::Matrix(_))
-        )
-    }
-
-    fn interpolate(&self, other: &TransformOp, t: f64) -> TransformOp {
-        match (self, other) {
-            (TransformOp::Rotate(a), TransformOp::Rotate(b)) => {
-                TransformOp::Rotate(a + (b - a) * t)
-            }
-            (TransformOp::Scale(ax, ay), TransformOp::Scale(bx, by)) => {
-                TransformOp::Scale(ax + (bx - ax) * t, ay + (by - ay) * t)
-            }
-            (TransformOp::Translate(ax, ay), TransformOp::Translate(bx, by)) => {
-                TransformOp::Translate(ax + (bx - ax) * t, ay + (by - ay) * t)
-            }
-            (TransformOp::SkewX(a), TransformOp::SkewX(b)) => TransformOp::SkewX(a + (b - a) * t),
-            (TransformOp::SkewY(a), TransformOp::SkewY(b)) => TransformOp::SkewY(a + (b - a) * t),
-            (TransformOp::Matrix(a), TransformOp::Matrix(b)) => {
-                let mut result = [0.0_f64; 6];
-                for i in 0..6 {
-                    result[i] = a[i] + (b[i] - a[i]) * t;
-                }
-                TransformOp::Matrix(result)
-            }
-            _ => self.clone(), // shouldn't happen due to same_type check
-        }
-    }
-}
-
-/// Compose a list of transform operations into a single 2D matrix.
-pub fn compose_matrices(ops: &[TransformOp]) -> [f64; 6] {
-    let mut result = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
-    for op in ops {
-        let m = op.to_matrix();
-        result = multiply_2d_matrices(result, m);
-    }
-    result
-}
-
-fn multiply_2d_matrices(a: [f64; 6], b: [f64; 6]) -> [f64; 6] {
-    [
-        a[0] * b[0] + a[2] * b[1],
-        a[1] * b[0] + a[3] * b[1],
-        a[0] * b[2] + a[2] * b[3],
-        a[1] * b[2] + a[3] * b[3],
-        a[0] * b[4] + a[2] * b[5] + a[4],
-        a[1] * b[4] + a[3] * b[5] + a[5],
-    ]
 }
 
 /// A detected change in an animatable property.

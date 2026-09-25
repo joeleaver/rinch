@@ -3818,6 +3818,18 @@ stops.
 `full_restyle_animation_refresh_tests.rs` are the pins, with the Chrome
 measurements and mutant-by-fixture tables in their module docs.
 
+**A `transform` transitions and animates by function list, not matrix entry by
+entry** (#414). `TransformValue` keeps the list it was composed from
+(`functions`; paint, hit testing and layout still read only the composed
+`matrix` + percentage coefficients), and `transition::transform::interpolate_lists`
+pairs functions by type, pads a shorter list (and `none`) with identity
+functions, and decomposes the unmatched remainder the way Chromium does
+(Gram–Schmidt shear, shorter-way angle, linear translation). A rotation keeps
+its size mid-turn, `rotate(0deg)` → `rotate(360deg)` is a change that spins,
+and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
+path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
+153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
+
 ### Native Control Flow (if / for / match)
 
 The `rsx!` macro supports native Rust control flow. All control flow is **always reactive** — conditions, iterators, and scrutinees are automatically wrapped in closures and tracked by Effects.

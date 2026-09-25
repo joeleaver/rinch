@@ -7,9 +7,10 @@ use style::values::specified::Color as SpecifiedColor;
 
 use crate::computed_style::{
     ComputedStyle, DimensionValue, LengthPercentageAutoValue, LengthPercentageValue,
-    accumulate_pct, color_from_specified,
+    color_from_specified,
 };
-use crate::transition::types::{AnimatableValue, TransformOp, TransitionProperty};
+use crate::transition::transform::{Affine, TransformOp};
+use crate::transition::types::{AnimatableTransform, AnimatableValue, TransitionProperty};
 
 use super::types::KeyframeStop;
 use crate::transition::types::TimingFunction;
@@ -215,17 +216,12 @@ fn convert_declaration(
             Some((TransitionProperty::FontSize, AnimatableValue::Float(px)))
         }
 
-        PropertyDeclaration::Transform(t) => {
-            let (ops, pct_translate_w, pct_translate_h) = transform_ops(t, fs, root_font_size)?;
-            Some((
-                TransitionProperty::Transform,
-                AnimatableValue::TransformComponents {
-                    ops,
-                    pct_translate_w,
-                    pct_translate_h,
-                },
-            ))
-        }
+        PropertyDeclaration::Transform(t) => Some((
+            TransitionProperty::Transform,
+            AnimatableValue::Transform(AnimatableTransform {
+                functions: transform_ops(t, fs, root_font_size)?,
+            }),
+        )),
 
         _ => None, // Unsupported property — silently skip
     }
@@ -287,27 +283,14 @@ fn extract_base_style_values(style: &ComputedStyle) -> Vec<(TransitionProperty, 
         values.push((TransitionProperty::Color, AnimatableValue::Color(c)));
     }
 
-    if !style.transform.is_identity {
-        values.push((
-            TransitionProperty::Transform,
-            AnimatableValue::TransformComponents {
-                ops: vec![TransformOp::Matrix(style.transform.matrix)],
-                // The percentage part of a translate lives outside the matrix
-                // and would otherwise be lost for the whole animation (#403).
-                pct_translate_w: style.transform.pct_translate_w,
-                pct_translate_h: style.transform.pct_translate_h,
-            },
-        ));
-    } else {
-        values.push((
-            TransitionProperty::Transform,
-            AnimatableValue::TransformComponents {
-                ops: vec![TransformOp::Matrix([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])],
-                pct_translate_w: [0.0, 0.0],
-                pct_translate_h: [0.0, 0.0],
-            },
-        ));
-    }
+    // The whole function list, percentage translates included — carrying only
+    // the matrix dropped those for the whole animation (#403), and carrying it
+    // as one `matrix()` would make it decompose against every authored stop
+    // rather than pair with it (#414).
+    values.push((
+        TransitionProperty::Transform,
+        AnimatableValue::Transform(AnimatableTransform::from_style(&style.transform)),
+    ));
 
     values
 }
@@ -465,9 +448,10 @@ fn serialised_length_px(css: &str, font_size: f32, root_font_size: f32) -> Optio
     None
 }
 
-/// A specified `transform` list as component ops, plus the percentage part of
-/// its translates as the linear form in (width, height) — the #212 channel,
-/// accumulated by the same `accumulate_pct` the cascade uses.
+/// A specified `transform` list as the function list the cascade would compute
+/// for it (`transform_from_stylo`), so a keyframe stop and a computed style
+/// pair function by function (#414). A percentage translate rides in its
+/// `Translate` function, as it does there.
 ///
 /// Percentage translates are why this is typed now: `translate(50%, 0)` used to
 /// be parsed by a `strip_suffix("px")` and dropped, taking the whole transform
@@ -484,93 +468,58 @@ fn transform_ops(
     transform: &style::values::specified::Transform,
     font_size: f32,
     root_font_size: f32,
-) -> Option<(Vec<TransformOp>, [f64; 2], [f64; 2])> {
+) -> Option<Vec<TransformOp>> {
     use style::values::generics::transform::GenericTransformOperation as Op;
 
-    // `transform: none`. Identity as a scale, so it interpolates
-    // component-wise against a `scale()` stop rather than falling back to
-    // matrix interpolation.
-    if transform.0.is_empty() {
-        return Some((vec![TransformOp::Scale(1.0, 1.0)], [0.0; 2], [0.0; 2]));
-    }
-
-    let mut ops: Vec<TransformOp> = Vec::new();
-    let mut m = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0];
-    let mut pct_w = [0.0_f64; 2];
-    let mut pct_h = [0.0_f64; 2];
-
-    // A translate's px part goes into the op; its percentage part goes into the
-    // linear form, accumulated against the matrix *as composed so far*.
-    let split = |lp: &SpecLengthPercentage| match StopLength::resolve(lp, font_size, root_font_size)
-    {
-        Some(StopLength::Px(px)) => Some((px as f64, 0.0)),
-        Some(StopLength::Percent(p)) => Some((0.0, p as f64)),
-        None => None,
+    // A translate's pixel and percentage parts, `(px, fraction)`; an absent
+    // axis is `(0, 0)`.
+    let split = |lp: Option<&SpecLengthPercentage>| match lp {
+        None => Some((0.0, 0.0)),
+        Some(lp) => match StopLength::resolve(lp, font_size, root_font_size)? {
+            StopLength::Px(px) => Some((px as f64, 0.0)),
+            StopLength::Percent(p) => Some((0.0, p as f64)),
+        },
+    };
+    let translate = |x: Option<&SpecLengthPercentage>, y: Option<&SpecLengthPercentage>| {
+        let (px, pct_x) = split(x)?;
+        let (py, pct_y) = split(y)?;
+        Some(TransformOp::Translate {
+            px: [px, py],
+            pct: [pct_x, pct_y],
+        })
     };
 
-    for op in transform.0.iter() {
-        let top = match op {
-            Op::Matrix(mat) => TransformOp::Matrix([
-                mat.a.get() as f64,
-                mat.b.get() as f64,
-                mat.c.get() as f64,
-                mat.d.get() as f64,
-                mat.e.get() as f64,
-                mat.f.get() as f64,
-            ]),
-            Op::Rotate(angle) => TransformOp::Rotate(angle.radians() as f64),
-            Op::Scale(sx, sy) => TransformOp::Scale(sx.get() as f64, sy.get() as f64),
-            Op::ScaleX(sx) => TransformOp::Scale(sx.get() as f64, 1.0),
-            Op::ScaleY(sy) => TransformOp::Scale(1.0, sy.get() as f64),
-            Op::SkewX(angle) => TransformOp::SkewX(angle.radians() as f64),
-            Op::SkewY(angle) => TransformOp::SkewY(angle.radians() as f64),
-            Op::Skew(ax, ay) => TransformOp::Matrix([
-                1.0,
-                (ay.radians() as f64).tan(),
-                (ax.radians() as f64).tan(),
-                1.0,
-                0.0,
-                0.0,
-            ]),
-            Op::TranslateX(tx) => {
-                let (px, pct) = split(tx)?;
-                accumulate_pct(&m, pct, 0.0, &mut pct_w, &mut pct_h);
-                TransformOp::Translate(px, 0.0)
-            }
-            Op::TranslateY(ty) => {
-                let (py, pct) = split(ty)?;
-                accumulate_pct(&m, 0.0, pct, &mut pct_w, &mut pct_h);
-                TransformOp::Translate(0.0, py)
-            }
-            Op::Translate(tx, ty) => {
-                let (px, x_pct) = split(tx)?;
-                let (py, y_pct) = split(ty)?;
-                accumulate_pct(&m, x_pct, y_pct, &mut pct_w, &mut pct_h);
-                TransformOp::Translate(px, py)
-            }
-            Op::Translate3D(tx, ty, _tz) => {
-                let (px, x_pct) = split(tx)?;
-                let (py, y_pct) = split(ty)?;
-                accumulate_pct(&m, x_pct, y_pct, &mut pct_w, &mut pct_h);
-                TransformOp::Translate(px, py)
-            }
-            // 3D operations flatten to identity, as in the cascade (#405).
-            _ => TransformOp::Matrix([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
-        };
-
-        let o = top.to_matrix();
-        m = [
-            m[0] * o[0] + m[2] * o[1],
-            m[1] * o[0] + m[3] * o[1],
-            m[0] * o[2] + m[2] * o[3],
-            m[1] * o[2] + m[3] * o[3],
-            m[0] * o[4] + m[2] * o[5] + m[4],
-            m[1] * o[4] + m[3] * o[5] + m[5],
-        ];
-        ops.push(top);
-    }
-
-    Some((ops, pct_w, pct_h))
+    // `transform: none` is the empty list, which pads to identity functions of
+    // whatever the other stop holds.
+    transform
+        .0
+        .iter()
+        .map(|op| {
+            Some(match op {
+                Op::Matrix(mat) => TransformOp::Matrix(Affine::from_matrix([
+                    mat.a.get() as f64,
+                    mat.b.get() as f64,
+                    mat.c.get() as f64,
+                    mat.d.get() as f64,
+                    mat.e.get() as f64,
+                    mat.f.get() as f64,
+                ])),
+                Op::Rotate(angle) => TransformOp::Rotate(angle.radians() as f64),
+                Op::Scale(sx, sy) => TransformOp::Scale(sx.get() as f64, sy.get() as f64),
+                Op::ScaleX(sx) => TransformOp::Scale(sx.get() as f64, 1.0),
+                Op::ScaleY(sy) => TransformOp::Scale(1.0, sy.get() as f64),
+                Op::SkewX(angle) => TransformOp::SkewX(angle.radians() as f64),
+                Op::SkewY(angle) => TransformOp::SkewY(angle.radians() as f64),
+                Op::Skew(ax, ay) => TransformOp::Skew(ax.radians() as f64, ay.radians() as f64),
+                Op::TranslateX(tx) => translate(Some(tx), None)?,
+                Op::TranslateY(ty) => translate(None, Some(ty))?,
+                Op::Translate(tx, ty) => translate(Some(tx), Some(ty))?,
+                Op::Translate3D(tx, ty, _tz) => translate(Some(tx), Some(ty))?,
+                // 3D operations flatten to identity, as in the cascade (#405).
+                _ => TransformOp::Matrix(Affine::IDENTITY),
+            })
+        })
+        .collect()
 }
 
 /// Convert a specified timing function to our TimingFunction.
