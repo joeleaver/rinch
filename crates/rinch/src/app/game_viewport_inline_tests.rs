@@ -616,6 +616,7 @@ type OracleCase = (&'static str, &'static str, &'static str, f64, (u32, u32));
 fn fresh_frames_match_the_reference_draw() {
     let cases: &[OracleCase] = &[
         ("r2d-plain", "", "", 1.0, (400, 200)),
+        ("r2d-round", "border-radius: 24px;", "", 1.0, (400, 200)),
         ("r2d-opacity", "", "opacity: 0.5;", 1.0, (400, 200)),
         (
             "r2d-round-op",

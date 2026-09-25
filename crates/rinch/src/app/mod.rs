@@ -1826,15 +1826,9 @@ impl RinchApp {
                     }
                 }
                 rinch_dom::paint::set_dirty_rects(Some(damage.rects()));
-                let clip_shape = match damage.rects() {
-                    [one] => rinch_dom::paint::painter::PaintShape::Rect(*one),
-                    _ => rinch_dom::paint::painter::PaintShape::BezPath(damage.clip_path()),
-                };
-                painter.push_clip(
-                    peniko::Fill::NonZero,
-                    peniko::kurbo::Affine::IDENTITY,
-                    &clip_shape,
-                );
+                // Not a plain `push_clip`: a box inside the damage has to be
+                // drawn the way the full repaint draws it (#1007).
+                painter.push_damage_clip(&damage);
                 if let Some(doc) = &self.doc {
                     let mut d = doc.borrow_mut();
                     let d = &mut *d;
