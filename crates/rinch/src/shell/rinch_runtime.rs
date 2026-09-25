@@ -130,6 +130,22 @@ pub(crate) fn send_native_event(event: RinchNativeEvent) {
     }
 }
 
+/// The two halves of a `proxy_wake_up`: run the queued main-thread work
+/// (`run_queued`: the callbacks, then the deferred-work inboxes they woke),
+/// then the queued native events (`drain_native`, which re-arms the
+/// `ReRender` coalescing in [`NativeEventQueue::drain`]).
+///
+/// A free function over the steps so a test can put a second thread's
+/// `run_on_main_thread` exactly between them (issue #988).
+fn drain_wake_queues<S>(
+    state: &mut S,
+    run_queued: impl FnOnce(&mut S),
+    drain_native: impl FnOnce(&mut S),
+) {
+    run_queued(state);
+    drain_native(state);
+}
+
 /// Queue a closure to run on the main (UI) thread.
 ///
 /// The closure will execute during the next event-loop wake, before the
@@ -1690,25 +1706,31 @@ impl ApplicationHandler for RinchRuntime {
         // changed) instead of repainting on every wake.
         rinch_core::clear_signals_changed();
 
-        // Drain main-thread callback queue.
-        rinch_core::drain_main_callbacks();
+        let mut deferred_ran = false;
+        drain_wake_queues(
+            self,
+            |rt| {
+                // Drain main-thread callback queue.
+                rinch_core::drain_main_callbacks();
 
-        // Then the work other threads sent an app itself (issue #328): a plain
-        // `<input>` paste whose clipboard read just answered. Its wake is one
-        // of the callbacks drained above, so this is the turn it asked for.
-        // It dirties the field it pastes into, but a field with no layout
-        // change leaves `has_pending_layout` false, so ask for the frame here.
-        let deferred_ran = self.app.run_deferred_work() > 0;
-        if let Some(dt_app) = &mut self.devtools_app
-            && dt_app.run_deferred_work() > 0
-        {
-            if let Some(w) = &self.devtools_window {
-                w.request_redraw();
-            }
-        }
-
-        // Drain queued native events.
-        self.drain_native_events(event_loop);
+                // Then the work other threads sent an app itself (issue #328):
+                // a plain `<input>` paste whose clipboard read just answered.
+                // Its wake is one of the callbacks drained above, so this is
+                // the turn it asked for. It dirties the field it pastes into,
+                // but a field with no layout change leaves
+                // `has_pending_layout` false, so ask for the frame here.
+                deferred_ran = rt.app.run_deferred_work() > 0;
+                if let Some(dt_app) = &mut rt.devtools_app
+                    && dt_app.run_deferred_work() > 0
+                {
+                    if let Some(w) = &rt.devtools_window {
+                        w.request_redraw();
+                    }
+                }
+            },
+            // Drain queued native events.
+            |rt| rt.drain_native_events(event_loop),
+        );
 
         // A cross-thread Signal::send()/update_send() drained above runs its
         // effects on this thread, but the ReRender handler's resolve_and_repaint
@@ -3729,6 +3751,70 @@ mod native_event_queue_tests {
             "a drain re-arms it"
         );
         let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    }
+
+    /// Issue #988. A second thread's `run_on_main_thread` lands between a
+    /// wake's two halves: after the main-thread queue was emptied (so
+    /// `queue_main_callback` answers "was empty" and it sends a `ReRender`)
+    /// and before the native drain (so that `ReRender` coalesces into the one
+    /// that caused this wake, and asks for no wake of its own). The drain then
+    /// consumes the old `ReRender`, and nothing is left to wake the loop for
+    /// the new callback.
+    ///
+    /// The invariant: once the wake returns, the injected callback has either
+    /// run or has a wake owed (a `ReRender` in the queue — which is what
+    /// `send_native_event` wakes the loop for). "Or has run" keeps the fixture
+    /// honest if another test in this process drains the shared main queue in
+    /// the meantime; that drain runs it, which is not a lost wake.
+    #[test]
+    fn a_callback_queued_between_the_two_drains_keeps_its_wake() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        // The wake being served: one queued callback and its ReRender.
+        run_on_main_thread(|| {});
+        NATIVE_EVENT_QUEUE
+            .lock()
+            .unwrap()
+            .push(RinchNativeEvent::ReRender);
+
+        let injected_ran = Arc::new(AtomicBool::new(false));
+        let flag = injected_ran.clone();
+        drain_wake_queues(
+            &mut (),
+            |_| {
+                rinch_core::drain_main_callbacks();
+                // Another thread, right between the two halves.
+                std::thread::spawn(move || {
+                    run_on_main_thread(move || flag.store(true, Ordering::SeqCst))
+                })
+                .join()
+                .unwrap();
+            },
+            |_| {
+                let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+            },
+        );
+
+        let wake_owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()) > 0;
+        if !wake_owed {
+            // Only another test's drain may have taken it; give that drain
+            // time to finish running it.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            while !injected_ran.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+        }
+        let ran = injected_ran.load(Ordering::SeqCst);
+        // Leave the shared queue as we found it.
+        rinch_core::drain_main_callbacks();
+        assert!(
+            wake_owed || ran,
+            "the callback queued between the drains is stranded: still queued, no wake owed"
+        );
     }
 
     /// Only `ReRender` coalesces: every other event is a distinct request, and
