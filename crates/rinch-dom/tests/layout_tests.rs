@@ -2559,6 +2559,56 @@ mod inset_fast_path {
         assert_eq!(layout_of(&doc, child).x, 205.0);
     }
 
+    /// A *logical* important inset is its own longhand (`inset-inline-start`),
+    /// which the cascade maps to a physical side only later; the guard must
+    /// still decline. It does so for any important logical inset, whatever
+    /// the writing mode (review of #927, F1).
+    #[test]
+    fn a_stylesheet_important_logical_inset_beats_an_inline_left_write() {
+        for rule in [
+            ".pin { inset-inline-start: 50px !important; }",
+            ".pin { inset-inline: 50px auto !important; }",
+        ] {
+            let (mut doc, child) = positioned_with_sheet(rule, "pin");
+            assert_eq!(layout_of(&doc, child).x, 55.0, "{rule}: baseline");
+            doc.set_style(child, "left", "200px");
+            doc.resolve_layout(800.0, 600.0);
+            assert_eq!(layout_of(&doc, child).x, 55.0, "{rule}: after the write");
+            restyle_unrelated(&mut doc, child);
+            assert_eq!(layout_of(&doc, child).x, 55.0, "{rule}: settled");
+        }
+    }
+
+    /// The guard walks the whole matched-rule chain, not only its leaf: an
+    /// inline `!important` on another property puts the style attribute's
+    /// important node above the author's important `left`. Kills a walk that
+    /// reads only the leaf rule node (review of #927, K5).
+    #[test]
+    fn an_inline_important_elsewhere_does_not_hide_an_author_important_left() {
+        let (mut doc, child) = positioned_with_sheet(".pin { left: 50px !important; }", "pin");
+        doc.set_style(child, "width", "12px !important");
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(layout_of(&doc, child).x, 55.0);
+        doc.set_style(child, "left", "200px");
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(layout_of(&doc, child).x, 55.0);
+        restyle_unrelated(&mut doc, child);
+        assert_eq!(layout_of(&doc, child).x, 55.0);
+    }
+
+    /// Every requested side is checked, not only the first: the important
+    /// side here is `top`, a later `INSET_SIDES` slot than `left`. Kills a
+    /// check of the first requested side only (review of #927, K6).
+    #[test]
+    fn a_batch_whose_second_side_is_important_declines() {
+        let (mut doc, child) = positioned_with_sheet(".pin { top: 30px !important; }", "pin");
+        doc.set_styles(child, &[("left", "200px"), ("top", "150px")]);
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(layout_of(&doc, child).y, 37.0);
+        restyle_unrelated(&mut doc, child);
+        assert_eq!(layout_of(&doc, child).y, 37.0);
+    }
+
     // ── #280: the fast path and `transition` ─────────────────────────────────
 
     /// A `transition` naming an inset must leave the fast path agreeing with
