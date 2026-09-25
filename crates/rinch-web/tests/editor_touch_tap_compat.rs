@@ -199,8 +199,9 @@ fn under(x: f32, y: f32) -> web_sys::Element {
         .unwrap_or_else(|| panic!("nothing under ({x}, {y})"))
 }
 
-/// A touch contact's `pointerdown` + `pointerup` at `(x, y)`.
-fn touch_pointer(x: f32, y: f32) {
+/// A touch contact's `pointerdown` + `pointerup` at `(x, y)`. Returns the
+/// `pointerup`'s `timeStamp`.
+fn touch_pointer(x: f32, y: f32) -> f64 {
     let init = web_sys::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
@@ -216,6 +217,48 @@ fn touch_pointer(x: f32, y: f32) {
     init.set_buttons(0);
     let up = web_sys::PointerEvent::new_with_event_init_dict("pointerup", &init).unwrap();
     target.dispatch_event(&up).unwrap();
+    up.time_stamp()
+}
+
+/// A `mousedown` whose `timeStamp` is forced to `at_ms`. In Chrome 153 a touch
+/// tap's compatibility `mousedown` carries its `pointerup`'s exact `timeStamp`
+/// (measured over CDP in PR #968's review), where a synthetic event gets
+/// `performance.now()`, always a little later.
+fn mousedown_at(x: f32, y: f32, detail: i32, at_ms: f64) -> web_sys::MouseEvent {
+    let init = web_sys::MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_button(0);
+    init.set_buttons(1);
+    init.set_detail(detail);
+    init.set_client_x(x as i32);
+    init.set_client_y(y as i32);
+    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict("mousedown", &init).unwrap();
+    let forge = js_sys::Function::new_with_args(
+        "ev, t",
+        "Object.defineProperty(ev, 'timeStamp', { value: t });",
+    );
+    forge
+        .call2(&wasm_bindgen::JsValue::NULL, &ev, &at_ms.into())
+        .unwrap();
+    assert_eq!(ev.time_stamp(), at_ms, "the forged timeStamp took");
+    under(x, y).dispatch_event(&ev).unwrap();
+    ev
+}
+
+/// A pen contact's pointer event.
+fn pen_event(name: &str, x: f32, y: f32, buttons: u16) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_type("pen");
+    init.set_pointer_id(9);
+    init.set_is_primary(true);
+    init.set_client_x(x as i32);
+    init.set_client_y(y as i32);
+    init.set_buttons(buttons);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap();
+    under(x, y).dispatch_event(&ev).unwrap();
 }
 
 /// A primary `mousedown` at `(x, y)` with click count `detail`, as the browser
@@ -281,7 +324,7 @@ fn a_taps_compatibility_mousedown_redoes_nothing() {
     let (x, y) = f.point(1, 3);
     let (tx0, w0) = (f.tx.get(), writes());
 
-    touch_pointer(x, y);
+    let up_ms = touch_pointer(x, y);
     let (tx1, w1) = (f.tx.get(), writes());
     // Positive control: the pointerup path serviced the tap.
     assert_eq!(
@@ -297,7 +340,9 @@ fn a_taps_compatibility_mousedown_redoes_nothing() {
         "caret at the tap, got {caret:?}"
     );
 
-    let down = mousedown(x, y, 1);
+    // The real browser's timing: the compatibility mousedown carries the
+    // pointerup's own timeStamp (elapsed 0).
+    let down = mousedown_at(x, y, 1, up_ms);
     mouseup(x, y, 1);
     assert_eq!(
         f.tx.get(),
@@ -525,5 +570,118 @@ fn a_compat_mousedown_after_another_editor_took_focus_runs_the_press() {
     assert_eq!(f.handle.selection(), caret);
     root_b.unmount();
     host_b.remove();
+    f.teardown();
+}
+
+/// A `mousedown` past the window is a press of its own, even at the tap's point.
+///
+/// Kills: no upper bound on the window.
+#[wasm_bindgen_test]
+fn a_mousedown_past_the_window_runs_the_press() {
+    let f = Fixture::mount(CONTENT);
+    let (x, y) = f.point(0, 8);
+    let up_ms = touch_pointer(x, y);
+    assert!(
+        f.capture_focused(),
+        "positive control: the tap focused the editor"
+    );
+    let tx = f.tx.get();
+    mousedown_at(x, y, 1, up_ms + 801.0);
+    mouseup(x, y, 1);
+    assert_eq!(f.tx.get(), tx + 1, "801 ms after the tap, the press runs");
+    f.teardown();
+}
+
+/// A pen tap leaves no record. Its compatibility `mousedown` comes *before* its
+/// `pointerup` (Chrome 153, measured), so a record would never be consumed and
+/// would swallow the next press at that point: here a press-drag that must
+/// select. From PR #968's review (`probe_pen_tap_then_press_drag_selects`).
+///
+/// Kills: recording a pen tap (the selection stays collapsed).
+#[wasm_bindgen_test]
+fn a_pen_tap_does_not_swallow_the_next_press() {
+    let f = Fixture::mount(CONTENT);
+    let (x, y) = f.point(0, 2);
+    pen_event("pointerdown", x, y, 1);
+    mousedown(x, y, 1);
+    pen_event("pointerup", x, y, 0);
+    mouseup(x, y, 1);
+    assert!(
+        f.capture_focused(),
+        "positive control: the pen tap focused the editor"
+    );
+    // A press-drag from the same spot (a hybrid device's mouse, or the pen again
+    // after the double-click interval).
+    mousedown(x, y, 1);
+    let (x2, y2) = f.point(0, 12);
+    mouse("mousemove", x2, y2, 0, 1);
+    mouseup(x2, y2, 1);
+    let sel = f.handle.selection();
+    assert!(!sel.is_empty(), "the press-drag selects, got {sel:?}");
+    f.teardown();
+}
+
+/// A tap whose compatibility `mousedown` never comes (a page's
+/// `preventDefault` on `pointerdown` suppresses it, and the `click` still fires:
+/// Chrome 153, measured) leaves no record behind its `click`.
+///
+/// Kills: a record the tap's `click` does not drop.
+#[wasm_bindgen_test]
+fn a_taps_click_drops_the_record() {
+    let f = Fixture::mount(CONTENT);
+    let (x, y) = f.point(0, 8);
+    let up_ms = touch_pointer(x, y);
+    mouse("click", x, y, 1, 0);
+    assert!(
+        f.capture_focused(),
+        "positive control: the tap focused the editor"
+    );
+    let tx = f.tx.get();
+    mousedown_at(x, y, 1, up_ms + 100.0);
+    mouseup(x, y, 1);
+    assert_eq!(f.tx.get(), tx + 1, "a press after the tap's click runs");
+    f.teardown();
+}
+
+/// A tapped link whose `on_link_click` moves focus to the app's own input (a
+/// link popover) is offered once, and the input keeps focus. From PR #968's
+/// review (`probe_link_claim_that_moves_focus_is_offered_once`).
+///
+/// Kills: asking the focus state for a claimed link tap (2 offers).
+#[wasm_bindgen_test]
+fn a_link_claim_that_moves_focus_is_offered_once() {
+    let f = Fixture::mount(LINKED);
+    let input = document().create_element("input").unwrap();
+    input.set_attribute(HOST_MARKER, "").unwrap();
+    document().body().unwrap().append_child(&input).unwrap();
+    let inp: web_sys::HtmlElement = input.clone().dyn_into().unwrap();
+    let seen = Rc::new(Cell::new(0u32));
+    let s2 = seen.clone();
+    f.handle.on_link_click(move |_| {
+        s2.set(s2.get() + 1);
+        inp.focus().unwrap();
+        true
+    });
+    let (x, y) = f.point(0, 9);
+    let up_ms = touch_pointer(x, y);
+    assert_eq!(seen.get(), 1, "positive control: the tap offers the link");
+    assert_eq!(
+        document().active_element().as_ref(),
+        Some(&input),
+        "the app focused its input"
+    );
+    mousedown_at(x, y, 1, up_ms);
+    mouseup(x, y, 1);
+    assert_eq!(
+        seen.get(),
+        1,
+        "the compatibility mousedown does not offer it again"
+    );
+    assert_eq!(
+        document().active_element().as_ref(),
+        Some(&input),
+        "and the app's input keeps focus"
+    );
+    input.remove();
     f.teardown();
 }
