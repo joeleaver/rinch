@@ -17,7 +17,8 @@
 //! 2. An Effect is created that watches the `each` closure
 //! 3. When the list changes:
 //!    - Keys are compared to identify what changed
-//!    - Removed items have their scopes disposed and nodes removed
+//!    - Removed items have their scopes disposed and *then* their nodes
+//!      released, so a row's cleanups still see the row (issue #356)
 //!    - New items are rendered with fresh scopes
 //!    - Moved items are repositioned in the DOM
 //!    - Unchanged items are left alone
@@ -75,7 +76,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::dom::{NodeHandle, RenderScope};
+use crate::dom::{NodeHandle, NodeId, RenderScope};
 use crate::element::ForItem;
 use crate::reactive::Effect;
 use crate::reconcile::diff_keyed;
@@ -253,22 +254,112 @@ struct ItemState {
     scope: Option<RenderScope>,
 }
 
-/// Unmount a row, releasing the backend's bookkeeping only if the row's own
-/// render scope built it (issue #719).
+/// A row taken out of a list during a pass, parked until the pass's borrows
+/// are released and its scope has been disposed (issue #356).
 ///
-/// The one rule every marker-based reactive helper applies, spelled once here
-/// because `for_each_dom_typed` reaches it from three places. `scope` is the
-/// [`RenderScope`] the `view` closure was called with; `None` (a row whose scope
-/// was already parked) is read as "not ours", which is the safe direction — it
-/// costs memory on `rinch-web`, where a missed `discard` leaks, rather than
-/// costing the subtree, where a wrong `discard` retires a node someone can still
-/// show.
-fn release_row(node: &NodeHandle, scope: Option<&RenderScope>) {
-    if scope.is_some_and(|s| s.created(node.node_id())) {
-        node.discard();
-    } else {
-        node.remove();
+/// **Dispose first, then release** — the order `show_dom`, `match_dom` and the
+/// component re-render already use, and `RootHandle::unmount` before them: a
+/// row's cleanups legitimately touch their own node, and a node that is already
+/// `discard`ed is retired on `rinch-web` (every read answers `None`, every
+/// write is a silent no-op) while it is still live on desktop. The scope cannot
+/// be disposed where the row is taken out, because disposal runs user code
+/// under the list's `RefMut`s (#141), so the *node* is parked with it.
+///
+/// `owned` is the verb (issue #719), decided **when the row is parked** —
+/// before its scope is disposed, as every other helper decides it: a row the
+/// `view` closure built through this scope is `discard`ed, one it was handed is
+/// only detached. `None` for the scope (a row whose scope was already parked)
+/// reads as "not ours", the safe direction: a missed `discard` costs memory on
+/// `rinch-web`, a wrong one costs a subtree someone can still show.
+pub(crate) struct ParkedRow {
+    node: NodeHandle,
+    owned: bool,
+    scope: Option<RenderScope>,
+}
+
+impl ParkedRow {
+    pub(crate) fn new(node: NodeHandle, scope: Option<RenderScope>) -> Self {
+        let owned = scope.as_ref().is_some_and(|s| s.created(node.node_id()));
+        Self { node, owned, scope }
     }
+}
+
+/// Tear parked rows down: every scope disposed, *then* every node released.
+///
+/// Call with no borrow of the list's own state held — disposal runs user code
+/// that may re-enter the list (#141). `shown` is asked once, after disposal,
+/// for the nodes the list's live rows hold: a memoising `view` can hand the very
+/// node a departing key showed to a key that arrived in the same pass, and the
+/// insert has already put it in place by the time the parked release runs.
+/// Releasing it anyway would take out the row the list is now showing; the
+/// inline release this replaced ran *before* that insert and so never met it.
+/// Asked once rather than per row, so tearing down `m` rows of an `n`-row list
+/// costs `O(n + m)`, not `O(n * m)`.
+///
+/// **A panicking cleanup still releases every node.** The release is done by a
+/// drop guard, so it runs on unwind too. Unwinding drops the rows the loop had
+/// not reached yet first, and a `RenderScope` disposes itself on drop, so every
+/// other row's cleanups still run before any node goes — the same order as the
+/// normal path. Without the guard a panic caught above the reconcile left every
+/// departing row mounted and in no list's bookkeeping, where the inline release
+/// this replaced had already taken them out.
+pub(crate) fn release_parked(
+    parked: Vec<ParkedRow>,
+    shown: impl FnOnce() -> std::collections::HashSet<NodeId>,
+) {
+    if parked.is_empty() {
+        return;
+    }
+    let _release = ReleaseNodes {
+        nodes: parked
+            .iter()
+            .map(|row| (row.node.clone(), row.owned))
+            .collect(),
+        shown: Some(shown),
+    };
+    for row in parked {
+        if let Some(scope) = row.scope {
+            scope.dispose();
+        }
+    }
+}
+
+/// The node half of [`release_parked`], run when it is dropped — at the end of
+/// the call, or on unwind out of a row's cleanup.
+struct ReleaseNodes<F: FnOnce() -> std::collections::HashSet<NodeId>> {
+    nodes: Vec<(NodeHandle, bool)>,
+    shown: Option<F>,
+}
+
+impl<F: FnOnce() -> std::collections::HashSet<NodeId>> Drop for ReleaseNodes<F> {
+    fn drop(&mut self) {
+        // On unwind, run no queued effect from inside the node verbs: a second
+        // panic there would abort the process.
+        let _quiet = std::thread::panicking().then(crate::reactive::suppress_effect_flush);
+        let shown = self.shown.take().map(|f| f()).unwrap_or_default();
+        // Either verb cancels the subtree's transitions and animations in the
+        // document implementation (#699); stamping inline `transition: none`
+        // here disarmed that permanently (#704).
+        for (node, owned) in self.nodes.drain(..) {
+            if shown.contains(&node.node_id()) {
+                continue;
+            }
+            if owned {
+                node.discard();
+            } else {
+                node.remove();
+            }
+        }
+    }
+}
+
+/// The nodes of the rows `state` still holds.
+fn shown_in(state: &RefCell<HashMap<String, ItemState>>) -> std::collections::HashSet<NodeId> {
+    state
+        .borrow()
+        .values()
+        .map(|row| row.node.node_id())
+        .collect()
 }
 
 /// Tear down an [`ItemState`] that a duplicate key displaced out of `items_state`.
@@ -281,12 +372,12 @@ fn release_row(node: &NodeHandle, scope: Option<&RenderScope>) {
 /// Issue #185 was exactly this situation handled badly: the displaced state was
 /// dropped inline, which disposed its [`RenderScope`] while its node stayed
 /// mounted — a row that renders, swallows clicks and never updates again,
-/// unreachable from every data structure. So unmount the node here and hand the
-/// scope back for the caller to dispose once its `RefMut`s are released
-/// (disposal runs user code, issue #141), and say so out loud: reaching this is a
-/// rinch bug, not an app bug, and the `warn!` is the only trace of it a release
-/// build will ever produce.
-fn reclaim_displaced(mut displaced: ItemState) -> Option<RenderScope> {
+/// unreachable from every data structure. So park the row — node and scope —
+/// for the caller to tear down once its `RefMut`s are released (disposal runs
+/// user code, issue #141; the node goes after the scope, issue #356), and say
+/// so out loud: reaching this is a rinch bug, not an app bug, and the `warn!` is
+/// the only trace of it a release build will ever produce.
+fn reclaim_displaced(displaced: ItemState) -> ParkedRow {
     tracing::warn!(
         "for_each_dom: duplicate key {:?} reached the render path — unmounting \
          and disposing the row it displaced. This is a rinch bug (issue #185); \
@@ -296,11 +387,8 @@ fn reclaim_displaced(mut displaced: ItemState) -> Option<RenderScope> {
     // Ownership decides the verb (issue #719): a row the `view` closure built
     // through this scope can never be shown again, so the backend lets go of
     // it; a row a *memoising* `view` handed back is only detached, so the same
-    // key rendering again puts it back. Either verb cancels the subtree's
-    // transitions and animations in the document implementation (#699);
-    // stamping inline `transition: none` here disarmed that permanently (#704).
-    release_row(&displaced.node, displaced.scope.as_ref());
-    displaced.scope.take()
+    // key rendering again puts it back.
+    ParkedRow::new(displaced.node, displaced.scope)
 }
 
 /// Fine-grained list rendering that surgically updates the DOM.
@@ -413,9 +501,9 @@ where
 
         // Track inserted nodes to chain insert_after calls
         let mut initial_nodes: Vec<NodeHandle> = Vec::new();
-        // Scopes of item states displaced by a duplicate key, disposed after
-        // `state` is released — see the note on `state.insert` below.
-        let mut displaced: Vec<RenderScope> = Vec::new();
+        // Rows displaced by a duplicate key, torn down after `state` is
+        // released — see the note on `state.insert` below.
+        let mut displaced: Vec<ParkedRow> = Vec::new();
 
         for item in initial_items {
             if let Some(doc) = doc_weak.upgrade() {
@@ -438,9 +526,9 @@ where
                 initial_nodes.push(node.clone());
                 // `each` yields unique keys (issue #185), so nothing can be
                 // displaced here — the `debug_assert!` says so loudly in dev.
-                // The release path is not a no-op: it unmounts and disposes the
+                // The release path is not a no-op: it disposes and unmounts the
                 // displaced row, because leaving it half-torn-down is precisely
-                // the #185 bug. The scope is parked rather than disposed inline,
+                // the #185 bug. The row is parked rather than torn down inline,
                 // since disposal runs user code under `state`'s `RefMut` (#141).
                 let clobbered = state.insert(
                     item.key.clone(),
@@ -455,16 +543,14 @@ where
                     "for_each_dom: `prepare_keys` guarantees one `ItemState` per key"
                 );
                 if let Some(clobbered) = clobbered {
-                    displaced.extend(reclaim_displaced(clobbered));
+                    displaced.push(reclaim_displaced(clobbered));
                 }
             }
         }
 
         drop(state);
         drop(keys);
-        for scope in displaced {
-            scope.dispose();
-        }
+        release_parked(displaced, || shown_in(&items_state));
     }
 
     // Create Effect that reconciles list when it changes
@@ -489,8 +575,10 @@ where
         // Always use diff_keyed to compute minimal operations
         let ops = diff_keyed(&old_keys, &new_keys);
 
-        // Scopes displaced by this reconcile, torn down at the very end of the
-        // closure once `state` and `keys` are no longer borrowed.
+        // Rows displaced by this reconcile — node and scope together — torn
+        // down at the very end of the closure once `state` and `keys` are no
+        // longer borrowed: each scope disposed, *then* its node released, so a
+        // row's cleanups still see a live row (issue #356).
         //
         // Disposal runs user code — cleanups, handler-closure drops, signal
         // value drops (issue #141) — and any of it that writes a signal flushes
@@ -498,8 +586,12 @@ where
         // the `RefMut`s below would make that a `BorrowMutError` rather than a
         // reconcile. The cost is that a removed item's effects stay live for the
         // remainder of this pass; they have no signal to wake them in that
-        // window, since nothing re-enters the flush before the drop.
-        let mut doomed: Vec<RenderScope> = Vec::new();
+        // window, since nothing re-enters the flush before the drop. The other
+        // cost is that a removed row's node stays in the DOM for the rest of
+        // the pass. Nothing here reads DOM order: every insert and move is
+        // anchored on a live row's node or the marker, so a parked node between
+        // two of them changes none of their placements.
+        let mut doomed: Vec<ParkedRow> = Vec::new();
 
         // Apply operations
         let mut state = items_state_clone.borrow_mut();
@@ -519,9 +611,9 @@ where
                         // below — so the backend lets go of it. A row a
                         // *memoising* `view` handed back is only detached, so
                         // that later `Insert` can put the same subtree in
-                        // place. Read before `item_state.scope` is parked.
-                        release_row(&item_state.node, item_state.scope.as_ref());
-                        doomed.extend(item_state.scope);
+                        // place. Decided now, applied after the scope is
+                        // disposed (issue #356).
+                        doomed.push(ParkedRow::new(item_state.node, item_state.scope));
                     }
                     // Remove from keys order
                     if let Some(pos) = keys.iter().position(|k| k == &key) {
@@ -597,7 +689,7 @@ where
                             "for_each_dom: `prepare_keys` guarantees one `ItemState` per key"
                         );
                         if let Some(clobbered) = clobbered {
-                            doomed.extend(reclaim_displaced(clobbered));
+                            doomed.push(reclaim_displaced(clobbered));
                         }
                     }
                 }
@@ -668,10 +760,12 @@ where
                             // being replaced is released only if the render that
                             // produced it built it. A memoising `view` that
                             // returns one of a small set of cached subtrees may
-                            // hand this very node back later.
-                            release_row(&old_state.node, previous_scope.as_ref());
-                            doomed.extend(previous_scope);
-                            old_state.node = new_node;
+                            // hand this very node back later. Released after
+                            // its old scope is disposed (issue #356).
+                            doomed.push(ParkedRow::new(
+                                std::mem::replace(&mut old_state.node, new_node),
+                                previous_scope,
+                            ));
                             old_state.item = item.clone();
                             old_state.scope = Some(child_scope);
                         }
@@ -683,12 +777,10 @@ where
         // Update keys to match new order
         *keys = new_keys;
 
-        // Borrows released before the parked scopes are torn down.
+        // Borrows released before the parked rows are torn down.
         drop(state);
         drop(keys);
-        for scope in doomed {
-            scope.dispose();
-        }
+        release_parked(doomed, || shown_in(&items_state_clone));
 
         // The batch is dropped last, and untracked. Dropping a `ForItem` drops
         // the user's data, and a `Drop` impl that reads a signal would otherwise
@@ -1962,10 +2054,10 @@ mod tests {
     /// and *nothing* in release, so the release path has to leave the DOM in a
     /// state someone can reason about. Issue #185 was this exact situation
     /// handled badly: scope disposed, node left mounted. So `reclaim_displaced`
-    /// unmounts the node and hands the scope back for the caller to dispose once
-    /// its borrows are released.
+    /// parks the whole row for the caller to tear down once its borrows are
+    /// released — scope first, then node (issue #356).
     #[test]
-    fn a_displaced_item_state_is_unmounted_and_its_scope_handed_back() {
+    fn a_displaced_item_state_is_parked_then_disposed_then_unmounted() {
         use crate::dom::traits::DomDocument;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
@@ -1993,24 +2085,25 @@ mod tests {
             scope: Some(child_scope),
         };
 
-        let reclaimed = super::reclaim_displaced(displaced)
-            .expect("the displaced row's scope is handed back, not dropped");
+        let parked = super::reclaim_displaced(displaced);
 
+        assert!(
+            owner.is_alive(),
+            "its scope is still live until the caller tears the row down, so \
+             disposal never runs user code under a `RefMut`"
+        );
+        assert_eq!(
+            parent.children().len(),
+            1,
+            "and so is its node: it leaves after its scope, not before (#356)"
+        );
+
+        super::release_parked(vec![parked], Default::default);
+        assert!(!owner.is_alive(), "tearing the row down frees its scope");
         assert_eq!(
             parent.children().len(),
             0,
-            "the displaced row is unmounted — leaving it is issue #185 itself"
-        );
-        assert!(
-            owner.is_alive(),
-            "and its scope is still live until the caller disposes it, so \
-             disposal never runs user code under a `RefMut`"
-        );
-
-        reclaimed.dispose();
-        assert!(
-            !owner.is_alive(),
-            "disposing the handed-back scope frees it"
+            "and unmounts the row — leaving it is issue #185 itself"
         );
     }
 
@@ -2209,5 +2302,253 @@ mod tests {
         // Positive control: a write the reconcile effect legitimately tracks.
         items.update(|v| v.push(3));
         assert_eq!(passes.get(), passes_before + 1);
+    }
+
+    /// What a row's cleanup saw of its own node: its `data-name`, and whether it
+    /// was still a child of the list's parent.
+    type CleanupSight = Rc<RefCell<Vec<(Option<String>, bool)>>>;
+
+    /// A `view` that stamps `data-name` on its row and registers a cleanup
+    /// recording what that cleanup can still see of the row (issue #356).
+    fn row_that_looks_at_itself_on_cleanup(
+        sight: CleanupSight,
+        parent: NodeHandle,
+    ) -> impl Fn(String, &mut crate::dom::RenderScope) -> NodeHandle + 'static {
+        move |name: String, s: &mut crate::dom::RenderScope| {
+            let row = s.create_element("div");
+            row.set_attribute("data-name", &name);
+            let (me, sight, parent) = (row.clone(), sight.clone(), parent.clone());
+            crate::reactive::on_cleanup(move || {
+                let attached = me
+                    .parent_node()
+                    .is_some_and(|p| p.node_id() == parent.node_id());
+                sight
+                    .borrow_mut()
+                    .push((me.get_attribute("data-name"), attached));
+            });
+            row
+        }
+    }
+
+    /// A removed row's cleanup runs against its node while that node is still
+    /// the live, mounted row (issue #356).
+    ///
+    /// The `Remove` arm used to `discard` the row during the pass and dispose
+    /// its scope at the end of it, so the cleanup ran against a retired node:
+    /// on `rinch-web` (and the mock, which retires the same way) every read
+    /// answered `None` and every write was a silent no-op, while `show_dom`,
+    /// `match_dom` and the component re-render all dispose first. Sampled off
+    /// the fixed point: the removed row is the *middle* one, with a sibling on
+    /// each side, and carries a non-empty attribute.
+    #[test]
+    fn a_removed_rows_cleanup_sees_its_own_live_node() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let sight: CleanupSight = Rc::new(RefCell::new(Vec::new()));
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |s: &String| s.clone(),
+            row_that_looks_at_itself_on_cleanup(sight.clone(), parent.clone()),
+        );
+
+        items.set(vec!["a".to_string(), "c".to_string()]);
+
+        assert_eq!(
+            *sight.borrow(),
+            vec![(Some("b".to_string()), true)],
+            "#356: the cleanup must run before its row is discarded or detached"
+        );
+        // And the row is still released afterwards (#719: it was built by the
+        // row's own scope, so it is discarded).
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(names, vec!["a".to_string(), "c".to_string()]);
+    }
+
+    /// The `Changed` arm too: a row re-rendered because its data changed has its
+    /// old scope disposed while the old node is still mounted (issue #356).
+    #[test]
+    fn a_rerendered_rows_old_cleanup_sees_its_own_live_node() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        // Keyed by the first character, so "b1" -> "b2" is the same key with
+        // different data: a re-render, not a remove + insert.
+        let items = Signal::new(vec!["a1".to_string(), "b1".to_string(), "c1".to_string()]);
+        let sight: CleanupSight = Rc::new(RefCell::new(Vec::new()));
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |s: &String| s[..1].to_string(),
+            row_that_looks_at_itself_on_cleanup(sight.clone(), parent.clone()),
+        );
+
+        items.set(vec!["a1".to_string(), "b2".to_string(), "c1".to_string()]);
+
+        assert_eq!(
+            *sight.borrow(),
+            vec![(Some("b1".to_string()), true)],
+            "#356: the replaced row's cleanup must run before its node is released"
+        );
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a1".to_string(), "b2".to_string(), "c1".to_string()]
+        );
+    }
+
+    /// Deferring the release to the end of the pass must not take out a node
+    /// that the same pass put back (issue #356).
+    ///
+    /// A memoising `view` may hand the *same* cached subtree to a different key.
+    /// When the key that owned it leaves and the new one arrives in one pass,
+    /// the row was detached and then re-inserted — in that order, while removal
+    /// happened inline. With the release parked until after disposal, the
+    /// insert comes first, so a parked release that did not check would detach
+    /// the node the list is now showing.
+    #[test]
+    fn a_parked_release_leaves_a_node_the_same_pass_reused() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        // Built outside every row scope, so each row merely *hands it back*:
+        // `remove`, not `discard` (#719).
+        let shared = scope.create_element("section");
+        shared.set_attribute("data-name", "shared");
+
+        let items = Signal::new(vec![1u32, 2]);
+        let cached = shared.clone();
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |n: &u32| n.to_string(),
+            move |n: u32, s: &mut RenderScope| {
+                if n >= 2 {
+                    cached.clone()
+                } else {
+                    let row = s.create_element("div");
+                    row.set_attribute("data-name", &n.to_string());
+                    row
+                }
+            },
+        );
+
+        // Key 2 leaves and key 3 arrives, each showing the same cached node.
+        items.set(vec![1u32, 3]);
+
+        assert_eq!(
+            shared.parent_node().map(|p| p.node_id()),
+            Some(parent.node_id()),
+            "#356: the release parked for key 2 must not detach the node key 3 now shows"
+        );
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(names, vec!["1".to_string(), "shared".to_string()]);
+    }
+
+    /// A row cleanup that panics still lets every departing row go (review of
+    /// PR #984, F1; the reviewer's probe P3).
+    ///
+    /// The nodes are released after the scopes are disposed (issue #356), so a
+    /// panic out of a disposal skipped the release entirely: caught above the
+    /// reconcile, it left `b` *and* `c` mounted and in no list's bookkeeping.
+    /// The panicking row is the middle one, so there is a row torn down after
+    /// it whose cleanup must still run.
+    #[test]
+    fn a_panicking_row_cleanup_still_releases_every_departing_row() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let c_cleaned = Rc::new(Cell::new(false));
+        let flag = c_cleaned.clone();
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |s: &String| s.clone(),
+            move |name: String, s: &mut RenderScope| {
+                let row = s.create_element("div");
+                row.set_attribute("data-name", &name);
+                match name.as_str() {
+                    "b" => {
+                        crate::reactive::on_cleanup(|| panic!("boom"));
+                    }
+                    "c" => {
+                        let flag = flag.clone();
+                        crate::reactive::on_cleanup(move || flag.set(true));
+                    }
+                    _ => {}
+                }
+                row
+            },
+        );
+
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            items.set(vec!["a".to_string()])
+        }));
+        assert!(
+            r.is_err(),
+            "precondition: the cleanup's panic reached the caller"
+        );
+
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a".to_string()],
+            "every departing row is released, the panicking one included"
+        );
+        assert!(
+            c_cleaned.get(),
+            "and the other departing row's cleanup still ran"
+        );
     }
 }
