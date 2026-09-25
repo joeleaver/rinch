@@ -415,7 +415,7 @@ pub(crate) fn clip_chain_bounds_counted(
         // The containing block ends the escape, and its own clip applies: a
         // `position: relative; overflow: hidden` box clips its absolute
         // children (`Collector::span` counts the chain after its clip, too).
-        if escaping && (a.position != PositionValue::Static || a.transformed) {
+        if escaping && a.contains_abs {
             escaping = false;
         }
         if !escaping && a.clips {
@@ -446,7 +446,7 @@ pub(crate) fn clip_chain_bounds_counted(
 struct PaintedStyle {
     clips: bool,
     position: PositionValue,
-    transformed: bool,
+    contains_abs: bool,
 }
 
 impl PaintedStyle {
@@ -459,7 +459,7 @@ impl PaintedStyle {
         Self {
             clips: painted.clips,
             position: painted.position,
-            transformed: painted.transform.is_some(),
+            contains_abs: painted.contains_abs,
         }
     }
 
@@ -467,7 +467,7 @@ impl PaintedStyle {
         Self {
             clips: node.clips_overflow() && node.computed_style.display != DisplayValue::Contents,
             position: node.computed_style.position,
-            transformed: !node.computed_style.transform.is_identity,
+            contains_abs: node.establishes_abs_containing_block(),
         }
     }
 }

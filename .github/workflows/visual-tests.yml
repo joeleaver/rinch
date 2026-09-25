@@ -3,11 +3,11 @@ name: Visual Regression Tests
 # Manual-dispatch only, deliberately — see `crates/rinch-visual-test/README.md`
 # ("Why this is not a merge gate yet").
 #
-# The harness works end to end and its exit code is now honoured, but 4 of 12
-# scenarios are red for reasons unrelated to any regression: stale `setup_clicks`
-# coordinates that no longer reach the section they name, the window chrome rinch
-# paints itself (which has no counterpart in the exported HTML), and a handful of
-# properties the exporter still does not emit. Wiring a red suite to
+# The harness works end to end and its exit code is now honoured, and each of
+# the 12 scenarios now navigates to, asserts and captures its own screen (#368).
+# 4 of them are still red for reasons unrelated to any regression: the window
+# chrome rinch paints itself (which has no counterpart in the exported HTML), and
+# a handful of properties the exporter still does not emit. Wiring a red suite to
 # `pull_request` would train everyone to ignore it. Green the scenarios first,
 # then add the `pull_request` trigger.
 on:
