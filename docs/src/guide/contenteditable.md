@@ -117,9 +117,15 @@ Command names are case-sensitive. The full catalogue:
 > stands, and at a textblock's start / end they join (or lift), as Backspace and
 > Delete do there. An inline atom — an image, a hard break — is a boundary of its
 > own: one right beside the caret goes alone, and a word beyond one is not taken
-> with it. There are no *line* delete commands (issue #301 is whether a "line" is
-> the visual line or the textblock); on the web the browser's
-> `deleteSoftLine*` / `deleteHardLine*` still delete to the textblock's edge.
+> with it. There are no *line* delete commands. On the web the browser's
+> `deleteSoftLine*` (a soft keyboard's line delete, Cmd+Backspace / Cmd+Delete)
+> deletes to the edge of the **visual** line the caret is on, as a browser field
+> does — on a wrapped paragraph, only the current line's prefix or rest — and
+> `deleteHardLine*` to the textblock's edge (issue #301). Home / End go to the
+> visual line's edges on both backends. The web finds the edge by hit-testing the
+> textblock just inside both sides of the caret's line and taking the smaller
+> position as the start, so a right-to-left line starts at its right edge; on a
+> line that *mixes* directions the answer can fall short of the logical edge.
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.

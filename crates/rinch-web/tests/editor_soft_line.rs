@@ -9,8 +9,11 @@
 //! The oracle is Chrome itself: a `contenteditable` twin of the paragraph, given
 //! the paragraph's own computed typography and content width, is asked where
 //! `Selection.modify(.., "lineboundary")` lands from the same character offset.
-//! So nothing here pins a font's advance widths — the line breaks are measured,
-//! on whatever monospace the host has.
+//! The right-to-left fixtures check against the line breaks measured off the
+//! paragraph's own glyph rects instead (Chrome's `modify` answered 25 for a line
+//! starting at 12 in an RTL paragraph of Latin text). Either way nothing here pins
+//! a font's advance widths — the line breaks are measured, on whatever fonts the
+//! host has.
 //!
 //! ```text
 //! CHROMEDRIVER=/path/to/chromedriver \
@@ -225,7 +228,8 @@ impl Fixture {
 
     /// Put the caret at char offset `i` of the paragraph (model `Pos(i + 1)`).
     fn caret_at(&self, i: u32) {
-        self.handle.set_selection(Selection::cursor(Pos(i as usize + 1)));
+        self.handle
+            .set_selection(Selection::cursor(Pos(i as usize + 1)));
     }
 
     /// The caret's char offset in the paragraph.
@@ -262,7 +266,6 @@ fn slice(s: &str, from: u32, to: u32) -> String {
         .collect()
 }
 
-
 /// Hebrew, so an RTL paragraph's logical line start is its RIGHT edge.
 const HEBREW: &str = "שלום עולם אחד שניים שלושה ארבעה חמישה שישה שבעה שמונה תשעה עשרה אחת עשרה";
 
@@ -293,13 +296,20 @@ fn count(s: &str) -> u32 {
 fn soft_line_backward_deletes_to_the_visual_line_start() {
     let (f, start, caret, _) = middle_line(TEXT, "");
     let chrome = f.chrome_line_boundary(caret, false);
-    assert_eq!(chrome, start, "the oracle agrees with the measured line start");
+    assert_eq!(
+        chrome, start,
+        "the oracle agrees with the measured line start"
+    );
     f.focus();
     f.caret_at(caret);
     assert!(f.before_input("deleteSoftLineBackward"));
     assert_eq!(
         f.text(),
-        format!("{}{}", slice(TEXT, 0, start), slice(TEXT, caret, count(TEXT)))
+        format!(
+            "{}{}",
+            slice(TEXT, 0, start),
+            slice(TEXT, caret, count(TEXT))
+        )
     );
     assert_eq!(f.head(), start);
     f.teardown();
@@ -320,7 +330,11 @@ fn soft_line_forward_deletes_to_the_visual_line_end() {
     assert!(f.before_input("deleteSoftLineForward"));
     assert_eq!(
         f.text(),
-        format!("{}{}", slice(TEXT, 0, caret), slice(TEXT, chrome, count(TEXT)))
+        format!(
+            "{}{}",
+            slice(TEXT, 0, caret),
+            slice(TEXT, chrome, count(TEXT))
+        )
     );
     assert_eq!(f.head(), caret);
     f.teardown();
@@ -439,7 +453,11 @@ fn soft_line_backward_for_ltr_text_in_an_rtl_paragraph() {
     assert!(f.before_input("deleteSoftLineBackward"));
     assert_eq!(
         f.text(),
-        format!("{}{}", slice(TEXT, 0, start), slice(TEXT, caret, count(TEXT)))
+        format!(
+            "{}{}",
+            slice(TEXT, 0, start),
+            slice(TEXT, caret, count(TEXT))
+        )
     );
     f.teardown();
 }
@@ -460,7 +478,8 @@ fn end_inside_a_broken_word_stays_on_its_line() {
     f.teardown();
 }
 
-const LONG_WORD: &str = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij";
+const LONG_WORD: &str =
+    "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij";
 
 /// A paragraph with padding and a border: the probes go just inside its
 /// CONTENT box, not its border box, so both edges still resolve.
@@ -468,7 +487,9 @@ const LONG_WORD: &str = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabc
 fn a_padded_paragraph_finds_both_edges() {
     let sheet = document().create_element("style").unwrap();
     // Not `HOST_MARKER`: mounting sweeps those away.
-    sheet.set_attribute("data-test-sheet-soft-line", "").unwrap();
+    sheet
+        .set_attribute("data-test-sheet-soft-line", "")
+        .unwrap();
     sheet.set_text_content(Some(
         "[data-test-host-soft-line] [data-pm-editor] p { padding: 0 60px; border: 0 solid; border-width: 0 7px; }",
     ));
