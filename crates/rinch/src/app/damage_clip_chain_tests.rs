@@ -423,3 +423,115 @@ fn a_removed_box_that_escaped_the_clip_is_cleared() {
         "incremental frame != full frame"
     );
 }
+
+// ── Moves between parents (review of #958) ─────────────────────────────────
+
+fn el(scope: &mut RenderScope, parent: &NodeHandle, style: &str) -> NodeHandle {
+    let e = scope.create_element("div");
+    e.set_attribute("style", style);
+    parent.append_child(&e);
+    e
+}
+
+type Build = Box<dyn Fn(&mut RenderScope, &NodeHandle) -> Vec<NodeHandle>>;
+
+/// A 600x400 root built by `build`, mounted, laid out and painted in full.
+fn mount_with(build: Build) -> (RinchApp, Vec<NodeHandle>) {
+    let slot: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(vec![]));
+    let s2 = slot.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px;");
+        *s2.borrow_mut() = build(scope, &outer);
+        outer
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    resolve(&mut app);
+    let _ = full_frame(&mut app);
+    let v = slot.borrow().clone();
+    (app, v)
+}
+
+/// The next frame is incremental and equals a from-scratch frame, and `old`
+/// — where the moved row was — holds no ink.
+fn assert_cleared(app: &mut RinchApp, old: (i32, i32, i32, i32)) {
+    let (inc, stats) = incremental_frame(app);
+    assert_incremental(&stats);
+    let full = full_frame(app);
+    assert_eq!(ink_in(&full, old), 0, "positive control: nothing there now");
+    assert_eq!(ink_in(&inc, old), 0, "the moved row ghosts where it was");
+    assert_eq!(
+        diff_in(&inc, &full, WHOLE),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
+const ROW40: &str = "width: 40px; height: 40px; background: rgb(0, 0, 200); flex-shrink: 0;";
+
+/// **A row moved INTO a clipper.** Its old pixels were drawn below the
+/// clipper, under the old parent's chain. Placed and clipped along the *new*
+/// parent's chain, its old rect is cut away by the new parent's clip and the
+/// row ghosts at (0, 100). A move between parents is a removal from the old
+/// one: its old rect is recorded under the chain it was painted under.
+///
+/// Kills: the move verbs detaching without recording the old rect.
+#[test]
+fn a_row_moved_into_a_clipper_is_cleared_where_it_was() {
+    let (mut app, h) = mount_with(Box::new(|s, o| {
+        let c = el(s, o, "width: 200px; height: 100px; overflow: hidden;");
+        let r = el(s, o, ROW40);
+        vec![c, r]
+    }));
+    h[0].append_child(&h[1]);
+    resolve(&mut app);
+    assert_cleared(&mut app, (0, 100, 40, 140));
+}
+
+/// The same into a scroller whose content already fills it, so the row lands
+/// below the scroller's viewport, entirely clipped.
+#[test]
+fn a_row_moved_into_a_full_scroller_is_cleared_where_it_was() {
+    let (mut app, h) = mount_with(Box::new(|s, o| {
+        let c = el(
+            s,
+            o,
+            "width: 200px; height: 100px; overflow: auto; display: flex; flex-direction: column;",
+        );
+        el(
+            s,
+            &c,
+            "width: 100px; height: 100px; background: rgb(200, 0, 0); flex-shrink: 0;",
+        );
+        let r = el(s, o, ROW40);
+        vec![c, r]
+    }));
+    h[0].append_child(&h[1]);
+    resolve(&mut app);
+    assert_cleared(&mut app, (0, 100, 40, 140));
+}
+
+/// **A row moved between two clippers.** Its old rect used to be placed along
+/// the new parent's chain (a wrong position, before #909 too): the pixels
+/// under the first clipper stayed.
+#[test]
+fn a_row_moved_between_clippers_is_cleared_where_it_was() {
+    let (mut app, h) = mount_with(Box::new(|s, o| {
+        let a = el(
+            s,
+            o,
+            "width: 200px; height: 100px; overflow: hidden; display: flex; flex-direction: column;",
+        );
+        el(s, &a, "height: 70px; flex-shrink: 0;");
+        let r = el(s, &a, ROW40);
+        let b = el(
+            s,
+            o,
+            "width: 200px; height: 100px; overflow: hidden; margin-left: 300px;",
+        );
+        vec![a, r, b]
+    }));
+    h[2].append_child(&h[1]);
+    resolve(&mut app);
+    assert_cleared(&mut app, (0, 70, 40, 100));
+}
