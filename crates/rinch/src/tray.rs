@@ -67,9 +67,15 @@ pub type TrayResult<T> = Result<T, TrayError>;
 /// callbacks it registered — so replacing a tray reclaims the previous one's ids
 /// rather than leaving them in the registry forever (issue #183). Keep the
 /// handle for as long as you want the tray. On Linux the drop shuts the ksni
-/// service down and waits for it to close its D-Bus connection, which is what
-/// takes the icon off the panel; the callbacks are released only after that,
-/// so an icon that is still on screen never has dead items (issue #377).
+/// service down and waits — for up to one second — for it to close its D-Bus
+/// connection, which is what takes the icon off the panel. The callbacks are
+/// released only once the connection has closed, so the icon's items keep
+/// working for as long as it can still be on screen (issue #377). If the
+/// service has not closed within the bound (a StatusNotifierWatcher that
+/// stopped answering leaves ksni waiting on it, where it cannot see the
+/// shutdown request), the drop returns anyway and the callbacks are kept
+/// registered; a later tray build or drop on the same thread releases them once
+/// the service has finished.
 ///
 /// # Threads
 ///
@@ -99,9 +105,11 @@ pub struct TrayIcon {
     /// and on Linux it could not even overwrite, because each build mints fresh
     /// `ksni-{N}` ids from a monotonic counter.
     ///
-    /// Declared after `service`, and released after [`TrayIcon`]'s `Drop` has
-    /// shut the service down: the icon leaves the panel before its items stop
-    /// working, never the other way round.
+    /// Released after [`TrayIcon`]'s `Drop` has shut the service down, so the
+    /// icon leaves the panel before its items stop working, never the other
+    /// way round. If the shutdown does not finish in time, the `Drop` parks it
+    /// (see [`park_until_closed`]) rather than releasing it under an icon that
+    /// may still be up.
     _menu: Option<crate::menu::MenuRegistration>,
 }
 
@@ -110,27 +118,117 @@ pub struct TrayIcon {
 /// be pinned without a D-Bus session.
 #[cfg(target_os = "linux")]
 trait TrayService {
-    /// Stop the service and return once it has closed its D-Bus connection —
-    /// the moment the StatusNotifierWatcher drops the item and the panel
-    /// removes the icon.
-    fn shutdown(&self);
+    /// Ask the service to stop, and wait up to [`SHUTDOWN_WAIT`] for it to
+    /// close its D-Bus connection — the moment the StatusNotifierWatcher drops
+    /// the item and the panel removes the icon.
+    fn shutdown(&self) -> Shutdown;
 }
+
+/// What [`TrayService::shutdown`] saw.
+#[cfg(target_os = "linux")]
+enum Shutdown {
+    /// The connection closed within the bound: the icon is gone.
+    Closed,
+    /// It had not closed when the bound ran out. The receiver hears (or
+    /// disconnects) once it has.
+    Pending(std::sync::mpsc::Receiver<()>),
+}
+
+/// How long dropping a Linux tray waits for ksni to close its connection.
+///
+/// A healthy session answers in about 10 ms. The bound exists because ksni's
+/// loop reads the shutdown request only between D-Bus calls, and a call to a
+/// watcher that never replies has no timeout (zbus's default), so an unbounded
+/// wait froze the dropping thread — the main thread, on quit or on a tray
+/// rebuild — for good.
+#[cfg(target_os = "linux")]
+const SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[cfg(target_os = "linux")]
 impl TrayService for ksni::blocking::Handle<RinchKsniTray> {
-    fn shutdown(&self) {
+    fn shutdown(&self) -> Shutdown {
         // Sending the request never blocks. Waiting for it does: ksni's
         // `wait` is a `block_on` on ksni's own runtime, which panics when the
         // calling thread is already inside a tokio runtime — and an app may well
         // have entered one on its main thread. So the wait runs on a thread of
-        // its own, which is inside no runtime whatever the caller is. Joining it
-        // keeps the promise the drop makes: when it returns the icon is gone.
+        // its own, which is inside no runtime whatever the caller is, and is
+        // left detached if it outlasts the bound: it ends when ksni's loop does.
         let awaiter = ksni::blocking::Handle::shutdown(self);
-        let _ = std::thread::Builder::new()
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let spawned = std::thread::Builder::new()
             .name("rinch-tray-shutdown".into())
-            .spawn(move || awaiter.wait())
-            .map(|waiter| waiter.join());
+            .spawn(move || {
+                awaiter.wait();
+                let _ = done_tx.send(());
+            });
+        if spawned.is_err() {
+            // No helper, so nothing will ever report back. The request is sent;
+            // do not hold the callbacks hostage to a report that cannot come.
+            return Shutdown::Closed;
+        }
+        match done_rx.recv_timeout(SHUTDOWN_WAIT) {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Shutdown::Pending(done_rx),
+            // Answered, or the helper ended without answering (it panicked):
+            // either way nothing is left to wait for.
+            _ => Shutdown::Closed,
+        }
     }
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// Menu registrations of dropped trays whose service had not closed its
+    /// connection within [`SHUTDOWN_WAIT`], with the channel that reports when
+    /// it has. Thread-local because a `MenuRegistration` must be released on
+    /// the thread that built it.
+    static PARKED: std::cell::RefCell<
+        Vec<(std::sync::mpsc::Receiver<()>, crate::menu::MenuRegistration)>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep `registration`'s callbacks registered until `closed` reports (or
+/// disconnects), instead of releasing them under an icon that may still be on
+/// the panel. Released by the next [`release_closed_parked`] after that.
+///
+/// Keeping them is the choice between two bad outcomes of a hung watcher: kept,
+/// an icon that might still be shown keeps working items, and the cost is the
+/// entries' memory until the service finishes; released, it could show items
+/// that silently do nothing — the #377 symptom this type exists to prevent.
+/// During thread teardown the list is gone and the registration is simply
+/// dropped, which then reclaims what it still can.
+#[cfg(target_os = "linux")]
+fn park_until_closed(
+    closed: std::sync::mpsc::Receiver<()>,
+    registration: crate::menu::MenuRegistration,
+) {
+    let mut entry = Some((closed, registration));
+    let _ = PARKED.try_with(|parked| {
+        if let Ok(mut parked) = parked.try_borrow_mut() {
+            parked.push(entry.take().expect("taken once"));
+        }
+    });
+    drop(entry);
+}
+
+/// Release every parked registration whose service has closed by now. Called
+/// on each tray build and drop on the thread.
+#[cfg(target_os = "linux")]
+fn release_closed_parked() {
+    use std::sync::mpsc::TryRecvError;
+    let done = PARKED
+        .try_with(|parked| {
+            let Ok(mut parked) = parked.try_borrow_mut() else {
+                return Vec::new();
+            };
+            let (done, still): (Vec<_>, Vec<_>) = parked
+                .drain(..)
+                .partition(|(rx, _)| !matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            *parked = still;
+            done
+        })
+        .unwrap_or_default();
+    // Released outside the borrow: a registration's drop drops user closures.
+    drop(done);
 }
 
 impl Drop for TrayIcon {
@@ -141,8 +239,15 @@ impl Drop for TrayIcon {
         // runs until told to shut down — so without this the icon stayed on the
         // panel for the life of the process, with every item dead (#377).
         #[cfg(target_os = "linux")]
-        if let Some(service) = self.service.take() {
-            service.shutdown();
+        {
+            if let Some(service) = self.service.take() {
+                if let Shutdown::Pending(closed) = service.shutdown() {
+                    if let Some(registration) = self._menu.take() {
+                        park_until_closed(closed, registration);
+                    }
+                }
+            }
+            release_closed_parked();
         }
     }
 }
@@ -271,6 +376,8 @@ impl TrayIconBuilder {
     #[cfg(target_os = "linux")]
     fn build_ksni(self) -> TrayResult<TrayIcon> {
         use ksni::blocking::TrayMethods;
+
+        release_closed_parked();
 
         let tooltip = self.tooltip.unwrap_or_default();
         let icon_data = self.icon_data;
@@ -579,10 +686,11 @@ mod tests {
             callbacks_at_shutdown: Rc<Cell<Option<usize>>>,
         }
         impl TrayService for Probe {
-            fn shutdown(&self) {
+            fn shutdown(&self) -> Shutdown {
                 self.shutdowns.set(self.shutdowns.get() + 1);
                 self.callbacks_at_shutdown
                     .set(Some(crate::menu::callback_count()));
+                Shutdown::Closed
             }
         }
 
@@ -624,6 +732,118 @@ mod tests {
             before,
             "and the callbacks are released after"
         );
+    }
+
+    /// The bounded half of the drop (review of #1054, F1): a service that has
+    /// not closed within the bound does not have its callbacks released under
+    /// it. They stay registered until it reports, and the next tray build or
+    /// drop on the thread releases them then — whether it reports by sending or
+    /// by its helper going away.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_shutdown_that_outlasts_the_bound_keeps_the_callbacks_until_it_closes() {
+        use std::cell::RefCell;
+
+        struct Slow(RefCell<Option<std::sync::mpsc::Receiver<()>>>);
+        impl TrayService for Slow {
+            fn shutdown(&self) -> Shutdown {
+                Shutdown::Pending(self.0.borrow_mut().take().expect("shut down once"))
+            }
+        }
+        fn tray(items: usize, closed: std::sync::mpsc::Receiver<()>) -> TrayIcon {
+            let mut menu = Menu::new();
+            for i in 0..items {
+                menu = menu.item(MenuItem::new(format!("i{i}")).on_click(|| {}));
+            }
+            let (_entries, registration) = convert_menu_to_ksni_entries(menu);
+            TrayIcon {
+                service: Some(Box::new(Slow(RefCell::new(Some(closed))))),
+                _menu: Some(registration),
+            }
+        }
+
+        let before = crate::menu::callback_count();
+        let (tx_a, rx_a) = std::sync::mpsc::channel();
+        let (tx_b, rx_b) = std::sync::mpsc::channel();
+        drop(tray(2, rx_a));
+        drop(tray(3, rx_b));
+        assert_eq!(
+            crate::menu::callback_count(),
+            before + 5,
+            "a pending shutdown keeps its callbacks registered"
+        );
+
+        release_closed_parked();
+        assert_eq!(
+            crate::menu::callback_count(),
+            before + 5,
+            "nothing has closed yet"
+        );
+
+        tx_a.send(()).unwrap();
+        release_closed_parked();
+        assert_eq!(
+            crate::menu::callback_count(),
+            before + 3,
+            "the closed one is released, the pending one kept"
+        );
+
+        // A helper that ends without reporting (it panicked) counts as closed.
+        drop(tx_b);
+        release_closed_parked();
+        assert_eq!(crate::menu::callback_count(), before);
+    }
+
+    /// Review of #1054, F1, live on a private bus: dropping a tray whose
+    /// watcher has stopped answering returns within the bound, keeping its
+    /// callbacks. At bd2719ae (an unbounded join) the drop never returned.
+    ///
+    /// Recipe (needs `dbus-run-session` and python3-gi; the test binary path is
+    /// whatever cargo printed):
+    ///
+    /// ```text
+    /// cargo test -p rinch --features system-tray --lib --no-run
+    /// dbus-run-session -- bash -c 'python3 crates/rinch/tests/fixtures/hung_sni_watcher.py & sleep 1;
+    ///   <test bin> tray::tests::live_dropping_a_tray_under_a_hung_watcher_is_bounded --include-ignored --nocapture'
+    /// ```
+    ///
+    /// Run on the real session bus instead it also passes, trivially (a
+    /// healthy watcher answers at once); the `pending` it prints says which
+    /// case ran.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a private bus running tests/fixtures/hung_sni_watcher.py"]
+    fn live_dropping_a_tray_under_a_hung_watcher_is_bounded() {
+        use std::time::{Duration, Instant};
+
+        let before = crate::menu::callback_count();
+        let t = TrayIconBuilder::new()
+            .with_menu(Menu::new().item(MenuItem::new("p").on_click(|| {})))
+            .build()
+            .expect("builds");
+        // Let the fake watcher cycle its name, so ksni is parked in a
+        // registration call that will never be answered.
+        std::thread::sleep(Duration::from_millis(1500));
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(10));
+            eprintln!("HUNG: the drop is still blocked after 10 s");
+            std::process::exit(3);
+        });
+        let t0 = Instant::now();
+        drop(t);
+        let took = t0.elapsed();
+        let pending = crate::menu::callback_count() - before;
+        eprintln!("drop returned after {took:?}; callbacks kept: {pending}");
+        assert!(
+            took < SHUTDOWN_WAIT + Duration::from_millis(500),
+            "{took:?}"
+        );
+        if took >= SHUTDOWN_WAIT {
+            assert_eq!(
+                pending, 1,
+                "a timed-out drop keeps the callbacks registered"
+            );
+        }
     }
 
     /// Issue #377 (1), live: a dropped `TrayIcon` must take its icon with it.
