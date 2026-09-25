@@ -178,8 +178,9 @@ consequences are worth knowing:
 - **An earlier component unmounting never clears a later one's registration.**
   These are single, last-wins slots — per document, since two documents can
   share a thread (issues #340, #478): a registration made while a document's
-  events are being dispatched belongs to that document, one made outside any
-  dispatch (from `main`, at mount) is the thread-global fallback every
+  code is running — its event dispatch, its mount, or an effect it owns
+  (issue #295) — belongs to that document, one made outside any document
+  (from `main`, a timer, on rinch-web) is the thread-global fallback every
   document without its own reaches. The release only reclaims the slot if it
   is still holding the callback that registered it.
 - **Register once per component, not once per event.** Each call from inside a

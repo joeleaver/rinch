@@ -929,12 +929,20 @@ fn an_effect_woken_from_another_contexts_handler_runs_under_its_own_document() {
             vec![b_doc, b_doc],
             "B's effect ran under B's document at mount and when A woke it"
         );
-        assert_eq!(seen.b_mount.get(), b_doc, "B's mount ran under B's document");
+        assert_eq!(
+            seen.b_mount.get(),
+            b_doc,
+            "B's mount ran under B's document"
+        );
 
         // The drag belongs to B: A's moves do not drive it, B's do.
         let mv = PlatformEvent::MouseMove { x: 70.0, y: 70.0 };
         a.update(std::slice::from_ref(&mv));
-        assert_eq!(seen.b_moves.get(), 0, "A's pointer stream is not B's drag's");
+        assert_eq!(
+            seen.b_moves.get(),
+            0,
+            "A's pointer stream is not B's drag's"
+        );
         b.update(std::slice::from_ref(&mv));
         assert_eq!(seen.b_moves.get(), 1, "B's pointer stream drives B's drag");
 

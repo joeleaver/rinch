@@ -196,9 +196,11 @@ pub type DocScopedSlotMap<T> = BTreeMap<Option<u64>, Rc<T>>;
 /// registration silently disable the first, and whichever remains then drives
 /// both documents — the class #134 fixed for the editor/bounds registries and
 /// #139 for the pointer-capture drag. Here each document gets its own entry,
-/// keyed by [`current_dispatching_doc`] at install time; installing with no
-/// document dispatching — from `main`, a timer, at mount, or on a backend that
-/// never marks dispatch (rinch-web) — fills the ownerless `None` entry, which
+/// keyed by [`current_dispatching_doc`] at install time — which covers a
+/// `RinchApp` mount and every effect a document owns, wherever it is flushed
+/// (issue #295); installing with no document marked — from `main`, a timer, or
+/// on a backend that never marks one (rinch-web) — fills the ownerless `None`
+/// entry, which
 /// [`read_doc_scoped_slot`] serves to every document as the fallback. That
 /// keeps the pre-#340 behaviour exactly for the single-document app: register
 /// at startup, intercept everything.
@@ -274,8 +276,9 @@ where
 /// Remove the entry a dispatch would reach right now — the resolution rule of
 /// [`read_doc_scoped_slot`], not the raw ambient key.
 ///
-/// Resolving matters: a component that registered at mount (no document
-/// dispatching, so the `None` entry) and clears from inside an event handler
+/// Resolving matters: a component that registered with no document marked
+/// (from `main`, or at a rinch-web mount — the `None` entry) and clears from
+/// inside an event handler
 /// (its document's dispatch) must clear the interceptor that is in effect, not
 /// no-op against its document's empty entry. The value is dropped **after**
 /// the borrow ends (rule 3).

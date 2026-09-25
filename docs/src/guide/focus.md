@@ -791,12 +791,14 @@ build on, with this menu as the fallback.
   capture-phase hook for the whole document, dispatched *before* the arbiter and
   regardless of focus. It is for global shortcuts; `on_key` is for a focused
   widget. They are different jobs and both still exist. It routes per document
-  (issue #340): a hook registered while a document's events are being
-  dispatched intercepts only that document's keys, and one registered from
-  `main` or at mount is the thread-global fallback that intercepts for every
-  document without its own — so two windows that each register from inside
-  their own event handling no longer clobber each other. Registrations made
-  outside any dispatch still share the single fallback slot, last-wins. Its *lifetime* does match the arbiter's, though:
+  (issue #340): a hook registered while a document's code is running — its
+  event dispatch, its mount (issue #295), or an effect it owns, wherever that
+  effect happens to be flushed — intercepts only that document's keys, and one
+  registered from `main` is the thread-global fallback that intercepts for
+  every document without its own — so two windows that each register at mount
+  or from their own event handling no longer clobber each other. Registrations
+  made outside any document (from `main`, a timer, or on rinch-web, which marks
+  no document) still share the single fallback slot, last-wins. Its *lifetime* does match the arbiter's, though:
   registering it during a render releases it when that component unmounts,
   exactly as a `FocusEntry` is deregistered (issue #183). Registering it from
   `main` keeps app lifetime. For **Escape**, use

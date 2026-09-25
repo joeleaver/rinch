@@ -143,6 +143,14 @@ pub fn push_context_root(root: u64) -> ContextRootGuard {
 /// The document whose events are being dispatched on this thread right now, or
 /// `None` outside any dispatch (issue #139).
 ///
+/// "Dispatched" is wider than the name (issue #295): the marker names the
+/// document whose code is running, and a document's code also runs at its
+/// **mount** (`RinchApp::mount_component` pushes it) and in every **effect or
+/// memo** it owns. Those record the marker current at their creation and
+/// re-enter it around each run, because the effect queue is thread-global — an
+/// effect of document B woken by a write in document A's handler is flushed
+/// inside A's dispatch, and must still answer B here.
+///
 /// Input state that lives in a process-lifetime thread-local — the pointer-capture
 /// drag, and anything else a future arbiter parks there — reads this to answer
 /// *whose event stream is this?*. Two live documents on one thread (two desktop
