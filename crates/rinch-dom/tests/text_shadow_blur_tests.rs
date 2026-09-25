@@ -703,8 +703,11 @@ fn a_blurred_shadows_interior_is_its_colour() {
 #[test]
 fn a_cached_shadow_mask_is_never_stale() {
     let style = |c: &str| format!("{BASE}; text-shadow: 0 40px 6px {c}");
+    // The reference is painted with nothing cached, so a stale entry cannot
+    // serve it too.
     let fresh = |text: &str, c: &str| {
         let mut d = document(&style(c), &[(text, None)]);
+        rinch_dom::paint::clear_text_shadow_cache();
         paint(&mut d, 1.5).0
     };
     // Same thread, so the cache is shared across all of these.
