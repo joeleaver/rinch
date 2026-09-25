@@ -494,7 +494,7 @@ fn transform_ops(
     let length = |l: &style::values::specified::Length| match l {
         style::values::specified::Length::NoCalc(nc) => {
             match StopLength::resolve(
-                &SpecLengthPercentage::Length(nc.clone()),
+                &SpecLengthPercentage::Length(*nc),
                 font_size,
                 root_font_size,
             )? {
