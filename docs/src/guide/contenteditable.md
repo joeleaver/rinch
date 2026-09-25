@@ -119,13 +119,27 @@ Command names are case-sensitive. The full catalogue:
 > own: one right beside the caret goes alone, and a word beyond one is not taken
 > with it. There are no *line* delete commands. On the web the browser's
 > `deleteSoftLine*` (a soft keyboard's line delete, Cmd+Backspace / Cmd+Delete)
-> deletes to the edge of the **visual** line the caret is on, as a browser field
-> does — on a wrapped paragraph, only the current line's prefix or rest — and
+> deletes to the edge of the **visual** line the caret is drawn on — on a wrapped
+> paragraph, normally only the current line's prefix or rest — and
 > `deleteHardLine*` to the textblock's edge (issue #301). Home / End go to the
 > visual line's edges on both backends. The web finds the edge by hit-testing the
 > textblock just inside both sides of the caret's line and taking the smaller
-> position as the start, so a right-to-left line starts at its right edge; on a
-> line that *mixes* directions the answer can fall short of the logical edge.
+> position as the start, so a right-to-left line starts at its right edge.
+>
+> Where this still differs from a browser field:
+> - **A caret at a soft wrap has no affinity.** The end of one visual line and the
+>   start of the next are one model position, and the web draws a caret there at
+>   the end of the line *above*. Home lands on exactly that position, so after
+>   Home the caret is drawn on the line above, a second Home climbs a line, and a
+>   `deleteSoftLineBackward` then takes the whole line above where Chrome deletes
+>   one character. A click at a line's start lands there too.
+> - **After a hard break** (Shift+Enter) a position at the next line's start maps
+>   before the break, so a soft-line delete backward on that line takes the break
+>   with it (#1025).
+> - **A caret line scrolled out of view** has nothing to hit-test, so Home, End
+>   and the soft-line deletes fall back to the textblock's edge there (#1026).
+> - On a line that *mixes* directions the answer can fall short of the logical
+>   edge.
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.
