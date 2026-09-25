@@ -287,8 +287,9 @@ pub struct RsxMatchArm {
     pub pattern: Pat,
     /// Optional `if` guard expression.
     pub guard: Option<Expr>,
-    /// RSX children for this arm. Usually a single node; a braced `{ let …; node }`
-    /// body yields leading statement(s) + node(s), like an `if`/`for` body.
+    /// RSX children for this arm. Usually a single node; a braced body that opens
+    /// with `let`, text, control flow or an element yields statement(s) + node(s),
+    /// like an `if`/`for` body (see `parse_braced_arm_body`, issue #395).
     pub children: Vec<RsxNode>,
 }
 
@@ -327,23 +328,8 @@ impl Parse for RsxMatchArm {
         // =>
         input.parse::<Token![=>]>()?;
 
-        // Parse the arm body. Normally one node (`0 => div { … }`), but a braced
-        // block whose content starts with `let` is parsed as rsx children
-        // (leading statements + node) so an arm can do per-branch setup — the
-        // same shape `if`/`for` bodies already accept. `generate_children_body`
-        // collapses the statements + node(s) into one NodeHandle. A non-`let`
-        // brace (`{ expr }`, `{|| … }`) keeps the single-node behavior.
         let children = if input.peek(token::Brace) {
-            let ahead = input.fork();
-            let inner;
-            syn::braced!(inner in ahead);
-            if inner.peek(Token![let]) {
-                let content;
-                syn::braced!(content in input);
-                parse_rsx_children(&content)?
-            } else {
-                vec![input.parse::<RsxNode>()?]
-            }
+            parse_braced_arm_body(input)?
         } else {
             vec![input.parse::<RsxNode>()?]
         };
@@ -358,6 +344,66 @@ impl Parse for RsxMatchArm {
             guard,
             children,
         })
+    }
+}
+
+/// What a braced `match` arm body opens with, which decides how it parses.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArmBodyStart {
+    /// `let`, a string literal, or `Name {` — rsx children, committed.
+    Children,
+    /// `if` / `for` / `match` — rsx children if the whole body parses as them,
+    /// otherwise the single braced node #221 handles (and diagnoses).
+    ControlFlow,
+    /// Anything else — the one braced expression it has always been.
+    Expr,
+}
+
+/// Parse `=> { … }`, a braced arm body (issue #395).
+///
+/// The **first token** decides, mirroring [`RsxNode::parse`]'s own dispatch:
+/// `let`, a string literal, `if`/`for`/`match`, or an element/component
+/// (`Name {`) opens rsx children — several nodes, as an `if`/`for` body holds,
+/// collapsed into one `NodeHandle` by `generate_children_body`. Anything else is
+/// a braced expression, exactly as before: `{ section(__scope) }` (ui-zoo's
+/// routing), `{a.clone()}`, `{|| …}`. Parsing every braced arm as children
+/// would have broken those — `section(__scope)` is not an rsx node.
+///
+/// A consequence worth knowing: `{ Point { x: 1 } }` is a component now, as
+/// `Point { x: 1 }` unbraced always was. A path (`geom::Point { … }`) is not an
+/// element name and stays an expression.
+///
+/// Control flow is tried as children on a fork and falls back to the single
+/// braced node, so `{ match y { … } }` alone keeps #221's transparent brace and
+/// `{ if c { helper() } else { other() } }` keeps #221's diagnostic.
+fn parse_braced_arm_body(input: ParseStream) -> Result<Vec<RsxNode>> {
+    let ahead = input.fork();
+    let inner;
+    syn::braced!(inner in ahead);
+
+    let start = if inner.peek(Token![let])
+        || inner.peek(LitStr)
+        || (inner.peek(syn::Ident) && inner.peek2(token::Brace))
+    {
+        ArmBodyStart::Children
+    } else if inner.peek(Token![if]) || inner.peek(Token![for]) || inner.peek(Token![match]) {
+        ArmBodyStart::ControlFlow
+    } else {
+        ArmBodyStart::Expr
+    };
+
+    match start {
+        ArmBodyStart::Children => {
+            let content;
+            syn::braced!(content in input);
+            parse_rsx_children(&content)
+        }
+        ArmBodyStart::ControlFlow if parse_rsx_children(&inner).is_ok() => {
+            let content;
+            syn::braced!(content in input);
+            parse_rsx_children(&content)
+        }
+        ArmBodyStart::ControlFlow | ArmBodyStart::Expr => Ok(vec![input.parse::<RsxNode>()?]),
     }
 }
 
@@ -845,7 +891,10 @@ mod tests {
         assert_eq!(first_arm("{|| count.get()}"), ["Expr"]);
         assert_eq!(first_arm("{ move || count.get() }"), ["Expr"]);
         assert_eq!(first_arm("{ panel }"), ["Expr"]);
-        assert_eq!(first_arm("{ items.iter().map(f).collect::<Vec<_>>() }"), ["Expr"]);
+        assert_eq!(
+            first_arm("{ items.iter().map(f).collect::<Vec<_>>() }"),
+            ["Expr"]
+        );
         assert_eq!(first_arm("{ rinch::helper(__scope) }"), ["Expr"]);
     }
 
@@ -862,7 +911,8 @@ mod tests {
     /// #221's diagnostic still fires for a braced arm of non-rsx control flow.
     #[test]
     fn a_braced_arm_of_non_rsx_control_flow_is_still_rejected() {
-        let input = "match x.get() { 0 => { if c.get() { helper() } else { other() } }, _ => \"b\" }";
+        let input =
+            "match x.get() { 0 => { if c.get() { helper() } else { other() } }, _ => \"b\" }";
         let msg = match parse_str::<RsxNode>(input) {
             Err(err) => err.to_string(),
             Ok(_) => panic!("braced control flow with non-rsx bodies must not compile"),
