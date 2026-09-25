@@ -378,11 +378,12 @@ where
         // Borrows released before the parked rows are torn down.
         drop(state);
         drop(old_keys);
-        release_parked(doomed, |node| {
+        release_parked(doomed, || {
             rendered
                 .borrow()
                 .values()
-                .any(|row| row.node.node_id() == node)
+                .map(|row| row.node.node_id())
+                .collect()
         });
 
         // The item collection is dropped last, and untracked, matching

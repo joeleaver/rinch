@@ -287,13 +287,18 @@ impl ParkedRow {
 /// Tear parked rows down: every scope disposed, *then* every node released.
 ///
 /// Call with no borrow of the list's own state held — disposal runs user code
-/// that may re-enter the list (#141). `still_shown` is asked, after disposal,
-/// whether a node is a live row again: a memoising `view` can hand the very
+/// that may re-enter the list (#141). `shown` is asked once, after disposal,
+/// for the nodes the list's live rows hold: a memoising `view` can hand the very
 /// node a departing key showed to a key that arrived in the same pass, and the
 /// insert has already put it in place by the time the parked release runs.
 /// Releasing it anyway would take out the row the list is now showing; the
 /// inline release this replaced ran *before* that insert and so never met it.
-pub(crate) fn release_parked(parked: Vec<ParkedRow>, still_shown: impl Fn(NodeId) -> bool) {
+/// Asked once rather than per row, so tearing down `m` rows of an `n`-row list
+/// costs `O(n + m)`, not `O(n * m)`.
+pub(crate) fn release_parked(
+    parked: Vec<ParkedRow>,
+    shown: impl FnOnce() -> std::collections::HashSet<NodeId>,
+) {
     if parked.is_empty() {
         return;
     }
@@ -307,8 +312,9 @@ pub(crate) fn release_parked(parked: Vec<ParkedRow>, still_shown: impl Fn(NodeId
     // Either verb cancels the subtree's transitions and animations in the
     // document implementation (#699); stamping inline `transition: none` here
     // disarmed that permanently (#704).
+    let shown = shown();
     for (node, owned) in nodes {
-        if still_shown(node.node_id()) {
+        if shown.contains(&node.node_id()) {
             continue;
         }
         if owned {
@@ -319,12 +325,13 @@ pub(crate) fn release_parked(parked: Vec<ParkedRow>, still_shown: impl Fn(NodeId
     }
 }
 
-/// Whether `node` is the node of a row `state` still holds.
-fn shown_in(state: &RefCell<HashMap<String, ItemState>>, node: NodeId) -> bool {
+/// The nodes of the rows `state` still holds.
+fn shown_in(state: &RefCell<HashMap<String, ItemState>>) -> std::collections::HashSet<NodeId> {
     state
         .borrow()
         .values()
-        .any(|row| row.node.node_id() == node)
+        .map(|row| row.node.node_id())
+        .collect()
 }
 
 /// Tear down an [`ItemState`] that a duplicate key displaced out of `items_state`.
@@ -515,7 +522,7 @@ where
 
         drop(state);
         drop(keys);
-        release_parked(displaced, |node| shown_in(&items_state, node));
+        release_parked(displaced, || shown_in(&items_state));
     }
 
     // Create Effect that reconciles list when it changes
@@ -745,7 +752,7 @@ where
         // Borrows released before the parked rows are torn down.
         drop(state);
         drop(keys);
-        release_parked(doomed, |node| shown_in(&items_state_clone, node));
+        release_parked(doomed, || shown_in(&items_state_clone));
 
         // The batch is dropped last, and untracked. Dropping a `ForItem` drops
         // the user's data, and a `Drop` impl that reads a signal would otherwise
@@ -2048,7 +2055,7 @@ mod tests {
             "and so is its node: it leaves after its scope, not before (#356)"
         );
 
-        super::release_parked(vec![parked], |_| false);
+        super::release_parked(vec![parked], Default::default);
         assert!(!owner.is_alive(), "tearing the row down frees its scope");
         assert_eq!(
             parent.children().len(),
