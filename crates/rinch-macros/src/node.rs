@@ -756,6 +756,120 @@ mod tests {
         }
     }
 
+    // ── Braced arm bodies: decided by the first token (issue #395) ──
+
+    /// The arm children of `match x.get() { 0 => <arm>, _ => "b" }`'s first arm,
+    /// as variant names.
+    fn first_arm(arm: &str) -> Vec<&'static str> {
+        let input = format!("match x.get() {{ 0 => {arm}, _ => \"b\" }}");
+        let node = match parse_str::<RsxNode>(&input) {
+            Ok(node) => node,
+            Err(err) => panic!("{arm} did not parse: {err}"),
+        };
+        let RsxNode::MatchBlock(mb) = node else {
+            panic!("Expected MatchBlock");
+        };
+        mb.arms[0]
+            .children
+            .iter()
+            .map(|c| match c {
+                RsxNode::Text(_) => "Text",
+                RsxNode::Expr(_) => "Expr",
+                RsxNode::Element(_) => "Element",
+                RsxNode::IfBlock(_) => "IfBlock",
+                RsxNode::ForLoop(_) => "ForLoop",
+                RsxNode::MatchBlock(_) => "MatchBlock",
+                RsxNode::Statement(_) => "Statement",
+            })
+            .collect()
+    }
+
+    /// A braced arm holds several nodes when it starts with an element, as an
+    /// `if`/`for` body does. It used to take exactly one node unless the arm
+    /// happened to open with `let`: `unexpected token, expected }`.
+    #[test]
+    fn a_braced_arm_holds_several_elements() {
+        assert_eq!(first_arm("{ div {} span {} }"), ["Element", "Element"]);
+        assert_eq!(first_arm(r#"{ div { "a" } "t" }"#), ["Element", "Text"]);
+        assert_eq!(first_arm("{ Card {} Badge {} }"), ["Element", "Element"]);
+        // One element in braces is the unbraced arm, not an expression.
+        assert_eq!(first_arm("{ div {} }"), ["Element"]);
+    }
+
+    /// A string literal opens rsx children too.
+    #[test]
+    fn a_braced_arm_may_start_with_text() {
+        assert_eq!(first_arm(r#"{ "a" span {} }"#), ["Text", "Element"]);
+        assert_eq!(first_arm(r#"{ "a" }"#), ["Text"]);
+    }
+
+    /// Control flow followed by more nodes is children; control flow alone is
+    /// still the one transparent construct #221 made it.
+    #[test]
+    fn a_braced_arm_may_start_with_control_flow() {
+        assert_eq!(
+            first_arm(r#"{ if c.get() { "a" } span {} }"#),
+            ["IfBlock", "Element"]
+        );
+        assert_eq!(
+            first_arm(r#"{ for i in v.get() { div {} } "tail" }"#),
+            ["ForLoop", "Text"]
+        );
+        assert_eq!(
+            first_arm(r#"{ match y.get() { 0 => "z", _ => "n" } div {} }"#),
+            ["MatchBlock", "Element"]
+        );
+        assert_eq!(
+            first_arm(r#"{ match y.get() { 0 => "z", _ => "n" } }"#),
+            ["MatchBlock"]
+        );
+    }
+
+    /// `let` keeps opening children (issue #102 Gap 2), now with several nodes.
+    #[test]
+    fn a_braced_let_arm_holds_several_nodes() {
+        assert_eq!(
+            first_arm("{ let k = 1; div {} span {} }"),
+            ["Statement", "Element", "Element"]
+        );
+    }
+
+    /// Everything else in a braced arm is the expression it always was. The
+    /// call arm is `examples/ui-zoo/src/lib.rs`'s section routing; `{a.clone()}`
+    /// is `rsx_captured_handle_branch.rs`'s; the issue's own suggestion (always
+    /// children) broke both.
+    #[test]
+    fn a_braced_arm_expression_stays_an_expression() {
+        assert_eq!(first_arm("{ overview_section(__scope) }"), ["Expr"]);
+        assert_eq!(first_arm("{a.clone()}"), ["Expr"]);
+        assert_eq!(first_arm("{|| count.get()}"), ["Expr"]);
+        assert_eq!(first_arm("{ move || count.get() }"), ["Expr"]);
+        assert_eq!(first_arm("{ panel }"), ["Expr"]);
+        assert_eq!(first_arm("{ items.iter().map(f).collect::<Vec<_>>() }"), ["Expr"]);
+        assert_eq!(first_arm("{ rinch::helper(__scope) }"), ["Expr"]);
+    }
+
+    /// `{ Name { … } }` reads as a component, as `Name { … }` unbraced does —
+    /// the first token decides, so a Rust struct literal in a braced arm is no
+    /// longer one. A *path* (`a::Point { … }`) is not an element name, so it
+    /// stays an expression.
+    #[test]
+    fn a_braced_struct_literal_shape_is_a_component() {
+        assert_eq!(first_arm("{ Point { x: 1, y: 2 } }"), ["Element"]);
+        assert_eq!(first_arm("{ geom::Point { x: 1, y: 2 } }"), ["Expr"]);
+    }
+
+    /// #221's diagnostic still fires for a braced arm of non-rsx control flow.
+    #[test]
+    fn a_braced_arm_of_non_rsx_control_flow_is_still_rejected() {
+        let input = "match x.get() { 0 => { if c.get() { helper() } else { other() } }, _ => \"b\" }";
+        let msg = match parse_str::<RsxNode>(input) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("braced control flow with non-rsx bodies must not compile"),
+        };
+        assert!(msg.contains("renders once and never updates"), "{msg}");
+    }
+
     // ── Braced control flow (issue #221) ─────────────────────────
 
     /// A brace around control flow is transparent: the same reactive node the
