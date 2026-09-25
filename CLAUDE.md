@@ -956,7 +956,11 @@ layout pass. `run_on_main_thread` and everything riding it (`set_timeout`,
 `rinch-http`, `rinch-ws`) work in embed for the same reason. The queue itself
 lives in `rinch-core` (`queue_main_callback` / `drain_main_callbacks`) so the
 desktop shell, the Android loop and embed all share one; the shell's dispatcher
-adds the "wake the event loop" side effect that embed has no use for.
+adds the "wake the event loop" side effect that embed has no use for. That wake
+is coalesced (one pending `ReRender` at a time), so a callback queued between a
+wake's callback drain and its native-event drain would fold into the wake being
+served; the wake therefore asks `rinch_core::main_callbacks_pending()` after the
+native drain and owes itself another (`drain_wake_queues`, issue #988).
 
 ## Native Menus
 
