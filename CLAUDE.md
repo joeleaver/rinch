@@ -2071,8 +2071,9 @@ box:
   ellipsis` rebuild (an IFC root's; a text leaf's was deleted in #982) and
   paint's on-demand fallback. The **form-control** text path (`<input>`,
   `<textarea>`, `<select>`) is deliberately not among them: paint and the two
-  hit-test builders there have to move as one piece, which is #320. A percentage spacing is still dropped where Chrome resolves it against
-  the font-size (#743).
+  hit-test builders there have to move as one piece, which is #320. A
+  percentage spacing is still dropped where Chrome resolves it against the
+  font-size (#743).
 - **An atomic inline is sized by three passes and no compute (#661).**
   `inline-block`, `inline-flex` and `inline-grid` boxes are detached from their
   parent's Taffy child list so the enclosing IFC can measure them as Parley

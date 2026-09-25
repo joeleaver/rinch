@@ -42,6 +42,8 @@ const BASE_CSS: &str = "
     .float { float: left; }
     .ib { display: inline-block; }
     .inline { display: inline; }
+    .pre { white-space: pre; }
+    .cx { overflow: clip; }
 ";
 
 /// Build `wrappers` (outermost first) under `<body>`, then the clipping
@@ -106,7 +108,11 @@ fn every_clipping_box_draws_its_ellipsis_as_an_ifc_root() {
         ("fixed span", &[], ("span", "clip fixed")),
         ("floated span", &[("div", "")], ("span", "clip float")),
         ("inline-block span", &[("div", "")], ("span", "clip ib")),
+        // `.clip` sets `white-space: nowrap`, so this `<pre>` is nowrap:
         ("pre in flex", &[("div", "flex")], ("pre", "clip")),
+        // …and these two are what exercise the `pre` and `clip` arms.
+        ("white-space: pre block", &[], ("div", "clip pre")),
+        ("overflow: clip block", &[], ("div", "clip cx")),
         ("button", &[("div", "")], ("button", "clip")),
     ];
     let mut failures = Vec::new();
