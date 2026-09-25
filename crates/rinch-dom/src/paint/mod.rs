@@ -506,6 +506,157 @@ thread_local! {
     /// `paint_subtree` paints into a pixmap of its own and has no window, so a
     /// value left behind here would cull against the wrong target.
     static VIEWPORT: Cell<Option<Viewport>> = const { Cell::new(None) };
+
+    /// The clips the painter has open right now, as cull rects: one entry per
+    /// `push_clip` or `push_layer` the painter has not yet popped, each holding
+    /// the running intersection of every clip beneath it and itself, in the
+    /// physical pixels paint works in (`None` = nothing clips yet). Written
+    /// only by [`ClipTrackingPainter`], which is what makes it the painter's
+    /// own clip stack rather than a second account of it (#910).
+    static CLIP_CULL: RefCell<Vec<Option<Rect>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The rect nothing drawn right now can reach past: the intersection of every
+/// clip the painter has open, grown by [`INK_MARGIN_CSS_PX`]. `None` while no
+/// clip is open.
+fn open_clip_cull() -> Option<Rect> {
+    CLIP_CULL.with(|c| c.borrow().last().copied().flatten())
+}
+
+/// A [`Painter`] that forwards everything and keeps [`CLIP_CULL`] in step with
+/// the clips it forwards (#910).
+///
+/// The dirty-region and window culls say what nothing can be *seen* outside;
+/// this one says what nothing can be *drawn* outside — a scroller's rows past
+/// its clip are on the window and inside a dirty rect, and are clipped away
+/// all the same. Mirroring the painter's own stack, rather than pushing a cull
+/// rect at the call sites that open a bracket, is what makes it exact by
+/// construction: a hoisted entry's clip chain, the #545 lift of a stacking
+/// root's bracket around a `position: fixed` entry (a `pop_layer` and a
+/// `push_clip` of the same shape), and a bracket card K43 elided are all
+/// whatever the painter was actually told, with no site to forget.
+///
+/// A layer pushes an unchanged copy of the entry beneath it: `pop_layer` pops
+/// a clip and a layer alike, and a layer's bounds are no clip on the software
+/// path. The shape's transformed **bounding box** stands for the shape — never
+/// smaller than what it clips to — grown by the ink margin, for the same
+/// reason the window's cull rect is: a box's layout rect is not the last word
+/// on where it puts ink, and a shadow cast back into a scroller's viewport by
+/// a row just past its edge is inside the clip.
+struct ClipTrackingPainter<'a> {
+    inner: &'a mut dyn Painter,
+    ink_margin: f64,
+}
+
+impl ClipTrackingPainter<'_> {
+    /// Run `f` with `painter` wrapped, on a clip-cull stack of its own. The
+    /// stack of an enclosing paint, if any, is set aside and put back.
+    fn run<R>(painter: &mut dyn Painter, scale: f64, f: impl FnOnce(&mut dyn Painter) -> R) -> R {
+        let saved = CLIP_CULL.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        let mut tracking = ClipTrackingPainter {
+            inner: painter,
+            ink_margin: INK_MARGIN_CSS_PX * scale,
+        };
+        let out = f(&mut tracking);
+        CLIP_CULL.with(|c| *c.borrow_mut() = saved);
+        out
+    }
+}
+
+impl Painter for ClipTrackingPainter<'_> {
+    fn reset(&mut self) {
+        CLIP_CULL.with(|c| c.borrow_mut().clear());
+        self.inner.reset();
+    }
+    fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
+        self.inner.fill(fill, transform, brush, shape);
+    }
+    fn fill_color(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        color: AlphaColor<Srgb>,
+        shape: &PaintShape,
+    ) {
+        self.inner.fill_color(fill, transform, color, shape);
+    }
+    fn stroke(
+        &mut self,
+        stroke: &peniko::kurbo::Stroke,
+        transform: Affine,
+        brush: &Brush,
+        shape: &PaintShape,
+    ) {
+        self.inner.stroke(stroke, transform, brush, shape);
+    }
+    fn stroke_color(
+        &mut self,
+        stroke: &peniko::kurbo::Stroke,
+        transform: Affine,
+        color: AlphaColor<Srgb>,
+        shape: &PaintShape,
+    ) {
+        self.inner.stroke_color(stroke, transform, color, shape);
+    }
+    fn draw_glyphs(
+        &mut self,
+        font: &peniko::FontData,
+        font_size: f32,
+        transform: Affine,
+        glyph_transform: Option<Affine>,
+        brush: &Brush,
+        hint: bool,
+        normalized_coords: &[i16],
+        glyphs: &[painter::PaintGlyph],
+    ) {
+        self.inner.draw_glyphs(
+            font,
+            font_size,
+            transform,
+            glyph_transform,
+            brush,
+            hint,
+            normalized_coords,
+            glyphs,
+        );
+    }
+    fn draw_image(&mut self, image: &painter::PaintImage<'_>, transform: Affine) {
+        self.inner.draw_image(image, transform);
+    }
+    fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        let bounds = transform
+            .transform_rect_bbox(shape.bounding_box())
+            .inflate(self.ink_margin, self.ink_margin);
+        CLIP_CULL.with(|c| {
+            let mut c = c.borrow_mut();
+            let next = match c.last().copied().flatten() {
+                Some(open) => open.intersect(bounds),
+                None => bounds,
+            };
+            c.push(Some(next));
+        });
+        self.inner.push_clip(fill, transform, shape);
+    }
+    fn push_layer(
+        &mut self,
+        blend: BlendMode,
+        opacity: f32,
+        transform: Affine,
+        bounds: &PaintShape,
+    ) {
+        CLIP_CULL.with(|c| {
+            let mut c = c.borrow_mut();
+            let open = c.last().copied().flatten();
+            c.push(open);
+        });
+        self.inner.push_layer(blend, opacity, transform, bounds);
+    }
+    fn pop_layer(&mut self) {
+        CLIP_CULL.with(|c| {
+            c.borrow_mut().pop();
+        });
+        self.inner.pop_layer();
+    }
 }
 
 /// The render target, and the rect outside which paint emits nothing.
@@ -613,9 +764,9 @@ pub fn set_dirty_rects(rects: Option<&[Rect]>) {
     DIRTY_REGION.with(|v| *v.borrow_mut() = rects.map(<[Rect]>::to_vec));
 }
 
-/// Check whether a node rect intersects the current dirty region.
-/// Returns true if there is no dirty region (full repaint) or if the
-/// node's absolute rect overlaps the dirty region.
+/// Check whether a node rect can put anything on screen this paint: it must
+/// touch the dirty region (always, on a full repaint), the window's cull rect,
+/// and the cull rect of the clips the painter has open ([`CLIP_CULL`], #910).
 fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
     let inside_dirty = DIRTY_REGION.with(|v| {
         let guard = v.borrow();
@@ -627,6 +778,16 @@ fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
         }
     });
     if !inside_dirty {
+        return false;
+    }
+
+    // …and against every clip the painter has open (#910). A scroller's rows
+    // below its viewport are on the window and, often, inside the dirty rect —
+    // and are clipped away all the same, so drawing them is work with no
+    // output. See [`ClipTrackingPainter`].
+    if let Some(clip) = open_clip_cull()
+        && !(x < clip.x1 && x + w > clip.x0 && y < clip.y1 && y + h > clip.y0)
+    {
         return false;
     }
 
@@ -1336,17 +1497,19 @@ pub fn paint_subtree(
     };
     let offset_x = -(node.layout.x as f64 * scale);
     let offset_y = -(node.layout.y as f64 * scale);
-    paint_node(
-        tree,
-        root_node_id,
-        painter,
-        scale,
-        offset_x,
-        offset_y,
-        font_cx,
-        layout_cx,
-        Affine::IDENTITY,
-    );
+    ClipTrackingPainter::run(painter, scale, |painter| {
+        paint_node(
+            tree,
+            root_node_id,
+            painter,
+            scale,
+            offset_x,
+            offset_y,
+            font_cx,
+            layout_cx,
+            Affine::IDENTITY,
+        )
+    });
 }
 
 /// Paint the entire document using a Painter.
@@ -1394,17 +1557,19 @@ pub fn paint_document(
             None
         })
     });
-    paint_node(
-        tree,
-        tree.body_id,
-        painter,
-        scale,
-        0.0,
-        0.0,
-        font_cx,
-        layout_cx,
-        Affine::IDENTITY,
-    );
+    ClipTrackingPainter::run(painter, scale, |painter| {
+        paint_node(
+            tree,
+            tree.body_id,
+            painter,
+            scale,
+            0.0,
+            0.0,
+            font_cx,
+            layout_cx,
+            Affine::IDENTITY,
+        )
+    });
     // Cleared, not left behind. `paint_subtree` renders into a pixmap sized to
     // one element and never sets this, so a stale window from the last frame
     // would have it culling against a rect that has nothing to do with what it
@@ -1563,6 +1728,24 @@ fn paint_children_with_stacking(
                 (node_transform, None)
             };
 
+            // Asked here, after the entry's chain is pushed, so the cull it
+            // reads is the one the entry would paint under (#910). A lifted
+            // fixed entry is never asked — the helper answers `false` for one
+            // — and a stacking context neither.
+            if lifted.is_none()
+                && paints_nothing_without_visit(
+                    tree,
+                    entry.node_id,
+                    scale,
+                    entry.offset_x,
+                    entry.offset_y,
+                    entry_transform,
+                    0,
+                )
+            {
+                continue;
+            }
+
             paint_node(
                 tree,
                 entry.node_id,
@@ -1594,6 +1777,17 @@ fn paint_children_with_stacking(
             if paints_at_stacking_root(child) || already_drawn_inline(child, PaintKind::InFlow) {
                 continue;
             }
+            if paints_nothing_without_visit(
+                tree,
+                child_id,
+                scale,
+                offset_x,
+                offset_y,
+                node_transform,
+                0,
+            ) {
+                continue;
+            }
             paint_node(
                 tree,
                 child_id,
@@ -1607,6 +1801,98 @@ fn paint_children_with_stacking(
             );
         }
     }
+}
+
+/// Whether the ordinary (non-stacking-context) box `node_id`, entered at
+/// `offset` under `parent_transform`, would paint nothing at all — decided
+/// without a [`paint_node`] visit (#910).
+///
+/// This is [`paint_node`]'s own cull, asked one level up: a box outside every
+/// cull ([`intersects_dirty_region`]) draws nothing of its own, and a box that
+/// clips then returns, while one that does not recurses into its box-tree
+/// children, skipping those its IFC draws and those painted at a stacking root.
+/// So the answer is `true` exactly when paint would have walked the subtree and
+/// drawn nothing: the box clips, or every child it would descend into is itself
+/// such a subtree. What it asks nothing about, it answers `false` for, and
+/// [`paint_node`] decides as it always has — a stacking context (hoisted, and
+/// `subtree_is_entirely_outside` is the walk that knows what escapes one),
+/// `position: fixed` or `sticky`, `display: contents`, a box degenerate in
+/// either axis.
+///
+/// The point is the count, not the test: a 500-row scroller showing 20 rows
+/// used to enter `paint_node` for every row, each to be culled on arrival. The
+/// loop still meets each row; it no longer composes a transform, walks a
+/// sticky chain or reads a dozen style fields to dismiss it.
+#[allow(clippy::too_many_arguments)]
+fn paints_nothing_without_visit(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    parent_transform: Affine,
+    depth: usize,
+) -> bool {
+    // Bounded like every other walk here; past it, visit and let paint decide.
+    const MAX_DEPTH: usize = 32;
+    if depth > MAX_DEPTH {
+        return false;
+    }
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    let cs = &node.computed_style;
+    if cs.display == DisplayValue::None {
+        return true;
+    }
+    if node.creates_stacking_context()
+        || matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky)
+        || cs.display == DisplayValue::Contents
+        || node.estimated_height.is_some()
+    {
+        return false;
+    }
+    let layout = &node.layout;
+    if layout.width == 0.0 || layout.height == 0.0 {
+        return false;
+    }
+    let x = offset_x + layout.x as f64 * scale;
+    let y = offset_y + layout.y as f64 * scale;
+    let w = layout.width as f64 * scale;
+    let h = layout.height as f64 * scale;
+    let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
+    let inside = if node_transform == Affine::IDENTITY {
+        intersects_dirty_region(x, y, w, h)
+    } else {
+        let bbox = node_transform.transform_rect_bbox(Rect::new(x, y, x + w, y + h));
+        intersects_dirty_region(bbox.x0, bbox.y0, bbox.width(), bbox.height())
+    };
+    if inside {
+        return false;
+    }
+    if node.clips_overflow() {
+        return true;
+    }
+    let child_x = x - node.scroll_offset.0 * scale;
+    let child_y = y - node.scroll_offset.1 * scale;
+    crate::RinchDocument::box_tree_children(&tree.nodes, node_id)
+        .iter()
+        .all(|&child_id| {
+            let Some(child) = tree.get(child_id) else {
+                return true;
+            };
+            paints_at_stacking_root(child)
+                || drawn_by_its_ifc(tree, child)
+                || paints_nothing_without_visit(
+                    tree,
+                    child_id,
+                    scale,
+                    child_x,
+                    child_y,
+                    node_transform,
+                    depth + 1,
+                )
+        })
 }
 
 #[allow(clippy::too_many_arguments)]

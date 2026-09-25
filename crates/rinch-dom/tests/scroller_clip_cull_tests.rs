@@ -157,7 +157,9 @@ fn a_stacking_context_scroller_paints_only_the_rows_its_clip_shows() {
 /// visits on both painters. The GPU path is where the prune is worth most —
 /// vello flattens every path it is handed before its coarse stage culls it.
 ///
-/// Kills: the tracking wrapper applied on one painter path and not the other.
+/// Kills: the clip tracking moved out of `paint_document` into a
+/// software-only caller (the Vello scene visits all 204 again). Also killed by
+/// either mutant above.
 #[test]
 fn the_gpu_scene_is_pruned_like_the_software_frame() {
     let mut doc = RinchDocument::new();
@@ -173,11 +175,11 @@ fn the_gpu_scene_is_pruned_like_the_software_frame() {
 }
 
 /// **Scrolled.** The rows the clip shows are the ones the scroll brought in,
-/// and the rows scrolled off the top are pruned like the ones below.
+/// and the rows scrolled off the *top* are pruned like the ones below — the
+/// cull is a rect on both sides, not a "past the bottom" test.
 ///
-/// Kills: the rows' offsets taken without the scroller's scroll (the cull
-/// would compare unscrolled rows against the clip and draw the wrong ones —
-/// the visible band would be empty).
+/// Kills: the clip test removed, and the tree-loop call removed (both leave
+/// all 200 rows visited).
 #[test]
 fn a_scrolled_scroller_paints_the_rows_scrolled_into_view() {
     let mut doc = RinchDocument::new();
