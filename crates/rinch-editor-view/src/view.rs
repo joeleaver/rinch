@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use crate::handle::ScrollAlign;
-use rinch_core::dom::{DomDocument, NodeFont, NodeHandle};
+use rinch_core::dom::{CaretAffinity, DomDocument, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
 use rinch_editor_core::{EditorState, EditorView, Mark, Node, Pos, Selection, ViewRequest};
@@ -610,6 +610,11 @@ pub struct RinchDomEditorView {
     ///
     /// [`EditorHandle::scroll_into_view`]: super::EditorHandle::scroll_into_view
     reveal_probes: Vec<NodeHandle>,
+    /// Which side of a soft wrap the caret at the selection's head is drawn on
+    /// (#301) — the handle's hint for the current selection
+    /// ([`EditorHandle::caret_affinity`](super::EditorHandle::caret_affinity)),
+    /// set before every caret pass.
+    caret_affinity: CaretAffinity,
 }
 
 /// How far above and below a revealed range [`RinchDomEditorView::position_reveal`]
@@ -662,6 +667,7 @@ impl RinchDomEditorView {
             node_outline: None,
             last_node_outline: None,
             cell_anchor_rect: None,
+            caret_affinity: CaretAffinity::Downstream,
             preedit_node: None,
             preedit_text: None,
             preedit: None,
@@ -804,7 +810,14 @@ impl EditorView for RinchDomEditorView {
             if self.preedit.is_some() {
                 preedit_font = d.node_font(block_id as u64);
             }
-            self.caret_geometry(&*d, &next.doc, next.selection.head(), block_id, flat_byte)
+            self.caret_geometry(
+                &*d,
+                &next.doc,
+                next.selection.head(),
+                block_id,
+                flat_byte,
+                self.caret_affinity,
+            )
         };
         match geometry {
             Some((x, y, height)) => {
@@ -892,16 +905,27 @@ impl RinchDomEditorView {
             .map(|(dom, byte)| (dom.node_id().0, byte))
     }
 
+    /// Set the side of a soft wrap the next caret pass draws the caret on.
+    pub(crate) fn set_caret_affinity(&mut self, affinity: CaretAffinity) {
+        self.caret_affinity = affinity;
+    }
+
     /// The on-screen caret for `pos` as `(x, y, height)`, in the host's popup
-    /// frame ([`DomDocument::query_caret_rect`]). `None` when `pos` is not in a
+    /// frame ([`DomDocument::query_caret_rect_with_affinity`]), drawn on
+    /// `affinity`'s side of a soft wrap. `None` when `pos` is not in a
     /// textblock, the host document is gone or busy, or the block has no box.
-    pub(crate) fn caret_rect(&self, doc: &Node, pos: Pos) -> Option<(f32, f32, f32)> {
+    pub(crate) fn caret_rect(
+        &self,
+        doc: &Node,
+        pos: Pos,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
         let (block, byte) = self.caret_target(doc, pos)?;
         let host = self.doc.upgrade()?;
         // A soft borrow: an app may ask from a callback while a runtime holds
         // the document; that answers "no geometry" rather than panicking.
         let host = host.try_borrow().ok()?;
-        host.query_caret_rect(block.node_id().0 as u64, byte)
+        host.query_caret_rect_with_affinity(block.node_id().0 as u64, byte, affinity)
     }
 
     /// Whether an IME composition (preedit) is being shown — the input method
@@ -974,17 +998,18 @@ impl RinchDomEditorView {
         pos: Pos,
         block_id: usize,
         flat_byte: usize,
+        affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
-        let from_parley =
-            d.query_caret_position(block_id as u64, flat_byte)
-                .map(|(local_x, local_y)| {
-                    let height = d
-                        .query_glyph_bounds(block_id as u64, flat_byte)
-                        .map(|g| g.height)
-                        .unwrap_or(18.0);
-                    let (ox, oy) = self.block_offset_in_container(d, block_id);
-                    (ox + local_x, oy + local_y, height)
-                });
+        let from_parley = d
+            .query_caret_position_with_affinity(block_id as u64, flat_byte, affinity)
+            .map(|(local_x, local_y)| {
+                let height = d
+                    .query_glyph_bounds(block_id as u64, flat_byte)
+                    .map(|g| g.height)
+                    .unwrap_or(18.0);
+                let (ox, oy) = self.block_offset_in_container(d, block_id);
+                (ox + local_x, oy + local_y, height)
+            });
         from_parley.or_else(|| self.empty_block_caret(d, doc, pos, block_id))
     }
 
@@ -1052,7 +1077,14 @@ impl RinchDomEditorView {
                             (block, byte, near)
                         }
                     };
-                    self.caret_geometry(&*d, doc, pos, block.node_id().0, byte)
+                    self.caret_geometry(
+                        &*d,
+                        doc,
+                        pos,
+                        block.node_id().0,
+                        byte,
+                        CaretAffinity::Downstream,
+                    )
                 })();
                 // The start (always last) is required. The end of a range is
                 // not: in a virtualized editor it can sit in a block that is

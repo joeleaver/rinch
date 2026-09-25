@@ -72,7 +72,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 use rinch_editor_core::{CursorMotion, PasteContent, Pos, Selection};
-use rinch_editor_view::{EditorHandle, LinkClick, LinkHover, LinkSpan, registry};
+use rinch_editor_view::{CaretAffinity, EditorHandle, LinkClick, LinkHover, LinkSpan, registry};
 
 use crate::event_delegation::{
     compute_byte_offset_in_block, drag_machine, modifiers_from_key_event, nearest_handler,
@@ -1861,7 +1861,10 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
                 registry::begin_drag(None, container_nid, anchor.0);
             }
             _ => {
-                handle.set_selection(Selection::cursor(clicked));
+                // A press past a wrapped line's end lands on its wrap point,
+                // and belongs to the line pressed on (#301).
+                let affinity = hit_affinity(&handle, clicked, y).0;
+                handle.set_selection_with_affinity(Selection::cursor(clicked), affinity);
                 registry::begin_drag(None, container_nid, clicked.0);
             }
         }
@@ -2155,25 +2158,32 @@ fn vertical_step(
     // threshold. Otherwise the probe snapped back to the current line (the target line
     // is an empty block with no text to hit-test, or a block atom is in the way).
     let head_tb = handle.caret_address(head).map(|(t, _)| t);
+    // The hit and the side of a soft wrap it belongs to (#301): a goal column
+    // past the target line's end lands on its wrap point, which is drawn on
+    // that line only upstream.
     let geo_head = resolve_editor_point(doc, gx, ty)
         .filter(|hit| hit.container_nid == container_nid)
         .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
-        .filter(|&p| {
+        .map(|p| (p, hit_affinity(handle, p, ty)))
+        .filter(|&(p, (_, rect))| {
             if handle.caret_address(p).map(|(t, _)| t) != head_tb {
                 return true; // different textblock — a real line change
             }
-            match head_screen_rect(handle, p) {
+            match rect {
                 Some((_, py, _)) if down => py > hy + hh * 0.5,
                 Some((_, py, _)) => py < hy - hh * 0.5,
                 None => false,
             }
-        });
+        })
+        .map(|(p, (affinity, _))| (p, affinity));
 
     // Stuck — step to the adjacent textblock in the model so the caret can still land
     // on a blank line above/below (or past a block atom). Mirrors the desktop fallback.
-    let Some(new_head) =
-        geo_head.or_else(|| handle.vertical_block_fallback(down).map(|s| s.head()))
-    else {
+    let Some((new_head, affinity)) = geo_head.or_else(|| {
+        handle
+            .vertical_block_fallback(down)
+            .map(|s| (s.head(), CaretAffinity::Downstream))
+    }) else {
         return false;
     };
 
@@ -2182,8 +2192,35 @@ fn vertical_step(
     } else {
         Selection::cursor(new_head)
     };
-    handle.set_selection(sel);
+    handle.set_selection_with_affinity(sel, affinity);
     true
+}
+
+/// Which side of a soft wrap a caret placed at `pos` by a hit at viewport `y`
+/// belongs to (#301), and its rect on that side: `Upstream` when only the
+/// upstream caret's line contains `y` — a hit past a wrapped line's end, which
+/// lands on the wrap point — else `Downstream`. Anywhere but a wrap point both
+/// sides are one caret and the answer is `Downstream`.
+fn hit_affinity(
+    handle: &EditorHandle,
+    pos: Pos,
+    y: f32,
+) -> (CaretAffinity, Option<(f32, f32, f32)>) {
+    let rect = |affinity| {
+        handle
+            .caret_rect_with_affinity(pos, affinity)
+            .map(|r| (r.x, r.y, r.height))
+    };
+    let contains =
+        |r: Option<(f32, f32, f32)>| r.is_some_and(|(_, ry, rh)| ry <= y && y <= ry + rh);
+    let down = rect(CaretAffinity::Downstream);
+    if !contains(down) {
+        let up = rect(CaretAffinity::Upstream);
+        if contains(up) {
+            return (CaretAffinity::Upstream, up);
+        }
+    }
+    (CaretAffinity::Downstream, down)
 }
 
 /// Home / End: move the head to the edge of its visual line, collapsing or
@@ -2209,17 +2246,34 @@ fn move_to_line_edge(
         );
     };
     // At a soft wrap the end of a line and the start of the next are one model
-    // position (there is no caret affinity). Desktop's End steps back one when
-    // the caret there would draw on the next line; the browser draws a collapsed
-    // range at a wrap point at the end of the line before — after a hanging space
-    // and inside a word broken by `overflow-wrap` alike (measured, Chrome 153) —
-    // so End keeps the wrap point, which is also where Chrome's own End goes.
-    handle.set_selection(if extend {
-        Selection::text(sel.anchor(), edge)
+    // position. End's is the upper line's, so it is drawn there (upstream);
+    // Home's is the lower line's (downstream, the default) (#301).
+    let affinity = if end && is_wrap_below(handle, head, edge) {
+        CaretAffinity::Upstream
     } else {
-        Selection::cursor(edge)
-    });
+        CaretAffinity::Downstream
+    };
+    handle.set_selection_with_affinity(
+        if extend {
+            Selection::text(sel.anchor(), edge)
+        } else {
+            Selection::cursor(edge)
+        },
+        affinity,
+    );
     true
+}
+
+/// Whether `edge`, the end of the visual line the caret at `head` is drawn on,
+/// is a soft-wrap point: a downstream caret there is drawn on a later line.
+fn is_wrap_below(handle: &EditorHandle, head: Pos, edge: Pos) -> bool {
+    let (Some((_, hy, hh)), Some(down)) = (
+        head_screen_rect(handle, head),
+        handle.caret_rect_with_affinity(edge, CaretAffinity::Downstream),
+    ) else {
+        return false;
+    };
+    down.y > hy + hh * 0.5
 }
 
 /// The model position at the start (`end == false`) or end of the visual line

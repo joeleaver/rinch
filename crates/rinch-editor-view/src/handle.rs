@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{CaretAffinity, DomDocument, NodeHandle, RenderScope};
 use rinch_core::reactive::{Owner, current_owner, unowned, untracked_handler};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
@@ -113,6 +113,11 @@ struct EditorCore {
     /// Overlay passes the pending `reveal` has found no geometry on; it is
     /// dropped at [`REVEAL_PATIENCE`]. Reset by each new request.
     reveal_misses: u8,
+    /// The caret-affinity hint (#301) and the selection it was set with — see
+    /// [`EditorHandle::caret_affinity`]. It applies only while the selection is
+    /// still that one, so every other writer (an edit, undo, a load, a remote
+    /// change that moves the caret) retires it without knowing it exists.
+    caret_hint: Option<(Selection, CaretAffinity)>,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
@@ -295,6 +300,15 @@ impl Drop for EditorCore {
 }
 
 impl EditorCore {
+    /// The side of a soft wrap the caret at the selection's head belongs to:
+    /// the hint while the selection is the one it came with, else the default.
+    fn caret_affinity(&self) -> CaretAffinity {
+        match &self.caret_hint {
+            Some((sel, affinity)) if *sel == self.state.selection => *affinity,
+            _ => CaretAffinity::Downstream,
+        }
+    }
+
     /// Commit a freshly-applied `next` state over `prev`: store it, re-project the
     /// host, and — when collaborating — record the local change onto the CRDT and
     /// broadcast the resulting delta. The single landing spot for every **local**
@@ -795,6 +809,7 @@ impl EditorHandle {
                 scroll: ScrollGate::default(),
                 reveal: None,
                 reveal_misses: 0,
+                caret_hint: None,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -838,6 +853,7 @@ impl EditorHandle {
                 scroll: ScrollGate::default(),
                 reveal: None,
                 reveal_misses: 0,
+                caret_hint: None,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -1427,7 +1443,37 @@ impl EditorHandle {
     /// comes after the layout, on both platforms.
     pub fn caret_rect(&self, pos: Pos) -> Option<rinch_core::reactive::ElementBounds> {
         let core = self.core();
-        let (x, y, height) = core.view.as_ref()?.caret_rect(&core.state.doc, pos)?;
+        let affinity = if pos == core.state.selection.head() {
+            core.caret_affinity()
+        } else {
+            CaretAffinity::Downstream
+        };
+        let (x, y, height) = core
+            .view
+            .as_ref()?
+            .caret_rect(&core.state.doc, pos, affinity)?;
+        Some(rinch_core::reactive::ElementBounds {
+            x,
+            y,
+            width: 0.0,
+            height,
+        })
+    }
+
+    /// [`caret_rect`](Self::caret_rect) for a caret at `pos` drawn on
+    /// `affinity`'s side of a soft line wrap (#301), whatever the hint says —
+    /// what a platform asks when it has to decide which side a caret it is
+    /// about to place belongs on.
+    pub fn caret_rect_with_affinity(
+        &self,
+        pos: Pos,
+        affinity: CaretAffinity,
+    ) -> Option<rinch_core::reactive::ElementBounds> {
+        let core = self.core();
+        let (x, y, height) = core
+            .view
+            .as_ref()?
+            .caret_rect(&core.state.doc, pos, affinity)?;
         Some(rinch_core::reactive::ElementBounds {
             x,
             y,
@@ -1711,8 +1757,63 @@ impl EditorHandle {
     /// Move the selection (and re-project, so the caret follows once geometry lands).
     ///
     /// A selection that changed brings the caret into view on the next caret pass
-    /// of a focused editor (the arrow keys and clicks all land here).
+    /// of a focused editor (the arrow keys and clicks all land here). It clears
+    /// the caret-affinity hint, even for the selection already held: the caret
+    /// is drawn [`CaretAffinity::Downstream`] — see
+    /// [`set_selection_with_affinity`](Self::set_selection_with_affinity).
     pub fn set_selection(&self, selection: Selection) {
+        self.set_selection_hinted(selection, None);
+    }
+
+    /// [`set_selection`](Self::set_selection), and draw the caret at the head on
+    /// `affinity`'s side of a soft line wrap (#301).
+    ///
+    /// The end of one visual line and the start of the next are one model
+    /// position; a caret there is drawn at the start of the lower line unless it
+    /// is told otherwise. The platforms say `Upstream` for a caret that arrived
+    /// from the upper line's side — End, a press past a wrapped line's end, a
+    /// vertical move whose column lies past the target line's end — and
+    /// `Downstream` for Home. The hint is **view state**, not part of the
+    /// model's [`Selection`]: it lives beside the selection it was set with and
+    /// applies only while the selection is still that one, so any other change
+    /// of selection — typing, an edit, undo, a load, a remote edit that moves
+    /// the caret, a plain `set_selection` — returns the caret to downstream. A
+    /// remote edit that leaves the caret where it was keeps it.
+    ///
+    /// It reaches the caret overlay, [`caret_rect`](Self::caret_rect) at the
+    /// head, and through them the platforms' visual-line motions (Home / End,
+    /// the soft-line deletes, Up / Down), which measure from the head's rect.
+    pub fn set_selection_with_affinity(&self, selection: Selection, affinity: CaretAffinity) {
+        self.set_selection_hinted(selection, Some(affinity));
+    }
+
+    /// The side of a soft line wrap the caret at the selection's head is drawn
+    /// on: the hint [`set_selection_with_affinity`](Self::set_selection_with_affinity)
+    /// set while the selection is still that one, else
+    /// [`CaretAffinity::Downstream`].
+    pub fn caret_affinity(&self) -> CaretAffinity {
+        self.core().caret_affinity()
+    }
+
+    /// [`caret_affinity`](Self::caret_affinity) for a caret at `pos`: the hint
+    /// when `pos` is the selection's head, else [`CaretAffinity::Downstream`].
+    /// What a platform's geometry query for `pos` should draw with.
+    pub fn caret_affinity_at(&self, pos: Pos) -> CaretAffinity {
+        let core = self.core();
+        if pos == core.state.selection.head() {
+            core.caret_affinity()
+        } else {
+            CaretAffinity::Downstream
+        }
+    }
+
+    fn set_selection_hinted(&self, selection: Selection, hint: Option<CaretAffinity>) {
+        let before = {
+            let mut core = self.core_mut();
+            let before = (core.state.selection.clone(), core.caret_affinity());
+            core.caret_hint = None;
+            before
+        };
         self.dispatch(
             |state| {
                 let mut tr = state.tr();
@@ -1721,6 +1822,23 @@ impl EditorHandle {
             },
             true,
         );
+        let doc_key = {
+            let mut core = self.core_mut();
+            if let Some(affinity) = hint
+                && core.state.selection == selection
+            {
+                core.caret_hint = Some((selection, affinity));
+            }
+            // Only the drawing side changed — the same selection, the other side
+            // of the wrap: no transaction moved anything, so nothing else owes
+            // the caret pass that redraws it.
+            let redraw = core.state.selection == before.0 && core.caret_affinity() != before.1;
+            core.view.as_ref().filter(|_| redraw).map(|v| v.doc_key())
+        };
+        if let Some(doc_key) = doc_key {
+            crate::registry::owe_overlay_pass(doc_key);
+            crate::registry::request_overlay_refresh();
+        }
     }
 
     /// Select the word around model `pos` (the double-click gesture). Returns whether
@@ -2142,6 +2260,10 @@ impl EditorHandle {
         let Some(view) = core.view.as_mut() else {
             return false;
         };
+        view.set_caret_affinity(match &core.caret_hint {
+            Some((sel, affinity)) if *sel == core.state.selection => *affinity,
+            _ => CaretAffinity::Downstream,
+        });
         let state = &core.state;
         // The view's `ScrollSelectionIntoView` says only that the overlay moved;
         // whether to scroll is the gate's decision (see above), so the requests
