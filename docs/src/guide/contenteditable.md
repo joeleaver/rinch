@@ -217,6 +217,27 @@ to style. Decorations are recomputed from every new state, and the editor does
 **not** move a range for you when text is inserted before it — a plugin that
 caches ranges maps them through `tr.mapping()` in its `apply`.
 
+Plugin code runs **untracked** (issue #943). `decorations`, `apply`,
+`init_state`, `handle_paste` and a plugin's commands run synchronously inside
+whatever app effect called the handle (a `set_selection`, a `command`, an
+`insert_text`), and a signal they read does not become that effect's
+dependency. The flip side: a plugin is not re-asked when a signal it reads
+changes. A spellchecker with an on/off switch re-runs its decorations by
+dispatching something when the switch moves, from an effect of its own:
+
+```rust
+let ed = editor.clone();
+Effect::new(move || {
+    let _ = spellcheck_on.get();
+    // Any transaction re-asks every plugin's decorations; this one changes nothing.
+    ed.update(|state| Some(state.tr()));
+});
+```
+
+The `build` closure you pass to `update` is the exception: it is your own code,
+and what it reads tracks as usual — including what plugin code *it* calls reads
+(`update(|s| { s.apply(..); … })` runs the plugins' `apply` as your code).
+
 A right press over the editor places the caret before an app's
 `data-oncontextmenu` handler runs, on both backends, so a handler that draws its
 own suggestions menu reads the pressed word from `selection()`.

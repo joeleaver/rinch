@@ -539,7 +539,10 @@ impl RinchDocument {
                 .copied()
                 .find(|&c| is_el(&self.tree, c) && !self.tree.nodes[c].is_pseudo_element);
             // `after` may be the inserted node itself; its successor is the
-            // one whose edge-ness can have moved.
+            // one whose edge-ness can have moved. That mark on the inserted
+            // node is load-bearing (#914): a node moved within its parent is
+            // not re-cascaded by the move verb, so under a sheet with only
+            // `:first-child` / `:last-child` this is its sole restyle.
             let after_next = children
                 .iter()
                 .skip(at + 1)
