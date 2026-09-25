@@ -972,7 +972,11 @@ fn a_singular_transform_is_neither_drawn_nor_hit() {
         ("scale3d(1, 1, 0)", false, false),
         ("scale3d(0.5, 0.5, 0)", false, false),
         ("rotateY(180deg) scaleZ(0)", false, false),
-        ("rotateY(180deg) scaleZ(0); backface-visibility: hidden", false, false),
+        (
+            "rotateY(180deg) scaleZ(0); backface-visibility: hidden",
+            false,
+            false,
+        ),
         ("rotateX(45deg) scaleZ(0)", false, false),
         ("scaleZ(0) rotateX(45deg)", false, false),
         ("rotateY(20deg) scaleZ(0)", false, false),
@@ -997,7 +1001,9 @@ fn a_singular_transform_is_neither_drawn_nor_hit() {
         let (red, _) = s.painted();
         let hit = s.hits(s.parent, 250.0, 120.0);
         if (red > 0) != drawn || (hit_too && !hit) || (!drawn && hit) {
-            bad.push(format!("{tf}: {red} red px, hit={hit}, Chrome drawn={drawn}"));
+            bad.push(format!(
+                "{tf}: {red} red px, hit={hit}, Chrome drawn={drawn}"
+            ));
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
