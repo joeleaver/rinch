@@ -980,4 +980,56 @@ mod tests {
             hits.borrow()
         );
     }
+
+    /// **Pins an accepted trade-off, not a goal** (review of PR #960; #963).
+    /// Code outside any document — a timer, `run_on_main_thread`, an http/ws
+    /// completion — cannot be attributed to the document that armed it, so its
+    /// install is newer than every document's own entry and shadows them all,
+    /// and its clear wipes them all. Registrations *inside* documents stay
+    /// isolated (the last step). When #963 runs such callbacks under their
+    /// owner's document, steps 2 and 3 flip to `(99, 20)` and `(None, 20)`, and
+    /// this fixture should be updated to say so.
+    #[test]
+    fn an_unmarked_install_or_clear_reaches_every_documents_entry() {
+        use crate::context::push_dispatching_doc;
+        thread_local! {
+            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
+                const { RefCell::new(DocScopedSlotMap::new()) };
+        }
+        let read_as = |doc: u64| {
+            let _d = push_dispatching_doc(doc);
+            read_doc_scoped_slot(&SLOT).map(|f| f())
+        };
+        {
+            let _a = push_dispatching_doc(1);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 10u32) as Probe);
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 20u32) as Probe);
+        }
+        let mut log = vec![(read_as(1), read_as(2))];
+        install_doc_scoped_slot(&SLOT, Rc::new(|| 99u32) as Probe); // A's timer
+        log.push((read_as(1), read_as(2)));
+        clear_doc_scoped_slot(&SLOT); // A's timer clears
+        log.push((read_as(1), read_as(2)));
+        {
+            let _b = push_dispatching_doc(2);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 21u32) as Probe);
+        }
+        {
+            let _a = push_dispatching_doc(1);
+            clear_doc_scoped_slot(&SLOT);
+        }
+        log.push((read_as(1), read_as(2)));
+        assert_eq!(
+            log,
+            [
+                (Some(10), Some(20)),
+                (Some(99), Some(99)),
+                (None, None),
+                (None, Some(21)),
+            ]
+        );
+    }
 }

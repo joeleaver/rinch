@@ -803,7 +803,13 @@ build on, with this menu as the fallback.
   the fallback was registered **later**, so a single-window app keeps
   last-registration-wins wherever it registers from; `clear_keyboard_interceptor`
   from outside any document clears every entry, and from inside one leaves that
-  document with none. Its *lifetime* does match the arbiter's, though:
+  document with none. The cost with several documents on one thread (two
+  embedded contexts, an app and its DevTools): code outside any document — a
+  timer, `run_on_main_thread`, an http/ws completion — cannot say which
+  document it belongs to, so its registration overrides **every** document's
+  own hook and its clear wipes every document's. Registrations made inside
+  documents stay isolated from each other. Issue #963 tracks running such
+  callbacks under their owner's document. Its *lifetime* does match the arbiter's, though:
   registering it during a render releases it when that component unmounts,
   exactly as a `FocusEntry` is deregistered (issue #183). Registering it from
   `main` keeps app lifetime. For **Escape**, use

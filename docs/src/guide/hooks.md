@@ -184,7 +184,11 @@ consequences are worth knowing:
   document is served whichever of its own and the fallback is **newer** — so
   the last registration wins in a single-document app wherever it was made. A
   clear from outside any document clears every entry; one from inside a
-  document leaves that document with nothing. The release only reclaims the slot if it
+  document leaves that document with nothing. With several documents on one
+  thread that cuts both ways: a timer, `run_on_main_thread` callback or http/ws
+  completion runs outside any document, so its registration overrides every
+  document's own and its clear wipes them all (issue #963 tracks attributing
+  those callbacks to their owner's document). The release only reclaims the slot if it
   is still holding the callback that registered it.
 - **Register once per component, not once per event.** Each call from inside a
   live component queues its own release, and those accumulate until the component
