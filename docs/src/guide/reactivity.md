@@ -263,8 +263,9 @@ you can make inside an effect (issue #931):
   `on_child_removed`), which every `for` reconcile, `if` branch swap and
   component re-render reaches from inside its effect;
 - the selection and selection-sync callbacks (`query_selection_ranges`,
-  `fire_selection_sync`), the dismiss stack (`dispatch_dismiss`) and
-  `Drag::cancel`'s `on_cancel`.
+  `fire_selection_sync`), the keyboard and paste interceptors
+  (`dispatch_keyboard_event`, `dispatch_paste_event`), the dismiss stack
+  (`dispatch_dismiss`) and `Drag::cancel`'s `on_cancel`.
 
 A closure you pass *as the call itself* is not one of these: the `build` closure
 of `EditorHandle::update(|state| …)` runs as part of your own code, and a signal

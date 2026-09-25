@@ -627,13 +627,15 @@ callbacks go through the same function** (issue #931): the editor's `Hook::invok
 (`on_change`/`on_selection_change`/`on_caret_moved`/`on_key`) and its
 `on_link_click`/`on_link_hover`; the child observers (`dom::late_child::notify`,
 reached from inside every `for`/`if`/component-re-render effect); the selection
-and selection-sync callbacks; `dispatch_dismiss`; `Drag::cancel`'s `on_cancel`.
+and selection-sync callbacks; `dispatch_dismiss`; `Drag::cancel`'s `on_cancel`
+(which #942's superseding `Drag::start` also reaches); and the keyboard and paste
+interceptors (`dispatch_keyboard_event` / `dispatch_paste_event` are public).
 `rinch_core::untracked_handler` is public for any new slot that stores an app's
 callback — use it there, not `untracked`. Not wrapped, because nothing reaches
 them from inside an effect: the focus-registry callbacks and menu callbacks
 (both `pub(crate)`, run by the runtime from events or the deferred focus work),
-the keyboard and paste interceptors (backend event dispatch only), and Drag's
-`on_move`/`on_end` (pointer events). Deliberately **not** wrapped: an
+and Drag's `on_move`/`on_end` (pointer events). Also not yet wrapped: the
+editor's collaboration `outbound` sink, issue #948. Deliberately **not** wrapped: an
 `EditorHandle::update` `build` closure, and plugin code (`Plugin::apply`,
 `decorations`, `handle_paste`), which runs under the core borrow beside that
 closure — issue #943.

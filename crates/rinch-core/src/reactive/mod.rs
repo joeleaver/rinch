@@ -1252,7 +1252,8 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
 /// [`ValueCallback`](crate::ValueCallback), [`InputCallback`](crate::InputCallback),
 /// [`FileDropCallback`](crate::FileDropCallback),
 /// [`ScrollCallback`](crate::events::ScrollCallback)) goes through here, and so
-/// do the selection and selection-sync callbacks, the dismiss stack,
+/// do the selection and selection-sync callbacks, the keyboard and paste
+/// interceptors, the dismiss stack,
 /// [`Drag::cancel`](crate::events::Drag::cancel)'s `on_cancel`, the child
 /// observers ([`on_child_inserted`](crate::dom::on_child_inserted) — which every
 /// `for` reconcile reaches from inside its effect) and the rich-text editor's
