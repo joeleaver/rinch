@@ -326,8 +326,10 @@ The view, on each transaction:
 
 1. **Diffs** the new document against the descriptor tree it retained from the previous
    one. Because the model is persistent, `Node::same_ref` (an `Rc::ptr_eq`) makes the
-   diff cheap — unchanged subtrees are skipped entirely. The diff is positional, and a
-   node whose tag or mark set changed is rebuilt rather than patched.
+   diff cheap — unchanged subtrees are skipped entirely. Siblings unchanged at the start
+   and the end of a child list are matched first, so a new or removed block leaves the
+   blocks after it on their own host nodes; the stretch between is diffed positionally,
+   and a node whose tag or mark set changed is rebuilt rather than patched.
 2. **Patches** the host for the changed regions via the standard `DomDocument`
    primitives (`create_element` / `create_text` / `append_child` / `insert_before` /
    `remove` / `set_text` / `set_attribute` / `set_style`), choosing tags from the
