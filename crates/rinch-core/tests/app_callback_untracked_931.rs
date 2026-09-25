@@ -4,8 +4,10 @@
 //! Each slot here is one a public call runs **synchronously**, so the call can
 //! be made from inside an effect: `query_selection_ranges` and
 //! `fire_selection_sync` run the selection callbacks, `dispatch_dismiss` runs
-//! the dismiss stack and `Drag::cancel` runs `on_cancel`. A callback's reads
-//! used to be recorded on whatever effect made the call. (The child observers,
+//! the dismiss stack, `Drag::cancel` (and a superseding `Drag::start`) runs
+//! `on_cancel`, and `dispatch_keyboard_event` / `dispatch_paste_event` run the
+//! keyboard and paste interceptors. A callback's reads used to be recorded on
+//! whatever effect made the call. (The child observers,
 //! which every `for` reconcile reaches from inside its effect, are pinned in
 //! `dom/late_child.rs`'s unit tests: they need the crate-private mock.)
 //!
@@ -142,4 +144,61 @@ fn on_cancel_run_by_drag_cancel_is_untracked() {
     let runs = nested(own, Drag::cancel);
     assert_eq!(fired.get(), 1, "control: the effect cancelled the drag");
     assert_untracked(&runs, own, store, &fired);
+}
+
+/// #942's supersede path: a `start()` made while a drag is live cancels it
+/// through `Drag::cancel`, so an effect that starts a drag must not be
+/// subscribed to the old drag's `on_cancel` reads either. (From the review of
+/// #947.)
+#[test]
+fn on_cancel_run_by_a_superseding_start_is_untracked() {
+    let (own, store) = (Signal::new(0), Signal::new(0));
+    let fired = Rc::new(Cell::new(0));
+    let body = reads(store, &fired);
+    Drag::absolute().on_cancel(move |_, _| body()).start();
+    let runs = nested(own, || Drag::absolute().start());
+    assert_eq!(
+        fired.get(),
+        1,
+        "control: the new drag superseded the live one"
+    );
+    assert_untracked(&runs, own, store, &fired);
+    Drag::cancel();
+}
+
+/// `dispatch_keyboard_event` is public, so the keyboard interceptor can be
+/// run from inside an effect. (From the review of #947.)
+#[test]
+fn the_keyboard_interceptor_run_by_dispatch_keyboard_event_is_untracked() {
+    let (own, store) = (Signal::new(0), Signal::new(0));
+    let fired = Rc::new(Cell::new(0));
+    let body = reads(store, &fired);
+    rinch_core::events::set_keyboard_interceptor(move |_| {
+        body();
+        false
+    });
+    let runs = nested(own, || {
+        rinch_core::events::dispatch_keyboard_event(&rinch_core::events::KeyEventData::new(
+            "a", "KeyA",
+        ));
+    });
+    assert_untracked(&runs, own, store, &fired);
+    rinch_core::events::clear_keyboard_interceptor();
+}
+
+/// `dispatch_paste_event` is public too. (From the review of #947.)
+#[test]
+fn the_paste_interceptor_run_by_dispatch_paste_event_is_untracked() {
+    let (own, store) = (Signal::new(0), Signal::new(0));
+    let fired = Rc::new(Cell::new(0));
+    let body = reads(store, &fired);
+    rinch_core::events::set_paste_interceptor(move |_| {
+        body();
+        false
+    });
+    let runs = nested(own, || {
+        rinch_core::events::dispatch_paste_event(&Default::default());
+    });
+    assert_untracked(&runs, own, store, &fired);
+    rinch_core::events::clear_paste_interceptor();
 }

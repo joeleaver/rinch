@@ -1145,3 +1145,49 @@ fn a_step_moved_out_of_a_stepper_renumbers_the_ones_it_left_behind() {
          second stepper, whose `active: 0` makes it the in-progress one there"
     );
 }
+
+#[test]
+fn a_reactive_active_survives_late_steps_arriving_and_leaving() {
+    let active = Signal::new(0u32);
+    let items = Signal::new(vec!["a", "b"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: {move || active.get()},
+                    for it in items.get() { StepperStep { key: it, label: it } }
+                }
+            }
+        }
+    });
+    let st = |tree: &Tree| -> Vec<String> {
+        tree.find_all("rinch-stepper__step")
+            .iter()
+            .map(|s| {
+                let c = s.get_attribute("class").unwrap_or_default();
+                ["completed", "progress", "inactive"]
+                    .iter()
+                    .find(|k| c.contains(&format!("--{k}")))
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    assert_eq!(st(&tree), vec!["progress", "inactive"]);
+    active.set(1);
+    assert_eq!(st(&tree), vec!["completed", "progress"]);
+    items.update(|v| v.push("c"));
+    assert_eq!(st(&tree), vec!["completed", "progress", "inactive"]);
+    active.set(2);
+    assert_eq!(st(&tree), vec!["completed", "completed", "progress"]);
+    items.update(|v| v.insert(0, "z"));
+    assert_eq!(
+        st(&tree),
+        vec!["completed", "completed", "progress", "inactive"]
+    );
+    items.update(|v| {
+        v.remove(0);
+    });
+    assert_eq!(st(&tree), vec!["completed", "completed", "progress"]);
+    active.set(0);
+    assert_eq!(st(&tree), vec!["progress", "inactive", "inactive"]);
+}
