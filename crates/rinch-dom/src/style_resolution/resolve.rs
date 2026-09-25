@@ -444,8 +444,8 @@ impl RinchDocument {
     /// items of *its* parent's container (css-display-3 §2.5), and Stylo's own
     /// traversal hands the adjuster the nearest non-contents ancestor for
     /// exactly that reason. rinch hand-rolls the cascade and used to pass the
-    /// DOM parent in both slots, so every child of an `rsx!` wrapper inside a
-    /// `Stack` or `Group` stayed `display: inline`.
+    /// DOM parent in both slots, so an inline-level child of an `rsx!` wrapper
+    /// inside a `Stack` or `Group` kept its inline display.
     ///
     /// Inheritance still comes from the DOM parent — only the second slot
     /// changes. The ancestors are read from their stored styles, which the
