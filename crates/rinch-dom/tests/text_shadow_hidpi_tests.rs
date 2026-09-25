@@ -155,31 +155,20 @@ fn recorded(scale: f64) -> (Run, Run) {
         &mut doc.font_cx,
         &mut cx,
     );
-    let mut shadow = painter.runs.iter().filter(|r| r.red);
-    let mut main = painter.runs.iter().filter(|r| !r.red);
-    let (s, m) = (shadow.next(), main.next());
+    let (mut shadow, mut main): (Vec<Run>, Vec<Run>) =
+        painter.runs.into_iter().partition(|r| r.red);
     assert!(
-        shadow.next().is_none() && main.next().is_none(),
-        "one line of one face: exactly one shadow run and one main run, got {:?}",
-        painter.runs
+        shadow.len() == 1 && main.len() == 1,
+        "one line of one face: exactly one shadow run and one main run, got \
+         shadow={shadow:?} main={main:?}; an empty pass means the fixture measures nothing"
     );
-    let (s, m) = (
-        s.expect("the shadow pass drew nothing; the fixture measures nothing"),
-        m.expect("the main pass drew nothing; the fixture measures nothing"),
+    let (s, m) = (shadow.remove(0), main.remove(0));
+    assert_eq!(
+        m.glyphs.len(),
+        TEXT.len(),
+        "{TEXT:?} shapes to one glyph per char"
     );
-    assert_eq!(m.glyphs.len(), TEXT.len(), "{TEXT:?} shapes to one glyph per char");
-    (
-        Run {
-            red: true,
-            font_size: s.font_size,
-            glyphs: s.glyphs.clone(),
-        },
-        Run {
-            red: false,
-            font_size: m.font_size,
-            glyphs: m.glyphs.clone(),
-        },
-    )
+    (s, m)
 }
 
 /// The painter is handed the shadow at the text's own size, every glyph
@@ -217,8 +206,14 @@ fn control_scale_one_and_the_main_pass_scales() {
     assert_shadow_follows_scale(1.0);
     let (_, m1) = recorded(1.0);
     let (_, m2) = recorded(2.0);
-    assert_eq!(m1.font_size, 32.0, "the declared font size reaches the painter");
-    assert_eq!(m2.font_size, 64.0, "the main pass is rasterised at scale × size");
+    assert_eq!(
+        m1.font_size, 32.0,
+        "the declared font size reaches the painter"
+    );
+    assert_eq!(
+        m2.font_size, 64.0,
+        "the main pass is rasterised at scale × size"
+    );
     for ((_, p1), (_, p2)) in m1.glyphs.iter().zip(&m2.glyphs) {
         assert!(
             (p2.x - 2.0 * p1.x).abs() < 1e-3 && (p2.y - 2.0 * p1.y).abs() < 1e-3,
