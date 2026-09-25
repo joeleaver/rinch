@@ -681,7 +681,11 @@ mod tests {
         assert_eq!(state.document.to_text(), "xA");
 
         state.execute(EditCommand::Undo);
-        assert_eq!(state.document.to_text(), "x", "the keystroke and its rewrite");
+        assert_eq!(
+            state.document.to_text(),
+            "x",
+            "the keystroke and its rewrite"
+        );
         state.execute(EditCommand::Undo);
         assert_eq!(state.document.to_text(), "");
         state.execute(EditCommand::Redo);

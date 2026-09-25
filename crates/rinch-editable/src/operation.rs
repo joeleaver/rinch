@@ -3,8 +3,14 @@ use crate::{Invertible, Position, Range};
 /// Operations for undo/redo in basic text editing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TextOperation {
-    Insert { pos: Position, text: String },
-    Delete { range: Range, deleted_text: String },
+    Insert {
+        pos: Position,
+        text: String,
+    },
+    Delete {
+        range: Range,
+        deleted_text: String,
+    },
     /// Several operations that undo and redo as **one** step, applied in
     /// order (issue #288): a keystroke that replaced a selection (a delete and
     /// an insert), an adopted rewrite of the whole text, or a keystroke

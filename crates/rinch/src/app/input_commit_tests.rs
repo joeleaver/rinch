@@ -1161,7 +1161,11 @@ fn ctrl_z_undoes_and_ctrl_y_and_ctrl_shift_z_redo() {
     );
 
     click_center(&mut app, b_id);
-    assert_eq!(changes(&log), ["a-change:ab"], "the commit carries the undone text");
+    assert_eq!(
+        changes(&log),
+        ["a-change:ab"],
+        "the commit carries the undone text"
+    );
 }
 
 /// Undo past the start of the stack, and redo with nothing to redo, change
@@ -1257,7 +1261,11 @@ fn a_read_only_field_refuses_undo_and_redo() {
     click_center(&mut app, a_id);
     type_str(&mut app, "ab");
     undo(&mut app);
-    assert_eq!(engine(&app).0, "a", "positive control: undo works while writable");
+    assert_eq!(
+        engine(&app).0,
+        "a",
+        "positive control: undo works while writable"
+    );
     {
         let doc = app.doc.clone().unwrap();
         doc.borrow_mut()
@@ -1269,7 +1277,12 @@ fn a_read_only_field_refuses_undo_and_redo() {
 
     assert_eq!(engine(&app).0, "a");
     assert_eq!(attr(&app, a_id, "value").as_deref(), Some("a"));
-    assert_eq!(log.borrow().len(), before, "nothing fired: {:?}", log.borrow());
+    assert_eq!(
+        log.borrow().len(),
+        before,
+        "nothing fired: {:?}",
+        log.borrow()
+    );
 }
 
 /// A field that went disabled while focused refuses undo and releases the
@@ -1289,6 +1302,15 @@ fn a_field_disabled_while_focused_refuses_undo() {
     undo(&mut app);
 
     assert_eq!(attr(&app, a_id, "value").as_deref(), Some("ab"));
-    assert_eq!(log.borrow().len(), before, "nothing fired: {:?}", log.borrow());
-    assert_eq!(app.focus_target, FocusTarget::None, "the claim was released");
+    assert_eq!(
+        log.borrow().len(),
+        before,
+        "nothing fired: {:?}",
+        log.borrow()
+    );
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::None,
+        "the claim was released"
+    );
 }
