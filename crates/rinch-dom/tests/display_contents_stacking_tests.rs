@@ -234,7 +234,11 @@ mod painted {
                 FULL_RED,
                 "`display: contents; {style}`: Chrome 153 paints the absolute here"
             );
-            assert_eq!(pixel_at(&painter, 350, 300), NOTHING, "outside both");
+            assert_eq!(
+                pixel_at(&painter, 350, 300),
+                NOTHING,
+                "`{style}`: outside both"
+            );
         }
     }
 
@@ -369,4 +373,11 @@ mod painted {
             );
         }
     }
+}
+#[test]
+fn zz_probe_fixed() {
+    let (doc, w, abs) = clip_fixture("display: contents; position: fixed", ABS);
+    let o = body_order(&doc);
+    eprintln!("abs layout {:?} wlayout {:?} onscreen {:?} order {:?}", doc.tree.get(abs.0).unwrap().layout, doc.tree.get(w.0).unwrap().layout, rinch_dom::paint::compute_absolute_position(&doc.tree, abs.0, 1.0), o);
+    panic!();
 }

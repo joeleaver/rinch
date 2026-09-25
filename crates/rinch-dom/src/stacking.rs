@@ -297,10 +297,16 @@ impl Deref for PaintOrder {
 ///
 /// A stacking-order question, not the containing-block one: which box an
 /// absolute resolves against is [`Node::establishes_abs_containing_block`]'s,
-/// and this deliberately does not ask it. That it still reads `position` off a
-/// `display: contents` element, which has no box to layer, is #1038.
+/// and this deliberately does not ask it.
+///
+/// A `display: contents` element answers `false` whatever its `position`: it
+/// has no box to layer (#1038). A positioned one used to be hoisted to step 8,
+/// so its in-flow children painted over later siblings they sit under in
+/// Chrome 153.
 fn is_positioned_z_auto(node: &Node) -> bool {
-    node.computed_style.position != PositionValue::Static && node.computed_style.z_index.is_none()
+    node.computed_style.display != crate::computed_style::DisplayValue::Contents
+        && node.computed_style.position != PositionValue::Static
+        && node.computed_style.z_index.is_none()
 }
 
 /// Whether `node` paints at the nearest stacking-context ancestor's ordered

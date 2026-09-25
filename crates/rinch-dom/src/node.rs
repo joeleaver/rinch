@@ -1304,8 +1304,18 @@ impl Node {
     /// is [`Node::clips_overflow`] and stacking is this, and nothing needs them
     /// to be the same question.
     pub fn creates_stacking_context(&self) -> bool {
-        use crate::computed_style::PositionValue;
+        use crate::computed_style::{DisplayValue, PositionValue};
 
+        // A `display: contents` element generates no box (css-display-3 §2.5),
+        // so nothing on the list above can make it a stacking context — nor
+        // does `opacity` or `transform` apply to it at all (#1038, measured in
+        // Chrome 153: its children paint at full strength and untranslated,
+        // and a `z-index` on it scopes nothing). Answering `true` made the
+        // collector stop at it, so everything under it was drawn inside the
+        // clip chain of the wrapper's own entry, escaping boxes included.
+        if self.computed_style.display == DisplayValue::Contents {
+            return false;
+        }
         match self.computed_style.position {
             // A fixed box is viewport-level content and a sticky box is
             // repositioned during scroll; both create a stacking context
@@ -1419,7 +1429,7 @@ impl Node {
     /// #994's review, and a moved absolute under a positioned contents wrapper
     /// was damaged to nothing and ghosted. (Whether a contents element makes a
     /// *stacking context* is a separate question, `creates_stacking_context`,
-    /// and still answers as if it had a box — #1038.)
+    /// which also answers `false` for one — #1038.)
     ///
     /// `display: none` is deliberately **not** excluded, and
     /// `display_contents_containing_block_tests` pins that: nothing under it is
