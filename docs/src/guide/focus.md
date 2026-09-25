@@ -695,6 +695,41 @@ refused while the lock is held; the Linux in-app menu bar's own dropdown is the
 known instance, tracked in
 [issue #701](https://github.com/joeleaver/rinch/issues/701).
 
+## Undo and redo in a text field
+
+A focused `<input>` or `<textarea>` undoes with **Ctrl+Z** and redoes with
+**Ctrl+Shift+Z** or **Ctrl+Y** (`Cmd` on macOS) on desktop, as a browser field
+does on the web (issue #288).
+
+- **`oninput` fires with the restored text**, exactly as for a keystroke, so a
+  controlled field's signal follows the undo. The eventual `onchange` compares
+  what the field shows at the commit with what it showed when focus arrived, so
+  undoing back to the starting text commits nothing.
+- **A `readonly` field refuses both**, like every other text-changing command,
+  and a field that goes `disabled` while focused releases the keyboard instead.
+- **One key press is one undo step.** Each typed character is its own step —
+  desktop does not merge a run of typing into one the way a browser does.
+  Typing over a selection is one step: the selected text comes back whole.
+- **A keystroke and the rewrite its own `oninput` made are one step.** A
+  normalizing field (upper-casing, say) therefore undoes to the text before
+  the keystroke, never to the raw text the handler is about to rewrite again.
+  A keystroke the handler **rejects** — writes the field back to what it
+  showed, as a digits-only filter does with a letter — leaves no step at all.
+  **This is where desktop and the web differ:** a browser treats that
+  rewrite as a script write to `.value` and drops the field's whole undo
+  history, so a normalizing field has no undo on the web.
+- **Any other write to the field's `value` clears its undo and redo
+  history** — a `value_fn` reset, a clear after `onsubmit`, a write from a
+  timer or another handler. It is the app's change, not the user's, so Ctrl+Z
+  cannot bring back text the app replaced. That is what a browser does for a
+  script write to `.value`, so for a write made outside a keystroke desktop
+  and the web agree.
+- **Not with Alt, and not mid-composition.** Ctrl+Alt+Z is left alone (it is
+  AltGr on Windows, which types a character on some layouts), and Ctrl+Z does
+  nothing while an input method is showing a composition.
+- The built-in right-click menu (below) has **no Undo row**; the chords are the
+  way in.
+
 ## Right-clicking a text field
 
 A right press on a text target — an `<input>` of a text-like type (`text`,
