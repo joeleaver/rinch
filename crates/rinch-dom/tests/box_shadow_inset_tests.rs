@@ -183,9 +183,17 @@ fn the_first_inset_shadow_is_on_top() {
     let p = painted("box-shadow: inset 0 0 0 10px rgb(0,0,0), inset 0 0 0 20px rgb(255,0,0)");
     let mid = TOP + 50;
     let [r, g, b, a] = rgba(&p, LEFT + 5, mid);
-    assert_eq!((r, g, b, a), (0.0, 0.0, 0.0, 1.0), "depth 5: the first shadow");
+    assert_eq!(
+        (r, g, b, a),
+        (0.0, 0.0, 0.0, 1.0),
+        "depth 5: the first shadow"
+    );
     let [r, g, b, a] = rgba(&p, LEFT + 15, mid);
-    assert_eq!((r, g, b, a), (1.0, 0.0, 0.0, 1.0), "depth 15: the second shadow");
+    assert_eq!(
+        (r, g, b, a),
+        (1.0, 0.0, 0.0, 1.0),
+        "depth 15: the second shadow"
+    );
     assert_alpha(&p, LEFT + 25, mid, 0.0, "depth 25: neither");
 }
 
