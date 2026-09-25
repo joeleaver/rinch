@@ -31,8 +31,10 @@
 // The expected matrices are Chrome's printed numbers, `0.707107` among them.
 #![allow(clippy::approx_constant)]
 
+use peniko::Brush;
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
+use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::transition::TransitionProperty;
 
 const BOX: &str = "position: absolute; left: 0; top: 0; width: 100px; height: 40px; \
@@ -548,4 +550,100 @@ fn keyframes_carry_a_translate_z_and_a_perspective() {
         "rotateY(60deg)",
         &[(0.2, [0.976287, 0.0899669, 0.0899669, 0.658663, 0.0, 0.0])],
     );
+}
+
+/// A rotation of zero angle has no axis of its own, so the pair interpolates
+/// about the other one — the long way, as written: `rotateY(0deg)` →
+/// `rotateX(300deg)` half way is `rotateX(150deg)` in Chrome 153, where a
+/// slerp would take the short way to `rotateX(-30deg)`.
+#[test]
+fn a_zero_angle_end_lerps_about_the_other_axis() {
+    let want = [(0.5, [1.0, 0.0, 0.0, -0.866025, 0.0, 0.0])];
+    check_transition("rotateY(0deg)", "rotateX(300deg)", &want);
+    check_transition("rotateX(300deg)", "rotateY(0deg)", &want);
+    check_keyframes("rotateY(0deg)", "rotateX(300deg)", &want);
+}
+
+/// A `scaleZ` only shows once a later `translateZ` meets a `perspective()`:
+/// Chrome 153's `perspective(100px) scaleZ(2) translateZ(10px)` is
+/// `matrix3d(…, 20, 0.8)`, a scale of 1.25. Pinned through the `@keyframes`
+/// converter too, whose `scaleZ`, `scale3d` and `matrix3d` arms nothing else
+/// reaches.
+#[test]
+fn a_scale_z_meets_a_perspective() {
+    let s = [1.25, 0.0, 0.0, 1.25, 0.0, 0.0];
+    check_static("perspective(100px) scaleZ(2) translateZ(10px)", s);
+    check_keyframes(
+        "perspective(100px) scaleZ(2) translateZ(10px)",
+        "none",
+        &[(0.0, s)],
+    );
+    check_keyframes(
+        "perspective(100px) scale3d(3, 0.5, 2) translateZ(10px)",
+        "none",
+        &[(0.0, [3.75, 0.0, 0.0, 0.625, 0.0, 0.0])],
+    );
+    check_keyframes(
+        "matrix3d(1,0,0,0, 0,1,0,0, 0,0,1,-0.01, 0,0,0,1) translateZ(10px)",
+        "none",
+        &[(0.0, [1.0 / 0.9, 0.0, 0.0, 1.0 / 0.9, 0.0, 0.0])],
+    );
+    check_keyframes(
+        "perspective(100px) scaleZ(1) translateZ(10px)",
+        "perspective(100px) scaleZ(3) translateZ(10px)",
+        &[(0.5, s)],
+    );
+}
+
+/// An element whose plane is at or behind the viewer (`w <= 0`) is neither
+/// drawn nor hit in Chrome 153 — measured on a box at (200, 100), 100×40:
+/// every pixel stays white and `elementFromPoint` answers the body. Dividing by
+/// a negative `w` drew it point-mirrored instead (20× magnified for
+/// `translateZ(10.5px)`) and let it swallow clicks, so a "fly through the
+/// screen" animation became a giant inverted copy as it passed the viewer.
+#[test]
+fn an_element_behind_the_viewer_is_neither_drawn_nor_hit() {
+    let mut bad = vec![];
+    for tf in [
+        "perspective(10px) translateZ(20px)",
+        "perspective(10px) translateZ(10px)",
+        "perspective(10px) translateZ(10.5px)",
+    ] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            &format!(
+                "position: absolute; left: 200px; top: 100px; width: 100px; height: 40px; \
+                 background: red; transform-origin: 0 0; transform: {tf};"
+            ),
+        );
+        doc.append_child(body, div);
+        doc.resolve_layout(400.0, 300.0);
+        let mut painter = TinySkiaPainter::new(400, 300);
+        let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            (400.0, 300.0),
+            &mut doc.font_cx,
+            &mut lcx,
+        );
+        let red = painter
+            .pixels()
+            .chunks(4)
+            .filter(|p| p[0] > 0 && p[3] > 0)
+            .count();
+        let hit = [(150.0, 80.0), (250.0, 120.0)].iter().any(|&(x, y)| {
+            rinch_dom::paint::point_in_painted_box(&doc.tree, div.0, 1.0, x, y)
+                .is_some_and(|(lx, ly)| (0.0..100.0).contains(&lx) && (0.0..40.0).contains(&ly))
+        });
+        if red > 0 || hit {
+            bad.push(format!("{tf}: {red} red px, hit={hit}"));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
 }
