@@ -439,7 +439,7 @@ fn failed_head_is_rsx(input: ParseStream, rsx_head: bool) -> bool {
         let whole_expr = inner.parse::<Expr>().is_ok() && inner.is_empty();
         return !whole_expr;
     }
-    skip_control_flow_head(&inner).is_ok() && !inner.is_empty() && starts_rsx_node(&inner)
+    skip_control_flow_head(&inner).is_ok() && starts_rsx_node(&inner)
 }
 
 /// Skip one `if` (with its `else` chain), `for` or `match` construct by tokens:
