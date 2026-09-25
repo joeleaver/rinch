@@ -2367,6 +2367,20 @@ impl NodeTree {
     /// node: nothing here walks a subtree.
     pub fn consume_paint_dirty(&mut self) {
         let nodes = &mut self.nodes;
+        // A whole-document restyle changes styles without pushing the nodes
+        // it changed, and the paint consuming it drew *every* node with the
+        // restyled values. So every painted node's state is re-read here, or
+        // a node not pushed since would keep describing a style the pixels on
+        // screen were never drawn with — its ink and transform, and the
+        // clipping and position the damage's clip chain reads (#909). O(n),
+        // on a frame that has just restyled and repainted all n.
+        if self.whole_document_damaged {
+            for (_, node) in nodes.iter_mut() {
+                if node.painted.is_some() {
+                    node.painted = Some(PaintedState::of(node));
+                }
+            }
+        }
         for id in self.paint_dirty_nodes.drain(..) {
             if let Some(node) = nodes.get_mut(id) {
                 node.prev_layout = node.layout;
@@ -2568,6 +2582,11 @@ pub struct PaintedState {
     /// The node's own transform, with its origin resolved against the box it
     /// was painted in. `None` for the identity.
     pub transform: Option<Box<PaintedTransform>>,
+    /// Whether the node clipped its content ([`Node::clips_overflow`], and a
+    /// box to clip with: not `display: contents`).
+    pub clips: bool,
+    /// Its `position`, which decides which clippers above it it escapes.
+    pub position: crate::computed_style::PositionValue,
 }
 
 /// A painted transform: the value and its resolved origin, in CSS px.
@@ -2593,6 +2612,9 @@ impl PaintedState {
         Self {
             ink: crate::paint::own_ink_outsets(cs),
             transform,
+            clips: node.clips_overflow()
+                && cs.display != crate::computed_style::DisplayValue::Contents,
+            position: cs.position,
         }
     }
 }

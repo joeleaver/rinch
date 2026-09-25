@@ -121,17 +121,28 @@ pub fn compute_damage(
     // node that names none is not "nothing changed": see the fallback at the
     // end of the loop.
     let named = Cell::new(false);
-    let mut add = |r: Rect| -> bool {
+    // `clip`: what the rect's node is clipped to (`clip_chain_bounds`, #909).
+    // A rect clipped away entirely still counts as *named* — the node said
+    // where it paints, and it paints nowhere visible — so the owner fallback
+    // below does not stand in for it with a box the clip was cutting away.
+    let mut add = |r: Rect, clip: Option<Rect>| -> bool {
         if r.width() > 0.0 && r.height() > 0.0 {
             named.set(true);
         }
-        region.add(Rect::new(
-            r.x0 - margin,
-            r.y0 - margin,
-            r.x1 + margin,
-            r.y1 + margin,
-        ))
+        let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
+        let r = match clip {
+            // Tested before `add` snaps it: an empty intersection at a
+            // fractional edge would snap out to a 1px sliver.
+            Some(c) => match r.intersect(c) {
+                r if r.width() > 0.0 && r.height() > 0.0 => r,
+                _ => return false,
+            },
+            None => r,
+        };
+        region.add(r)
     };
+    let clip_now = |id: RawNodeId| clip_chain_bounds(tree, id, scale, false);
+    let clip_then = |id: RawNodeId| clip_chain_bounds(tree, id, scale, true);
 
     // Deduplicate — paint_dirty_nodes may have duplicates
     let mut seen = HashSet::new();
@@ -179,7 +190,10 @@ pub fn compute_damage(
 
         if w > 0.0
             && h > 0.0
-            && add(transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h))))
+            && add(
+                transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h))),
+                clip_now(node_id),
+            )
         {
             return DamageRegion::full(viewport_w, viewport_h);
         }
@@ -208,7 +222,10 @@ pub fn compute_damage(
             let rh = root.layout.height as f64 * scale;
             if rw > 0.0
                 && rh > 0.0
-                && add(rt.transform_rect_bbox(Rect::new(rx, ry, rx + rw, ry + rh)))
+                && add(
+                    rt.transform_rect_bbox(Rect::new(rx, ry, rx + rw, ry + rh)),
+                    clip_now(root_id),
+                )
             {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
@@ -234,14 +251,17 @@ pub fn compute_damage(
                 return DamageRegion::full(viewport_w, viewport_h);
             };
             if bounds.width() > 0.0 && bounds.height() > 0.0 {
-                if add(transform.transform_rect_bbox(bounds)) {
+                // Unclipped: the subtree's own boxes may escape clippers the
+                // wrapper does not (an absolute child), and one chain cannot
+                // speak for all of them.
+                if add(transform.transform_rect_bbox(bounds), None) {
                     return DamageRegion::full(viewport_w, viewport_h);
                 }
                 if node.painted.is_some() {
                     let (px, py, pt) =
                         position_and_transform_in(tree, node_id, scale, Frame::Painted);
                     let old = bounds + (Vec2::new(px - ax, py - ay));
-                    if add(pt.transform_rect_bbox(old)) {
+                    if add(pt.transform_rect_bbox(old), None) {
                         return DamageRegion::full(viewport_w, viewport_h);
                     }
                 }
@@ -253,7 +273,7 @@ pub fn compute_damage(
         // same subtree, translated; a descendant that changed brings its own
         // painted rect).
         if let Some(r) = painted_rect_with(tree, node_id, scale, ink)
-            && add(r)
+            && add(r, clip_then(node_id))
         {
             return DamageRegion::full(viewport_w, viewport_h);
         }
@@ -272,12 +292,15 @@ pub fn compute_damage(
                 let ow = owner_node.layout.width as f64 * scale;
                 let oh = owner_node.layout.height as f64 * scale;
                 let ink = Outsets::from_css(own_ink_outsets(&owner_node.computed_style), scale);
-                if add(ot.transform_rect_bbox(ink.grow(Rect::new(ox, oy, ox + ow, oy + oh)))) {
+                if add(
+                    ot.transform_rect_bbox(ink.grow(Rect::new(ox, oy, ox + ow, oy + oh))),
+                    clip_now(owner),
+                ) {
                     return DamageRegion::full(viewport_w, viewport_h);
                 }
             }
             if let Some(r) = painted_rect_with(tree, owner, scale, Outsets::ZERO)
-                && add(r)
+                && add(r, clip_then(owner))
             {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
@@ -289,12 +312,10 @@ pub fn compute_damage(
         // Rects stored at scale=1; apply current scale
         if rw > 0.0
             && rh > 0.0
-            && add(Rect::new(
-                rx * scale,
-                ry * scale,
-                (rx + rw) * scale,
-                (ry + rh) * scale,
-            ))
+            && add(
+                Rect::new(rx * scale, ry * scale, (rx + rw) * scale, (ry + rh) * scale),
+                None,
+            )
         {
             return DamageRegion::full(viewport_w, viewport_h);
         }
@@ -302,6 +323,147 @@ pub fn compute_damage(
 
     // Every rect was clamped to the surface as it was added.
     region
+}
+
+/// The screen rect every clipping ancestor of `node_id` confines its paint to
+/// — in the current frame, or as it was last painted — or `None` when nothing
+/// is known to clip it (#909).
+///
+/// Damage is intersected with it: a change a scroller clips away cannot reach
+/// a pixel, so a row moved below the scroller's viewport names nothing. The
+/// walk follows what clips a box in paint, and errs **wide** in the cases
+/// below, since a rect too large costs a repaint and a rect too small leaves
+/// stale pixels:
+///
+/// - a `position: fixed` box, or anything inside one, is clipped by nothing
+///   above the fixed box (paint can clip one more than that, #549 — never
+///   less);
+/// - an `absolute` box escapes every clipper below its containing block; the
+///   block's own clip applies, as it does in `Collector::span`;
+/// - a clipper with no box (`display: contents`, a degenerate axis) is not
+///   taken; nothing above the body is asked (paint starts there).
+///
+/// `painted` asks about the pixels on screen: each node's clipping, position
+/// and box **as it was painted** (`PaintedState`, `prev_layout`), placed by
+/// [`Frame::Painted`], and it answers `None` — no clip — the moment a node on
+/// the walk was never painted. It walks the **current** parents, which is
+/// right for a node still under the parents it was painted under. The moves
+/// see to that: a move from one parent to another records the subtree's old
+/// rects under the old chain and forgets its painted state first
+/// (`record_pixels_left_by_move`), as a removal does. **Not every detach
+/// forgets**, and these are gaps, all pre-existing (#966): `set_text_content`
+/// orphans an element's children with `parent = None` and their painted state
+/// kept, `replace_node` does the same to the node it displaces, and
+/// `set_inner_html` frees children without recording their rects. Such a
+/// node, attached again, has its old rect placed along its new parents.
+/// `Frame::Painted` also places a box by its *current* `position` (a
+/// same-frame static↔fixed change, #961).
+///
+/// Without `painted` the question is the next paint's, and the current state
+/// is exactly what that paint clips with.
+pub(crate) fn clip_chain_bounds(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    painted: bool,
+) -> Option<Rect> {
+    clip_chain_bounds_counted(tree, node_id, scale, painted, &mut 0)
+}
+
+/// [`clip_chain_bounds`], adding to `steps` one per ancestor it walks.
+pub(crate) fn clip_chain_bounds_counted(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    painted: bool,
+    steps: &mut u64,
+) -> Option<Rect> {
+    let frame = if painted {
+        Frame::Painted
+    } else {
+        Frame::Current
+    };
+    let style = |node: &Node| -> Option<PaintedStyle> {
+        if painted {
+            node.painted.as_ref().map(PaintedStyle::then)
+        } else {
+            Some(PaintedStyle::now(node))
+        }
+    };
+    let node = tree.get(node_id)?;
+    let mut position = style(node)?.position;
+    // Skipping clippers until the containing block of an absolute box.
+    let mut escaping = false;
+    let mut clip: Option<Rect> = None;
+    let mut current = crate::RinchDocument::box_tree_parent(&tree.nodes, node_id);
+    loop {
+        match position {
+            PositionValue::Fixed => break,
+            PositionValue::Absolute => escaping = true,
+            _ => {}
+        }
+        let Some(id) = current else { break };
+        *steps += 1;
+        let ancestor = tree.get(id)?;
+        let a = style(ancestor)?;
+        // The containing block ends the escape, and its own clip applies: a
+        // `position: relative; overflow: hidden` box clips its absolute
+        // children (`Collector::span` counts the chain after its clip, too).
+        if escaping && (a.position != PositionValue::Static || a.transformed) {
+            escaping = false;
+        }
+        if !escaping && a.clips {
+            let size = match frame {
+                Frame::Current => ancestor.layout,
+                Frame::Painted => ancestor.prev_layout,
+            };
+            let (w, h) = (size.width as f64 * scale, size.height as f64 * scale);
+            if w > 0.0 && h > 0.0 {
+                let (x, y, t) = position_and_transform_in(tree, id, scale, frame);
+                let r = t.transform_rect_bbox(Rect::new(x, y, x + w, y + h));
+                clip = Some(clip.map_or(r, |c| c.intersect(r)));
+            }
+        }
+        // Paint starts at the body: nothing above it clips anything, and
+        // nothing above it is ever painted (so has no painted state to ask).
+        if id == tree.body_id {
+            break;
+        }
+        position = a.position;
+        current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
+    }
+    clip
+}
+
+/// The style facts [`clip_chain_bounds`] walks on.
+#[derive(Clone, Copy)]
+struct PaintedStyle {
+    clips: bool,
+    position: PositionValue,
+    transformed: bool,
+}
+
+impl PaintedStyle {
+    /// What a node was painted with. A [`PaintedState`](crate::node::PaintedState)
+    /// is written for a node by every paint that consumes it and, after a
+    /// whole-document restyle, for every painted node
+    /// ([`NodeTree::consume_paint_dirty`]) — and any other style change
+    /// pushes the node, so between two consumptions nothing it records moves.
+    fn then(painted: &crate::node::PaintedState) -> Self {
+        Self {
+            clips: painted.clips,
+            position: painted.position,
+            transformed: painted.transform.is_some(),
+        }
+    }
+
+    fn now(node: &Node) -> Self {
+        Self {
+            clips: node.clips_overflow() && node.computed_style.display != DisplayValue::Contents,
+            position: node.computed_style.position,
+            transformed: !node.computed_style.transform.is_identity,
+        }
+    }
 }
 
 /// The ancestor whose paint covers `node_id` when `node_id` names no rect of
