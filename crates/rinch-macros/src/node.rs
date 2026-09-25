@@ -1003,6 +1003,17 @@ mod tests {
         assert_eq!(first_arm("{ {label} span {} }"), ["Expr", "Element"]);
         assert_eq!(first_arm(r#"{ {|| x.get()} " items" }"#), ["Expr", "Text"]);
         assert_eq!(first_arm("{ {x} }"), ["Expr"]);
+        // A braced head after control flow is another node.
+        assert_eq!(
+            first_arm(r#"{ if c.get() { "a" } { helper() } }"#),
+            ["IfBlock", "Expr"]
+        );
+        // A double brace around rsx control flow keeps its pre-#395 meaning,
+        // a plain Rust block: only a head followed by more nodes is children.
+        assert_eq!(
+            first_arm(r#"{ { match y.get() { 0 => "z", _ => "n" } } }"#),
+            ["Expr"]
+        );
         assert_eq!(
             first_arm("{ { match y.get() { 0 => helper(), _ => other() } } }"),
             ["Expr"]
