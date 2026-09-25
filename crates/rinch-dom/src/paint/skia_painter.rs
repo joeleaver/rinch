@@ -1329,6 +1329,11 @@ impl TinySkiaPainter {
         };
         let fresh = self.clip_mask.is_none();
         Painter::push_clip(self, Fill::NonZero, Affine::IDENTITY, &shape);
+        if !fresh {
+            // Inside another clip this is an ordinary clip, and the rects the
+            // open damage clip (if any) is tested against stay its own.
+            return;
+        }
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
         self.damage_rects.clear();
         self.damage_rects.extend(rects.iter().filter_map(|r| {
@@ -1343,7 +1348,7 @@ impl TinySkiaPainter {
             };
             (!d.is_empty()).then_some(d)
         }));
-        if fresh && let Some(m) = self.clip_mask.as_mut() {
+        if let Some(m) = self.clip_mask.as_mut() {
             m.damage_only = true;
         }
     }
