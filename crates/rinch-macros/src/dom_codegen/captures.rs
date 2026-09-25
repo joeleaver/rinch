@@ -347,42 +347,56 @@ impl<'ast> Visit<'ast> for Collector {
 /// Used to determine which names a closure's params or a `let` introduces, so the
 /// capture scanner can skip them.
 pub(crate) fn collect_pat_idents(pat: &syn::Pat, out: &mut HashSet<String>) {
+    let mut idents = Vec::new();
+    collect_pat_ident_tokens(pat, &mut idents);
+    out.extend(idents.iter().map(|id| id.to_string()));
+}
+
+/// The identifiers a pattern binds, as the pattern's **own tokens** — spans,
+/// and so hygiene, intact.
+///
+/// For emitting code that names a binding (issue #394's `let _ = &name;`): a
+/// name rebuilt from its string at `Span::call_site()` does not resolve to a
+/// binding that came in through a user's `macro_rules!` fragment (`for $it in
+/// …`), and fails with E0425. An or-pattern contributes every alternative's
+/// copy; callers that emit once per name dedup.
+pub(crate) fn collect_pat_ident_tokens(pat: &syn::Pat, out: &mut Vec<syn::Ident>) {
     use syn::Pat;
     match pat {
         Pat::Ident(pat_ident) => {
-            out.insert(pat_ident.ident.to_string());
+            out.push(pat_ident.ident.clone());
             if let Some((_, sub)) = &pat_ident.subpat {
-                collect_pat_idents(sub, out);
+                collect_pat_ident_tokens(sub, out);
             }
         }
         Pat::Tuple(t) => {
             for p in &t.elems {
-                collect_pat_idents(p, out);
+                collect_pat_ident_tokens(p, out);
             }
         }
         Pat::TupleStruct(t) => {
             for p in &t.elems {
-                collect_pat_idents(p, out);
+                collect_pat_ident_tokens(p, out);
             }
         }
         Pat::Struct(s) => {
             for field in &s.fields {
-                collect_pat_idents(&field.pat, out);
+                collect_pat_ident_tokens(&field.pat, out);
             }
         }
         Pat::Or(o) => {
             for p in &o.cases {
-                collect_pat_idents(p, out);
+                collect_pat_ident_tokens(p, out);
             }
         }
-        Pat::Reference(r) => collect_pat_idents(&r.pat, out),
-        Pat::Paren(p) => collect_pat_idents(&p.pat, out),
+        Pat::Reference(r) => collect_pat_ident_tokens(&r.pat, out),
+        Pat::Paren(p) => collect_pat_ident_tokens(&p.pat, out),
         Pat::Slice(s) => {
             for p in &s.elems {
-                collect_pat_idents(p, out);
+                collect_pat_ident_tokens(p, out);
             }
         }
-        Pat::Type(t) => collect_pat_idents(&t.pat, out),
+        Pat::Type(t) => collect_pat_ident_tokens(&t.pat, out),
         // No-binding patterns:
         // - Wild, Lit, Range, Rest, Path, Const, Macro, Verbatim
         _ => {}

@@ -159,7 +159,6 @@ fn test_for_basic() -> NodeHandle {
     }
 }
 
-#[allow(unused_variables)]
 #[component]
 fn test_for_with_closures() -> NodeHandle {
     let items = Signal::new(vec![
