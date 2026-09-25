@@ -923,6 +923,13 @@ for todo in todos.get() {
 }
 ```
 
+A binding counts as used if **either** the `key:` expression or the body reads it, so an item
+used only as a key (`for id in ids { span { key: id, "row" } }`) does not warn `unused variable`,
+and neither does an `if let` or `match` binding its branch reads. A binding nothing reads still
+warns, at your pattern. (For a `for` loop the check is by name, so a binding that both the key
+and the body merely *spell* — as a path segment or a struct-literal field name, say — can go
+unreported.)
+
 **Note:** The item type must implement `Clone + PartialEq + 'static` for `for` loops to work. This enables efficient data comparison for selective re-rendering.
 
 #### Reactivity in for Loops
