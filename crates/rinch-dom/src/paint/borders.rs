@@ -732,23 +732,6 @@ pub(super) fn paint_box_shadow(
     }
 }
 
-/// The standard normal CDF, `Φ(z)`, from Abramowitz & Stegun 7.1.26's `erf`
-/// (absolute error under 1.5e-7 — far below one 8-bit alpha level).
-fn normal_cdf(z: f64) -> f64 {
-    let x = z.abs() / std::f64::consts::SQRT_2;
-    let t = 1.0 / (1.0 + 0.327_591_1 * x);
-    let poly = t
-        * (0.254_829_592
-            + t * (-0.284_496_736
-                + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
-    let erf = 1.0 - poly * (-x * x).exp();
-    if z >= 0.0 {
-        0.5 * (1.0 + erf)
-    } else {
-        0.5 * (1.0 - erf)
-    }
-}
-
 /// Paint the `inset` shadows of `shadows` (#974). Called after the element's
 /// background and before its border, which is where css-backgrounds-3 §7.1
 /// puts an inner shadow; the outer ones are `paint_box_shadow`'s.
@@ -758,16 +741,26 @@ fn normal_cdf(z: f64) -> f64 {
 /// a hole, the hole being the padding box moved by the offset and shrunk by
 /// the spread, its radii the padding box's shrunk by the spread (the inset
 /// half of §7.1.1 — a negative spread grows them by the ratio rule outer
-/// shadows use). Everything is clipped to the padding box's rounded shape.
+/// shadows use). First shadow on top.
 ///
-/// A blur is a Gaussian of `sigma = blur / 2` across the hole's edge, which is
-/// what Chrome 153 paints (measured, `tests/box_shadow_inset_tests.rs`). It is
-/// approximated by nested holes — each layer the padding box minus the hole
-/// moved `e` further in, for `e` stepping across `[-blur, blur]` — whose
-/// alphas are chosen so that a point covered by the innermost `m` layers
-/// composites (source-over, one colour) to exactly the Gaussian's value at the
-/// middle of its step. Deep in the shadow every layer covers, and the
-/// composite is the shadow colour itself.
+/// Each shadow is **one** draw through **one** clip — the padding box's
+/// rounded shape, less any `viewport_holes` (a `data-viewport` hole shows the
+/// layer beneath, so the shadow is cut out of it exactly as the background
+/// is). One draw matters on the software painter: tiny-skia applies the clip
+/// mask per draw, so a stack of translucent fills through one rounded clip
+/// multiplies the clip's edge coverage into itself and leaves a dark rim
+/// along the curve (review of #1014, F1), where Vello composites the clip
+/// once.
+///
+/// - **Unblurred**: the ring is a vector fill (`EvenOdd`, hole cut out).
+/// - **Blurred**: the hole's coverage is rasterised into a mask, blurred by a
+///   Gaussian of `sigma = blur / 2` (three box blurs per axis, as browsers
+///   do), and the shadow drawn as an image whose alpha is the colour's alpha
+///   times one minus that — the definition in §7.1, so corners, rounded holes
+///   and a blur wider than the box come out as in Chrome 153
+///   (`tests/box_shadow_inset_tests.rs`). The mask is built in the paint's
+///   device pixels, cropped to what can be seen when the transform is a plain
+///   translation.
 ///
 /// Nothing is drawn outside the border box, so no ink reach, layer bound or
 /// damage rect needs to know about an inset shadow (`own_ink_outsets` and
@@ -784,6 +777,7 @@ pub(super) fn paint_inset_box_shadow(
     radii: RoundedRectRadii,
     node: &Node,
     transform: Affine,
+    viewport_holes: &[Rect],
 ) {
     if !shadows.iter().any(|s| s.inset) {
         return;
@@ -818,10 +812,28 @@ pub(super) fn paint_inset_box_shadow(
         || pad_radii.top_right > 0.0
         || pad_radii.bottom_right > 0.0
         || pad_radii.bottom_left > 0.0;
-    let clip: PaintShape = if rounded {
-        pad.to_rounded_rect(pad_radii).into()
+    let (clip, clip_fill): (PaintShape, Fill) = if viewport_holes.is_empty() {
+        let shape = if rounded {
+            pad.to_rounded_rect(pad_radii).into()
+        } else {
+            pad.into()
+        };
+        (shape, Fill::NonZero)
     } else {
-        pad.into()
+        let mut path: BezPath = if rounded {
+            pad.to_rounded_rect(pad_radii).into_path(0.1)
+        } else {
+            pad.into_path(0.1)
+        };
+        // A hole only subtracts where it overlaps the padding box; the part
+        // outside would count as *inside* under `EvenOdd`.
+        for hole in viewport_holes {
+            let hole = hole.intersect(pad);
+            if hole.width() > 0.0 && hole.height() > 0.0 {
+                path.extend(hole.into_path(0.1).iter());
+            }
+        }
+        (path.into(), Fill::EvenOdd)
     };
 
     // The first shadow is on top, so paint back to front.
@@ -833,8 +845,7 @@ pub(super) fn paint_inset_box_shadow(
         let color: AlphaColor<Srgb> = shadow
             .color
             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40));
-        let base_alpha = color.components[3] as f64;
-        if base_alpha <= 0.0 {
+        if color.components[3] <= 0.0 {
             continue;
         }
         let hole_radii = RoundedRectRadii::new(
@@ -843,66 +854,41 @@ pub(super) fn paint_inset_box_shadow(
             spread_corner_radius(pad_radii.bottom_right, -spread),
             spread_corner_radius(pad_radii.bottom_left, -spread),
         );
-        let base_hole = pad + Vec2::new(offset_x, offset_y);
+        let hole = (pad + Vec2::new(offset_x, offset_y)).inset(-spread);
+        let hole_empty = hole.width() <= 0.0 || hole.height() <= 0.0;
 
-        // `(inset, alpha)` per layer, painted in this order. `inset` is how
-        // much further than the spread the layer's hole is shrunk.
-        let layers: Vec<(f64, f64)> = if blur > 0.0 {
-            const N: usize = 12;
-            let sigma = blur * 0.5;
-            let step = 2.0 * blur / N as f64;
-            // Layer `j`'s hole edge sits at depth `e_j` into the hole; a point
-            // at depth `p` is covered by every layer with `e_j > p`. The
-            // target coverage for the points first covered by layer `j`
-            // (`p` in `(e_{j-1}, e_j]`) is the Gaussian's at the step's
-            // middle; the deepest band (every layer) is the full colour.
-            let edge = |j: usize| -blur + (j + 1) as f64 * step;
-            let target = |j: usize| -> f64 {
-                if j == 0 {
-                    base_alpha
-                } else if j >= N {
-                    0.0
-                } else {
-                    base_alpha * (1.0 - normal_cdf((edge(j) - step * 0.5) / sigma))
-                }
-            };
-            (0..N)
-                .map(|j| {
-                    let (t, next) = (target(j), target(j + 1));
-                    let a = if next >= 1.0 {
-                        0.0
-                    } else {
-                        ((t - next) / (1.0 - next)).clamp(0.0, 1.0)
-                    };
-                    (edge(j), a)
-                })
-                .collect()
-        } else {
-            vec![(0.0, base_alpha)]
-        };
-
-        painter.push_clip(Fill::NonZero, transform, &clip);
-        for (e, a) in layers {
-            if a * 255.0 < 0.5 {
-                continue;
-            }
-            let layer_color = color.with_alpha(a as f32);
-            let shrink = spread + e;
-            let hole = base_hole.inset(-shrink);
-            if hole.width() <= 0.0 || hole.height() <= 0.0 {
-                // No hole left: the whole padding box is shadow.
-                painter.fill_color(Fill::NonZero, transform, layer_color, &clip);
-                continue;
-            }
-            let hole_path: BezPath = if rounded {
-                let shrink_r = |r: f64| if r > 0.0 { (r - e).max(0.0) } else { 0.0 };
-                let r = RoundedRectRadii::new(
-                    shrink_r(hole_radii.top_left),
-                    shrink_r(hole_radii.top_right),
-                    shrink_r(hole_radii.bottom_right),
-                    shrink_r(hole_radii.bottom_left),
+        if blur > 0.0 && !hole_empty {
+            if let Some((origin, image)) =
+                blurred_inset_image(pad, hole, hole_radii, blur * 0.5, color, transform)
+            {
+                painter.push_clip(clip_fill, transform, &clip);
+                painter.draw_image(
+                    &super::painter::PaintImage {
+                        data: &image.data,
+                        width: image.width,
+                        height: image.height,
+                        decoded: None,
+                        opaque: false,
+                    },
+                    transform * Affine::translate(origin),
                 );
-                hole.to_rounded_rect(r).into_path(0.1)
+                painter.pop_layer();
+            }
+            continue;
+        }
+
+        painter.push_clip(clip_fill, transform, &clip);
+        if hole_empty {
+            // No hole left: the whole padding box is shadow.
+            painter.fill_color(
+                Fill::NonZero,
+                transform,
+                color,
+                &pad.inflate(1.0, 1.0).into(),
+            );
+        } else {
+            let hole_path: BezPath = if rounded {
+                hole.to_rounded_rect(hole_radii).into_path(0.1)
             } else {
                 hole.into_path(0.1)
             };
@@ -912,8 +898,195 @@ pub(super) fn paint_inset_box_shadow(
             // even-odd count only ever subtracts.
             let mut path = pad.union(hole).inflate(1.0, 1.0).into_path(0.1);
             path.extend(hole_path.iter());
-            painter.fill_color(Fill::EvenOdd, transform, layer_color, &path.into());
+            painter.fill_color(Fill::EvenOdd, transform, color, &path.into());
         }
         painter.pop_layer();
+    }
+}
+
+/// A straight-alpha RGBA8 image to draw.
+struct ShadowImage {
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+/// The largest blur mask built for one inset shadow, in pixels. Past it the
+/// shadow is not drawn: an inset shadow on a box this size is a whole screen
+/// of mask per frame, and the mask is cropped to what can be seen first.
+const MAX_INSET_MASK_PIXELS: usize = 16 * 1024 * 1024;
+
+/// The blurred inset shadow over the padding box `pad` (device pixels), as an
+/// image and the device-space origin to draw it at; `None` when nothing of it
+/// can be seen.
+///
+/// The hole's coverage is rasterised with its rounded corners (pixel-centre
+/// signed distance, one pixel of anti-aliasing) over `pad` grown by the blur's
+/// reach, blurred by three box blurs per axis approximating a Gaussian of
+/// `sigma`, and each pixel of `pad` takes `alpha * (1 - blurred hole)`.
+fn blurred_inset_image(
+    pad: Rect,
+    hole: Rect,
+    hole_radii: RoundedRectRadii,
+    sigma: f64,
+    color: AlphaColor<Srgb>,
+    transform: Affine,
+) -> Option<(Vec2, ShadowImage)> {
+    // The image covers `pad` on whole device pixels, cropped to what can be
+    // seen when the transform is a translation (a rotated or scaled box keeps
+    // its whole padding box).
+    let mut area = Rect::new(pad.x0.floor(), pad.y0.floor(), pad.x1.ceil(), pad.y1.ceil());
+    let c = transform.as_coeffs();
+    if c[0] == 1.0 && c[1] == 0.0 && c[2] == 0.0 && c[3] == 1.0 {
+        if let Some(visible) = super::visible_paint_rect() {
+            let visible = visible - Vec2::new(c[4], c[5]);
+            area = area.intersect(Rect::new(
+                visible.x0.floor(),
+                visible.y0.floor(),
+                visible.x1.ceil(),
+                visible.y1.ceil(),
+            ));
+        }
+    }
+    if area.width() <= 0.0 || area.height() <= 0.0 {
+        return None;
+    }
+    let boxes = gaussian_boxes(sigma);
+    // How far the three box blurs reach: the sum of their radii.
+    let reach = boxes.iter().map(|b| b / 2).sum::<usize>() + 1;
+    let (iw, ih) = (area.width() as usize, area.height() as usize);
+    let (ew, eh) = (iw + 2 * reach, ih + 2 * reach);
+    if ew.saturating_mul(eh) > MAX_INSET_MASK_PIXELS {
+        return None;
+    }
+    let ox = area.x0 - reach as f64;
+    let oy = area.y0 - reach as f64;
+
+    // The hole's coverage, 1 inside, 0 outside.
+    let mut mask = vec![0.0f32; ew * eh];
+    for j in 0..eh {
+        let py = oy + j as f64 + 0.5;
+        if py < hole.y0 - 1.0 || py > hole.y1 + 1.0 {
+            continue;
+        }
+        let row = &mut mask[j * ew..(j + 1) * ew];
+        for (i, m) in row.iter_mut().enumerate() {
+            let px = ox + i as f64 + 0.5;
+            let d = rounded_rect_distance(hole, hole_radii, px, py);
+            *m = (0.5 - d).clamp(0.0, 1.0) as f32;
+        }
+    }
+
+    let mut scratch = vec![0.0f32; ew.max(eh)];
+    let mut line = vec![0.0f32; ew.max(eh)];
+    // Rows.
+    for j in 0..eh {
+        let row = &mut mask[j * ew..(j + 1) * ew];
+        for &b in &boxes {
+            box_blur_line(row, &mut scratch[..ew], b / 2);
+        }
+    }
+    // Columns (only those the image keeps).
+    for i in reach..reach + iw {
+        for j in 0..eh {
+            line[j] = mask[j * ew + i];
+        }
+        for &b in &boxes {
+            box_blur_line(&mut line[..eh], &mut scratch[..eh], b / 2);
+        }
+        for j in 0..eh {
+            mask[j * ew + i] = line[j];
+        }
+    }
+
+    let rgba = color.to_rgba8();
+    let alpha = color.components[3];
+    let mut data = vec![0u8; iw * ih * 4];
+    for j in 0..ih {
+        let src = &mask[(j + reach) * ew + reach..(j + reach) * ew + reach + iw];
+        let dst = &mut data[j * iw * 4..(j + 1) * iw * 4];
+        for (px, &m) in dst.chunks_exact_mut(4).zip(src) {
+            let a = alpha * (1.0 - m.clamp(0.0, 1.0));
+            px[0] = rgba.r;
+            px[1] = rgba.g;
+            px[2] = rgba.b;
+            px[3] = (a * 255.0).round() as u8;
+        }
+    }
+    Some((
+        Vec2::new(area.x0, area.y0),
+        ShadowImage {
+            data,
+            width: iw as u32,
+            height: ih as u32,
+        },
+    ))
+}
+
+/// The signed distance from `(px, py)` to the edge of the rounded rect
+/// `rect`/`radii`: negative inside. Each corner's radius is clamped to half
+/// the rect's smaller side, as kurbo's `RoundedRect` clamps it.
+fn rounded_rect_distance(rect: Rect, radii: RoundedRectRadii, px: f64, py: f64) -> f64 {
+    let cx = (rect.x0 + rect.x1) * 0.5;
+    let cy = (rect.y0 + rect.y1) * 0.5;
+    let hw = rect.width() * 0.5;
+    let hh = rect.height() * 0.5;
+    let (dx, dy) = (px - cx, py - cy);
+    let r = match (dx < 0.0, dy < 0.0) {
+        (true, true) => radii.top_left,
+        (false, true) => radii.top_right,
+        (false, false) => radii.bottom_right,
+        (true, false) => radii.bottom_left,
+    }
+    .min(hw.min(hh))
+    .max(0.0);
+    let qx = dx.abs() - (hw - r);
+    let qy = dy.abs() - (hh - r);
+    let outside = qx.max(0.0).hypot(qy.max(0.0));
+    outside + qx.max(qy).min(0.0) - r
+}
+
+/// Three odd box widths whose successive blurs approximate a Gaussian of
+/// standard deviation `sigma` (Kovesi, "Fast Almost-Gaussian Filtering").
+fn gaussian_boxes(sigma: f64) -> [usize; 3] {
+    const N: f64 = 3.0;
+    let ideal = (12.0 * sigma * sigma / N + 1.0).sqrt();
+    let mut wl = ideal.floor() as i64;
+    if wl % 2 == 0 {
+        wl -= 1;
+    }
+    let wl = wl.max(1);
+    let wu = wl + 2;
+    let wlf = wl as f64;
+    let m = ((12.0 * sigma * sigma - N * wlf * wlf - 4.0 * N * wlf - 3.0 * N) / (-4.0 * wlf - 4.0))
+        .round() as i64;
+    let mut out = [0usize; 3];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = if (i as i64) < m { wl } else { wu } as usize;
+    }
+    out
+}
+
+/// One box blur of radius `r` along `line`, in place; values past either end
+/// count as zero.
+fn box_blur_line(line: &mut [f32], scratch: &mut [f32], r: usize) {
+    if r == 0 {
+        return;
+    }
+    let n = line.len();
+    scratch[..n].copy_from_slice(line);
+    let norm = 1.0 / (2 * r + 1) as f32;
+    let mut sum = 0.0f32;
+    for &v in scratch.iter().take(r.min(n)) {
+        sum += v;
+    }
+    for i in 0..n {
+        if i + r < n {
+            sum += scratch[i + r];
+        }
+        line[i] = sum * norm;
+        if i >= r {
+            sum -= scratch[i - r];
+        }
     }
 }
