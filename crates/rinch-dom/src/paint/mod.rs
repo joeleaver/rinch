@@ -3,6 +3,7 @@
 //! Walks the node tree and emits drawing commands via the `Painter` trait
 //! for backgrounds, borders, and text.
 
+mod blur;
 mod borders;
 pub mod clip;
 mod contenteditable;

@@ -4,6 +4,7 @@ use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Cap, Point, Rect, RoundedRectRadii, Shape, Stroke, Vec2};
 
+use super::blur::Blur1d;
 use super::painter::{PaintShape, Painter};
 use crate::computed_style::BorderStyleValue;
 use crate::node::Node;
@@ -973,8 +974,9 @@ fn blurred_inset_images(
         return Vec::new();
     }
     perf.add(crate::perf::Counter::InsetShadowMaskPx, (iw * ih) as u64);
-    let blur = Blur1d::new(sigma);
+    let blur = Blur1d::new(sigma, DIRECT_KERNEL_MAX_SIGMA);
     let reach = blur.reach();
+    let mut tmp = Vec::new();
 
     // The rect's blurred coverage, one axis at a time, over the image grown
     // by the reach (what lies further out cannot reach the image).
@@ -985,7 +987,7 @@ fn blurred_inset_images(
                 ((p + 1.0).min(h1) - p.max(h0)).max(0.0) as f32
             })
             .collect();
-        blur.apply(&mut line);
+        blur.apply(&mut line, &mut Vec::new());
         line.drain(..reach);
         line.truncate(n);
         line
@@ -1049,7 +1051,7 @@ fn blurred_inset_images(
         // Only the rows the sliver is on have anything to blur across.
         for row in patch.chunks_exact_mut(pw) {
             if row.iter().any(|&v| v != 0.0) {
-                blur.apply(row);
+                blur.apply(row, &mut tmp);
             }
         }
         let mut col = vec![0.0f32; ph];
@@ -1057,7 +1059,7 @@ fn blurred_inset_images(
             for j in 0..ph {
                 col[j] = patch[j * pw + i];
             }
-            blur.apply(&mut col);
+            blur.apply(&mut col, &mut tmp);
             for j in 0..ph {
                 patch[j * pw + i] = col[j];
             }
@@ -1144,92 +1146,4 @@ fn blurred_inset_images(
         ));
     }
     out
-}
-
-/// A 1-D approximation of a Gaussian blur of standard deviation `sigma`: a
-/// sampled kernel for a small `sigma`, three box blurs (Kovesi, "Fast
-/// Almost-Gaussian Filtering") for a large one. Values past either end of a
-/// line count as zero.
-enum Blur1d {
-    Kernel(Vec<f32>),
-    Boxes([usize; 3]),
-}
-
-impl Blur1d {
-    fn new(sigma: f64) -> Self {
-        if sigma <= DIRECT_KERNEL_MAX_SIGMA {
-            let radius = (3.0 * sigma).ceil().max(1.0) as i64;
-            let mut k: Vec<f64> = (-radius..=radius)
-                .map(|i| (-(i as f64).powi(2) / (2.0 * sigma * sigma)).exp())
-                .collect();
-            let sum: f64 = k.iter().sum();
-            k.iter_mut().for_each(|v| *v /= sum);
-            Blur1d::Kernel(k.into_iter().map(|v| v as f32).collect())
-        } else {
-            const N: f64 = 3.0;
-            let ideal = (12.0 * sigma * sigma / N + 1.0).sqrt();
-            let mut wl = ideal.floor() as i64;
-            if wl % 2 == 0 {
-                wl -= 1;
-            }
-            let wl = wl.max(1);
-            let wlf = wl as f64;
-            let m = ((12.0 * sigma * sigma - N * wlf * wlf - 4.0 * N * wlf - 3.0 * N)
-                / (-4.0 * wlf - 4.0))
-                .round() as i64;
-            let mut widths = [0usize; 3];
-            for (i, w) in widths.iter_mut().enumerate() {
-                *w = if (i as i64) < m { wl } else { wl + 2 } as usize;
-            }
-            Blur1d::Boxes(widths)
-        }
-    }
-
-    /// How far one sample's value spreads, in samples.
-    fn reach(&self) -> usize {
-        match self {
-            Blur1d::Kernel(k) => k.len() / 2,
-            Blur1d::Boxes(w) => w.iter().map(|w| w / 2).sum(),
-        }
-    }
-
-    fn apply(&self, line: &mut [f32]) {
-        let src = line.to_vec();
-        let n = line.len();
-        match self {
-            Blur1d::Kernel(k) => {
-                let r = k.len() / 2;
-                for (i, out) in line.iter_mut().enumerate() {
-                    let lo = i.saturating_sub(r);
-                    let hi = (i + r).min(n - 1);
-                    let mut acc = 0.0f32;
-                    for (s, v) in src[lo..=hi].iter().enumerate() {
-                        acc += v * k[lo + s + r - i];
-                    }
-                    *out = acc;
-                }
-            }
-            Blur1d::Boxes(widths) => {
-                let mut src = src;
-                for &w in widths {
-                    let r = w / 2;
-                    if r == 0 {
-                        continue;
-                    }
-                    let norm = 1.0 / w as f32;
-                    let mut sum: f32 = src.iter().take(r.min(n)).sum();
-                    for i in 0..n {
-                        if i + r < n {
-                            sum += src[i + r];
-                        }
-                        line[i] = sum * norm;
-                        if i >= r {
-                            sum -= src[i - r];
-                        }
-                    }
-                    src.copy_from_slice(line);
-                }
-            }
-        }
-    }
 }

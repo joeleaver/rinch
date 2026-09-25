@@ -32,6 +32,8 @@ use peniko::Brush;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Rect};
 
+#[cfg(feature = "software-renderer")]
+use super::blur::Blur1d;
 use super::painter::{BlendMode, PaintShape, Painter};
 use super::text::{TextMask, draw_shadow_copy};
 
@@ -215,7 +217,7 @@ fn draw_masked(
     mask: Option<&TextMask>,
     wavy: Option<&crate::node::InlineLayout>,
 ) -> bool {
-    let blur = Blur1d::new(sigma);
+    let blur = Blur1d::new(sigma, DIRECT_KERNEL_MAX_SIGMA);
     let pad = blur.reach() as f64;
     let c = css_transform.as_coeffs();
     let translate_only = c[0] == 1.0 && c[1] == 0.0 && c[2] == 0.0 && c[3] == 1.0;
@@ -498,6 +500,13 @@ impl Painter for CallHasher {
     }
 }
 
+/// Past this `sigma` a text shadow's blur is three box blurs rather than a
+/// sampled Gaussian kernel: the kernel costs `6 sigma` per sample, the boxes
+/// a constant. The inset `box-shadow` switches at 2.5; a text shadow is
+/// blurred over far more pixels, so it switches sooner.
+#[cfg(feature = "software-renderer")]
+const DIRECT_KERNEL_MAX_SIGMA: f64 = 1.25;
+
 /// Blur a `w` x `h` coverage mask in place, rows then columns. A row with no
 /// coverage stays empty through the row pass, so it is skipped; the column
 /// pass sweeps whole rows at a time, so it reads the mask in order.
@@ -509,167 +518,7 @@ fn blur_2d(blur: &Blur1d, mask: &mut [f32], w: usize, h: usize) {
             blur.apply(row, &mut tmp);
         }
     }
-    blur.apply_columns(mask, w, h);
-}
-
-/// Past this `sigma` a 1-D blur is three box blurs rather than a sampled
-/// Gaussian kernel: the kernel costs `6 sigma` per sample, the boxes a
-/// constant. (PR #1014's copy switches at 2.5; a text shadow is blurred over
-/// far more pixels than an inset box shadow, so it switches sooner.)
-#[cfg(feature = "software-renderer")]
-const DIRECT_KERNEL_MAX_SIGMA: f64 = 1.25;
-
-/// A 1-D approximation of a Gaussian blur of standard deviation `sigma`: a
-/// sampled kernel out to `3 sigma` for a small `sigma`, three box blurs
-/// (Kovesi, "Fast Almost-Gaussian Filtering") for a large one — Skia's own
-/// method. Values past either end of a line count as zero.
-///
-/// The same construction as the inset `box-shadow` blur of PR #1014 (#974),
-/// kept here rather than shared while both are unmerged.
-#[cfg(feature = "software-renderer")]
-enum Blur1d {
-    Kernel(Vec<f32>),
-    Boxes([usize; 3]),
-}
-
-#[cfg(feature = "software-renderer")]
-impl Blur1d {
-    fn new(sigma: f64) -> Self {
-        if sigma <= DIRECT_KERNEL_MAX_SIGMA {
-            let radius = (3.0 * sigma).ceil().max(1.0) as i64;
-            let mut k: Vec<f64> = (-radius..=radius)
-                .map(|i| (-(i as f64).powi(2) / (2.0 * sigma * sigma)).exp())
-                .collect();
-            let sum: f64 = k.iter().sum();
-            k.iter_mut().for_each(|v| *v /= sum);
-            Blur1d::Kernel(k.into_iter().map(|v| v as f32).collect())
-        } else {
-            const N: f64 = 3.0;
-            let ideal = (12.0 * sigma * sigma / N + 1.0).sqrt();
-            let mut wl = ideal.floor() as i64;
-            if wl % 2 == 0 {
-                wl -= 1;
-            }
-            let wl = wl.max(1);
-            let wlf = wl as f64;
-            let m = ((12.0 * sigma * sigma - N * wlf * wlf - 4.0 * N * wlf - 3.0 * N)
-                / (-4.0 * wlf - 4.0))
-                .round() as i64;
-            let mut widths = [0usize; 3];
-            for (i, w) in widths.iter_mut().enumerate() {
-                *w = if (i as i64) < m { wl } else { wl + 2 } as usize;
-            }
-            Blur1d::Boxes(widths)
-        }
-    }
-
-    /// How far one sample's value spreads, in samples.
-    fn reach(&self) -> usize {
-        match self {
-            Blur1d::Kernel(k) => k.len() / 2,
-            Blur1d::Boxes(w) => w.iter().map(|w| w / 2).sum(),
-        }
-    }
-
-    /// Blur every column of the `w` x `h` row-major `mask` in place,
-    /// sweeping rows so the mask is read in memory order.
-    fn apply_columns(&self, mask: &mut [f32], w: usize, h: usize) {
-        let mut src = mask.to_vec();
-        match self {
-            Blur1d::Kernel(k) => {
-                let r = k.len() / 2;
-                for y in 0..h {
-                    let out = &mut mask[y * w..(y + 1) * w];
-                    out.fill(0.0);
-                    let lo = y.saturating_sub(r);
-                    let hi = (y + r).min(h - 1);
-                    for sy in lo..=hi {
-                        let kv = k[sy + r - y];
-                        let row = &src[sy * w..(sy + 1) * w];
-                        for (o, v) in out.iter_mut().zip(row) {
-                            *o += kv * v;
-                        }
-                    }
-                }
-            }
-            Blur1d::Boxes(widths) => {
-                let mut sum = vec![0.0_f32; w];
-                for &bw in widths {
-                    let r = bw / 2;
-                    if r == 0 {
-                        continue;
-                    }
-                    let norm = 1.0 / bw as f32;
-                    sum.fill(0.0);
-                    for sy in 0..r.min(h) {
-                        for (s, v) in sum.iter_mut().zip(&src[sy * w..(sy + 1) * w]) {
-                            *s += v;
-                        }
-                    }
-                    for y in 0..h {
-                        if y + r < h {
-                            let add = &src[(y + r) * w..(y + r + 1) * w];
-                            for (s, v) in sum.iter_mut().zip(add) {
-                                *s += v;
-                            }
-                        }
-                        let out = &mut mask[y * w..(y + 1) * w];
-                        for (o, s) in out.iter_mut().zip(&sum) {
-                            *o = s * norm;
-                        }
-                        if y >= r {
-                            let sub = &src[(y - r) * w..(y - r + 1) * w];
-                            for (s, v) in sum.iter_mut().zip(sub) {
-                                *s -= v;
-                            }
-                        }
-                    }
-                    src.copy_from_slice(mask);
-                }
-            }
-        }
-    }
-
-    /// Blur `line` in place; `tmp` is scratch, reused across calls.
-    fn apply(&self, line: &mut [f32], tmp: &mut Vec<f32>) {
-        let n = line.len();
-        tmp.clear();
-        tmp.extend_from_slice(line);
-        match self {
-            Blur1d::Kernel(k) => {
-                let r = k.len() / 2;
-                for (i, out) in line.iter_mut().enumerate() {
-                    let lo = i.saturating_sub(r);
-                    let hi = (i + r).min(n - 1);
-                    let mut acc = 0.0f32;
-                    for (s, v) in tmp[lo..=hi].iter().enumerate() {
-                        acc += v * k[lo + s + r - i];
-                    }
-                    *out = acc;
-                }
-            }
-            Blur1d::Boxes(widths) => {
-                for &w in widths {
-                    let r = w / 2;
-                    if r == 0 {
-                        continue;
-                    }
-                    let norm = 1.0 / w as f32;
-                    let mut sum: f32 = tmp.iter().take(r.min(n)).sum();
-                    for i in 0..n {
-                        if i + r < n {
-                            sum += tmp[i + r];
-                        }
-                        line[i] = sum * norm;
-                        if i >= r {
-                            sum -= tmp[i - r];
-                        }
-                    }
-                    tmp.copy_from_slice(line);
-                }
-            }
-        }
-    }
+    blur.apply_columns(mask, w, h, &mut tmp);
 }
 
 // ── The kernel of copies (Vello-only fallback) ─────────────────────────────
