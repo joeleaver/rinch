@@ -103,24 +103,66 @@ fn a_before_regenerated_by_an_inherited_change_keeps_its_style() {
     assert_before_style(&doc, w);
 }
 
-/// A class change on the originator that brings a `span` rule into play under
-/// it: a real `<span>` child takes the rule (the positive control), the
-/// generated box does not — in a browser a `::before` is not a `span`.
+/// A class change on an **ancestor** that brings a `span` rule into play below
+/// it (`.a.on span`). No rule on the originator depends on `.a`, so the
+/// originator is not re-cascaded and its `::before` keeps its node — and
+/// Stylo's descendant invalidation puts a restyle hint on that live box. A
+/// real `<span>` takes the rule (the positive control); the generated box must
+/// not — in a browser a `::before` is not a `span`.
+///
+/// This is the fixture for the walk's skip itself, including a skip that
+/// yields to a hint. A class change on the *originator* is not: it re-cascades
+/// the originator, which frees the `::before` and regenerates it as a fresh
+/// node that nothing walks into, so it passes with the skip deleted.
 #[test]
-fn a_span_rule_hinted_by_a_class_change_does_not_restyle_a_before() {
-    let (mut doc, w) = doc_with(".w.on span { color: rgb(0, 0, 255) }");
-    // Positive control: a real span under `.w` does take the rule.
+fn a_span_rule_hinted_by_an_ancestor_class_change_does_not_restyle_a_before() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(&format!("{BEFORE}\n.a.on span {{ color: rgb(0, 0, 255) }}"));
+    let body = doc.body();
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "class", "a");
+    doc.append_child(body, a);
+    let w = doc.create_element("div");
+    doc.set_attribute(w, "class", "w");
+    doc.append_child(a, w);
     let real = doc.create_element("span");
     doc.append_child(w, real);
+    doc.resolve_layout(VW, VH);
+    let before = generated(&doc, w);
+    doc.set_attribute(a, "class", "a on");
     doc.resolve_layout(VW + 1.0, VH);
-    doc.set_attribute(w, "class", "w on");
-    doc.resolve_layout(VW + 2.0, VH);
     assert_eq!(
         hex(&doc, real.0),
         "#0000ff",
         "positive control: the rule applies"
     );
+    assert_eq!(
+        generated(&doc, w),
+        before,
+        "the originator was not re-cascaded: the ::before is the same node"
+    );
     assert_before_style(&doc, w);
+}
+
+/// A generated box now carries its pseudo cascade, so its `@keyframes`
+/// animation starts on desktop (#1004; it never did before — #925). It is
+/// restarted at every cascade of its originator, which regenerates the box
+/// (#1023).
+#[test]
+fn a_before_animation_runs() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(
+        "@keyframes k { from { opacity: 0 } to { opacity: 1 } } \
+         .w::before { content: \"x\"; display: inline-block; animation: k 1s linear infinite }",
+    );
+    let body = doc.body();
+    let w = doc.create_element("div");
+    doc.set_attribute(w, "class", "w");
+    doc.append_child(body, w);
+    doc.resolve_layout(VW, VH);
+    let b = generated(&doc, w);
+    assert_eq!(doc.tree.active_animations.get(&b).map(|v| v.len()), Some(1));
+    assert!(doc.tree.has_running_animations());
 }
 
 /// The same for `::after`.
