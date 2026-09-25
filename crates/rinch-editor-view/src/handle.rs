@@ -46,18 +46,11 @@ type LinkClickFn = Rc<dyn Fn(&LinkClick) -> bool>;
 /// An [`EditorHandle::on_link_hover`] callback.
 type LinkHoverFn = Rc<dyn Fn(Option<&LinkHover>)>;
 
-/// The owned editor: its state, its desktop projection, and the schema/plugins
-/// needed to rebuild a fresh state on `load_doc`.
-///
-/// `view` is `None` until the editor is mounted into a host element (design A7:
-/// a handle is created with [`create_editor`](super::create_editor) *before* its
-/// container exists, then projected when the [`Editor`](super::Editor) component
-/// renders). State edits (`load_doc`/`command`/`set_selection`) work before mount
-/// — they mutate the owned state, and the view renders the current state when it
-/// attaches.
 /// Whether `prev → next` only shifted the selection: the same kind, both ends
-/// moved by one amount, and the head's textblock unchanged with the head at the
-/// same offset in it. See [`EditorCore::carry_caret_hint`].
+/// moved by one amount, and the head at the same offset in a textblock of the
+/// same type and attrs whose content **up to the head** is unchanged — what
+/// comes after it (a peer typing at the paragraph's end) cannot move the head
+/// to another line. See [`EditorCore::carry_caret_hint`].
 fn shifted_in_place(prev: &EditorState, next: &EditorState) -> bool {
     let (p, n) = (&prev.selection, &next.selection);
     if std::mem::discriminant(p) != std::mem::discriminant(n) {
@@ -70,11 +63,25 @@ fn shifted_in_place(prev: &EditorState, next: &EditorState) -> bool {
     let (Ok(rp), Ok(rn)) = (prev.doc.resolve(p.head()), next.doc.resolve(n.head())) else {
         return false;
     };
-    rp.parent().is_textblock()
-        && rp.parent_offset() == rn.parent_offset()
-        && (rp.parent().same_ref(rn.parent()) || rp.parent() == rn.parent())
+    let off = rp.parent_offset();
+    let (bp, bn) = (rp.parent(), rn.parent());
+    bp.is_textblock()
+        && off == rn.parent_offset()
+        && (bp.same_ref(bn)
+            || (bp.node_type() == bn.node_type()
+                && bp.attrs() == bn.attrs()
+                && bp.content().cut(0, off) == bn.content().cut(0, off)))
 }
 
+/// The owned editor: its state, its desktop projection, and the schema/plugins
+/// needed to rebuild a fresh state on `load_doc`.
+///
+/// `view` is `None` until the editor is mounted into a host element (design A7:
+/// a handle is created with [`create_editor`](super::create_editor) *before* its
+/// container exists, then projected when the [`Editor`](super::Editor) component
+/// renders). State edits (`load_doc`/`command`/`set_selection`) work before mount
+/// — they mutate the owned state, and the view renders the current state when it
+/// attaches.
 struct EditorCore {
     state: EditorState,
     view: Option<RinchDomEditorView>,
@@ -323,8 +330,33 @@ impl EditorCore {
     /// The side of a soft wrap the caret at the selection's head belongs to:
     /// the hint while the selection is the one it came with, else the default.
     fn caret_affinity(&self) -> CaretAffinity {
+        self.affinity_at(self.state.selection.head())
+    }
+
+    /// The side of a soft wrap a caret at `pos` is drawn on: the hint at the
+    /// head (while its selection holds), downstream elsewhere — and always
+    /// **upstream right before a hard break**. A `hard_break` has no bytes in
+    /// the host text, so the positions before and after one share a byte
+    /// offset; which line a caret there belongs to is the model's to say, not
+    /// the geometry's. Before the break is the end of its line (Chrome draws the
+    /// DOM point there), after it the start of the next.
+    fn affinity_at(&self, pos: Pos) -> CaretAffinity {
+        let before_hard_break = self
+            .state
+            .doc
+            .resolve(pos)
+            .ok()
+            .and_then(|r| r.node_after())
+            .is_some_and(|n| n.type_name() == "hard_break");
+        if before_hard_break {
+            return CaretAffinity::Upstream;
+        }
         match &self.caret_hint {
-            Some((sel, affinity)) if *sel == self.state.selection => *affinity,
+            Some((sel, affinity))
+                if *sel == self.state.selection && pos == self.state.selection.head() =>
+            {
+                *affinity
+            }
             _ => CaretAffinity::Downstream,
         }
     }
@@ -372,6 +404,15 @@ impl EditorCore {
             self.carry_anchors(&next.doc, mapping);
             self.carry_reveal(mapping);
             self.carry_caret_hint(&prev, &next);
+        }
+        // A hint for any selection but the one landing is dead: keeping it would
+        // revive it if the selection came back by another route.
+        if self
+            .caret_hint
+            .as_ref()
+            .is_some_and(|(sel, _)| *sel != next.selection)
+        {
+            self.caret_hint = None;
         }
         self.note_selection(&prev.selection, &next.selection);
         self.state = next.clone();
@@ -1490,11 +1531,7 @@ impl EditorHandle {
     /// comes after the layout, on both platforms.
     pub fn caret_rect(&self, pos: Pos) -> Option<rinch_core::reactive::ElementBounds> {
         let core = self.core();
-        let affinity = if pos == core.state.selection.head() {
-            core.caret_affinity()
-        } else {
-            CaretAffinity::Downstream
-        };
+        let affinity = core.affinity_at(pos);
         let (x, y, height) = core
             .view
             .as_ref()?
@@ -1845,15 +1882,11 @@ impl EditorHandle {
     }
 
     /// [`caret_affinity`](Self::caret_affinity) for a caret at `pos`: the hint
-    /// when `pos` is the selection's head, else [`CaretAffinity::Downstream`].
-    /// What a platform's geometry query for `pos` should draw with.
+    /// when `pos` is the selection's head, else [`CaretAffinity::Downstream`] —
+    /// and [`CaretAffinity::Upstream`] right before a hard break, which ends its
+    /// line. What a platform's geometry query for `pos` should draw with.
     pub fn caret_affinity_at(&self, pos: Pos) -> CaretAffinity {
-        let core = self.core();
-        if pos == core.state.selection.head() {
-            core.caret_affinity()
-        } else {
-            CaretAffinity::Downstream
-        }
+        self.core().affinity_at(pos)
     }
 
     fn set_selection_hinted(&self, selection: Selection, hint: Option<CaretAffinity>) {
@@ -2304,13 +2337,11 @@ impl EditorHandle {
     pub fn update_caret(&self) -> bool {
         let mut guard = self.core_mut();
         let core = &mut *guard;
+        let affinity = core.caret_affinity();
         let Some(view) = core.view.as_mut() else {
             return false;
         };
-        view.set_caret_affinity(match &core.caret_hint {
-            Some((sel, affinity)) if *sel == core.state.selection => *affinity,
-            _ => CaretAffinity::Downstream,
-        });
+        view.set_caret_affinity(affinity);
         let state = &core.state;
         // The view's `ScrollSelectionIntoView` says only that the overlay moved;
         // whether to scroll is the gate's decision (see above), so the requests
