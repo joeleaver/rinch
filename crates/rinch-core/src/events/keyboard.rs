@@ -133,8 +133,10 @@ thread_local! {
     /// Now a registration is keyed by
     /// [`current_dispatching_doc`](crate::context::current_dispatching_doc)
     /// and dispatch prefers the dispatching document's interceptor, falling
-    /// back to the ownerless entry — so a hook installed from `main` or at
-    /// mount still intercepts every document's keys, as it always has. The
+    /// back to the ownerless entry — so a hook installed from `main` still
+    /// intercepts every document's keys, as it always has. (A hook installed
+    /// at a `RinchApp` mount, or from an effect a document owns, is that
+    /// document's: both run under its marker since issue #295.) The
     /// *lifetime* of each entry is issue #183 and is handled below.
     static KEYBOARD_INTERCEPTOR: RefCell<InterceptorSlots> =
         const { RefCell::new(InterceptorSlots::new()) };
