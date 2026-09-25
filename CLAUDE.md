@@ -4011,6 +4011,16 @@ rsx! {
 
 Pattern bindings and guards are supported — each arm re-evaluates the scrutinee to extract bound values.
 
+**A braced arm body is decided by its first token** (issue #395). It holds rsx
+children — several nodes, like an `if`/`for` body — when it starts with `let`, a
+string literal, `if`/`for`/`match`, or `Name {` (an element or component):
+`0 => { h2 { "Home" } p { "…" } }`. Anything else is the one braced expression
+it always was, so `0 => { overview_section(__scope) }` (ui-zoo's routing) and
+`0 => {a.clone()}` are unchanged. `{ Point { x: 1 } }` is therefore a component,
+as unbraced; a path (`geom::Point { … }`) stays an expression. A braced body of
+lone control flow is still #221's transparent brace, diagnostic included
+(`parse_braced_arm_body`, `crates/rinch-macros/src/node.rs`).
+
 **Runtime desugaring:** `if` → `show_dom()`, `for` → `for_each_dom_typed()`, `match` → `match_dom()`.
 
 **A brace around control flow is transparent** (issue #221). `div { { match x { … } } }`

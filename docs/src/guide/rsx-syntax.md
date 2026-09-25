@@ -1038,6 +1038,32 @@ match score.get() {
 }
 ```
 
+#### Several nodes in one arm
+
+An arm body in braces can hold several nodes, as an `if` or `for` body can —
+they are rendered together as the arm:
+
+```rust
+match tab.get() {
+    0 => { h2 { "Home" } p { "Welcome back." } },
+    1 => { let n = count.get(); b { {n.to_string()} } " items" },
+    2 => { Badge { "new" } Badge { "beta" } },
+    _ => { overview_section(__scope) },   // one expression, as always
+}
+```
+
+What the braces hold is decided by their **first token**. They hold rsx nodes
+when the body starts with `let`, a string literal, `if`/`for`/`match`, or an
+element or component name followed by `{` (`div {`, `Card {`). Anything else —
+a call, a method chain, a variable, a closure — is a single Rust expression, as
+it always was: `{ overview_section(__scope) }`, `{ panel.clone() }` and
+`{|| count.get().to_string()}` are unchanged. (Until issue #395 only a body
+starting with `let` could hold more than one node.)
+
+One consequence: `{ Point { x: 1 } }` in an arm is a component named `Point`,
+exactly as `Point { x: 1 }` unbraced is — not a Rust struct literal. A path such
+as `geom::Point { x: 1 }` is not an element name, so it stays an expression.
+
 #### How `match` works internally
 
 The `match` block desugars to `match_dom()`, which generalizes `show_dom()` to N branches. A discriminant closure returns the index of the active branch (0, 1, 2, ...). When the discriminant changes, the old branch is disposed and the new branch is rendered.
