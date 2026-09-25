@@ -555,7 +555,7 @@ fn glyph_wrapped() -> (Fixture, Vec<u32>, u32) {
 /// line's start; a second End stays.
 #[wasm_bindgen_test]
 fn end_on_a_glyph_wrap_lands_at_the_wrap_upstream() {
-    let (f, starts, caret) = glyph_wrapped();
+    let (f, starts, _) = glyph_wrapped();
     assert!(f.key("End", false));
     assert_eq!(f.head(), starts[2], "End lands on the wrap point itself");
     assert_eq!(
