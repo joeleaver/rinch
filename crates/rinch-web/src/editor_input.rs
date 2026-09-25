@@ -2226,7 +2226,7 @@ fn move_to_line_edge(
 /// the caret at `head` is drawn on — the web twin of desktop's
 /// `RinchApp::visual_line_bound`.
 ///
-/// Hit-tests the textblock's content box just inside **both** edges at the
+/// Hit-tests the textblock just inside **both** edges of its box at the
 /// vertical middle of the caret's line, and takes the smaller position as the
 /// start and the larger as the end. Probing both sides, rather than choosing one
 /// by `direction`, is what makes a right-to-left line right: its logical start
@@ -2238,8 +2238,10 @@ fn move_to_line_edge(
 ///
 /// The end of a wrapped line is the wrap point — the same model position as the
 /// next line's start. `None` without geometry (no caret rect, a probe landing
-/// outside the caret's textblock, or an answer on the wrong side of `head`); the
-/// callers then fall back to the textblock's edge.
+/// outside the caret's textblock, or an answer on the wrong side of `head`) —
+/// which includes a caret line scrolled out of the viewport, where
+/// `caretRangeFromPoint` answers nothing (#1026); the callers then fall back to
+/// the textblock's edge.
 fn visual_line_bound(
     handle: &EditorHandle,
     container_nid: usize,
@@ -2250,27 +2252,23 @@ fn visual_line_bound(
     let (_, hy, hh) = head_screen_rect(handle, head)?;
     let (tb, _) = handle.caret_address(head)?;
     let el = node_by_nid(tb)?.dyn_into::<web_sys::Element>().ok()?;
-    let style = web_sys::window()?.get_computed_style(&el).ok()??;
-    let px = |prop: &str| {
-        style
-            .get_property_value(prop)
-            .ok()
-            .and_then(|v| v.trim_end_matches("px").parse::<f32>().ok())
-            .unwrap_or(0.0)
-    };
+    // Just inside the BORDER box, in the same viewport space the caret rect and
+    // `caretRangeFromPoint` use. `getBoundingClientRect` is scaled by a
+    // `transform` or CSS `zoom` on the way to the viewport, while `clientLeft`,
+    // `clientWidth` and the computed padding are not, so a content box built from
+    // them lands off the line under either (desktop pushes its edges through the
+    // painted transform for the same reason, #203). A point in the padding or
+    // border still resolves to the nearest position on the line (measured,
+    // Chrome 153, a 60px-padded, 7px-bordered paragraph).
     let rect = el.get_bounding_client_rect();
-    // The content box: the border box's left, past the left border
-    // (`clientLeft`) and padding, to the padding box's right less its padding.
-    let padding_left = rect.left() as f32 + el.client_left() as f32;
-    let content_left = padding_left + px("padding-left");
-    let content_right = padding_left + el.client_width() as f32 - px("padding-right");
+    let (left, right) = (rect.left() as f32, rect.right() as f32);
     let y = hy + hh * 0.5;
     let probe = |x: f32| {
         resolve_editor_point(doc, x, y)
             .filter(|hit| hit.container_nid == container_nid && hit.textblock_nid == tb)
             .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
     };
-    let hits = [probe(content_left + 1.0), probe(content_right - 1.0)];
+    let hits = [probe(left + 1.0), probe(right - 1.0)];
     let found = hits.iter().flatten().copied();
     if end {
         found.max_by_key(|p| p.0).filter(|p| p.0 >= head.0)
