@@ -1282,6 +1282,78 @@ pub fn delete_char_forward() -> Command {
     })
 }
 
+/// The range a word delete removes from a collapsed caret: from the caret to
+/// the previous (`forward = false`) or next word boundary of
+/// [`word_boundary`](crate::motion::word_boundary) — the boundary the word motion
+/// (Ctrl+Left / Right) lands on — clamped so it never takes an inline atom (an
+/// image, a hard break) along with text. `None` when the selection is not a
+/// collapsed text caret, or when the clamped range is empty: at a textblock edge,
+/// or with an atom right beside the caret.
+fn word_delete_range(state: &EditorState, forward: bool) -> Option<(usize, usize)> {
+    let sel = &state.selection;
+    if matches!(sel, crate::selection::Selection::Cell(_)) || !sel.is_empty() {
+        return None;
+    }
+    let head = sel.head();
+    let r = state.doc.resolve(head).ok()?;
+    let block = r.parent();
+    if !block.is_textblock() {
+        return None;
+    }
+    let head_off = r.parent_offset();
+    let start = head.0 - head_off;
+    let mut target = crate::motion::word_boundary(&state.doc, head, forward)?.0 - start;
+    // An atom is a placeholder space to the word motion, so a word delete would
+    // otherwise take it together with the word beyond it. It is a boundary of its
+    // own instead, as a block edge is: one keypress takes the atom alone.
+    let mut off = 0;
+    for i in 0..block.child_count() {
+        let child = block.child(i);
+        let size = child.node_size();
+        if child.text().is_none() {
+            if forward && off >= head_off && off < target {
+                target = off;
+            } else if !forward && off >= target && off + size <= head_off {
+                target = off + size;
+            }
+        }
+        off += size;
+    }
+    (target != head_off).then(|| {
+        let (a, b) = (start + target, head.0);
+        (a.min(b), a.max(b))
+    })
+}
+
+/// Delete from the caret to a word boundary (see [`word_delete_range`]), when
+/// that range is not empty.
+fn delete_word_range(forward: bool) -> Command {
+    command_tr(move |state| {
+        let (from, to) = word_delete_range(state, forward)?;
+        let mut tr = state.tr();
+        tr.delete(from, to).ok()?;
+        tr.doc_changed().then_some(tr)
+    })
+}
+
+/// Delete the word before the caret (Ctrl+Backspace; Alt+Backspace on macOS):
+/// from the caret back to the boundary the word motion (Ctrl+Left) lands on,
+/// taking any whitespace between them. A mark boundary is not a word boundary.
+///
+/// Where that range is empty it is [`delete_char_backward`]: with a non-empty
+/// selection (deleted as it stands), at a textblock's start (join / lift, as
+/// Backspace does there), and with an inline atom right before the caret (the
+/// atom alone — a word delete never takes an atom along with text).
+pub fn delete_word_backward() -> Command {
+    chain(vec![delete_word_range(false), delete_char_backward()])
+}
+
+/// Delete the word after the caret (Ctrl+Delete; Alt+Delete on macOS) — the
+/// mirror of [`delete_word_backward`], falling back to [`delete_char_forward`].
+pub fn delete_word_forward() -> Command {
+    chain(vec![delete_word_range(true), delete_char_forward()])
+}
+
 // ===================================================================
 // The base-editing plugin (commands + keymap)
 // ===================================================================
@@ -1341,6 +1413,8 @@ impl Plugin for BaseCommandsPlugin {
             ("deleteSelection", delete_selection()),
             ("deleteCharBackward", delete_char_backward()),
             ("deleteCharForward", delete_char_forward()),
+            ("deleteWordBackward", delete_word_backward()),
+            ("deleteWordForward", delete_word_forward()),
         ];
         for level in 1..=6i64 {
             let name: &'static str = match level {
@@ -1392,8 +1466,37 @@ impl Plugin for BaseCommandsPlugin {
             ("Mod-Alt-6", "setHeading6"),
         ]
         .into_iter()
+        .chain(word_delete_bindings())
         .filter_map(|(b, cmd)| KeyBinding::parse(b).map(|kb| (kb, cmd)))
         .collect()
+    }
+}
+
+/// The word-delete chords: Ctrl+Backspace / Ctrl+Delete on Windows and Linux,
+/// Alt(Option)+Backspace / Alt+Delete on macOS, where Cmd+Backspace is the
+/// line delete. `Mod` is the primary accelerator, which is Cmd on macOS — hence
+/// the platform split, decided at compile time like the desktop shell's own
+/// `cfg!(target_os = "macos")` checks.
+///
+/// **None on wasm.** A browser build cannot know the OS at compile time, and
+/// the browser already resolves the platform's chord into a `beforeinput`
+/// `deleteWordBackward` / `deleteWordForward`, which `rinch-web` maps onto these
+/// commands by name. Binding `Mod-Backspace` there would take Cmd+Backspace on a
+/// Mac (the web glue's `primary` is Ctrl *or* Meta) away from the browser's line
+/// delete.
+fn word_delete_bindings() -> Vec<(&'static str, &'static str)> {
+    if cfg!(target_arch = "wasm32") {
+        Vec::new()
+    } else if cfg!(target_os = "macos") {
+        vec![
+            ("Alt-Backspace", "deleteWordBackward"),
+            ("Alt-Delete", "deleteWordForward"),
+        ]
+    } else {
+        vec![
+            ("Mod-Backspace", "deleteWordBackward"),
+            ("Mod-Delete", "deleteWordForward"),
+        ]
     }
 }
 
