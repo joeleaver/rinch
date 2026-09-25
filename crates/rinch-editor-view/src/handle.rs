@@ -6529,6 +6529,83 @@ mod tests {
             assert_eq!(*seen.borrow(), vec![CaretAffinity::Upstream]);
         }
 
+        /// A selection that leaves the hinted one and comes back by another
+        /// route (select all, then an `update` back to the caret) does not
+        /// revive the old hint (PR #1019, round 3).
+        #[test]
+        fn a_selection_that_leaves_and_returns_does_not_revive_it() {
+            let h = hinted();
+            assert!(h.command("selectAll"));
+            assert_ne!(h.selection(), Selection::cursor(Pos(4)), "control: left");
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.set_selection(Selection::cursor(Pos(4)));
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(4)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        /// An edit strictly after the caret in its own block — a peer typing at
+        /// the paragraph's end — leaves the caret's line alone: the hint stays.
+        #[test]
+        fn an_edit_after_the_caret_in_its_own_block_keeps_it() {
+            let h = hinted();
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(5, 6).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(4)), "control: unmoved");
+            assert_eq!(h.caret_affinity(), CaretAffinity::Upstream);
+        }
+
+        /// A hint left inert by a selection that moved on is not carried onto
+        /// the new caret by a later edit.
+        #[test]
+        fn an_inert_hint_is_not_carried_onto_another_caret() {
+            let h = hinted();
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.set_selection(Selection::cursor(Pos(9)));
+                Some(tr)
+            }));
+            assert_eq!(
+                h.caret_affinity(),
+                CaretAffinity::Downstream,
+                "control: inert"
+            );
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(2, 3).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(8)), "control: shifted");
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        /// Undoing an earlier-block edit shifts the caret back, and the hint
+        /// follows it both ways.
+        #[test]
+        fn undo_of_an_earlier_block_edit_carries_it_back() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            h.set_selection_with_affinity(Selection::cursor(Pos(10)), CaretAffinity::Upstream);
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(2, 3).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(
+                h.caret_affinity(),
+                CaretAffinity::Upstream,
+                "control: carried"
+            );
+            assert!(h.command("undo"));
+            assert_eq!(h.selection(), Selection::cursor(Pos(10)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Upstream);
+        }
+
         #[test]
         fn a_selection_moved_by_undo_clears_it() {
             let h = hinted();

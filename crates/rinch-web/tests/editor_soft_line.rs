@@ -89,6 +89,54 @@ impl Fixture {
         }
     }
 
+    /// [`Fixture::mounted`], handing the editor's container out through `slot`.
+    fn mounted_capturing(
+        text: &'static str,
+        style: &str,
+        slot: std::rc::Rc<std::cell::RefCell<Option<rinch_core::dom::NodeHandle>>>,
+    ) -> Self {
+        let f = Self::mounted(text, style);
+        f.root.unmount();
+        f.host.remove();
+        let host = document().create_element("div").unwrap();
+        host.set_attribute(HOST_MARKER, "").unwrap();
+        host.set_attribute(
+            "style",
+            &format!(
+                "font-family: monospace; font-size: 16px; line-height: 24px; \
+                 padding: 20px; width: 180px; {style}"
+            ),
+        )
+        .unwrap();
+        document().body().unwrap().append_child(&host).unwrap();
+        let handle = create_editor();
+        assert!(handle.load_html(&format!("<p>{text}</p>")));
+        let mounted = handle.clone();
+        let root = rinch_web::mount_into(
+            &host,
+            ThemeProviderProps::default(),
+            move |scope: &mut RenderScope| {
+                let c = mounted.mount(scope);
+                *slot.borrow_mut() = Some(c.clone());
+                c
+            },
+        );
+        Self {
+            root,
+            host,
+            handle,
+            text,
+        }
+    }
+
+    /// The rect of char `i` of text node `text`.
+    fn char_rect_in(&self, text: web_sys::Node, i: u32) -> web_sys::DomRect {
+        let range = document().create_range().unwrap();
+        range.set_start(&text, i).unwrap();
+        range.set_end(&text, i + 1).unwrap();
+        range.get_bounding_client_rect()
+    }
+
     /// Focus the editor by a real press on the first character.
     fn focus(&self) {
         let r = self.char_rect(0);
@@ -747,5 +795,85 @@ fn a_press_on_the_right_half_of_a_glyph_wraps_last_letter_lands_after_it() {
     mouse("mouseup", x, y);
     assert_eq!(f.head(), starts[2], "after the last letter, not before it");
     assert_eq!(caret_line(&f, &starts), Some(1));
+    f.teardown();
+}
+
+/// A caret right before a hard break (`<br>`) is drawn at the end of its own
+/// line — where Chrome draws the DOM point at the end of that text — and the
+/// caret right after it at the start of the next. The view gives a hard break no
+/// bytes, so both positions share one byte offset; the downstream draw used to
+/// step past the `<br>` and put the first on the next line too (PR #1019's third
+/// review).
+#[wasm_bindgen_test]
+fn a_caret_before_a_hard_break_draws_on_its_own_line() {
+    let f = Fixture::mounted("alpha bravo<br>charlie delta", "width: 400px;");
+    f.focus();
+    let text = f.para().first_child().unwrap();
+    assert_eq!(
+        text.text_content().unwrap(),
+        "alpha bravo",
+        "positive control"
+    );
+    let range = document().create_range().unwrap();
+    range.set_start(&text, 11).unwrap();
+    range.set_end(&text, 11).unwrap();
+    let chrome = range.get_bounding_client_rect();
+    // "alpha bravo" is 1..12; the break 12..13; "charlie" from 13.
+    for (what, set) in [("caret_rect", false), ("the caret itself", true)] {
+        if set {
+            f.handle.set_selection(Selection::cursor(Pos(12)));
+        }
+        let r = f.handle.caret_rect(Pos(12)).expect("a rect");
+        assert!(
+            (r.y as f64 - chrome.y()).abs() < 1.0 && (r.x as f64 - chrome.x()).abs() < 1.0,
+            "{what}: before the break at ({}, {}), Chrome ({}, {})",
+            r.x,
+            r.y,
+            chrome.x(),
+            chrome.y()
+        );
+    }
+    let after = f.handle.caret_rect(Pos(13)).expect("a rect");
+    let c = f.char_rect_in(f.para().last_child().unwrap(), 0);
+    assert!(
+        (after.y as f64 - c.top()).abs() < 1.0 && (after.x as f64 - c.left()).abs() < 1.0,
+        "after the break: ({}, {}) vs the next line's first char ({}, {})",
+        after.x,
+        after.y,
+        c.left(),
+        c.top()
+    );
+    f.teardown();
+}
+
+/// The affinity-blind caret query answers DOWNSTREAM at a soft wrap on the web,
+/// as on desktop: the start of the lower line, not the collapsed range Chrome
+/// draws at the upper line's end (`NodeHandle::query_caret_position`, the
+/// public door to `DomDocument::query_caret_position`).
+#[wasm_bindgen_test]
+fn the_blind_caret_query_answers_downstream_at_a_wrap() {
+    let slot: std::rc::Rc<std::cell::RefCell<Option<rinch_core::dom::NodeHandle>>> =
+        Default::default();
+    let f = Fixture::mounted_capturing(LONG_WORD, "overflow-wrap: anywhere;", slot.clone());
+    let starts = f.line_starts();
+    assert!(starts.len() >= 3, "{starts:?}");
+    let block = f.handle.caret_address(Pos(1)).unwrap().0;
+    let container = slot.borrow().clone().expect("the container");
+    let para = container
+        .children()
+        .into_iter()
+        .find(|c| c.node_id().0 == block)
+        .expect("the paragraph's handle");
+    let byte = starts[1] as usize; // ASCII: bytes are chars
+    let next = f.char_rect(starts[1]);
+    let p = f.para().get_bounding_client_rect();
+    let (lx, ly) = para.query_caret_position(byte).expect("a position");
+    assert!(
+        (ly as f64 - (next.top() - p.top())).abs() < 1.0
+            && (lx as f64 - (next.left() - p.left())).abs() < 1.0,
+        "at the wrap ({lx}, {ly}) vs the lower line's start ({}, {})",
+        next.left() - p.left(),
+        next.top() - p.top()
+    );
     f.teardown();
 }
