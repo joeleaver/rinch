@@ -190,6 +190,22 @@ fn perspective_magnifies_a_translate_toward_the_viewer() {
         "perspective(100px) translateZ(10px) translate(10px, 5px)",
         [k, 0.0, 0.0, k, 11.1111, 5.55556],
     );
+    // A percentage translate is divided by `w` like the rest of the matrix…
+    check_static(
+        "perspective(100px) translateZ(10px) translate(50%, 25%)",
+        [k, 0.0, 0.0, k, 55.5556, 11.1111],
+    );
+    // …and one *before* the perspective is not magnified by it (Chrome's
+    // rect starts at 150, 110 — the untransformed translate).
+    check_static(
+        "translate(50%, 25%) perspective(100px) translateZ(10px)",
+        [k, 0.0, 0.0, k, 50.0, 10.0],
+    );
+    // A depth under 1px is clamped to 1px: w = 1 - 0.2 / 1.
+    check_static(
+        "perspective(0.5px) translateZ(0.2px)",
+        [1.25, 0.0, 0.0, 1.25, 0.0, 0.0],
+    );
     check_static("perspective(100px)", I);
     check_static("perspective(none) translateZ(10px)", I);
 }
