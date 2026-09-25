@@ -1565,12 +1565,16 @@ impl RinchDocument {
     ///   absolute with no positioned ancestor is excluded for the same reason
     ///   — its size is baked from the initial containing block (#204);
     /// - a requested inset that is not a plain value in the block (see
-    ///   [`plain_inset`]).
-    ///
-    /// Known limitation: a stylesheet rule with `!important` on the same inset
-    /// beats the inline declaration in the cascade; the fast path does not
-    /// consult the cascade and applies the inline value until the next full
-    /// restyle.
+    ///   [`plain_inset`]);
+    /// - a requested inset some matched rule declares `!important` (#277; see
+    ///   [`Self::important_rule_declares_inset`]). The cascade puts that
+    ///   declaration above a normal inline one, so writing the inline value
+    ///   would move the box until the next restyle snapped it back;
+    /// - a node whose `transition` covers an inset
+    ///   ([`crate::transition::TransitionProperty::covers_inset`], #280). No
+    ///   inset is animatable today, so this declines nothing yet; it is here
+    ///   so the day one is, the move reaches the cascade's transition hooks
+    ///   instead of jumping.
     fn inset_fast_path_values(
         &self,
         node_id: usize,
@@ -1593,7 +1597,81 @@ impl RinchDocument {
             let slot = INSET_SIDES.iter().position(|(name, _)| *name == property)?;
             batch[slot] = Some(plain_inset(pdb, INSET_SIDES[slot].1)?);
         }
+        let node = &self.tree.nodes[node_id];
+        if node
+            .transition_specs
+            .iter()
+            .any(|spec| spec.property.covers_inset())
+        {
+            return None;
+        }
+        let sides = INSET_SIDES
+            .iter()
+            .zip(batch.iter())
+            .filter(|(_, v)| v.is_some())
+            .map(|((_, id), _)| *id);
+        for id in sides {
+            if self.important_rule_declares_inset(node_id, id) {
+                return None;
+            }
+        }
         Some(batch)
+    }
+
+    /// Whether any rule the node matched on its last cascade declares inset
+    /// longhand `id` at an `!important` level (#277).
+    ///
+    /// Walks the node's Stylo rule node chain — one entry per matched rule,
+    /// already sorted by the cascade — and reads only the important levels'
+    /// declaration blocks, so a node with no important rule pays the walk and
+    /// nothing else. An `inset` shorthand is stored as its four longhands, so
+    /// `inset: 0 !important` answers for every side. A *logical* inset
+    /// (`inset-inline-start`, `inset-block-end`, and the `inset-inline` /
+    /// `inset-block` shorthands that expand to them) is its own longhand that
+    /// the cascade maps to a physical side only later, by writing mode and
+    /// direction; any important one answers `true` for every side rather than
+    /// repeating that mapping here.
+    ///
+    /// Conservative on purpose: it does not ask *which* important declaration
+    /// wins, so a node whose own style attribute already carried an
+    /// `!important` inset also declines, and the write takes the cascade —
+    /// correct, merely not fast. The chain is the last cascade's; a selector
+    /// change since then is already queued for a restyle that recomputes the
+    /// inset from the full block, so a stale answer either way costs at most
+    /// the fast path, never the result.
+    fn important_rule_declares_inset(&self, node_id: usize, id: LonghandId) -> bool {
+        let data = self.tree.nodes[node_id].stylo_element_data.borrow();
+        let Some(rules) = data
+            .as_ref()
+            .and_then(|d| d.styles.get_primary())
+            .and_then(|cv| cv.rules.as_ref())
+        else {
+            return false;
+        };
+        let guard = self.tree.guard.read();
+        rules.self_and_ancestors().any(|rule| {
+            rule.cascade_level().is_important()
+                && rule.style_source().is_some_and(|source| {
+                    source
+                        .read(&guard)
+                        .declaration_importance_iter()
+                        .any(|(decl, importance)| {
+                            importance.important()
+                                && matches!(
+                                    decl.id(),
+                                    PropertyDeclarationId::Longhand(l)
+                                        if l == id
+                                            || matches!(
+                                                l,
+                                                LonghandId::InsetInlineStart
+                                                    | LonghandId::InsetInlineEnd
+                                                    | LonghandId::InsetBlockStart
+                                                    | LonghandId::InsetBlockEnd
+                                            )
+                                )
+                        })
+                })
+        })
     }
 
     /// Write `insets` to `ComputedStyle` and the Taffy inset, and let Taffy

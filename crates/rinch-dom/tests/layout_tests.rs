@@ -2437,6 +2437,208 @@ mod inset_fast_path {
             "`left: 25px` was written after `inset: 0`, so it wins"
         );
     }
+
+    // ── #277: a stylesheet `!important` inset beats the inline write ────────
+
+    /// `positioned`, with `css` in a `<style>` element and `class` on the
+    /// child, laid out once.
+    fn positioned_with_sheet(css: &str, class: &str) -> (RinchDocument, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let sheet = doc.create_element("style");
+        let text = doc.create_text(css);
+        doc.append_child(sheet, text);
+        doc.append_child(body, sheet);
+        let parent = doc.create_element("div");
+        doc.set_attribute(parent, "style", PARENT);
+        doc.append_child(body, parent);
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "class", class);
+        doc.set_attribute(child, "style", CHILD);
+        doc.append_child(parent, child);
+        doc.resolve_layout(800.0, 600.0);
+        (doc, child)
+    }
+
+    /// An unrelated restyle of the child: a full cascade of its whole block,
+    /// at a different viewport so layout is not skipped.
+    fn restyle_unrelated(doc: &mut RinchDocument, child: NodeId) {
+        doc.set_style(child, "background-color", "rgb(1, 2, 3)");
+        doc.resolve_layout(801.0, 600.0);
+    }
+
+    /// The cascade puts an author `!important` declaration above a normal
+    /// inline one, so `left: 200px` written inline must leave the child at
+    /// the stylesheet's 50px — at once, not only after the next unrelated
+    /// restyle (which used to snap it back from 205 to 55).
+    #[test]
+    fn a_stylesheet_important_left_beats_an_inline_left_write() {
+        let (mut doc, child) = positioned_with_sheet(".pin { left: 50px !important; }", "pin");
+        assert_eq!(layout_of(&doc, child).x, 55.0, "baseline: the rule wins");
+
+        doc.set_style(child, "left", "200px");
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(
+            layout_of(&doc, child).x,
+            55.0,
+            "the inline write must not beat the stylesheet's !important left"
+        );
+        assert!(matches!(
+            doc.tree.get(child.0).unwrap().computed_style.left,
+            LengthPercentageAutoValue::Length(v) if v == 50.0
+        ));
+
+        restyle_unrelated(&mut doc, child);
+        assert_eq!(layout_of(&doc, child).x, 55.0, "and it stays there");
+    }
+
+    /// The `inset` shorthand with `!important` expands to four important
+    /// longhands; `top` must decline as `left` does.
+    #[test]
+    fn a_stylesheet_important_inset_shorthand_beats_an_inline_top_write() {
+        let (mut doc, child) =
+            positioned_with_sheet(".pin { inset: 30px auto auto 40px !important; }", "pin");
+        assert_eq!(
+            (layout_of(&doc, child).x, layout_of(&doc, child).y),
+            (45.0, 37.0)
+        );
+
+        doc.set_style(child, "top", "150px");
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(layout_of(&doc, child).y, 37.0);
+    }
+
+    /// Off the fixed point: an important rule on a *different* side leaves
+    /// this side's write on the fast path, and it lands. Kills a guard that
+    /// declines whenever any important rule matched at all — and, because the
+    /// same rule also declares a *normal* `left` (Stylo points a rule's normal
+    /// and important rule nodes at one block), a guard that asks the block
+    /// whether it declares `left` without asking whether that declaration is
+    /// the important one.
+    #[test]
+    fn an_important_rule_on_another_side_keeps_the_fast_path() {
+        let (mut doc, child) =
+            positioned_with_sheet(".pin { left: 50px; top: 30px !important; }", "pin");
+        let overrides = [("left", "120px")];
+        set_and_resolve(&mut doc, child, &overrides, Path::Fast);
+        assert_eq!(
+            (layout_of(&doc, child).x, layout_of(&doc, child).y),
+            (125.0, 37.0)
+        );
+
+        restyle_unrelated(&mut doc, child);
+        assert_eq!(
+            (layout_of(&doc, child).x, layout_of(&doc, child).y),
+            (125.0, 37.0)
+        );
+    }
+
+    /// A normal (not important) stylesheet inset loses to the inline one, so
+    /// the write keeps the fast path. Kills a guard that declines on any
+    /// stylesheet declaration of the side, important or not.
+    #[test]
+    fn a_normal_stylesheet_left_keeps_the_fast_path() {
+        let (mut doc, child) = positioned_with_sheet(".pin { left: 50px; }", "pin");
+        // The inline `left: 0` already wins over the rule.
+        assert_eq!(layout_of(&doc, child).x, 5.0);
+        set_and_resolve(&mut doc, child, &[("left", "120px")], Path::Fast);
+        assert_eq!(layout_of(&doc, child).x, 125.0);
+    }
+
+    /// An inline `!important` beats an author `!important` (the style
+    /// attribute is more specific within one origin and importance). The fast
+    /// path may decline here — it is conservative — but the result must be
+    /// the cascade's.
+    #[test]
+    fn an_inline_important_left_beats_a_stylesheet_important_left() {
+        let (mut doc, child) = positioned_with_sheet(".pin { left: 50px !important; }", "pin");
+        doc.set_style(child, "left", "200px !important");
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(layout_of(&doc, child).x, 205.0);
+        restyle_unrelated(&mut doc, child);
+        assert_eq!(layout_of(&doc, child).x, 205.0);
+    }
+
+    /// A *logical* important inset is its own longhand (`inset-inline-start`),
+    /// which the cascade maps to a physical side only later; the guard must
+    /// still decline. It does so for any important logical inset, whatever
+    /// the writing mode (review of #927, F1).
+    #[test]
+    fn a_stylesheet_important_logical_inset_beats_an_inline_left_write() {
+        for rule in [
+            ".pin { inset-inline-start: 50px !important; }",
+            ".pin { inset-inline: 50px auto !important; }",
+        ] {
+            let (mut doc, child) = positioned_with_sheet(rule, "pin");
+            assert_eq!(layout_of(&doc, child).x, 55.0, "{rule}: baseline");
+            doc.set_style(child, "left", "200px");
+            doc.resolve_layout(800.0, 600.0);
+            assert_eq!(layout_of(&doc, child).x, 55.0, "{rule}: after the write");
+            restyle_unrelated(&mut doc, child);
+            assert_eq!(layout_of(&doc, child).x, 55.0, "{rule}: settled");
+        }
+    }
+
+    /// The guard walks the whole matched-rule chain, not only its leaf: an
+    /// inline `!important` on another property puts the style attribute's
+    /// important node above the author's important `left`. Kills a walk that
+    /// reads only the leaf rule node (review of #927, K5).
+    #[test]
+    fn an_inline_important_elsewhere_does_not_hide_an_author_important_left() {
+        let (mut doc, child) = positioned_with_sheet(".pin { left: 50px !important; }", "pin");
+        doc.set_style(child, "width", "12px !important");
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(layout_of(&doc, child).x, 55.0);
+        doc.set_style(child, "left", "200px");
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(layout_of(&doc, child).x, 55.0);
+        restyle_unrelated(&mut doc, child);
+        assert_eq!(layout_of(&doc, child).x, 55.0);
+    }
+
+    /// Every requested side is checked, not only the first: the important
+    /// side here is `top`, a later `INSET_SIDES` slot than `left`. Kills a
+    /// check of the first requested side only (review of #927, K6).
+    #[test]
+    fn a_batch_whose_second_side_is_important_declines() {
+        let (mut doc, child) = positioned_with_sheet(".pin { top: 30px !important; }", "pin");
+        doc.set_styles(child, &[("left", "200px"), ("top", "150px")]);
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(layout_of(&doc, child).y, 37.0);
+        restyle_unrelated(&mut doc, child);
+        assert_eq!(layout_of(&doc, child).y, 37.0);
+    }
+
+    // ── #280: the fast path and `transition` ─────────────────────────────────
+
+    /// A `transition` naming an inset must leave the fast path agreeing with
+    /// the cascade. Today `TransitionProperty` has no inset variant, so the
+    /// cascade moves the box at once and so must the fast path; the day one
+    /// is added, `TransitionProperty::covers_inset` makes the fast path
+    /// decline for such a node and this fixture keeps asking the two to agree.
+    #[test]
+    fn an_inset_transition_moves_the_box_as_the_cascade_does() {
+        for transition in ["left 1s linear", "all 1s linear", "inset 1s linear"] {
+            let child_style = format!("{CHILD}; transition: {transition}");
+            let (mut doc, child) = positioned(PARENT, &child_style);
+            doc.set_style(child, "left", "120px");
+            // No inset is animatable today, so nothing about the transition
+            // may cost the fast path (a `transition: all` is common).
+            assert_path(&doc, child, Path::Fast);
+            doc.resolve_layout(800.0, 600.0);
+            // The cascade twin: the same write through a value only the
+            // cascade takes (`calc`), on a fresh tree.
+            let (mut twin_doc, twin_child) = positioned(PARENT, &child_style);
+            twin_doc.set_style(twin_child, "left", "calc(100px + 20px)");
+            assert_path(&twin_doc, twin_child, Path::Stylo);
+            twin_doc.resolve_layout(800.0, 600.0);
+            assert_eq!(
+                layout_of(&doc, child),
+                layout_of(&twin_doc, twin_child),
+                "`transition: {transition}`: fast path and cascade disagree"
+            );
+        }
+    }
 }
 
 /// An inline-block nested inside an inline element still belongs to the block's

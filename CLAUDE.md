@@ -4080,7 +4080,7 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for twelve benchmarks, on the
+It records Callgrind instruction counts (Gungraun) for thirteen benchmarks, on the
 PR's merge commit and on its first parent (the current `main` tip). The report
 is a table in the job summary and one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks
