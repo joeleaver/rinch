@@ -30,7 +30,7 @@ use layer_bounds::{
 };
 use svg::*;
 use text::*;
-pub use text_shadow::{TAP_GLYPH_BUDGET, force_tapped_text_shadows};
+pub use text_shadow::{TAP_GLYPH_BUDGET, clear_text_shadow_cache, force_tapped_text_shadows};
 
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};

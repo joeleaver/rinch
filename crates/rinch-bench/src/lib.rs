@@ -568,9 +568,18 @@ pub fn setup_text_shadow_paint() -> PaintFixture {
     f
 }
 
-/// Paint the 40 shadowed paragraphs with the software painter.
+/// Paint the 40 shadowed paragraphs with the software painter. Each blurred
+/// mask was kept from the setup's paint, so this is the steady state.
 pub fn op_text_shadow_paint(mut f: PaintFixture) -> PaintFixture {
     f.paint();
+    f
+}
+
+/// [`setup_text_shadow_paint`], with the blurred masks forgotten: the paint
+/// rasterises and blurs every shadow (glyph caches still warm).
+pub fn setup_text_shadow_paint_cold() -> PaintFixture {
+    let f = setup_text_shadow_paint();
+    rinch_dom::paint::clear_text_shadow_cache();
     f
 }
 

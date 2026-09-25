@@ -80,6 +80,14 @@ pub fn force_tapped_text_shadows(on: bool) -> bool {
     FORCE_TAPS.with(|f| f.replace(on))
 }
 
+/// Forget every blurred shadow mask kept between paints, so the next paint
+/// rasterises and blurs each one again. For benchmarks and tests.
+#[doc(hidden)]
+pub fn clear_text_shadow_cache() {
+    #[cfg(feature = "software-renderer")]
+    MASK_CACHE.with(|c| *c.borrow_mut() = MaskCache::default());
+}
+
 /// Start a paint: the kernel-of-copies budget is per paint.
 pub(super) fn begin_paint() {
     TAP_GLYPHS.with(|t| t.set(0));
