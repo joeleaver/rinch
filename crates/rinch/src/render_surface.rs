@@ -666,6 +666,10 @@ pub fn create_video_surface(viewport_name: &str) -> RenderSurfaceHandle {
     create_named_surface(viewport_name, true)
 }
 
+/// A callback receiving decoded RGBA frames as `(pixels, width, height)` —
+/// the shape of `rinch_video`'s `FrameSink`.
+pub type VideoFrameSink = Arc<dyn Fn(&[u8], u32, u32) + Send + Sync>;
+
 /// The frame sink a **video player** delivers decoded frames through: a video
 /// surface named `viewport_id` plus a closure that submits into it.
 ///
@@ -679,7 +683,7 @@ pub fn create_video_surface(viewport_name: &str) -> RenderSurfaceHandle {
 /// the surface to, which is why the handle used to be `mem::forget`-leaked:
 /// every video ever played kept a registered surface, holding its last decoded
 /// frame, for the rest of the process.
-pub fn create_video_frame_sink(viewport_id: &str) -> Arc<dyn Fn(&[u8], u32, u32) + Send + Sync> {
+pub fn create_video_frame_sink(viewport_id: &str) -> VideoFrameSink {
     let handle = create_video_surface(viewport_id);
     let writer = handle.writer();
     let lease = SurfaceLease {
