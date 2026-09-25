@@ -295,6 +295,14 @@ impl ParkedRow {
 /// inline release this replaced ran *before* that insert and so never met it.
 /// Asked once rather than per row, so tearing down `m` rows of an `n`-row list
 /// costs `O(n + m)`, not `O(n * m)`.
+///
+/// **A panicking cleanup still releases every node.** The release is done by a
+/// drop guard, so it runs on unwind too. Unwinding drops the rows the loop had
+/// not reached yet first, and a `RenderScope` disposes itself on drop, so every
+/// other row's cleanups still run before any node goes — the same order as the
+/// normal path. Without the guard a panic caught above the reconcile left every
+/// departing row mounted and in no list's bookkeeping, where the inline release
+/// this replaced had already taken them out.
 pub(crate) fn release_parked(
     parked: Vec<ParkedRow>,
     shown: impl FnOnce() -> std::collections::HashSet<NodeId>,
@@ -302,25 +310,45 @@ pub(crate) fn release_parked(
     if parked.is_empty() {
         return;
     }
-    let mut nodes = Vec::with_capacity(parked.len());
+    let _release = ReleaseNodes {
+        nodes: parked
+            .iter()
+            .map(|row| (row.node.clone(), row.owned))
+            .collect(),
+        shown: Some(shown),
+    };
     for row in parked {
         if let Some(scope) = row.scope {
             scope.dispose();
         }
-        nodes.push((row.node, row.owned));
     }
-    // Either verb cancels the subtree's transitions and animations in the
-    // document implementation (#699); stamping inline `transition: none` here
-    // disarmed that permanently (#704).
-    let shown = shown();
-    for (node, owned) in nodes {
-        if shown.contains(&node.node_id()) {
-            continue;
-        }
-        if owned {
-            node.discard();
-        } else {
-            node.remove();
+}
+
+/// The node half of [`release_parked`], run when it is dropped — at the end of
+/// the call, or on unwind out of a row's cleanup.
+struct ReleaseNodes<F: FnOnce() -> std::collections::HashSet<NodeId>> {
+    nodes: Vec<(NodeHandle, bool)>,
+    shown: Option<F>,
+}
+
+impl<F: FnOnce() -> std::collections::HashSet<NodeId>> Drop for ReleaseNodes<F> {
+    fn drop(&mut self) {
+        // On unwind, run no queued effect from inside the node verbs: a second
+        // panic there would abort the process.
+        let _quiet = std::thread::panicking().then(crate::reactive::suppress_effect_flush);
+        let shown = self.shown.take().map(|f| f()).unwrap_or_default();
+        // Either verb cancels the subtree's transitions and animations in the
+        // document implementation (#699); stamping inline `transition: none`
+        // here disarmed that permanently (#704).
+        for (node, owned) in self.nodes.drain(..) {
+            if shown.contains(&node.node_id()) {
+                continue;
+            }
+            if owned {
+                node.discard();
+            } else {
+                node.remove();
+            }
         }
     }
 }
@@ -2438,5 +2466,74 @@ mod tests {
             .filter_map(|n| n.get_attribute("data-name"))
             .collect();
         assert_eq!(names, vec!["1".to_string(), "shared".to_string()]);
+    }
+
+    /// A row cleanup that panics still lets every departing row go (review of
+    /// PR #984, F1; the reviewer's probe P3).
+    ///
+    /// The nodes are released after the scopes are disposed (issue #356), so a
+    /// panic out of a disposal skipped the release entirely: caught above the
+    /// reconcile, it left `b` *and* `c` mounted and in no list's bookkeeping.
+    /// The panicking row is the middle one, so there is a row torn down after
+    /// it whose cleanup must still run.
+    #[test]
+    fn a_panicking_row_cleanup_still_releases_every_departing_row() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let c_cleaned = Rc::new(Cell::new(false));
+        let flag = c_cleaned.clone();
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |s: &String| s.clone(),
+            move |name: String, s: &mut RenderScope| {
+                let row = s.create_element("div");
+                row.set_attribute("data-name", &name);
+                match name.as_str() {
+                    "b" => {
+                        crate::reactive::on_cleanup(|| panic!("boom"));
+                    }
+                    "c" => {
+                        let flag = flag.clone();
+                        crate::reactive::on_cleanup(move || flag.set(true));
+                    }
+                    _ => {}
+                }
+                row
+            },
+        );
+
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            items.set(vec!["a".to_string()])
+        }));
+        assert!(
+            r.is_err(),
+            "precondition: the cleanup's panic reached the caller"
+        );
+
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a".to_string()],
+            "every departing row is released, the panicking one included"
+        );
+        assert!(
+            c_cleaned.get(),
+            "and the other departing row's cleanup still ran"
+        );
     }
 }
