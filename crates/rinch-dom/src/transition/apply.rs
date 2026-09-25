@@ -92,6 +92,9 @@ pub fn apply_value_to_style(
         (TransitionProperty::Transform, AnimatableValue::Transform(tf)) => {
             style.transform = tf.to_style();
         }
+        (TransitionProperty::Visibility, AnimatableValue::Visibility(v)) => {
+            style.visibility = *v;
+        }
         _ => {}
     }
 }

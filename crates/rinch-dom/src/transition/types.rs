@@ -8,6 +8,7 @@ use style::values::generics::easing::TimingKeyword;
 use super::transform::{Affine, TransformOp, compose, interpolate_lists, lists_equivalent};
 use crate::computed_style::{
     DimensionValue, LengthPercentageAutoValue, LengthPercentageValue, TransformValue,
+    VisibilityValue,
 };
 
 // =============================================================================
@@ -44,6 +45,10 @@ pub enum TransitionProperty {
     BorderRadiusBottomLeft,
     FontSize,
     Transform,
+    /// `visibility`, interpolated by css-values-4's rule for it: a discrete
+    /// step in which every progress strictly between 0 and 1 is `visible` when
+    /// either end is (#759). See [`interpolate_visibility`].
+    Visibility,
 }
 
 /// All individual animatable properties (excluding All).
@@ -75,6 +80,7 @@ const _ALL_ANIMATABLE: &[TransitionProperty] = &[
     TransitionProperty::BorderRadiusBottomLeft,
     TransitionProperty::FontSize,
     TransitionProperty::Transform,
+    TransitionProperty::Visibility,
 ];
 
 impl TransitionProperty {
@@ -109,6 +115,7 @@ impl TransitionProperty {
             "border-bottom-left-radius" => Self::BorderRadiusBottomLeft,
             "font-size" => Self::FontSize,
             "transform" => Self::Transform,
+            "visibility" => Self::Visibility,
             _ => return None,
         })
     }
@@ -181,7 +188,8 @@ impl TransitionProperty {
             | Self::BorderRadiusBottomRight
             | Self::BorderRadiusBottomLeft
             | Self::FontSize
-            | Self::Transform => false,
+            | Self::Transform
+            | Self::Visibility => false,
         }
     }
 
@@ -197,6 +205,7 @@ impl TransitionProperty {
                 | Self::BorderBottomColor
                 | Self::BorderLeftColor
                 | Self::Transform
+                | Self::Visibility
         )
     }
 }
@@ -410,6 +419,8 @@ pub enum AnimatableValue {
     LengthPercentage(LengthPercentageValue),
     LengthPercentageAuto(LengthPercentageAutoValue),
     Transform(AnimatableTransform),
+    /// A `visibility` value — discrete, see [`interpolate_visibility`].
+    Visibility(VisibilityValue),
 }
 
 /// A transform captured for interpolation: the computed **function list**
@@ -555,6 +566,9 @@ impl AnimatableValue {
             (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => {
                 Some(AnimatableValue::Transform(a.interpolate(b, t as f64)))
             }
+            (AnimatableValue::Visibility(a), AnimatableValue::Visibility(b)) => {
+                Some(AnimatableValue::Visibility(interpolate_visibility(*a, *b, t)))
+            }
             // Incompatible types — snap immediately.
             //
             // A length against a percentage lands here on purpose: CSS
@@ -601,8 +615,36 @@ impl AnimatableValue {
             (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => {
                 lists_equivalent(&a.functions, &b.functions)
             }
+            (AnimatableValue::Visibility(a), AnimatableValue::Visibility(b)) => a == b,
             _ => false,
         }
+    }
+}
+
+/// `visibility` at eased progress `p` (css-values-4 §3, "Combining Values":
+/// *visibility* is "discrete, except that if one of the values is `visible`,
+/// interpolated as a discrete step where values of p between 0 and 1 map to
+/// `visible` and other values of p map to the closer endpoint").
+///
+/// So a closing overlay (`visible → hidden`) stays visible for the whole
+/// transition and vanishes at its end, and an opening one (`hidden → visible`)
+/// is visible from the first step. Without a `visible` end (`hidden ↔
+/// collapse`) it is the ordinary discrete rule, which flips at 50%. A `p`
+/// outside `0..=1` (an overshooting `cubic-bezier`) is the closer endpoint.
+pub fn interpolate_visibility(from: VisibilityValue, to: VisibilityValue, p: f32) -> VisibilityValue {
+    let either_visible = from == VisibilityValue::Visible || to == VisibilityValue::Visible;
+    if either_visible {
+        if p <= 0.0 {
+            from
+        } else if p >= 1.0 {
+            to
+        } else {
+            VisibilityValue::Visible
+        }
+    } else if p < 0.5 {
+        from
+    } else {
+        to
     }
 }
 

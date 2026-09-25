@@ -26,12 +26,18 @@ pub fn styles() -> String {
     z-index: var(--rinch-popover-z-index, 100);
     opacity: 0;
     visibility: hidden;
-    transition: opacity 150ms ease, visibility 150ms ease, transform 150ms ease;
+    /* Closing: the fade runs with the panel still visible, and it hides once
+       the 150ms are up — `visibility 0s linear 150ms` (#759; the note on
+       `.rinch-drawer__root--hidden` in `styles/drawer.rs` has the reasoning).
+       Opening is instant and cancels a pending hide: the opened rule below
+       declares no `visibility` transition. */
+    transition: opacity 150ms ease, visibility 0s linear 150ms, transform 150ms ease;
 }
 
 .rinch-popover--opened .rinch-popover__dropdown {
     opacity: 1;
     visibility: visible;
+    transition: opacity 150ms ease, transform 150ms ease;
 }
 
 /* Paused while closed (#912) — the closed dropdown is `visibility: hidden`,
