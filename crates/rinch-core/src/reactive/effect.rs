@@ -436,8 +436,16 @@ pub(super) fn run_effect(id: ObserverId) {
 
         // …and the document it was created in, for the same reason and for
         // the same kind of consumer: the queue drains under whichever
-        // document happens to be dispatching (issue #295).
-        let _doc_guard = crate::context::enter_dispatching_doc(inner.doc);
+        // document happens to be dispatching (issue #295). Not for a memo's
+        // marker: its body only queues observers and runs no user code, so
+        // nothing in it reads the marker — and a selection change wakes one
+        // marker per row (measured: +1.8% instructions on the `memo_flush`
+        // bench with the guard here, for nothing). The memo's *recompute*,
+        // which does run user code, re-enters the document itself.
+        let _doc_guard = inner
+            .memo
+            .is_none()
+            .then(|| crate::context::enter_dispatching_doc(inner.doc));
 
         // Re-enter the scope that owned this effect at creation, for the same
         // reason: `flush_effects` runs from arbitrary stacks (an event handler,
