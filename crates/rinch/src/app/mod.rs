@@ -117,6 +117,8 @@ mod repaint_old_rect_tests;
 mod screenshot_capture_tests;
 mod select_widget;
 #[cfg(test)]
+mod shared_hit_tests;
+#[cfg(test)]
 mod stepper_state_709_tests;
 #[cfg(test)]
 mod text_action_word_tests;
@@ -388,6 +390,17 @@ pub(crate) enum PressFocus {
     Preserve,
 }
 
+/// One remembered hit-test answer: the document and the hit cache generation
+/// it was computed at, the point asked about, and the answer (#908).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HitMemo {
+    doc_key: u64,
+    generation: u64,
+    x: u32,
+    y: u32,
+    hit: Option<usize>,
+}
+
 // ── RinchApp ─────────────────────────────────────────────────────────────────
 
 /// Platform-agnostic application state.
@@ -468,6 +481,10 @@ pub struct RinchApp {
     /// so a release, press or wheel in the same batch is judged against the
     /// box where the last move put it. Cleared by `resolve_and_repaint`.
     pub(crate) drag_layout_owed: bool,
+    /// The last hit test the shell ran for the event being handled, and what
+    /// it was asked: see [`Self::shared_hit`]. Cleared at the top of every
+    /// `handle_event` (#908).
+    pub(crate) hit_memo: std::cell::Cell<Option<HitMemo>>,
     /// Text rendering scale for HiDPI/mobile (applied to Parley font sizes).
     pub(crate) text_scale: f32,
     /// Display scale factor pushed into Stylo's `Device` (issue #211): drives
@@ -709,6 +726,7 @@ impl RinchApp {
             modifiers: Modifiers::default(),
             scene_dirty: true,
             drag_layout_owed: false,
+            hit_memo: std::cell::Cell::new(None),
             text_scale: 1.0,
             device_pixel_ratio: 1.0,
             #[cfg(software_shell)]

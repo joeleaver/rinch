@@ -195,6 +195,9 @@ reactive deltas. It also pins the pointer-move path: a warm move over a
 500-row scroller runs one hit test that visits the four boxes under the pointer
 and builds no stacking sequence, a move with no `onmousemove` handler anywhere
 runs one hit test, and five drag moves queued before a frame lay out once.
+A press shares its hit test the same way: a click on an editor toolbar button
+runs one hit test for the press and one for the release
+(`perf_regression_editor_tests::a_toolbar_bold_over_a_word`, #908).
 
 Each scenario in `perf_counter_baselines.rs` asserts the **whole frame**:
 every counter's exact value, with any counter the baseline does not list

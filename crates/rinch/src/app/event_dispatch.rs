@@ -106,6 +106,8 @@ impl RinchApp {
         // effect flushes and layout all run under this and any of them may
         // unwind.
         let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
+        // Hit tests are shared within one event only (`shared_hit`).
+        self.hit_memo.set(None);
 
         let mut actions = Vec::new();
         // Logical (CSS-pixel) viewport — for ClickContext *and* for every
@@ -178,7 +180,6 @@ impl RinchApp {
                 // audit F2.1). A handler that mutates the document bumps the
                 // hit cache's generation, and `move_hit` re-tests after that,
                 // so sharing never answers from a tree a handler changed.
-                let mut shared_hit: Option<(u64, Option<usize>)> = None;
 
                 // Additive: fire data-onmousemove before any drag/scroll/hover
                 // logic below (which can early-return). Skipped outright —
@@ -190,7 +191,7 @@ impl RinchApp {
                     .as_ref()
                     .is_some_and(|doc| doc.borrow().tree.mousemove_handlers > 0)
                 {
-                    let hit = self.move_hit(&mut shared_hit, x, y);
+                    let hit = self.move_hit(x, y);
                     self.dispatch_mouse_attr_at(
                         "data-onmousemove",
                         hit,
@@ -233,7 +234,7 @@ impl RinchApp {
                     drag.cursor = (x, y);
 
                     // Hit test for drop targets — check both DOM elements and surfaces
-                    let hit_id = self.move_hit(&mut shared_hit, x, y);
+                    let hit_id = self.move_hit(x, y);
                     let Some(drag) = self.active_dnd.as_mut() else {
                         return actions; // the enclosing `if let` matched it
                     };
@@ -498,7 +499,7 @@ impl RinchApp {
                 // Update hover state and cursor
                 if let Some(doc) = &self.doc {
                     let (hovered, cursor_style, old_hovered) = {
-                        let h = self.move_hit(&mut shared_hit, x, y);
+                        let h = self.move_hit(x, y);
                         let d = doc.borrow();
                         let mut cs = h
                             .and_then(|id| d.tree.get(id))
@@ -679,7 +680,7 @@ impl RinchApp {
                     // check also asks — one press, one answer (issue #316).
                     let (hit, press_focus, focus_dom_target) = {
                         let d = doc.borrow();
-                        let hit = hit_test(&d.tree, x, y);
+                        let hit = self.shared_hit(&d, x, y);
                         let press_focus = Self::resolve_click_focus(&d.tree, hit);
                         // Where the DOM `:focus` state goes. The outer
                         // `Option` is *whether to touch it at all*: a
@@ -759,7 +760,7 @@ impl RinchApp {
                 // immediate click handling
                 let draggable_node = if let Some(doc) = &self.doc {
                     let d = doc.borrow();
-                    if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                    if let Some(hit_id) = self.shared_hit(&d, x, y) {
                         Self::find_draggable(&d.tree, hit_id)
                     } else {
                         None
@@ -889,7 +890,7 @@ impl RinchApp {
                     let claim = self.doc.as_ref().and_then(|doc| {
                         let hit_id = {
                             let d = doc.borrow();
-                            hit_test(&d.tree, x, y)
+                            self.shared_hit(&d, x, y)
                         }?;
                         Self::oncontextmenu_handler_at(doc, hit_id)
                     });
@@ -994,7 +995,7 @@ impl RinchApp {
                     if let Some(doc) = &self.doc {
                         let surface_hit = {
                             let d = doc.borrow();
-                            if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                            if let Some(hit_id) = self.shared_hit(&d, x, y) {
                                 Self::find_render_surface_at(&d.tree, hit_id, x, y)
                             } else {
                                 None
@@ -1041,7 +1042,7 @@ impl RinchApp {
                 let hit = self
                     .doc
                     .as_ref()
-                    .and_then(|doc| hit_test(&doc.borrow().tree, x, y));
+                    .and_then(|doc| self.shared_hit(&doc.borrow(), x, y));
 
                 // Check if scrolling over a render surface — dispatch and skip normal scroll
                 let surface_consumed = if let Some(doc) = &self.doc {
@@ -1783,7 +1784,7 @@ impl RinchApp {
                 if let Some(doc) = &self.doc {
                     let hit_id = {
                         let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
+                        self.shared_hit(&d, x, y)
                     };
                     if let Some(hit_id) = hit_id {
                         let target = Self::find_file_drop_target(&doc.borrow().tree, hit_id);
@@ -1818,7 +1819,7 @@ impl RinchApp {
                 if let Some(doc) = &self.doc {
                     let hit_id = {
                         let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
+                        self.shared_hit(&d, x, y)
                     };
                     if let Some(hit_id) = hit_id {
                         Self::dispatch_file_drop(doc, hit_id, paths);
@@ -2383,35 +2384,60 @@ impl RinchApp {
         vp_w: f32,
         vp_h: f32,
     ) {
-        let Some(doc) = &self.doc else { return };
-        let hit = hit_test(&doc.borrow().tree, x, y);
+        let hit = self.move_hit(x, y);
         self.dispatch_mouse_attr_at(attr, hit, x, y, button, vp_w, vp_h);
     }
 
-    /// The hit test for the pointer move being handled, shared across its
-    /// consumers. `shared` holds the last answer and the hit cache's
-    /// generation it was computed at; a generation that has moved since —
-    /// a handler that mutated the document in between — re-tests, so the
-    /// answer is always the one a fresh `hit_test` would give.
-    pub(super) fn move_hit(
-        &self,
-        shared: &mut Option<(u64, Option<usize>)>,
-        x: f32,
-        y: f32,
-    ) -> Option<usize> {
-        let doc = self.doc.as_ref()?;
-        let d = doc.borrow();
+    /// The hit test for `(x, y)` in `d`, shared by every consumer of the event
+    /// being handled (update-path audit F2.1 for a pointer move, #908 for a press).
+    ///
+    /// A left press asks "what is under the pointer" of the `data-onmousedown`
+    /// dispatch, the editor, the focus claim, the draggable search, and each phase
+    /// of the click — a toolbar press over a focused editor ran nine hit tests of
+    /// one tree at one point, where the answer can only change when the tree does.
+    /// The memo holds the last answer with the document and the hit cache's
+    /// generation it was computed at; a generation that has moved since — a handler
+    /// that mutated the document, a layout, a scroll — re-tests, so the answer is
+    /// always the one a fresh [`hit_test`] would give.
+    ///
+    /// The generation is what the hit cache itself trusts, and one input is known
+    /// to move without it: a transition or animation tick writes a `transform` into
+    /// `computed_style` without bumping it (the hit cache keys its *contents* by
+    /// `HitStyleKey`, which holds whether a transform is the identity, not its
+    /// value). So the memo never outlives the event it was filled in:
+    /// `handle_event` drops it on entry. The ticks run inside
+    /// `handle_event(AboutToWait)` and nothing in that arm hit-tests, so no answer
+    /// from before a tick is ever reused. A hit test added after the ticks there
+    /// would have to drop the memo first.
+    pub(crate) fn shared_hit(&self, d: &RinchDocument, x: f32, y: f32) -> Option<usize> {
+        let doc_key = d.doc_key();
         let generation = d.tree.hit_cache.generation();
-        if let Some((at, hit)) = *shared
-            && at == generation
+        let (xb, yb) = (x.to_bits(), y.to_bits());
+        if let Some(m) = self.hit_memo.get()
+            && m.doc_key == doc_key
+            && m.generation == generation
+            && m.x == xb
+            && m.y == yb
         {
-            return hit;
+            return m.hit;
         }
         let hit = hit_test(&d.tree, x, y);
         // The hit test itself invalidates nothing, so the generation read
         // before it still describes the tree it answered for.
-        *shared = Some((generation, hit));
+        self.hit_memo.set(Some(HitMemo {
+            doc_key,
+            generation,
+            x: xb,
+            y: yb,
+            hit,
+        }));
         hit
+    }
+
+    /// [`Self::shared_hit`] against this app's own document.
+    pub(super) fn move_hit(&self, x: f32, y: f32) -> Option<usize> {
+        let doc = self.doc.as_ref()?;
+        self.shared_hit(&doc.borrow(), x, y)
     }
 
     /// [`Self::dispatch_mouse_attr`] for a hit test the caller already ran.
@@ -3415,7 +3441,7 @@ impl RinchApp {
     ) -> Option<(usize, usize, usize)> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
-        let hit = hit_test(&d.tree, x, y)?;
+        let hit = self.shared_hit(&d, x, y)?;
         // Walk up for the nearest editor textblock (including empty ones, which
         // have no Parley layout) and the `data-pm-editor` container.
         let mut textblock = None;
@@ -3469,7 +3495,7 @@ impl RinchApp {
             return false;
         };
         let d = doc.borrow();
-        let Some(hit) = hit_test(&d.tree, x, y) else {
+        let Some(hit) = self.shared_hit(&d, x, y) else {
             return false;
         };
         // Walk up to the nearest task_item element (stopping at the editor container).
@@ -3715,7 +3741,7 @@ impl RinchApp {
     pub(crate) fn editor_container_at(&self, x: f32, y: f32) -> Option<usize> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
-        let hit = hit_test(&d.tree, x, y)?;
+        let hit = self.shared_hit(&d, x, y)?;
         let mut cur = Some(hit);
         while let Some(id) = cur {
             let node = d.tree.get(id)?;
@@ -3736,7 +3762,7 @@ impl RinchApp {
     pub(super) fn editor_leaf_at(&self, x: f32, y: f32) -> Option<usize> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
-        let hit = hit_test(&d.tree, x, y)?;
+        let hit = self.shared_hit(&d, x, y)?;
         let mut leaf: Option<usize> = None;
         let mut cur = Some(hit);
         while let Some(id) = cur {
@@ -3934,7 +3960,7 @@ impl RinchApp {
             && let Some(hit) = self
                 .doc
                 .as_ref()
-                .and_then(|d| hit_test(&d.borrow().tree, x, y))
+                .and_then(|d| self.shared_hit(&d.borrow(), x, y))
             && let Some((c, link_handle, link)) = self.editor_link_at_hit(hit, x, y)
             && c == container
         {

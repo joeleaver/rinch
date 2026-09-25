@@ -406,7 +406,7 @@ impl RinchApp {
         }
         let hit = {
             let d = doc.borrow();
-            match hit_test(&d.tree, x, y) {
+            match self.shared_hit(&d, x, y) {
                 Some(hid) => {
                     let mut cur = Some(hid);
                     let mut result = Hit::Outside;
