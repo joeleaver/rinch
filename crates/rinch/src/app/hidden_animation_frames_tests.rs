@@ -401,7 +401,10 @@ fn a_loader_in_a_closed_drawer_is_paused_and_lets_the_app_idle() {
         "a `visibility: hidden` ancestor does not drop an animation, in rinch \
          or in a browser"
     );
-    assert!(is_paused(&app, oval), "but the drawer's closed rule pauses it");
+    assert!(
+        is_paused(&app, oval),
+        "but the drawer's closed rule pauses it"
+    );
     assert_eq!(
         idle_frames_requesting_redraw(&mut app, 4),
         0,
@@ -509,7 +512,11 @@ fn an_app_declared_animation_in_a_closed_drawer_is_paused_too() {
         (1, 1),
         "the app's animation is registered, and paused by the closed rule"
     );
-    assert_eq!(idle_frames_requesting_redraw(&mut app, 4), 0, "so the app idles");
+    assert_eq!(
+        idle_frames_requesting_redraw(&mut app, 4),
+        0,
+        "so the app idles"
+    );
 
     opened.set(true);
     app.resolve_and_repaint(SETTLED.0, SETTLED.1);
@@ -579,7 +586,10 @@ fn a_loader_in_an_unhovered_hover_card_is_paused_until_hovered() {
     let oval = node_with_class(&app, OVAL);
 
     assert_eq!(animations(&app, oval), 1, "precondition: registered");
-    assert!(is_paused(&app, oval), "an unhovered card pauses its content");
+    assert!(
+        is_paused(&app, oval),
+        "an unhovered card pauses its content"
+    );
     assert_eq!(idle_frames_requesting_redraw(&mut app, 4), 0, "and idles");
 
     let target = node_with_class(&app, "rinch-hover-card__target");
