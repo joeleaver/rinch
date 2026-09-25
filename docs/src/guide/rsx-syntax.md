@@ -397,6 +397,23 @@ for that and places it after the last character instead. Where the wrap is
 at a space the space hangs and nothing looks different; in text with no
 spaces (CJK) the caret is visibly one column short.
 
+Home and End in a `<textarea>` go to the start and end of the caret's
+**visual** line, soft-wrapped lines included; Ctrl+Home and Ctrl+End (Cmd on
+macOS) go to the start and end of the whole text. Shift extends the selection.
+Without Shift a selection collapses and moves from its head — the end the
+caret is at — rather than from its start or end as ArrowUp and ArrowDown do,
+which is what Chrome does. In a single-line `<input>` Home and End go to the
+ends of the value. A Home or End moves the caret off the column a run of
+vertical moves was aiming at, so the next ArrowUp or ArrowDown aims from where
+the caret now is; one that leaves the caret where it was keeps that column, as
+in Chrome.
+
+End on a soft-wrapped line follows the rule above: desktop stops one character
+before the wrap point, a browser at the wrap point with the caret drawn at the
+end of the line. When the wrap is at a space, the caret sits before that space,
+so a character typed there goes before it — `abcd abcdX abcd` where Chrome
+types `abcd abcd Xabcd`.
+
 ### Sizing a `<textarea>`
 
 A `<textarea>` holds its value in an attribute rather than as child text, so it
