@@ -16,12 +16,12 @@
 //! must not re-run the effect. The handler's own write still works — it is not
 //! the handler that is silenced, only the subscription.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use rinch_core::events::ScrollCallback;
-use rinch_core::reactive::Effect;
+use rinch_core::reactive::{Effect, Scope, on_cleanup};
 use rinch_core::{Callback, FileDropCallback, InputCallback, ScrollEvent, Signal, ValueCallback};
 
 /// Build a component effect that reads `own` and then calls `invoke`, and
@@ -140,7 +140,7 @@ fn a_callback_invoked_two_effects_deep_subscribes_neither() {
 
     let outer_runs = Rc::new(Cell::new(0u32));
     let inner_runs = Rc::new(Cell::new(0u32));
-    let inner_slot: Rc<std::cell::RefCell<Option<Effect>>> = Rc::default();
+    let inner_slot: Rc<RefCell<Option<Effect>>> = Rc::default();
 
     let (o, i, s, slot) = (
         outer_runs.clone(),
@@ -225,7 +225,7 @@ fn an_effect_created_by_a_handler_still_tracks() {
     let own = Signal::new(0);
     let store = Signal::new(0);
     let child_runs = Rc::new(Cell::new(0u32));
-    let slot: Rc<std::cell::RefCell<Option<Effect>>> = Rc::default();
+    let slot: Rc<RefCell<Option<Effect>>> = Rc::default();
 
     let (c, sl) = (child_runs.clone(), slot.clone());
     let cb = Callback::new(move || {
@@ -250,4 +250,81 @@ fn an_effect_created_by_a_handler_still_tracks() {
         "the handler-created effect tracks the store"
     );
     assert_eq!(runs.get(), 1, "the calling effect does not");
+}
+
+/// Only tracking is suspended, not ownership: a signal created by a handler
+/// invoked from an effect inside a scope belongs to that scope, exactly like one
+/// the effect creates itself, and the scope's disposal frees both. (Found by the
+/// review of #926: wrapping the handler in `unowned` passes every fixture above.)
+#[test]
+fn a_handler_invoked_from_an_effect_keeps_the_ambient_owner() {
+    let scope = Scope::new();
+    let made: Rc<RefCell<Vec<Signal<i32>>>> = Rc::default();
+    let m = made.clone();
+    let cb = Callback::new(move || m.borrow_mut().push(Signal::new(1)));
+    let m2 = made.clone();
+    scope.run(|| {
+        let _e = Effect::new(move || {
+            cb.invoke();
+            m2.borrow_mut().push(Signal::new(2));
+        });
+    });
+    assert_eq!(made.borrow().len(), 2);
+    assert!(made.borrow().iter().all(|s| s.is_alive()));
+
+    scope.dispose();
+    let alive: Vec<bool> = made.borrow().iter().map(|s| s.is_alive()).collect();
+    assert_eq!(
+        alive,
+        vec![false, false],
+        "the handler's signal and the effect's are both freed by the scope"
+    );
+}
+
+/// An `on_cleanup` a handler registers belongs to the ambient scope too, and
+/// runs when that scope is disposed — as it would for a bare call.
+#[test]
+fn an_on_cleanup_registered_by_a_handler_runs_at_scope_disposal() {
+    let scope = Scope::new();
+    let ran = Rc::new(Cell::new(0));
+    let r = ran.clone();
+    let cb = Callback::new(move || {
+        let r = r.clone();
+        on_cleanup(move || r.set(r.get() + 1));
+    });
+    scope.run(|| {
+        let _e = Effect::new(move || cb.invoke());
+    });
+    assert_eq!(ran.get(), 0);
+
+    scope.dispose();
+    assert_eq!(ran.get(), 1, "the handler's cleanup ran with its scope");
+}
+
+/// A handler that panics, caught inside the calling effect, leaves the
+/// observer stack as it found it: the effect's reads after the panic still
+/// subscribe it. (Kills a suspension that forgets to restore on unwind.)
+#[test]
+fn a_caught_handler_panic_restores_the_observer_stack() {
+    let own = Signal::new(0);
+    let later = Signal::new(0);
+    let runs = Rc::new(Cell::new(0));
+    let r = runs.clone();
+    let cb = Callback::new(|| panic!("boom"));
+    let _e = Effect::new(move || {
+        own.get();
+        r.set(r.get() + 1);
+        let cb = cb.clone();
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb.invoke()));
+        assert!(res.is_err());
+        later.get(); // read AFTER the panic: must still track
+    });
+    assert_eq!(runs.get(), 1);
+
+    later.set(1);
+    assert_eq!(
+        runs.get(),
+        2,
+        "a read after a caught handler panic still subscribes the effect"
+    );
 }
