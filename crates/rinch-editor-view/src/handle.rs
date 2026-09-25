@@ -450,12 +450,16 @@ impl EditorCore {
     /// next`, as CodeMirror maps a range's `assoc` through changes.
     ///
     /// The hint follows the selection when the edit only **shifted** it: both
-    /// ends moved by the same amount, and the head's textblock is unchanged with
-    /// the head at the same offset in it — an edit in another block, a peer typing
-    /// above. That block's lines are then the lines they were, so the caret is
-    /// still at the same wrap point and still belongs to the same side. Any other
-    /// change drops it: an edit at or around the caret re-wraps its own block,
-    /// and typing moves the caret. Asked by position, not through the
+    /// ends moved by the same amount, and the head at the same offset in its
+    /// textblock, whose content **up to the head** is unchanged — an edit in
+    /// another block, a peer typing above, or one typing after the caret in its
+    /// own paragraph. The caret's line is decided by what comes before it, so it
+    /// still belongs to the same side. (A change of the block's *width* — a
+    /// re-indent, a resized table column — can re-wrap it; an `Upstream` caret
+    /// that is no longer at a wrap draws where a `Downstream` one would, so
+    /// keeping the hint then is harmless.) Any other change drops it: an edit
+    /// before the caret in its own block re-wraps it, and typing moves the
+    /// caret. Asked by position, not through the
     /// transaction's mapping, because a remote integration rebuilds the document
     /// and has none (see [`EditorHandle::collab_receive`]).
     ///
@@ -1860,11 +1864,13 @@ impl EditorHandle {
     /// `Downstream` for Home. The hint is **view state**, not part of the
     /// model's [`Selection`]: it lives beside the selection it was set with and
     /// applies only while the selection is still that one, so any other change
-    /// of selection — typing, an edit at the caret, undo, a load, a plain
-    /// `set_selection` — returns the caret to downstream. A
-    /// remote edit, or a local one, that only shifts the caret — an edit in an
-    /// earlier paragraph, a peer typing above — carries it to the shifted
-    /// caret, since the caret's own line is unchanged.
+    /// of selection — typing, an edit before the caret in its own paragraph,
+    /// undo, a load, a plain `set_selection` — returns the caret to downstream.
+    /// A remote edit, or a local one, that leaves the caret's paragraph
+    /// unchanged up to it — an edit in an earlier paragraph, a peer typing above
+    /// or after the caret — carries it along, since the caret's line is
+    /// unchanged. Right before a hard break the caret is always drawn upstream,
+    /// at the end of its line.
     ///
     /// It reaches the caret overlay, [`caret_rect`](Self::caret_rect) at the
     /// head, and through them the platforms' visual-line motions (Home / End,
