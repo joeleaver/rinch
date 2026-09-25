@@ -50,6 +50,7 @@ fn section(__scope: &mut RenderScope, name: &str) -> NodeHandle {
 
 #[component]
 fn arms(sel: Signal<u32>, flag: Signal<bool>, handle: NodeHandle) -> NodeHandle {
+    let label = String::from("lead");
     rsx! {
         div {
             match sel.get() {
@@ -69,6 +70,10 @@ fn arms(sel: Signal<u32>, flag: Signal<bool>, handle: NodeHandle) -> NodeHandle 
                 6 => { section(__scope, "call") },
                 7 => { handle.clone() },
                 8 => {|| format!("n{}", sel.get())},
+                // an interpolation may lead when more nodes follow
+                10 => { {label.clone()} span { "!" } },
+                // a method on a leading literal is still an expression
+                11 => { "lit".to_string() },
                 _ => "rest",
             }
         }
@@ -95,6 +100,8 @@ fn every_braced_arm_shape_renders_and_switches() {
         (7, "captured"),
         (8, "n8"),
         (9, "rest"),
+        (10, "lead!"),
+        (11, "lit"),
     ];
     for (n, expected) in want {
         sel.set(n);

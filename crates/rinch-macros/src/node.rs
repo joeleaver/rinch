@@ -920,6 +920,72 @@ mod tests {
         assert!(msg.contains("renders once and never updates"), "{msg}");
     }
 
+    /// The error a braced arm reports, as text.
+    fn arm_error(arm: &str) -> String {
+        let input = format!("match x.get() {{ 0 => {arm}, _ => \"b\" }}");
+        match parse_str::<RsxNode>(&input) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("{arm} must not parse"),
+        }
+    }
+
+    /// A typo in a multi-node arm led by control flow is reported at the typo
+    /// (`class "x"` is an element named `class` missing its braces), not as a
+    /// struct-literal error inside the valid `if` body, and not as #221's
+    /// "renders once" — the author wrote no braced control flow (PR #1017
+    /// review, F1).
+    #[test]
+    fn a_typo_after_leading_control_flow_is_reported_at_the_typo() {
+        let msg = arm_error(r#"{ if c.get() { b { "a" } } span { "b" } i { class "x" } }"#);
+        assert_eq!(msg, "expected curly braces");
+        let msg = arm_error(
+            r#"{ for i in v.get() { b { {i.to_string()} } } span { "b" } i { class "x" } }"#,
+        );
+        assert_eq!(msg, "expected curly braces");
+        let msg = arm_error(r#"{ if c.get() { "a" } span { "b" "c" d } }"#);
+        assert!(!msg.contains("renders once"), "{msg}");
+        assert_eq!(msg, "expected curly braces");
+    }
+
+    /// Control flow followed by something that starts no rsx node (a method
+    /// call, an operator) is the one Rust expression it always was, not a
+    /// children parse that fails at the `.` (PR #1017 review, F2).
+    #[test]
+    fn control_flow_followed_by_a_method_call_stays_an_expression() {
+        assert_eq!(
+            first_arm(r#"{ if a { "b" } else { "c" } .len() }"#),
+            ["Expr"]
+        );
+        assert_eq!(
+            first_arm(r#"{ if c.get() { "a" } else { "b" } == d }"#),
+            ["Expr"]
+        );
+    }
+
+    /// A literal or `Name { … }` with a method called on it is an expression,
+    /// as before #395 (PR #1017 review, F3).
+    #[test]
+    fn a_method_on_a_leading_literal_or_struct_stays_an_expression() {
+        assert_eq!(first_arm(r#"{ "a".to_string() }"#), ["Expr"]);
+        assert_eq!(first_arm(r#"{ "a".into() }"#), ["Expr"]);
+        assert_eq!(first_arm("{ Foo { a: 1 }.into_node(__scope) }"), ["Expr"]);
+    }
+
+    /// An arm may lead with an interpolation when more nodes follow; a lone
+    /// braced expression keeps its old meaning, including a braced `match` of
+    /// non-rsx arms, which is a plain Rust block there, not #221's error
+    /// (PR #1017 review, F4).
+    #[test]
+    fn a_braced_arm_may_start_with_an_interpolation() {
+        assert_eq!(first_arm("{ {label} span {} }"), ["Expr", "Element"]);
+        assert_eq!(first_arm(r#"{ {|| x.get()} " items" }"#), ["Expr", "Text"]);
+        assert_eq!(first_arm("{ {x} }"), ["Expr"]);
+        assert_eq!(
+            first_arm("{ { match y.get() { 0 => helper(), _ => other() } } }"),
+            ["Expr"]
+        );
+    }
+
     // ── Braced control flow (issue #221) ─────────────────────────
 
     /// A brace around control flow is transparent: the same reactive node the
