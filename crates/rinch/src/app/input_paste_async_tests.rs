@@ -433,3 +433,39 @@ fn deferred_work_for_a_dropped_app_is_discarded() {
         "the work and its captures were released, not queued"
     );
 }
+
+// ── An IME composition started while the read was in flight ──────────────────
+
+/// The composition is not in the field's text (it is painted at the caret
+/// from `data-preedit`), so a paste that answers mid-composition goes in at
+/// the caret, ahead of it — the order the two were asked for in — and the
+/// composition carries on after it and commits there.
+#[test]
+fn a_paste_that_answers_mid_composition_lands_ahead_of_it() {
+    let _lock = clipboard_lock();
+    let (mut app, ids, _log) = page(&[]);
+    focus(&mut app, ids.input);
+    key(&mut app, KeyCode::End);
+    clip("XYZ");
+    ctrl_v(&mut app);
+    let preedit = |app: &mut RinchApp, text: &str| {
+        let event = ImeEvent::Preedit {
+            text: text.to_string(),
+            cursor: Some((text.len(), text.len())),
+        };
+        app.handle_event(PlatformEvent::Ime(event), VP, 1.0);
+    };
+    preedit(&mut app, "日本");
+    assert_eq!(settle(&mut app), 1);
+    assert_eq!(field(&app, ids.input), state("hello worldXYZ", 14, 14));
+    assert_eq!(
+        attr(&app, ids.input, "data-preedit").as_deref(),
+        Some("日本")
+    );
+    app.handle_event(
+        PlatformEvent::Ime(ImeEvent::Commit("日本".to_string())),
+        VP,
+        1.0,
+    );
+    assert_eq!(field(&app, ids.input).0, "hello worldXYZ日本");
+}
