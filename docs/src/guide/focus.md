@@ -715,11 +715,15 @@ does on the web (issue #288).
   the keystroke, never to the raw text the handler is about to rewrite again.
   A keystroke the handler **rejects** — writes the field back to what it
   showed, as a digits-only filter does with a letter — leaves no step at all.
+  **This is where desktop and the web differ:** a browser treats that
+  rewrite as a script write to `.value` and drops the field's whole undo
+  history, so a normalizing field has no undo on the web.
 - **Any other write to the field's `value` clears its undo and redo
   history** — a `value_fn` reset, a clear after `onsubmit`, a write from a
   timer or another handler. It is the app's change, not the user's, so Ctrl+Z
   cannot bring back text the app replaced. That is what a browser does for a
-  script write to `.value`, so desktop and the web agree here.
+  script write to `.value`, so for a write made outside a keystroke desktop
+  and the web agree.
 - **Not with Alt, and not mid-composition.** Ctrl+Alt+Z is left alone (it is
   AltGr on Windows, which types a character on some layouts), and Ctrl+Z does
   nothing while an input method is showing a composition.
