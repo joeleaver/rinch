@@ -383,6 +383,7 @@ fn a_field_disabled_during_the_read_gets_nothing() {
     assert_eq!(settle(&mut app), 1);
     assert_eq!(field(&app, ids.input).0, "hello world");
     assert!(log.borrow().is_empty());
+    assert_eq!(app.focus_target, FocusTarget::None, "and lost the keyboard");
 }
 
 // ── The deferred-work queue itself ───────────────────────────────────────────
