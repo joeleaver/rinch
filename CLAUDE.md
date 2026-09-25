@@ -1955,9 +1955,15 @@ bar and ignored the wheel. An **IFC root's** own inline content is measured from
 its inline layout (`Node::text_layout`, at the content origin), not from its
 text nodes' boxes: a text node under a contents wrapper or an inline `<span>`
 has no box at all, and a direct one's proxy box is border-box-sized, which
-over-reported a padded text scroller. That covers text that is the container's
-**only** inline content: text beside a block child is laid out by anonymous
-block boxes, which are in no `children` list, and adds nothing (#995).
+over-reported a padded text scroller. Text beside a block child is laid out
+by anonymous block boxes (and inside a split inline, #513, by the box around its
+fragment), which are in no `children` list — so the walk reads the **box
+tree** (`RinchDocument::box_tree_children`), not `children` (#995): each such
+box is measured by its rect and by its own lines, so a `nowrap` line wider than
+the container counts. The same list holds an out-of-flow box hoisted out of a
+flowed inline element into its host (#591), which the element walk never
+reached (it saw the inline's `0x0` box); the containing-block rule is asked of
+it as of any child.
 `DomDocument::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
 `content_extents`; they used to be a second copy of the walk, with neither the
@@ -1965,7 +1971,9 @@ containing-block rule nor the descent.
 
 Limits, all pre-existing and none introduced by that filter. The walk
 stops at the first **box**, so an absolute whose containing block is a **non-parent**
-ancestor contributes to no box's range at all — Chrome gives it to that
+ancestor contributes to no box's range at all — unless everything between them
+is flowed inline elements and `display: contents` wrappers, which hoist it into
+the containing block's box list (#591, reached since #995) — Chrome gives it to that
 ancestor (measured: a 700x1500 absolute under a static `overflow: auto` div
 lands on `documentElement.scrollHeight`), and rinch used to give it to the
 wrong box, which is what grew the phantom bar (**#770**). And
