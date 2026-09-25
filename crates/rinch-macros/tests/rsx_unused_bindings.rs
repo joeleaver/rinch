@@ -150,6 +150,38 @@ fn for_item_used_in_key_and_view() -> NodeHandle {
     }
 }
 
+/// `rsx!` inside the author's own `macro_rules!`, the loop variable passed in
+/// as `$it`. The acknowledgements must be the pattern's own identifier tokens:
+/// a name rebuilt from its string at the call site has the wrong hygiene and
+/// resolves to nothing (E0425) — which is what the first cut of this fix did.
+macro_rules! rows_view {
+    ($scope:ident, $v:expr, $it:ident) => {{
+        let __scope = $scope;
+        rsx! {
+            div {
+                for $it in $v {
+                    div { key: $it.id, {$it.name.clone()} }
+                }
+            }
+        }
+    }};
+}
+
+#[derive(Clone, PartialEq, Debug)]
+struct NamedRow {
+    id: u32,
+    name: String,
+}
+
+#[component]
+fn for_inside_a_user_macro_rules() -> NodeHandle {
+    let rows = vec![NamedRow {
+        id: 1,
+        name: "a".into(),
+    }];
+    rows_view!(__scope, rows.clone(), item)
+}
+
 // ============================================================
 // `match` — the same shape, one arm binding used in its body
 // ============================================================
