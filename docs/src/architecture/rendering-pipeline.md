@@ -168,10 +168,37 @@ pub trait Painter {
     fn draw_image(&mut self, image: &PaintImage, transform: Affine);
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape);
     fn push_layer(&mut self, blend: BlendMode, opacity: f32, ...);
+    fn push_isolated_layer(&mut self, opacity: f32, ...); // never elided, even at opacity 1
     fn pop_layer(&mut self);
     // ...
 }
 ```
+
+**A blurred `text-shadow` is a blurred mask** (#980, `paint/text_shadow.rs`).
+Vello has no general blur, so wherever the software rasteriser is compiled in
+(every desktop and Android build) the shadow — glyphs, underline, line-through
+and wavy underline (#981) — is rasterised **once** into a coverage mask over the
+part of it that can be seen, blurred by a separable Gaussian of standard
+deviation `blur / 2` out to three of them, and handed to the painter as
+`Painter::draw_alpha_mask`: the same mask to Vello (as an image) and to
+tiny-skia (a solid fill through a pooled surface mask). Blurred masks are kept
+between paints (32 MB, least recently used out), keyed by a hash of every call
+that rasterised them in the terms that decide its pixels: each glyph by the
+pixel the software painter rounds it to, a decoration to a quarter pixel. The
+mask is always rasterised at the text's true position. A repaint of a shadow
+that is wholly on screen and unchanged, or has moved by whole pixels, or by a
+fraction that moves none of its glyphs to another pixel, rasterises nothing; a shadow the surface, a clip or the damage crops is
+rasterised again whenever the crop moves relative to it (a line scrolling
+across a scroller's edge), and so is any shadow whose text or style changed.
+`text_shadow_masks_rasterised` counts what a paint rasterised. The Vello-only
+build (`embed` without `software-renderer`) has no rasteriser and draws a
+kernel of copies in `BlendMode::Plus` layers inside one
+`push_isolated_layer`: 13 taps, a 5-tap cross or none, chosen by the shadow's
+own glyph count against `TAP_GLYPHS_PER_SHADOW`, with `TAP_GLYPH_BUDGET` as a
+per-paint crash guard. Cost: `dom::text_shadow_paint` in the Perf job, 40
+paragraphs of 14px text at 800x600 with `0 1px 4px` — `paragraphs_40` repaints
+from the cache (61M instructions in CI), `paragraphs_40_cold` rasterises every
+visible mask.
 
 Application code never interacts with the Painter directly. Cargo features decide which backends a build carries, and a `gpu` build picks one of its two when the window opens (see below).
 
@@ -234,7 +261,7 @@ fn paint_software(&mut self) {
 
 The software renderer includes **dirty region caching**: when only a small part of the UI changes (e.g., cursor blink, hover feedback), only the affected rectangular region is cleared and repainted. Nodes outside the dirty region are skipped entirely during the paint traversal.
 
-Every dirty node contributes two rects: its current box, grown by how far its own outset `box-shadow` and `outline` reach (an inset shadow paints inside its padding box), and the rect it was **last painted** in. The second is summed up the box-tree chain from what each node was last painted with — `Node::prev_layout` and `Node::painted` (own ink reach, own transform), parent-relative, written only by the paint that consumes the region (`NodeTree::consume_paint_dirty`: the software frame, a full repaint and a GPU scene build alike). So the old pixels are found however many layout passes ran between two paints, when an ancestor moved rather than the node, and when a box moved *and* dropped its shadow, lost a child or changed its transform in the same frame; a removal records the painted rect of every node it takes out. A positioned box (`absolute`, `fixed` or `relative`) that moved is also grown by its whole painted subtree's reach, which carries an untouched overflowing child with it. That is what lets an editor keystroke, a caret move or a dragged absolute panel repaint a region instead of the whole window. Once the region reaches half the surface (`FULL_REPAINT_FRACTION`) it stops being measured and the frame repaints in full.
+Every dirty node contributes two rects: its current box, grown by how far its own outset `box-shadow`, `outline` and `text-shadow` reach (an inset shadow paints inside its padding box), and the rect it was **last painted** in. The second is summed up the box-tree chain from what each node was last painted with — `Node::prev_layout` and `Node::painted` (own ink reach, own transform), parent-relative, written only by the paint that consumes the region (`NodeTree::consume_paint_dirty`: the software frame, a full repaint and a GPU scene build alike). So the old pixels are found however many layout passes ran between two paints, when an ancestor moved rather than the node, and when a box moved *and* dropped its shadow, lost a child or changed its transform in the same frame; a removal records the painted rect of every node it takes out. A positioned box (`absolute`, `fixed` or `relative`) that moved is also grown by its whole painted subtree's reach, which carries an untouched overflowing child with it. That is what lets an editor keystroke, a caret move or a dragged absolute panel repaint a region instead of the whole window. Once the region reaches half the surface (`FULL_REPAINT_FRACTION`) it stops being measured and the frame repaints in full.
 
 The region is the union of the changed *nodes'* rects, so anything painted **outside** the node tree has to contribute its own. The drag ghost is the one such overlay: it is blitted into the framebuffer after the document paint, so `RinchApp` remembers the rect it covered and folds that into the next frame's dirty region — otherwise the frame that stops drawing the ghost would never clear where it had been, leaving it stuck on screen (issue #173). The GPU backend rebuilds the whole Vello scene every dirty frame and so has no equivalent case.
 

@@ -49,6 +49,7 @@ pub(super) fn paint_inline_layout(
         scale,
         mask,
         None,
+        Some(inline_layout),
     );
 
     // Wavy underlines (`text-decoration-style: wavy` — the spellcheck squiggle)
@@ -63,6 +64,7 @@ pub(super) fn paint_inline_layout(
             transform,
             scale,
             mask,
+            None,
         );
     }
 
@@ -195,6 +197,9 @@ fn paint_inline_backgrounds(
 /// `mask` cuts the wave under hidden text cluster by cluster, as
 /// [`render_text`] cuts the straight underline under hidden glyphs (#829).
 ///
+/// `brush` overrides every span's own colour: a `text-shadow` pass draws the
+/// wave in the shadow's colour (#981).
+///
 /// [`InlineDecorationSpan`]: crate::node::InlineDecorationSpan
 #[allow(clippy::too_many_arguments)]
 fn paint_wavy_decorations(
@@ -205,6 +210,7 @@ fn paint_wavy_decorations(
     css_transform: Affine,
     scale: f64,
     mask: Option<&TextMask>,
+    brush: Option<&Brush>,
 ) {
     use peniko::kurbo::BezPath;
 
@@ -217,7 +223,7 @@ fn paint_wavy_decorations(
     const THICKNESS: f64 = 1.0;
 
     for span in &inline_layout.decoration_spans {
-        let brush = Brush::Solid(span.color);
+        let brush = brush.cloned().unwrap_or(Brush::Solid(span.color));
         for line in layout.lines() {
             let line_range = line.text_range();
             if line_range.end <= span.start || line_range.start >= span.end {
@@ -486,9 +492,39 @@ pub(super) fn render_text(
     mask: Option<&TextMask>,
     color: Option<AlphaColor<Srgb>>,
 ) {
-    let sf = scale as f32;
     let transform = css_transform * Affine::translate((x, y));
     let color_brush = color.map(Brush::Solid);
+    draw_text(
+        painter,
+        layout,
+        transform,
+        scale,
+        mask,
+        color_brush.as_ref(),
+        None,
+    );
+}
+
+/// Draw `layout`'s glyphs and its straight decorations (underline,
+/// line-through) through `transform`, which already carries the text's
+/// origin. `glyph_brush` overrides the layout's brush for the glyphs and
+/// `decoration_brush` for the decorations; `None` keeps each one's own.
+///
+/// [`render_text`] and every `text-shadow` pass draw through this one
+/// function, so a shadow is the main pass's glyphs **and** decorations
+/// (#981), segment for segment — a hidden stretch that draws no underline
+/// casts no underline shadow either (#829).
+#[allow(clippy::too_many_arguments)]
+fn draw_text(
+    painter: &mut dyn Painter,
+    layout: &parley::layout::Layout<Brush>,
+    transform: Affine,
+    scale: f64,
+    mask: Option<&TextMask>,
+    glyph_brush: Option<&Brush>,
+    decoration_brush: Option<&Brush>,
+) {
+    let sf = scale as f32;
     for line in layout.lines() {
         let mut cursor = GlyphCursor::default();
         for item in line.items() {
@@ -509,7 +545,7 @@ pub(super) fn render_text(
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
             let style = glyph_run.style();
-            let brush = color_brush.clone().unwrap_or_else(|| style.brush.clone());
+            let brush = glyph_brush.unwrap_or(&style.brush);
 
             // The x extents of the shown stretches of this run, for the
             // decorations: the whole run when nothing in it is hidden.
@@ -538,37 +574,34 @@ pub(super) fn render_text(
                 font_size,
                 transform,
                 glyph_xform,
-                &brush,
+                brush,
                 true,
                 run.normalized_coords(),
                 &glyphs,
             );
 
-            // Draw underline decoration
-            if let Some(underline) = &style.underline {
-                let run_metrics = run.metrics();
-                let offset = underline.offset.unwrap_or(run_metrics.underline_offset) * sf;
-                let size = underline.size.unwrap_or(run_metrics.underline_size) * sf;
-                let dec_brush = &underline.brush;
-                let line_y = (gy - offset) as f64;
-                let stroke = Stroke::new(size.max(1.0) as f64);
-                for &(x0, x1) in &segments {
-                    let line = peniko::kurbo::Line::new((x0 as f64, line_y), (x1 as f64, line_y));
-                    painter.stroke(&stroke, transform, dec_brush, &line.into());
-                }
-            }
-
-            // Draw strikethrough decoration
-            if let Some(strikethrough) = &style.strikethrough {
-                let run_metrics = run.metrics();
-                let offset = strikethrough
-                    .offset
-                    .unwrap_or(run_metrics.strikethrough_offset)
-                    * sf;
-                let size = strikethrough.size.unwrap_or(run_metrics.strikethrough_size) * sf;
-                let dec_brush = &strikethrough.brush;
-                let line_y = (gy - offset) as f64;
-                let stroke = Stroke::new(size.max(1.0) as f64);
+            let run_metrics = run.metrics();
+            // Underline, then line-through: `(offset, size, brush)` each.
+            let decorations = [
+                style.underline.as_ref().map(|d| {
+                    (
+                        d.offset.unwrap_or(run_metrics.underline_offset),
+                        d.size.unwrap_or(run_metrics.underline_size),
+                        &d.brush,
+                    )
+                }),
+                style.strikethrough.as_ref().map(|d| {
+                    (
+                        d.offset.unwrap_or(run_metrics.strikethrough_offset),
+                        d.size.unwrap_or(run_metrics.strikethrough_size),
+                        &d.brush,
+                    )
+                }),
+            ];
+            for (offset, size, own_brush) in decorations.into_iter().flatten() {
+                let dec_brush = decoration_brush.unwrap_or(own_brush);
+                let line_y = (gy - offset * sf) as f64;
+                let stroke = Stroke::new((size * sf).max(1.0) as f64);
                 for &(x0, x1) in &segments {
                     let line = peniko::kurbo::Line::new((x0 as f64, line_y), (x1 as f64, line_y));
                     painter.stroke(&stroke, transform, dec_brush, &line.into());
@@ -578,78 +611,42 @@ pub(super) fn render_text(
     }
 }
 
-/// Render a single shadow pass of a Parley text layout (glyphs only, no decorations).
-///
-/// Draws all glyph runs at the given offset with the specified shadow color,
-/// ignoring the original brush from the layout styles. A hidden glyph casts no
-/// shadow (`mask`, #829).
-///
-/// `x`/`y` are physical px, and `scale` scales the glyphs exactly as
-/// [`render_text`] does, so a shadow is the main pass's glyphs at the main
-/// pass's size (#409). It used to take no `scale` and drew the glyphs at the
-/// layout's logical size — invisible at scale 1, half size at scale 2.
+/// One copy of a shadow: [`draw_text`] and the wavy underlines, all in `brush`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn render_text_shadow_pass(
+pub(super) fn draw_shadow_copy(
     painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
     x: f64,
     y: f64,
-    shadow_color: AlphaColor<Srgb>,
+    brush: &Brush,
     css_transform: Affine,
     scale: f64,
     mask: Option<&TextMask>,
+    wavy: Option<&crate::node::InlineLayout>,
 ) {
-    let sf = scale as f32;
     let transform = css_transform * Affine::translate((x, y));
-    let shadow_brush = Brush::Solid(shadow_color);
-    for line in layout.lines() {
-        let mut cursor = GlyphCursor::default();
-        for item in line.items() {
-            let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
-                continue;
-            };
-            let flags = run_flags(&mut cursor, &glyph_run, mask);
-            let mut gx = glyph_run.offset() * sf;
-            let gy = glyph_run.baseline() * sf;
-            let run = glyph_run.run();
-            let font = run.font();
-            let font_size = run.font_size() * sf;
-            let synthesis = run.synthesis();
-            let glyph_xform = synthesis
-                .skew()
-                .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
-
-            let glyphs: Vec<PaintGlyph> = glyph_run
-                .glyphs()
-                .enumerate()
-                .filter_map(|(i, glyph)| {
-                    let px = gx + glyph.x * sf;
-                    let py = gy + glyph.y * sf;
-                    gx += glyph.advance * sf;
-                    if flags.as_ref().is_some_and(|f| f[i]) {
-                        return None;
-                    }
-                    Some(PaintGlyph {
-                        id: glyph.id,
-                        x: px,
-                        y: py,
-                    })
-                })
-                .collect();
-            if glyphs.is_empty() {
-                continue;
-            }
-            painter.draw_glyphs(
-                font,
-                font_size,
-                transform,
-                glyph_xform,
-                &shadow_brush,
-                true,
-                run.normalized_coords(),
-                &glyphs,
-            );
-        }
+    draw_text(
+        painter,
+        layout,
+        transform,
+        scale,
+        mask,
+        Some(brush),
+        Some(brush),
+    );
+    if let Some(inline_layout) = wavy
+        && !inline_layout.decoration_spans.is_empty()
+    {
+        paint_wavy_decorations(
+            painter,
+            x,
+            y,
+            inline_layout,
+            css_transform,
+            scale,
+            mask,
+            Some(brush),
+        );
     }
 }
 
@@ -657,7 +654,9 @@ pub(super) fn render_text_shadow_pass(
 ///
 /// Draws shadow passes (in reverse order so first shadow renders on top of later ones)
 /// at the specified offsets, then draws the normal text on top. `mask` is
-/// [`render_text`]'s, applied to every pass.
+/// [`render_text`]'s, applied to every pass. `wavy` is the IFC whose wavy
+/// underlines the shadows cast too (#981); the main pass's own wavy
+/// underlines are the caller's, drawn after the text.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text_with_shadow(
     painter: &mut dyn Painter,
@@ -669,30 +668,28 @@ pub(super) fn render_text_with_shadow(
     scale: f64,
     mask: Option<&TextMask>,
     color: Option<AlphaColor<Srgb>>,
+    wavy: Option<&crate::node::InlineLayout>,
 ) {
-    if text_shadows.is_empty() {
-        render_text(painter, layout, x, y, css_transform, scale, mask, color);
-        return;
-    }
-
     // Render shadows in reverse order (first shadow = topmost, drawn last before main text)
     for shadow in text_shadows.iter().rev() {
         let shadow_color = shadow.color.unwrap_or_else(|| {
             AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255) // default: black
         });
-        // The offset is CSS px and `x`/`y` are physical: scale it like every
-        // other length on its way to the painter (#409).
+        // The offset and the blur are CSS px and `x`/`y` are physical: scale
+        // them like every other length on its way to the painter (#409).
         let sx = x + shadow.offset_x as f64 * scale;
         let sy = y + shadow.offset_y as f64 * scale;
-        render_text_shadow_pass(
+        super::text_shadow::render_text_shadow_pass(
             painter,
             layout,
             sx,
             sy,
             shadow_color,
+            shadow.blur_radius.max(0.0) as f64 * scale,
             css_transform,
             scale,
             mask,
+            wavy,
         );
     }
 
