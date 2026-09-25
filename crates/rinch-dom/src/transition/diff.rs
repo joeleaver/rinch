@@ -298,22 +298,10 @@ fn diff_lpa(
     }
 }
 
+/// Whether a transform changed, by the rule a running transition's end value
+/// is compared with: see [`lists_equivalent`](super::transform::lists_equivalent).
+/// Comparing the composed matrices instead missed a full turn —
+/// `rotate(0deg)` and `rotate(360deg)` compose to the same matrix (#414).
 fn transforms_equal(a: &TransformValue, b: &TransformValue) -> bool {
-    if a.is_identity && b.is_identity {
-        return true;
-    }
-    for i in 0..6 {
-        if (a.matrix[i] - b.matrix[i]).abs() > 0.001 {
-            return false;
-        }
-    }
-    for i in 0..2 {
-        if (a.pct_translate_w[i] - b.pct_translate_w[i]).abs() > 0.001 {
-            return false;
-        }
-        if (a.pct_translate_h[i] - b.pct_translate_h[i]).abs() > 0.001 {
-            return false;
-        }
-    }
-    true
+    super::transform::lists_equivalent(&a.functions, &b.functions)
 }

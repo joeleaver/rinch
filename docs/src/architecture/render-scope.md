@@ -312,7 +312,11 @@ item1.replace_with(&new_item);
 >
 > Two edges of that rule. The verb is chosen **before** the scope is disposed, so
 > an `on_cleanup` that re-parents a scope-built node cannot rescue it — build it
-> outside the closure and hand it in instead. And ownership answers for nodes in
+> outside the closure and hand it in instead. The verb is *applied* **after** the
+> scope is disposed, in all four helpers (a `for` or `virtual_list` row since
+> issue #356), so an `on_cleanup` still sees its own node live and mounted — on
+> `rinch-web` a node already discarded answers every read with `None`. And
+> ownership answers for nodes in
 > a subtree: a node attached to nothing is reached by no walk, which is what
 > `rinch_core::dom::release_scratch_container` exists for.
 >

@@ -48,6 +48,7 @@ pub(super) fn paint_inline_layout(
         transform,
         scale,
         mask,
+        None,
     );
 
     // Wavy underlines (`text-decoration-style: wavy` — the spellcheck squiggle)
@@ -467,6 +468,13 @@ fn run_flags(
 /// `mask` drops the glyphs of hidden elements, and their share of the
 /// underline and line-through, while every shown glyph keeps the position it
 /// was laid out at (#829).
+///
+/// `color` overrides the brush baked into the layout for the **glyphs**; a
+/// decoration keeps its own brush, which is `text-decoration-color` and not
+/// `color`. A text leaf passes its parent's **current** computed
+/// colour (#904): its cached layout is rebuilt only by a layout compute, so a
+/// colour-only change — a hover, a transition frame — is applied here rather
+/// than by re-shaping.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text(
     painter: &mut dyn Painter,
@@ -476,9 +484,11 @@ pub(super) fn render_text(
     css_transform: Affine,
     scale: f64,
     mask: Option<&TextMask>,
+    color: Option<AlphaColor<Srgb>>,
 ) {
     let sf = scale as f32;
     let transform = css_transform * Affine::translate((x, y));
+    let color_brush = color.map(Brush::Solid);
     for line in layout.lines() {
         let mut cursor = GlyphCursor::default();
         for item in line.items() {
@@ -499,7 +509,7 @@ pub(super) fn render_text(
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
             let style = glyph_run.style();
-            let brush = style.brush.clone();
+            let brush = color_brush.clone().unwrap_or_else(|| style.brush.clone());
 
             // The x extents of the shown stretches of this run, for the
             // decorations: the whole run when nothing in it is hidden.
@@ -658,9 +668,10 @@ pub(super) fn render_text_with_shadow(
     css_transform: Affine,
     scale: f64,
     mask: Option<&TextMask>,
+    color: Option<AlphaColor<Srgb>>,
 ) {
     if text_shadows.is_empty() {
-        render_text(painter, layout, x, y, css_transform, scale, mask);
+        render_text(painter, layout, x, y, css_transform, scale, mask, color);
         return;
     }
 
@@ -686,5 +697,5 @@ pub(super) fn render_text_with_shadow(
     }
 
     // Render the main text on top
-    render_text(painter, layout, x, y, css_transform, scale, mask);
+    render_text(painter, layout, x, y, css_transform, scale, mask, color);
 }

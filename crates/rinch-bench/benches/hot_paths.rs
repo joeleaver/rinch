@@ -45,6 +45,11 @@ list_bench!(append_row, setup_append_row, op_append_row);
 list_bench!(remove_row, setup_remove_row, op_remove_row);
 list_bench!(resize_1px, setup_resize, op_resize);
 list_bench!(set_text_content, setup_set_text, op_set_text);
+list_bench!(
+    flex_label_hover,
+    setup_flex_label_hover,
+    op_flex_label_hover
+);
 
 #[library_benchmark]
 #[bench::list_500_closed(setup = setup_drawer_toggle)]
@@ -103,6 +108,7 @@ library_benchmark_group!(
         remove_row,
         resize_1px,
         set_text_content,
+        flex_label_hover,
         drawer_toggle,
         inset_move,
         full_paint

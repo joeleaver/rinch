@@ -46,6 +46,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::dom::{NodeHandle, RenderScope};
+use crate::for_loop::{ParkedRow, release_parked};
 use crate::reactive::{Effect, Signal};
 
 /// State for a single rendered item in the virtual list.
@@ -236,30 +237,24 @@ where
 
         // Remove out-of-range items.
         //
-        // Their scopes are parked and disposed at the very end of this closure,
-        // once `state` and `old_keys` are no longer borrowed. Disposal runs user
-        // code — cleanups, handler-closure drops, signal value drops (issue
-        // #141) — and any of it that writes a signal flushes effects
-        // synchronously, re-entering this closure and panicking on the
-        // outstanding `RefMut`s.
-        let mut doomed: Vec<RenderScope> = Vec::new();
+        // Each row — node and scope together — is parked and torn down at the
+        // very end of this closure, once `state` and `old_keys` are no longer
+        // borrowed. Disposal runs user code — cleanups, handler-closure drops,
+        // signal value drops (issue #141) — and any of it that writes a signal
+        // flushes effects synchronously, re-entering this closure and panicking
+        // on the outstanding `RefMut`s. The node goes *after* its scope is
+        // disposed, so a row's cleanups still see a live row (issue #356).
+        // Until then it stays in the window; the re-append below moves every
+        // live row behind it, so it changes none of their placements.
+        let mut doomed: Vec<ParkedRow> = Vec::new();
         for k in &to_remove {
             if let Some(item_state) = state.remove(k) {
                 // Ownership decides the verb (issue #719): a row the `view`
                 // closure built is gone for good — scrolling back to this key
                 // renders it afresh — so the backend lets go of it; a row a
-                // *memoising* `view` handed back is only detached. Read before
-                // the scope is parked.
-                if item_state
-                    .scope
-                    .as_ref()
-                    .is_some_and(|s| s.created(item_state.node.node_id()))
-                {
-                    item_state.node.discard();
-                } else {
-                    item_state.node.remove();
-                }
-                doomed.extend(item_state.scope);
+                // *memoising* `view` handed back is only detached. Decided now,
+                // before the scope is disposed.
+                doomed.push(ParkedRow::new(item_state.node, item_state.scope));
             }
         }
 
@@ -380,12 +375,16 @@ where
         // Update keys order
         *old_keys = new_keys;
 
-        // Borrows released before the parked scopes are torn down.
+        // Borrows released before the parked rows are torn down.
         drop(state);
         drop(old_keys);
-        for scope in doomed {
-            scope.dispose();
-        }
+        release_parked(doomed, || {
+            rendered
+                .borrow()
+                .values()
+                .map(|row| row.node.node_id())
+                .collect()
+        });
 
         // The item collection is dropped last, and untracked, matching
         // `for_each_dom`'s reconcile tail: dropping it drops the user's data,
@@ -988,5 +987,97 @@ mod tests {
         // Positive control: a write the windowing effect legitimately tracks.
         items.update(|v| v.push(4));
         assert_eq!(passes.get(), passes_before + 1);
+    }
+
+    /// A row that leaves the range has its cleanup run while its node is still
+    /// the live, mounted row (issue #356).
+    ///
+    /// The windowing pass used to `discard` the row as it walked `to_remove`
+    /// and dispose its scope at the end of the pass, so the cleanup ran against
+    /// a retired node — `None` for every read on `rinch-web` and the mock alike.
+    /// The departing row is the middle one, with a sibling on each side.
+    #[test]
+    fn a_departing_rows_cleanup_sees_its_own_live_node() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let items = Signal::new(vec![
+            (1u32, "A".to_string()),
+            (2u32, "B".to_string()),
+            (3u32, "C".to_string()),
+        ]);
+        type Sight = Rc<RefCell<Vec<(Option<String>, bool)>>>;
+        let sight: Sight = Rc::new(RefCell::new(Vec::new()));
+        let log = sight.clone();
+        super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |item: &(u32, String)| item.0,
+            1,
+            move |item: (u32, String), s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.1);
+                let (me, log) = (node.clone(), log.clone());
+                crate::reactive::on_cleanup(move || {
+                    log.borrow_mut()
+                        .push((me.get_attribute("data-name"), me.parent_node().is_some()));
+                });
+                node
+            },
+        );
+
+        items.set(vec![(1u32, "A".to_string()), (3u32, "C".to_string())]);
+
+        assert_eq!(
+            *sight.borrow(),
+            vec![(Some("B".to_string()), true)],
+            "#356: the cleanup must run before its row is discarded or detached"
+        );
+    }
+
+    /// The parked release leaves a node the same pass put back (issue #356):
+    /// a memoising `view` handing the departing key's node to an arriving one.
+    /// The re-append has already placed it by the time the release runs.
+    #[test]
+    fn a_parked_release_leaves_a_node_the_same_pass_reused() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        // Built outside every row scope, so a row only hands it back (#719).
+        let shared = scope.create_element("section");
+        shared.set_attribute("data-name", "shared");
+
+        let items = Signal::new(vec![1u32, 2]);
+        let cached = shared.clone();
+        super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |n: &u32| *n,
+            1,
+            move |n: u32, s: &mut RenderScope| {
+                if n >= 2 {
+                    cached.clone()
+                } else {
+                    let row = s.create_element("div");
+                    row.set_attribute("data-name", &n.to_string());
+                    row
+                }
+            },
+        );
+        let window = shared
+            .parent_node()
+            .expect("precondition: the shared row is mounted");
+
+        items.set(vec![1u32, 3]);
+
+        assert_eq!(
+            row_names(&window),
+            vec!["1".to_string(), "shared".to_string()],
+            "#356: the release parked for key 2 must not detach the node key 3 now shows"
+        );
     }
 }

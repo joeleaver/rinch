@@ -87,6 +87,17 @@ pub enum DisplayValue {
 }
 
 impl DisplayValue {
+    /// Whether this box is a flex or grid container (either outside): its
+    /// own text runs are anonymous flex / grid items. Such an item does not
+    /// clip, so its text never takes the container's `text-overflow`
+    /// ellipsis (#904, measured in Chrome 153).
+    pub fn is_flex_or_grid_container(self) -> bool {
+        matches!(
+            self,
+            Self::Flex | Self::InlineFlex | Self::Grid | Self::InlineGrid
+        )
+    }
+
     /// Convert to Taffy Display — the **inside** of the display value, i.e.
     /// which formatting context this box's children get.
     ///
@@ -975,6 +986,15 @@ pub struct TransformValue {
     pub pct_translate_w: [f64; 2],
     /// The same per unit of the element's **height**, for `translateY`.
     pub pct_translate_h: [f64; 2],
+    /// The function list the fields above were composed from, which is what a
+    /// transition or animation interpolates (#414). Empty for `none`.
+    ///
+    /// Everything else — paint, hit testing, layout — reads the composed form
+    /// and must go on doing so; this is kept only because CSS interpolates
+    /// `rotate(0deg)` → `rotate(90deg)` as `rotate(45deg)`, which the composed
+    /// matrices cannot express.
+    #[serde(skip)]
+    pub functions: Vec<crate::transition::TransformOp>,
 }
 
 impl Default for TransformValue {
@@ -984,6 +1004,7 @@ impl Default for TransformValue {
             is_identity: true,
             pct_translate_w: [0.0, 0.0],
             pct_translate_h: [0.0, 0.0],
+            functions: Vec::new(),
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::computed_style::{BackgroundValue, ComputedStyle};
 
-use super::types::{AnimatableTransform, AnimatableValue, TransitionProperty, compose_matrices};
+use super::types::{AnimatableValue, TransitionProperty};
 
 /// Write an interpolated AnimatableValue into the correct ComputedStyle field.
 pub fn apply_value_to_style(
@@ -91,21 +91,6 @@ pub fn apply_value_to_style(
         }
         (TransitionProperty::Transform, AnimatableValue::Transform(tf)) => {
             style.transform = tf.to_style();
-        }
-        (
-            TransitionProperty::Transform,
-            AnimatableValue::TransformComponents {
-                ops,
-                pct_translate_w,
-                pct_translate_h,
-            },
-        ) => {
-            style.transform = AnimatableTransform {
-                matrix: compose_matrices(ops),
-                pct_translate_w: *pct_translate_w,
-                pct_translate_h: *pct_translate_h,
-            }
-            .to_style();
         }
         _ => {}
     }
