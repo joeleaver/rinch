@@ -711,7 +711,7 @@ fn a_cached_shadow_mask_is_never_stale() {
         paint(&mut d, 1.5).0
     };
     // Same thread, so the cache is shared across all of these.
-    let mut doc = document(&style("rgb(255, 0, 0)"), &[("HxH", None)]);
+    let mut doc = document(&style("rgb(255, 0, 0)"), &[("Hx H", None)]);
     let first = paint(&mut doc, 1.5).0;
     let again = paint(&mut doc, 1.5).0;
     assert!(
@@ -719,19 +719,20 @@ fn a_cached_shadow_mask_is_never_stale() {
         "a repaint of an unchanged page changed its pixels"
     );
 
-    // The text changes — only its last glyph, so every glyph keeps its
-    // position and only a glyph id tells the two masks apart. The text node
+    // The text changes — only its last glyph, after a space (no kerning pair
+    // to move it), so every glyph keeps its position and only a glyph id
+    // tells the two masks apart. The text node
     // is the div's only child.
     let body = doc.body();
     let div = doc.tree.get(body.0).unwrap().children[0];
     let text = doc.tree.get(div).unwrap().children[0];
-    doc.set_text_content(rinch_core::dom::NodeId(text), "HxI");
+    doc.set_text_content(rinch_core::dom::NodeId(text), "Hx I");
     doc.resolve_layout(VW, VH + 1.0);
     doc.resolve_layout(VW, VH);
     let changed = paint(&mut doc, 1.5).0;
     assert!(changed != first, "positive control: new text, new pixels");
     assert!(
-        changed == fresh("HxI", "rgb(255, 0, 0)"),
+        changed == fresh("Hx I", "rgb(255, 0, 0)"),
         "the new text's shadow is not what a fresh document paints: a stale mask"
     );
 
