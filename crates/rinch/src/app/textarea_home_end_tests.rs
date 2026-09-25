@@ -417,3 +417,23 @@ fn a_single_line_input_goes_to_the_ends_of_its_value() {
     key(&mut app, KeyCode::Home, true);
     assert_eq!(sel(&app, id), (7, 0));
 }
+
+/// End at a soft wrap between multi-byte characters (CJK wraps with no space):
+/// the caret lands on a char boundary and stays on the line it was on. Every
+/// other fixture wraps at a 1-byte space, where "one byte short" and "one
+/// character short" agree (review of #950).
+#[test]
+fn end_at_a_cjk_soft_wrap_lands_on_a_char_boundary_on_the_same_line() {
+    let (mut app, id) = mount("textarea", 70);
+    type_str(&mut app, "漢字漢字漢字漢字漢字");
+    let v = value(&app, id);
+    caret_to(&mut app, 1);
+    key(&mut app, KeyCode::End, false);
+    let e = caret(&app, id);
+    let (_, ey, _, h) = caret_rect(&mut app, id, e);
+    let (_, y0, _, _) = caret_rect(&mut app, id, 0);
+    assert!(v.is_char_boundary(e), "End lands on a char boundary: {e}");
+    assert!((ey - y0).abs() < h * 0.5, "End stays on line 1");
+    key(&mut app, KeyCode::End, false);
+    assert_eq!(caret(&app, id), e, "a second End stays");
+}
