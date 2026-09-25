@@ -1056,6 +1056,11 @@ mod tests {
         let msg = arm_error(r#"{ if c.get() { "a" } span }"#);
         assert!(!msg.contains("renders once"), "{msg}");
         assert_eq!(msg, "unexpected end of input, expected curly braces");
+        // Past an `else if … else` chain to the node that follows it.
+        let msg = arm_error(
+            r#"{ if c.get() { b { class "x" } } else if d.get() { "d" } else { "n" } span {} }"#,
+        );
+        assert_eq!(msg, "expected curly braces");
         // A lone braced control flow of non-rsx bodies is still #221's case.
         let msg = arm_error("{ match y.get() { 0 => helper(), _ => other() } }");
         assert!(msg.contains("renders once"), "{msg}");
