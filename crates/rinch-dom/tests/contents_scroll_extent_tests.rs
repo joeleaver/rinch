@@ -632,6 +632,19 @@ fn nowrap_text_after_a_block_scrolls_horizontally_by_its_line() {
         doc.scroll_width(NodeId(id)) > 580.0,
         "the wheel's range too"
     );
+    // Off the zero-offset fixed point: in a padded container the anonymous
+    // box sits 10px in, and its line is measured from there, so the content
+    // width is the same line's advance (Chrome 153: `scrollWidth` 606, the
+    // leading 10px of padding plus the same 596px line).
+    let (padded, pid) = mixed_scroller(
+        "white-space: nowrap; padding: 10px",
+        &[Mixed::Block, Mixed::Text(WORD5)],
+    );
+    assert_eq!(
+        padded.scroll_width(NodeId(pid)),
+        doc.scroll_width(NodeId(id)),
+        "the line's advance, padded or not"
+    );
 }
 
 /// An `absolute` box inside a flowed inline `span` beside a block child: the
