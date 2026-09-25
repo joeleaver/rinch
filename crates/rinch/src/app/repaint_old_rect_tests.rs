@@ -938,6 +938,96 @@ mod editor {
         assert_moved_cleanly(&mut p, old);
     }
 
+    /// The overlays are placed by a `transform` since #906, and a transformed
+    /// box is a stacking context that paint enters through its clip chain —
+    /// so a caret scrolled under its editor's `overflow` edge must still be
+    /// cut there, and moving it must still repaint a region equal to a
+    /// from-scratch frame.
+    ///
+    /// The editor is a 60px scroller 40px down the window. The caret is put
+    /// on the first line, then the user scrolls by 30px, so the caret's box
+    /// (rows 10..30 of the window, content-relative) lies above the
+    /// scroller's top edge and the next line's caret straddles nothing. A
+    /// local oracle over the band above the scroller, where correct output
+    /// holds no caret colour; and an ArrowRight (which scrolls the caret back
+    /// into view) repaints a frame equal to a full one.
+    #[test]
+    fn a_caret_scrolled_past_the_editor_edge_is_clipped_and_moves_cleanly() {
+        let handle = crate::editor::create_editor();
+        let mut html = String::new();
+        for i in 0..8 {
+            html.push_str(&format!("<p>line {i} of the scrolled editor</p>"));
+        }
+        assert!(handle.load_html(&html));
+        let h = handle.clone();
+        let ed = Rc::new(std::cell::Cell::new(0usize));
+        let ed_in = ed.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "padding-top: 40px; width: 400px; font-size: 16px; line-height: 20px; \
+                 font-family: sans-serif",
+            );
+            let e = h.mount(scope);
+            e.set_attribute(
+                "style",
+                "height: 60px; overflow-y: auto; padding: 0; border: 0; border-radius: 0",
+            );
+            ed_in.set(e.node_id().0);
+            root.append_child(&e);
+            root
+        });
+        app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        app.focus_target = FocusTarget::Editor(ed.get());
+        let mut p = Page { app, handle };
+        p.handle.set_selection(Selection::cursor(Pos(3)));
+        p.app.refresh_editor_overlays();
+        about_to_wait(&mut p.app);
+        let shown = full_frame(&mut p.app);
+        let r0 = caret_rect(&p.app);
+        assert!(
+            caret_px(&shown, r0) > 5,
+            "positive control: the caret is painted at {r0:?} before the scroll"
+        );
+        {
+            let doc = p.app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.tree.nodes[ed.get()].scroll_offset.1 = 30.0;
+            d.tree.dirty_nodes.insert(ed.get());
+            d.tree.hit_cache.invalidate();
+        }
+        about_to_wait(&mut p.app);
+        let full = full_frame(&mut p.app);
+        let r = caret_rect(&p.app);
+        assert!(
+            r.3 <= 41 && r.1 >= 0,
+            "precondition: the scroll put the caret's box {r:?} above the scroller (y = 40)"
+        );
+        assert_eq!(
+            caret_px(&full, (0, 0, 600, 40)),
+            0,
+            "the transformed caret escaped its editor's clip"
+        );
+        key(&mut p.app, KeyCode::ArrowRight, None);
+        about_to_wait(&mut p.app);
+        let (inc, stats) = incremental_frame(&mut p.app);
+        assert_eq!(stats.get(Counter::PaintFrames), 1, "{stats:?}");
+        let moved = caret_rect(&p.app);
+        assert!(
+            caret_px(&inc, moved) > 5,
+            "positive control: the caret was scrolled back into view at {moved:?}"
+        );
+        assert_eq!(caret_px(&inc, (0, 0, 600, 40)), 0, "and nothing above it");
+        let full = full_frame(&mut p.app);
+        assert_eq!(
+            diff_in(&inc, &full, (0, 0, 600, 400)),
+            0,
+            "incremental frame != full frame"
+        );
+    }
+
     /// A drag-select: the selection rects are created, grow and shrink frame
     /// by frame, and the caret goes away and comes back. Every frame is a
     /// region, and every one matches a from-scratch frame.
