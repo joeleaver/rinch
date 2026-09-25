@@ -453,7 +453,12 @@ impl RinchDocument {
         self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
         self.tree.dirty_ifc_text_roots.clear();
 
-        // Copy cached text layouts to nodes (use the exact layouts from measurement)
+        // Copy cached text layouts to nodes (use the exact layouts from
+        // measurement) — the root compute's text leaves and, since #904, the
+        // ones the detached atomic-inline computes measured this pass (an
+        // `inline-flex` label), which the root compute never reaches.
+        let mut text_layout_cache = text_layout_cache;
+        text_layout_cache.extend(std::mem::take(&mut self.tree.atomic_leaf_layouts));
         self.copy_cached_text_layouts(text_layout_cache);
 
         // Arm transitions now that the first layout has completed, so nothing
@@ -2168,6 +2173,7 @@ impl RinchDocument {
                 continue;
             }
             let taffy_id = child_node.taffy_id;
+            let is_leaf = child_node.ifc_root.is_none();
             // A text run beside a block-level sibling is laid out by an
             // anonymous block box, and one inside a split inline (#513) by the
             // box around its fragment — neither in the element tree, so the
@@ -2184,7 +2190,53 @@ impl RinchDocument {
             if let Some(t) = taffy_id {
                 let _ = self.tree.taffy.mark_dirty(t);
             }
+            // 4. A text **leaf** (no IFC holds it) is painted from the layout
+            //    its measure built, which carries the brush; only a compute
+            //    rebuilds it. A `color`-only change moves no box, so without
+            //    this no compute would follow and the label would keep its
+            //    old colour (#904 — measured on a flex item's text, frozen
+            //    before #904 too).
+            if is_leaf {
+                self.tree.layout_dirty = true;
+            }
         }
+    }
+
+    /// Drop the cached layout of every text **leaf** child of `node_id` — the
+    /// text of a flex or grid item, in a block-level container or inside an
+    /// `inline-flex` / `inline-grid` — so the next layout re-measures and
+    /// re-caches it (#904).
+    ///
+    /// Steps 3 and 4 of [`Self::invalidate_text_measure_for_node`], for the
+    /// transition and animation ticks of a property that changes only a leaf
+    /// layout's brush (`TransitionProperty::recolours_text`): such a tick
+    /// writes `computed_style` without a cascade, so without this the leaf
+    /// paints the pre-transition colour. Plus
+    /// [`Self::mark_atomic_inline_dirty`], because the leaf of an
+    /// `inline-flex` is measured only by that atomic inline's own compute.
+    /// An IFC's text is not touched: that is #679.
+    pub(crate) fn invalidate_text_leaf_layouts(&mut self, node_id: usize) {
+        let Some(node) = self.tree.nodes.get(node_id) else {
+            return;
+        };
+        let leaves: Vec<(usize, Option<taffy::NodeId>)> = node
+            .children
+            .iter()
+            .filter_map(|&c| self.tree.nodes.get(c).map(|n| (c, n)))
+            .filter(|(_, n)| matches!(n.kind, NodeKind::Text(_)) && n.ifc_root.is_none())
+            .map(|(c, n)| (c, n.taffy_id))
+            .collect();
+        if leaves.is_empty() {
+            return;
+        }
+        for (child, taffy_id) in leaves {
+            self.tree.dirty_text_contexts.insert(child);
+            if let Some(t) = taffy_id {
+                let _ = self.tree.taffy.mark_dirty(t);
+            }
+        }
+        self.tree.layout_dirty = true;
+        self.mark_atomic_inline_dirty(node_id);
     }
 
     /// Invalidate the IFC that owns a node (if any).

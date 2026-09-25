@@ -4040,6 +4040,9 @@ impl RinchDocument {
         // `tree.nodes.get_mut` free after the call returns.
         let nodes = &tree.nodes;
         let perf = &tree.perf;
+        // The layouts this compute's text leaves are measured with, kept for
+        // paint (#904) — see `NodeTree::atomic_leaf_layouts`.
+        let mut leaf_layouts: HashMap<(usize, u32), parley::layout::Layout<Brush>> = HashMap::new();
         perf.bump(crate::perf::Counter::InlineBlockComputes);
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
@@ -4093,6 +4096,11 @@ impl RinchDocument {
                         builder.push_default(parley::style::StyleProperty::FontFamily(
                             parley::style::FontFamily::Source(font_stack),
                         ));
+                        // The brush, so the layout kept below paints in the
+                        // text's colour — as the root compute's does.
+                        builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(
+                            text.color,
+                        )));
                         // Apply overflow-wrap for emergency line-breaking
                         builder.push_default(parley::style::StyleProperty::OverflowWrap(
                             text.overflow_wrap.to_parley(),
@@ -4113,10 +4121,16 @@ impl RinchDocument {
                             known_dims.width.or(max_width)
                         };
                         layout.break_all_lines(wrap_width);
-                        taffy::Size {
+                        let size = taffy::Size {
                             width: known_dims.width.unwrap_or(layout.width()),
                             height: known_dims.height.unwrap_or(layout.height()),
-                        }
+                        };
+                        // Keyed exactly as the root compute keys its own text
+                        // leaves, so `copy_cached_text_layouts` picks between
+                        // them by the same rule.
+                        let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                        leaf_layouts.insert((text.node_id, wrap_bits), layout);
+                        size
                     }
                     Some(NodeContext::Image { width, height, .. }) => {
                         let iw = *width as f32;
@@ -4139,6 +4153,7 @@ impl RinchDocument {
                 }
             },
         );
+        tree.atomic_leaf_layouts.extend(leaf_layouts);
     }
 
     /// Measure a set of detached atomic inlines (`inline-block`, `inline-flex`,

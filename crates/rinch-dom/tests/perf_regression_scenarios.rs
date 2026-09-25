@@ -299,6 +299,8 @@ fn an_inline_block_holding_an_ifc() {
 
 /// An `inline-flex` whose only child is a text node: that text is a flex item,
 /// measured as a leaf through `NodeContext::Text` inside the atomic compute.
+/// Its first paint shapes nothing since #904 (`shape_paint` 1 → 0): the
+/// compute keeps the layout its measure built.
 #[test]
 fn an_inline_flex_holding_a_text_leaf() {
     let mut doc = doc_with(".chip { display: inline-flex; padding: 2px; }");
@@ -322,7 +324,6 @@ fn an_inline_flex_holding_a_text_leaf() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (ShapeAtomicInline, 4),
-            (ShapePaint, 1),
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),

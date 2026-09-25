@@ -773,12 +773,26 @@ impl RinchDocument {
             .map(|(id, _)| *id)
             .collect();
 
+        // Which nodes are having their text *colour* interpolated: a text
+        // leaf's cached layout carries the brush (#904,
+        // `TransitionProperty::recolours_text`).
+        let recoloured_nodes: Vec<usize> = self
+            .tree
+            .active_transitions
+            .iter()
+            .filter(|(_, props)| props.keys().any(|p| p.recolours_text()))
+            .map(|(id, _)| *id)
+            .collect();
+
         let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
 
         for node_id in text_measure_nodes {
             self.invalidate_text_measure_for_node(node_id);
             // The box has to be measured again, and no Taffy style changed.
             self.tree.layout_dirty = true;
+        }
+        for node_id in recoloured_nodes {
+            self.invalidate_text_leaf_layouts(node_id);
         }
 
         // For layout-affecting transitions, we need to re-sync Taffy styles
@@ -946,11 +960,28 @@ impl RinchDocument {
             .map(|(id, _)| *id)
             .collect();
 
+        // The colour twin (#904), under the same filter: a tick moves only a
+        // running animation that has not settled.
+        let recoloured_nodes: Vec<usize> = self
+            .tree
+            .active_animations
+            .iter()
+            .filter(|(_, anims)| {
+                anims
+                    .iter()
+                    .any(|a| !a.is_paused() && !a.fill_settled && a.recolours_text())
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
         let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
 
         for node_id in text_measure_nodes {
             self.invalidate_text_measure_for_node(node_id);
             self.tree.layout_dirty = true;
+        }
+        for node_id in recoloured_nodes {
+            self.invalidate_text_leaf_layouts(node_id);
         }
 
         // For layout-affecting animations, re-sync Taffy styles.
