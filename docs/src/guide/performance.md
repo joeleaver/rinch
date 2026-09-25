@@ -169,7 +169,9 @@ Some limits on what these numbers mean:
   of the last 8 frames had open at once, so an app that idles right after a
   deeply nested frame keeps that frame's buffers until it paints again.
 - **A screenshot is a frame.** The debug `screenshot` command paints, and that
-  paint shows up in the counters like any other frame.
+  paint shows up in the counters like any other frame. The capture after it
+  adds nothing: on the software backend it reads the frame just presented back,
+  as the GPU backend always has, rather than painting a second time (#364).
 
 ## The committed baselines
 

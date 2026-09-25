@@ -137,7 +137,10 @@ pub fn park_main_callback<T: 'static>(cb: impl FnOnce(T) + 'static) -> MainCallb
 /// Also a no-op if the component that parked the callback has since been
 /// unmounted — see [`park_main_callback`]. The callback runs with that component
 /// as the ambient owner, so anything it allocates belongs to the component
-/// rather than to whatever the event loop happened to be doing.
+/// rather than to whatever the event loop happened to be doing. A callback
+/// parked outside any render runs under [`unowned`](crate::reactive::unowned)
+/// for the same reason in reverse: it has app lifetime, so what it allocates
+/// must not land on whatever owner this resume happens to be nested inside.
 ///
 /// Call on the main thread. `T` must match the type used at [`park_main_callback`];
 /// a mismatch is a programming error (debug-asserted, ignored in release).
@@ -164,7 +167,10 @@ pub fn resume_main_callback<T: 'static>(id: MainCallbackId, payload: T) {
     };
     match entry.owner {
         Some(owner) => owner.run(move || (*cb)(payload)),
-        None => (*cb)(payload),
+        // Not bare: the owner stack is not an ancestor chain, so a resume nested
+        // inside another owner's `run` would hand this app-lifetime callback's
+        // allocations to that unrelated scope (issue #374).
+        None => crate::reactive::unowned(move || (*cb)(payload)),
     }
 }
 
@@ -273,6 +279,45 @@ mod tests {
         assert!(
             escaped.get(),
             "`unowned` must detach the callback from the render that parked it"
+        );
+    }
+
+    /// An ownerless continuation resumed from *inside* a live one must not
+    /// allocate under the live one's scope (issue #374, the #373 fix applied to
+    /// this registry). The owner stack is not an ancestor chain: running the
+    /// ownerless callback bare lets the `Signal` it creates land on whatever
+    /// owner the dispatch happens to be nested inside — freed, and panicking on
+    /// the next read, once that unrelated component unmounts.
+    #[test]
+    fn an_ownerless_callback_resumed_inside_a_live_one_does_not_allocate_under_it() {
+        use crate::reactive::{Scope, Signal};
+
+        // Parked from `main`: app lifetime. Creates a signal the app keeps.
+        let kept: Rc<Cell<Option<Signal<u32>>>> = Rc::new(Cell::new(None));
+        let k = kept.clone();
+        let ownerless = park_main_callback::<()>(move |()| k.set(Some(Signal::new(41))));
+
+        // Parked during a render: owned by `component`. Its body synchronously
+        // drives the ownerless resume, so that resume is nested in `owner.run`.
+        let component = Scope::new();
+        let owned = component
+            .run(|| park_main_callback::<()>(move |()| resume_main_callback(ownerless, ())));
+
+        let before = component.owned_counts().signals;
+        resume_main_callback(owned, ());
+        assert_eq!(
+            component.owned_counts().signals,
+            before,
+            "the ownerless callback's signal must not be attributed to the \
+             component whose callback happened to resume it"
+        );
+
+        component.dispose();
+        let signal = kept.get().expect("the ownerless callback ran");
+        assert_eq!(
+            signal.get(),
+            41,
+            "an app-lifetime signal must survive an unrelated component unmounting"
         );
     }
 

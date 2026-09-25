@@ -720,8 +720,11 @@ impl RinchDocument {
 
         // For text nodes that are direct children, set their layout to reflect
         // the actual IFC content extent (not the constrained container height).
-        // This is critical for scroll containers: compute_content_height uses
-        // children's layout bounds to determine if content overflows.
+        // A scroll container's range no longer reads these boxes:
+        // `paint::scrollbar::content_extents` measures an IFC root's inline
+        // layout itself (#396), because a text node under a `display: contents`
+        // wrapper or an inline span gets no box here at all, and a skipped
+        // root never rewrites this one (#873).
         let ifc_content_height = inline_layout.layout.height();
         let children: Vec<usize> = self.tree.nodes[root_id].children.clone();
         for child_id in children {

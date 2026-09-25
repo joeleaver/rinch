@@ -1873,8 +1873,8 @@ thumb's **travel** (`track_len - thumb_len`), not the track length. Anything new
 that needs to know where a bar is should ask that module rather than re-derive
 it.
 
-**What counts as scrollable content (#765).** `content_extents` measures the
-scroll range from the container's **direct children**, and only from those the
+**What counts as scrollable content (#765, #396).** `content_extents` measures
+the scroll range from the container's **child boxes**, and only from those the
 container is the **containing block** of — `out_of_flow::contributes_to_scrollable_overflow`,
 which mirrors `out_of_flow_kind`'s walk. The two **must not drift apart**, and
 nothing enforces it — `scrollable_overflow_tests` pins this predicate against
@@ -1895,8 +1895,29 @@ the rule and must not become it: a hidden box still has a box and still counts,
 in rinch as in Chrome. `display: none` generates none and its zeroed rect
 contributes nothing without a special case.
 
+A child box is a direct child, or a box reached **through** `display: contents`
+children, at any depth (#396): a wrapper generates no box, its children are laid
+out in the container's own frame, and the containing-block rule is asked of the
+container for each of them — a wrapper contains nothing. `rsx!` emits such a
+wrapper for a `for`/`if`/`match` that is an rsx root or a branch's lone node,
+for a branch of several nodes, for an embedded `Vec<NodeHandle>` and around
+every reactive `{|| text}` (a `for` written straight into an element is *not*
+wrapped — its rows are the element's own children), so before
+#396 a scroll region whose rows came from one reported no content, painted no
+bar and ignored the wheel. An **IFC root's** own inline content is measured from
+its inline layout (`Node::text_layout`, at the content origin), not from its
+text nodes' boxes: a text node under a contents wrapper or an inline `<span>`
+has no box at all, and a direct one's proxy box is border-box-sized, which
+over-reported a padded text scroller. That covers text that is the container's
+**only** inline content: text beside a block child is laid out by anonymous
+block boxes, which are in no `children` list, and adds nothing (#995).
+`DomDocument::scroll_height` /
+`scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
+`content_extents`; they used to be a second copy of the walk, with neither the
+containing-block rule nor the descent.
+
 Limits, all pre-existing and none introduced by that filter. The walk
-is one level deep, so an absolute whose containing block is a **non-parent**
+stops at the first **box**, so an absolute whose containing block is a **non-parent**
 ancestor contributes to no box's range at all — Chrome gives it to that
 ancestor (measured: a 700x1500 absolute under a static `overflow: auto` div
 lands on `documentElement.scrollHeight`), and rinch used to give it to the
@@ -1917,8 +1938,8 @@ the **start** under-reports by up to the offset, and needs no padding to do it �
 a 240x50 child at `left: -40px` in a plain 200x100 scroller gives Chrome 40px of
 travel and rinch no bar. `content_extents`' doc has the rule and the
 measurements. And the extent is each child's untransformed **border** box, so a
-child's `transform`, its end margins, and the children of a `display: contents`
-wrapper (whose own box is 0x0) add nothing, where Chrome counts all three.
+child's `transform` and its end margins add nothing, where Chrome counts
+both.
 
 **Styling the bar (#416).** Two inherited custom properties:
 `--rinch-scrollbar-color: <thumb> [<track>]` and `--rinch-scrollbar-width: auto
