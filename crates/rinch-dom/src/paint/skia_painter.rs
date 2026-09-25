@@ -515,6 +515,10 @@ enum LayerState {
         /// The parent's written-area bookkeeping, restored on pop.
         parent_touched: Option<DeviceRect>,
         opacity: f32,
+        /// How the layer is composited back: source-over, or `Plus` for a
+        /// [`BlendMode::Plus`] layer (a blurred `text-shadow`'s kernel taps,
+        /// #980). `Saturation` is composited source-over, as it always was.
+        blend: tiny_skia::BlendMode,
     },
 }
 
@@ -1343,6 +1347,26 @@ impl TinySkiaPainter {
     }
 }
 
+impl TinySkiaPainter {
+    /// Draw what follows into a fresh (or pooled, already transparent) layer
+    /// until the matching pop composites it back at `opacity` with `blend`.
+    /// The clip mask in force stays in force: the layer's content is clipped
+    /// exactly as it would be drawn directly.
+    fn open_layer(&mut self, opacity: f32, blend: tiny_skia::BlendMode) {
+        self.stats.layers += 1;
+        let layer = self.acquire_layer();
+        let parent_pixmap = std::mem::replace(&mut self.pixmap, layer);
+        let parent_touched = self.touched.replace(DeviceRect::EMPTY);
+
+        self.layer_stack.push(LayerState::Opacity {
+            parent_pixmap,
+            parent_touched,
+            opacity,
+            blend,
+        });
+    }
+}
+
 impl Painter for TinySkiaPainter {
     fn reset(&mut self) {
         self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
@@ -1867,12 +1891,14 @@ impl Painter for TinySkiaPainter {
 
     fn push_layer(
         &mut self,
-        _blend: BlendMode,
+        blend: BlendMode,
         opacity: f32,
         _transform: Affine,
         _bounds: &PaintShape,
     ) {
-        if (opacity - 1.0).abs() < f32::EPSILON {
+        // A `Plus` layer at opacity 1 still adds rather than covers, so it
+        // never takes the fast path below.
+        if !matches!(blend, BlendMode::Plus) && (opacity - 1.0).abs() < f32::EPSILON {
             // Near-opaque: compositing a layer back at this alpha changes no
             // pixel, so no layer is allocated. The push still has to happen —
             // `pop_layer` is called unconditionally by the caller — and what it
@@ -1914,19 +1940,17 @@ impl Painter for TinySkiaPainter {
             return;
         }
 
-        // Draw the layer's content into a fresh (or pooled, already
-        // transparent) pixmap. The clip mask in force stays in force: the
-        // layer's content is clipped exactly as it would be drawn directly.
-        self.stats.layers += 1;
-        let layer = self.acquire_layer();
-        let parent_pixmap = std::mem::replace(&mut self.pixmap, layer);
-        let parent_touched = self.touched.replace(DeviceRect::EMPTY);
+        let blend = match blend {
+            BlendMode::Plus => tiny_skia::BlendMode::Plus,
+            BlendMode::Normal | BlendMode::Saturation => tiny_skia::BlendMode::SourceOver,
+        };
+        self.open_layer(opacity, blend);
+    }
 
-        self.layer_stack.push(LayerState::Opacity {
-            parent_pixmap,
-            parent_touched,
-            opacity,
-        });
+    fn push_isolated_layer(&mut self, opacity: f32, _transform: Affine, _bounds: &PaintShape) {
+        // No near-opaque fast path: what is drawn inside may add (`Plus`)
+        // rather than cover, which only an empty layer of its own makes right.
+        self.open_layer(opacity, tiny_skia::BlendMode::SourceOver);
     }
 
     fn pop_layer(&mut self) {
@@ -1948,6 +1972,7 @@ impl Painter for TinySkiaPainter {
                 mut parent_pixmap,
                 parent_touched,
                 opacity,
+                blend,
             } => {
                 // Composite the layer back onto the parent — only the part of
                 // it anything was drawn into. Everywhere else the layer is
@@ -1959,7 +1984,7 @@ impl Painter for TinySkiaPainter {
                 };
                 let paint = PixmapPaint {
                     opacity,
-                    blend_mode: tiny_skia::BlendMode::SourceOver,
+                    blend_mode: blend,
                     quality: tiny_skia::FilterQuality::Nearest,
                 };
                 if drawn == self.surface_rect() {

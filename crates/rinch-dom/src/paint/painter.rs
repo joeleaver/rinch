@@ -115,6 +115,13 @@ pub enum BlendMode {
     Normal,
     /// Used for CSS `filter: grayscale(...)` approximation.
     Saturation,
+    /// Composite by **adding** the layer to what is beneath it (Porter-Duff
+    /// `plus`, saturating), instead of covering it. Inside an isolated layer
+    /// ([`Painter::push_isolated_layer`]), a sum of `Plus` layers at weights
+    /// that total 1 is a weighted average of their contents — which is how a
+    /// blurred `text-shadow` is drawn as a Gaussian kernel of copies on both
+    /// backends (#980).
+    Plus,
 }
 
 // ── Image data ──────────────────────────────────────────────────────────────
@@ -223,6 +230,16 @@ pub trait Painter {
         transform: Affine,
         bounds: &PaintShape,
     );
+
+    /// Push a layer that is **always** drawn on its own and composited back
+    /// as a unit, source-over at `opacity` — even at opacity 1, where a
+    /// backend may skip a [`push_layer`](Self::push_layer) as a no-op. What
+    /// is drawn inside can then use [`BlendMode::Plus`] against the layer's
+    /// own transparent start rather than against the backdrop. Popped by
+    /// [`pop_layer`](Self::pop_layer).
+    fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
+        self.push_layer(BlendMode::Normal, opacity, transform, bounds);
+    }
 
     /// Pop the most recent clip or opacity layer.
     fn pop_layer(&mut self);

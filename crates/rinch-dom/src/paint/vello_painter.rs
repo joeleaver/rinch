@@ -163,8 +163,9 @@ impl Painter for VelloPainter {
         bounds: &PaintShape,
     ) {
         let mix = match blend {
-            BlendMode::Normal => peniko::Mix::Normal,
-            BlendMode::Saturation => peniko::Mix::Saturation,
+            BlendMode::Normal => peniko::BlendMode::from(peniko::Mix::Normal),
+            BlendMode::Saturation => peniko::BlendMode::from(peniko::Mix::Saturation),
+            BlendMode::Plus => peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Plus),
         };
         dispatch_push_layer!(self.scene, Fill::NonZero, mix, opacity, transform, bounds);
     }

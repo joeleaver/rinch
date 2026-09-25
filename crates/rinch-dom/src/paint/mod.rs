@@ -521,11 +521,24 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
 
 /// How far a node's **own** ink reaches past its border box, in CSS px:
 /// `[left, top, right, bottom]`. Outset `box-shadow` (the whole blur radius
-/// plus spread, around its offset — the same slack `layer_bounds` allows) and
-/// `outline` (width plus a positive offset). Inset shadows paint inside the
-/// box. Never negative.
+/// plus spread, around its offset — the same slack `layer_bounds` allows),
+/// `outline` (width plus a positive offset) and `text-shadow` (the blur
+/// radius around its offset, #980). Inset shadows paint inside the box.
+/// Never negative.
+///
+/// A `text-shadow` is measured from the border box, where the text it
+/// shadows usually is; it is inherited, so a text node's parent and every IFC
+/// root carry it, and an inline element's damage falls back to the box that
+/// paints it. Text that overflows its box casts a shadow past this reach.
 pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32; 4] {
     let mut o = [0.0_f32; 4];
+    for shadow in &cs.text_shadow {
+        let reach = shadow.blur_radius.abs();
+        o[0] = o[0].max(reach - shadow.offset_x);
+        o[1] = o[1].max(reach - shadow.offset_y);
+        o[2] = o[2].max(reach + shadow.offset_x);
+        o[3] = o[3].max(reach + shadow.offset_y);
+    }
     for shadow in &cs.box_shadow {
         if shadow.inset {
             continue;
@@ -820,6 +833,14 @@ impl Painter for ClipTrackingPainter<'_> {
             c.push(open);
         });
         self.inner.push_layer(blend, opacity, transform, bounds);
+    }
+    fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
+        CLIP_CULL.with(|c| {
+            let mut c = c.borrow_mut();
+            let open = c.last().copied().flatten();
+            c.push(open);
+        });
+        self.inner.push_isolated_layer(opacity, transform, bounds);
     }
     fn pop_layer(&mut self) {
         CLIP_CULL.with(|c| {
@@ -3429,6 +3450,7 @@ fn paint_node(
                     scale,
                     None,
                     Some(color),
+                    None,
                 );
                 return;
             }
@@ -3543,6 +3565,7 @@ fn paint_node(
                 text_shadows,
                 parent_transform,
                 scale,
+                None,
                 None,
                 None,
             );

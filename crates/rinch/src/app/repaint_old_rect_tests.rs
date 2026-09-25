@@ -1163,7 +1163,7 @@ fn text_panel(shadow: &str) -> (RinchApp, NodeHandle) {
             scope,
             &root,
             &format!(
-                "position: absolute; left: 20px; top: 150px; width: 80px; height: 20px; \
+                "position: absolute; left: 20px; top: 150px; width: 200px; height: 20px; \
                  font-size: 16px; line-height: 20px; color: rgb(0, 0, 0); \
                  text-shadow: {shadow}"
             ),

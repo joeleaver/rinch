@@ -1172,9 +1172,9 @@ impl Walk<'_> {
 ///
 /// `render_text_with_shadow` draws each shadow pass `offset × scale` physical
 /// px from the scaled text, at the text's own size (#409), so the reach is the
-/// offset plus the blur radius, times `scale`. The blur radius is included even
-/// though this painter draws shadow text without blurring it, because the day
-/// it does the glyphs will spread by it.
+/// offset plus the blur radius, times `scale`: a blurred shadow's kernel
+/// reaches exactly the blur radius from its offset (`text::shadow_kernel`,
+/// #980).
 fn text_shadow_reach(rect: Rect, node: &Node, scale: f64) -> Rect {
     let shadows = &node.computed_style.text_shadow;
     if shadows.is_empty() {
