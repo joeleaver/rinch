@@ -789,7 +789,7 @@ impl RinchDocument {
                             let inline_layout = Self::build_inline_layout(
                                 nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                             );
-                            let w = inline_layout.layout.width();
+                            let w = inline_layout.measured_width();
                             let h = inline_layout.layout.height();
 
                             // Store in persistent cache

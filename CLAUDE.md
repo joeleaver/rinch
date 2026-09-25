@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, Taffy, Parley, and dual rendering backends (Vello for GPU, tiny-skia for software). The goal is to provide a reactive GUI framework using HTML/CSS for layout.
 
 **Key dependencies:**
-- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.12** in two places — `crates/rinch-dom/Cargo.toml` and the vendored `crates/stylo-taffy/Cargo.toml` — which must move together. 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height.
+- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.12** in two places — `crates/rinch-dom/Cargo.toml` and the vendored `crates/stylo-taffy/Cargo.toml` — which must move together. 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12's measure function returns a size only and its leaves and blocks report no baseline, so flex/grid `align-items: baseline` aligns every item by its bottom edge (#1013; 0.14's measure returns a `LayoutOutput` with baselines).
 - **parley** - Text shaping and line breaking, at the **published `0.11.1`**. It was a git `rev`
   on an unmerged 22-commit "Floats WIP" branch off `v0.7.0` until #659; upstream landed that work
   in 0.9.0, so nothing was lost by moving to the release line. Two things about the dependency line
@@ -30,6 +30,15 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     right in English: `y` is 0 for ordinary Latin shaping and non-zero only for mark positioning.
     `crates/rinch-dom/src/paint/text.rs` **adds** it, in the main pass and the shadow pass alike;
     `crates/rinch-dom/tests/glyph_y_ydown_tests.rs` is the pin, one fixture per site.
+  - **Preserved spaces do not hang in 0.11.1.** At a width a `pre-wrap` space overflows, parley
+    hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
+    is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC
+    breaks its lines, and puts the spaces back on the line they hang from; upstream's rework
+    (#790, #785) is unreleased. Likewise an IFC's measure is `InlineLayout::measured_width`, not
+    `Layout::width`: the latter drops a preserved trailing space that Chrome counts, and a box
+    sized without it wraps the space onto a line of its own (the editor's list bullet dropping a
+    line after "text ").
+    `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)

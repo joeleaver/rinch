@@ -142,6 +142,119 @@ fn push_spacing(b: &mut parley::RangedBuilder<'_, Brush>, letter_spacing: f32, w
     b.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
 }
 
+/// Break `layout` into lines at `max_width`, hanging preserved spaces at a soft
+/// wrap the way CSS does.
+///
+/// CSS Text 3 §4.1.3: with `white-space: pre-wrap`, a sequence of preserved
+/// spaces at the end of a line **hangs** — it may overflow the line and never
+/// starts the next one. Parley 0.11.1 hangs only the *first* space that
+/// overflows and then commits the line, so
+///
+/// - the rest of the sequence starts the next line (`"ab  "` at the width of
+///   `"ab"` puts the second space on a line of its own), and
+/// - when nothing but the hanging space is left (`"ab "` at the width of
+///   `"ab"`), the breaker still emits one more, empty line, which counts in the
+///   layout's height.
+///
+/// Either way the text is one line taller than it is. That is what made an
+/// editor list item's paragraph two lines tall while its text ended in a space:
+/// the flex item was sized to the text without its trailing space and then laid
+/// out at that width. Upstream parley reworked hanging (#790, #785, unreleased
+/// at 0.11.1); this puts the sequence back on the line it hangs from.
+///
+/// Only a line parley ended at the hang ([`BreakReason::Regular`]) whose next
+/// cluster is a space, a newline, or the end of the text is rebroken. That line
+/// is given just enough room for its content, the hanging spaces, and 0.01px —
+/// no following word fits in that — and then [`set_prior_line_width`] puts its
+/// alignment width back at `max_width`, so `text-align: right`/`center` still
+/// line the text up against the box edge with the spaces hanging past it. The
+/// lines before it are broken at the same width as before, so they do not move;
+/// each pass fixes the first such line after the previous one, so the loop ends
+/// within one pass per line.
+///
+/// Collapsible white space (`normal`, `nowrap`) has no trailing spaces left to
+/// hang, and an unconstrained layout has nothing to wrap, so both are broken
+/// exactly as before.
+///
+/// [`BreakReason::Regular`]: parley::layout::BreakReason::Regular
+/// [`set_prior_line_width`]: parley::layout::BreakLines::set_prior_line_width
+pub(crate) fn break_lines_hanging_spaces(
+    layout: &mut parley::Layout<Brush>,
+    max_width: Option<f32>,
+    preserves_spaces: bool,
+) {
+    layout.break_all_lines(max_width);
+    let Some(max) = max_width else { return };
+    if !preserves_spaces || !max.is_finite() {
+        return;
+    }
+    // (line index, the max advance that line needs to keep its hanging spaces)
+    let mut widened: Vec<(usize, f32)> = Vec::new();
+    while let Some(fix) = first_unhung_line(layout, widened.last().map_or(0, |&(i, _)| i + 1)) {
+        widened.push(fix);
+        let mut breaker = layout.break_lines();
+        let mut next = widened.iter().peekable();
+        let mut line = 0usize;
+        loop {
+            let line_max = match next.peek() {
+                Some(&&(i, m)) if i == line => {
+                    next.next();
+                    m
+                }
+                _ => max,
+            };
+            let state = breaker.state_mut();
+            state.set_layout_max_advance(line_max);
+            state.set_line_max_advance(line_max);
+            if breaker.break_next().is_none() {
+                break;
+            }
+            if line_max != max {
+                breaker.set_prior_line_width(max);
+            }
+            line += 1;
+        }
+        // The layout's own max advance is what `align` and the line metrics
+        // written on drop read: the box's width, not a widened line's.
+        let state = breaker.state_mut();
+        state.set_layout_max_advance(max);
+        state.set_line_max_advance(max);
+        breaker.finish();
+    }
+}
+
+/// The first line at or after `from` that parley ended by hanging one space
+/// while more hangable white space (or nothing at all) followed it, and the max
+/// advance that line needs to keep all of it. See
+/// [`break_lines_hanging_spaces`].
+fn first_unhung_line(layout: &parley::Layout<Brush>, from: usize) -> Option<(usize, f32)> {
+    use parley::layout::{BreakReason, Cluster};
+    for (i, line) in layout.lines().enumerate().skip(from) {
+        if line.break_reason() != BreakReason::Regular {
+            continue;
+        }
+        let end = line.text_range().end;
+        let mut hanging = 0.0f32;
+        let mut cluster = Cluster::from_byte_index(layout, end);
+        match &cluster {
+            // Nothing follows: the empty line after the hang is spurious.
+            None => {}
+            Some(c) if c.is_hard_line_break() => {}
+            Some(c) if c.is_space_or_nbsp() => {
+                while let Some(c) = cluster.filter(|c| c.is_space_or_nbsp()) {
+                    hanging += c.advance();
+                    cluster = c.next_logical();
+                }
+            }
+            // A word follows: an ordinary break.
+            Some(_) => continue,
+        }
+        // The breaker compares a line's own advance (from 0) with its max.
+        return Some((i, line.metrics().advance + hanging + 0.01));
+    }
+    None
+}
+
 impl RinchDocument {
     /// Build inline layouts for all IFC roots after Taffy layout.
     ///
@@ -4110,7 +4223,7 @@ impl RinchDocument {
                             nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                         );
                         taffy::Size {
-                            width: known_dims.width.unwrap_or(inline_layout.layout.width()),
+                            width: known_dims.width.unwrap_or(inline_layout.measured_width()),
                             height: known_dims.height.unwrap_or(inline_layout.layout.height()),
                         }
                     }
@@ -4623,7 +4736,8 @@ impl RinchDocument {
             WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre => None,
             _ => max_width,
         };
-        text_layout.break_all_lines(effective_max_width);
+        let preserves_spaces = matches!(collapse, parley::style::WhiteSpaceCollapse::Preserve);
+        break_lines_hanging_spaces(&mut text_layout, effective_max_width, preserves_spaces);
 
         // Apply text-align from computed style
         let alignment = root_computed.text_align.to_parley();
@@ -4637,6 +4751,7 @@ impl RinchDocument {
             background_spans,
             decoration_spans,
             max_width: max_width.unwrap_or(f32::INFINITY),
+            preserves_spaces,
         }
     }
 
@@ -4752,6 +4867,8 @@ impl RinchDocument {
             background_spans: Vec::new(),
             decoration_spans: Vec::new(),
             max_width: container_width,
+            // Laid out unconstrained, one line: nothing hangs.
+            preserves_spaces: false,
         }
     }
 
