@@ -3085,14 +3085,25 @@ let tray = TrayIconBuilder::new()
 - **Dropping the `TrayIcon` removes the icon, then releases its callbacks** (#377).
   On Linux, ksni's own `Handle` does not stop the service when dropped (its loop
   ignores a closed request channel), so `TrayIcon`'s `Drop` sends ksni's
-  `Shutdown` and joins a helper thread that waits for the D-Bus connection to
-  close. The wait runs off the caller's thread because ksni's `wait` is a
-  `block_on`, which panics inside a tokio runtime. The callbacks go only after
-  that: before #377 the icon stayed on the panel for the life of the process,
-  and once #183 released the callbacks on drop, every item on it was dead.
-  Pinned by `tray::tests::dropping_the_tray_shuts_the_service_down_before_releasing_the_callbacks`
-  and, against a live session bus, the `#[ignore]`d
-  `live_a_dropped_tray_leaves_the_status_notifier_watcher`.
+  `Shutdown` and waits up to `SHUTDOWN_WAIT` (1 s; ~10 ms on a healthy
+  session) for a helper thread to report that the D-Bus connection closed. The
+  wait runs off the caller's thread because ksni's `wait` is a `block_on`, which
+  panics inside a tokio runtime, and it is **bounded** because ksni reads the
+  request only between D-Bus calls: a watcher that stops answering leaves it in
+  a call with no timeout, and an unbounded wait froze the main thread for good
+  (review of #1054). The callbacks go only after the close: before #377 the icon
+  stayed on the panel for the life of the process, and once #183 released the
+  callbacks on drop, every item on it was dead. **On a timeout the callbacks
+  are kept, not released** — parked in the thread-local `PARKED` list and
+  released by the next tray build or drop on the thread once the helper reports
+  or disconnects — because an icon that may still be shown should keep working
+  items; the cost is their memory meanwhile. Pinned by
+  `tray::tests::dropping_the_tray_shuts_the_service_down_before_releasing_the_callbacks`,
+  `a_shutdown_that_outlasts_the_bound_keeps_the_callbacks_until_it_closes`, and
+  two `#[ignore]`d live ones: `live_a_dropped_tray_leaves_the_status_notifier_watcher`
+  (session bus) and `live_dropping_a_tray_under_a_hung_watcher_is_bounded`
+  (private bus running `crates/rinch/tests/fixtures/hung_sni_watcher.py`).
+  `build()` has the same unbounded shape and is not bounded yet (#1057).
 - **`TrayIcon` is `!Send`/`!Sync`** on every platform, deliberately: its
   `MenuRegistration` holds `Rc`s (and `tray-icon`'s own handle off Linux holds
   one too) because release must run on the thread whose

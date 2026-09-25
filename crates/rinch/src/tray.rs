@@ -108,7 +108,7 @@ pub struct TrayIcon {
     /// Released after [`TrayIcon`]'s `Drop` has shut the service down, so the
     /// icon leaves the panel before its items stop working, never the other
     /// way round. If the shutdown does not finish in time, the `Drop` parks it
-    /// (see [`park_until_closed`]) rather than releasing it under an icon that
+    /// (see `park_until_closed`) rather than releasing it under an icon that
     /// may still be up.
     _menu: Option<crate::menu::MenuRegistration>,
 }
