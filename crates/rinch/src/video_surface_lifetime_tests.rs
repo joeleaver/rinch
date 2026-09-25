@@ -15,7 +15,7 @@ use std::sync::Once;
 
 use rinch_video::{VideoPlayer, VideoPlayerBackend};
 
-use super::{create_video_frame_sink, registered_viewport_names};
+use super::{create_video_frame_sink, registered_surface_ids, registered_viewport_names};
 
 type Sink = std::sync::Arc<dyn Fn(&[u8], u32, u32) + Send + Sync>;
 
@@ -93,6 +93,9 @@ fn cleanup_releases_the_players_surface() {
 fn resuming_playback_reuses_the_surface() {
     let player = player();
     let name = player.viewport_id();
+    player.play();
+    let first = registered_surface_ids();
+    player.pause();
     for _ in 0..3 {
         player.play();
         player.pause();
@@ -103,6 +106,14 @@ fn resuming_playback_reuses_the_surface() {
         1,
         "every play() minted another surface: {:?}",
         registered_viewport_names()
+    );
+    // The *same* surface, not a fresh one per resume that replaced the last:
+    // a paused video keeps its last frame in that surface, and a replacement
+    // would start empty.
+    assert_eq!(
+        registered_surface_ids(),
+        first,
+        "resuming replaced the player's surface"
     );
     player.cleanup();
     assert_eq!(surfaces_named(&name), 0);
