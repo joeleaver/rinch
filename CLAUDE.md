@@ -4049,6 +4049,25 @@ rsx! {
 
 Pattern bindings and guards are supported — each arm re-evaluates the scrutinee to extract bound values.
 
+**A braced arm body is decided by how it starts** (issue #395). It holds rsx
+children — several nodes, like an `if`/`for` body — when it starts with `let`,
+or with an rsx *head* (`Name {`, a string literal, `if`/`for`/`match`, or a
+braced interpolation) **followed by another node**:
+`0 => { h2 { "Home" } p { "…" } }`, `{ {label} span {} }`. A lone element or
+literal is that one node. Everything else is the one braced expression it always
+was: `0 => { overview_section(__scope) }` (ui-zoo's routing), `0 => {a.clone()}`,
+and a head followed by `.` or an operator (`{ "a".to_string() }`,
+`{ if … {} else {} .len() }`). `{ Point { x: 1 } }` is therefore a component, as
+unbraced; a path (`geom::Point { … }`), and a struct literal that cannot be an
+element (`{ Foo { a } }`, `{ Foo { ..Default::default() } }`, a method called on
+one), stay expressions. Lone control flow in braces is still #221's transparent
+brace, diagnostic included. In a multi-node arm the rsx parser reports a typo at
+the typo, including one inside a leading `if`/`for`/`match`: a head that fails
+to parse is skipped **by tokens** to see whether a node follows it — a
+diagnostic-only heuristic that a brace in the condition (`if let Foo { a } = x`)
+can defeat (`parse_braced_arm_body`, `failed_head_is_rsx`,
+`crates/rinch-macros/src/node.rs`).
+
 **Runtime desugaring:** `if` → `show_dom()`, `for` → `for_each_dom_typed()`, `match` → `match_dom()`.
 
 **A brace around control flow is transparent** (issue #221). `div { { match x { … } } }`

@@ -1055,6 +1055,52 @@ match score.get() {
 }
 ```
 
+#### Several nodes in one arm
+
+An arm body in braces can hold several nodes, as an `if` or `for` body can —
+they are rendered together as the arm:
+
+```rust
+match tab.get() {
+    0 => { h2 { "Home" } p { "Welcome back." } },
+    1 => { let n = count.get(); b { {n.to_string()} } " items" },
+    2 => { Badge { "new" } Badge { "beta" } },
+    _ => { overview_section(__scope) },   // one expression, as always
+}
+```
+
+What the braces hold is decided by how they **start**:
+
+- `let` always starts rsx nodes.
+- An element or component (`div {`, `Card {`), a string literal, `if`/`for`/
+  `match`, or an interpolation `{ … }` starts rsx nodes **when more nodes follow
+  it**: `{ {label} span { "!" } }`, `{ if open.get() { "▾" } span { "Menu" } }`.
+- An element, component or string literal on its own is that one node.
+- Anything else is a single Rust expression, as it always was: a call, a
+  variable, a closure, and a method called on a literal or on a struct
+  (`{ "a".to_string() }`, `{ if a { "x" } else { "y" } .len() }`). So
+  `{ overview_section(__scope) }`, `{ panel.clone() }` and
+  `{|| count.get().to_string()}` are unchanged. Lone control flow in braces is
+  the transparent brace described under
+  [Braces around control flow](#braces-around-control-flow).
+
+(Until issue #395 only a body starting with `let` could hold more than one node.)
+A mistake inside a multi-node arm is reported by the rsx parser, at the
+mistake, like one in any other rsx body — including one inside a leading
+`if`/`for`/`match` when another node follows it. (Finding that following node
+after a head that failed to parse is a token-level heuristic: a condition that
+itself holds braces, such as `if let Foo { a } = x`, can defeat it and leave you
+with the single-node error instead.) A lone braced `if`/`for`/`match` whose
+bodies are not rsx still gets the "renders once" error described under
+[Braces around control flow](#braces-around-control-flow).
+
+One consequence: `{ Point { x: 1 } }` in an arm is a component named `Point`,
+exactly as `Point { x: 1 }` unbraced is, not a Rust struct literal. A struct
+literal that cannot be an element — shorthand fields (`{ Foo { a } }`), a `..`
+base (`{ Foo { ..Default::default() } }`), or one with a method called on it
+(`{ Point { x: 1 }.into_node(__scope) }`) — stays an expression, and so does a
+path such as `geom::Point { x: 1 }`, which is not an element name.
+
 #### How `match` works internally
 
 The `match` block desugars to `match_dom()`, which generalizes `show_dom()` to N branches. A discriminant closure returns the index of the active branch (0, 1, 2, ...). When the discriminant changes, the old branch is disposed and the new branch is rendered.
