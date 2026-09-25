@@ -63,13 +63,19 @@ fn a_selection_set_from_app_code_is_drawn_on_the_next_update() {
     for _ in 0..3 {
         ctx.update(&[]);
     }
-    assert!(ctx.app().has_focused_contenteditable(), "precondition: focused");
+    assert!(
+        ctx.app().has_focused_contenteditable(),
+        "precondition: focused"
+    );
     assert_eq!(highlights(&ctx), 0, "control: no range yet");
     assert!(!ctx.needs_update(), "control: the context is idle");
 
     // The second paragraph, spanning 11..19.
     handle.set_selection(Selection::text(Pos(11), Pos(19)));
-    assert!(ctx.needs_update(), "the selection change asks for an update");
+    assert!(
+        ctx.needs_update(),
+        "the selection change asks for an update"
+    );
     ctx.update(&[]);
     assert_eq!(highlights(&ctx), 1, "the highlight is drawn");
     assert!(!ctx.needs_update(), "and the context is idle again");
