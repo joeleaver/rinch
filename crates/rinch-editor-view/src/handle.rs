@@ -612,9 +612,22 @@ impl WeakEditorHandle {
 /// a caller holding a `RefCell` of its own that one of those effects borrows
 /// would panic inside a plain read (PR #882 review, E3). The one immutable
 /// borrow that does DOM work, [`EditorHandle::set_dark_mode`], flushes itself.
+///
+/// **Dependency tracking is suspended for as long as the borrow lives**
+/// (issue #943). Everything that runs under a borrow of the core is the
+/// editor's code or a plugin's — `Plugin::apply`, `decorations` (the view's
+/// decoration diff), `handle_paste`, `init_state`, a plugin's command, an input
+/// rule — and it runs synchronously inside whatever app effect called the
+/// handle. A plugin that reads an app signal would otherwise make that signal a
+/// dependency of every effect that moves the selection. Holding the suspension
+/// here rather than at each call site is what covers every internal site,
+/// including the ones added later. The one exception is the caller's own
+/// [`EditorHandle::update`] `build` closure, which [`EditorHandle::dispatch`]
+/// runs with the suspension lifted.
 struct CoreGuard<B> {
     borrow: B,
     _no_flush: rinch_core::reactive::EffectFlushSuppressed,
+    _untracked: rinch_core::reactive::TrackingSuspended,
 }
 
 impl<B: std::ops::Deref<Target = EditorCore>> std::ops::Deref for CoreGuard<B> {
@@ -647,6 +660,9 @@ impl<B: std::ops::Deref<Target = EditorCore>> std::ops::Deref for CoreGuard<B> {
 struct CoreMutGuard<'a> {
     borrow: Option<std::cell::RefMut<'a, EditorCore>>,
     no_flush: Option<rinch_core::reactive::EffectFlushSuppressed>,
+    /// See [`CoreGuard`]: tracking is suspended while the borrow is held.
+    /// `None` only while [`EditorHandle::dispatch`] runs a caller's `build`.
+    untracked: Option<rinch_core::reactive::TrackingSuspended>,
     /// `std::thread::panicking()` when the borrow was taken.
     panicking: bool,
 }
@@ -669,10 +685,11 @@ impl Drop for CoreMutGuard<'_> {
         let Some(owed) = self.borrow.as_deref_mut().map(EditorCore::take_owed) else {
             return;
         };
-        // Release in field order — the borrow, then the suppression — before
-        // any user code runs.
+        // Release in field order — the borrow, then the suppressions — before
+        // any user code runs. (The hooks are untracked on their own, #931.)
         self.borrow = None;
         self.no_flush = None;
+        self.untracked = None;
         if std::thread::panicking() && !self.panicking {
             return;
         }
@@ -692,6 +709,7 @@ impl EditorHandle {
         CoreGuard {
             borrow: self.inner.borrow(),
             _no_flush: no_flush,
+            _untracked: rinch_core::reactive::suspend_tracking(),
         }
     }
 
@@ -702,6 +720,7 @@ impl EditorHandle {
         CoreMutGuard {
             borrow: Some(self.inner.borrow_mut()),
             no_flush: Some(no_flush),
+            untracked: Some(rinch_core::reactive::suspend_tracking()),
             panicking: std::thread::panicking(),
         }
     }
@@ -715,6 +734,7 @@ impl EditorHandle {
         Ok(CoreMutGuard {
             borrow: Some(self.inner.try_borrow_mut()?),
             no_flush: Some(no_flush),
+            untracked: Some(rinch_core::reactive::suspend_tracking()),
             panicking: std::thread::panicking(),
         })
     }
@@ -740,7 +760,8 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
-        let state = EditorState::create(schema.clone(), doc, plugins.clone());
+        // Plugins' `init_state` runs here; untracked, as under the core (#943).
+        let state = untracked_handler(|| EditorState::create(schema.clone(), doc, plugins.clone()));
         EditorHandle {
             inner: Rc::new(RefCell::new(EditorCore {
                 state,
@@ -777,8 +798,13 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
-        let state = EditorState::create(schema.clone(), doc, plugins.clone());
-        let view = RinchDomEditorView::new(container, doc_ref, &state);
+        // Plugins' `init_state` and `decorations` run here; untracked, as under
+        // the core (#943).
+        let (state, view) = untracked_handler(|| {
+            let state = EditorState::create(schema.clone(), doc, plugins.clone());
+            let view = RinchDomEditorView::new(container, doc_ref, &state);
+            (state, view)
+        });
         EditorHandle {
             inner: Rc::new(RefCell::new(EditorCore {
                 state,
@@ -860,8 +886,13 @@ impl EditorHandle {
     /// collaborator's edit takes — does not: a browser does not scroll a
     /// contenteditable to its caret because the DOM changed elsewhere, and a user
     /// who scrolled away would be pulled back.
+    ///
+    /// **Tracking.** `build` is the caller's own code and runs tracked: an app
+    /// effect that reads a signal in it depends on that signal. The plugin code
+    /// the dispatch then runs (`Plugin::apply`, `decorations`, …) does not
+    /// subscribe the caller (#943).
     pub fn update(&self, build: impl FnOnce(&EditorState) -> Option<Transaction>) -> bool {
-        self.dispatch(build, false)
+        self.dispatch_inner(build, false, true)
     }
 
     /// [`Self::update`], with the scroll decision made by the caller: `input`
@@ -869,13 +900,35 @@ impl EditorHandle {
     /// a paste, an IME edit), which brings the caret into view whether or not the
     /// transaction set the selection explicitly — an input rule's rewrite or an
     /// IME's surrounding-text delete maps it instead.
+    ///
+    /// `build` here is the handle's own (input rules, a plugin's paste claim)
+    /// and runs untracked; see [`CoreGuard`].
     fn dispatch(
         &self,
         build: impl FnOnce(&EditorState) -> Option<Transaction>,
         input: bool,
     ) -> bool {
+        self.dispatch_inner(build, input, false)
+    }
+
+    /// [`Self::dispatch`]; `caller_build` runs `build` with tracking resumed,
+    /// for [`Self::update`], whose `build` is the caller's code.
+    fn dispatch_inner(
+        &self,
+        build: impl FnOnce(&EditorState) -> Option<Transaction>,
+        input: bool,
+        caller_build: bool,
+    ) -> bool {
         let mut core = self.core_mut();
-        let Some(tr) = build(&core.state) else {
+        if caller_build {
+            // Resume tracking for the caller's closure, and only for it.
+            core.untracked = None;
+        }
+        let built = build(&core.state);
+        if caller_build {
+            core.untracked = Some(rinch_core::reactive::suspend_tracking());
+        }
+        let Some(tr) = built else {
             return false;
         };
         let prev = core.state.clone();
@@ -6828,7 +6881,10 @@ mod tests {
             );
             own.set(1);
             assert_eq!(inner.get(), 2, "positive control: the app effect is live");
-            assert!(fired.get() > after_first, "and its re-run ran the plugin again");
+            assert!(
+                fired.get() > after_first,
+                "and its re-run ran the plugin again"
+            );
         }
 
         /// The issue's repro: a mounted editor asks `decorations()` on every
@@ -6838,9 +6894,7 @@ mod tests {
             let h = two_paragraphs();
             let next = alternating(3, 4);
             let driven = h.clone();
-            assert_plugin_untracked(&h, Site::Decorations, move || {
-                driven.set_selection(next())
-            });
+            assert_plugin_untracked(&h, Site::Decorations, move || driven.set_selection(next()));
         }
 
         #[test]

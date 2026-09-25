@@ -1280,6 +1280,37 @@ pub fn untracked_handler<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// [`untracked_handler`] as a guard: the whole observer stack is suspended
+/// from this call until the returned value is dropped (issue #943).
+///
+/// For library code that runs app-supplied code under a borrow it holds in a
+/// guard of its own, where a closure cannot span the region — the rich-text
+/// editor's `EditorHandle` holds one beside every borrow of its core, so
+/// every plugin method it runs (`apply`, `decorations`, `handle_paste`, a
+/// plugin's command) is untracked however it was reached. Everything
+/// [`untracked_handler`] says applies, including its warning: the caller's
+/// own synchronous code must run with the guard dropped.
+///
+/// Drop guards in the reverse order they were taken, as scoped guards are.
+#[must_use = "tracking resumes as soon as the guard is dropped"]
+pub struct TrackingSuspended {
+    _suspended: scope::SuspendObservers,
+}
+
+impl std::fmt::Debug for TrackingSuspended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TrackingSuspended")
+    }
+}
+
+/// Suspend dependency tracking until the returned guard is dropped; see
+/// [`TrackingSuspended`].
+pub fn suspend_tracking() -> TrackingSuspended {
+    TrackingSuspended {
+        _suspended: scope::SuspendObservers::take(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
