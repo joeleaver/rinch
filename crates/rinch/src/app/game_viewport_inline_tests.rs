@@ -606,12 +606,15 @@ fn overlay_closing_reveals_the_last_frame() {
     unregister_render_surface(game.id());
 }
 
+/// (viewport name, card style, wrapper style, device scale, frame size).
+type OracleCase = (&'static str, &'static str, &'static str, f64, (u32, u32));
+
 /// Copy vs reference for fresh frames, over a spread of scenes: rounded card,
 /// opacity wrapper, DPI 1.5 at a whole and a fractional device offset,
 /// downscaled and upscaled frames.
 #[test]
 fn fresh_frames_match_the_reference_draw() {
-    let cases: &[(&str, &str, &str, f64, (u32, u32))] = &[
+    let cases: &[OracleCase] = &[
         ("r2d-plain", "", "", 1.0, (400, 200)),
         ("r2d-opacity", "", "opacity: 0.5;", 1.0, (400, 200)),
         (
