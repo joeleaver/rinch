@@ -1560,14 +1560,11 @@ fn a_theme_change_that_reaches_no_text_reshapes_nothing() {
         doc.load_css(css);
         doc.set_theme_css(theme);
         let _ = ifc_doc(&mut doc, false);
-        // A second paragraph through another route: an anonymous box.
-        let body = doc.body();
-        let a = doc.create_element("div");
-        doc.append_child(body, a);
-        let t = doc.create_text("text beside a block");
-        doc.append_child(a, t);
-        let li = doc.create_element("li");
-        doc.append_child(a, li);
+        // A second paragraph, and an atomic inline with an IFC of its own.
+        let _ = chip_doc(&mut doc, false);
+        // No anonymous block box: the whole-document IFC setup pass a theme
+        // change runs re-mints those, and re-shapes their text whatever the
+        // restyle did (#964).
         settle(&mut doc);
         doc
     };
