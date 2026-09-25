@@ -574,3 +574,30 @@ fn none_against_a_zero_rotation_starts_nothing() {
         "none -> rotate(0deg) must not start a transition"
     );
 }
+
+/// Review of #983: `skewX` and `skew` do not pair either (Chrome 153,
+/// `Element.animate` paused at `currentTime`). A mutant pairing them panics in
+/// `interpolate_pair`'s `unreachable!` and no other fixture reaches it.
+#[test]
+fn skew_x_against_skew_decomposes() {
+    let samples = [
+        (0.2, [1.01037, 0.0706518, 0.493977, 1.0128, 0.0, 0.0]),
+        (0.5, [1.01641, 0.17922, 0.371114, 1.01963, 0.0, 0.0]),
+        (0.8, [1.01062, 0.289789, 0.252393, 1.01229, 0.0, 0.0]),
+    ];
+    check_transition("skewX(30deg)", "skew(10deg, 20deg)", &samples);
+    check_keyframes("skewX(30deg)", "skew(10deg, 20deg)", &samples);
+}
+
+/// Review of #983: a singular endpoint flips *at* 0.5 to the end value —
+/// Chrome 153 gives `matrix(1, 0, 0, 1, 0, 0)` at exactly half way. The
+/// existing fixture samples 0.49/0.51 only, the fixed point either side of the
+/// `<` / `<=` choice.
+#[test]
+fn a_singular_endpoint_is_the_end_value_at_exactly_half_way() {
+    check_keyframes(
+        "matrix(0, 0, 0, 0, 10, 10)",
+        "matrix(1, 0, 0, 1, 0, 0)",
+        &[(0.5, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0])],
+    );
+}
