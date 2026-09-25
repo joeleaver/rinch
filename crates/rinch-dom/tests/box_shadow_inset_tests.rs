@@ -159,6 +159,160 @@ fn a_blurred_inset_shadow_falls_off_as_a_gaussian() {
         "the middle of the box is 2.5 sigma from every edge"
     );
     assert_alpha(&p, LEFT - 1, mid, 0.0, "outside the box");
+    // The corner, where two edges' shadows meet. Chrome 153 is separable
+    // there — the hole's blurred coverage is the product of the two axes' —
+    // so the corner is darker than either edge: 0.706 at the corner pixel,
+    // 0.494 five pixels in along the diagonal. A model that asks only for the
+    // nearest edge (#1014's first cut) gave 0.435 and 0.314.
+    for (d, chrome) in [(0, 0.706), (5, 0.494)] {
+        let got = alpha(&p, LEFT + d, TOP + d);
+        assert!(
+            (got - chrome).abs() <= 0.04,
+            "blurred inset shadow's corner at ({d}, {d}): alpha {got:.3}, Chrome 153 paints {chrome:.3}"
+        );
+    }
+}
+
+/// A small blur (`inset 0 0 4px`, sigma 2) against Chrome 153, mid-edge and
+/// at the corner.
+#[test]
+fn a_small_blurred_inset_shadow_matches_chrome() {
+    let p = painted("box-shadow: inset 0 0 4px rgb(0,0,0)");
+    for ((x, y), chrome) in [
+        ((0, 50), 0.400),
+        ((1, 50), 0.251),
+        ((2, 50), 0.125),
+        ((0, 0), 0.631),
+        ((1, 1), 0.439),
+        ((3, 3), 0.098),
+    ] {
+        let got = alpha(&p, LEFT + x, TOP + y);
+        assert!(
+            (got - chrome).abs() <= 0.05,
+            "inset 0 0 4px at ({x}, {y}): alpha {got:.3}, Chrome 153 paints {chrome:.3}"
+        );
+    }
+}
+
+/// A rounded hole blurs as a rounded hole. `border-radius: 30px; inset 0 0
+/// 15px`, along the diagonal from the corner. Chrome 153: clear until the
+/// padding corner's arc (about 8.8px in), then 0.427 at 10px, 0.125 at 15px
+/// and nearly clear at 20px. A hole blurred as if it were square would give
+/// the diagonal a square hole's corner and leave these too dark.
+#[test]
+fn a_blurred_rounded_inset_shadow_follows_the_rounded_hole() {
+    let p = painted("border-radius: 30px; box-shadow: inset 0 0 15px rgb(0,0,0)");
+    assert_alpha(&p, LEFT + 6, TOP + 6, 0.0, "outside the padding corner");
+    for (d, chrome) in [(10, 0.427), (12, 0.286), (15, 0.125), (20, 0.012)] {
+        let got = alpha(&p, LEFT + d, TOP + d);
+        assert!(
+            (got - chrome).abs() <= 0.04,
+            "rounded blurred inset shadow at ({d}, {d}): alpha {got:.3}, Chrome 153 paints {chrome:.3}"
+        );
+    }
+}
+
+/// Review of #1014, F1: on the software painter the shadow reaches the
+/// rounded clip's anti-aliased edge **once**. Drawn as a stack of translucent
+/// fills each clipped on its own, the edge pixel compounded the clip's
+/// coverage into itself and came out 0.80 — a dark rim along the curve.
+/// Chrome 153 paints 0.357 there; one draw through the clip gives the
+/// unblurred shape's own edge coverage, 0.435.
+#[test]
+fn a_blurred_rounded_inset_shadow_has_no_dark_rim() {
+    let p = painted("border-radius: 30px; box-shadow: inset 10px 20px 15px 5px rgb(0,0,0)");
+    for (x, y) in [(20, 1), (1, 20)] {
+        let got = alpha(&p, LEFT + x, TOP + y);
+        assert!(
+            (got - 0.357).abs() <= 0.1,
+            "the clip edge at ({x}, {y}): alpha {got:.3}, Chrome 153 paints 0.357"
+        );
+    }
+}
+
+/// A translucent inset shadow keeps its alpha, unblurred and blurred.
+/// `rgba(0,0,255,0.5)`: the unblurred ring is 0.5 deep; `inset 0 0 10px 5px`
+/// at depths 0 / 5 / 12, Chrome 153: 0.416 / 0.231 / 0.024.
+#[test]
+fn a_translucent_inset_shadow_keeps_its_alpha() {
+    let p = painted("box-shadow: inset 0 0 0 10px rgba(0,0,255,0.5)");
+    assert_alpha(&p, LEFT + 5, TOP + 50, 0.5, "the unblurred ring");
+    let p = painted("box-shadow: inset 0 0 10px 5px rgba(0,0,255,0.5)");
+    for (d, chrome) in [(0, 0.416), (5, 0.231), (12, 0.024)] {
+        let got = alpha(&p, LEFT + d, TOP + 50);
+        assert!(
+            (got - chrome).abs() <= 0.03,
+            "translucent blurred inset shadow at depth {d}: alpha {got:.3}, Chrome 153 paints {chrome:.3}"
+        );
+    }
+}
+
+/// Unequal borders at a corner: `border-width: 5px 30px 5px 5px;
+/// border-radius: 40px`. CSS makes the padding corner at the top right an
+/// ellipse (10 wide, 35 tall); rinch's radii are circular and take the larger
+/// border, giving a radius of 10 — which agrees with Chrome 153 at this pixel
+/// (black, in the ring under the corner). Taking the smaller border instead
+/// (radius 35) would cut it away.
+#[test]
+fn an_unequal_border_corner_takes_the_larger_border() {
+    let p = painted(
+        "border-style: solid; border-color: rgba(0,0,0,0); border-width: 5px 30px 5px 5px; \
+         border-radius: 40px; box-shadow: inset 0 0 0 10px rgb(0,0,0)",
+    );
+    assert_alpha(&p, LEFT + 60, TOP + 10, 1.0, "under the top-right corner");
+}
+
+/// Review of #1014, F2: a `data-viewport` hole in a clipping container shows
+/// the layer beneath through the container's inset shadow, exactly as it does
+/// through its background (a browser paints the child above its parent's
+/// shadow).
+#[test]
+fn an_inset_shadow_is_cut_for_a_viewport_hole() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        &format!(
+            "position: absolute; left: {LEFT}px; top: {TOP}px; width: 200px; height: 200px; \
+             overflow: hidden; background: rgb(255,255,255); box-shadow: inset 0 0 0 30px rgb(0,0,0)"
+        ),
+    );
+    let hole = doc.create_element("div");
+    doc.set_attribute(hole, "data-viewport", "game");
+    doc.set_attribute(hole, "style", "width: 100px; height: 100px");
+    doc.append_child(div, hole);
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    let mut p = TinySkiaPainter::new(800, 600);
+    let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut p,
+        1.0,
+        (800.0, 600.0),
+        &mut doc.font_cx,
+        &mut lcx,
+    );
+    assert_alpha(
+        &p,
+        LEFT + 5,
+        TOP + 50,
+        0.0,
+        "the ring inside the viewport hole",
+    );
+    assert_alpha(&p, LEFT + 50, TOP + 50, 0.0, "the hole itself");
+    assert_eq!(
+        rgba(&p, LEFT + 5, TOP + 150),
+        [0.0, 0.0, 0.0, 1.0],
+        "the ring outside the hole"
+    );
+    assert_eq!(
+        rgba(&p, LEFT + 150, TOP + 150),
+        [1.0, 1.0, 1.0, 1.0],
+        "the background"
+    );
 }
 
 /// An inset shadow paints **above** the element's background (an outer one
