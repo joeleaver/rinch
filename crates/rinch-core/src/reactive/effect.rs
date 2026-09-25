@@ -117,6 +117,21 @@ pub(super) struct EffectInner {
     /// every run so `use_context`/`use_store` resolve the same namespace as at
     /// build time (issue #136). `0` = the thread-global fallback root.
     pub(super) root: u64,
+    /// The document current when this effect was created
+    /// ([`current_dispatching_doc`](crate::context::current_dispatching_doc)),
+    /// re-entered as the dispatching-document marker on every run (issue #295).
+    ///
+    /// The effect queue is thread-global: an effect owned by one document is
+    /// flushed wherever the write that woke it happened, and with two
+    /// documents on one thread (an app and its DevTools panel, two embedded
+    /// `RinchContext`s) that is routinely inside the *other* document's
+    /// `handle_event`. Everything the body does that reads the marker — arming
+    /// a `Drag`, registering a keyboard/paste/selection interceptor, asking
+    /// `Drag::is_active` — must be attributed to the document the effect
+    /// belongs to, not to whichever one was dispatching. `None` (created
+    /// outside any document: `main`, a timer, rinch-web) re-enters `None`,
+    /// which every consumer reads as "nobody's" — never a borrowed document.
+    pub(super) doc: Option<u64>,
     /// The scope that owned this effect when it was created, re-entered on every
     /// run so resources the body creates are attributed to the component that
     /// built it rather than to whatever happened to be rendering when the flush
@@ -163,6 +178,7 @@ impl Effect {
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
+            doc: crate::context::current_dispatching_doc(),
             owner: super::Owner::current(),
             deps: RefCell::new(Vec::new()),
             body_tracks_deps: true,
@@ -193,6 +209,7 @@ impl Effect {
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
+            doc: crate::context::current_dispatching_doc(),
             owner: super::Owner::current(),
             deps: RefCell::new(Vec::new()),
             body_tracks_deps: true,
@@ -416,6 +433,11 @@ pub(super) fn run_effect(id: ObserverId) {
         // use_context/use_store resolve the same namespace as at build time
         // (issue #136).
         let _root_guard = crate::context::push_context_root(inner.root);
+
+        // …and the document it was created in, for the same reason and for
+        // the same kind of consumer: the queue drains under whichever
+        // document happens to be dispatching (issue #295).
+        let _doc_guard = crate::context::enter_dispatching_doc(inner.doc);
 
         // Re-enter the scope that owned this effect at creation, for the same
         // reason: `flush_effects` runs from arbitrary stacks (an event handler,

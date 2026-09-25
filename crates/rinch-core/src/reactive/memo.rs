@@ -114,6 +114,11 @@ struct MemoInner<T> {
     /// context A but first read from context B resolved B's stores (issue #136
     /// follow-up, issue #141). `0` = the thread-global fallback root.
     root: u64,
+    /// The document current when this memo was created, re-entered around
+    /// each recompute for the same reason `root` is — the computation runs in
+    /// the reader's frame, which may be another document's dispatch (issue
+    /// #295). See `EffectInner::doc`.
+    doc: Option<u64>,
     /// The scope that owned this memo at creation, re-entered around the lazy
     /// recompute for the same reason `root` is (issue #141). Weak by
     /// construction — see [`Owner`](super::Owner).
@@ -153,6 +158,7 @@ impl<T: Clone + PartialEq + 'static> MemoInner<T> {
         // reach `Memo::leak` on this same memo, which takes `owner` mutably.
         let owner = self.owner.borrow().clone();
         let _root_guard = crate::context::push_context_root(self.root);
+        let _doc_guard = crate::context::enter_dispatching_doc(self.doc);
         let _owner_guard = owner.push();
         // Retracking: this is the pass that reads the memo's dependencies, so
         // it replaces the set the previous recompute took out (#171).
@@ -227,6 +233,7 @@ impl<T: Clone + PartialEq + 'static> Memo<T> {
             state: Cell::new(MemoState::Dirty),
             version: Cell::new(0),
             root: crate::context::current_context_root(),
+            doc: crate::context::current_dispatching_doc(),
             owner: RefCell::new(super::Owner::current()),
             subscribers: Rc::clone(&subscribers),
         });
@@ -257,6 +264,7 @@ impl<T: Clone + PartialEq + 'static> Memo<T> {
             })),
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
+            doc: crate::context::current_dispatching_doc(),
             // Inert: the marker closure only queues observers, so it allocates
             // nothing to attribute. Set for uniformity with every other
             // `EffectInner`.

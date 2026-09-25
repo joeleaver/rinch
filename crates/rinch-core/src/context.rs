@@ -231,6 +231,18 @@ pub fn push_dispatching_doc(doc_key: u64) -> DispatchDocGuard {
     DispatchDocGuard { prev }
 }
 
+/// Re-enter a document identity already resolved by [`doc_identity`] — an
+/// `Option` captured from [`current_dispatching_doc`] — until the guard drops.
+///
+/// The reactive runtime's half of the marker (issue #295): an effect or memo
+/// records the document current at its creation and re-enters it around every
+/// run, because the effect queue is thread-global and drains under whichever
+/// document happens to be dispatching. `None` is re-entered as `None`.
+pub(crate) fn enter_dispatching_doc(doc: Option<u64>) -> DispatchDocGuard {
+    let prev = DISPATCHING_DOC.with(|d| d.replace(doc));
+    DispatchDocGuard { prev }
+}
+
 /// Create a context value accessible by any component.
 ///
 /// Context provides a way to share values across your component tree without
