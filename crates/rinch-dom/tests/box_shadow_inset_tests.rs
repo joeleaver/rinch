@@ -265,54 +265,54 @@ fn an_unequal_border_corner_takes_the_larger_border() {
 /// Review of #1014, F2: a `data-viewport` hole in a clipping container shows
 /// the layer beneath through the container's inset shadow, exactly as it does
 /// through its background (a browser paints the child above its parent's
-/// shadow).
+/// shadow) — and whether or not the container paints a background, since the
+/// holes used to be looked for only when it did.
 #[test]
 fn an_inset_shadow_is_cut_for_a_viewport_hole() {
-    let mut doc = RinchDocument::new();
-    let body = doc.body();
-    let div = doc.create_element("div");
-    doc.set_attribute(
-        div,
-        "style",
-        &format!(
-            "position: absolute; left: {LEFT}px; top: {TOP}px; width: 200px; height: 200px; \
-             overflow: hidden; background: rgb(255,255,255); box-shadow: inset 0 0 0 30px rgb(0,0,0)"
-        ),
-    );
-    let hole = doc.create_element("div");
-    doc.set_attribute(hole, "data-viewport", "game");
-    doc.set_attribute(hole, "style", "width: 100px; height: 100px");
-    doc.append_child(div, hole);
-    doc.append_child(body, div);
-    doc.resolve_layout(800.0, 600.0);
-    let mut p = TinySkiaPainter::new(800, 600);
-    let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
-    rinch_dom::paint::paint_document(
-        &doc.tree,
-        &mut p,
-        1.0,
-        (800.0, 600.0),
-        &mut doc.font_cx,
-        &mut lcx,
-    );
-    assert_alpha(
-        &p,
-        LEFT + 5,
-        TOP + 50,
-        0.0,
-        "the ring inside the viewport hole",
-    );
-    assert_alpha(&p, LEFT + 50, TOP + 50, 0.0, "the hole itself");
-    assert_eq!(
-        rgba(&p, LEFT + 5, TOP + 150),
-        [0.0, 0.0, 0.0, 1.0],
-        "the ring outside the hole"
-    );
-    assert_eq!(
-        rgba(&p, LEFT + 150, TOP + 150),
-        [1.0, 1.0, 1.0, 1.0],
-        "the background"
-    );
+    for background in ["background: rgb(255,255,255);", ""] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            &format!(
+                "position: absolute; left: {LEFT}px; top: {TOP}px; width: 200px; height: 200px; \
+                 overflow: hidden; {background} box-shadow: inset 0 0 0 30px rgb(0,0,0)"
+            ),
+        );
+        let hole = doc.create_element("div");
+        doc.set_attribute(hole, "data-viewport", "game");
+        doc.set_attribute(hole, "style", "width: 100px; height: 100px");
+        doc.append_child(div, hole);
+        doc.append_child(body, div);
+        doc.resolve_layout(800.0, 600.0);
+        let mut p = TinySkiaPainter::new(800, 600);
+        let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut p,
+            1.0,
+            (800.0, 600.0),
+            &mut doc.font_cx,
+            &mut lcx,
+        );
+        let what = |w: &str| format!("{w} ({background:?})");
+        assert_alpha(
+            &p,
+            LEFT + 5,
+            TOP + 50,
+            0.0,
+            &what("the ring inside the viewport hole"),
+        );
+        assert_alpha(&p, LEFT + 50, TOP + 50, 0.0, &what("the hole itself"));
+        assert_eq!(
+            rgba(&p, LEFT + 5, TOP + 150),
+            [0.0, 0.0, 0.0, 1.0],
+            "{}",
+            what("the ring outside the hole")
+        );
+    }
 }
 
 /// An inset shadow paints **above** the element's background (an outer one
