@@ -1088,8 +1088,8 @@ context.
 The registry also shrinks now. It used to only ever grow: building a new native
 menu bar releases the previous bar's ids, and dropping a `TrayIcon` releases that
 tray's (the ksni path mints a fresh `ksni-{N}` id per item per build, so it could
-never even overwrite). Keep the `TrayIcon` alive for as long as you want its menu
-to work. A callback may also rebuild the menu it was dispatched from — that used
+never even overwrite). Keep the `TrayIcon` alive for as long as you want the tray:
+dropping it also removes the icon (#377, below). A callback may also rebuild the menu it was dispatched from — that used
 to be a `BorrowMutError`.
 
 ## Rich-Text Editor
@@ -3062,6 +3062,25 @@ let tray = TrayIconBuilder::new()
 - `with_icon_path(path)` — Load from a PNG file path
 - **Push-based events** — Menu callbacks fire via `MenuEvent::set_event_handler` on the main thread. No polling thread, no wasted CPU.
 - **Left-click** — Shows the window automatically via `TrayIconEvent::set_event_handler`.
+- **Dropping the `TrayIcon` removes the icon, then releases its callbacks** (#377).
+  On Linux, ksni's own `Handle` does not stop the service when dropped (its loop
+  ignores a closed request channel), so `TrayIcon`'s `Drop` sends ksni's
+  `Shutdown` and joins a helper thread that waits for the D-Bus connection to
+  close. The wait runs off the caller's thread because ksni's `wait` is a
+  `block_on`, which panics inside a tokio runtime. The callbacks go only after
+  that: before #377 the icon stayed on the panel for the life of the process,
+  and once #183 released the callbacks on drop, every item on it was dead.
+  Pinned by `tray::tests::dropping_the_tray_shuts_the_service_down_before_releasing_the_callbacks`
+  and, against a live session bus, the `#[ignore]`d
+  `live_a_dropped_tray_leaves_the_status_notifier_watcher`.
+- **`TrayIcon` is `!Send`/`!Sync`** on every platform, deliberately: its
+  `MenuRegistration` holds `Rc`s (and `tray-icon`'s own handle off Linux holds
+  one too) because release must run on the thread whose
+  thread-local `MENU_CALLBACKS` holds the entries. On Linux it was `Send` until
+  #183, so a `static OnceLock<TrayIcon>` stopped compiling there. Keep it in a
+  local of `main` or a `thread_local!`.
+- **A disabled item registers no callback** on either path: `build_muda_item`
+  returns early, and the ksni conversion mints no `ksni-{N}` id for one.
 
 **Minimize-to-tray pattern:** Combine system tray with `on_close_requested` + `hide_current_window()`:
 

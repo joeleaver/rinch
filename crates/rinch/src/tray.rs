@@ -73,7 +73,7 @@ pub type TrayResult<T> = Result<T, TrayError>;
 ///
 /// # Threads
 ///
-/// A `TrayIcon` that carries a menu is **neither `Send` nor `Sync`**: keep it
+/// A `TrayIcon` is **neither `Send` nor `Sync`**, on any platform: keep it
 /// on the thread that built it (the main thread), for example in a local of
 /// `main` or in a `thread_local!`, not in a `static OnceLock` or an
 /// `Arc<Mutex<_>>`, and do not move it into a spawned thread. This is
@@ -83,7 +83,8 @@ pub type TrayResult<T> = Result<T, TrayError>;
 /// anywhere else, it would reclaim nothing. The handle holds `Rc`s for exactly
 /// that reason, so the compiler enforces it. On Linux this became true with
 /// issue #183 (the handle had held only a `JoinHandle` before, and was `Send`);
-/// on other platforms `tray-icon`'s own handle was never `Send`.
+/// on other platforms `tray-icon`'s own handle holds an `Rc` and was never
+/// `Send`.
 pub struct TrayIcon {
     /// On Linux: the running ksni service, shut down on drop.
     #[cfg(target_os = "linux")]
