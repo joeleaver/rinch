@@ -2189,7 +2189,12 @@ impl raw_window_handle::HasDisplayHandle for AndroidWindow {
 
 // ── GPU diagnostic tests ────────────────────────────────────────────────
 
+// A bring-up diagnostic, run by hand: uncomment the `gpu_diagnostic::run_tests()`
+// call in `run_loop` to log whether this device's Vulkan driver can do what
+// Vello needs (compute, storage textures, a render). Nothing calls it otherwise,
+// so it is dead code by design rather than by accident (#372).
 #[cfg(feature = "android-gpu")]
+#[allow(dead_code)]
 mod gpu_diagnostic {
     pub fn run_tests() {
         log::info!("=== GPU DIAGNOSTIC TESTS ===");
@@ -2442,7 +2447,7 @@ mod gpu_diagnostic {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups((w + 7) / 8, (h + 7) / 8, 1);
+            pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
         queue.submit(std::iter::once(encoder.finish()));
         let _ = device.poll(wgpu::PollType::Wait {

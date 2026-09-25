@@ -311,6 +311,7 @@ pub(crate) fn offer_key(doc_key: u64, node_id: usize, key: &KeyEventData) -> boo
 /// node, and for a registered one that is focusable but not *text* (a card, a
 /// toolbar button), so focusing those does not switch the OS input method on.
 /// An unmounted target answers `false` for free — its registration is gone.
+#[cfg(any(feature = "desktop", test))] // read only by `RinchApp::ime_state`
 pub(crate) fn wants_ime(doc_key: u64, node_id: usize) -> bool {
     entry_for(doc_key, node_id).is_some_and(|entry| entry.on_ime.is_some())
 }
@@ -318,6 +319,7 @@ pub(crate) fn wants_ime(doc_key: u64, node_id: usize) -> bool {
 /// The target's IME candidate-box rect in logical window space, freshly read
 /// from its [`FocusEntry::caret_rect`] provider. `None` when it has none, or
 /// when it has no caret right now.
+#[cfg(any(feature = "desktop", test))] // read only by `RinchApp::ime_state`
 pub(crate) fn caret_rect_of(doc_key: u64, node_id: usize) -> Option<(f32, f32, f32, f32)> {
     entry_for(doc_key, node_id)
         .and_then(|entry| entry.caret_rect.clone())
