@@ -45,10 +45,3 @@ pub use node::{
     Node, NodeContext, NodeKind, NodeTree, TextData, TextMeasure, first_legend_child,
     node_is_disabled, node_is_disabled_in_tree, tag_is_disableable,
 };
-
-/// TEMPORARY (#1036 workflow self-test, reverted before merge): an API that
-/// exists only on this branch, so a benchmark calling it cannot build on `main`.
-#[doc(hidden)]
-pub fn perf_self_test_1036(n: u64) -> u64 {
-    (0..n).fold(0, |a, i| a.wrapping_mul(31).wrapping_add(i))
-}

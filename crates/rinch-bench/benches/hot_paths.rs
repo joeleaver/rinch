@@ -112,12 +112,6 @@ fn memo_flush(f: ShellFixture<Signal<usize>>) -> ShellFixture<Signal<usize>> {
     black_box(measure(black_box(f), op_memo_selection))
 }
 
-// TEMPORARY (#1036 workflow self-test, reverted before merge).
-#[library_benchmark]
-fn self_test_1036() -> u64 {
-    black_box(rinch_dom::perf_self_test_1036(black_box(40)))
-}
-
 library_benchmark_group!(
     name = dom,
     benchmarks = [
@@ -132,8 +126,7 @@ library_benchmark_group!(
         inset_move,
         full_paint,
         shadow_paint,
-        text_shadow_paint,
-        self_test_1036
+        text_shadow_paint
     ]
 );
 
