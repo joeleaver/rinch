@@ -145,6 +145,14 @@ define_counters! {
     /// signature moved), and so dropped the measures and paint layout of.
     /// The roots it left alone keep both.
     IfcSignatureChanges = "ifc_signature_changes",
+    /// Parley layouts (of any of the kinds above) broken a second time to
+    /// hang preserved trailing spaces at a soft wrap
+    /// (`break_lines_hanging_spaces`). At most one per layout, however many
+    /// lines it fixes — the linearity pin.
+    IfcHangPasses = "ifc_hang_passes",
+    /// Lines those passes broke again at a widened width to keep their
+    /// spaces and tabs on the line they hang from.
+    IfcHangLines = "ifc_hang_lines",
 
     // ── Layout ─────────────────────────────────────────────────────────
     /// `resolve_layout` calls.

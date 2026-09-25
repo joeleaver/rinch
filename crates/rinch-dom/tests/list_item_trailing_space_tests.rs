@@ -358,3 +358,83 @@ fn a_soft_wrapped_lines_hanging_space_is_not_in_the_measured_width() {
         assert_eq!(boxof(&d, p), (0.0, 0.0, 42.0, 3.0 * LINE), "{ws}");
     }
 }
+
+// ---- From #1018's review (Chrome 153, the same face and markup) ----
+
+/// A shrink-to-fit box of `white-space: {ws}` holding `s`: a `flex-start` item
+/// of a 300px column. Returns its box and the caret x at char `at`.
+fn fit_content(ws: &str, s: &str, at: usize) -> ((f32, f32), f32) {
+    let mut d = doc();
+    let body = d.body();
+    let c = el(
+        &mut d,
+        body,
+        "div",
+        "display: flex; flex-direction: column; align-items: flex-start; width: 300px; \
+         font-family: ProbeFace; font-size: 16px; line-height: 25px",
+    );
+    let p = el(&mut d, c, "div", &format!("white-space: {ws}"));
+    text(&mut d, p, s);
+    d.resolve_layout(VW, VH);
+    let (_, _, w, h) = boxof(&d, p);
+    ((w, h), caret(&d, p, at).0)
+}
+
+/// NBSP is not white space that hangs (CSS Text 3 §4.1.3 hangs spaces and
+/// tabs): `text` + three NBSPs is one unbreakable word that does not fit 80px,
+/// so Chrome wraps it: 50 tall, `text` at the start of line two.
+#[test]
+fn nbsp_does_not_hang() {
+    let s = "bullet text\u{a0}\u{a0}\u{a0}";
+    let (d, b) = block("80px", s);
+    assert_eq!(boxof(&d, b).3, 2.0 * LINE);
+}
+
+/// `pre-line` collapses spaces and removes them at the end of a line, so they
+/// are no part of its max-content width. Chrome: 27.92.
+#[test]
+fn pre_line_trailing_spaces_are_not_measured() {
+    let ((w, _), _) = fit_content("pre-line", "abc   ", 0);
+    assert_eq!(w, 28.0);
+}
+
+/// The atomic-inline measure site: an `inline-block` counts its trailing
+/// preserved spaces. Chrome: 41.42.
+#[test]
+fn inline_block_counts_its_trailing_spaces() {
+    let mut d = doc();
+    let body = d.body();
+    let ib = el(
+        &mut d,
+        body,
+        "span",
+        "display: inline-block; font-family: ProbeFace; font-size: 16px; line-height: 25px; \
+         white-space: pre-wrap",
+    );
+    text(&mut d, ib, "abc   ");
+    d.resolve_layout(VW, VH);
+    assert_eq!((boxof(&d, ib).2, boxof(&d, ib).3), (41.0, LINE));
+}
+
+/// The rebroken line leaves no room for a following word, however narrow:
+/// Chrome puts `i` (3.88px) on line two.
+#[test]
+fn a_narrow_word_after_hanging_spaces_still_wraps() {
+    let s = "bullet text   i";
+    let (d, b) = block("75px", s);
+    assert_eq!(boxof(&d, b).3, 2.0 * LINE);
+    assert_eq!(caret(&d, b, s.len()).1, LINE);
+}
+
+/// Shrink-to-fit and alignment agree: the box counts its trailing spaces, so
+/// the text starts at the box's start. Chrome: 41.42 wide, `abc` at 0 for
+/// right and center alignment alike.
+#[test]
+#[ignore = "#1042: parley's `align` hangs every trailing space, so the text starts past its own box"]
+fn right_aligned_fit_content_text_starts_at_its_start() {
+    for align in ["right", "center"] {
+        let ((w, _), x) = fit_content(&format!("pre-wrap; text-align: {align}"), "abc   ", 0);
+        assert_eq!(w, 41.0);
+        assert!(x.abs() < 1.0, "{align}: `abc` at {x}");
+    }
+}

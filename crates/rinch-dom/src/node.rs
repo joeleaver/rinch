@@ -483,11 +483,14 @@ pub struct InlineLayout {
     pub decoration_spans: Vec<InlineDecorationSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
-    /// Whether the text's white space is preserved (`pre`, `pre-wrap`,
-    /// `pre-line`, and every contenteditable root), so spaces at the end of
-    /// a line are content, not collapsed away. Read by
-    /// [`Self::measured_width`].
+    /// Whether spaces at the end of a line are content, not collapsed away:
+    /// `pre`, `pre-wrap` and every contenteditable root. Not `pre-line`, which
+    /// collapses spaces and removes them at the end of a line (CSS Text 3
+    /// §4.1.3). Read by [`Self::measured_width`].
     pub preserves_spaces: bool,
+    /// What hanging the preserved spaces at a soft wrap cost this layout
+    /// (the `ifc_hang_*` perf counters).
+    pub hang: crate::ifc::HangStats,
 }
 
 impl InlineLayout {

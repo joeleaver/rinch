@@ -34,10 +34,16 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
     is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC
     breaks its lines, and puts the spaces back on the line they hang from; upstream's rework
-    (#790, #785) is unreleased. Likewise an IFC's measure is `InlineLayout::measured_width`, not
+    (#790, #785) is unreleased. Spaces and tabs hang, NBSP does not (it glues). It is **one**
+    extra break of the paragraph, line by line, however many lines it fixes: the first version
+    restarted from line 0 per fixed line, which is quadratic (0.7–1.0 s for 1,600 double-spaced
+    lines). `ifc_hang_passes` counts those breaks, at most one per layout, and
+    `perf_regression_scenarios::a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass` pins it;
+    `ifc::hang_differential_tests` holds the old loop as the oracle. Likewise an IFC's measure is `InlineLayout::measured_width`, not
     `Layout::width`: the latter drops a preserved trailing space that Chrome counts, and a box
     sized without it wraps the space onto a line of its own (the editor's list bullet dropping a
-    line after "text ").
+    line after "text "). Not for `pre-line`, which removes spaces at a line's end (though rinch
+    still keeps them in its text, #1043).
     `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)

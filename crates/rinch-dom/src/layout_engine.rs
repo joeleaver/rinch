@@ -585,6 +585,7 @@ impl RinchDocument {
         // folded into `self.tree.perf` after the compute.
         let measure_calls = std::cell::Cell::new(0u64);
         let shape_ifc = std::cell::Cell::new(0u64);
+        let hang = std::cell::Cell::new(crate::ifc::HangStats::default());
         let shape_text = std::cell::Cell::new(0u64);
         let cache_hits = std::cell::Cell::new(0u64);
         let font_cx = &mut self.font_cx;
@@ -789,6 +790,10 @@ impl RinchDocument {
                             let inline_layout = Self::build_inline_layout(
                                 nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                             );
+                            let mut h = hang.get();
+                            h.passes += inline_layout.hang.passes;
+                            h.lines += inline_layout.hang.lines;
+                            hang.set(h);
                             let w = inline_layout.measured_width();
                             let h = inline_layout.layout.height();
 
@@ -817,6 +822,7 @@ impl RinchDocument {
         let perf = &self.tree.perf;
         perf.add(Counter::TaffyMeasureCalls, measure_calls.get());
         perf.add(Counter::ShapeMeasureIfc, shape_ifc.get());
+        hang.get().record(perf);
         perf.add(Counter::ShapeMeasureText, shape_text.get());
         perf.add(Counter::IfcMeasureCacheHits, cache_hits.get());
         perf.add_elapsed(Counter::TimeTaffyComputeNs, t);
