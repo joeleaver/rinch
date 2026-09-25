@@ -3773,13 +3773,17 @@ mod native_event_queue_tests {
     /// consumes the old `ReRender`, and nothing is left to wake the loop for
     /// the new callback.
     ///
+    /// Two injection points, both inside that window: the end of the queued
+    /// half, and the start of the native half (before its drain takes the
+    /// lock). The second is what a fix that samples "is anything queued?"
+    /// *before* the native drain gets wrong.
+    ///
     /// The invariant: once the wake returns, the injected callback has either
     /// run or has a wake owed (a `ReRender` in the queue — which is what
     /// `send_native_event` wakes the loop for). "Or has run" keeps the fixture
     /// honest if another test in this process drains the shared main queue in
     /// the meantime; that drain runs it, which is not a lost wake.
-    #[test]
-    fn a_callback_queued_between_the_two_drains_keeps_its_wake() {
+    fn callback_queued_mid_wake_keeps_its_wake(inject_in_native_half: bool) {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
         let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
@@ -3795,21 +3799,31 @@ mod native_event_queue_tests {
 
         let injected_ran = Arc::new(AtomicBool::new(false));
         let flag = injected_ran.clone();
+        // Another thread, inside the window.
+        let inject = move || {
+            std::thread::spawn(move || {
+                run_on_main_thread(move || flag.store(true, Ordering::SeqCst))
+            })
+            .join()
+            .unwrap();
+        };
+        let mut inject = Some(inject);
         drain_wake_queues(
-            &mut (),
-            |_| {
+            &mut inject,
+            |inject| {
                 rinch_core::drain_main_callbacks();
-                // Another thread, right between the two halves.
-                std::thread::spawn(move || {
-                    run_on_main_thread(move || flag.store(true, Ordering::SeqCst))
-                })
-                .join()
-                .unwrap();
+                if !inject_in_native_half {
+                    (inject.take().unwrap())();
+                }
             },
-            |_| {
+            |inject| {
+                if inject_in_native_half {
+                    (inject.take().unwrap())();
+                }
                 let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
             },
         );
+        assert!(inject.is_none(), "the injection ran");
 
         let wake_owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()) > 0;
         if !wake_owed {
@@ -3825,8 +3839,18 @@ mod native_event_queue_tests {
         rinch_core::drain_main_callbacks();
         assert!(
             wake_owed || ran,
-            "the callback queued between the drains is stranded: still queued, no wake owed"
+            "the callback queued mid-wake is stranded: still queued, no wake owed"
         );
+    }
+
+    #[test]
+    fn a_callback_queued_after_the_callback_drain_keeps_its_wake() {
+        callback_queued_mid_wake_keeps_its_wake(false);
+    }
+
+    #[test]
+    fn a_callback_queued_as_the_native_drain_starts_keeps_its_wake() {
+        callback_queued_mid_wake_keeps_its_wake(true);
     }
 
     /// Only `ReRender` coalesces: every other event is a distinct request, and
