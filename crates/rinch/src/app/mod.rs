@@ -26,6 +26,8 @@ mod component_prop_707_tests;
 #[cfg(test)]
 mod component_radius_tests;
 #[cfg(test)]
+mod contents_scroll_396_tests;
+#[cfg(test)]
 mod css_hook_760_tests;
 #[cfg(all(test, software_shell))]
 mod damage_clip_chain_tests;
