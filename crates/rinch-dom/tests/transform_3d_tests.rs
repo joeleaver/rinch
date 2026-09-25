@@ -647,3 +647,262 @@ fn an_element_behind_the_viewer_is_neither_drawn_nor_hit() {
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+// ------------------------------------ transform-origin's z, backface-visibility
+
+/// One red 100×40 box at `left`/`top` with `style` on top, laid out in an
+/// 800×600 viewport, plus an optional blue 50×20 child with `child` as its
+/// style.
+struct Scene {
+    doc: RinchDocument,
+    parent: NodeId,
+    child: Option<NodeId>,
+}
+
+fn scene(left: f64, top: f64, style: &str, child: Option<&str>) -> Scene {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let parent = doc.create_element("div");
+    doc.set_attribute(
+        parent,
+        "style",
+        &format!(
+            "position: absolute; left: {left}px; top: {top}px; width: 100px; height: 40px; \
+             background: red; {style}"
+        ),
+    );
+    doc.append_child(body, parent);
+    let child = child.map(|css| {
+        let c = doc.create_element("div");
+        doc.set_attribute(
+            c,
+            "style",
+            &format!("width: 50px; height: 20px; background: blue; {css}"),
+        );
+        doc.append_child(parent, c);
+        c
+    });
+    doc.resolve_layout(800.0, 600.0);
+    Scene { doc, parent, child }
+}
+
+impl Scene {
+    /// The painted bounding box of `id`: `(x, y, width, height)`.
+    fn rect(&self, id: NodeId) -> [f64; 4] {
+        let r = rinch_dom::paint::painted_border_box(&self.doc.tree, id.0, 1.0);
+        [r.x0, r.y0, r.width(), r.height()]
+    }
+
+    /// Pixels painted `(red, blue)`.
+    fn painted(&mut self) -> (usize, usize) {
+        let mut painter = TinySkiaPainter::new(800, 600);
+        let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &self.doc.tree,
+            &mut painter,
+            1.0,
+            (800.0, 600.0),
+            &mut self.doc.font_cx,
+            &mut lcx,
+        );
+        let px = painter.pixels();
+        let red = px
+            .chunks(4)
+            .filter(|p| p[3] > 0 && p[0] > 128 && p[2] < 64)
+            .count();
+        let blue = px
+            .chunks(4)
+            .filter(|p| p[3] > 0 && p[2] > 128 && p[0] < 64)
+            .count();
+        (red, blue)
+    }
+
+    /// Whether the point `(x, y)` lands inside `id`'s own box.
+    fn hits(&self, id: NodeId, x: f64, y: f64) -> bool {
+        let (w, h) = {
+            let l = self.doc.tree.nodes[id.0].layout;
+            (l.width as f64, l.height as f64)
+        };
+        rinch_dom::paint::point_in_painted_box(&self.doc.tree, id.0, 1.0, x, y)
+            .is_some_and(|(lx, ly)| (0.0..w).contains(&lx) && (0.0..h).contains(&ly))
+    }
+}
+
+fn assert_rect(got: [f64; 4], want: [f64; 4], what: &str) {
+    let close = got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 0.01);
+    assert!(close, "{what}: got {got:?}, Chrome 153 gives {want:?}");
+}
+
+/// `transform-origin: <x> <y> <z>` moves a rotation out of the page by its
+/// z (#997). Every rect is Chrome 153's `getBoundingClientRect()` of a 100×40
+/// box; rinch dropped the z and drew each at its `z = 0` origin — the first at
+/// x = 214.64, which is where the issue started.
+#[test]
+fn transform_origin_z_moves_a_rotation_out_of_the_page() {
+    for (left, top, style, want) in [
+        (
+            200.0,
+            100.0,
+            "transform: rotateY(45deg); transform-origin: 50% 50% 100px",
+            [143.934, 100.0, 70.711, 40.0],
+        ),
+        (
+            200.0,
+            100.0,
+            "transform: rotateY(45deg); transform-origin: 0 0 100px",
+            [129.289, 100.0, 70.711, 40.0],
+        ),
+        (
+            600.0,
+            100.0,
+            "transform: rotateY(30deg); transform-origin: 10px 20px -40px",
+            [621.340, 100.0, 86.603, 40.0],
+        ),
+        (
+            400.0,
+            300.0,
+            "transform: rotateX(60deg); transform-origin: 0 0 30px",
+            [400.0, 325.981, 100.0, 20.0],
+        ),
+        // The z meets a perspective(): the plane sits 10px further back.
+        (
+            200.0,
+            0.0,
+            "transform: perspective(100px) translateZ(10px); transform-origin: 0 0 20px",
+            [200.0, 0.0, 90.909, 36.364],
+        ),
+        // A transform that stays in the page is not moved by it.
+        (
+            600.0,
+            200.0,
+            "transform: translateX(10px); transform-origin: 10px 20px -40px",
+            [610.0, 200.0, 100.0, 40.0],
+        ),
+        (
+            200.0,
+            200.0,
+            "transform: rotate(30deg); transform-origin: 0 0 50px",
+            [180.0, 200.0, 106.603, 84.641],
+        ),
+    ] {
+        let s = scene(left, top, style, None);
+        assert_rect(s.rect(s.parent), want, style);
+    }
+}
+
+/// A transition's frames compose with the origin's z too, and a frame that
+/// turns the back of a `backface-visibility: hidden` box to the viewer is
+/// neither drawn nor hit — Chrome 153, an `Element.animate()` of
+/// `rotateY(0deg)` → `rotateY(180deg)` paused at 40% and at 60%: the first is
+/// at x = 104.894 and hit, the second is not hit.
+#[test]
+fn a_transition_frame_takes_the_origin_z_and_the_backface() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let style_el = doc.create_element("style");
+    let css = doc.create_text(
+        ".t { position: absolute; left: 200px; top: 0; width: 100px; height: 40px; \
+         background: red; backface-visibility: hidden; transform-origin: 0 0 100px; \
+         transition: transform 1000ms linear; transform: rotateY(0deg); } \
+         .t.on { transform: rotateY(180deg); }",
+    );
+    doc.append_child(style_el, css);
+    doc.append_child(body, style_el);
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "t");
+    doc.append_child(body, div);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    doc.set_attribute(div, "class", "t on");
+    doc.resolve_layout(800.0, 600.0);
+    let t0 = doc
+        .tree
+        .active_transitions
+        .get(&div.0)
+        .and_then(|t| t.get(&TransitionProperty::Transform))
+        .expect("a transform transition")
+        .start_time_ms;
+    let mut s = Scene {
+        doc,
+        parent: div,
+        child: None,
+    };
+
+    rinch_dom::transition::tick_transitions(&mut s.doc.tree, t0 + 400.0);
+    assert_rect(s.rect(div), [104.894, 0.0, 30.902, 40.0], "at 40%");
+    assert!(s.painted().0 > 0, "at 40% the front faces the viewer");
+    assert!(s.hits(div, 120.0, 20.0), "at 40% the box is hit");
+
+    rinch_dom::transition::tick_transitions(&mut s.doc.tree, t0 + 600.0);
+    assert_eq!(s.painted().0, 0, "at 60% the back faces the viewer");
+    assert!(!s.hits(div, 89.0, 20.0), "at 60% nothing is hit");
+}
+
+/// `backface-visibility: hidden` hides a box whose own transform turns its
+/// back to the viewer, and only then (#997). Chrome 153's `elementFromPoint`
+/// at each box's centre: `rotateY(180deg)` and `rotateY(100deg)` are not hit,
+/// while `rotateY(80deg)`, `scaleX(-1)` — a mirror, not a turn — and
+/// `rotateX(180deg) rotateY(180deg)`, which is `rotate(180deg)`, are.
+#[test]
+fn a_hidden_backface_is_neither_drawn_nor_hit() {
+    let mut bad = vec![];
+    for (tf, shown) in [
+        ("rotateY(180deg)", false),
+        ("rotateY(100deg)", false),
+        ("rotateX(180deg)", false),
+        ("rotateY(180deg); transform-origin: 50% 50% 60px", false),
+        ("rotateY(80deg)", true),
+        ("scaleX(-1)", true),
+        ("scale(-1, -1)", true),
+        ("rotateX(180deg) rotateY(180deg)", true),
+        ("rotateY(360deg)", true),
+    ] {
+        let mut s = scene(
+            200.0,
+            100.0,
+            &format!("transform: {tf}; backface-visibility: hidden"),
+            None,
+        );
+        let (red, _) = s.painted();
+        let hit = s.hits(s.parent, 250.0, 120.0);
+        if (red > 0, hit) != (shown, shown) {
+            bad.push(format!("{tf}: {red} red px, hit={hit}, want shown={shown}"));
+        }
+        // The same box with its backface visible is always drawn.
+        let mut v = scene(200.0, 100.0, &format!("transform: {tf}"), None);
+        let (red, _) = v.painted();
+        if red == 0 || !v.hits(v.parent, 250.0, 120.0) {
+            bad.push(format!("{tf} (visible backface): {red} red px"));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The box is hidden with everything in it — a child turned back to face the
+/// viewer included — and it is the box's **own** transform that decides: a
+/// child with a hidden backface under a turned parent, with no transform of its
+/// own, is drawn. Chrome 153: the first child is not hit, the second is.
+#[test]
+fn a_hidden_backface_hides_the_subtree_and_reads_only_the_own_transform() {
+    let mut s = scene(
+        400.0,
+        200.0,
+        "transform: rotateY(180deg); backface-visibility: hidden",
+        Some("transform: rotateY(180deg)"),
+    );
+    let child = s.child.unwrap();
+    assert_eq!(s.painted(), (0, 0), "a hidden parent hides its child");
+    assert!(!s.hits(child, 475.0, 210.0));
+
+    let mut s = scene(
+        400.0,
+        100.0,
+        "transform: rotateY(180deg)",
+        Some("backface-visibility: hidden"),
+    );
+    let child = s.child.unwrap();
+    assert_rect(s.rect(child), [450.0, 100.0, 50.0, 20.0], "the child");
+    let (red, blue) = s.painted();
+    assert!(red > 0 && blue > 0, "{red} red px, {blue} blue px");
+    assert!(s.hits(child, 475.0, 110.0));
+}
