@@ -1052,17 +1052,29 @@ match tab.get() {
 }
 ```
 
-What the braces hold is decided by their **first token**. They hold rsx nodes
-when the body starts with `let`, a string literal, `if`/`for`/`match`, or an
-element or component name followed by `{` (`div {`, `Card {`). Anything else —
-a call, a method chain, a variable, a closure — is a single Rust expression, as
-it always was: `{ overview_section(__scope) }`, `{ panel.clone() }` and
-`{|| count.get().to_string()}` are unchanged. (Until issue #395 only a body
-starting with `let` could hold more than one node.)
+What the braces hold is decided by how they **start**:
+
+- `let` always starts rsx nodes.
+- An element or component (`div {`, `Card {`), a string literal, `if`/`for`/
+  `match`, or an interpolation `{ … }` starts rsx nodes **when more nodes follow
+  it**: `{ {label} span { "!" } }`, `{ if open.get() { "▾" } span { "Menu" } }`.
+- An element, component or string literal on its own is that one node.
+- Anything else is a single Rust expression, as it always was: a call, a
+  variable, a closure, and a method called on a literal or on a struct
+  (`{ "a".to_string() }`, `{ if a { "x" } else { "y" } .len() }`). So
+  `{ overview_section(__scope) }`, `{ panel.clone() }` and
+  `{|| count.get().to_string()}` are unchanged. Lone control flow in braces is
+  the transparent brace described under
+  [Braces around control flow](#braces-around-control-flow).
+
+(Until issue #395 only a body starting with `let` could hold more than one node.)
+A mistake inside a multi-node arm is reported where it is, like one in any
+other rsx body.
 
 One consequence: `{ Point { x: 1 } }` in an arm is a component named `Point`,
-exactly as `Point { x: 1 }` unbraced is — not a Rust struct literal. A path such
-as `geom::Point { x: 1 }` is not an element name, so it stays an expression.
+exactly as `Point { x: 1 }` unbraced is, not a Rust struct literal. A path such
+as `geom::Point { x: 1 }` is not an element name, so it stays an expression, and
+so does `{ Point { x: 1 }.into_node(__scope) }`.
 
 #### How `match` works internally
 

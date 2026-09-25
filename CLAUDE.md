@@ -4011,14 +4011,18 @@ rsx! {
 
 Pattern bindings and guards are supported — each arm re-evaluates the scrutinee to extract bound values.
 
-**A braced arm body is decided by its first token** (issue #395). It holds rsx
-children — several nodes, like an `if`/`for` body — when it starts with `let`, a
-string literal, `if`/`for`/`match`, or `Name {` (an element or component):
-`0 => { h2 { "Home" } p { "…" } }`. Anything else is the one braced expression
-it always was, so `0 => { overview_section(__scope) }` (ui-zoo's routing) and
-`0 => {a.clone()}` are unchanged. `{ Point { x: 1 } }` is therefore a component,
-as unbraced; a path (`geom::Point { … }`) stays an expression. A braced body of
-lone control flow is still #221's transparent brace, diagnostic included
+**A braced arm body is decided by how it starts** (issue #395). It holds rsx
+children — several nodes, like an `if`/`for` body — when it starts with `let`,
+or with an rsx *head* (`Name {`, a string literal, `if`/`for`/`match`, or a
+braced interpolation) **followed by another node**:
+`0 => { h2 { "Home" } p { "…" } }`, `{ {label} span {} }`. A lone element or
+literal is that one node. Everything else is the one braced expression it always
+was: `0 => { overview_section(__scope) }` (ui-zoo's routing), `0 => {a.clone()}`,
+and a head followed by `.` or an operator (`{ "a".to_string() }`,
+`{ if … {} else {} .len() }`). `{ Point { x: 1 } }` is therefore a component, as
+unbraced; a path (`geom::Point { … }`) stays an expression. Lone control flow in
+braces is still #221's transparent brace, diagnostic included; a typo in a
+multi-node arm is reported at the typo, not as #221's message
 (`parse_braced_arm_body`, `crates/rinch-macros/src/node.rs`).
 
 **Runtime desugaring:** `if` → `show_dom()`, `for` → `for_each_dom_typed()`, `match` → `match_dom()`.
