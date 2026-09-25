@@ -985,27 +985,7 @@ impl RinchApp {
                             Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
                         }
                     }
-                    // Fire ondragend on source
-                    if let Some(doc) = &self.doc {
-                        let (cx, cy) = drag.cursor;
-                        events::set_click_context(events::ClickContext {
-                            mouse_x: cx,
-                            mouse_y: cy,
-                            element_x: 0.0,
-                            element_y: 0.0,
-                            element_width: 0.0,
-                            element_height: 0.0,
-                            text_hit: Default::default(),
-                            viewport_width: vp_w,
-                            viewport_height: vp_h,
-                            button: events::MouseButton::Left,
-                            modifiers: self.modifier_state(),
-                        });
-                        Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
-                    }
-                    // Reset ghost visibility for next drag
-                    events::reset_drag_ghost_visibility();
-                    self.scene_dirty = true;
+                    self.end_active_dnd(&drag, vp_w, vp_h);
                     actions.push(AppAction::RequestRedraw);
                 }
 
@@ -1286,14 +1266,11 @@ impl RinchApp {
             } => {
                 // ── Drag-and-drop: Escape cancels active drag ─────────────
                 if key == KeyCode::Escape {
-                    if let Some(drag) = self.active_dnd.take() {
-                        if let Some(doc) = &self.doc {
-                            if let Some(target_id) = drag.over_target {
-                                Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
-                            }
-                            Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
-                        }
-                        self.scene_dirty = true;
+                    // The same teardown a `PointerCancel` runs (issue #333):
+                    // it used to spell its own, and spelled less — the ghost
+                    // a drag had suppressed stayed suppressed into the next
+                    // drag, and a surface under the drag never heard it leave.
+                    if self.cancel_active_dnd(vp_w, vp_h) {
                         actions.push(AppAction::RequestRedraw);
                         return actions;
                     }
@@ -1941,6 +1918,62 @@ impl RinchApp {
         actions
     }
 
+    /// Cancel an element-to-element drag in flight: a render surface under it
+    /// hears `DragLeave`, a drop target `data-ondragleave`, and nothing hears
+    /// that something dropped. Then [`Self::end_active_dnd`].
+    ///
+    /// The one cancel path — Escape and `PointerCancel` both come here, so they
+    /// cannot drift apart again (issue #333). Returns whether a drag was live.
+    fn cancel_active_dnd(&mut self, vp_w: f32, vp_h: f32) -> bool {
+        let Some(drag) = self.active_dnd.take() else {
+            return false;
+        };
+        if let Some((surface_sid, _)) = self.drag_over_surface.take() {
+            crate::render_surface::dispatch_surface_event(
+                surface_sid,
+                crate::render_surface::SurfaceEvent::DragLeave,
+            );
+        }
+        if let Some(doc) = &self.doc {
+            if let Some(target_id) = drag.over_target {
+                Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
+            }
+        }
+        self.end_active_dnd(&drag, vp_w, vp_h);
+        true
+    }
+
+    /// What every ending of an element-to-element drag owes once the target
+    /// side is settled, whether it dropped or was cancelled: `data-ondragend`
+    /// on the source, with the drag's last cursor as its `ClickContext` (the
+    /// source has a ghost and a dragging class to undo, and this is the only
+    /// callback that will ever tell it to); the built-in ghost visible again,
+    /// since a `suppress_drag_ghost` lasts exactly as long as its drag; and a
+    /// repaint, for the ghost's pixels.
+    ///
+    /// `drag` has already been taken out of `active_dnd`.
+    fn end_active_dnd(&mut self, drag: &ActiveDrag, vp_w: f32, vp_h: f32) {
+        if let Some(doc) = &self.doc {
+            let (cx, cy) = drag.cursor;
+            events::set_click_context(events::ClickContext {
+                mouse_x: cx,
+                mouse_y: cy,
+                element_x: 0.0,
+                element_y: 0.0,
+                element_width: 0.0,
+                element_height: 0.0,
+                text_hit: Default::default(),
+                viewport_width: vp_w,
+                viewport_height: vp_h,
+                button: events::MouseButton::Left,
+                modifiers: self.modifier_state(),
+            });
+            Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
+        }
+        events::reset_drag_ghost_visibility();
+        self.scene_dirty = true;
+    }
+
     /// Release everything an in-flight press is holding, without completing any
     /// of it. The body of [`PlatformEvent::PointerCancel`].
     ///
@@ -1982,42 +2015,7 @@ impl RinchApp {
         // cancel exists to prevent.
         released |= self.pending_drag.take().is_some();
 
-        if let Some(drag) = self.active_dnd.take() {
-            released = true;
-            // A surface the drag was over hears that it left, never that
-            // something dropped on it.
-            if let Some((surface_sid, _)) = self.drag_over_surface.take() {
-                crate::render_surface::dispatch_surface_event(
-                    surface_sid,
-                    crate::render_surface::SurfaceEvent::DragLeave,
-                );
-            }
-            if let Some(doc) = &self.doc {
-                if let Some(target_id) = drag.over_target {
-                    Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
-                }
-                // `ondragend` still fires: the source has a ghost and a
-                // dragging class to undo, and it is the only callback that
-                // will ever tell it to.
-                let (cx, cy) = drag.cursor;
-                events::set_click_context(events::ClickContext {
-                    mouse_x: cx,
-                    mouse_y: cy,
-                    element_x: 0.0,
-                    element_y: 0.0,
-                    element_width: 0.0,
-                    element_height: 0.0,
-                    text_hit: Default::default(),
-                    viewport_width: vp_w,
-                    viewport_height: vp_h,
-                    button: events::MouseButton::Left,
-                    modifiers: self.modifier_state(),
-                });
-                Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
-            }
-            events::reset_drag_ghost_visibility();
-            self.scene_dirty = true;
-        }
+        released |= self.cancel_active_dnd(vp_w, vp_h);
 
         // The pointer-capture drag's counterpart to the `finish_drag` on
         // `MouseUp`. A no-op when none is active.
@@ -2633,6 +2631,13 @@ impl RinchApp {
             cursor,
             over_target: None,
         });
+        // A drag starts with the built-in ghost visible, whatever the last one
+        // left behind: a `suppress_drag_ghost` lasts exactly as long as its
+        // own drag. Every ending resets it too (`end_active_dnd`); this is the
+        // half that holds for an ending nobody has written yet (issue #333).
+        // Before `data-ondragstart` fires, so a source that hides the ghost
+        // there still does.
+        events::reset_drag_ghost_visibility();
         // The ghost appears now, not on the next move: `build_pixels` names
         // its rect as the frame's damage.
         self.scene_dirty = true;
