@@ -25,6 +25,9 @@ use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_input_event};
 use rinch_core::{Component, InputCallback, Signal};
 
+mod common;
+use common::find_by_class;
+
 #[derive(Clone, Copy)]
 enum Kind {
     Text,
@@ -116,16 +119,6 @@ impl Mounted {
     fn attribute(&self) -> Option<String> {
         self.field.get_attribute("value")
     }
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    let matches = node
-        .get_attribute("class")
-        .is_some_and(|attr| attr.split_whitespace().any(|c| c == class));
-    if matches {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
 }
 
 fn as_typed(text: &str) -> String {

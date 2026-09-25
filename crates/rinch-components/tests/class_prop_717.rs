@@ -48,6 +48,9 @@ use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event};
 use rinch_core::{Component, Signal};
 
+mod common;
+use common::{find_by_class, has_class};
+
 /// The class a caller puts on the component — `class: "mine"` in rsx.
 const CALLER: &str = "mine";
 
@@ -75,20 +78,6 @@ impl Mounted {
         find_by_class(&self.root, class)
             .unwrap_or_else(|| panic!("the tree carries no `{class}` node"))
     }
-}
-
-fn has_class(node: &NodeHandle, class: &str) -> bool {
-    node.get_attribute("class")
-        .unwrap_or_default()
-        .split_whitespace()
-        .any(|c| c == class)
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    if has_class(node, class) {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
 }
 
 /// The first `data-rid` in `node`'s subtree, in document order.

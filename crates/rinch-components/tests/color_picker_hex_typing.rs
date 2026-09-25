@@ -32,6 +32,9 @@ use rinch_core::events::{
 };
 use rinch_core::{Component, InputCallback};
 
+mod common;
+use common::{find_by_class, type_desktop};
+
 /// Every keystroke state of an author typing `#3366cc` into an empty field.
 const KEYSTROKES: [&str; 7] = ["#", "#3", "#33", "#336", "#3366", "#3366c", "#3366cc"];
 
@@ -126,8 +129,7 @@ impl Mounted {
     /// One keystroke, desktop-shaped: the runtime mirrors the field's text
     /// into the `value` attribute, then dispatches `oninput` with it.
     fn type_text(&self, text: &str) {
-        self.field().set_attribute("value", text);
-        dispatch_input_event(self.field_handler(), text.to_string());
+        type_desktop(&self.field(), self.field_handler(), text);
     }
 
     /// One keystroke, web-shaped: the live text moves and the `value`
@@ -169,16 +171,6 @@ impl Mounted {
 fn record_into(emissions: &Rc<RefCell<Vec<String>>>) -> InputCallback {
     let seen = emissions.clone();
     InputCallback::new(move |value: String| seen.borrow_mut().push(value))
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    let matches = node
-        .get_attribute("class")
-        .is_some_and(|attr| attr.split_whitespace().any(|c| c == class));
-    if matches {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
 }
 
 /// The headline defect: typing `#3366cc` one keystroke at a time. At `#336`
