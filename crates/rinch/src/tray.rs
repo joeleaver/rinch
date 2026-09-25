@@ -426,3 +426,135 @@ fn build_ksni_menu(entries: &[KsniMenuEntry]) -> Vec<ksni::MenuItem<RinchKsniTra
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::menu::MenuItem;
+
+    /// Every id this build registered, flattened out of the ksni entries.
+    fn registered_ids(entries: &[KsniMenuEntry], out: &mut Vec<String>) {
+        for entry in entries {
+            match entry {
+                KsniMenuEntry::Item { menu_id, .. } => out.extend(menu_id.iter().cloned()),
+                KsniMenuEntry::Separator => {}
+                KsniMenuEntry::Submenu { entries, .. } => registered_ids(entries, out),
+            }
+        }
+    }
+
+    /// Issue #377 (3): ksni never activates a disabled item, so an id minted and
+    /// a callback registered for one can never be dispatched — a permanent
+    /// registry entry holding the closure's captures alive for the life of the
+    /// tray. The muda side returns early for a disabled item
+    /// (`build_muda_item`); the ksni side must too, at every depth.
+    ///
+    /// Three enabled and three disabled items, one of each in a submenu, so a
+    /// fix that skips only top-level disabled items still fails.
+    #[test]
+    fn a_disabled_ksni_item_registers_no_callback() {
+        let before = crate::menu::callback_count();
+        let menu = Menu::new()
+            .item(MenuItem::new("on-a").on_click(|| {}))
+            .item(MenuItem::new("off-a").enabled(false).on_click(|| {}))
+            .item(MenuItem::new("off-b").enabled(false).on_click(|| {}))
+            .separator()
+            .item(MenuItem::new("on-b").on_click(|| {}))
+            .submenu(
+                "sub",
+                Menu::new()
+                    .item(MenuItem::new("on-c").on_click(|| {}))
+                    .item(MenuItem::new("off-c").enabled(false).on_click(|| {})),
+            );
+
+        let (entries, registration) = convert_menu_to_ksni_entries(menu);
+
+        let mut ids = Vec::new();
+        registered_ids(&entries, &mut ids);
+        assert_eq!(ids.len(), 3, "only the three enabled items get an id: {ids:?}");
+        assert_eq!(
+            crate::menu::callback_count() - before,
+            3,
+            "only the three enabled items register a callback"
+        );
+
+        // The disabled entries are still rendered, greyed out.
+        fn disabled_labels(entries: &[KsniMenuEntry], out: &mut Vec<String>) {
+            for entry in entries {
+                match entry {
+                    KsniMenuEntry::Item {
+                        label,
+                        enabled: false,
+                        menu_id,
+                    } => {
+                        assert!(menu_id.is_none(), "disabled `{label}` carries an id");
+                        out.push(label.clone());
+                    }
+                    KsniMenuEntry::Submenu { entries, .. } => disabled_labels(entries, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut off = Vec::new();
+        disabled_labels(&entries, &mut off);
+        assert_eq!(off, ["off-a", "off-b", "off-c"]);
+
+        drop(registration);
+        assert_eq!(crate::menu::callback_count(), before);
+    }
+
+    /// Issue #377 (1), live: a dropped `TrayIcon` must take its icon with it.
+    ///
+    /// Needs a session bus with a StatusNotifierWatcher and a registered host
+    /// (a KDE session does), and `busctl`, so it is `#[ignore]`d; run it with
+    /// `cargo test -p rinch --features system-tray --lib tray::tests::live -- --ignored`.
+    /// It puts an icon in the real tray for well under a second.
+    ///
+    /// ksni registers the item under its well-known name
+    /// `org.freedesktop.StatusNotifierItem-{pid}-{n}`, which the watcher lists in
+    /// `RegisteredStatusNotifierItems` until that name's owner goes away.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a live D-Bus session with a StatusNotifierWatcher"]
+    fn live_a_dropped_tray_leaves_the_status_notifier_watcher() {
+        fn ours() -> usize {
+            let out = std::process::Command::new("busctl")
+                .args([
+                    "--user",
+                    "get-property",
+                    "org.kde.StatusNotifierWatcher",
+                    "/StatusNotifierWatcher",
+                    "org.kde.StatusNotifierWatcher",
+                    "RegisteredStatusNotifierItems",
+                ])
+                .output()
+                .expect("busctl runs");
+            assert!(out.status.success(), "busctl: {out:?}");
+            let needle = format!("StatusNotifierItem-{}-", std::process::id());
+            String::from_utf8_lossy(&out.stdout).matches(&needle).count()
+        }
+        fn wait_for(want: usize) -> usize {
+            let mut seen = ours();
+            for _ in 0..60 {
+                if seen == want {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                seen = ours();
+            }
+            seen
+        }
+
+        assert_eq!(ours(), 0, "no tray of ours before the build");
+        let tray = TrayIconBuilder::new()
+            .with_tooltip("rinch #377 probe")
+            .with_menu(Menu::new().item(MenuItem::new("probe").on_click(|| {})))
+            .build()
+            .expect("the tray builds");
+        // Positive control: the instrument sees our item while the handle lives.
+        assert_eq!(wait_for(1), 1, "the watcher lists the live tray");
+
+        drop(tray);
+        assert_eq!(wait_for(0), 0, "the dropped tray is still registered");
+    }
+}
