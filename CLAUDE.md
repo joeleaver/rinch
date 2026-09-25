@@ -1390,7 +1390,12 @@ armed the drag drives it: another document's `MouseMove` does not reach
 armed **outside** any event dispatch — from a timer, a menu callback, or on
 rinch-web, which has one page-wide pointer stream — belongs to no document in
 particular and stays drivable by anybody. Nothing changes for a single-window
-app. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
+app. **An effect counts as its document's code** (issue #295): the effect queue
+is thread-global, so a write in document A's handler flushes document B's
+effects inside A's `handle_event` — but every `Effect` and `Memo` records the
+document current at its creation (`RinchApp::mount_component` marks the mount,
+`handle_event` the dispatch) and re-enters it around every run, so a drag armed,
+or an interceptor registered, from B's effect belongs to B. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
 the pointer is grabbed to the pressing window while a button is held — so this
 matters for an embed host pumping several contexts from one event stream, and
 for a drag left live past a missed `MouseUp`.)
@@ -2294,6 +2299,20 @@ was already vacuous. What it breaks is the **reverse inference**, which is why
 `paint_children_with_stacking` is *told* whether a bracket is open
 (`clip_elided`) rather than deducing it. Anything new that needs to know must be
 told too, not infer it from the predicate.
+
+**The clips the painter has open are a cull** (#910). `paint_document` and
+`paint_subtree` wrap the painter in `ClipTrackingPainter`, which mirrors every
+`push_clip` / `push_layer` / `pop_layer` onto a stack of cull rects (each
+clip's transformed bounding box grown by `INK_MARGIN_CSS_PX`), and
+`intersects_dirty_region` tests against its top as well as the damage and the
+window. Mirroring the painter rather than the call sites is what keeps it
+exact: a hoisted entry's clip chain, the #545 lift around a `position: fixed`
+entry and an elided bracket are whatever the painter was told. A box the cull
+would draw nothing for is dismissed by its parent's loop
+(`paints_nothing_without_visit`) without entering `paint_node`, so a 500-row
+scroller costs its ~20 visible rows. The ink margin is the window cull's
+policy, with its known loss: ink cast more than 64 CSS px from a box that sits
+outside a clip is not drawn back into it.
 
 `clip` is the only value that ever reached that gap, and that is measured rather
 than reasoned: css-overflow-3 §3 makes a `visible` compute to `auto` when the

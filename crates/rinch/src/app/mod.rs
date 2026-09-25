@@ -984,6 +984,16 @@ impl RinchApp {
             .scope_context_to_doc
             .then(|| rinch_core::push_context_root(doc.borrow().doc_key()));
 
+        // The mount is this document's code running, exactly as a dispatch is:
+        // mark it (issue #295). Every effect and memo the component tree
+        // creates records the marker it was created under and re-enters it on
+        // every later run, so this is what makes an effect built here keep
+        // answering *this* document when the thread-global queue flushes it
+        // inside another document's `handle_event`. It also keys what the
+        // component body registers directly — an interceptor slot, a drag —
+        // to this document instead of the ownerless entry.
+        let _dispatching = rinch_core::push_dispatching_doc(doc.borrow().doc_key());
+
         // Create RenderScope
         let doc_as_dom: Rc<RefCell<dyn DomDocument>> = doc.clone();
         let body_id = doc.borrow().body();

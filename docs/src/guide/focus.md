@@ -791,12 +791,25 @@ build on, with this menu as the fallback.
   capture-phase hook for the whole document, dispatched *before* the arbiter and
   regardless of focus. It is for global shortcuts; `on_key` is for a focused
   widget. They are different jobs and both still exist. It routes per document
-  (issue #340): a hook registered while a document's events are being
-  dispatched intercepts only that document's keys, and one registered from
-  `main` or at mount is the thread-global fallback that intercepts for every
-  document without its own — so two windows that each register from inside
-  their own event handling no longer clobber each other. Registrations made
-  outside any dispatch still share the single fallback slot, last-wins. Its *lifetime* does match the arbiter's, though:
+  (issue #340): a hook registered while a document's code is running — its
+  event dispatch, its mount (issue #295), or an effect it owns, wherever that
+  effect happens to be flushed — intercepts only that document's keys, and one
+  registered from `main` is the thread-global fallback that intercepts for
+  every document without its own — so two windows that each register at mount
+  or from their own event handling no longer clobber each other. Registrations
+  made outside any document (from `main`, a timer, a `run_on_main_thread`
+  callback, or on rinch-web, which marks no document) still share the single
+  fallback slot, last-wins. A document is served whichever of its own hook and
+  the fallback was registered **later**, so a single-window app keeps
+  last-registration-wins wherever it registers from; `clear_keyboard_interceptor`
+  from outside any document clears every entry, and from inside one leaves that
+  document with none. The cost with several documents on one thread (two
+  embedded contexts, an app and its DevTools): code outside any document — a
+  timer, `run_on_main_thread`, an http/ws completion — cannot say which
+  document it belongs to, so its registration overrides **every** document's
+  own hook and its clear wipes every document's. Registrations made inside
+  documents stay isolated from each other. Issue #963 tracks running such
+  callbacks under their owner's document. Its *lifetime* does match the arbiter's, though:
   registering it during a render releases it when that component unmounts,
   exactly as a `FocusEntry` is deregistered (issue #183). Registering it from
   `main` keeps app lifetime. For **Escape**, use

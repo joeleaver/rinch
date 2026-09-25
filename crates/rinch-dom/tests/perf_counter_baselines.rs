@@ -383,8 +383,9 @@ fn every_rinch_dom_counter_fires_somewhere() {
 // ── Scenarios ──────────────────────────────────────────────────────────────
 
 /// Nothing dirty: the layout early-returns. The full paint still walks every
-/// on-screen node (the rows below the fold are culled): the shell's dirty
-/// region, not rinch-dom, is what makes an idle frame cheap.
+/// on-screen node (the rows below the fold are dismissed by their parent's
+/// loop without a visit, #910): the shell's dirty region, not rinch-dom, is
+/// what makes an idle frame cheap.
 #[test]
 fn idle_frame() {
     let mut f = build(true);
@@ -395,7 +396,7 @@ fn idle_frame() {
         &[
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
-            (PaintNodesVisited, 66),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -436,7 +437,7 @@ fn hover_colour_only_without_wrapper() {
             (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
-            (PaintNodesVisited, 66),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -464,7 +465,7 @@ fn hover_colour_only_with_contents_wrapper() {
             (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
-            (PaintNodesVisited, 66),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -490,7 +491,7 @@ fn colour_only_class_toggle() {
             (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
-            (PaintNodesVisited, 66),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -513,7 +514,7 @@ fn unselected_attribute_write() {
             (StyleInvalidations, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
-            (PaintNodesVisited, 66),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -545,7 +546,7 @@ fn container_class_a_descendant_rule_depends_on() {
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 160),
-            (PaintNodesVisited, 65),
+            (PaintNodesVisited, 48),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -614,7 +615,7 @@ fn append_one_row() {
             (IfcScopeNodes, 43),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 44),
-            (PaintNodesVisited, 67),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -664,7 +665,7 @@ fn append_one_row_without_wrappers() {
             (IfcScopeNodes, 43),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 44),
-            (PaintNodesVisited, 67),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -698,7 +699,7 @@ fn remove_one_row() {
             (IfcScopeNodes, 40),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 39),
-            (PaintNodesVisited, 65),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -732,7 +733,7 @@ fn set_text_on_one_row() {
             (TaffyMeasureCalls, 4),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
-            (PaintNodesVisited, 66),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -816,7 +817,7 @@ fn transform_animation_tick() {
         &[
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
-            (PaintNodesVisited, 66),
+            (PaintNodesVisited, 50),
             (StackingOrderBuilds, 2),
         ],
     );

@@ -132,7 +132,7 @@ fn a_hover_repaints_a_region_and_counts_its_hit_tests() {
         // builds its own: 1 + 1.
         (Counter::HitExtentsComputed, 14),
         (Counter::StackingOrderBuilds, 2),
-        (Counter::PaintNodesVisited, 15),
+        (Counter::PaintNodesVisited, 5),
         // The software painter. One clip: the dirty region's own, whose
         // mask is filled over the region plus its 2px bookkeeping pad
         // (800 x 32), not the surface's 480 000. The glyphs of the three
