@@ -625,17 +625,17 @@ fn a_centring_offset_survives_a_transform_transition() {
 /// The interpolation itself, and the write-back that used to zero it.
 #[test]
 fn transform_interpolation_carries_the_percentage_coefficients() {
-    let identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-    let from = AnimatableValue::Transform(AnimatableTransform {
-        matrix: identity,
-        pct_translate_w: [-1.0, 0.0],
-        pct_translate_h: [0.0, -0.5],
-    });
-    let to = AnimatableValue::Transform(AnimatableTransform {
-        matrix: identity,
-        pct_translate_w: [0.0, 0.0],
-        pct_translate_h: [0.0, -0.5],
-    });
+    // `translate(-100%, -50%)` → `translate(0, -50%)`.
+    let translate = |x: f64, y: f64| {
+        AnimatableValue::Transform(AnimatableTransform {
+            functions: vec![TransformOp::Translate {
+                px: [0.0, 0.0],
+                pct: [x, y],
+            }],
+        })
+    };
+    let from = translate(-1.0, -0.5);
+    let to = translate(0.0, -0.5);
 
     let mid = from
         .interpolate(&to, 0.25)
@@ -643,15 +643,16 @@ fn transform_interpolation_carries_the_percentage_coefficients() {
     let AnimatableValue::Transform(tf) = &mid else {
         panic!("interpolating two transforms should give a transform");
     };
+    let tf = tf.composed();
     assert!(
-        (tf.pct_translate_w[0] + 0.75).abs() < 1e-9,
+        (tf.pct_w[0] + 0.75).abs() < 1e-9,
         "a quarter of the way from -100% to 0 is -75%, got {:?}",
-        tf.pct_translate_w
+        tf.pct_w
     );
     assert!(
-        (tf.pct_translate_h[1] + 0.5).abs() < 1e-9,
+        (tf.pct_h[1] + 0.5).abs() < 1e-9,
         "an unchanging coefficient must survive, got {:?}",
-        tf.pct_translate_h
+        tf.pct_h
     );
 
     // And it reaches the computed style rather than being zeroed on write-back.
@@ -916,16 +917,11 @@ fn animated_transform(
     ms: f64,
 ) -> ([f64; 6], [f64; 2], [f64; 2]) {
     match animated_value(doc, div, ms, TransitionProperty::Transform) {
-        Some(AnimatableValue::TransformComponents {
-            ops,
-            pct_translate_w,
-            pct_translate_h,
-        }) => (
-            rinch_dom::transition::compose_matrices(&ops),
-            pct_translate_w,
-            pct_translate_h,
-        ),
-        other => panic!("expected transform components, got {other:?}"),
+        Some(AnimatableValue::Transform(tf)) => {
+            let c = tf.composed();
+            (c.matrix, c.pct_w, c.pct_h)
+        }
+        other => panic!("expected a transform, got {other:?}"),
     }
 }
 

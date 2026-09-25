@@ -84,100 +84,67 @@ pub(super) fn z_index_from_stylo(z: &style::values::computed::ZIndex) -> Option<
 pub(super) fn transform_from_stylo(
     transform: &style::values::computed::Transform,
 ) -> TransformValue {
+    use crate::transition::{Affine, TransformOp, compose};
     use style::values::generics::transform::GenericTransformOperation;
 
     if transform.0.is_empty() {
         return TransformValue::default();
     }
 
-    // Compose all operations into a single 2D affine matrix [a, b, c, d, e, f]
-    let mut m = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
-
     // The percentage part of a translate cannot be resolved here — the
-    // element's border box is not known until Taffy has run — so it is
-    // accumulated separately and folded in at paint time. What is accumulated
-    // is the *linear form* in (width, height): see `accumulate_pct` and the
-    // `TransformValue` type doc (#212).
-    let mut pct_w = [0.0_f64; 2];
-    let mut pct_h = [0.0_f64; 2];
-
-    for op in &*transform.0 {
-        let op_matrix = match op {
-            GenericTransformOperation::Matrix(mat) => [
+    // element's border box is not known until Taffy has run — so a
+    // `Translate` function carries it beside its pixel part, and composing the
+    // list accumulates its *linear form* in (width, height), each translate in
+    // the frame the functions before it establish (#212; see `Affine::then`).
+    let split = |lp: Option<&style::values::computed::LengthPercentage>| {
+        lp.map_or((0.0, 0.0), length_or_pct_split)
+    };
+    let translate = |x: Option<&style::values::computed::LengthPercentage>,
+                     y: Option<&style::values::computed::LengthPercentage>| {
+        let (px, pct_x) = split(x);
+        let (py, pct_y) = split(y);
+        TransformOp::Translate {
+            px: [px, py],
+            pct: [pct_x, pct_y],
+        }
+    };
+    let functions: Vec<TransformOp> = transform
+        .0
+        .iter()
+        .map(|op| match op {
+            GenericTransformOperation::Matrix(mat) => TransformOp::Matrix(Affine::from_matrix([
                 mat.a as f64,
                 mat.b as f64,
                 mat.c as f64,
                 mat.d as f64,
                 mat.e as f64,
                 mat.f as f64,
-            ],
-            GenericTransformOperation::Rotate(angle) => {
-                let rad = angle.radians64();
-                let cos = rad.cos();
-                let sin = rad.sin();
-                [cos, sin, -sin, cos, 0.0, 0.0]
-            }
-            GenericTransformOperation::Scale(sx, sy) => {
-                [*sx as f64, 0.0, 0.0, *sy as f64, 0.0, 0.0]
-            }
-            GenericTransformOperation::ScaleX(sx) => [*sx as f64, 0.0, 0.0, 1.0, 0.0, 0.0],
-            GenericTransformOperation::ScaleY(sy) => [1.0, 0.0, 0.0, *sy as f64, 0.0, 0.0],
-            GenericTransformOperation::TranslateX(tx) => {
-                let (px, pct) = length_or_pct_split(tx);
-                accumulate_pct(&m, pct, 0.0, &mut pct_w, &mut pct_h);
-                [1.0, 0.0, 0.0, 1.0, px, 0.0]
-            }
-            GenericTransformOperation::TranslateY(ty) => {
-                let (py, pct) = length_or_pct_split(ty);
-                accumulate_pct(&m, 0.0, pct, &mut pct_w, &mut pct_h);
-                [1.0, 0.0, 0.0, 1.0, 0.0, py]
-            }
-            GenericTransformOperation::Translate(tx, ty) => {
-                let (tx_px, tx_pct) = length_or_pct_split(tx);
-                let (ty_px, ty_pct) = length_or_pct_split(ty);
-                accumulate_pct(&m, tx_pct, ty_pct, &mut pct_w, &mut pct_h);
-                [1.0, 0.0, 0.0, 1.0, tx_px, ty_px]
-            }
+            ])),
+            GenericTransformOperation::Rotate(angle) => TransformOp::Rotate(angle.radians64()),
+            GenericTransformOperation::Scale(sx, sy) => TransformOp::Scale(*sx as f64, *sy as f64),
+            GenericTransformOperation::ScaleX(sx) => TransformOp::Scale(*sx as f64, 1.0),
+            GenericTransformOperation::ScaleY(sy) => TransformOp::Scale(1.0, *sy as f64),
+            GenericTransformOperation::TranslateX(tx) => translate(Some(tx), None),
+            GenericTransformOperation::TranslateY(ty) => translate(None, Some(ty)),
+            GenericTransformOperation::Translate(tx, ty) => translate(Some(tx), Some(ty)),
             // `translate3d()` is the 2D translate with a z the flattening
             // drops. It is handled here rather than falling into the catch-all
             // below *because* it carries two `LengthPercentage`s: routed to
-            // the `_ => identity` arm it would silently lose the whole
-            // translation, and added later without this accumulation it would
-            // reintroduce #212. The other 3D operations stay unimplemented
-            // (#405).
-            GenericTransformOperation::Translate3D(tx, ty, _tz) => {
-                let (tx_px, tx_pct) = length_or_pct_split(tx);
-                let (ty_px, ty_pct) = length_or_pct_split(ty);
-                accumulate_pct(&m, tx_pct, ty_pct, &mut pct_w, &mut pct_h);
-                [1.0, 0.0, 0.0, 1.0, tx_px, ty_px]
-            }
-            GenericTransformOperation::SkewX(angle) => {
-                let tan = angle.radians64().tan();
-                [1.0, 0.0, tan, 1.0, 0.0, 0.0]
-            }
-            GenericTransformOperation::SkewY(angle) => {
-                let tan = angle.radians64().tan();
-                [1.0, tan, 0.0, 1.0, 0.0, 0.0]
-            }
+            // the identity arm it would silently lose the whole translation.
+            // The other 3D operations stay unimplemented (#405).
+            GenericTransformOperation::Translate3D(tx, ty, _tz) => translate(Some(tx), Some(ty)),
+            GenericTransformOperation::SkewX(angle) => TransformOp::SkewX(angle.radians64()),
+            GenericTransformOperation::SkewY(angle) => TransformOp::SkewY(angle.radians64()),
             GenericTransformOperation::Skew(ax, ay) => {
-                let tan_x = ax.radians64().tan();
-                let tan_y = ay.radians64().tan();
-                [1.0, tan_y, tan_x, 1.0, 0.0, 0.0]
+                TransformOp::Skew(ax.radians64(), ay.radians64())
             }
             // 3D transforms -- flatten to 2D identity (skip)
-            _ => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-        };
+            _ => TransformOp::Matrix(Affine::IDENTITY),
+        })
+        .collect();
 
-        // Matrix multiply: m = m * op_matrix
-        let a = m[0] * op_matrix[0] + m[2] * op_matrix[1];
-        let b = m[1] * op_matrix[0] + m[3] * op_matrix[1];
-        let c = m[0] * op_matrix[2] + m[2] * op_matrix[3];
-        let d = m[1] * op_matrix[2] + m[3] * op_matrix[3];
-        let e = m[0] * op_matrix[4] + m[2] * op_matrix[5] + m[4];
-        let f = m[1] * op_matrix[4] + m[3] * op_matrix[5] + m[5];
-        m = [a, b, c, d, e, f];
-    }
-
+    let composed = compose(&functions);
+    let (m, pct_w, pct_h) = (composed.matrix, composed.pct_w, composed.pct_h);
     let has_pct = pct_w.iter().chain(&pct_h).any(|c| c.abs() > 1e-9);
 
     let is_identity = !has_pct
@@ -193,35 +160,8 @@ pub(super) fn transform_from_stylo(
         is_identity,
         pct_translate_w: pct_w,
         pct_translate_h: pct_h,
+        functions,
     }
-}
-
-/// Fold one percentage translate into the running coefficients, in the frame
-/// the functions before it establish.
-///
-/// `m` must be the matrix as it stands *before* this operation is composed in.
-/// A translate leaves the linear part alone, so `m[0..4]` is the `L` this
-/// offset is expressed in; reading it after the multiply happens to give the
-/// same value today and would be wrong the moment anyone reorders the loop.
-///
-/// `px`/`py` are fractions (0.5 = 50%). The contribution to the final `(e, f)`
-/// is `L·(px·W, py·H)`, which is linear in `W` and `H` — hence four
-/// coefficients rather than a function list (#212).
-///
-/// Shared with the keyframe extractor so an authored `translate(50%, 0)` stop
-/// accumulates by exactly the same rule the cascade uses — the two must agree
-/// or a transform would jump the moment an animation starts.
-pub(crate) fn accumulate_pct(
-    m: &[f64; 6],
-    px: f64,
-    py: f64,
-    pct_w: &mut [f64; 2],
-    pct_h: &mut [f64; 2],
-) {
-    pct_w[0] += px * m[0];
-    pct_w[1] += px * m[1];
-    pct_h[0] += py * m[2];
-    pct_h[1] += py * m[3];
 }
 
 /// Split a LengthPercentage into (px_value, percentage_fraction).

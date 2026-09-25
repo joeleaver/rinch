@@ -25,7 +25,7 @@
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
-use rinch_dom::transition::TransitionProperty;
+use rinch_dom::transition::{AnimatableValue, TransformOp, TransitionProperty};
 
 /// A 100×40 box, so a percentage translate is visible in the result.
 const BOX: &str = "position: absolute; left: 0; top: 0; width: 100px; height: 40px; \
@@ -340,6 +340,76 @@ fn a_decomposed_pair_carries_its_percentage_translate() {
     );
 }
 
+/// Chrome decomposes by Gram–Schmidt: a shear, not the residual 2×2 matrix of
+/// the css-transforms-1 pseudo-code. The translation stays linear, sheared or
+/// not.
+#[test]
+fn a_sheared_pair_with_translations_decomposes_like_chrome() {
+    check_transition(
+        "skewX(40deg) translate(10px, 5px)",
+        "rotate(50deg) scale(1.5) translate(-20px, 30px)",
+        &[
+            (
+                0.2,
+                [1.08329, 0.191013, 0.536177, 1.21151, 0.605273, 5.18882],
+            ),
+            (
+                0.5,
+                [1.13288, 0.528273, -0.0529712, 1.35452, -19.7801, 5.47205],
+            ),
+            (
+                0.8,
+                [1.07246, 0.899903, -0.719922, 1.22348, -40.1654, 5.75529],
+            ),
+        ],
+    );
+}
+
+/// Two reflections on opposite axes interpolate their scales straight through
+/// zero — no half turn is inserted (the pseudo-code's sign swap is not what
+/// Chrome does).
+#[test]
+fn opposite_reflections_interpolate_their_scales() {
+    check_transition(
+        "scale(-1, 1) skewX(0deg)",
+        "matrix(1, 0, 0, -1, 0, 0)",
+        &[
+            (0.2, [-0.6, 0.0, 0.0, 0.6, 0.0, 0.0]),
+            (0.8, [0.6, 0.0, 0.0, -0.6, 0.0, 0.0]),
+        ],
+    );
+}
+
+/// A half turn against the identity goes the way the angles are written —
+/// 180° down to 0° — the quaternion slerp's tie.
+#[test]
+fn a_half_turn_decomposes_through_ninety_degrees() {
+    check_transition(
+        "matrix(-1, 0, 0, -1, 0, 0)",
+        "matrix(1, 0, 0, 1, 0, 0) skewX(0deg)",
+        &[
+            (0.2, [-0.809017, 0.587785, -0.587785, -0.809017, 0.0, 0.0]),
+            (0.8, [0.809017, 0.587785, -0.587785, 0.809017, 0.0, 0.0]),
+        ],
+    );
+}
+
+/// A singular matrix has no decomposition; Chrome flips from one end to the
+/// other half way.
+#[test]
+fn a_singular_endpoint_flips_half_way() {
+    check_transition(
+        "matrix(0, 0, 0, 1, 0, 0)",
+        "rotate(90deg)",
+        &[
+            (0.2, [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+            (0.45, [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+            (0.55, [0.0, 1.0, -1.0, 0.0, 0.0, 0.0]),
+            (0.8, [0.0, 1.0, -1.0, 0.0, 0.0, 0.0]),
+        ],
+    );
+}
+
 // ── Starting and reversing ──
 
 /// `rotate(0deg)` and `rotate(360deg)` compose to the same matrix, and they
@@ -390,16 +460,42 @@ fn a_reversal_starts_from_the_interpolated_function_list() {
     );
 
     let t1 = start(&mut doc, div, "t");
-    let duration = doc.tree.active_transitions[&div.0][&TransitionProperty::Transform].duration_ms;
+    let reversal = &doc.tree.active_transitions[&div.0][&TransitionProperty::Transform];
+    let duration = reversal.duration_ms;
+    // The reversal starts from the style at the wall-clock moment the class
+    // changed, a little past 45° under a loaded test run. What matters is its
+    // *shape*: still a single `rotate()`, so it goes on pairing by function.
+    let AnimatableValue::Transform(from) = &reversal.from else {
+        panic!("a transform transition starts from a transform");
+    };
+    let [TransformOp::Rotate(from_rad)] = from.functions[..] else {
+        panic!(
+            "the reversal must start from the interpolated function list, got {:?}",
+            from.functions
+        );
+    };
+    let from_deg = from_rad.to_degrees();
     assert!(
-        (duration - 500.0).abs() < 50.0,
-        "a reversal half way is shortened to about half: {duration}"
+        (from_deg - 45.0).abs() < 5.0 && (duration - 500.0).abs() < 60.0,
+        "reversing half way: from about 45° over about half the duration, \
+         got {from_deg}° over {duration}ms"
     );
+
     rinch_dom::transition::tick_transitions(&mut doc.tree, t1 + 0.2 * duration);
-    assert_matrix(
-        resolved(&doc, div),
-        [0.809017, 0.587785, -0.587785, 0.809017, 0.0, 0.0],
-        "a fifth of the way back",
+    // A fifth of the way back — Chrome 153 gives exactly `rotate(36deg)` from
+    // 45°. The size is exact: it is what the elementwise lerp got wrong.
+    let m = resolved(&doc, div);
+    let det = m[0] * m[3] - m[1] * m[2];
+    assert!(
+        (det - 1.0).abs() < 1e-9,
+        "a reversal of a rotation is still a rotation: {m:?}"
+    );
+    let angle = m[1].atan2(m[0]).to_degrees();
+    assert!(
+        // Progress is an `f32`, hence a thousandth of a degree.
+        (angle - from_deg * 0.8).abs() < 1e-3,
+        "a fifth of the way back from {from_deg}° is {}°, got {angle}°",
+        from_deg * 0.8
     );
 }
 
