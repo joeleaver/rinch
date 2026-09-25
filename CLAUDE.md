@@ -1432,14 +1432,33 @@ The backend says which by calling `update_drag_with_button(x, y,
 PrimaryButton::{Down,Up,Unknown})`; `update_drag(x, y)` is exactly the `Unknown`
 form. Three states rather than a bool because a backend that cannot see the
 button state is a real case: **rinch-web reports `Down`/`Up` from `buttons & 1`
-and heals; desktop reports `Unknown` and does not.** `PlatformEvent::MouseMove`
-carries no button mask, and neither does winit's `PointerMoved` behind it, so
-desktop has no independent source of truth — and a flag the runtime kept itself
-would be no help, since the missed `MouseUp` that strands the drag is the same
-event that would have cleared the flag. Tracked in **issue #294**. Nothing is
-ever ended on a guess: `Unknown` behaves exactly like `Down`. The heal is
-document-scoped like the rest of the drag — another document's idle pointer
-cannot tear down this one's live drag.
+and heals on the move; desktop reports `Unknown` and does not.**
+`PlatformEvent::MouseMove` carries no button mask, and neither does winit's
+`PointerMoved` behind it, so desktop has no source of truth on a move — and a
+flag the runtime kept itself would be no help, since the missed `MouseUp` that
+strands the drag is the same event that would have cleared the flag. Nothing is
+ever ended on a guess: `Unknown` behaves exactly like `Down`.
+
+**Desktop heals on the next event that proves the release was missed** (issue
+#381), through `rinch_core::heal_missed_release` — the same `on_cancel` ending,
+at the last move. Two events count: a **left `MouseDown`** while the drag is
+live (a button cannot be pressed twice without a release in between), handled
+*before* the press is dispatched so its handlers never see the stranded drag
+and a drag the press arms is not the one ended; and **`WindowFocus(false)`**,
+after which the release goes to another window. Before #381 the next unrelated
+click's `MouseUp` ran `finish_drag` and **committed** the stranded drag's
+`on_end` at that click's position. A right or middle press proves nothing (a
+chord can be real) and ends nothing. Both events also release the editor's
+drag-select (`registry::DRAG`, the same shape — #294). What is left: between the
+swallowed release and that next press or blur, the drag still follows a pointer
+with no button held — a native context menu that takes a grab without blurring
+the window leaves exactly that — and only an OS query for the button state
+(`XQueryPointer`, `GetAsyncKeyState`, `pressedMouseButtons`; Wayland has none)
+could close it. Because the shell folds a desktop touch contact into a left
+press, a second finger's press ends a drag the first finger is making, as a
+second finger's drag already does on rinch-web. Every heal is document-scoped
+like the rest of the drag — another document's idle pointer, press or blur
+cannot tear down this one's live drag. Pins: `app/missed_release_381_tests.rs`.
 
 ### File Drop (OS → App)
 

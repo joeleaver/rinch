@@ -231,6 +231,14 @@ is still down — there is one drag at a time, not one per finger. Keep teardown
 in `on_cancel` and it runs on every ending but a commit — and an unmount of
 the component that armed the drag, which drops it without calling back.
 
+A drag whose release never arrives is ended the same way, through
+`on_cancel` at the last position `on_move` saw. On rinch-web that happens on
+the first move that reports the button up. Desktop cannot see the button on a
+move, so it ends the drag on the next event that proves the release was
+missed: a **left press** (handled before the press reaches any handler, so
+nothing it dispatches sees the old drag) or the window **losing focus**. Until
+one of those arrives, the stranded drag keeps following the pointer.
+
 `onscroll` fires once per container that moved, whichever axis moved it, and
 its [`ScrollEvent`] payload carries **both** offsets — so a horizontal-only
 scroller reports its position rather than an unchanging `scroll_top`
