@@ -758,3 +758,81 @@ fn the_root_build_is_attributed_to_the_root_scope() {
         );
     });
 }
+
+// ── pointer-capture drags across contexts (issue #293) ───────────────────────
+
+/// A press in context B that arms a drag while context A's drag is live ends
+/// A's drag through its `on_cancel`, rather than dropping it with its teardown
+/// unrun. Driven through real `update()` calls, so the dispatching-document
+/// marker is the one `RinchApp::handle_event` pushes, not a test's.
+#[test]
+fn a_drag_armed_in_one_context_cancels_another_contexts_live_drag() {
+    on_ui_thread(|| {
+        use rinch_platform::{MouseButton, PlatformEvent};
+
+        #[derive(Default)]
+        struct Log {
+            cancels: Cell<u32>,
+            ends: Cell<u32>,
+        }
+        let a_log = Rc::new(Log::default());
+        let b_log = Rc::new(Log::default());
+
+        fn arming_root(log: Rc<Log>) -> impl Fn(&mut RenderScope) -> NodeHandle + 'static {
+            move |__scope: &mut RenderScope| {
+                let log = log.clone();
+                rsx! {
+                    div {
+                        style: "width: 300px; height: 300px;",
+                        onclick: move || {
+                            let c = log.clone();
+                            let e = log.clone();
+                            rinch_core::Drag::absolute()
+                                .on_cancel(move |_, _| c.cancels.set(c.cancels.get() + 1))
+                                .on_end(move |_, _| e.ends.set(e.ends.get() + 1))
+                                .start();
+                        },
+                    }
+                }
+            }
+        }
+
+        let mut a = RinchContext::new(cfg(), arming_root(a_log.clone()));
+        let mut b = RinchContext::new(cfg(), arming_root(b_log.clone()));
+        a.update(&[]);
+        b.update(&[]);
+
+        let press = PlatformEvent::MouseDown {
+            x: 50.0,
+            y: 50.0,
+            button: MouseButton::Left,
+        };
+        let release = PlatformEvent::MouseUp {
+            x: 60.0,
+            y: 60.0,
+            button: MouseButton::Left,
+        };
+
+        a.update(std::slice::from_ref(&press));
+        assert!(
+            rinch_core::Drag::is_active(),
+            "positive control: A's press armed a drag"
+        );
+        b.update(std::slice::from_ref(&press));
+        assert_eq!(
+            a_log.cancels.get(),
+            1,
+            "B's arm ended A's drag through on_cancel"
+        );
+
+        // Only B's release may commit anything now.
+        a.update(std::slice::from_ref(&release));
+        assert_eq!(a_log.ends.get(), 0, "a superseded drag never commits");
+        b.update(std::slice::from_ref(&release));
+        assert_eq!(b_log.ends.get(), 1, "B's own drag commits on B's release");
+        assert_eq!(b_log.cancels.get(), 0);
+
+        drop(a);
+        drop(b);
+    });
+}
