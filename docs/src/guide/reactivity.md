@@ -224,9 +224,12 @@ Effect::new(move || {
 // This effect only re-runs when `count` changes, not when `name` changes
 ```
 
-`untracked` hides only the observer directly above it: if the effect you are in
-was itself created while another effect was running, a read inside `untracked`
-is handed to that outer one.
+`untracked` hides only the observer directly above it. That matters only while
+an effect's run is nested inside another effect's run — the first run of an
+`Effect::new` written inside another effect's body, for instance. A read inside
+`untracked` there is recorded on the outer effect. Later re-runs of the inner
+effect normally come from a flush with no effect beneath them and are unaffected (issue
+#932).
 
 ### App handlers never subscribe the effect that calls them
 
