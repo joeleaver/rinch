@@ -20,7 +20,7 @@
 //!
 //! `out_of_flow::contributes_to_scrollable_overflow` asks the predicate of the
 //! scroll container, never of a wrapper, so scroll ranges were already right
-//! (#990); a contents element is not a scroll container.
+//! (#990).
 //!
 //! Every expected number is **measured in Chrome 153** (`--headless=new`,
 //! `CSS1Compat`, `body { margin: 0 }`), not derived:

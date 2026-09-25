@@ -1917,7 +1917,11 @@ in both. A `position:
 fixed` child resolves against the viewport, so it is no part of any scroll
 range below it; an `absolute` child counts only where the container is
 positioned or transformed (`Node::establishes_abs_containing_block`) or *is*
-the initial containing block, which in rinch is the `<html>` box. Taffy lays
+the initial containing block, which in rinch is the `<html>` box. A
+`display: contents` element is neither, whatever its `position` or `transform`
+compute to: it generates no box, so the predicate answers `false` for it and an
+absolute under a `display: contents; position: relative` wrapper resolves
+against whatever contains the wrapper (#994, measured in Chrome 153). Taffy lays
 every out-of-flow box out against its direct parent whatever CSS says, so
 without that filter a closed `Drawer` — `position: fixed`, and still rendered
 since #751/#761 — made an `overflow: auto` ancestor report 800x600 of content
@@ -2529,7 +2533,8 @@ correct, and each has a fixture in
   *bounds* callers** (#550), but it is a *different shape*. `Collector::span`
   truncates an absolute's chain at its containing block (`Absolute =>
   self.cb_depth`, set at **any** `establishes_abs_containing_block()` ancestor —
-  any non-`static` position or a transform), so it escapes the clippers *below*
+  any non-`static` position or a transform on a box that is not
+  `display: contents`, #994), so it escapes the clippers *below*
   that block while staying clipped by the ones above. `opacity_layer_bounds` and
   `clip_cuts_nothing` narrow it at **every** clipping ancestor regardless, so a
   layer holding one can come back too small with the same GPU-only symptom. It
