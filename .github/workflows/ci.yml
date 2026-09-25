@@ -202,7 +202,10 @@ jobs:
       # Feature combinations the workspace-wide default build never exercises.
       # desktop + embed carries BOTH painters since #140 (the winit shell drives
       # TinySkia while embed RinchContexts drive Vello) and broke silently before
-      # anything checked it. Plain `cargo check` — compile-only, cheap.
+      # anything checked it. `clippy -D warnings`, not `check` (#372): a
+      # combination that leaves an item unused is a warning, and
+      # `--no-default-features --features embed` carried four (the IME bridge
+      # only the desktop shell reads) that `check` printed and passed.
       #
       # `components,theme` with no defaults is the configuration `rinch-web`
       # resolves `rinch` to: no muda, no winit, no rinch-dom. `rinch::menu` and
@@ -214,10 +217,10 @@ jobs:
       # confusing rinch-web failure rather than here.
       - name: Check rinch feature combinations
         run: |
-          cargo check -p rinch --features embed
-          cargo check -p rinch --no-default-features --features embed
-          cargo check -p rinch --features gpu,embed
-          cargo check -p rinch --no-default-features --features components,theme
+          cargo clippy -p rinch --features embed -- -D warnings
+          cargo clippy -p rinch --no-default-features --features embed -- -D warnings
+          cargo clippy -p rinch --features gpu,embed -- -D warnings
+          cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native
   # cfg, so anything behind `cfg(target_arch = "wasm32")` — the whole rinch-web
@@ -415,7 +418,7 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
 
-  # Type-check the Android target. Nothing else in this pipeline compiles it.
+  # Type-check and lint the Android target. Nothing else in this pipeline compiles it.
   #
   # Almost every module in `crates/rinch-android` is `#[cfg(target_os =
   # "android")]` — the exceptions are the callback registries (`callback`,
@@ -428,17 +431,22 @@ jobs:
   # someone running `examples/hello-android/build-apk.sh` on a machine with the
   # NDK.
   #
-  # `cargo check` needs no NDK: it type-checks without linking, so this job is a
+  # `cargo clippy` needs no NDK: it type-checks without linking, so this job is a
   # toolchain target and nothing more.
   #
   # `--no-default-features` is required. The `android` feature does not turn the
   # desktop defaults off, so a bare `--features android` drags in `muda` (GTK
   # menus) and fails to build for Android — a trap worth not re-discovering.
   #
-  # Warnings are NOT denied here yet: the Android cfg leaves ~11 pieces of
-  # cfg-conditional dead code across `rinch`, which want greening in their own
-  # change. Tracked separately; upgrading this to `clippy -D warnings` is the
-  # point of that issue.
+  # Warnings are denied (#372): an orphaned `use` or a helper only one platform
+  # calls is a *warning*, not an error, and the Android defect that motivated
+  # this job (a `use std::sync::Mutex;` left behind by PR #370) was exactly
+  # that. So this is `clippy -D warnings`, not `check`.
+  # `missing_const_for_thread_local` is suppressed on this target only, at the top of each crate that trips it,
+  # because it cannot see `const { .. }` there (see `rinch-core/src/lib.rs`).
+  #
+  # Library targets only: `--all-targets` does not compile rinch's lib-test for
+  # Android yet (#793).
   check-android:
     runs-on: ubuntu-latest
     steps:
@@ -447,6 +455,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          components: clippy
           targets: aarch64-linux-android, x86_64-linux-android
 
       - name: Cache cargo
@@ -460,15 +469,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-android-
 
-      - name: Type-check the Android shell and platform crate
+      - name: Lint the Android shell and platform crate
         run: |
           for target in aarch64-linux-android x86_64-linux-android; do
             echo "::group::$target"
-            cargo check -p rinch-android --target "$target"
-            cargo check -p rinch --target "$target" \
-              --no-default-features --features android
-            cargo check -p rinch --target "$target" \
-              --no-default-features --features android-gpu
+            cargo clippy -p rinch-android --target "$target" -- -D warnings
+            cargo clippy -p rinch --target "$target" \
+              --no-default-features --features android -- -D warnings
+            cargo clippy -p rinch --target "$target" \
+              --no-default-features --features android-gpu -- -D warnings
             echo "::endgroup::"
           done
 

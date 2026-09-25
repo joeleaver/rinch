@@ -3,11 +3,11 @@
 use super::{ClipboardError, ClipboardResult, ImageData};
 
 pub fn copy_text(text: impl AsRef<str>) -> ClipboardResult<()> {
-    rinch_android::clipboard::copy_text(text.as_ref()).map_err(|e| ClipboardError::AccessFailed(e))
+    rinch_android::clipboard::copy_text(text.as_ref()).map_err(ClipboardError::AccessFailed)
 }
 
 pub fn paste_text() -> ClipboardResult<String> {
-    rinch_android::clipboard::paste_text().map_err(|e| ClipboardError::AccessFailed(e))
+    rinch_android::clipboard::paste_text().map_err(ClipboardError::AccessFailed)
 }
 
 pub fn has_text() -> bool {
