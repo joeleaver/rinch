@@ -259,4 +259,37 @@ mod painted {
         );
         assert_eq!(pixel_at(&painter, 350, 300), NOTHING, "outside both");
     }
+
+    /// The off-window cull (`layer_bounds::subtree_is_entirely_outside`, #562)
+    /// asks the same question: an absolute escapes a clipper only when that
+    /// clipper sits below its containing block. Put the clipper entirely below
+    /// the 600px window and the absolute — which lives at the ICB, on screen —
+    /// must not be culled with it.
+    #[test]
+    fn an_offscreen_clipper_does_not_cull_the_absolute_that_escapes_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let clip = div(
+            &mut doc,
+            body,
+            "margin: 700px 0 0 60px; width: 100px; height: 100px; overflow: hidden",
+        );
+        let wrapper = div(&mut doc, clip, "display: contents; position: relative");
+        let abs = div(
+            &mut doc,
+            wrapper,
+            "position: absolute; left: 10px; top: 20px; width: 300px; height: 250px; \
+             background-color: rgb(255, 0, 0)",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(on_screen(&doc, abs), (10.0, 20.0), "premise: on screen");
+        let painter = paint(&mut doc);
+        assert_eq!(
+            pixel_at(&painter, 100, 100),
+            RED,
+            "the absolute escapes the off-window clipper, so culling the \
+             clipper's subtree must not take it along"
+        );
+    }
 }
