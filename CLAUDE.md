@@ -2472,7 +2472,8 @@ entries are pruned; a stacking context is always entered, since its hoisted
 descendants can be anywhere. Extents and hit-test stacking sequences live in
 `NodeTree::hit_cache` (`rinch_dom::hit_cache`), valid until its generation
 moves: every mutating `DomDocument` method that changes something (an identical
-attribute or text write returns first), `resolve_styles`, `resolve_layout`,
+attribute or text write returns first), `resolve_styles`, `resolve_layout`
+(except on its paint-only path, which moves no box — #911),
 `NodeTree::push_dirty` and `remove_subtree` bump it, and so does a transition
 or animation tick — **only** for a node whose `HitStyleKey` it changed (the
 `computed_style` inputs the cache depends on: `display`, `position`,
@@ -2496,6 +2497,30 @@ a scroll, a restyle and a removal. Measured: a warm move over a 500-row
 scroller went from 2 hit tests visiting 1986 nodes to 1 visiting 4, including
 with `AboutToWait` between moves (`a_move_after_about_to_wait_is_warm`,
 `a_colour_animation_keeps_moves_warm`).
+
+**A scroll is the one partial invalidation** (#911). Every scroll-offset write
+in the shell — the wheel (touch scrolls arrive as wheel events), a scrollbar
+drag, `apply_scroll_into_view` (every `scroll_into_view` and
+`scroll_to_fraction`), `set_scroll_top`/`set_scroll_left` — goes through
+`NodeTree::mark_scrolled`, which calls `HitCache::invalidate_scroll`: the
+generation still moves (so `move_hit` re-tests) and every stacking sequence is
+dropped, but extents are kept. An extent is relative to its own node and reads
+only its **own** scroll offset, never an ancestor's, and a box that clips — every
+real scroll container — does not fold its children in at all, so scrolling one
+changes no extent anywhere. A box that does not clip and has a scroll offset
+anyway (only `set_scroll_top` gives one that) drops its own extent and the chain
+folded out of it, which `flow_extent` records with `note_extent_parent`. A new
+input to `flow_extent` that is not relative to its node breaks this. (Layout's
+own clamp and the `display: none` reset are inside passes that invalidate in
+full.) A new scroll-offset writer that changes nothing else should use
+`mark_scrolled`, not `push_dirty`, or every notch rebuilds every row's extent.
+The wheel arm runs **one** hit test for both the render-surface check and the
+scroll routing. Measured on 500 rows: the second and later notches went from 2
+hit tests and 493 extents to 1 and 0
+(`perf_regression_tests::a_second_wheel_notch_recomputes_no_extent`); the first
+notch after a layout still finds the cache cold (498).
+`prune_tests::nested_scrollers_scrolled_one_at_a_time_hit_identically` and
+`a_resize_that_moves_percentage_boxes_drops_the_memo` are its oracles.
 
 **Two behaviour changes that follow from the rules, are CSS-correct, and will
 still surprise someone.**

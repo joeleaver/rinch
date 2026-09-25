@@ -327,8 +327,16 @@ fn a_scrolled_list_hits_identically() {
 /// Scrollers inside scrollers, each holding `sticky`, `fixed`, `absolute`
 /// and `relative` children, scrolled one at a time with the cache warm
 /// between — the shape #911's partial invalidation has to get right. A scroll
-/// keeps every extent below the scrolled node and drops its chain up to the
-/// root; dropping one link too few answers from before the scroll.
+/// drops every stacking sequence (the positioned rows are entries of the
+/// body's, at offsets that moved), and keeps every extent but the chain above
+/// a scrolled box whose extent reads its scroll offset.
+///
+/// A real scroller clips, so its extent is its own box and no extent anywhere
+/// moves when it scrolls. The chain half is reached only by a box that does
+/// **not** clip and still has a scroll offset — which only a programmatic
+/// `set_scroll_top` gives one — so `wrapper` is that box, and a chain that
+/// stops one link short leaves `<body>`'s children answering from before its
+/// scroll.
 ///
 /// Every probe grid runs on a warm cache: the previous grid filled it, and
 /// the `resolve_layout` between some rounds takes the paint-only path, which
@@ -338,7 +346,11 @@ fn nested_scrollers_scrolled_one_at_a_time_hit_identically() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let mut scrollers = Vec::new();
-    let mut parent = body;
+    // Index 3: not a scroll container — no `overflow` — but scrolled anyway.
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", "padding-top: 6px; margin-left: 9px");
+    doc.append_child(body, wrapper);
+    let mut parent = wrapper;
     // Three levels: body > outer > middle > inner, each a scroller of rows
     // and positioned children, the next level nested in its third row.
     for level in 0..3 {
@@ -406,18 +418,22 @@ fn nested_scrollers_scrolled_one_at_a_time_hit_identically() {
         }
         parent = next_parent;
     }
+    scrollers.push(wrapper);
     doc.resolve_layout(800.0, 600.0);
     assert_agree(&doc, "as laid out");
 
     // Deepest first, then outwards and back in, off every fixed point.
-    let steps: [(usize, f64, f64); 9] = [
+    let steps: [(usize, f64, f64); 12] = [
         (2, 37.0, 0.0),
         (1, 55.5, 11.0),
+        (3, 17.0, 5.0),
         (0, 91.0, 0.0),
         (2, 140.0, 23.0),
+        (3, 44.0, 0.0),
         (0, 12.0, 7.0),
         (1, 0.0, 0.0),
         (2, 3.0, 0.0),
+        (3, 0.0, 31.0),
         (1, 210.0, 40.0),
         (0, 260.0, 0.0),
     ];
@@ -438,6 +454,47 @@ fn nested_scrollers_scrolled_one_at_a_time_hit_identically() {
             .count();
     }
     assert!(hits_seen > 50, "positive control: hits seen {hits_seen}");
+}
+
+/// A viewport resize moves percentage-sized boxes with no restyle and no
+/// `DomDocument` write — only the layout pass sees it. Since #911 that pass
+/// keeps the hit memo on its paint-only path, so this pins that the path which
+/// does move boxes still drops it: the probes before the resize fill the cache
+/// with extents at the old width.
+#[test]
+fn a_resize_that_moves_percentage_boxes_drops_the_memo() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    for i in 0..12 {
+        let row = doc.create_element("div");
+        doc.set_attribute(
+            row,
+            "style",
+            &format!(
+                "width: {}%; height: 30px; margin-left: {}%",
+                20 + i * 5,
+                i * 3
+            ),
+        );
+        doc.append_child(body, row);
+        let over = doc.create_element("div");
+        // Overflows the row to the right by a percentage of the row, so the
+        // row's extent — not just its box — moves with the viewport.
+        doc.set_attribute(over, "style", "width: 150%; height: 12px");
+        doc.append_child(row, over);
+    }
+    doc.resolve_layout(800.0, 600.0);
+    assert_agree(&doc, "at 800");
+    doc.resolve_layout(530.0, 600.0);
+    let before = reference_hit_test(&doc.tree, 700.0, 20.0);
+    assert_agree(&doc, "at 530");
+    // Positive control: the resize did move a box across a probed point.
+    doc.resolve_layout(800.0, 600.0);
+    assert_ne!(
+        reference_hit_test(&doc.tree, 700.0, 20.0),
+        before,
+        "the resize moved nothing under (700, 20)"
+    );
 }
 
 // ── Ticks: the `HitStyleKey` fields a tick can write ────────────────────────

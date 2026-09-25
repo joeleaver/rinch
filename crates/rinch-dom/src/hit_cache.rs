@@ -218,9 +218,17 @@ impl HitCache {
     /// through every scroller between it and its root, and the cheap question
     /// is not "which roots is `id` under" but "was anything built".
     ///
+    /// `extent_reads_scroll` is whether `id`'s own extent reads its scroll
+    /// offset at all: a box that clips confines its extent to its own box and
+    /// never folds its children in, so scrolling one — which is every real
+    /// scroll container — changes no extent anywhere, and nothing is dropped
+    /// but the sequences. The hit tester's `flow_extent` is the authority on
+    /// that rule; `NodeTree::mark_scrolled` passes `!clips_overflow()`, the
+    /// same predicate it reads.
+    ///
     /// A caller that changed anything else as well — a layout, a style, the
     /// tree's shape — calls [`Self::invalidate`] instead.
-    pub fn invalidate_scroll(&self, id: usize) {
+    pub fn invalidate_scroll(&self, id: usize, extent_reads_scroll: bool) {
         let mut s = self.state.borrow_mut();
         let was_current = s.filled_at == self.generation.get();
         self.invalidate();
@@ -230,6 +238,9 @@ impl HitCache {
         }
         s.filled_at = self.generation.get();
         s.orders.clear();
+        if !extent_reads_scroll {
+            return;
+        }
         let mut cur = id;
         // Bounded by the node count: a parent chain is a path up the box tree.
         for _ in 0..=s.extent_parents.len() {

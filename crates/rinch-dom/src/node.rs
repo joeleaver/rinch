@@ -2341,7 +2341,8 @@ impl NodeTree {
     pub fn mark_scrolled(&mut self, id: RawNodeId) {
         if let Some(node) = self.nodes.get_mut(id) {
             node.dirty.insert(DirtyFlags::PAINT);
-            self.hit_cache.invalidate_scroll(id);
+            let extent_reads_scroll = !node.clips_overflow();
+            self.hit_cache.invalidate_scroll(id, extent_reads_scroll);
             self.dirty_nodes.insert(id);
             self.paint_dirty_nodes.push(id);
         }

@@ -680,7 +680,7 @@ fn mount_scroller() -> (RinchApp, NodeHandle) {
 /// scroll routing used to run one each). It finds the hit cache **cold** — the
 /// mount's layout dropped it and nothing has probed since — so it computes
 /// **498** extents, once: the next notch keeps them (see
-/// `a_second_wheel_notch_recomputes_only_the_scrollers_ancestor_extents`).
+/// `a_second_wheel_notch_recomputes_no_extent`).
 ///
 /// **Finding, pinned as it is — #910 (paint visits); a fix must LOWER this
 /// number, and its PR updates the pin:** paint visits **504** nodes for the
@@ -744,13 +744,13 @@ fn wheel_notch(app: &mut RinchApp) {
 ///
 /// #911: a scroll moves the scroller's rows, but no row's *own* extent — an
 /// extent is relative to its node's origin, and the scroll offset is applied
-/// by the ancestor that places the scroller's children. So the scroll drops
-/// only the scroller's extent and its ancestors', and the frame's paint-only
-/// layout pass drops nothing. One hit test, two extents: the scroller's and
-/// the root `div`'s. (`<body>` is a stacking root, which probes its sequence
-/// rather than keeping an extent of its own.) It was 2 hit tests and 493.
+/// by the scroller when it places its children — and not the scroller's
+/// either, since a box that clips keeps its extent to its own box. So the
+/// scroll drops only the stacking sequences, the frame's paint-only layout
+/// pass drops nothing, and the notch computes **no** extent at all. It was 2
+/// hit tests and 493 extents.
 #[test]
-fn a_second_wheel_notch_recomputes_only_the_scrollers_ancestor_extents() {
+fn a_second_wheel_notch_recomputes_no_extent() {
     let (mut app, scroller) = mount_scroller();
     interaction(&mut app, wheel_notch);
     let first = scroller.scroll_top();
@@ -778,7 +778,6 @@ fn a_second_wheel_notch_recomputes_only_the_scrollers_ancestor_extents() {
             (ClipMaskPx, 367044),
             (HitTests, 1),
             (HitTestNodesVisited, 4),
-            (HitExtentsComputed, 2),
         ],
     );
 }
