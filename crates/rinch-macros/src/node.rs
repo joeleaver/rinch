@@ -974,6 +974,53 @@ mod tests {
         assert_eq!(msg, "expected curly braces");
     }
 
+    /// A typo *inside* a leading control-flow head, a non-rsx body in it, or a
+    /// following element missing its braces is reported by the rsx parser, not
+    /// as a struct-literal error at a valid token or as #221's "renders once"
+    /// (PR #1017 review round 2, R1).
+    #[test]
+    fn a_typo_in_or_right_after_a_leading_control_flow_head_is_rsx_reported() {
+        let msg = arm_error(r#"{ if c.get() { b { "a" } i { class "x" } } span { "s" } }"#);
+        assert_eq!(msg, "expected curly braces");
+        let msg = arm_error(r#"{ match y.get() { 0 => "a", _ => helper() } span { "s" } }"#);
+        assert!(!msg.contains("renders once"), "{msg}");
+        assert_eq!(msg, "expected curly braces");
+        let msg = arm_error(r#"{ if c.get() { "a" } span }"#);
+        assert!(!msg.contains("renders once"), "{msg}");
+        assert_eq!(msg, "unexpected end of input, expected curly braces");
+        // A lone braced control flow of non-rsx bodies is still #221's case.
+        let msg = arm_error("{ match y.get() { 0 => helper(), _ => other() } }");
+        assert!(msg.contains("renders once"), "{msg}");
+    }
+
+    /// A struct literal that is not an rsx element — shorthand fields, a `..`
+    /// base — is still the expression it was on main (review round 2, R2).
+    #[test]
+    fn a_struct_literal_that_is_not_rsx_stays_an_expression() {
+        assert_eq!(first_arm("{ Foo { a } }"), ["Expr"]);
+        assert_eq!(first_arm("{ Foo { ..Default::default() } }"), ["Expr"]);
+        assert_eq!(
+            first_arm("{ Foo { a: 1, ..Default::default() }.into_node(__scope) }"),
+            ["Expr"]
+        );
+        // A typo'd element is no complete expression, so it is still rsx's error.
+        assert_eq!(
+            arm_error(r#"{ i { class "x" } span {} }"#),
+            "expected curly braces"
+        );
+    }
+
+    /// `let` and `,` after the first node continue the children (review round
+    /// 2, R3).
+    #[test]
+    fn let_and_comma_after_the_first_node_continue_the_children() {
+        assert_eq!(
+            first_arm(r#"{ if c.get() { "a" } let k = 1; span {} }"#),
+            ["IfBlock", "Statement", "Element"]
+        );
+        assert_eq!(first_arm(r#"{ "a", "b" }"#), ["Text", "Text"]);
+    }
+
     /// Control flow followed by something that starts no rsx node (a method
     /// call, an operator) is the one Rust expression it always was, not a
     /// children parse that fails at the `.` (PR #1017 review, F2).
