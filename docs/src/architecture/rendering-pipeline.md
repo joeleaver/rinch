@@ -382,7 +382,10 @@ list holding `rotateX`/`rotateY`/`rotateZ`/`rotate3d`, `scaleZ`/`scale3d`,
 result is projected the way Chrome draws an element with no `perspective` or
 `preserve-3d` ancestor: applied to the plane `z = 0`, divided by `w`, the
 resulting `z` dropped. So `rotateX(60deg)` squashes the box to half its height,
-and `perspective(100px) translateZ(10px)` magnifies it by 100/90. Only the
+and `perspective(100px) translateZ(10px)` magnifies it by 100/90. A plane at or
+behind the viewer (`w <= 0`, `perspective(10px) translateZ(20px)`) is neither
+drawn nor hit, as in Chrome — it flattens to the zero matrix `scale(0)` gives.
+Only the
 **composed** matrix is flattened — `rotateX(90deg) scaleY(2) rotateX(-90deg)` is
 the identity, where flattening each function would draw a line. For
 interpolation every `rotate*` is one primitive (a common axis lerps the angle,
@@ -393,8 +396,11 @@ Chrome's: the `perspective` and `transform-style` *properties* are not
 implemented at all, so a parent's `perspective` does nothing; a transform whose
 `w` depends on x or y (`perspective(200px) rotateY(30deg)`, a trapezoid in
 Chrome) is drawn with those terms dropped, since no affine draws a trapezoid;
-and a mismatched remainder holding a 3D function is decomposed as a flattened
-2D matrix, where Chrome decomposes the 4×4 (#989).
+a mismatched remainder holding a 3D function is decomposed as a flattened
+2D matrix, where Chrome decomposes the 4×4 (#989); and `transform-origin`'s z
+component and `backface-visibility: hidden` are ignored — `ComputedStyle`
+carries only an x/y origin, so `rotateY(45deg)` about `50% 50% 100px` lands
+where Chrome's does not (#997).
 
 Two things rinch does **not** implement from §3. The **transitionability**
 precondition, which appears in item 1 and again in item 4.2: a pair of values

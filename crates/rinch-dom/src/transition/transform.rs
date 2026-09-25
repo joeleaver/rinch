@@ -35,6 +35,9 @@
 //!    decomposes the flattened 2D matrix, which has lost any rotation out of
 //!    the page (#989).
 //!
+//! Not modelled at all: the `perspective` and `transform-style` properties,
+//! `transform-origin`'s z component and `backface-visibility` (#997).
+//!
 //! A percentage `translate` stays exact throughout. It lives in the
 //! `Translate` function's `pct` until the list is composed, and in an
 //! [`Affine`]'s `pct_w`/`pct_h` after that; a decomposition interpolates the
@@ -614,13 +617,20 @@ impl Mat4 {
     /// Exact when the `w` row does not depend on x or y (`m14 = m24 = 0` in
     /// CSS's naming). When it does — a `perspective()` acting on a rotation
     /// out of the page — the figure is a trapezoid no affine can draw, and
-    /// those two terms are dropped (#405). A `w` of 0 (the plane through the
-    /// viewer) is left undivided rather than dividing by zero. Of the
+    /// those two terms are dropped (#405). A `w` at or below 0 puts the
+    /// plane at or behind the viewer, where Chrome 153 draws nothing and
+    /// `elementFromPoint` finds nothing; it flattens to the zero matrix, which
+    /// paint and hit testing already treat as nothing (`scale(0)`). Of the
     /// box-relative part only the translation is kept: anything it put in the
     /// linear columns came from a projective `w` row too.
     fn flatten(&self) -> Affine {
         let m = &self.m;
-        let w = if m[3][3] == 0.0 { 1.0 } else { m[3][3] };
+        // At or behind the viewer: Chrome draws nothing and hits nothing.
+        // The zero matrix is the path `scale(0)` already takes.
+        if m[3][3].is_nan() || m[3][3] <= 1e-9 {
+            return Affine::from_matrix([0.0; 6]);
+        }
+        let w = m[3][3];
         Affine {
             matrix: [
                 m[0][0] / w,
