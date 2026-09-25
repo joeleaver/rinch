@@ -70,7 +70,9 @@ fn max_scroll(bars: &Scrollbars) -> (Option<f64>, Option<f64>) {
 
 /// Every reader of a scroll range, in one tuple: the shared extent, the bars
 /// paint and hit testing use, and the `DomDocument` pair the wheel clamps to.
-fn ranges(doc: &RinchDocument, id: usize) -> ((f64, f64), (Option<f64>, Option<f64>), (f64, f64)) {
+type Ranges = ((f64, f64), (Option<f64>, Option<f64>), (f64, f64));
+
+fn ranges(doc: &RinchDocument, id: usize) -> Ranges {
     (
         content_extents(&doc.tree, id),
         max_scroll(&scrollbars(&doc.tree, id, 1.0)),
