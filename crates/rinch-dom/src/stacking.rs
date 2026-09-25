@@ -294,6 +294,11 @@ impl Deref for PaintOrder {
 
 /// Whether `node` is positioned with `z-index: auto` — CSS 2.1 Appendix E step
 /// 8's "positioned descendants with 'z-index: auto'".
+///
+/// A stacking-order question, not the containing-block one: which box an
+/// absolute resolves against is [`Node::establishes_abs_containing_block`]'s,
+/// and this deliberately does not ask it. That it still reads `position` off a
+/// `display: contents` element, which has no box to layer, is #1038.
 fn is_positioned_z_auto(node: &Node) -> bool {
     node.computed_style.position != PositionValue::Static && node.computed_style.z_index.is_none()
 }
