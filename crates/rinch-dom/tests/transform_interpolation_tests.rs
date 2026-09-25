@@ -313,6 +313,15 @@ fn a_decomposed_rotation_takes_the_short_way() {
             (0.8, [-0.994522, -0.104528, 0.104528, -0.994522, 0.0, 0.0]),
         ],
     );
+    // And the other way round, which wraps the other way.
+    check_transition(
+        "rotate(-170deg)",
+        "scale(1) rotate(170deg)",
+        &[
+            (0.2, [-0.994522, -0.104528, 0.104528, -0.994522, 0.0, 0.0]),
+            (0.8, [-0.994522, 0.104528, -0.104528, -0.994522, 0.0, 0.0]),
+        ],
+    );
 }
 
 /// A reflection against a rotation: the decomposition's flipped axis.
