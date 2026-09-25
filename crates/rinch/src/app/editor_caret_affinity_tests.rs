@@ -18,6 +18,7 @@
 
 use super::hit_testing::painted_element_box;
 use super::*;
+use rinch_core::dom::CaretAffinity;
 use rinch_editor_core::{Pos, Selection};
 
 const VP: (u32, u32) = (800, 600);
@@ -361,4 +362,108 @@ fn a_click_past_a_wrapped_lines_end_draws_on_the_clicked_line() {
         "the press lands on the wrap point"
     );
     assert_eq!(p.caret_line(), Some(li), "and draws on the clicked line");
+}
+
+/// The hint is stored before the selection-change callback runs: a popup that
+/// positions itself from `caret_rect(head)` there sees the line End left the
+/// caret on. (From the second review of PR #1019.)
+#[test]
+fn the_selection_callback_sees_the_hint() {
+    let (mut p, starts, _) = glyph_wrapped();
+    let seen: Rc<RefCell<Vec<(CaretAffinity, Option<f32>)>>> = Rc::default();
+    p.handle.on_selection_change({
+        let (h, seen) = (p.handle.clone(), seen.clone());
+        move |sel| {
+            seen.borrow_mut()
+                .push((h.caret_affinity(), h.caret_rect(sel.head()).map(|r| r.y)))
+        }
+    });
+    key(&mut p.app, KeyCode::End, false);
+    assert_eq!(p.head(), starts[2]);
+    let after = (
+        p.handle.caret_affinity(),
+        p.handle
+            .caret_rect(p.handle.selection().head())
+            .map(|r| r.y),
+    );
+    assert_eq!(after.0, CaretAffinity::Upstream, "control");
+    assert_eq!(seen.borrow().last().copied(), Some(after));
+}
+
+/// An edit in an earlier paragraph — a peer typing above — shifts the caret's
+/// position but not its line: an upstream caret stays drawn at the end of its
+/// line. An edit before the caret in its own paragraph re-wraps it and drops the
+/// hint.
+#[test]
+fn an_edit_above_keeps_the_caret_on_its_line() {
+    let handle = crate::editor::create_editor();
+    assert!(handle.load_html(&format!(
+        "<p>top</p><p style=\"overflow-wrap: anywhere\">{WORD}</p>"
+    )));
+    let handle_in = handle.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px");
+        let editor = handle_in.mount(scope);
+        editor.set_attribute(
+            "style",
+            "width: 180px; height: 400px; font-size: 16px; line-height: 24px; \
+             font-family: sans-serif",
+        );
+        root.append_child(&editor);
+        root
+    });
+    app.register_app_font(AppFont::sans_serif(INTER));
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    handle.focus();
+    idle(&mut app);
+    // `<p>top</p>` is 0..5; the second paragraph's text starts at 6.
+    let base = 6usize;
+    let local = |app: &RinchApp, i: usize| {
+        let (tb, _) = handle.caret_address(Pos(base + i)).unwrap();
+        let doc = app.doc.as_ref().unwrap().borrow();
+        doc.query_caret_position(tb as u64, i).unwrap()
+    };
+    let mut starts = vec![0usize];
+    let mut y = local(&app, 0).1;
+    for i in 1..WORD.len() {
+        let yi = local(&app, i).1;
+        if yi > y + 1.0 {
+            starts.push(i);
+            y = yi;
+        }
+    }
+    assert!(starts.len() >= 4, "{starts:?}");
+    handle.set_selection(Selection::cursor(Pos(base + starts[1] + 3)));
+    idle(&mut app);
+    key(&mut app, KeyCode::End, false);
+    assert_eq!(handle.selection().head(), Pos(base + starts[2]));
+    let y_before = handle.caret_rect(handle.selection().head()).unwrap().y;
+    // Delete "o" of "top": the caret maps back one.
+    assert!(handle.update(|state| {
+        let mut tr = state.tr();
+        tr.delete(2, 3).ok()?;
+        Some(tr)
+    }));
+    idle(&mut app);
+    assert_eq!(
+        handle.selection().head(),
+        Pos(base - 1 + starts[2]),
+        "mapped"
+    );
+    assert_eq!(handle.caret_affinity(), CaretAffinity::Upstream);
+    let y_after = handle.caret_rect(handle.selection().head()).unwrap().y;
+    // The first paragraph kept its one line, so the caret's line did not move.
+    assert!(
+        (y_after - y_before).abs() < 1.0,
+        "still drawn on its line: {y_before} -> {y_after}"
+    );
+    // Now an edit in its own paragraph, before it.
+    assert!(handle.update(|state| {
+        let mut tr = state.tr();
+        tr.delete(base - 1, base).ok()?;
+        Some(tr)
+    }));
+    assert_eq!(handle.caret_affinity(), CaretAffinity::Downstream);
 }

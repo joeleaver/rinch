@@ -684,3 +684,68 @@ fn a_click_past_a_wrapped_lines_end_draws_on_the_clicked_line() {
     );
     f.teardown();
 }
+
+/// A vertical move whose goal column lies past the target line's end lands on
+/// its wrap point and draws on the target line (upstream) — Chrome 153 native:
+/// End then ArrowDown lands on the next wrap point, ArrowUp back on this one.
+/// (From the second review of PR #1019.)
+#[wasm_bindgen_test]
+fn a_vertical_move_onto_a_wrap_point_draws_on_the_target_line() {
+    let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
+    let starts = f.line_starts();
+    assert!(starts.len() >= 5, "{starts:?}");
+    f.focus();
+    f.caret_at(starts[1] + 3);
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), starts[2]);
+    assert!(f.key("ArrowDown", false));
+    assert_eq!(f.head(), starts[3], "down onto line 3's wrap point");
+    assert_eq!(caret_line(&f, &starts), Some(2), "drawn on line 3, not 4");
+    assert!(f.key("ArrowUp", false));
+    assert_eq!(f.head(), starts[2]);
+    assert_eq!(caret_line(&f, &starts), Some(1), "back up, drawn on line 2");
+    f.teardown();
+}
+
+/// A downstream caret at a wrap point in a right-to-left paragraph is drawn at
+/// the start edge of the lower line — its RIGHT edge.
+#[wasm_bindgen_test]
+fn a_downstream_caret_at_an_rtl_wrap_draws_at_the_right_edge() {
+    let f = Fixture::mounted(HEBREW, "direction: rtl;");
+    let starts = f.line_starts();
+    assert!(starts.len() >= 3, "{starts:?}");
+    f.focus();
+    f.caret_at(starts[1]);
+    let r = f
+        .handle
+        .caret_rect(f.handle.selection().head())
+        .expect("a caret");
+    let c = f.char_rect(starts[1]);
+    assert!(
+        (r.x as f64 - c.right()).abs() <= 1.0,
+        "caret x {} at the right edge {} of the line's first char (left {})",
+        r.x,
+        c.right(),
+        c.left()
+    );
+    assert_eq!(caret_line(&f, &starts), Some(1));
+    f.teardown();
+}
+
+/// A press on the right half of the last letter of a glyph-wrapped line lands
+/// after it — on the wrap point, drawn on that line.
+#[wasm_bindgen_test]
+fn a_press_on_the_right_half_of_a_glyph_wraps_last_letter_lands_after_it() {
+    let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
+    let starts = f.line_starts();
+    assert!(starts.len() >= 4, "{starts:?}");
+    f.focus();
+    let last = f.char_rect(starts[2] - 1);
+    let x = (last.left() + last.width() * 0.6) as f32;
+    let y = (last.top() + last.height() / 2.0) as f32;
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    assert_eq!(f.head(), starts[2], "after the last letter, not before it");
+    assert_eq!(caret_line(&f, &starts), Some(1));
+    f.teardown();
+}
