@@ -612,20 +612,18 @@ impl Mat4 {
         }
     }
 
-    /// Whether this turns the plane's back to the viewer: the `(3, 3)` entry
-    /// of the inverse is negative, i.e. its cofactor and the determinant have
-    /// opposite signs (Chrome's `IsBackFaceVisible`, which also answers "no"
-    /// for a singular matrix). The box-relative part is a translation and
-    /// cannot turn anything.
-    fn back_facing(&self) -> bool {
+    /// A 3×3 minor: the determinant of rows `r` and columns `c`.
+    fn minor(&self, r: [usize; 3], c: [usize; 3]) -> f64 {
         let m = &self.m;
-        let det3 = |r: [usize; 3], c: [usize; 3]| {
-            m[r[0]][c[0]] * (m[r[1]][c[1]] * m[r[2]][c[2]] - m[r[1]][c[2]] * m[r[2]][c[1]])
-                - m[r[0]][c[1]] * (m[r[1]][c[0]] * m[r[2]][c[2]] - m[r[1]][c[2]] * m[r[2]][c[0]])
-                + m[r[0]][c[2]] * (m[r[1]][c[0]] * m[r[2]][c[1]] - m[r[1]][c[1]] * m[r[2]][c[0]])
-        };
-        // Laplace expansion along row 0.
-        let det: f64 = (0..4)
+        m[r[0]][c[0]] * (m[r[1]][c[1]] * m[r[2]][c[2]] - m[r[1]][c[2]] * m[r[2]][c[1]])
+            - m[r[0]][c[1]] * (m[r[1]][c[0]] * m[r[2]][c[2]] - m[r[1]][c[2]] * m[r[2]][c[0]])
+            + m[r[0]][c[2]] * (m[r[1]][c[0]] * m[r[2]][c[1]] - m[r[1]][c[1]] * m[r[2]][c[0]])
+    }
+
+    /// The determinant, by Laplace expansion along row 0. The box-relative
+    /// part is a translation and changes nothing about it.
+    fn determinant(&self) -> f64 {
+        (0..4)
             .map(|c| {
                 let cols = match c {
                     0 => [1, 2, 3],
@@ -634,13 +632,32 @@ impl Mat4 {
                     _ => [0, 1, 2],
                 };
                 let sign = if c % 2 == 0 { 1.0 } else { -1.0 };
-                sign * m[0][c] * det3([1, 2, 3], cols)
+                sign * self.m[0][c] * self.minor([1, 2, 3], cols)
             })
-            .sum();
+            .sum()
+    }
+
+    /// Whether Chrome would refuse to invert this, and so neither draws nor
+    /// hits an element transformed by it (#1051): a determinant that is not a
+    /// normal `f32`. Measured in Chrome 153: `scaleZ(2.5e-38)` is drawn and
+    /// `scaleZ(1e-38)` — or `scaleZ(1e-20) scaleZ(1e-20)` — is not, while a
+    /// determinant that is only small (`scaleZ(1e-20)`) is drawn.
+    fn singular(&self) -> bool {
+        let det = self.determinant();
+        !det.is_finite() || det.abs() < f32::MIN_POSITIVE as f64
+    }
+
+    /// Whether this turns the plane's back to the viewer: the `(3, 3)` entry
+    /// of the inverse is negative, i.e. its cofactor and the determinant have
+    /// opposite signs (Chrome's `IsBackFaceVisible`, which also answers "no"
+    /// for a singular matrix). The box-relative part is a translation and
+    /// cannot turn anything.
+    fn back_facing(&self) -> bool {
+        let det = self.determinant();
         if det == 0.0 || !det.is_finite() {
             return false;
         }
-        let cofactor33 = det3([0, 1, 3], [0, 1, 3]);
+        let cofactor33 = self.minor([0, 1, 3], [0, 1, 3]);
         // Chrome's `kEpsilon` is float epsilon: `scale(0.015) rotateY(180deg)`
         // (`cofactor33 · det = -s⁴ ≈ -5e-8`) still faces the viewer there.
         cofactor33 * det < -(f32::EPSILON as f64)
@@ -714,6 +731,12 @@ pub fn compose(ops: &[TransformOp]) -> Affine {
 /// negative. Measured in Chrome 153, it reads the element's **own** transform —
 /// under a turned parent a child with none of its own still faces the viewer —
 /// and a mirror (`scaleX(-1)`) is not a turn.
+///
+/// A [singular](Mat4::singular) 4×4 composes to the zero matrix, the path
+/// `scale(0)` and a plane behind the viewer take: Chrome 153 neither draws nor
+/// hits such an element, even where its flattening is invertible — `scaleZ(0)`
+/// flattens to the identity (#1051). Only here, not in [`compose`]: that one
+/// also feeds interpolation, whose ends must keep their flattened values.
 pub fn compose_about_origin_z(ops: &[TransformOp], origin_z: f64) -> (Affine, bool) {
     if ops.iter().all(TransformOp::is_planar) {
         return (compose(ops), false);
@@ -731,6 +754,9 @@ pub fn compose_about_origin_z(ops: &[TransformOp], origin_z: f64) -> (Affine, bo
             z: -origin_z,
         };
         m = m.then(&back.to_mat4());
+    }
+    if m.singular() {
+        return (Affine::from_matrix([0.0; 6]), false);
     }
     (m.flatten(), m.back_facing())
 }
