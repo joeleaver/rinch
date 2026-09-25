@@ -187,11 +187,15 @@ fn one_caret_blink_repaints_the_caret() {
 /// Typing one character into a paragraph: one paragraph re-shaped, one region
 /// repainted.
 ///
-/// **Finding, pinned as it is — #906; a fix must LOWER this number, and its PR updates the pin:** a keystroke lays out **twice**
-/// (`layout_resolves` 2, `taffy_root_computes` 2). The likely second is the
-/// caret overlay, repositioned after the first layout — its one Taffy style
-/// change is the same one `arrow_right` shows — but that is read off the
-/// counts, not traced.
+/// **One Taffy compute (#906, was 2).** The keystroke's layout places the
+/// text; the post-layout caret pass then moves the caret overlay, and the
+/// frame resolves once more for that (`layout_resolves` 2). The caret is
+/// placed by a `transform` (`view.rs`, `overlay_translate`), which is
+/// paint-only, so that second resolve cascades the caret and skips Taffy
+/// (`layout_skipped_paint_only` 1). It used to be a `left`/`top` write, a
+/// Taffy style change that ran a second whole-document root compute. The
+/// second resolve itself cannot go: the caret's position is read off the
+/// text layout the first one produced.
 #[test]
 fn typing_one_character() {
     let mut page = page();
@@ -208,13 +212,13 @@ fn typing_one_character() {
             (PseudoElementPasses, 2),
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 2),
-            (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 3),
             (LayoutResolves, 2),
-            (TaffyRootComputes, 2),
-            (TaffyMeasureCalls, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
@@ -234,9 +238,11 @@ fn typing_one_character() {
 /// ArrowRight: a selection-only change. Nothing is re-shaped, and the repaint
 /// is the caret's old and new rects (608 px).
 ///
-/// **Finding, pinned as it is — #906; a fix must LOWER this number, and its PR updates the pin:** moving the caret is a Taffy style change on
-/// the caret overlay (`taffy_style_changes` 1), so a selection-only key runs a
-/// **root Taffy compute** over the whole document.
+/// **No Taffy compute (#906, was 1).** The caret overlay moves by a
+/// `transform`, so the one resolve cascades it and skips layout
+/// (`layout_skipped_paint_only` 1). It moved by `left`/`top` until #906: a
+/// Taffy style change, and a root compute over the whole document per arrow
+/// key.
 #[test]
 fn arrow_right() {
     let mut page = page();
@@ -253,10 +259,8 @@ fn arrow_right() {
             (PseudoElementPasses, 1),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 1),
-            (TaffyStyleChanges, 1),
             (LayoutResolves, 1),
-            (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 1),
+            (LayoutSkippedPaintOnly, 1),
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
@@ -281,7 +285,8 @@ fn arrow_right() {
 /// structural pass re-signed the whole document), and the 31 shapes are
 /// unchanged — so the drops come in through `ifc_measure_invalidations` (92,
 /// about three per block), whose source is not traced here. Two
-/// layouts, as for a keystroke. The full repaint is legitimate: every block
+/// resolves, as for a keystroke, the second paint-only since #906 (one
+/// Taffy compute, was 2). The full repaint is legitimate: every block
 /// below the caret moves, which is more than half the window.
 #[test]
 fn enter_splits_a_paragraph() {
@@ -303,18 +308,19 @@ fn enter_splits_a_paragraph() {
             (PseudoElementPasses, 3),
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 4),
-            (TaffyStyleChanges, 2),
+            (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 31),
             (ShapeIfcBuild, 31),
             (IfcMeasureInvalidations, 92),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
             (IfcScopeContainers, 2),
             (IfcScopeNodes, 34),
-            (TaffyRootComputes, 2),
-            (TaffyMeasureCalls, 32),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 31),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullRegionTooLarge, 1),
@@ -334,7 +340,8 @@ fn enter_splits_a_paragraph() {
 /// **Finding, pinned as it is — #905; a fix must LOWER this number, and its PR updates the pin:** the mirror of `enter_splits_a_paragraph` —
 /// the blocks after the join are re-shaped with it (`shape_measure_ifc` 29), and
 /// as there, not through signatures (`ifc_signature_changes` 0 since #895, was
-/// 29) but through `ifc_measure_invalidations` (88).
+/// 29) but through `ifc_measure_invalidations` (88). One Taffy compute; the
+/// caret pass's resolve is paint-only since #906 (was 2).
 #[test]
 fn backspace_joins_two_paragraphs() {
     let mut page = page();
@@ -356,17 +363,17 @@ fn backspace_joins_two_paragraphs() {
             (PseudoElementPasses, 2),
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 2),
-            (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 29),
             (ShapeIfcBuild, 29),
             (IfcMeasureInvalidations, 88),
             (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
             (IfcScopeContainers, 1),
             (IfcScopeNodes, 31),
-            (TaffyRootComputes, 2),
-            (TaffyMeasureCalls, 30),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 29),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullRegionTooLarge, 1),
