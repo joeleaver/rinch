@@ -123,6 +123,15 @@ fn start_drag_over_target(f: &mut Fixture) {
         !events::is_drag_ghost_visible(),
         "positive control: the source's ondragstart hid the ghost"
     );
+    // Some other handler ran between the last move and the drag's end (a key
+    // handler, a timer) and left its own context behind. The last move's
+    // context would read DRAG_END by coincidence — the fixed point that hid
+    // Escape's missing `set_click_context`.
+    events::set_click_context(events::ClickContext {
+        mouse_x: 3.0,
+        mouse_y: 5.0,
+        ..Default::default()
+    });
 }
 
 fn escape(app: &mut RinchApp) -> Vec<AppAction> {
