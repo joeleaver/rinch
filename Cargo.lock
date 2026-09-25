@@ -4969,6 +4969,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "js-sys",
+ "log",
  "rinch-android",
  "wasm-bindgen",
  "wasm-bindgen-futures",

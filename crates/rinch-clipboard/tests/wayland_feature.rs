@@ -6,38 +6,81 @@
 //! Plasma Wayland) never revokes that ownership, so `paste_text()` silently
 //! returns stale data. This test fails if a future dependency cleanup drops the
 //! feature again.
+//!
+//! **How it asks, and why not `cargo tree` (#275).** arboard exposes no public
+//! item behind the feature, so the question cannot be put to the type system.
+//! It used to be put to cargo instead — `cargo tree -e features`, spawned from
+//! the test with `current_dir(env!("CARGO_MANIFEST_DIR"))`. That path is baked
+//! in at compile time, and a shared target dir hands a later `cargo test` the
+//! binary a since-deleted git worktree built, so the spawn failed with
+//! `NotFound` for its *working directory* — deterministically, while looking
+//! like a flake. Now the test asks the arboard that is actually linked into
+//! this binary: with the feature, `Clipboard::new()` tries the Wayland
+//! data-control backend first whenever `WAYLAND_DISPLAY` is set, and logs a
+//! warning through `log` when that fails; without it, it never tries and logs
+//! nothing about Wayland. Pointing `WAYLAND_DISPLAY` at a socket that does not
+//! exist makes the attempt fail on every host, so no compositor, display or
+//! subprocess is involved, and nothing is read from disk.
 
 #![cfg(target_os = "linux")]
 
-use std::process::Command;
+use std::sync::Mutex;
 
-/// Asserts via `cargo tree -e features` that this crate enables arboard's
-/// `wayland-data-control` feature and that `wl-clipboard-rs` (the native
-/// Wayland backend it gates) is actually in the dependency graph.
+/// Every record logged in this process, as `(target, message)`.
+static RECORDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+struct Capture;
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        RECORDS
+            .lock()
+            .unwrap()
+            .push((record.target().to_string(), record.args().to_string()));
+    }
+    fn flush(&self) {}
+}
+
+static CAPTURE: Capture = Capture;
+
 #[test]
 fn arboard_wayland_data_control_is_enabled() {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let output = Command::new(cargo)
-        .args(["tree", "-p", "rinch-clipboard", "-e", "features"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("failed to run `cargo tree`");
+    log::set_logger(&CAPTURE).expect("the only logger in this test binary");
+    log::set_max_level(log::LevelFilter::Trace);
+
+    // Positive control: the instrument hears a record at all. Without it, a
+    // `log` built with a static max level (`release_max_level_off`, say) would
+    // make the assertion below fail for the wrong reason — and a future
+    // rewrite that inverts it would pass for one.
+    log::warn!(target: "wayland_feature_probe", "probe");
     assert!(
-        output.status.success(),
-        "`cargo tree` failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        RECORDS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(target, _)| target == "wayland_feature_probe"),
+        "the capture logger heard nothing; this test cannot see arboard's log"
     );
 
-    let tree = String::from_utf8_lossy(&output.stdout);
+    // A socket name that cannot exist, and no X11 display: the Wayland attempt
+    // fails, the X11 fallback fails, and neither touches the developer's
+    // session. This file holds one test, so nothing races the environment.
+    std::env::set_var("WAYLAND_DISPLAY", "rinch-275-no-such-wayland-socket");
+    std::env::remove_var("DISPLAY");
+    let _ = arboard::Clipboard::new();
+
+    let records = RECORDS.lock().unwrap().clone();
     assert!(
-        tree.contains("arboard feature \"wayland-data-control\""),
-        "arboard's wayland-data-control feature is no longer enabled — \
-         Linux clipboard would silently fall back to X11-only and serve \
-         stale pastes on Wayland (#148)"
-    );
-    assert!(
-        tree.contains("wl-clipboard-rs"),
-        "wl-clipboard-rs (arboard's native Wayland backend) missing from \
-         the dependency graph (#148)"
+        records
+            .iter()
+            .any(|(target, message)| target.starts_with("arboard")
+                && message.to_ascii_lowercase().contains("wayland")),
+        "arboard never tried its Wayland data-control backend, so its \
+         `wayland-data-control` feature is no longer enabled — Linux clipboard \
+         would silently fall back to X11-only and serve stale pastes on \
+         Wayland (#148). Records heard: {records:?}"
     );
 }
