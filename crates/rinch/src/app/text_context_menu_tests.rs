@@ -529,7 +529,28 @@ fn a_real_press_on_an_item_runs_it_and_closes_the_menu() {
     let (_, by, _, bh) = abs_box(&app, ids.input);
     shell_press(&mut app, x, by + bh / 2.0, MouseButton::Right);
 
-    let (sx, sy) = row_center(&app, TextEditAction::SelectAll);
+    // Off the row's centre and off the x = y diagonal (the centre sits near
+    // it), so a press judged at a swapped or duplicated coordinate misses the
+    // row instead of landing on it by accident.
+    let row = app
+        .open_text_menu
+        .as_ref()
+        .and_then(|m| {
+            m.items
+                .iter()
+                .find(|r| r.action == TextEditAction::SelectAll)
+        })
+        .map(|r| r.node_id)
+        .expect("the menu is open and has Select all");
+    let (rx, ry, rw, rh) = abs_box(&app, row);
+    let (sx, sy) = (rx + rw - 6.0, ry + rh / 2.0);
+    let inside = |(x, y): (f32, f32)| x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+    assert!(inside((sx, sy)), "precondition: the press is on the row");
+    assert!(
+        !inside((sy, sx)) && !inside((sx, sx)),
+        "precondition: ({sx}, {sy}) is off the diagonal of the row {:?}",
+        (rx, ry, rw, rh)
+    );
     shell_press(&mut app, sx, sy, MouseButton::Left);
     assert!(
         !app.is_text_context_menu_open(),
@@ -541,6 +562,52 @@ fn a_real_press_on_an_item_runs_it_and_closes_the_menu() {
         ("0", "11"),
         "Select all ran"
     );
+}
+
+/// A pointer-capture drag whose release was missed (issue #381), then a real
+/// left press that closes the open menu. The menu swallows the press, so the
+/// heal has to run before the menu takes it: otherwise the press's release
+/// reached the `MouseUp` arm with the menu gone and `finish_drag` committed the
+/// stranded drag through `on_end` at the click's position — the wrong commit
+/// #381's heal exists to prevent.
+#[test]
+fn a_stranded_drag_is_cancelled_not_committed_by_the_press_that_closes_the_menu() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    focus_and_select(&mut app, ids.input);
+    let ends = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
+    let cancels = Rc::new(Cell::new(0u32));
+    {
+        let (e, c) = (ends.clone(), cancels.clone());
+        rinch_core::Drag::absolute()
+            .on_move(|_, _| {})
+            .on_end(move |x, y| e.borrow_mut().push((x, y)))
+            .on_cancel(move |_, _| c.set(c.get() + 1))
+            .start();
+    }
+    assert!(
+        rinch_core::Drag::is_active(),
+        "precondition: a stranded drag"
+    );
+    let x = x_for_offset(&mut app, ids.input, 4);
+    let (_, by, _, bh) = abs_box(&app, ids.input);
+    shell_press(&mut app, x, by + bh / 2.0, MouseButton::Right);
+    assert!(app.is_text_context_menu_open(), "precondition: open");
+
+    let (px, py, _, ph) = abs_box(&app, ids.plain);
+    shell_press(&mut app, px + 10.0, py + ph / 2.0, MouseButton::Left);
+    let (ended, cancelled, active) = (
+        ends.borrow().clone(),
+        cancels.get(),
+        rinch_core::Drag::is_active(),
+    );
+    rinch_core::Drag::cancel();
+    assert!(
+        !app.is_text_context_menu_open(),
+        "the press closes the menu"
+    );
+    assert_eq!(ended, Vec::new(), "a stranded drag is never committed");
+    assert_eq!(cancelled, 1, "it ends through on_cancel, once");
+    assert!(!active, "and it is over");
 }
 
 #[test]
