@@ -340,9 +340,25 @@ fn hard_line_deletes_keep_the_textblock_edge() {
     f.teardown();
 }
 
+/// End from `caret` landed at `end`: the wrap point `next` or the character
+/// before it, whichever the browser draws on the caret's own line — the model has
+/// no caret affinity, so where a caret AT the wrap point draws is the browser's
+/// call (after a hanging space: this line; inside a broken word: the next).
+fn assert_end_on_the_line(f: &Fixture, caret: u32, end: u32, next: u32) {
+    assert!(
+        end == next || end == next - 1,
+        "End lands at the wrap point {next} or just before it: {end}"
+    );
+    let caret_top = f.char_rect(caret).top();
+    let end_rect = f.handle.caret_rect(f.handle.selection().head()).unwrap();
+    assert!(
+        (end_rect.y as f64 - caret_top).abs() < 12.0,
+        "End's caret is drawn on the caret's own line: {} vs {caret_top}",
+        end_rect.y
+    );
+}
+
 /// Home and End go to the visual line's edges, as on desktop; Shift extends.
-/// End on a wrapped line stops before the wrap point: the model has no caret
-/// affinity, so a caret at the wrap point itself draws on the next line.
 #[wasm_bindgen_test]
 fn home_and_end_go_to_the_visual_line_edges() {
     let (f, start, caret, next) = middle_line(TEXT, "");
@@ -355,14 +371,7 @@ fn home_and_end_go_to_the_visual_line_edges() {
     f.caret_at(caret);
     assert!(f.key("End", false));
     let end = f.head();
-    assert_eq!(end, next - 1, "End stops just before the wrap point");
-    let caret_top = f.char_rect(caret).top();
-    let end_rect = f.handle.caret_rect(f.handle.selection().head()).unwrap();
-    assert!(
-        (end_rect.y as f64 - caret_top).abs() < 12.0,
-        "End's caret is drawn on the caret's own line: {} vs {caret_top}",
-        end_rect.y
-    );
+    assert_end_on_the_line(&f, caret, end, next);
 
     f.caret_at(caret);
     assert!(f.key("Home", true));
@@ -437,3 +446,19 @@ fn soft_line_backward_for_ltr_text_in_an_rtl_paragraph() {
     );
     f.teardown();
 }
+
+/// One unbroken word, broken by `overflow-wrap`: the wrap point sits between two
+/// letters, where the browser draws a caret at the start of the NEXT line. End
+/// must stop one character short of it to stay on the line it was pressed on.
+#[wasm_bindgen_test]
+fn end_inside_a_broken_word_stays_on_its_line() {
+    let (f, _, caret, next) = middle_line(LONG_WORD, "overflow-wrap: anywhere;");
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.key("End", false));
+    let end = f.head();
+    assert_end_on_the_line(&f, caret, end, next);
+    f.teardown();
+}
+
+const LONG_WORD: &str = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij";
