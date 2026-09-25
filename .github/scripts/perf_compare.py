@@ -71,6 +71,9 @@ def main():
     ap.add_argument("--head-label", default="head")
     ap.add_argument("--base-failed", action="store_true",
                     help="the base has the benchmarks and they did not run: fail")
+    ap.add_argument("--base-own-sources", action="store_true",
+                    help="the base ran its own copy of crates/rinch-bench, because "
+                         "the head's did not build or run on it (#1036)")
     ap.add_argument("--note", default="", help="an extra line under the table")
     ap.add_argument("--out")
     args = ap.parse_args()
@@ -130,6 +133,25 @@ def main():
         lines.append(
             f"No benchmark grew by more than {args.threshold:g}% against `{args.base_label}`."
         )
+    if base is not None:
+        both = sorted(set(head) & set(base))
+        head_only = sorted(set(head) - set(base))
+        base_only = sorted(set(base) - set(head))
+        coverage = f"Compared {len(both)} of {len(set(head) | set(base))} benchmarks."
+        if head_only:
+            coverage += " Not compared, head only (new): " + ", ".join(f"`{n}`" for n in head_only) + "."
+        if base_only:
+            coverage += " Not compared, base only (removed): " + ", ".join(f"`{n}`" for n in base_only) + "."
+        lines += ["", coverage]
+    if base is not None and args.base_own_sources:
+        lines += [
+            "",
+            f"The head's copy of `crates/rinch-bench` did not build or run on "
+            f"`{args.base_label}`, so the base ran its own copy. That usually means the "
+            "PR adds a benchmark calling an API the same PR introduces. A benchmark "
+            "whose scenario this PR changes compares two different scenarios here, so "
+            "its Δ is not the library's alone.",
+        ]
     lines += [
         "",
         f"| Benchmark | {args.base_label} | {args.head_label} | Δ | |",

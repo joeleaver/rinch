@@ -33,6 +33,10 @@ FAKE_CARGO = textwrap.dedent(r"""
             return []
         with open(p) as f:
             return [l.strip() for l in f if l.strip()]
+    if not os.path.isdir(crate):
+        print("error: package ID specification `rinch-bench` did not match any packages",
+              file=sys.stderr)
+        sys.exit(101)
     with open("Cargo.lock", "a") as f:
         f.write("# touched by a cargo run\n")
     api = set(lines("API"))
@@ -68,6 +72,7 @@ def checkout(root, api, benches=None, needs=(), panic=False, scale=None):
     """A fake checkout: the library's API, and optionally `crates/rinch-bench`."""
     write(os.path.join(root, "API"), "\n".join(api) + "\n")
     write(os.path.join(root, "Cargo.lock"), "# lockfile of " + os.path.basename(root) + "\n")
+    os.makedirs(os.path.join(root, "crates", "rinch-core"), exist_ok=True)
     if scale is not None:
         write(os.path.join(root, "SCALE"), f"{scale}\n")
     if benches is not None:
@@ -145,9 +150,9 @@ class BaseStep(Harness):
         code, report = self.compare(out, self.run_head(), outputs)
         # The existing benches got a Δ -- and a +10% one fails the check.
         self.assertIn("| `dom::hover.list_500` | 1,000 | 1,100 | +10.00% | ❌ regression |", report)
-        self.assertIn("| `dom::text_shadow_paint.cold` | – | 500 | – | new |", report)
+        self.assertIn("| `dom::text_shadow_paint.cold` | – | 550 | – | new |", report)
         self.assertIn("Compared 2 of 3 benchmarks", report)
-        self.assertIn("its own copy of `crates/rinch-bench`", report)
+        self.assertIn("so the base ran its own copy", report)
         self.assertEqual(code, 1, report)
 
     def test_the_fallback_restores_the_bases_lockfile(self):
