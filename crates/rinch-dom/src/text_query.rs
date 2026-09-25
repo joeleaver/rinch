@@ -147,7 +147,9 @@ pub fn glyph_bounds_for_offset_layout(
 
     let line = cluster.line();
     let line_metrics = line.metrics();
-    let line_y = line_metrics.baseline - line_metrics.ascent;
+    // The line box's top, as the caret has it (`Cursor::geometry`), not
+    // `baseline - ascent`, which is one half-leading lower (#1008).
+    let line_y = line_metrics.block_min_coord;
 
     // Use the cluster's advance for width
     let advance = cluster.advance();
@@ -159,7 +161,7 @@ pub fn glyph_bounds_for_offset_layout(
         x: geom.x0 as f32,
         y: line_y,
         width: advance,
-        height: line_metrics.line_height,
+        height: line_metrics.block_max_coord - line_metrics.block_min_coord,
     })
 }
 
@@ -217,14 +219,19 @@ pub fn selection_rects_for_layout(
             continue;
         }
         let metrics = line.metrics();
-        let top = metrics.baseline - metrics.ascent;
+        // The line box, `block_min_coord..block_max_coord` — the box Parley's
+        // caret (`Cursor::geometry`) stands in and a browser paints a selection
+        // over. `baseline - ascent` is that top plus the half-leading, which put
+        // the highlight half a leading below its line and into the next (#1008).
+        let top = metrics.block_min_coord;
+        let height = metrics.block_max_coord - metrics.block_min_coord;
         let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
             .geometry(layout, 0.0)
             .x0 as f32;
         let right = Cursor::from_byte_index(layout, end, Affinity::Downstream)
             .geometry(layout, 0.0)
             .x0 as f32;
-        rects.push((left, top, (right - left).max(1.0), metrics.line_height));
+        rects.push((left, top, (right - left).max(1.0), height));
     }
     rects
 }
