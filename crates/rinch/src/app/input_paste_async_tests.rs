@@ -416,17 +416,20 @@ fn deferred_work_runs_once_in_order_with_the_app() {
     assert_eq!(app.run_deferred_work(), 0, "each item runs once");
 }
 
-/// Work sent after its app was dropped goes nowhere, and does not panic.
+/// Work sent after its app was dropped goes nowhere: it is dropped on the
+/// spot, with everything it captured, rather than parked in an inbox that the
+/// sender alone keeps alive and nothing will ever run.
 #[test]
 fn deferred_work_for_a_dropped_app_is_discarded() {
     let (app, _ids, _log) = page(&[]);
     let sender = app.app_work_sender();
     drop(app);
-    // The closure must be `Send`; a flag through an `Arc` records a run.
-    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let f = flag.clone();
-    sender.send(move |_app: &mut RinchApp| {
-        f.store(true, std::sync::atomic::Ordering::SeqCst);
-    });
-    assert!(!flag.load(std::sync::atomic::Ordering::SeqCst));
+    let captured = std::sync::Arc::new(());
+    let held = captured.clone();
+    sender.send(move |_app: &mut RinchApp| drop(held));
+    assert_eq!(
+        std::sync::Arc::strong_count(&captured),
+        1,
+        "the work and its captures were released, not queued"
+    );
 }
