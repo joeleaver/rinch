@@ -1043,3 +1043,252 @@ fn enter_after_a_write_back_to_the_baseline_commits_nothing() {
         log.borrow()
     );
 }
+
+// ── Undo / redo on a focused field (issue #288) ─────────────────────────────
+//
+// `EditableState` always kept an undo stack; nothing reached it. Ctrl+Z undoes,
+// Ctrl+Y and Ctrl+Shift+Z redo (Cmd on macOS). A browser fires `input` for an
+// undo, so `oninput` carries the restored text. One key press is one undo step
+// — including the rewrite a controlled field's own `oninput` made in answer to
+// it — so an undo never shows the half-applied state between a keystroke and
+// its normalization, and a normalizing field can be undone past its rewrites.
+
+/// The platform's primary shortcut modifier: Cmd on macOS, Ctrl elsewhere.
+fn primary_mods(shift: bool) -> Modifiers {
+    Modifiers {
+        ctrl: !cfg!(target_os = "macos"),
+        meta: cfg!(target_os = "macos"),
+        shift,
+        ..Default::default()
+    }
+}
+
+fn chord(app: &mut RinchApp, key: KeyCode, text: &str, shift: bool) {
+    app.handle_event(
+        PlatformEvent::KeyDown {
+            key,
+            logical_key: None,
+            // A real Ctrl chord carries the key's text too; the `ctrl` gate
+            // on the text-insertion arm is what must keep it out of the field.
+            text: Some(text.to_string()),
+            modifiers: primary_mods(shift),
+            repeat: KeyRepeat::Unknown,
+        },
+        (800, 600),
+        1.0,
+    );
+}
+
+fn undo(app: &mut RinchApp) {
+    chord(app, KeyCode::KeyZ, "z", false);
+}
+
+fn inputs(log: &Rc<RefCell<Vec<String>>>) -> Vec<String> {
+    log.borrow()
+        .iter()
+        .filter(|e| e.starts_with("a-input"))
+        .cloned()
+        .collect()
+}
+
+/// Mount one `<input>` whose `oninput` upper-cases what it is given by writing
+/// it back — the controlled-normalizer pattern of #238. Returns the app, the
+/// input's id and the log of every `oninput` payload.
+fn mount_uppercasing_field() -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let slot: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let (slot_in, handle_in, log_in) = (slot.clone(), handle.clone(), log.clone());
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let input = scope.create_element("input");
+        input.set_attribute("style", "width: 200px; height: 30px");
+        let h = handle_in.clone();
+        let log = log_in.clone();
+        let id = register_input_handler(InputCallback::new(move |v: String| {
+            log.borrow_mut().push(v.clone());
+            let upper = v.to_uppercase();
+            if upper != v
+                && let Some(node) = h.borrow().as_ref()
+            {
+                node.set_attribute("value", &upper);
+            }
+        }));
+        input.set_attribute("data-oninput", &id.0.to_string());
+        *handle_in.borrow_mut() = Some(input.clone());
+        slot_in.set(Some(input.node_id().0));
+        input
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let id = slot.get().unwrap();
+    (app, id, log)
+}
+
+/// Ctrl+Z undoes a keystroke, Ctrl+Y and Ctrl+Shift+Z redo one; each fires
+/// `oninput` with the restored text, the field displays it, and the eventual
+/// commit carries what the field shows.
+#[test]
+fn ctrl_z_undoes_and_ctrl_y_and_ctrl_shift_z_redo() {
+    let (mut app, a_id, b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "abc");
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "ab");
+    assert_eq!(attr(&app, a_id, "value").as_deref(), Some("ab"));
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "a");
+    chord(&mut app, KeyCode::KeyY, "y", false);
+    assert_eq!(engine(&app).0, "ab", "Ctrl+Y redoes");
+    chord(&mut app, KeyCode::KeyZ, "Z", true);
+    assert_eq!(engine(&app).0, "abc", "Ctrl+Shift+Z redoes");
+    assert_eq!(attr(&app, a_id, "value").as_deref(), Some("abc"));
+    undo(&mut app);
+
+    assert_eq!(
+        inputs(&log),
+        [
+            "a-input:a",
+            "a-input:ab",
+            "a-input:abc",
+            "a-input:ab",
+            "a-input:a",
+            "a-input:ab",
+            "a-input:abc",
+            "a-input:ab",
+        ],
+        "every undo and redo fires oninput with the restored text"
+    );
+
+    click_center(&mut app, b_id);
+    assert_eq!(changes(&log), ["a-change:ab"], "the commit carries the undone text");
+}
+
+/// Undo past the start of the stack, and redo with nothing to redo, change
+/// nothing and fire nothing.
+#[test]
+fn undo_and_redo_with_nothing_to_do_fire_nothing() {
+    let (mut app, a_id, _b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "a");
+    undo(&mut app);
+    undo(&mut app);
+    chord(&mut app, KeyCode::KeyY, "y", false);
+    chord(&mut app, KeyCode::KeyY, "y", false);
+
+    assert_eq!(engine(&app).0, "a");
+    assert_eq!(inputs(&log), ["a-input:a", "a-input:", "a-input:a"]);
+}
+
+/// A programmatic rewrite of the focused field is one undo step: Ctrl+Z goes
+/// straight back to the text the user typed, never through the empty field
+/// that lies between the rewrite's delete and its insert.
+#[test]
+fn one_undo_reverts_a_programmatic_rewrite_whole() {
+    let (mut app, a_id, _b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "hi");
+    write_value(&app, a_id, "HI!");
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "hi", "the rewrite is undone whole");
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "h");
+    chord(&mut app, KeyCode::KeyY, "y", false);
+    chord(&mut app, KeyCode::KeyY, "y", false);
+    assert_eq!(engine(&app).0, "HI!", "and redone whole");
+    assert_eq!(
+        inputs(&log),
+        [
+            "a-input:h",
+            "a-input:hi",
+            "a-input:hi",
+            "a-input:h",
+            "a-input:hi",
+            "a-input:HI!",
+        ]
+    );
+}
+
+/// A field whose `oninput` normalizes what it is given can be undone past its
+/// rewrites. With the keystroke and its rewrite as separate steps, the second
+/// Ctrl+Z restores the raw lowercase letter, `oninput` upper-cases it again —
+/// a new edit, which clears the redo stack — and the user can never get back
+/// below it.
+#[test]
+fn a_normalizing_field_undoes_a_keystroke_and_its_rewrite_together() {
+    let (mut app, id, log) = mount_uppercasing_field();
+
+    click_center(&mut app, id);
+    type_str(&mut app, "ab");
+    assert_eq!(engine(&app).0, "AB");
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "A");
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "", "undone past both normalized keystrokes");
+    assert_eq!(attr(&app, id, "value").as_deref(), Some(""));
+    chord(&mut app, KeyCode::KeyZ, "Z", true);
+    assert_eq!(engine(&app).0, "A", "redo replays the normalized keystroke");
+    assert_eq!(*log.borrow(), ["a", "Ab", "A", "", "A"]);
+}
+
+/// Replacing a selection is one undo step: the delete of the selected text and
+/// the insert of the typed one come back together.
+#[test]
+fn replacing_a_selection_is_one_undo_step() {
+    let (mut app, a_id, _b_id, _div_id, _log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "abc");
+    chord(&mut app, KeyCode::KeyA, "a", false);
+    type_str(&mut app, "x");
+    assert_eq!(engine(&app).0, "x");
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "abc", "one undo restores the replaced text");
+}
+
+/// A read-only field refuses undo: it changes nothing and fires nothing, like
+/// every other text-changing command.
+#[test]
+fn a_read_only_field_refuses_undo_and_redo() {
+    let (mut app, a_id, _b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "ab");
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "a", "positive control: undo works while writable");
+    {
+        let doc = app.doc.clone().unwrap();
+        doc.borrow_mut()
+            .set_attribute(rinch_core::dom::NodeId(a_id), "readonly", "");
+    }
+    let before = log.borrow().len();
+    undo(&mut app);
+    chord(&mut app, KeyCode::KeyY, "y", false);
+
+    assert_eq!(engine(&app).0, "a");
+    assert_eq!(attr(&app, a_id, "value").as_deref(), Some("a"));
+    assert_eq!(log.borrow().len(), before, "nothing fired: {:?}", log.borrow());
+}
+
+/// A field that went disabled while focused refuses undo and releases the
+/// keyboard, as for every other key (issue #315).
+#[test]
+fn a_field_disabled_while_focused_refuses_undo() {
+    let (mut app, a_id, _b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "ab");
+    {
+        let doc = app.doc.clone().unwrap();
+        doc.borrow_mut()
+            .set_attribute(rinch_core::dom::NodeId(a_id), "disabled", "");
+    }
+    let before = log.borrow().len();
+    undo(&mut app);
+
+    assert_eq!(attr(&app, a_id, "value").as_deref(), Some("ab"));
+    assert_eq!(log.borrow().len(), before, "nothing fired: {:?}", log.borrow());
+    assert_eq!(app.focus_target, FocusTarget::None, "the claim was released");
+}
