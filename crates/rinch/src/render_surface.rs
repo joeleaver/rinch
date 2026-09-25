@@ -1745,6 +1745,15 @@ fn setup_resize_observer(
 mod compositor_routing_tests {
     use super::*;
 
+    /// `renderer::GPU_PRESENTING` is process-global, and two tests below flip
+    /// it on a `gpu` build while the other one asks it: each holds this for its
+    /// whole body, or one reads the other's `true` halfway through.
+    static PRESENTING: Mutex<()> = Mutex::new(());
+
+    fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
+        PRESENTING.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// The whole table from `surface_takes_compositor_path`'s doc comment,
     /// pinned in both columns regardless of which backend this build is.
     ///
@@ -1783,6 +1792,7 @@ mod compositor_routing_tests {
     /// the finished UI. That double delivery is #358.
     #[test]
     fn a_video_frame_goes_to_the_inline_map_and_off_the_software_blit() {
+        let _presenting = presenting_lock();
         let video = create_video_surface("test-video");
         video.writer().submit_frame(&[10, 20, 30, 255], 1, 1);
 
@@ -1829,6 +1839,7 @@ mod compositor_routing_tests {
     /// it keeps the compositor layer it has always had.
     #[test]
     fn a_game_viewport_frame_paints_inline_on_software() {
+        let _presenting = presenting_lock();
         let game = create_render_surface_with_name("game");
         game.writer().submit_frame(&[1, 2, 3, 255], 1, 1);
 
@@ -1873,6 +1884,7 @@ mod compositor_routing_tests {
     /// And a `RenderSurface` component keeps its own inline path, by id.
     #[test]
     fn a_render_surface_component_is_still_collected_by_id() {
+        let _presenting = presenting_lock();
         let surface = create_render_surface();
         mount_render_surface(&surface);
         surface.writer().submit_frame(&[9, 9, 9, 255], 1, 1);
