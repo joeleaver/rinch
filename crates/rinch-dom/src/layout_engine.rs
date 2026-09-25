@@ -438,12 +438,6 @@ impl RinchDocument {
             self.read_layout_results_for_box(anon_id);
         }
 
-        // Clamp scroll offsets to valid range after layout.
-        // When a scroll container shrinks (e.g., window resize makes max-height
-        // smaller) or grows (content now fits), the old scroll offset may exceed
-        // the new max. Clamping here ensures paint and hit-testing use valid values.
-        self.clamp_scroll_offsets();
-
         // Build inline layouts for IFC roots (rebuild with final widths and store)
         // Temporarily take layout_cx out to avoid borrow conflict
         let t = web_time::Instant::now();
@@ -460,6 +454,16 @@ impl RinchDocument {
         let mut text_layout_cache = text_layout_cache;
         text_layout_cache.extend(std::mem::take(&mut self.tree.atomic_leaf_layouts));
         self.copy_cached_text_layouts(text_layout_cache);
+
+        // Clamp scroll offsets to the valid range after layout. When a scroll
+        // container shrinks (e.g., window resize makes max-height smaller) or
+        // grows (content now fits), the old scroll offset may exceed the new
+        // max; clamping here ensures paint and hit-testing use valid values.
+        // **After** the two text passes above: the range is `content_extents`,
+        // which reads an IFC root's and an anonymous box's `text_layout`, and
+        // before them that is last pass's lines or none (review of #1045 — a
+        // bottom-pinned text scroller snapped to 0 when text was appended).
+        self.clamp_scroll_offsets();
 
         // Arm transitions now that the first layout has completed, so nothing
         // transitions into existence on page load.

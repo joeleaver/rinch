@@ -1975,7 +1975,8 @@ itself positioned, and then placed against the host (**#1049**).
 `DomDocument::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
 `content_extents`, and so is layout's own clamp of a scrolled container
-(`clamp_scroll_offsets`); each used to be a copy of the walk over `children`
+(`clamp_scroll_offsets`, which runs after `copy_cached_text_layouts`, since the
+range reads this pass's `text_layout`s); each used to be a copy of the walk over `children`
 alone, and the clamp copy took back on every layout pass the range the others
 granted (a scroller at the bottom of #995's shape snapped from 150 to 50, a
 text scroller from 100 to 0). **The walk reads `children` in one pass** where
