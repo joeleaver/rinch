@@ -1938,3 +1938,63 @@ fn a_finished_colour_transition_reaches_an_inline_flex_label() {
 fn a_finished_colour_transition_reaches_a_flex_row_label() {
     a_finished_colour_transition_reaches_the_label("flex");
 }
+
+/// The animation twin: a `forwards` colour animation run to its end on an
+/// `inline-flex`, against a label built red. An animation tick writes
+/// `computed_style` without a cascade too (#904).
+#[test]
+fn a_finished_colour_animation_reaches_an_inline_flex_label() {
+    let css =
+        "@keyframes recolour { from { color: rgb(10, 20, 30); } to { color: rgb(220, 0, 0); } }
+        .iflex { display: inline-flex; } .iflex.anim { animation: recolour 150ms linear forwards; }
+        .iflex.hot { color: rgb(220, 0, 0); }";
+    let make = |class: &str| {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(css);
+        let body = d.body();
+        let e = d.create_element("div");
+        d.set_attribute(e, "class", class);
+        let t = d.create_text("some label text");
+        d.append_child(e, t);
+        d.append_child(body, e);
+        settle(&mut d);
+        (d, e)
+    };
+    let red = |px: &[[u8; 4]]| {
+        px.iter()
+            .filter(|p| p[3] > 0 && p[0] as i32 > p[1] as i32 + 80)
+            .count()
+    };
+    let (mut d, e) = make("iflex");
+    assert_eq!(
+        red(&paint_pixels(&mut d)),
+        0,
+        "counter-oracle: no red ink yet"
+    );
+    d.set_attribute(e, "class", "iflex anim");
+    d.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        red(&paint_pixels(&mut d)),
+        0,
+        "the animation starts from its first keyframe"
+    );
+    for a in d
+        .tree
+        .active_animations
+        .get_mut(&e.0)
+        .expect("the class change starts the animation")
+    {
+        a.start_time_ms -= 10_000.0;
+    }
+    d.tick_animations();
+    d.resolve_layout(VP.0, VP.1);
+    let incremental = red(&paint_pixels(&mut d));
+    let (mut f, _) = make("iflex hot");
+    let fresh = red(&paint_pixels(&mut f));
+    assert!(fresh > 0, "counter-oracle: the fresh label draws red ink");
+    assert_eq!(
+        incremental, fresh,
+        "red ink after the animation, incremental vs fresh"
+    );
+}
