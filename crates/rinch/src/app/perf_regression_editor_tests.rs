@@ -394,9 +394,16 @@ fn backspace_joins_two_paragraphs() {
 /// The toolbar's Bold button over a selected word: a real click on a
 /// `data-nofocus` button, then the command.
 ///
-/// **Findings, pinned as they are — #908; a fix must LOWER this number, and its PR updates the pin:** one click runs **ten** hit tests, two
-/// whole-document IFC setup passes and two layouts, and builds six stacking
-/// sequences. The bold mark re-shapes only its own paragraph.
+/// One click runs two hit tests (#908 took it from ten), one layout with one
+/// scoped IFC setup pass, and a partial repaint of the word; the bold mark
+/// re-shapes only its own paragraph. The selection's highlight is already on
+/// screen before the click: the `set_selection` above owes the overlay pass and
+/// `settle` runs it (#1001). Before that, the click itself created the
+/// highlight's `data-pm-selection` div — a second layout, a scoped IFC pass
+/// over 37 nodes, and a full repaint. The hit-test caches are cold at the click
+/// (69 extents, 8 stacking sequences) because the overlay pass's resolve in
+/// `settle` moved their generation; a pointer move before the click warms them
+/// (36 extents, 6 sequences).
 #[test]
 fn a_toolbar_bold_over_a_word() {
     let mut page = page();
@@ -413,37 +420,36 @@ fn a_toolbar_bold_over_a_word() {
         "editor: toolbar toggleBold",
         &s,
         &[
-            (StyleResolves, 4),
-            (ElementsCascaded, 4),
-            (StyleNodesVisited, 4),
-            (PseudoElementPasses, 4),
-            (StyleInvalidations, 2),
-            (TaffyStyleSyncs, 5),
-            (TaffyStyleChanges, 3),
+            (StyleResolves, 2),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (PseudoElementPasses, 1),
+            (TaffyStyleSyncs, 2),
+            (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (IfcMeasureInvalidations, 5),
+            (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),
-            (LayoutResolves, 2),
-            (IfcSetupPasses, 2),
-            (IfcScopedPasses, 2),
-            (IfcScopeContainers, 3),
-            (IfcScopeNodes, 37),
-            (TaffyRootComputes, 2),
-            (TaffyMeasureCalls, 2),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 1),
+            (IfcScopeNodes, 4),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
             (PaintFrames, 1),
-            (RepaintFull, 1),
-            (RepaintFullRegionTooLarge, 1),
-            (RepaintedPx, 480000),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 18112),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 23),
-            (StackingOrderBuilds, 6),
-            (GlyphCacheHits, 305),
-            (ClipMasks, 1),
-            (ClipMaskPx, 303408),
+            (PaintNodesVisited, 6),
+            (StackingOrderBuilds, 8),
+            (GlyphCacheHits, 19),
+            (ClipMasks, 2),
+            (ClipMaskPx, 20520),
             (HitTests, 2),
             (HitTestNodesVisited, 10),
-            (HitExtentsComputed, 39),
+            (HitExtentsComputed, 69),
         ],
     );
 }
