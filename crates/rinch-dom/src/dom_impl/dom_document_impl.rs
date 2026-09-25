@@ -1,6 +1,8 @@
 //! `DomDocument` trait implementation for `RinchDocument`.
 
-use rinch_core::dom::{DomDocument, NodeId, serialize_declarations, split_declarations};
+use rinch_core::dom::{
+    CaretAffinity, DomDocument, NodeId, serialize_declarations, split_declarations,
+};
 
 use peniko::color::{AlphaColor, Srgb};
 
@@ -976,8 +978,31 @@ impl DomDocument for RinchDocument {
     }
 
     fn query_caret_rect(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32, f32)> {
+        self.query_caret_rect_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
+    }
+
+    fn query_caret_position_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32)> {
+        crate::text_query::caret_position_for_offset_with_affinity(
+            self,
+            node_id,
+            byte_offset,
+            affinity,
+        )
+    }
+
+    fn query_caret_rect_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
         let id = node_id as usize;
-        if let Some(rect) = self.text_caret_window_rect(id, byte_offset) {
+        if let Some(rect) = self.text_caret_window_rect_with_affinity(id, byte_offset, affinity) {
             return Some(rect);
         }
         // No text geometry. For an element with no text at all (an empty
@@ -1738,7 +1763,19 @@ impl RinchDocument {
         node_id: usize,
         byte_offset: usize,
     ) -> Option<(f32, f32, f32)> {
-        let (local_x, local_y) = self.query_caret_position(node_id as u64, byte_offset)?;
+        self.text_caret_window_rect_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
+    }
+
+    /// [`Self::text_caret_window_rect`] for a caret with `affinity` at a soft
+    /// wrap (#301): an `Upstream` caret there is at the end of the upper line.
+    pub fn text_caret_window_rect_with_affinity(
+        &self,
+        node_id: usize,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        let (local_x, local_y) =
+            self.query_caret_position_with_affinity(node_id as u64, byte_offset, affinity)?;
         let height = self
             .query_glyph_bounds(node_id as u64, byte_offset)
             .map(|g| g.height)

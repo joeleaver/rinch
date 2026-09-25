@@ -234,8 +234,11 @@ PRs do not collide in one file.
   **increment site** of every counter that has more than one site. `shape_paint`
   has three (a `<select>` label, an `<input>` value, and text with no cached
   layout — a constructed state since #904, when an `inline-flex` label stopped
-  reaching it), `ellipsis_builds` two (an IFC root's, and a text leaf's — which no known markup reaches since #998 blockified the flex item behind a `display: contents` wrapper that used to; a flex or grid container's own text never ellipsizes, as in Chrome), `shape_atomic_inline` two and
-  `pseudo_element_passes` two. A per-counter check cannot see a deleted
+  reaching it), `shape_atomic_inline` two and
+  `pseudo_element_passes` two. `ellipsis_builds` is down to one site, an IFC
+  root's: the text-leaf rebuild was deleted in #982 once #998 had closed the
+  last route to it, and the file keeps a scenario pinning that a flex
+  container's own text builds none (Chrome draws no "…" there). A per-counter check cannot see a deleted
   increment while a sibling site still fires; one document per site can.
 - `crates/rinch/src/app/perf_regression_tests.rs` drives a real `RinchApp` the
   way the desktop loop does (`AboutToWait`, then the paint the loop asked for):

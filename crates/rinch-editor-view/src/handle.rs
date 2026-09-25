@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{CaretAffinity, DomDocument, NodeHandle, RenderScope};
 use rinch_core::reactive::{Owner, current_owner, unowned, untracked_handler};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
@@ -45,6 +45,33 @@ use super::view::RinchDomEditorView;
 type LinkClickFn = Rc<dyn Fn(&LinkClick) -> bool>;
 /// An [`EditorHandle::on_link_hover`] callback.
 type LinkHoverFn = Rc<dyn Fn(Option<&LinkHover>)>;
+
+/// Whether `prev → next` only shifted the selection: the same kind, both ends
+/// moved by one amount, and the head at the same offset in a textblock of the
+/// same type and attrs whose content **up to the head** is unchanged — what
+/// comes after it (a peer typing at the paragraph's end) cannot move the head
+/// to another line. See [`EditorCore::carry_caret_hint`].
+fn shifted_in_place(prev: &EditorState, next: &EditorState) -> bool {
+    let (p, n) = (&prev.selection, &next.selection);
+    if std::mem::discriminant(p) != std::mem::discriminant(n) {
+        return false;
+    }
+    let delta = |a: Pos, b: Pos| b.0 as isize - a.0 as isize;
+    if delta(p.head(), n.head()) != delta(p.anchor(), n.anchor()) {
+        return false;
+    }
+    let (Ok(rp), Ok(rn)) = (prev.doc.resolve(p.head()), next.doc.resolve(n.head())) else {
+        return false;
+    };
+    let off = rp.parent_offset();
+    let (bp, bn) = (rp.parent(), rn.parent());
+    bp.is_textblock()
+        && off == rn.parent_offset()
+        && (bp.same_ref(bn)
+            || (bp.node_type() == bn.node_type()
+                && bp.attrs() == bn.attrs()
+                && bp.content().cut(0, off) == bn.content().cut(0, off)))
+}
 
 /// The owned editor: its state, its desktop projection, and the schema/plugins
 /// needed to rebuild a fresh state on `load_doc`.
@@ -113,6 +140,11 @@ struct EditorCore {
     /// Overlay passes the pending `reveal` has found no geometry on; it is
     /// dropped at [`REVEAL_PATIENCE`]. Reset by each new request.
     reveal_misses: u8,
+    /// The caret-affinity hint (#301) and the selection it was set with — see
+    /// [`EditorHandle::caret_affinity`]. It applies only while the selection is
+    /// still that one, so every other writer (an edit, undo, a load, a remote
+    /// change that moves the caret) retires it without knowing it exists.
+    caret_hint: Option<(Selection, CaretAffinity)>,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
@@ -295,6 +327,40 @@ impl Drop for EditorCore {
 }
 
 impl EditorCore {
+    /// The side of a soft wrap the caret at the selection's head belongs to:
+    /// the hint while the selection is the one it came with, else the default.
+    fn caret_affinity(&self) -> CaretAffinity {
+        self.affinity_at(self.state.selection.head())
+    }
+
+    /// The side of a soft wrap a caret at `pos` is drawn on: the hint at the
+    /// head (while its selection holds), downstream elsewhere — and always
+    /// **upstream right before a hard break**. A `hard_break` has no bytes in
+    /// the host text, so the positions before and after one share a byte
+    /// offset; which line a caret there belongs to is the model's to say, not
+    /// the geometry's. Before the break is the end of its line (Chrome draws the
+    /// DOM point there), after it the start of the next.
+    fn affinity_at(&self, pos: Pos) -> CaretAffinity {
+        let before_hard_break = self
+            .state
+            .doc
+            .resolve(pos)
+            .ok()
+            .and_then(|r| r.node_after())
+            .is_some_and(|n| n.type_name() == "hard_break");
+        if before_hard_break {
+            return CaretAffinity::Upstream;
+        }
+        match &self.caret_hint {
+            Some((sel, affinity))
+                if *sel == self.state.selection && pos == self.state.selection.head() =>
+            {
+                *affinity
+            }
+            _ => CaretAffinity::Downstream,
+        }
+    }
+
     /// Commit a freshly-applied `next` state over `prev`: store it, re-project the
     /// host, and — when collaborating — record the local change onto the CRDT and
     /// broadcast the resulting delta. The single landing spot for every **local**
@@ -337,6 +403,16 @@ impl EditorCore {
         if doc_changed {
             self.carry_anchors(&next.doc, mapping);
             self.carry_reveal(mapping);
+            self.carry_caret_hint(&prev, &next);
+        }
+        // A hint for any selection but the one landing is dead: keeping it would
+        // revive it if the selection came back by another route.
+        if self
+            .caret_hint
+            .as_ref()
+            .is_some_and(|(sel, _)| *sel != next.selection)
+        {
+            self.caret_hint = None;
         }
         self.note_selection(&prev.selection, &next.selection);
         self.state = next.clone();
@@ -368,6 +444,36 @@ impl EditorCore {
             let from = m.map(from.0, 1);
             (Pos(from), Pos(m.map(to.0, -1).max(from)), align)
         });
+    }
+
+    /// Carry the caret-affinity hint (#301) across a document change `prev →
+    /// next`, as CodeMirror maps a range's `assoc` through changes.
+    ///
+    /// The hint follows the selection when the edit only **shifted** it: both
+    /// ends moved by the same amount, and the head at the same offset in its
+    /// textblock, whose content **up to the head** is unchanged — an edit in
+    /// another block, a peer typing above, or one typing after the caret in its
+    /// own paragraph. The caret's line is decided by what comes before it, so it
+    /// still belongs to the same side. (A change of the block's *width* — a
+    /// re-indent, a resized table column — can re-wrap it; an `Upstream` caret
+    /// that is no longer at a wrap draws where a `Downstream` one would, so
+    /// keeping the hint then is harmless.) Any other change drops it: an edit
+    /// before the caret in its own block re-wraps it, and typing moves the
+    /// caret. Asked by position, not through the
+    /// transaction's mapping, because a remote integration rebuilds the document
+    /// and has none (see [`EditorHandle::collab_receive`]).
+    ///
+    /// Called only for a change of document. A selection-only transaction leaves
+    /// the hint as it stands: [`EditorHandle::set_selection_with_affinity`]
+    /// stores it for the selection the transaction is about to set, and it
+    /// applies only if that is the selection that lands.
+    fn carry_caret_hint(&mut self, prev: &EditorState, next: &EditorState) {
+        let Some((sel, affinity)) = self.caret_hint.take() else {
+            return;
+        };
+        if sel == prev.selection && shifted_in_place(prev, next) {
+            self.caret_hint = Some((next.selection.clone(), affinity));
+        }
     }
 
     /// Owe [`EditorHandle::on_selection_change`] a call if the stored selection
@@ -795,6 +901,7 @@ impl EditorHandle {
                 scroll: ScrollGate::default(),
                 reveal: None,
                 reveal_misses: 0,
+                caret_hint: None,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -838,6 +945,7 @@ impl EditorHandle {
                 scroll: ScrollGate::default(),
                 reveal: None,
                 reveal_misses: 0,
+                caret_hint: None,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -1427,7 +1535,33 @@ impl EditorHandle {
     /// comes after the layout, on both platforms.
     pub fn caret_rect(&self, pos: Pos) -> Option<rinch_core::reactive::ElementBounds> {
         let core = self.core();
-        let (x, y, height) = core.view.as_ref()?.caret_rect(&core.state.doc, pos)?;
+        let affinity = core.affinity_at(pos);
+        let (x, y, height) = core
+            .view
+            .as_ref()?
+            .caret_rect(&core.state.doc, pos, affinity)?;
+        Some(rinch_core::reactive::ElementBounds {
+            x,
+            y,
+            width: 0.0,
+            height,
+        })
+    }
+
+    /// [`caret_rect`](Self::caret_rect) for a caret at `pos` drawn on
+    /// `affinity`'s side of a soft line wrap (#301), whatever the hint says —
+    /// what a platform asks when it has to decide which side a caret it is
+    /// about to place belongs on.
+    pub fn caret_rect_with_affinity(
+        &self,
+        pos: Pos,
+        affinity: CaretAffinity,
+    ) -> Option<rinch_core::reactive::ElementBounds> {
+        let core = self.core();
+        let (x, y, height) = core
+            .view
+            .as_ref()?
+            .caret_rect(&core.state.doc, pos, affinity)?;
         Some(rinch_core::reactive::ElementBounds {
             x,
             y,
@@ -1711,8 +1845,66 @@ impl EditorHandle {
     /// Move the selection (and re-project, so the caret follows once geometry lands).
     ///
     /// A selection that changed brings the caret into view on the next caret pass
-    /// of a focused editor (the arrow keys and clicks all land here).
+    /// of a focused editor (the arrow keys and clicks all land here). It clears
+    /// the caret-affinity hint, even for the selection already held: the caret
+    /// is drawn [`CaretAffinity::Downstream`] — see
+    /// [`set_selection_with_affinity`](Self::set_selection_with_affinity).
     pub fn set_selection(&self, selection: Selection) {
+        self.set_selection_hinted(selection, None);
+    }
+
+    /// [`set_selection`](Self::set_selection), and draw the caret at the head on
+    /// `affinity`'s side of a soft line wrap (#301).
+    ///
+    /// The end of one visual line and the start of the next are one model
+    /// position; a caret there is drawn at the start of the lower line unless it
+    /// is told otherwise. The platforms say `Upstream` for a caret that arrived
+    /// from the upper line's side — End, a press past a wrapped line's end, a
+    /// vertical move whose column lies past the target line's end — and
+    /// `Downstream` for Home. The hint is **view state**, not part of the
+    /// model's [`Selection`]: it lives beside the selection it was set with and
+    /// applies only while the selection is still that one, so any other change
+    /// of selection — typing, an edit before the caret in its own paragraph,
+    /// undo, a load, a plain `set_selection` — returns the caret to downstream.
+    /// A remote edit, or a local one, that leaves the caret's paragraph
+    /// unchanged up to it — an edit in an earlier paragraph, a peer typing above
+    /// or after the caret — carries it along, since the caret's line is
+    /// unchanged. Right before a hard break the caret is always drawn upstream,
+    /// at the end of its line.
+    ///
+    /// It reaches the caret overlay, [`caret_rect`](Self::caret_rect) at the
+    /// head, and through them the platforms' visual-line motions (Home / End,
+    /// the soft-line deletes, Up / Down), which measure from the head's rect.
+    pub fn set_selection_with_affinity(&self, selection: Selection, affinity: CaretAffinity) {
+        self.set_selection_hinted(selection, Some(affinity));
+    }
+
+    /// The side of a soft line wrap the caret at the selection's head is drawn
+    /// on: the hint [`set_selection_with_affinity`](Self::set_selection_with_affinity)
+    /// set while the selection is still that one, else
+    /// [`CaretAffinity::Downstream`].
+    pub fn caret_affinity(&self) -> CaretAffinity {
+        self.core().caret_affinity()
+    }
+
+    /// [`caret_affinity`](Self::caret_affinity) for a caret at `pos`: the hint
+    /// when `pos` is the selection's head, else [`CaretAffinity::Downstream`] —
+    /// and [`CaretAffinity::Upstream`] right before a hard break, which ends its
+    /// line. What a platform's geometry query for `pos` should draw with.
+    pub fn caret_affinity_at(&self, pos: Pos) -> CaretAffinity {
+        self.core().affinity_at(pos)
+    }
+
+    fn set_selection_hinted(&self, selection: Selection, hint: Option<CaretAffinity>) {
+        let before = {
+            let mut core = self.core_mut();
+            let before = (core.state.selection.clone(), core.caret_affinity());
+            // Stored BEFORE the dispatch, so the selection-change callbacks the
+            // commit fires already see it; it is inert unless the dispatch lands
+            // exactly `selection`.
+            core.caret_hint = hint.map(|a| (selection.clone(), a));
+            before
+        };
         self.dispatch(
             |state| {
                 let mut tr = state.tr();
@@ -1721,6 +1913,18 @@ impl EditorHandle {
             },
             true,
         );
+        let doc_key = {
+            let core = self.core_mut();
+            // Only the drawing side changed — the same selection, the other side
+            // of the wrap: no transaction moved anything, so nothing else owes
+            // the caret pass that redraws it.
+            let redraw = core.state.selection == before.0 && core.caret_affinity() != before.1;
+            core.view.as_ref().filter(|_| redraw).map(|v| v.doc_key())
+        };
+        if let Some(doc_key) = doc_key {
+            crate::registry::owe_overlay_pass(doc_key);
+            crate::registry::request_overlay_refresh();
+        }
     }
 
     /// Select the word around model `pos` (the double-click gesture). Returns whether
@@ -2139,9 +2343,11 @@ impl EditorHandle {
     pub fn update_caret(&self) -> bool {
         let mut guard = self.core_mut();
         let core = &mut *guard;
+        let affinity = core.caret_affinity();
         let Some(view) = core.view.as_mut() else {
             return false;
         };
+        view.set_caret_affinity(affinity);
         let state = &core.state;
         // The view's `ScrollSelectionIntoView` says only that the overlay moved;
         // whether to scroll is the gate's decision (see above), so the requests
@@ -2587,6 +2793,9 @@ impl EditorHandle {
                 // mapped local steps, so there is no mapping to carry an anchor
                 // across; invalidate instead of guessing (see `carry_anchors`).
                 core.carry_anchors(&next.doc, None);
+                if !prev.doc.same_ref(&next.doc) {
+                    core.carry_caret_hint(&prev, &next);
+                }
                 core.note_selection(&prev.selection, &next.selection);
                 core.state = next.clone();
                 if let Some(view) = core.view.as_mut() {
@@ -4686,6 +4895,42 @@ mod tests {
             );
         }
 
+        /// A peer typing in an earlier paragraph shifts the caret's position,
+        /// not its line: the caret-affinity hint (#301) follows it. A peer typing
+        /// before the caret in its own paragraph re-wraps it and drops the hint.
+        #[test]
+        fn a_remote_edit_above_carries_the_caret_affinity_and_one_beside_it_drops_it() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "top"), para(&s, "second line")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            // "second line" is 6..17; the guest's caret at "second| line" (12).
+            guest.set_selection_with_affinity(Selection::cursor(Pos(12)), CaretAffinity::Upstream);
+            host.set_selection(Selection::cursor(Pos(4)));
+            assert!(host.insert_text("XY"));
+            assert_eq!(doc_text(&guest), "topXY\nsecond line");
+            assert_eq!(
+                guest.selection(),
+                Selection::cursor(Pos(14)),
+                "shifted by two"
+            );
+            assert_eq!(
+                guest.caret_affinity(),
+                CaretAffinity::Upstream,
+                "and still upstream"
+            );
+
+            host.set_selection(Selection::cursor(Pos(9)));
+            assert!(host.insert_text("Z"));
+            assert_eq!(doc_text(&guest), "topXY\nsZecond line");
+            assert_eq!(guest.selection(), Selection::cursor(Pos(15)));
+            assert_eq!(
+                guest.caret_affinity(),
+                CaretAffinity::Downstream,
+                "its own block re-wrapped"
+            );
+        }
+
         /// Typing right after a link, through the handle, reaches the peer as plain
         /// text: `link` is non-inclusive in the model, and the projection writes that
         /// into the CRDT rather than leaving the char inside the link's range (where
@@ -6219,6 +6464,218 @@ mod tests {
 
     /// `on_key`, `on_selection_change` and `caret_rect`: what an app needs to
     /// drive an autocomplete popup from the editor.
+    /// The caret-affinity hint (#301) lives beside the selection it was set
+    /// with and applies only while the selection is still that one.
+    mod caret_affinity {
+        use super::*;
+
+        fn hinted() -> EditorHandle {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            h.set_selection_with_affinity(Selection::cursor(Pos(4)), CaretAffinity::Upstream);
+            assert_eq!(
+                h.caret_affinity(),
+                CaretAffinity::Upstream,
+                "control: the hint holds"
+            );
+            assert_eq!(h.caret_affinity_at(Pos(4)), CaretAffinity::Upstream);
+            assert_eq!(
+                h.caret_affinity_at(Pos(3)),
+                CaretAffinity::Downstream,
+                "only at the head"
+            );
+            h
+        }
+
+        #[test]
+        fn a_plain_set_selection_clears_it_even_to_the_same_caret() {
+            let h = hinted();
+            h.set_selection(Selection::cursor(Pos(4)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        #[test]
+        fn a_typed_character_clears_it() {
+            let h = hinted();
+            assert!(h.insert_text("x"));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        #[test]
+        fn an_edit_that_leaves_the_selection_keeps_it() {
+            let h = hinted();
+            // An edit in the second paragraph maps the caret onto itself.
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(9, 10).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(4)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Upstream);
+        }
+
+        /// An edit in an earlier paragraph shifts the caret's position but not
+        /// its place in its own line: the hint follows it (mapped, as
+        /// CodeMirror maps `assoc`).
+        #[test]
+        fn an_edit_in_an_earlier_block_carries_it_to_the_shifted_caret() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            h.set_selection_with_affinity(Selection::cursor(Pos(10)), CaretAffinity::Upstream);
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(2, 3).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(9)), "control: shifted");
+            assert_eq!(h.caret_affinity(), CaretAffinity::Upstream);
+        }
+
+        /// An edit in the caret's own block before it re-wraps that block: the
+        /// hint is dropped, even though the caret only shifted.
+        #[test]
+        fn an_edit_before_the_caret_in_its_own_block_drops_it() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            h.set_selection_with_affinity(Selection::cursor(Pos(11)), CaretAffinity::Upstream);
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(8, 9).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(
+                h.selection(),
+                Selection::cursor(Pos(10)),
+                "control: shifted"
+            );
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        /// A same-length replacement before the caret in its own block leaves the
+        /// caret's position and offset alone but can re-wrap its line: the hint
+        /// is dropped.
+        #[test]
+        fn a_same_length_replacement_before_the_caret_drops_it() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            h.set_selection_with_affinity(Selection::cursor(Pos(11)), CaretAffinity::Upstream);
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                let text = state.schema().text("Q").ok()?;
+                tr.replace_with(8, 9, Fragment::from_node(text)).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(
+                h.selection(),
+                Selection::cursor(Pos(11)),
+                "control: unmoved"
+            );
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        /// The hint is already stored when the selection-change callback runs,
+        /// so a popup positioned from it sees the side the caret is drawn on.
+        #[test]
+        fn the_selection_callback_sees_the_new_hint() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            h.on_selection_change({
+                let (h, seen) = (h.clone(), seen.clone());
+                move |_| seen.borrow_mut().push(h.caret_affinity())
+            });
+            h.set_selection_with_affinity(Selection::cursor(Pos(4)), CaretAffinity::Upstream);
+            assert_eq!(*seen.borrow(), vec![CaretAffinity::Upstream]);
+        }
+
+        /// A selection that leaves the hinted one and comes back by another
+        /// route (select all, then an `update` back to the caret) does not
+        /// revive the old hint (PR #1019, round 3).
+        #[test]
+        fn a_selection_that_leaves_and_returns_does_not_revive_it() {
+            let h = hinted();
+            assert!(h.command("selectAll"));
+            assert_ne!(h.selection(), Selection::cursor(Pos(4)), "control: left");
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.set_selection(Selection::cursor(Pos(4)));
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(4)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        /// An edit strictly after the caret in its own block — a peer typing at
+        /// the paragraph's end — leaves the caret's line alone: the hint stays.
+        #[test]
+        fn an_edit_after_the_caret_in_its_own_block_keeps_it() {
+            let h = hinted();
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(5, 6).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(4)), "control: unmoved");
+            assert_eq!(h.caret_affinity(), CaretAffinity::Upstream);
+        }
+
+        /// A hint left inert by a selection that moved on is not carried onto
+        /// the new caret by a later edit.
+        #[test]
+        fn an_inert_hint_is_not_carried_onto_another_caret() {
+            let h = hinted();
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.set_selection(Selection::cursor(Pos(9)));
+                Some(tr)
+            }));
+            assert_eq!(
+                h.caret_affinity(),
+                CaretAffinity::Downstream,
+                "control: inert"
+            );
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(2, 3).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(8)), "control: shifted");
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        /// Undoing an earlier-block edit shifts the caret back, and the hint
+        /// follows it both ways.
+        #[test]
+        fn undo_of_an_earlier_block_edit_carries_it_back() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            h.set_selection_with_affinity(Selection::cursor(Pos(10)), CaretAffinity::Upstream);
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(2, 3).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(
+                h.caret_affinity(),
+                CaretAffinity::Upstream,
+                "control: carried"
+            );
+            assert!(h.command("undo"));
+            assert_eq!(h.selection(), Selection::cursor(Pos(10)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Upstream);
+        }
+
+        #[test]
+        fn a_selection_moved_by_undo_clears_it() {
+            let h = hinted();
+            assert!(h.insert_text("x"));
+            h.set_selection_with_affinity(Selection::cursor(Pos(5)), CaretAffinity::Upstream);
+            assert!(h.command("undo"));
+            assert_ne!(h.selection(), Selection::cursor(Pos(5)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+    }
+
     mod popup_hooks {
         use super::*;
         use std::cell::Cell;

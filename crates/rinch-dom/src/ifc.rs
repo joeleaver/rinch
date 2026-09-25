@@ -610,7 +610,8 @@ impl RinchDocument {
                 // A grid (or flex) container holding only text is laid out
                 // here as an IFC root, but that text is an anonymous item of
                 // the container, which does not clip — so no "…", as in
-                // Chrome (#904's second review; see `copy_cached_text_layouts`).
+                // Chrome (#904's second review). It is the only ellipsis
+                // site since #982 (`ellipsis_route_tests.rs`).
                 if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
                     && !cs.display.is_flex_or_grid_container()
                     && matches!(
@@ -655,16 +656,17 @@ impl RinchDocument {
     ///
     /// Uses the exact layouts built during Taffy measurement to ensure
     /// paint uses identical text shaping results.
-    /// Also handles text-overflow: ellipsis by truncating text and appending "…"
-    /// when the parent has overflow: hidden + white-space: nowrap + text-overflow: ellipsis.
+    ///
+    /// No `text-overflow: ellipsis` is built here. A text leaf is the text of
+    /// a flex or grid container (behind any `display: contents` wrappers),
+    /// which is an anonymous item that does not clip — Chrome 153 draws no
+    /// "…" there (#904) — and a box that does clip its text with an ellipsis
+    /// is an IFC root, whose "…" is built in `build_ifc_layouts`
+    /// (`ellipsis_route_tests.rs`). This site had its own rebuild until #982.
     pub(crate) fn copy_cached_text_layouts(
         &mut self,
         cache: HashMap<(usize, u32), parley::layout::Layout<Brush>>,
     ) {
-        use crate::computed_style::{
-            DisplayValue, OverflowValue, TextOverflowValue, WhiteSpaceValue,
-        };
-
         // First collect node IDs and their layouts to apply. Only a node the
         // compute measured can have an entry, so walk the cache's nodes rather
         // than the slab (layout audit F12): a node absent from the cache was
@@ -728,225 +730,14 @@ impl RinchDocument {
             })
             .collect();
 
-        // Collect ellipsis rebuild requests: (node_id, text_content, available_width)
-        let mut ellipsis_rebuilds: Vec<(usize, String, f32)> = Vec::new();
-
         // Apply the updates with alignment
         for (id, mut layout) in updates {
             // Get text-align from parent's computed style
-            let parent_id = self.tree.nodes[id].parent;
-            let alignment = parent_id
+            let alignment = self.tree.nodes[id]
+                .parent
                 .and_then(|p| self.tree.nodes.get(p))
                 .map(|p| p.computed_style.text_align.to_parley())
                 .unwrap_or(parley::layout::Alignment::Start);
-
-            // Check if text-overflow: ellipsis applies
-            let needs_ellipsis =
-                parent_id
-                    .and_then(|p| self.tree.nodes.get(p))
-                    .is_some_and(|parent| {
-                        // A flex or grid container's own text sits in an
-                        // anonymous item, which does not clip, so it never
-                        // ellipsizes — Chrome 153 draws no "…" there, only the
-                        // clipped text (#904's second review). Only a block
-                        // container's own text does.
-                        //
-                        // The one route found to the rebuild below (#982) was
-                        // a `span` flex item behind a `display: contents`
-                        // wrapper, which rinch left `display: inline` and
-                        // measured as a leaf. Since #998 that span is
-                        // blockified and is an IFC root, so its "…" comes from
-                        // the IFC-root site
-                        // (`a_contents_wrapped_flex_item_ellipsis` in
-                        // `perf_regression_scenarios.rs`); no other route to
-                        // this one is known.
-                        !parent.computed_style.display.is_flex_or_grid_container()
-                            && parent.computed_style.display != DisplayValue::Contents
-                            && matches!(
-                                parent.computed_style.text_overflow,
-                                TextOverflowValue::Ellipsis
-                            )
-                            && matches!(
-                                parent.computed_style.white_space,
-                                WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                            )
-                            && matches!(
-                                parent.computed_style.overflow_x,
-                                OverflowValue::Hidden | OverflowValue::Clip
-                            )
-                    });
-
-            if needs_ellipsis {
-                let parent_width = parent_id
-                    .and_then(|p| self.tree.nodes.get(p))
-                    .map(|p| p.layout.width)
-                    .unwrap_or(f32::INFINITY);
-
-                // Check if text overflows its parent
-                if layout.width() > parent_width && parent_width > 0.0 {
-                    if let NodeKind::Text(text_data) = &self.tree.nodes[id].kind {
-                        ellipsis_rebuilds.push((id, text_data.content.clone(), parent_width));
-                        continue; // Skip normal caching; will be rebuilt below
-                    }
-                }
-            }
-
-            // Apply alignment before caching
-            layout.align(alignment, parley::layout::AlignmentOptions::default());
-
-            self.tree.nodes[id].cached_text_parley = Some(Box::new(layout));
-        }
-
-        // Rebuild layouts for text nodes that need ellipsis truncation
-        for (id, content, available_width) in ellipsis_rebuilds {
-            self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
-            let parent_id = self.tree.nodes[id].parent;
-            let parent = parent_id.and_then(|p| self.tree.nodes.get(p));
-            let font_size = parent.map(|p| p.computed_style.font_size).unwrap_or(16.0);
-            let font_weight = parent
-                .map(|p| p.computed_style.font_weight)
-                .unwrap_or(400.0);
-            let font_family = parent
-                .map(|p| {
-                    if p.computed_style.font_family.is_empty() {
-                        "sans-serif".to_string()
-                    } else {
-                        p.computed_style.font_family.clone()
-                    }
-                })
-                .unwrap_or_else(|| "sans-serif".to_string());
-            let color = parent
-                .and_then(|p| p.computed_style.color)
-                .unwrap_or_else(|| {
-                    peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
-                });
-            let line_height = parent.and_then(|p| p.computed_style.line_height.to_parley());
-            let (letter_spacing, word_spacing) = parent
-                .map(|p| {
-                    (
-                        p.computed_style.letter_spacing,
-                        p.computed_style.word_spacing,
-                    )
-                })
-                .unwrap_or((0.0, 0.0));
-            let alignment = parent
-                .map(|p| p.computed_style.text_align.to_parley())
-                .unwrap_or(parley::layout::Alignment::Start);
-
-            // Measure the ellipsis "…" width first
-            let ellipsis = "…";
-            let ellipsis_width = {
-                let mut builder =
-                    self.layout_cx
-                        .ranged_builder(&mut self.font_cx, ellipsis, 1.0, true);
-                builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-                if (font_weight - 400.0).abs() > 1.0 {
-                    builder.push_default(parley::style::StyleProperty::FontWeight(
-                        parley::style::FontWeight::new(font_weight),
-                    ));
-                }
-                builder.push_default(parley::style::StyleProperty::FontFamily(
-                    parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family.clone())),
-                ));
-                push_spacing(&mut builder, letter_spacing, word_spacing);
-                let mut layout = builder.build(ellipsis);
-                layout.break_all_lines(None);
-                layout.width()
-            };
-
-            let target_width = available_width - ellipsis_width;
-            if target_width <= 0.0 {
-                // Not even room for the ellipsis — just show ellipsis
-                let mut builder =
-                    self.layout_cx
-                        .ranged_builder(&mut self.font_cx, ellipsis, 1.0, true);
-                builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-                builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-                builder.push_default(parley::style::StyleProperty::FontFamily(
-                    parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family)),
-                ));
-                if (font_weight - 400.0).abs() > 1.0 {
-                    builder.push_default(parley::style::StyleProperty::FontWeight(
-                        parley::style::FontWeight::new(font_weight),
-                    ));
-                }
-                if let Some(lh) = line_height {
-                    builder.push_default(parley::style::StyleProperty::LineHeight(lh));
-                }
-                push_spacing(&mut builder, letter_spacing, word_spacing);
-                let mut layout = builder.build(ellipsis);
-                layout.break_all_lines(None);
-                layout.align(alignment, parley::layout::AlignmentOptions::default());
-                self.tree.nodes[id].cached_text_parley = Some(Box::new(layout));
-                continue;
-            }
-
-            // Binary search for the longest prefix that fits within target_width
-            let chars: Vec<char> = content.chars().collect();
-            let mut lo: usize = 0;
-            let mut hi: usize = chars.len();
-            let mut best_len = 0;
-
-            while lo <= hi {
-                let mid = (lo + hi) / 2;
-                if mid == 0 {
-                    lo = 1;
-                    continue;
-                }
-                let prefix: String = chars[..mid].iter().collect();
-                let mut builder =
-                    self.layout_cx
-                        .ranged_builder(&mut self.font_cx, &prefix, 1.0, true);
-                builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-                if (font_weight - 400.0).abs() > 1.0 {
-                    builder.push_default(parley::style::StyleProperty::FontWeight(
-                        parley::style::FontWeight::new(font_weight),
-                    ));
-                }
-                builder.push_default(parley::style::StyleProperty::FontFamily(
-                    parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family.clone())),
-                ));
-                push_spacing(&mut builder, letter_spacing, word_spacing);
-                let mut layout = builder.build(&prefix);
-                layout.break_all_lines(None);
-
-                if layout.width() <= target_width {
-                    best_len = mid;
-                    lo = mid + 1;
-                } else {
-                    if mid == 0 {
-                        break;
-                    }
-                    hi = mid - 1;
-                }
-            }
-
-            // Build final layout with truncated text + ellipsis
-            let truncated: String = chars[..best_len]
-                .iter()
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-                + ellipsis;
-            let mut builder =
-                self.layout_cx
-                    .ranged_builder(&mut self.font_cx, &truncated, 1.0, true);
-            builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-            builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-            builder.push_default(parley::style::StyleProperty::FontFamily(
-                parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family)),
-            ));
-            if (font_weight - 400.0).abs() > 1.0 {
-                builder.push_default(parley::style::StyleProperty::FontWeight(
-                    parley::style::FontWeight::new(font_weight),
-                ));
-            }
-            if let Some(lh) = line_height {
-                builder.push_default(parley::style::StyleProperty::LineHeight(lh));
-            }
-            push_spacing(&mut builder, letter_spacing, word_spacing);
-            let mut layout = builder.build(&truncated);
-            layout.break_all_lines(None);
             layout.align(alignment, parley::layout::AlignmentOptions::default());
             self.tree.nodes[id].cached_text_parley = Some(Box::new(layout));
         }

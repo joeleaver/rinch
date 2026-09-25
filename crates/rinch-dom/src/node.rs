@@ -2683,6 +2683,8 @@ pub struct PaintedState {
 pub struct PaintedTransform {
     pub value: crate::computed_style::TransformValue,
     pub origin: (f32, f32),
+    /// `backface-visibility: hidden` (#997).
+    pub backface_hidden: bool,
 }
 
 impl PaintedState {
@@ -2696,6 +2698,7 @@ impl PaintedState {
                     cs.transform_origin_x.resolve(node.layout.width),
                     cs.transform_origin_y.resolve(node.layout.height),
                 ),
+                backface_hidden: cs.backface_visibility_hidden,
             })
         });
         Self {

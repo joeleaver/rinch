@@ -45,6 +45,8 @@ mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_caret_affinity_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_focus_and_reveal_tests;

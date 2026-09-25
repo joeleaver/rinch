@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::event_delegation::{
     FOCUS_VALUE_PROP, get_expando_string, set_expando, utf16_offset_to_utf8_bytes,
 };
-use rinch_core::dom::{DomDocument, GlyphBounds, NodeId, attr_is_truthy};
+use rinch_core::dom::{CaretAffinity, DomDocument, GlyphBounds, NodeId, attr_is_truthy};
 use rinch_editable::RewriteDiff;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -786,6 +786,60 @@ pub fn update_theme_style_global(css: &str) {
 }
 
 impl WebDocument {
+    /// The caret at flat UTF-8 `byte_offset` in `block`, as a viewport
+    /// `(x, y, height)`, on `affinity`'s side of a soft wrap (#301).
+    ///
+    /// The browser draws a collapsed range at a soft-wrap point at the end of
+    /// the upper line (measured, Chrome 153, after a hanging space and inside an
+    /// `overflow-wrap`-broken word alike): that is the `Upstream` caret. A
+    /// `Downstream` one there is drawn at the start of the character after it,
+    /// on the lower line. A wrap point is recognised by that character sitting
+    /// on a later line than the collapsed range; its start edge is its left for
+    /// a left-to-right run and its right for a right-to-left one, told apart by
+    /// where a caret just after it draws. `None` for a block with no text.
+    fn text_caret_viewport_rect(
+        &self,
+        block: &web_sys::Node,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        let (text_node, off) = find_text_node_at_byte_offset(block, byte_offset)?;
+        let range = self.browser_doc.create_range().ok()?;
+        range.set_start(&text_node, off).ok()?;
+        range.set_end(&text_node, off).ok()?;
+        let collapsed = range.get_bounding_client_rect();
+        if collapsed.height() <= 0.0 {
+            return None;
+        }
+        let upstream = (
+            collapsed.x() as f32,
+            collapsed.y() as f32,
+            collapsed.height() as f32,
+        );
+        if affinity == CaretAffinity::Upstream {
+            return Some(upstream);
+        }
+        let Some((next_node, start, len)) = find_char_at_byte_offset(block, byte_offset) else {
+            return Some(upstream);
+        };
+        range.set_start(&next_node, start).ok()?;
+        range.set_end(&next_node, start + len).ok()?;
+        let ch = range.get_bounding_client_rect();
+        if ch.height() <= 0.0 || ch.y() < collapsed.y() + collapsed.height() * 0.5 {
+            return Some(upstream);
+        }
+        // A caret just after the character is at its end edge; the start edge
+        // is the other one.
+        range.collapse_with_to_start(false);
+        let after = range.get_bounding_client_rect().x();
+        let x = if (after - ch.left()).abs() < (after - ch.right()).abs() {
+            ch.right()
+        } else {
+            ch.left()
+        };
+        Some((x as f32, ch.y() as f32, ch.height() as f32))
+    }
+
     /// Create a new WebDocument backed by the browser's document.
     ///
     /// Creates a `<div id="rinch-root">` as root and `<div id="rinch-body">`
@@ -977,6 +1031,39 @@ fn find_text_node_recursive(
         }
     }
     None
+}
+
+/// The text node holding the character that STARTS at flat UTF-8 `byte_offset`
+/// under `node`, with that character's UTF-16 start and length — unlike
+/// [`find_text_node_at_byte_offset`], which answers the end of the earlier node
+/// at a boundary between two. `None` past the last character.
+fn find_char_at_byte_offset(
+    node: &web_sys::Node,
+    byte_offset: usize,
+) -> Option<(web_sys::Node, u32, u32)> {
+    fn walk(node: &web_sys::Node, remaining: &mut usize) -> Option<(web_sys::Node, u32, u32)> {
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            let text = node.text_content().unwrap_or_default();
+            if *remaining < text.len() {
+                let ch = text.get(*remaining..)?.chars().next()?;
+                let start = utf8_byte_to_utf16_offset(&text, *remaining);
+                return Some((node.clone(), start as u32, ch.len_utf16() as u32));
+            }
+            *remaining -= text.len();
+            return None;
+        }
+        let children = node.child_nodes();
+        for i in 0..children.length() {
+            if let Some(child) = children.item(i)
+                && let Some(found) = walk(&child, remaining)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let mut remaining = byte_offset;
+    walk(node, &mut remaining)
 }
 
 /// Convert a UTF-8 byte offset to a UTF-16 code unit offset within a string.
@@ -1548,34 +1635,34 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// Downstream at a soft wrap, as on desktop — see
+    /// [`Self::query_caret_position_with_affinity`].
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
-        let n = self.nodes.get(&(node_id as usize))?;
-        let (text_node, utf16_offset) = find_text_node_at_byte_offset(n, byte_offset)?;
-        let range = self.browser_doc.create_range().ok()?;
-        range.set_start(&text_node, utf16_offset).ok()?;
-        range.set_end(&text_node, utf16_offset).ok()?;
-        let rect = range.get_bounding_client_rect();
-        // Get the block element's rect to compute relative coordinates
-        let el: web_sys::Element = n.clone().dyn_into().ok()?;
-        let block_rect = el.get_bounding_client_rect();
-        Some((
-            (rect.x() - block_rect.x()) as f32,
-            (rect.y() - block_rect.y()) as f32,
-        ))
+        self.query_caret_position_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
 
-    fn query_caret_rect(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32, f32)> {
+    fn query_caret_position_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32)> {
+        let n = self.nodes.get(&(node_id as usize))?;
+        let (x, y, _) = self.text_caret_viewport_rect(n, byte_offset, affinity)?;
+        let el: web_sys::Element = n.clone().dyn_into().ok()?;
+        let block_rect = el.get_bounding_client_rect();
+        Some((x - block_rect.x() as f32, y - block_rect.y() as f32))
+    }
+
+    fn query_caret_rect_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
         let block = self.nodes.get(&(node_id as usize))?;
-        // A collapsed `Range` at the text position: the browser's own caret box.
-        if let Some((text_node, off)) = find_text_node_at_byte_offset(block, byte_offset)
-            && let Ok(range) = self.browser_doc.create_range()
-            && range.set_start(&text_node, off).is_ok()
-            && range.set_end(&text_node, off).is_ok()
-        {
-            let r = range.get_bounding_client_rect();
-            if r.height() > 0.0 {
-                return Some((r.x() as f32, r.y() as f32, r.height() as f32));
-            }
+        if let Some(rect) = self.text_caret_viewport_rect(block, byte_offset, affinity) {
+            return Some(rect);
         }
         // No text node (an empty block): the block's own box, one line high.
         let el = block.dyn_ref::<web_sys::Element>()?;
@@ -1586,6 +1673,12 @@ impl DomDocument for WebDocument {
             18.0
         };
         Some((r.x() as f32, r.y() as f32, h))
+    }
+
+    /// Downstream at a soft wrap, as on desktop — see
+    /// [`Self::query_caret_rect_with_affinity`].
+    fn query_caret_rect(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32, f32)> {
+        self.query_caret_rect_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
 
     fn query_glyph_bounds(&self, node_id: u64, byte_offset: usize) -> Option<GlyphBounds> {

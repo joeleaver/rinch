@@ -81,10 +81,13 @@ pub(super) fn z_index_from_stylo(z: &style::values::computed::ZIndex) -> Option<
     }
 }
 
+/// A computed `transform`, composed about a `transform-origin` whose z is
+/// `origin_z` CSS px (#997; the x and y are applied at paint).
 pub(super) fn transform_from_stylo(
     transform: &style::values::computed::Transform,
+    origin_z: f64,
 ) -> TransformValue {
-    use crate::transition::{Affine, TransformOp, compose};
+    use crate::transition::{Affine, TransformOp, compose_about_origin_z};
     use style::values::generics::transform::GenericTransformOperation;
 
     if transform.0.is_empty() {
@@ -173,7 +176,7 @@ pub(super) fn transform_from_stylo(
         })
         .collect();
 
-    let composed = compose(&functions);
+    let (composed, back_facing) = compose_about_origin_z(&functions, origin_z);
     let (m, pct_w, pct_h) = (composed.matrix, composed.pct_w, composed.pct_h);
     let has_pct = pct_w.iter().chain(&pct_h).any(|c| c.abs() > 1e-9);
 
@@ -191,6 +194,7 @@ pub(super) fn transform_from_stylo(
         pct_translate_w: pct_w,
         pct_translate_h: pct_h,
         functions,
+        back_facing,
     }
 }
 
