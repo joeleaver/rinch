@@ -319,6 +319,20 @@ fn mouse(name: &str, x: f32, y: f32) {
     target.dispatch_event(&ev).unwrap();
 }
 
+/// Remove any stylesheet a failed fixture left behind: a panic skips the
+/// fixture's own removal, and the sheet would restyle every later test.
+fn remove_test_sheets() {
+    if let Ok(stale) = document().query_selector_all("[data-test-sheet-soft-line]") {
+        for i in 0..stale.length() {
+            if let Some(node) = stale.item(i)
+                && let Ok(el) = node.dyn_into::<web_sys::Element>()
+            {
+                el.remove();
+            }
+        }
+    }
+}
+
 fn slice(s: &str, from: u32, to: u32) -> String {
     s.chars()
         .skip(from as usize)
@@ -545,6 +559,7 @@ const LONG_WORD: &str =
 /// box, into the padding, and still resolve to the line's edges.
 #[wasm_bindgen_test]
 fn a_padded_paragraph_finds_both_edges() {
+    remove_test_sheets();
     let sheet = document().create_element("style").unwrap();
     // Not `HOST_MARKER`: mounting sweeps those away.
     sheet
@@ -739,6 +754,40 @@ fn a_click_past_a_wrapped_lines_end_draws_on_the_clicked_line() {
 /// (From the second review of PR #1019.)
 #[wasm_bindgen_test]
 fn a_vertical_move_onto_a_wrap_point_draws_on_the_target_line() {
+    vertical_move_onto_a_wrap_point(None);
+}
+
+/// The same with a line box 1.75 caret heights tall — measured on this host's
+/// face, so it holds on any — which puts the point a vertical move probes on
+/// the target line (1.5 caret heights below the caret's top) in that line's
+/// leading, ABOVE its glyphs and outside both of the wrap point's caret rects:
+/// which side of the wrap the hit belongs to must be decided by nearness, not
+/// containment. With the editor's own 1.65 line height it depended on the
+/// font: CI's face (a 17px caret in a 26.4px line) put the probe 0.9px above
+/// the caret rect and drew the caret a line low, where this host's did not.
+#[wasm_bindgen_test]
+fn a_vertical_move_onto_a_wrap_point_with_leading_above_the_glyphs() {
+    let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
+    let caret = f.handle.caret_rect(Pos(2)).expect("a caret").height;
+    f.teardown();
+    assert!(caret > 8.0, "positive control: a caret height, {caret}");
+    vertical_move_onto_a_wrap_point(Some(&format!("line-height: {}px", caret * 1.75)));
+}
+
+fn vertical_move_onto_a_wrap_point(p_style: Option<&str>) {
+    remove_test_sheets();
+    let sheet = p_style.map(|decl| {
+        let sheet = document().create_element("style").unwrap();
+        // Not `HOST_MARKER`: mounting sweeps those away.
+        sheet
+            .set_attribute("data-test-sheet-soft-line", "")
+            .unwrap();
+        sheet.set_text_content(Some(&format!(
+            "[data-test-host-soft-line] [data-pm-editor] p {{ {decl} }}"
+        )));
+        document().head().unwrap().append_child(&sheet).unwrap();
+        sheet
+    });
     let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
     let starts = f.line_starts();
     assert!(starts.len() >= 5, "{starts:?}");
@@ -776,6 +825,9 @@ fn a_vertical_move_onto_a_wrap_point_draws_on_the_target_line() {
     assert_eq!(f.head(), starts[2]);
     assert_eq!(caret_line(&f, &starts), Some(1), "back up, drawn on line 2");
     f.teardown();
+    if let Some(sheet) = sheet {
+        sheet.remove();
+    }
 }
 
 /// A downstream caret at a wrap point in a right-to-left paragraph is drawn at
