@@ -174,14 +174,23 @@ pub trait Painter {
 }
 ```
 
-**A blurred `text-shadow` is a kernel of copies** (#980). Vello has no general
-blur, so both backends draw one from the same calls: the shadow (glyphs,
-underline, line-through and wavy underline — #981) is drawn once per tap of a
-Gaussian of standard deviation `blur / 2` out to the blur radius, each copy in
-a `BlendMode::Plus` layer at the tap's weight, all inside one
-`push_isolated_layer` at the shadow colour's alpha. The weights are quantised
-to 1/255 and sum to 1, so a solid interior stays solid; the grid step is one
-physical pixel, widened for a large blur so there are at most 113 taps.
+**A blurred `text-shadow` is a blurred mask** (#980, `paint/text_shadow.rs`).
+Vello has no general blur, so wherever the software rasteriser is compiled in
+(every desktop and Android build) the shadow — glyphs, underline, line-through
+and wavy underline (#981) — is rasterised **once** into a coverage mask over the
+part of it that can be seen, blurred by a separable Gaussian of standard
+deviation `blur / 2` out to three of them, and handed to the painter as
+`Painter::draw_alpha_mask`: the same mask to Vello (as an image) and to
+tiny-skia (a solid fill through a pooled surface mask). Blurred masks are kept
+between paints (32 MB, least recently used out), keyed by a hash of every call
+that rasterised them, so a repaint of an unchanged page rasterises and blurs
+nothing. The Vello-only build (`embed` without `software-renderer`) has no
+rasteriser and draws a kernel of at most 13 copies in `BlendMode::Plus` layers
+inside one `push_isolated_layer`, at most `TAP_GLYPH_BUDGET` glyph copies per
+paint; past it a shadow is drawn unblurred. Cost, 40 paragraphs of 14px text at
+1200x800 with `0 1px 4px`: 175M instructions for a first paint and 61M for a
+repaint, against 81M for the same page with an unblurred shadow
+(`dom::text_shadow_paint`).
 
 Application code never interacts with the Painter directly. Cargo features decide which backends a build carries, and a `gpu` build picks one of its two when the window opens (see below).
 

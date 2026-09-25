@@ -350,6 +350,18 @@ out why a number moved, run the same interaction in a live app:
 Or set `RINCH_PERF=1` and read the one line each frame prints. Close DevTools
 before you read the reactive counters (see the limits above).
 
+## What a blurred `text-shadow` costs
+
+A `text-shadow` with a blur radius is rasterised into a coverage mask, blurred
+and filled once per shadowed block of text (#980). The masks are kept between
+paints, so a repaint of text that has not changed pays only the fill. The first
+paint of a page of blurred shadows costs about twice what the same page with an
+unblurred shadow does, and more the larger the blur and the display scale: the
+mask is the text grown by one and a half blur radii on every side, in physical
+pixels. On a build with no software rasteriser (`embed` without
+`software-renderer`) a blurred shadow is drawn as up to 13 copies, and past a
+per-paint budget of glyph copies it is drawn unblurred.
+
 ## CI regression job
 
 Counters say *what* a frame did; they do not say how much it cost. The `Perf`

@@ -697,7 +697,7 @@ fn a_blurred_shadows_interior_is_its_colour() {
 /// or the shadow's colour changed is what a fresh document paints — never a
 /// stale mask.
 ///
-/// Kills: a cache key that leaves out the glyphs (the old text's shadow is
+/// Kills: a cache key that leaves out the glyph ids (the old text's shadow is
 /// served for the new text); the colour baked into the cached mask (the old
 /// colour is served).
 #[test]
@@ -716,17 +716,19 @@ fn a_cached_shadow_mask_is_never_stale() {
         "a repaint of an unchanged page changed its pixels"
     );
 
-    // The text changes: the text node is the div's only child.
+    // The text changes — only its last glyph, so every glyph keeps its
+    // position and only a glyph id tells the two masks apart. The text node
+    // is the div's only child.
     let body = doc.body();
     let div = doc.tree.get(body.0).unwrap().children[0];
     let text = doc.tree.get(div).unwrap().children[0];
-    doc.set_text_content(rinch_core::dom::NodeId(text), "xHx");
+    doc.set_text_content(rinch_core::dom::NodeId(text), "HxI");
     doc.resolve_layout(VW, VH + 1.0);
     doc.resolve_layout(VW, VH);
     let changed = paint(&mut doc, 1.5).0;
     assert!(changed != first, "positive control: new text, new pixels");
     assert!(
-        changed == fresh("xHx", "rgb(255, 0, 0)"),
+        changed == fresh("HxI", "rgb(255, 0, 0)"),
         "the new text's shadow is not what a fresh document paints: a stale mask"
     );
 
@@ -751,4 +753,61 @@ fn a_cached_shadow_mask_is_never_stale() {
         "the blue shadow painted {reddish} red and {bluish} blue pixels: the colour is \
          applied at draw time, never cached"
     );
+}
+
+/// A blurred shadow is clipped by an `overflow: hidden` ancestor like the text
+/// it shadows: the mask is filled through the clip in force.
+///
+/// Kills: the software painter's mask fill ignoring the clip mask.
+#[test]
+fn a_blurred_shadow_is_clipped_by_its_ancestor() {
+    let style =
+        format!("{BASE}; height: 40px; overflow: hidden; text-shadow: 0 60px 4px rgb(255, 0, 0)");
+    let (px, w, h) = paint(&mut document(&style, &[("HxH", None)]), 1.5);
+    let reddish = px
+        .iter()
+        .filter(|&&[r, g, b, _]| r >= 254 && g <= 240 && b <= 240)
+        .count();
+    assert_eq!(
+        reddish, 0,
+        "the shadow falls wholly below its 40px `overflow: hidden` box and must be clipped"
+    );
+    // Positive control: without the clip it is there.
+    let open = format!("{BASE}; height: 40px; text-shadow: 0 60px 4px rgb(255, 0, 0)");
+    let (px, _, _) = paint(&mut document(&open, &[("HxH", None)]), 1.5);
+    let _ = (w, h);
+    assert!(
+        px.iter()
+            .filter(|&&[r, g, b, _]| r >= 254 && g <= 240 && b <= 240)
+            .count()
+            > 100,
+        "positive control: the unclipped shadow is drawn"
+    );
+}
+
+/// An opacity layer's bounds hold a blurred shadow's whole reach — one and a
+/// half blur radii, where the mask stops — so Vello, which clips a layer to
+/// its bounds, keeps the soft edge.
+///
+/// Kills: the reach cut back to one blur radius.
+#[test]
+fn opacity_layer_bounds_reach_one_and_a_half_blur_radii() {
+    let base = "width: 10px; white-space: nowrap; font-size: 16px; line-height: 20px; \
+                font-family: ProbeFace; opacity: 0.5";
+    for scale in [1.0, 2.0] {
+        let right = |extra: &str| {
+            let mut doc = document(&format!("{base}; {extra}"), &[("HxH", None)]);
+            let body = doc.body();
+            let c = doc.tree.get(body.0).unwrap().children[0];
+            let _ = &mut doc;
+            rinch_dom::paint::opacity_layer_bounds(&doc.tree, c, scale, 0.0, 0.0).x1
+        };
+        let reach = right("text-shadow: 0 0 20px red") - right("");
+        assert!(
+            (reach - 30.0 * scale).abs() < 1.0,
+            "at scale {scale} a 20px blur grows the layer bounds by {reach}; the mask reaches \
+             {} physical px",
+            30.0 * scale
+        );
+    }
 }
