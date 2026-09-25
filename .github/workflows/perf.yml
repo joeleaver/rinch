@@ -18,17 +18,21 @@ name: Perf
 # `crates/rinch-bench/src/alloc.rs` is what makes that true: without it, glibc's
 # free lists moved one benchmark by 7% between identical runs.
 #
-# The base run uses the HEAD's benchmark sources: `crates/rinch-bench` is copied
-# over the base checkout before it builds, so both sides run exactly the same
-# scenarios against two versions of the library. If those sources need
-# something the base does not have, the base side cannot run:
+# The base run first uses the HEAD's benchmark sources: `crates/rinch-bench`
+# is copied over the base checkout before it builds, so both sides run exactly
+# the same scenarios against two versions of the library. If those sources do
+# not build or run on the base -- usually a PR adding a benchmark that calls an
+# API the same PR introduces (#1036) -- the base runs its OWN copy instead
+# (`.github/scripts/perf_bench_base.sh`), so every benchmark both copies define
+# is still compared and one only the head defines shows as `new`. The report
+# lists which benchmarks were compared and which were not. Only if neither copy
+# runs is there no baseline:
 #   * base has no `crates/rinch-bench` yet (the PR that adds it): the report
 #     shows the head alone and passes;
-#   * base HAS the crate and still did not run (the PR broke an API the
-#     benchmarks call, or a benchmark panics on base): the check FAILS, since
-#     otherwise breaking the benchmarks would be a way past the gate. The
-#     `perf-regression-accepted` label downgrades this to a warning, as it
-#     does a regression.
+#   * base HAS the crate and neither copy ran (its own benchmarks panic, or
+#     the base is broken): the check FAILS, since otherwise breaking the
+#     benchmarks would be a way past the gate. The `perf-regression-accepted`
+#     label downgrades this to a warning, as it does a regression.
 #
 # Reading it, running it locally and the escape hatch:
 # `docs/src/guide/performance.md#ci-regression-job`.
@@ -179,6 +183,10 @@ jobs:
           echo "base=$base_sha" >> "$GITHUB_OUTPUT"
           echo "merge $head_sha, first parent $base_sha"
 
+      # The scripts this job runs, against fakes: seconds, and before any build.
+      - name: Self-test the Perf scripts
+        run: python3 head/.github/scripts/test_perf_scripts.py
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -256,26 +264,17 @@ jobs:
           GUNGRAUN_VERSION: ${{ steps.gungraun.outputs.version }}
         run: cargo install gungraun-runner --version "$GUNGRAUN_VERSION" --locked
 
-      - name: Benchmark base (with the head's benchmark sources)
+      # Head's benchmark sources first, the base's own if those do not build or
+      # run there (#1036); `.github/scripts/perf_bench_base.sh` says why.
+      - name: Benchmark base
         id: base
+        env:
+          BASE_DIR: base
+          HEAD_DIR: head
+          OUT: ${{ runner.temp }}/base.jsonl
         run: |
-          if [ -d base/crates/rinch-bench ]; then
-            echo "has_crate=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_crate=false" >> "$GITHUB_OUTPUT"
-          fi
-          rm -rf base/crates/rinch-bench
-          cp -r head/crates/rinch-bench base/crates/rinch-bench
-          cd base
-          # Not --locked: the base's Cargo.lock may not know Gungraun yet.
-          if CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASE" GUNGRAUN_HOME="$RUNNER_TEMP/gungraun-base" \
-             cargo bench -p rinch-bench -- $BENCH_ARGS > "$RUNNER_TEMP/base.jsonl"; then
-            echo "ran=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning title=perf baseline::the benchmarks did not build or run on the base"
-            : > "$RUNNER_TEMP/base.jsonl"
-            echo "ran=false" >> "$GITHUB_OUTPUT"
-          fi
+          CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASE" GUNGRAUN_HOME="$RUNNER_TEMP/gungraun-base" \
+            bash head/.github/scripts/perf_bench_base.sh
 
       - name: Benchmark head
         id: head
@@ -297,6 +296,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_HAS_CRATE: ${{ steps.base.outputs.has_crate }}
           BASE_RAN: ${{ steps.base.outputs.ran }}
+          BASE_SOURCES: ${{ steps.base.outputs.sources }}
           HEAD_OUTCOME: ${{ steps.head.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -322,6 +322,9 @@ jobs:
                 --out "$report")
           if [ "$BASE_RAN" != "true" ] && [ "$BASE_HAS_CRATE" = "true" ]; then
             args+=(--base-failed)
+          fi
+          if [ "$BASE_SOURCES" = "base" ]; then
+            args+=(--base-own-sources)
           fi
           if [ "$ACCEPTED" = "true" ]; then
             args+=(--accepted)
@@ -360,7 +363,7 @@ jobs:
           STATUS: ${{ steps.compare.outputs.status }}
         run: |
           case "$STATUS" in
-            1) echo "A benchmark regressed past the threshold, or the benchmarks did not run on a base that has them; see the job summary."
+            1) echo "A benchmark regressed past the threshold, or neither copy of the benchmarks ran on a base that has them; see the job summary."
                echo "If that is intended, add the '${ACCEPT_LABEL}' label." ;;
             2) echo "perf_compare.py failed (a malformed input or a crash in the script). That is a bug in this workflow, not a regression, and the label cannot fix it." ;;
             3) echo "The head's benchmarks did not build or run; see the 'Benchmark head' step." ;;

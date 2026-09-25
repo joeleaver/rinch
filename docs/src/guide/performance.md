@@ -435,18 +435,30 @@ operation. Two runs of the same binary agree to within about **0.03%**. The
 remaining noise comes from hash-table probing, whose seeds vary per process. So
 any Δ larger than a fraction of a percent is the code.
 
-The base run uses the head's copy of `crates/rinch-bench`, so both sides run
-the same scenarios. When the base cannot run them, the outcome depends on
-whether the base has the crate at all:
+The base run first uses the head's copy of `crates/rinch-bench`, so both sides
+run the same scenarios and every Δ is the library alone. That copy does not
+build on the base when the PR adds a benchmark that calls an API the same PR
+introduces (#1036). The base then runs **its own** copy instead, restored with
+its own `Cargo.lock` (`.github/scripts/perf_bench_base.sh`). Every benchmark
+both copies define is still compared; one only the head defines shows as
+`new`, and one only the base defines as `removed`. The report says the base ran
+its own copy, because a benchmark whose scenario the PR changed then compares
+two different scenarios. Above the table, the report always says how many
+benchmarks were compared and names the ones that were not.
+
+When neither copy runs, the outcome depends on whether the base has the crate
+at all:
 
 - **The base has no `crates/rinch-bench`.** The report shows the head alone and
   the job passes. No merge commit's first parent can lack the crate once it is
   on `main`, so this applies only to PRs based before then.
-- **The base has the crate and the run still failed.** The job fails. Usually a
-  PR changed an API the benchmarks call without updating them, or a benchmark
-  panics on the base. Otherwise, breaking the benchmarks would be a way past the
-  check. The `perf-regression-accepted` label downgrades this failure to a
-  warning, the same as a regression.
+- **The base has the crate and neither copy ran.** The job fails. Usually one
+  of the base's own benchmarks panics there. Otherwise, breaking the benchmarks
+  would be a way past the check. The `perf-regression-accepted` label
+  downgrades this failure to a warning, the same as a regression.
+
+The scripts the job runs have a self-test against a fake `cargo`
+(`python3 .github/scripts/test_perf_scripts.py`), which the job runs first.
 
 If the head's own benchmarks do not build or run, the job fails. The PR comment
 then says so, rather than keeping the previous run's table.

@@ -17,8 +17,11 @@ read as a regression the label would excuse.
 
 A missing or empty base reports the head alone. That passes when the base has
 no benchmarks yet; with `--base-failed` (the base has `crates/rinch-bench` and
-its run still failed) it is a failure like a regression, and `--accepted`
-downgrades it the same way.
+neither the head's copy nor its own ran) it is a failure like a regression, and
+`--accepted` downgrades it the same way. `--base-own-sources` says the base ran
+its own copy (`perf_bench_base.sh`, #1036), which the report explains. Whenever
+there is a base, the report says how many benchmarks were compared and names
+the ones only one side has.
 """
 
 import argparse
@@ -114,9 +117,9 @@ def main():
                 else "**fails this check**")
         lines.append(
             f"The benchmarks did not build or run on `{args.base_label}`, which has "
-            f"them, so nothing could be compared — {verb}. Usually the PR changed an "
-            "API the benchmarks call without updating `crates/rinch-bench`, or a "
-            "benchmark panics on the base."
+            f"them, with either the head's copy of `crates/rinch-bench` or its own, so "
+            f"nothing could be compared — {verb}. Usually one of the base's own "
+            "benchmarks panics there."
         )
     elif base is None:
         lines.append(
