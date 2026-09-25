@@ -20,6 +20,9 @@
 //! Asserted against the sheet the app actually ships
 //! (`generate_all_component_styles`), not the per-component fragments.
 
+mod common;
+use common::{declarations_for, strip_comments};
+
 /// The wrapper selector and the hidden-input selector for each control.
 const HIDDEN_INPUT_CONTROLS: &[(&str, &str)] = &[
     (".rinch-checkbox", ".rinch-checkbox__input"),
@@ -27,64 +30,11 @@ const HIDDEN_INPUT_CONTROLS: &[(&str, &str)] = &[
     (".rinch-switch", ".rinch-switch__input"),
 ];
 
-/// Strip `/* ... */` comments.
-///
-/// Load-bearing, and verified so: with this reduced to the identity the test
-/// fails rather than passing, because a comment sitting immediately above a rule
-/// is swept into that rule's prelude and stops the selector matching. These
-/// three rules are all commented, so nothing here is matched without it.
-fn strip_comments(css: &str) -> String {
-    let mut out = String::with_capacity(css.len());
-    let mut rest = css;
-    while let Some(start) = rest.find("/*") {
-        out.push_str(&rest[..start]);
-        match rest[start + 2..].find("*/") {
-            Some(end) => rest = &rest[start + 2 + end + 2..],
-            None => return out,
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Every declaration in every rule whose selector list contains exactly
-/// `selector`, lowercased and whitespace-normalized.
-///
-/// Selectors are matched as whole comma-separated entries so `.rinch-switch`
-/// does not match `.rinch-switch--disabled` or `.rinch-switch__track`.
-fn declarations_for(css: &str, selector: &str) -> Vec<String> {
-    let css = strip_comments(css);
-    let mut found = Vec::new();
-    let mut rest = css.as_str();
-    while let Some(open) = rest.find('{') {
-        let prelude = rest[..open].rsplit('}').next().unwrap_or("").trim();
-        let Some(close) = rest[open..].find('}') else {
-            break;
-        };
-        let body = &rest[open + 1..open + close];
-        let matches = prelude
-            .split(',')
-            .any(|s| s.split_whitespace().collect::<Vec<_>>().join(" ") == selector);
-        if matches {
-            found.extend(
-                body.split(';')
-                    .map(|d| {
-                        d.split_whitespace()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .to_lowercase()
-                    })
-                    .filter(|d| !d.is_empty()),
-            );
-        }
-        rest = &rest[open + close + 1..];
-    }
-    found
-}
-
 #[test]
 fn a_wrapper_of_a_hidden_absolute_input_is_itself_positioned() {
-    let css = rinch_components::styles::generate_all_component_styles();
+    // Comments stripped once, up front: every one of these three rules is
+    // commented, so none of them matches without it.
+    let css = strip_comments(&rinch_components::styles::generate_all_component_styles());
 
     for (wrapper, input) in HIDDEN_INPUT_CONTROLS {
         let input_decls = declarations_for(&css, input);

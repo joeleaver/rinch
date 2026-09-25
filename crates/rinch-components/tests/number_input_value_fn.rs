@@ -27,6 +27,9 @@ use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event, dispatch_input_event};
 use rinch_core::{Callback, Component, InputCallback, Signal};
 
+mod common;
+use common::{find_by_class, handler};
+
 struct Input {
     // Kept alive for the test's duration: the document owns the nodes the
     // effect patches, the scope owns the effect and handlers.
@@ -89,13 +92,7 @@ impl Input {
     }
 
     fn handler(&self, class: &str, attr: &str) -> EventHandlerId {
-        let node = find_by_class(&self.root, class).expect("element exists");
-        EventHandlerId(
-            node.get_attribute(attr)
-                .expect("element carries a handler id")
-                .parse()
-                .expect("handler id is numeric"),
-        )
+        handler(&self.root, class, attr)
     }
 
     /// Click a stepper button (`--up` or `--down`).
@@ -115,16 +112,6 @@ impl Input {
             text.to_string(),
         );
     }
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    let matches = node
-        .get_attribute("class")
-        .is_some_and(|attr| attr.split_whitespace().any(|c| c == class));
-    if matches {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
 }
 
 /// A programmatic `signal.set()` with no user interaction reaches the field —

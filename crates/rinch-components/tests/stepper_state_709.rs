@@ -30,7 +30,10 @@ use rinch_components::stepper::{Stepper, StepperCompleted, StepperStep};
 use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::{Component, Signal};
-use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use rinch_tabler_icons::TablerIcon;
+
+mod common;
+use common::{collect_by_class, find_by_class, glyph, glyph_of, has_class};
 
 // ---------------------------------------------------------------- scaffolding
 
@@ -58,29 +61,6 @@ impl Tree {
         let mut out = Vec::new();
         collect_by_class(&self.root, "rinch-stepper__step", &mut out);
         out
-    }
-}
-
-fn has_class(node: &NodeHandle, class: &str) -> bool {
-    node.get_attribute("class")
-        .unwrap_or_default()
-        .split_whitespace()
-        .any(|c| c == class)
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    if has_class(node, class) {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
-}
-
-fn collect_by_class(node: &NodeHandle, class: &str, out: &mut Vec<NodeHandle>) {
-    if has_class(node, class) {
-        out.push(node.clone());
-    }
-    for child in node.children() {
-        collect_by_class(&child, class, out);
     }
 }
 
@@ -131,29 +111,6 @@ fn numbers(tree: &Tree) -> Vec<String> {
                 .unwrap_or_default()
         })
         .collect()
-}
-
-/// Every `d` attribute in `node`'s subtree, in document order — what tells one
-/// rendered Tabler glyph from another.
-fn glyph(node: &NodeHandle) -> Vec<String> {
-    fn walk(node: &NodeHandle, out: &mut Vec<String>) {
-        if let Some(d) = node.get_attribute("d") {
-            out.push(d);
-        }
-        for child in node.children() {
-            walk(&child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
-}
-
-fn glyph_of(icon: TablerIcon) -> Vec<String> {
-    let tree = Tree::build(move |scope| render_tabler_icon(scope, icon, TablerIconStyle::Outline));
-    let paths = glyph(&tree.root);
-    assert!(!paths.is_empty(), "{icon:?} renders no path data");
-    paths
 }
 
 /// The **live** glyph in step `n`'s icon box — what the step draws.
