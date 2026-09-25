@@ -542,15 +542,50 @@ pub fn op_full_paint(mut f: PaintFixture) -> PaintFixture {
     f
 }
 
-/// [`setup_full_paint`]'s 40 paragraphs with a blurred `text-shadow` on every
-/// one (#980): each paint rasterises every shadow into a mask, blurs it and
-/// draws it as an image.
-pub fn setup_text_shadow_paint() -> PaintFixture {
+/// 40 form fields styled the way an app styles a text input — a 1px border,
+/// a small radius and a blurred `inset` shadow — laid out and painted once
+/// (#974). An inset shadow builds and draws a blurred mask per box per paint,
+/// so this is where its cost shows.
+pub fn setup_shadow_paint() -> PaintFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; } \
+         div { position: absolute; width: 280px; height: 34px; background: rgb(255, 255, 255); \
+         border: 1px solid rgb(200, 200, 200); border-radius: 6px; \
+         box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2); }",
+    );
+    let mut html = String::new();
+    for i in 0..40 {
+        let (x, y) = ((i % 2) * 300 + 10, (i / 2) * 40 + 5);
+        html.push_str(&format!("<div style=\"left: {x}px; top: {y}px\"></div>"));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// Paint the 40 fields with the software painter.
+pub fn op_shadow_paint(mut f: PaintFixture) -> PaintFixture {
+    f.paint();
+    f
+}
+
+/// [`setup_full_paint`]'s 40 paragraphs with `text-shadow: 0 1px {blur}px` on
+/// every one (#980), painted once — which rasterises, blurs and caches every
+/// shadow's mask.
+fn text_shadow_page(blur: &str) -> PaintFixture {
     let mut doc = new_document();
     doc.load_css(&format!(
         "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
          color: rgb(30, 30, 40); }} p {{ margin: 0 0 2px 0; \
-         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }}"
+         text-shadow: 0 1px {blur}px rgba(0, 0, 0, 0.4); }}"
     ));
     let mut html = String::new();
     for i in 0..40 {
@@ -568,18 +603,27 @@ pub fn setup_text_shadow_paint() -> PaintFixture {
     f
 }
 
-/// Paint the 40 shadowed paragraphs with the software painter. Each blurred
-/// mask was kept from the setup's paint, so this is the steady state.
+/// The 40 shadowed paragraphs, painted once: the measured paint is the
+/// steady state, every blurred mask served from the cache.
+pub fn setup_text_shadow_paint() -> PaintFixture {
+    text_shadow_page("4")
+}
+
+/// Paint the 40 shadowed paragraphs with the software painter.
 pub fn op_text_shadow_paint(mut f: PaintFixture) -> PaintFixture {
     f.paint();
     f
 }
 
-/// [`setup_text_shadow_paint`], with the blurred masks forgotten: the paint
-/// rasterises and blurs every shadow (glyph caches still warm).
+/// The same page painted once at a 4px blur, then restyled to 4.01px — a blur
+/// radius is in a mask's cache key — so the measured paint rasterises and
+/// blurs every shadow with the glyph caches warm. It needs no API of its own,
+/// so the base of a Perf comparison can build it.
 pub fn setup_text_shadow_paint_cold() -> PaintFixture {
-    let f = setup_text_shadow_paint();
-    rinch_dom::paint::clear_text_shadow_cache();
+    let mut f = text_shadow_page("4");
+    f.doc
+        .load_css("p { text-shadow: 0 1px 4.01px rgba(0, 0, 0, 0.4); }");
+    f.doc.resolve_layout(VP.0, VP.1);
     f
 }
 

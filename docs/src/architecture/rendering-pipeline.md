@@ -253,7 +253,7 @@ fn paint_software(&mut self) {
 
 The software renderer includes **dirty region caching**: when only a small part of the UI changes (e.g., cursor blink, hover feedback), only the affected rectangular region is cleared and repainted. Nodes outside the dirty region are skipped entirely during the paint traversal.
 
-Every dirty node contributes two rects: its current box, grown by how far its own `box-shadow`, `outline` and `text-shadow` reach, and the rect it was **last painted** in. The second is summed up the box-tree chain from what each node was last painted with — `Node::prev_layout` and `Node::painted` (own ink reach, own transform), parent-relative, written only by the paint that consumes the region (`NodeTree::consume_paint_dirty`: the software frame, a full repaint and a GPU scene build alike). So the old pixels are found however many layout passes ran between two paints, when an ancestor moved rather than the node, and when a box moved *and* dropped its shadow, lost a child or changed its transform in the same frame; a removal records the painted rect of every node it takes out. A positioned box (`absolute`, `fixed` or `relative`) that moved is also grown by its whole painted subtree's reach, which carries an untouched overflowing child with it. That is what lets an editor keystroke, a caret move or a dragged absolute panel repaint a region instead of the whole window. Once the region reaches half the surface (`FULL_REPAINT_FRACTION`) it stops being measured and the frame repaints in full.
+Every dirty node contributes two rects: its current box, grown by how far its own outset `box-shadow`, `outline` and `text-shadow` reach (an inset shadow paints inside its padding box), and the rect it was **last painted** in. The second is summed up the box-tree chain from what each node was last painted with — `Node::prev_layout` and `Node::painted` (own ink reach, own transform), parent-relative, written only by the paint that consumes the region (`NodeTree::consume_paint_dirty`: the software frame, a full repaint and a GPU scene build alike). So the old pixels are found however many layout passes ran between two paints, when an ancestor moved rather than the node, and when a box moved *and* dropped its shadow, lost a child or changed its transform in the same frame; a removal records the painted rect of every node it takes out. A positioned box (`absolute`, `fixed` or `relative`) that moved is also grown by its whole painted subtree's reach, which carries an untouched overflowing child with it. That is what lets an editor keystroke, a caret move or a dragged absolute panel repaint a region instead of the whole window. Once the region reaches half the surface (`FULL_REPAINT_FRACTION`) it stops being measured and the frame repaints in full.
 
 The region is the union of the changed *nodes'* rects, so anything painted **outside** the node tree has to contribute its own. The drag ghost is the one such overlay: it is blitted into the framebuffer after the document paint, so `RinchApp` remembers the rect it covered and folds that into the next frame's dirty region — otherwise the frame that stops drawing the ghost would never clear where it had been, leaving it stuck on screen (issue #173). The GPU backend rebuilds the whole Vello scene every dirty frame and so has no equivalent case.
 
@@ -854,10 +854,12 @@ pause every animation beneath them:
 
 Every descendant, not a list of known spinners, because any component or app
 rule can declare an animation. Not the pseudo-elements, although
-`animation-play-state` does not inherit into them, so on rinch-web an `::after`
-spinner under a closed overlay still runs: desktop animates no pseudo-element
-(#925), and rinch-dom matches `::before`/`::after` rules with no ancestor bloom
-filter (#935), so `*::before`/`*::after` rules cost +10% of style instructions
+`animation-play-state` does not inherit into them, so an `::after` spinner
+under a closed overlay still runs — on rinch-web, and since #1004 on desktop
+too, where a generated box carries its pseudo cascade and its animation starts
+(#925; desktop restarts it at every cascade of its originator, #1023), keeping
+the frame clock running. They are left out because rinch-dom matches
+`::before`/`::after` rules with no ancestor bloom filter (#935), so `*::before`/`*::after` rules cost +10% of style instructions
 on every page that loads the component CSS and +71% under a closed drawer.
 `!important` because the `animation` shorthand
 resets `animation-play-state` to `running`: without it the pause loses to any

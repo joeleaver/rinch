@@ -913,7 +913,8 @@ impl Walk<'_> {
         // — the empirical match to Chrome's visible extent — so the whole blur
         // radius is a deliberate half-blur of slack, cheap insurance against
         // that approximation being retuned outward later. Inset shadows are
-        // painted inside the box, and `paint_box_shadow` skips them anyway.
+        // painted inside the box (`paint_inset_box_shadow` clips them to the
+        // padding box), so they reach nothing past it.
         for shadow in &cs.box_shadow {
             if shadow.inset {
                 continue;

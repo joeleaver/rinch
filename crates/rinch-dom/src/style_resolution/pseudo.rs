@@ -192,11 +192,20 @@ impl RinchDocument {
             }
         }
 
-        // Set computed style and mark as pseudo-element
+        // Set computed style and mark as pseudo-element. The pseudo cascade's
+        // result is also the box's *Stylo* style: `apply_stylo_styles_to_taffy`
+        // reads a node's `computed_style` back from there, and
+        // `resolve_styles_recursive` recognises a box that carries a pseudo
+        // style (`ComputedValues::is_pseudo_style`) and does not re-cascade it
+        // as the plain `<span>` it is in the tree (#1004). It is regenerated,
+        // with a fresh pseudo cascade, whenever its originator is cascaded.
         {
             let span_raw = span_id.0;
             self.tree.nodes[span_raw].computed_style = pseudo_style;
             self.tree.nodes[span_raw].is_pseudo_element = true;
+            let mut data = style::data::ElementData::default();
+            data.styles.primary = Some(pseudo_computed);
+            *self.tree.nodes[span_raw].stylo_element_data.borrow_mut() = Some(data);
             self.tree.style_dirty_nodes.push(span_raw);
         }
 

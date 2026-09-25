@@ -128,6 +128,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `paint_nodes_visited` | Nodes `paint_node` visited. A box that would draw nothing — outside the window, outside the damage, or outside every clip the painter has open (a scroller's rows past its viewport) — is dismissed by its parent's loop without a visit, so a scroller costs its visible rows, not its list (#910) |
 | | `removal_damage_steps` | Work a removal (or a move to another parent) did to record the old pixels of what it took out: one per node, plus one per ancestor its clip-chain walk stepped through (#909). Linear in what was removed, never in what else is pending |
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
+| | `inset_shadow_mask_px` | Pixels of blurred `inset` box-shadow computed by paint, cropped to the render target, the open clips and a partial repaint's damage. Rebuilt on every paint of the box, so a caret-sized repaint inside a large shadowed panel costs about its own area here (#974) |
 | Software painter | `glyph_cache_hits` / `glyph_cache_misses` | Glyphs drawn from the rasterised-glyph cache, and glyphs rasterised (then cached). A steady frame has no misses |
 | | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface; none for a clip that fully covers the clip enclosing it, which a scroller around a partial repaint does, and no intersection for one lying wholly inside the enclosing clip's fully covered area) |
 | | `paint_layers`, `layer_px` | Opacity layers opened, and the layer pixels composited back (the part of each layer anything was drawn into) |
@@ -390,8 +391,9 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::drawer_toggle.list_500_closed` | Open, then close, a closed `Drawer` holding 500 rows, with the theme's and the component library's stylesheets loaded; each re-cascades the whole subtree. The one benchmark that sees what a component-library selector costs (#935: a pseudo-element rule is matched without a bloom filter) |
 | `dom::inset_move.list_500` | One drag step of an absolute panel beside the list: `set_styles` of `left`/`top` (the inset fast path), then layout |
 | `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |
+| `dom::shadow_paint.fields_40` | A full `TinySkiaPainter` paint of 40 input-like boxes, each with a 1px border, a 6px radius and a blurred `inset` shadow (#974: a blurred mask built and drawn per box) |
 | `dom::text_shadow_paint.paragraphs_40` | The same 40 paragraphs with `text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4)` on each, painted again: every blurred mask is served from the cache (#980) |
-| `dom::text_shadow_paint.paragraphs_40_cold` | The same, with the mask cache emptied first: every shadow is rasterised into a coverage mask, blurred and filled |
+| `dom::text_shadow_paint.paragraphs_40_cold` | The same page restyled to a 4.01px blur first, so no mask is cached: every shadow is rasterised into a coverage mask, blurred and filled |
 | `shell::pointer_move_warm.warm_x50` | 50 pointer moves inside one row of a 500-row scroller, each followed by `AboutToWait` |
 | `shell::pointer_move_cold.cold` | The first move after a layout, which builds the hit-test cache |
 | `shell::hover_frame.partial_repaint` | A move onto another row, then the frame: layout and a partial software repaint |

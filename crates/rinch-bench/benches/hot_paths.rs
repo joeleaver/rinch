@@ -70,6 +70,12 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 }
 
 #[library_benchmark]
+#[bench::fields_40(setup = setup_shadow_paint)]
+fn shadow_paint(f: PaintFixture) -> PaintFixture {
+    black_box(measure(black_box(f), op_shadow_paint))
+}
+
+#[library_benchmark]
 #[bench::paragraphs_40(setup = setup_text_shadow_paint)]
 #[bench::paragraphs_40_cold(setup = setup_text_shadow_paint_cold)]
 fn text_shadow_paint(f: PaintFixture) -> PaintFixture {
@@ -119,6 +125,7 @@ library_benchmark_group!(
         drawer_toggle,
         inset_move,
         full_paint,
+        shadow_paint,
         text_shadow_paint
     ]
 );

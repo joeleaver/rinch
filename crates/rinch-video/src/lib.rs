@@ -134,11 +134,16 @@ pub(crate) fn decrement_video_loaded() {
 
 /// Register a player as active (called on play).
 pub(crate) fn register_active_player(player: VideoPlayer) {
-    // Set up the frame sink if a factory is available and sink isn't already set.
+    // Set up the frame sink if a factory is available and the player does not
+    // have one yet. Once per player, not once per `play()`: the sink owns a
+    // render surface, so every resume used to register one more (issue #363).
     #[cfg(not(target_arch = "wasm32"))]
     {
-        if let Some(sink) = create_frame_sink(&player.viewport_id()) {
-            player.set_frame_sink(sink);
+        if !player.frame_sink_installed.get() {
+            if let Some(sink) = create_frame_sink(&player.viewport_id()) {
+                player.set_frame_sink(sink);
+                player.frame_sink_installed.set(true);
+            }
         }
     }
 
