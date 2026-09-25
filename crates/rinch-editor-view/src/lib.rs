@@ -31,9 +31,9 @@ pub use links::{LinkClick, LinkHover, LinkSpan};
 #[cfg(feature = "collaboration")]
 pub use registry::collab_receive_for;
 pub use registry::{
-    begin_drag, drag_anchor, editor_for, editor_for_doc, end_drag, link_hover_wanted,
-    overlay_pass_owed, reveal_owed, set_focus_handler, set_link_hover, set_overlay_refresher,
-    unregister_editor, update_all_carets,
+    any_overlay_pass_owed, begin_drag, drag_anchor, editor_for, editor_for_doc, end_drag,
+    link_hover_wanted, overlay_pass_owed, reveal_owed, set_focus_handler, set_link_hover,
+    set_overlay_pass_scheduler, set_overlay_refresher, unregister_editor, update_all_carets,
 };
 /// The collaboration error type (re-exported from `rinch-editor-collab`) returned by
 /// the [`EditorHandle`] collaboration methods.

@@ -224,6 +224,21 @@ fn refresh_caret() {
     }
 }
 
+/// Queue [`refresh_caret`] for a microtask, if an overlay pass is still owed
+/// then — see [`registry::set_overlay_pass_scheduler`]. Called with an editor's
+/// borrow held, so it only queues.
+fn schedule_overlay_pass() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let run = wasm_bindgen::closure::Closure::once_into_js(|| {
+        if registry::any_overlay_pass_owed() {
+            refresh_caret();
+        }
+    });
+    window.queue_microtask(run.unchecked_ref());
+}
+
 /// Make the capture textarea `readonly` exactly while the focused editor is
 /// read-only ([`EditorHandle::set_read_only`]).
 ///
@@ -2468,6 +2483,10 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // `EditorHandle::set_read_only` arrives through none of them either, and the
     // same refresh is what carries it to the capture textarea's `readonly`.
     registry::set_overlay_refresher(refresh_caret);
+    // A selection moved by app code — a timer, an effect, a toolbar button's
+    // click — arrives through none of them either (#1001): the handle owes an
+    // overlay pass, and this runs it once the current task's code is done.
+    registry::set_overlay_pass_scheduler(schedule_overlay_pass);
     // `EditorHandle::focus`: the keyboard reaches an editor only through the
     // capture textarea, so a programmatic focus has to go through the same
     // steps a press does.
