@@ -1180,8 +1180,12 @@ impl RinchApp {
 
         // New-editor phase 2 (design A3): render each mounted editor's caret from
         // its selection now that layout geometry is fresh. If an overlay (caret /
-        // selection / node-outline) actually moved, re-resolve so its new absolute
-        // position is current. The dirty region then covers the overlay's old
+        // selection / node-outline) actually moved, re-resolve so its new
+        // transform is in its computed style. The overlays are placed by a
+        // `transform` (#906), so for a pure move this resolve cascades them and
+        // skips Taffy (`layout_skipped_paint_only`); only a changed overlay
+        // *size* (a selection rect's width, a caret on a taller line) reaches
+        // layout. The dirty region then covers the overlay's old
         // rect as well as its new one: this second resolve does not overwrite
         // `prev_layout`, which only the consuming paint advances
         // (`NodeTree::consume_paint_dirty`). It used to, and every keystroke

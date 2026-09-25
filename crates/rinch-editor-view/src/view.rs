@@ -1188,6 +1188,10 @@ impl RinchDomEditorView {
             div.set_attribute("data-pm-selection", "true");
             div.set_styles(&[
                 ("position", "absolute"),
+                // Anchored at the container's padding-box origin; the rect is
+                // placed by `transform` (`overlay_translate`), which is paint-only.
+                ("left", "0"),
+                ("top", "0"),
                 ("background-color", "rgba(26,115,232,0.3)"),
                 ("pointer-events", "none"),
                 // Behind the in-flow text (the container is a stacking context).
@@ -1204,13 +1208,12 @@ impl RinchDomEditorView {
             }
         }
         for (div, (x, y, w, h)) in self.selection_rects.iter().zip(rects) {
-            let left = format!("{x}px");
-            let top = format!("{y}px");
+            let transform = overlay_translate(*x, *y);
+            let (w, h) = overlay_size(*x, *y, *w, *h);
             let width = format!("{w}px");
             let height = format!("{h}px");
             div.set_styles(&[
-                ("left", &left),
-                ("top", &top),
+                ("transform", &transform),
                 ("width", &width),
                 ("height", &height),
                 ("display", "block"),
@@ -1352,6 +1355,9 @@ impl RinchDomEditorView {
             div.set_attribute("data-pm-selected", "true");
             div.set_styles(&[
                 ("position", "absolute"),
+                // Placed by `transform`, like the caret (`overlay_translate`).
+                ("left", "0"),
+                ("top", "0"),
                 // Trace the node's box exactly (border drawn inside the box).
                 ("box-sizing", "border-box"),
                 ("border", "2px solid #1a73e8"),
@@ -1364,13 +1370,12 @@ impl RinchDomEditorView {
             self.node_outline = Some(div);
         }
         if let Some(div) = &self.node_outline {
-            let left = format!("{x}px");
-            let top = format!("{y}px");
+            let transform = overlay_translate(x, y);
+            let (w, h) = overlay_size(x, y, w, h);
             let width = format!("{w}px");
             let height = format!("{h}px");
             div.set_styles(&[
-                ("left", &left),
-                ("top", &top),
+                ("transform", &transform),
                 ("width", &width),
                 ("height", &height),
                 ("visibility", "visible"),
@@ -1458,6 +1463,10 @@ impl RinchDomEditorView {
             caret.set_attribute("data-pm-caret", "true");
             caret.set_styles(&[
                 ("position", "absolute"),
+                // Anchored at the container's padding-box origin and moved by
+                // `transform` (`overlay_translate`): see there for why.
+                ("left", "0"),
+                ("top", "0"),
                 ("width", "2px"),
                 ("background-color", "#1a73e8"),
                 ("pointer-events", "none"),
@@ -1468,12 +1477,10 @@ impl RinchDomEditorView {
             self.caret = Some(caret);
         }
         if let Some(caret) = &self.caret {
-            let left = format!("{x}px");
-            let top = format!("{y}px");
-            let h = format!("{height}px");
+            let transform = overlay_translate(x, y);
+            let h = format!("{}px", overlay_size(x, y, 0.0, height).1);
             caret.set_styles(&[
-                ("left", &left),
-                ("top", &top),
+                ("transform", &transform),
                 ("height", &h),
                 ("visibility", "visible"),
             ]);
@@ -1638,6 +1645,39 @@ impl RinchDomEditorView {
             span.set_style("display", "none");
         }
     }
+}
+
+/// The `transform` that places an overlay (caret, selection rect, node
+/// outline) at `(x, y)` in container space. Each overlay is `position:
+/// absolute` at `left: 0; top: 0` — the container's padding-box origin — and
+/// is moved by this translation alone (#906).
+///
+/// A `transform` is paint-only. `left`/`top` are Taffy insets, so moving an
+/// overlay through them was a Taffy style change, and on the desktop every
+/// caret move — each arrow key, and the post-layout caret pass after each
+/// keystroke — ran a root Taffy compute over the whole document. The
+/// transform reaches no layout on either backend; the desktop damage still
+/// names the old rect and the new one (`Node::painted` records the transform
+/// the box was last painted with), `scroll_into_view` measures the painted
+/// box (`painted_border_box`) and a browser's `scrollIntoView` the
+/// transformed one, and every overlay already forms a stacking context of its
+/// own (`position: absolute` with a `z-index`), so the transform changes
+/// nothing about how it stacks or which clip it is under.
+///
+/// Rounded to whole pixels, which is where the old insets were laid out: the
+/// desktop rounds a laid-out box, not a transform, and a 2px caret translated
+/// by a fraction is drawn across three columns, lighter.
+fn overlay_translate(x: f32, y: f32) -> String {
+    format!("translate({}px, {}px)", x.round(), y.round())
+}
+
+/// The size an overlay at `(x, y)` sized `w` x `h` covers, in whole pixels:
+/// the distance between its rounded edges, which is what the old `left`/`top`
+/// plus `width`/`height` were laid out at — Taffy rounds a box's two edges,
+/// not its size, so a caret at y = 10.6 with height 20.8 covered rows 11..31,
+/// 20 rows and not `round(20.8)` = 21. Paired with [`overlay_translate`].
+fn overlay_size(x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
+    ((x + w).round() - x.round(), (y + h).round() - y.round())
 }
 
 /// The flat UTF-8 byte offset, within a textblock's concatenated inline text,
@@ -2822,18 +2862,18 @@ mod tests {
                 .borrow()
                 .get_attribute(a.node_id(), "style")
                 .unwrap_or_default();
-            let num = |k: &str| {
-                style
-                    .split(';')
-                    .find_map(|d| {
-                        let (n, v) = d.split_once(':')?;
-                        (n.trim() == k)
-                            .then(|| v.trim().trim_end_matches("px").parse::<f32>().ok())
-                            .flatten()
-                    })
-                    .map(|v| v.round() as i32)
-            };
-            (num("left").unwrap(), num("top").unwrap())
+            // Placed by `translate(x, y)`, not by insets (#906).
+            let (x, y) = style
+                .split(';')
+                .find_map(|d| {
+                    let (n, v) = d.split_once(':')?;
+                    let args = v.trim().strip_prefix("translate(")?.strip_suffix(')')?;
+                    let (x, y) = args.split_once(',')?;
+                    let px = |s: &str| s.trim().trim_end_matches("px").parse::<f32>().ok();
+                    (n.trim() == "transform").then(|| Some((px(x)?, px(y)?))).flatten()
+                })
+                .expect("a transform");
+            (x.round() as i32, y.round() as i32)
         };
         assert_eq!(
             anchor_pos(&view),
