@@ -5301,6 +5301,7 @@ dependencies = [
  "js-sys",
  "rinch-core",
  "rustls",
+ "tracing",
  "tungstenite",
  "wasm-bindgen",
  "web-sys",

@@ -259,6 +259,13 @@ fn invoke<T: 'static>(id: u64, arg: T, select: impl Fn(&mut Handlers) -> &mut Op
     };
 
     if owner.as_ref().is_some_and(|owner| !owner.is_alive()) {
+        // Worded like `rinch_core::main_thread::resume_main_callback`'s line for
+        // the same prune: without it, a socket whose frames still arrive but
+        // reach nothing after a route change says so nowhere (issue #374).
+        tracing::debug!(
+            "dropping socket callback on connection {}: the component that registered it was unmounted",
+            id
+        );
         // Dropped here, outside the borrow above, and deliberately NOT put back.
         drop(cb);
         sweep_dead(id);
@@ -781,5 +788,136 @@ mod tests {
         HANDLERS.with(|h| {
             h.borrow_mut().remove(&id);
         });
+    }
+
+    /// The twin of `main_thread`'s pin (issue #374): an ownerless socket
+    /// callback dispatched from inside a live one runs under `unowned`, so what
+    /// it allocates is not attributed to the live one's component. #373 made
+    /// the change; nothing pinned it.
+    #[test]
+    fn an_ownerless_callback_dispatched_inside_a_live_one_does_not_allocate_under_it() {
+        let (outer, inner) = (424_250, 424_251);
+        HANDLERS.with(|h| {
+            let mut h = h.borrow_mut();
+            h.insert(outer, Handlers::default());
+            h.insert(inner, Handlers::default());
+        });
+
+        install(
+            inner,
+            |h| &mut h.on_message,
+            Box::new(|_| {
+                let _app_lifetime = Signal::new(0u32);
+            }),
+        );
+        let component = Scope::new();
+        component.run(|| {
+            install(
+                outer,
+                |h| &mut h.on_message,
+                Box::new(move |_| {
+                    dispatch(inner, WsEvent::Message(WsMessage::Text("in".to_string())))
+                }),
+            );
+        });
+
+        let before = component.owned_counts().signals;
+        dispatch(outer, WsEvent::Message(WsMessage::Text("out".to_string())));
+        assert_eq!(
+            component.owned_counts().signals,
+            before,
+            "the ownerless callback's signal must not be attributed to the \
+             component whose callback happened to dispatch it"
+        );
+
+        component.dispose();
+        HANDLERS.with(|h| {
+            let mut h = h.borrow_mut();
+            h.remove(&outer);
+            h.remove(&inner);
+        });
+    }
+
+    /// A dead callback is pruned *audibly* (issue #374): an app whose socket
+    /// messages stop arriving after a route change — the handler's component
+    /// unmounted, the `WsHandle` stayed parked in a store — has one `debug!`
+    /// line to find, worded like `resume_main_callback`'s for the same reason.
+    #[test]
+    fn pruning_a_dead_callback_logs_why() {
+        let id = 424_249;
+        HANDLERS.with(|h| h.borrow_mut().insert(id, Handlers::default()));
+
+        let scope = Scope::new();
+        scope.run(|| {
+            install(id, |h| &mut h.on_message, Box::new(|_| {}));
+        });
+
+        // Positive control first: a live dispatch logs nothing, so the
+        // capture below is attributable to the prune and not to dispatch.
+        let live = capture_debug(|| {
+            dispatch(id, WsEvent::Message(WsMessage::Text("live".to_string())));
+        });
+        assert!(live.is_empty(), "a live dispatch must not log: {live:?}");
+
+        scope.dispose();
+        let lines = capture_debug(|| {
+            dispatch(id, WsEvent::Message(WsMessage::Text("dead".to_string())));
+        });
+        assert_eq!(
+            lines,
+            vec![format!(
+                "dropping socket callback on connection {id}: the component that \
+                 registered it was unmounted"
+            )],
+            "pruning must say what it dropped and why"
+        );
+
+        HANDLERS.with(|h| {
+            h.borrow_mut().remove(&id);
+        });
+    }
+
+    /// Every `DEBUG`-or-louder event's message emitted while `f` runs on this
+    /// thread. A hand-rolled subscriber rather than `tracing-subscriber`, so
+    /// this wasm-clean crate gains no dev-dependency for one assertion.
+    fn capture_debug(f: impl FnOnce()) -> Vec<String> {
+        use std::sync::{Arc, Mutex};
+        use tracing::field::{Field, Visit};
+        use tracing::span::{Attributes, Id, Record};
+        use tracing::{Event, Level, Metadata, Subscriber, subscriber::Interest};
+
+        struct Capture(Arc<Mutex<Vec<String>>>);
+        struct Message(String);
+        impl Visit for Message {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        impl Subscriber for Capture {
+            fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+                Interest::always()
+            }
+            fn enabled(&self, m: &Metadata<'_>) -> bool {
+                *m.level() <= Level::DEBUG
+            }
+            fn new_span(&self, _: &Attributes<'_>) -> Id {
+                Id::from_u64(1)
+            }
+            fn record(&self, _: &Id, _: &Record<'_>) {}
+            fn record_follows_from(&self, _: &Id, _: &Id) {}
+            fn event(&self, e: &Event<'_>) {
+                let mut m = Message(String::new());
+                e.record(&mut m);
+                self.0.lock().unwrap().push(m.0);
+            }
+            fn enter(&self, _: &Id) {}
+            fn exit(&self, _: &Id) {}
+        }
+
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        tracing::subscriber::with_default(Capture(lines.clone()), f);
+        lines.lock().unwrap().clone()
     }
 }
