@@ -4161,6 +4161,20 @@ mod tests {
                 h.command("deleteCharForward")
             }),
             ("the Backspace key", end(), |h| bound_key(h, "Backspace")),
+            ("word backspace", end(), |h| h.command("deleteWordBackward")),
+            ("word forward delete", Selection::cursor(Pos(3)), |h| {
+                h.command("deleteWordForward")
+            }),
+            ("the word-delete chord", end(), |h| {
+                bound_key(
+                    h,
+                    if cfg!(target_os = "macos") {
+                        "Alt-Backspace"
+                    } else {
+                        "Mod-Backspace"
+                    },
+                )
+            }),
             ("enter", end(), |h| h.command("enter")),
             ("the Enter key", end(), |h| bound_key(h, "Enter")),
             ("a hard break", end(), |h| h.command("insertHardBreak")),
