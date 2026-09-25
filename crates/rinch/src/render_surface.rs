@@ -701,7 +701,16 @@ pub fn create_video_frame_sink(viewport_id: &str) -> VideoFrameSink {
 /// The registry is thread-local, so a drop on another thread cannot reach it:
 /// that release is queued for the main thread instead (the sink is `Send`, even
 /// though every player in the workspace drops it on the main thread), and runs
-/// at the next drain of the main-thread queue.
+/// at the next drain of the main-thread queue. It does not wake the event loop
+/// to get there: `run_on_main_thread` would, but it panics where no dispatcher
+/// is registered, which a `Drop` must not risk, and a surface released one wake
+/// late costs nothing but its buffer until then. Every host drains the queue
+/// (desktop on each wake and paint, Android per frame, embed per `update`).
+///
+/// A lease dropped after the thread's registry was destroyed — a player still
+/// playing at thread or process exit, whose `ACTIVE_PLAYERS` entry is torn down
+/// after the registry — has nothing left to unregister and does nothing: a
+/// `with` there would panic inside a TLS destructor, which aborts.
 struct SurfaceLease {
     id: usize,
     thread: std::thread::ThreadId,
@@ -712,7 +721,13 @@ impl Drop for SurfaceLease {
         let id = self.id;
         // A drop from inside a registry walk (a render callback letting go of a
         // player) cannot take the registry mutably either; defer it the same way.
-        let registry_free = SURFACE_REGISTRY.with(|reg| reg.try_borrow_mut().is_ok());
+        // At thread exit (and at process exit, for the main thread) the
+        // registry may already have been destroyed: then there is nothing left
+        // to unregister, and `with` would panic inside a TLS destructor (abort).
+        let Ok(registry_free) = SURFACE_REGISTRY.try_with(|reg| reg.try_borrow_mut().is_ok())
+        else {
+            return;
+        };
         if std::thread::current().id() == self.thread && registry_free {
             unregister_render_surface(id);
         } else {

@@ -219,6 +219,9 @@ impl VideoPlayer {
         // player's render surface (issue #363).
         self.inner.borrow().cleanup();
         self.frame_sink_installed.set(false);
+        // The surface that held the last frame is gone with the sink: nothing
+        // fills the viewport until the next frame arrives (#186).
+        self.has_frame.set_if_changed(false);
         crate::unregister_active_player(self);
         crate::decrement_video_loaded();
     }
