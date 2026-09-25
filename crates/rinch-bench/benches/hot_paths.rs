@@ -70,6 +70,12 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 }
 
 #[library_benchmark]
+#[bench::paragraphs_40(setup = setup_text_shadow_paint)]
+fn text_shadow_paint(f: PaintFixture) -> PaintFixture {
+    black_box(measure(black_box(f), op_text_shadow_paint))
+}
+
+#[library_benchmark]
 #[bench::warm_x50(setup = setup_pointer_move_warm)]
 fn pointer_move_warm(app: RinchApp) -> RinchApp {
     black_box(measure(black_box(app), op_pointer_move_warm))
@@ -111,7 +117,8 @@ library_benchmark_group!(
         flex_label_hover,
         drawer_toggle,
         inset_move,
-        full_paint
+        full_paint,
+        text_shadow_paint
     ]
 );
 

@@ -1182,14 +1182,44 @@ fn text_panel(shadow: &str) -> (RinchApp, NodeHandle) {
 /// The band the shadow of [`text_panel`]'s text is painted in.
 const TEXT_SHADOW_BAND: (i32, i32, i32, i32) = (20, 206, 80, 234);
 
-/// A box moved with its text: the text's shadow, 60px below the box, is
-/// cleared where it was painted (it used to be no part of any node's ink).
+/// A **static** row shifted down by reflow (a spacer above it grows), its
+/// text's shadow 60px below its box: nothing walks a static box's subtree, so
+/// only the row's own text-shadow ink names where the old shadow was painted.
+/// (A moved *positioned* box is grown by its subtree's reach already, so it
+/// cannot tell whether the shadow is ink — review of #1020, F6.)
 #[test]
-fn a_moved_box_clears_its_old_text_shadow() {
-    let (mut app, b) = text_panel("0 60px 6px rgb(255, 0, 0)");
-    assert_clean_after(&mut app, TEXT_SHADOW_BAND, |app| {
-        b.set_style("left", "300px");
-        b.set_style("top", "20px");
+fn a_static_row_shifted_by_reflow_clears_its_old_text_shadow() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let col = el(scope, &outer, "width: 300px");
+        let spacer = el(scope, &col, "height: 100px");
+        let row = el(
+            scope,
+            &col,
+            "height: 20px; font-size: 16px; line-height: 20px; color: rgb(0, 0, 0); \
+             text-shadow: 0 60px 6px rgb(255, 0, 0)",
+        );
+        let t = scope.create_text("HHHH HHHH");
+        row.append_child(&t);
+        (outer, vec![spacer])
+    });
+    // The text at y 100..120 casts its shadow at 160..180, softened by 6px.
+    assert_clean_after(&mut app, (0, 154, 90, 186), |app| {
+        hs[0].set_style("height", "40px");
+        resolve(app);
+    });
+}
+
+/// A widely blurred shadow's soft edge reaches past the hard shadow and the
+/// 4px dirty margin: only the blur's share of the ink names it (review of
+/// #1020, F5).
+#[test]
+fn a_widely_blurred_text_shadow_dropped_in_place_is_cleared() {
+    let (mut app, b) = text_panel("0 60px 20px rgb(255, 0, 0)");
+    // The hard shadow is at y 210..230; its blurred tail is checked at 236..250.
+    assert_clean_after(&mut app, (20, 236, 120, 250), |app| {
+        b.set_style("text-shadow", "none");
         resolve(app);
     });
 }

@@ -7,13 +7,13 @@
 //!
 //! # The blur, and why both painters agree on it
 //!
-//! Vello has no general blur, so the shadow is blurred the one way both
-//! painters can draw identically: as a weighted sum of copies of the shadow at
-//! the taps of a Gaussian kernel, each tap drawn into its own layer composited
-//! with [`BlendMode::Plus`] at the tap's weight, inside one group layer at the
-//! shadow colour's alpha. The sum of the weights is 1, so a shadow's solid
-//! interior stays solid; the kernel's reach is the blur radius, which is what
-//! `layer_bounds::text_shadow_reach` and the damage ink already allow.
+//! Wherever the software rasteriser is compiled in (every desktop build), a
+//! blurred shadow is rasterised once into a coverage mask, blurred by a
+//! separable Gaussian of standard deviation `blur / 2`, and handed to the
+//! painter as **one image** — the same image to Vello as to tiny-skia. The
+//! Vello-only build falls back to a small kernel of copies, each in a
+//! [`BlendMode::Plus`] layer at its weight inside one isolated layer, under a
+//! per-paint budget; `force_tapped_text_shadows` pins that path here.
 //!
 //! # Two oracles
 //!
@@ -90,9 +90,22 @@ fn is_red(c: [u8; 4]) -> bool {
 
 #[derive(Debug)]
 enum Op {
-    Glyphs { color: [u8; 4], glyphs: Vec<Point> },
-    Stroke { color: [u8; 4], bbox: Rect },
-    Push { blend: BlendMode, opacity: f32 },
+    Glyphs {
+        color: [u8; 4],
+        glyphs: Vec<Point>,
+    },
+    Stroke {
+        color: [u8; 4],
+        bbox: Rect,
+    },
+    Push {
+        blend: BlendMode,
+        opacity: f32,
+        bounds: Rect,
+    },
+    Image {
+        rect: Rect,
+    },
     Pop,
 }
 
@@ -140,10 +153,23 @@ impl Painter for Recorder {
                 .collect(),
         });
     }
-    fn draw_image(&mut self, _: &PaintImage<'_>, _: Affine) {}
+    fn draw_image(&mut self, image: &PaintImage<'_>, transform: Affine) {
+        self.ops.push(Op::Image {
+            rect: transform.transform_rect_bbox(Rect::new(
+                0.0,
+                0.0,
+                image.width as f64,
+                image.height as f64,
+            )),
+        });
+    }
     fn push_clip(&mut self, _: Fill, _: Affine, _: &PaintShape) {}
-    fn push_layer(&mut self, blend: BlendMode, opacity: f32, _: Affine, _: &PaintShape) {
-        self.ops.push(Op::Push { blend, opacity });
+    fn push_layer(&mut self, blend: BlendMode, opacity: f32, t: Affine, bounds: &PaintShape) {
+        self.ops.push(Op::Push {
+            blend,
+            opacity,
+            bounds: t.transform_rect_bbox(bounds.bounding_box()),
+        });
     }
     fn pop_layer(&mut self) {
         self.ops.push(Op::Pop);
@@ -182,38 +208,55 @@ fn first_glyphs(ops: &[Op]) -> (Vec<Point>, Point) {
     (red, black[0])
 }
 
-/// A blurred shadow is handed to the painter as a Gaussian kernel of copies:
-/// each in a `Plus` layer at its weight, the weights summing to 1, the copies
-/// spread symmetrically out to the blur radius — in physical px.
+/// Run `f` with blurred shadows drawn the Vello-only build's way — a kernel
+/// of copies — and put the default back even if it panics.
+fn tapped<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            rinch_dom::paint::force_tapped_text_shadows(self.0);
+        }
+    }
+    let _restore = Restore(rinch_dom::paint::force_tapped_text_shadows(true));
+    f()
+}
+
+/// The Vello-only fallback hands the painter a small Gaussian kernel of
+/// copies: each in a `Plus` layer at its weight, the weights summing to 1, at
+/// most 13 copies spread symmetrically out to three standard deviations —
+/// in physical px — every layer's bounds holding the whole reach.
 ///
 /// Kills: the blur ignored (one hard copy, no `Plus` layer); the blur radius
-/// unscaled (the spread at scale 2 reaches 8, not 16); a kernel whose weights
-/// do not sum to 1 (a solid shadow would come out faint or clipped); a
-/// one-sided kernel (the weighted mean of the taps moves off the offset).
+/// unscaled (the spread at scale 2 reaches 12, not 24); weights that do not
+/// sum to 1; a one-sided kernel; layer bounds shrunk to the bare text (Vello
+/// clips a layer to them and loses the soft edge; tiny-skia cannot see it —
+/// review of #1020, M4); an uncapped kernel (the GPU crash of that review).
 #[test]
-fn a_blurred_shadow_is_a_normalised_kernel_out_to_the_scaled_radius() {
+fn the_fallback_is_a_small_normalised_kernel_out_to_three_sigma() {
     const BLUR: f64 = 8.0;
     for scale in [1.5, 2.0] {
         let mut doc = document(
             &format!("{BASE}; text-shadow: 3px 50px {BLUR}px rgb(255, 0, 0)"),
             &[("HxH", None)],
         );
-        let ops = record(&mut doc, scale);
+        let ops = tapped(|| record(&mut doc, scale));
 
-        let weights: Vec<f32> = ops
+        let plus: Vec<(f32, Rect)> = ops
             .iter()
             .filter_map(|op| match op {
                 Op::Push {
                     blend: BlendMode::Plus,
                     opacity,
-                } => Some(*opacity),
+                    bounds,
+                } => Some((*opacity, *bounds)),
                 _ => None,
             })
             .collect();
+        let weights: Vec<f32> = plus.iter().map(|p| p.0).collect();
         assert!(
-            weights.len() >= 9,
-            "at scale {scale} a {BLUR}px blur must be drawn as a kernel of `Plus` layers; \
-             got {} of them (#980)",
+            (5..=13).contains(&weights.len()),
+            "at scale {scale} a {BLUR}px blur must be drawn as a kernel of 5 to 13 `Plus` \
+             layers; got {} (#980)",
             weights.len()
         );
         let sum: f32 = weights.iter().sum();
@@ -232,11 +275,11 @@ fn a_blurred_shadow_is_a_normalised_kernel_out_to_the_scaled_radius() {
             .iter()
             .map(|(dx, dy)| dx.hypot(*dy))
             .fold(0.0_f64, f64::max);
-        let radius = BLUR * scale;
+        let radius = 1.5 * BLUR * scale;
         assert!(
-            reach <= radius + 1e-6 && reach >= 0.75 * radius,
+            reach <= radius + 1e-6 && reach >= 0.65 * radius,
             "at scale {scale} the kernel reaches {reach:.2} physical px from the offset; \
-             a {BLUR}px blur reaches {radius} (#980)"
+             a {BLUR}px blur reaches three sigma, {radius} (#980)"
         );
         let (mx, my) = rel
             .iter()
@@ -248,6 +291,119 @@ fn a_blurred_shadow_is_a_normalised_kernel_out_to_the_scaled_radius() {
             mx.abs() < 0.05 && my.abs() < 0.05,
             "the kernel's weighted centre is ({mx:.3}, {my:.3}) from the offset: it must be \
              symmetric"
+        );
+
+        // Every layer holds the whole shadow: the first glyph's origin moved by
+        // the offset, a line box around it, grown by the full reach.
+        let (sx, sy) = (main.x + 3.0 * scale, main.y + 50.0 * scale);
+        let need = Rect::new(
+            sx - radius,
+            sy - 32.0 * scale - radius,
+            sx + radius,
+            sy + 8.0 * scale + radius,
+        );
+        for (_, bounds) in &plus {
+            assert!(
+                bounds.x0 <= need.x0 + 1e-6
+                    && bounds.y0 <= need.y0 + 1e-6
+                    && bounds.x1 >= need.x1 - 1e-6
+                    && bounds.y1 >= need.y1 - 1e-6,
+                "at scale {scale} a tap layer's bounds {bounds:?} do not hold the shadow's \
+                 reach {need:?}: Vello clips the soft edge (review of #1020, M4)"
+            );
+        }
+    }
+}
+
+/// The fallback stops blurring past its per-paint budget: a page whose
+/// shadows would need more glyph copies than [`TAP_GLYPH_BUDGET`] draws the
+/// rest unblurred, one copy each — so ordinary CSS cannot hand Vello the
+/// hundreds of thousands of glyph copies that overflowed wgpu's buffer
+/// binding limit (review of #1020, F1).
+///
+/// Kills: the budget not enforced.
+#[test]
+fn the_fallback_keeps_to_its_budget() {
+    let para = "The quick brown fox jumps over the lazy dog, twice over and again. ";
+    // Forty one-line paragraphs, small enough that all of them are on the
+    // 300x200 viewport (nothing culled): each is a shadow of its own.
+    let children: Vec<(&str, Option<&str>)> = (0..40)
+        .map(|_| (para, Some("display: block; white-space: nowrap")))
+        .collect();
+    let mut doc = document(
+        "width: 290px; font-size: 4px; line-height: 4px; font-family: ProbeFace; \
+         text-shadow: 0 1px 4px rgb(255, 0, 0)",
+        &children,
+    );
+    let ops = tapped(|| record(&mut doc, 2.0));
+    let copies: usize = ops
+        .iter()
+        .map(|op| match op {
+            Op::Glyphs { color, glyphs } if is_red(*color) => glyphs.len(),
+            _ => 0,
+        })
+        .sum();
+    let main: usize = ops
+        .iter()
+        .map(|op| match op {
+            Op::Glyphs { color, glyphs } if !is_red(*color) => glyphs.len(),
+            _ => 0,
+        })
+        .sum();
+    assert!(
+        main * 13 > rinch_dom::paint::TAP_GLYPH_BUDGET + 2 * main,
+        "positive control: the page would need far more than the budget ({main} glyphs)"
+    );
+    assert!(
+        copies <= rinch_dom::paint::TAP_GLYPH_BUDGET + main,
+        "{copies} shadow glyph copies for {main} glyphs: the fallback must stop blurring at \
+         its budget ({})",
+        rinch_dom::paint::TAP_GLYPH_BUDGET
+    );
+}
+
+/// Where the software rasteriser is compiled in, a blurred shadow reaches the
+/// painter as **one image** — no copies, no layers — covering the text moved
+/// by the offset and grown by three standard deviations, in physical px.
+///
+/// Kills: the image path not taken (copies drawn); the mask not grown by the
+/// blur (the soft edge cropped); the offset or the blur unscaled.
+#[test]
+fn a_blurred_shadow_is_one_image_over_its_reach() {
+    const BLUR: f64 = 8.0;
+    for scale in [1.5, 2.0] {
+        let mut doc = document(
+            &format!("{BASE}; text-shadow: 3px 50px {BLUR}px rgb(255, 0, 0)"),
+            &[("HxH", None)],
+        );
+        let ops = record(&mut doc, scale);
+        let images: Vec<Rect> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Image { rect } => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images.len(), 1, "one image per shadow: {ops:?}");
+        assert!(
+            !ops.iter().any(|op| matches!(op, Op::Push { .. })),
+            "no layer: the blur is in the image"
+        );
+        let (taps, main) = first_glyphs(&ops);
+        assert!(taps.is_empty(), "no shadow glyphs reach the painter");
+        let reach = 1.5 * BLUR * scale;
+        let (sx, sy) = (main.x + 3.0 * scale, main.y + 50.0 * scale);
+        let img = images[0];
+        assert!(
+            img.x0 <= sx - reach + 1.0
+                && img.y0 <= sy - 23.0 * scale - reach + 1.0
+                && img.y1 >= sy + reach - 1.0,
+            "at scale {scale} the shadow image {img:?} does not reach {reach} physical px \
+             past the shadowed text at ({sx}, {sy}) (#980)"
+        );
+        assert!(
+            img.x0 >= sx - reach - 16.0 * scale - 2.0,
+            "the image {img:?} reaches far past the blur: it is not placed at the offset"
         );
     }
 }
@@ -428,9 +584,9 @@ fn the_software_painter_draws_the_blur() {
             ("bottom", sb.y1 - hb.y1),
         ] {
             assert!(
-                grew >= 0.6 * radius && grew <= radius + 2.0,
+                grew >= 0.6 * radius && grew <= 1.5 * radius + 2.0,
                 "at scale {scale} the blurred shadow's {side} edge is {grew} physical px past \
-                 the hard one's; a {BLUR}px blur softens it out to about {radius} (#980). \
+                 the hard one's; a {BLUR}px blur softens it out to between {radius} and 1.5 times that (#980). \
                  hard={hb:?} soft={sb:?}"
             );
         }
@@ -493,30 +649,45 @@ fn the_software_painter_draws_the_underline_shadow() {
     );
 }
 
-/// Where a blurred shadow's copies all cover a pixel — the middle of a stem
-/// much wider than the blur — the shadow is solid, as a Gaussian of a solid
-/// region is: the copies **add** (`Plus`) and their weights sum to 1.
+/// The middle of a stem much wider than the blur is solid in a blurred
+/// shadow, as a Gaussian of a solid region is — on the image path, and on the
+/// fallback, whose copies **add** (`Plus`) at weights that sum to 1 — and a
+/// translucent shadow's middle is exactly its alpha (review of #1020, F3:
+/// every other fixture's shadow is opaque, where "alpha applied" and "alpha
+/// ignored" agree).
 ///
-/// Kills: the software painter compositing a `Plus` layer source-over (the
-/// copies then cover each other: `1 - Π(1 - w)`, about 63%, never solid);
-/// a kernel whose weights fall short of 1; the isolated layer skipped at
-/// opacity 1 (the copies add onto the white page and leave it white).
+/// Kills: the shadow colour's alpha dropped (on either path); the software
+/// painter compositing a `Plus` layer source-over (the copies cover each
+/// other and never sum to solid); a kernel whose weights fall short of 1; the
+/// isolated layer skipped at opacity 1 (the copies add onto the white page).
 #[test]
-fn a_blurred_shadows_solid_interior_stays_solid() {
-    for scale in [1.0, 1.5] {
-        let style = "margin: 0 0 0 20px; font-size: 150px; line-height: 170px; \
+fn a_blurred_shadows_interior_is_its_colour() {
+    for fallback in [false, true] {
+        for (alpha, lo, hi) in [(1.0, 250, 255), (0.5, 120, 135)] {
+            for scale in [1.0, 1.5] {
+                let style = format!(
+                    "margin: 0 0 0 20px; font-size: 150px; line-height: 170px; \
                      color: rgb(0, 0, 0); font-family: ProbeFace; \
-                     text-shadow: 150px 0 4px rgb(255, 0, 0)";
-        let (px, w, h) = paint(&mut document(style, &[("I", None)]), scale);
-        let (bbox, peak) = red_tint(&px, w, h);
-        assert!(
-            bbox.width() > 14.0 * scale,
-            "positive control: the stem's shadow is wide ({bbox:?})"
-        );
-        assert!(
-            peak >= 250,
-            "at scale {scale} the middle of a wide stem's blurred shadow peaks at {peak}/255 \
-             red: every copy covers it, so it must be solid (#980)"
-        );
+                     text-shadow: 150px 0 4px rgba(255, 0, 0, {alpha})"
+                );
+                let mut doc = document(&style, &[("I", None)]);
+                let (px, w, h) = if fallback {
+                    tapped(|| paint(&mut doc, scale))
+                } else {
+                    paint(&mut doc, scale)
+                };
+                let (bbox, peak) = red_tint(&px, w, h);
+                assert!(
+                    bbox.width() > 14.0 * scale,
+                    "positive control: the stem's shadow is wide ({bbox:?})"
+                );
+                assert!(
+                    (lo..=hi).contains(&peak),
+                    "fallback={fallback} scale {scale}: the middle of a wide stem's blurred \
+                     shadow in rgba(255, 0, 0, {alpha}) tints by {peak}/255 over white; it \
+                     must be {lo}..={hi} (#980)"
+                );
+            }
+        }
     }
 }

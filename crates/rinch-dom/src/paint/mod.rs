@@ -14,6 +14,7 @@ pub mod scrollbar;
 mod select;
 mod svg;
 mod text;
+mod text_shadow;
 pub mod vello_painter;
 
 #[cfg(feature = "software-renderer")]
@@ -29,6 +30,7 @@ use layer_bounds::{
 };
 use svg::*;
 use text::*;
+pub use text_shadow::{TAP_GLYPH_BUDGET, force_tapped_text_shadows};
 
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};
@@ -522,9 +524,9 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
 /// How far a node's **own** ink reaches past its border box, in CSS px:
 /// `[left, top, right, bottom]`. Outset `box-shadow` (the whole blur radius
 /// plus spread, around its offset — the same slack `layer_bounds` allows),
-/// `outline` (width plus a positive offset) and `text-shadow` (the blur
-/// radius around its offset, #980). Inset shadows paint inside the box.
-/// Never negative.
+/// `outline` (width plus a positive offset) and `text-shadow` (one and a half
+/// blur radii — three standard deviations — around its offset, #980). Inset
+/// shadows paint inside the box. Never negative.
 ///
 /// A `text-shadow` is measured from the border box, where the text it
 /// shadows usually is; it is inherited, so a text node's parent and every IFC
@@ -533,7 +535,7 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
 pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32; 4] {
     let mut o = [0.0_f32; 4];
     for shadow in &cs.text_shadow {
-        let reach = shadow.blur_radius.abs();
+        let reach = shadow.blur_radius.abs() * text_shadow::REACH_PER_BLUR as f32;
         o[0] = o[0].max(reach - shadow.offset_x);
         o[1] = o[1].max(reach - shadow.offset_y);
         o[2] = o[2].max(reach + shadow.offset_x);
@@ -735,6 +737,7 @@ impl ClipTrackingPainter<'_> {
     /// Run `f` with `painter` wrapped, on a clip-cull stack of its own. The
     /// stack of an enclosing paint, if any, is set aside and put back.
     fn run<R>(painter: &mut dyn Painter, scale: f64, f: impl FnOnce(&mut dyn Painter) -> R) -> R {
+        text_shadow::begin_paint();
         let saved = CLIP_CULL.with(|c| std::mem::take(&mut *c.borrow_mut()));
         let mut tracking = ClipTrackingPainter {
             inner: painter,
@@ -958,6 +961,29 @@ pub fn set_dirty_region(region: Option<Rect>) {
 /// any of them. `None` means a full repaint; an empty slice culls everything.
 pub fn set_dirty_rects(rects: Option<&[Rect]>) {
     DIRTY_REGION.with(|v| *v.borrow_mut() = rects.map(<[Rect]>::to_vec));
+}
+
+/// The part of the device that anything drawn right now can show on: the
+/// render target, the clips the painter has open and the damage, intersected.
+/// `None` when none of them bounds it (a `paint_subtree` with no clip open).
+/// What a blurred `text-shadow` crops its mask to (#980).
+pub(super) fn visible_device_rect() -> Option<Rect> {
+    let mut r = VIEWPORT.with(|v| v.get().map(|vp| vp.target));
+    let mut meet = |b: Rect| r = Some(r.map_or(b, |a| a.intersect(b)));
+    if let Some(c) = open_clip_cull() {
+        meet(c);
+    }
+    let damage = DIRTY_REGION.with(|v| {
+        v.borrow().as_ref().map(|rects| {
+            rects.iter().fold(Rect::ZERO, |acc: Rect, d| {
+                if acc.area() == 0.0 { *d } else { acc.union(*d) }
+            })
+        })
+    });
+    if let Some(d) = damage {
+        meet(d);
+    }
+    r
 }
 
 /// Check whether a node rect can put anything on screen this paint: it must

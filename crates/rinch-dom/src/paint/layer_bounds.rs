@@ -1172,9 +1172,9 @@ impl Walk<'_> {
 ///
 /// `render_text_with_shadow` draws each shadow pass `offset × scale` physical
 /// px from the scaled text, at the text's own size (#409), so the reach is the
-/// offset plus the blur radius, times `scale`: a blurred shadow's kernel
-/// reaches exactly the blur radius from its offset (`text::shadow_kernel`,
-/// #980).
+/// offset plus [`REACH_PER_BLUR`](super::text_shadow::REACH_PER_BLUR) blur
+/// radii — three standard deviations, where the blur stops (#980) — times
+/// `scale`.
 fn text_shadow_reach(rect: Rect, node: &Node, scale: f64) -> Rect {
     let shadows = &node.computed_style.text_shadow;
     if shadows.is_empty() {
@@ -1182,7 +1182,7 @@ fn text_shadow_reach(rect: Rect, node: &Node, scale: f64) -> Rect {
     }
     let mut grown = rect;
     for shadow in shadows {
-        let blur = shadow.blur_radius.abs() as f64 * scale;
+        let blur = shadow.blur_radius.abs() as f64 * super::text_shadow::REACH_PER_BLUR * scale;
         let dx = shadow.offset_x as f64 * scale;
         let dy = shadow.offset_y as f64 * scale;
         grown = grown.union(Rect::new(

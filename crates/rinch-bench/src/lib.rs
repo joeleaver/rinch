@@ -542,6 +542,38 @@ pub fn op_full_paint(mut f: PaintFixture) -> PaintFixture {
     f
 }
 
+/// [`setup_full_paint`]'s 40 paragraphs with a blurred `text-shadow` on every
+/// one (#980): each paint rasterises every shadow into a mask, blurs it and
+/// draws it as an image.
+pub fn setup_text_shadow_paint() -> PaintFixture {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+         color: rgb(30, 30, 40); }} p {{ margin: 0 0 2px 0; \
+         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }}"
+    ));
+    let mut html = String::new();
+    for i in 0..40 {
+        html.push_str(&format!("<p>{i}: {LOREM}</p>"));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// Paint the 40 shadowed paragraphs with the software painter.
+pub fn op_text_shadow_paint(mut f: PaintFixture) -> PaintFixture {
+    f.paint();
+    f
+}
+
 // ── rinch (shell): a RinchApp on the software painter ──────────────────────
 
 fn mount(component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {

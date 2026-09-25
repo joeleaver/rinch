@@ -1,10 +1,10 @@
 //! Text rendering functions.
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, Rect, Stroke};
+use peniko::kurbo::{Affine, Stroke};
 use peniko::{Brush, Fill};
 
-use super::painter::{BlendMode, PaintGlyph, PaintShape, Painter};
+use super::painter::{PaintGlyph, Painter};
 use crate::computed_style::{TextShadowValue, VisibilityValue};
 use crate::node::{Node, NodeTree};
 
@@ -611,86 +611,9 @@ fn draw_text(
     }
 }
 
-/// Render a single shadow pass of a Parley text layout: its glyphs, its
-/// straight decorations and — given the IFC's `wavy` spans — its wavy
-/// underlines, all in the shadow's colour (#981). A hidden glyph casts no
-/// shadow (`mask`, #829).
-///
-/// `x`/`y` are physical px, and `scale` scales the glyphs exactly as
-/// [`render_text`] does, so a shadow is the main pass's glyphs at the main
-/// pass's size (#409).
-///
-/// `blur` is the blur radius in physical px. A blurred shadow is drawn as a
-/// Gaussian kernel of copies ([`shadow_kernel`]): each copy in a
-/// [`BlendMode::Plus`] layer at its weight, all of them inside one isolated
-/// layer at the shadow colour's alpha, the copies themselves opaque. Vello has
-/// no general blur, and this is a blur both painters draw from the same calls
-/// (#980). The kernel reaches exactly `blur` from the offset, which is what
-/// `layer_bounds::text_shadow_reach` and the damage ink allow for.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_text_shadow_pass(
-    painter: &mut dyn Painter,
-    layout: &parley::layout::Layout<Brush>,
-    x: f64,
-    y: f64,
-    shadow_color: AlphaColor<Srgb>,
-    blur: f64,
-    css_transform: Affine,
-    scale: f64,
-    mask: Option<&TextMask>,
-    wavy: Option<&crate::node::InlineLayout>,
-) {
-    let kernel = shadow_kernel(blur / 2.0);
-    if kernel.len() <= 1 {
-        let brush = Brush::Solid(shadow_color);
-        draw_shadow_copy(
-            painter,
-            layout,
-            x,
-            y,
-            &brush,
-            css_transform,
-            scale,
-            mask,
-            wavy,
-        );
-        return;
-    }
-
-    // Everything a copy can draw, grown by the kernel's reach, in the
-    // painter's space. The software painter ignores a layer's bounds; Vello
-    // clips to them.
-    let margin = blur + layout_ink_margin(layout) * scale;
-    let area = Rect::new(
-        x - margin,
-        y - margin,
-        x + layout.full_width().max(layout.width()) as f64 * scale + margin,
-        y + layout.height() as f64 * scale + margin,
-    );
-    let bounds = PaintShape::Rect(area);
-    let opaque = Brush::Solid(shadow_color.with_alpha(1.0));
-    painter.push_isolated_layer(shadow_color.components[3], css_transform, &bounds);
-    for &(dx, dy, weight) in &kernel {
-        painter.push_layer(BlendMode::Plus, weight, css_transform, &bounds);
-        draw_shadow_copy(
-            painter,
-            layout,
-            x + dx,
-            y + dy,
-            &opaque,
-            css_transform,
-            scale,
-            mask,
-            wavy,
-        );
-        painter.pop_layer();
-    }
-    painter.pop_layer();
-}
-
 /// One copy of a shadow: [`draw_text`] and the wavy underlines, all in `brush`.
 #[allow(clippy::too_many_arguments)]
-fn draw_shadow_copy(
+pub(super) fn draw_shadow_copy(
     painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
     x: f64,
@@ -727,71 +650,6 @@ fn draw_shadow_copy(
     }
 }
 
-/// How far, in layout px, glyph ink may reach past `layout`'s line boxes: an
-/// italic's overhang, a tall accent. Half the largest font size, which is
-/// generous; it only sizes a layer's bounds.
-fn layout_ink_margin(layout: &parley::layout::Layout<Brush>) -> f64 {
-    let mut size = 0.0_f32;
-    for line in layout.lines() {
-        for item in line.items() {
-            if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
-                size = size.max(run.run().font_size());
-            }
-        }
-    }
-    size as f64 * 0.5
-}
-
-/// The taps of a Gaussian blur of standard deviation `sigma` (physical px):
-/// `(dx, dy, weight)` for grid points out to `2 * sigma` — the blur radius, as
-/// CSS defines the radius (css-text-decor-3 §4 points at css-backgrounds-3's
-/// shadow blur, whose Gaussian has a standard deviation of half of it).
-///
-/// The grid step is 1 physical px, widened for a large blur so there are at
-/// most 13 steps across the kernel (at most 113 taps): cost is one layer and
-/// one copy of the text per tap. The weights are quantised to multiples of
-/// 1/255 and sum to exactly 1 — the unit a layer's opacity reaches an 8-bit
-/// surface in — so a shadow's solid interior stays solid rather than losing a
-/// rounding step per tap; a tap whose weight rounds to nothing is dropped. The
-/// kernel is symmetric: what rounding leaves over goes to the centre tap.
-///
-/// A `sigma` below a quarter pixel gives the single tap `(0, 0, 1.0)`: the
-/// shadow is drawn once, directly, as an unblurred one is.
-pub(super) fn shadow_kernel(sigma: f64) -> Vec<(f64, f64, f32)> {
-    if !sigma.is_finite() || sigma < 0.25 {
-        return vec![(0.0, 0.0, 1.0)];
-    }
-    let radius = 2.0 * sigma;
-    let step = (radius / 6.0).max(1.0);
-    let n = (radius / step).floor() as i32;
-    let mut taps: Vec<(f64, f64, f64)> = Vec::new();
-    for j in -n..=n {
-        for i in -n..=n {
-            let (dx, dy) = (i as f64 * step, j as f64 * step);
-            let d2 = dx * dx + dy * dy;
-            if d2 <= radius * radius + 1e-9 {
-                taps.push((dx, dy, (-d2 / (2.0 * sigma * sigma)).exp()));
-            }
-        }
-    }
-    let total: f64 = taps.iter().map(|t| t.2).sum();
-    let mut units: Vec<i64> = taps
-        .iter()
-        .map(|t| (t.2 / total * 255.0).round() as i64)
-        .collect();
-    let centre = taps
-        .iter()
-        .position(|t| t.0 == 0.0 && t.1 == 0.0)
-        .expect("the grid holds its centre");
-    let left_over = 255 - units.iter().sum::<i64>();
-    units[centre] = (units[centre] + left_over).max(1);
-    taps.iter()
-        .zip(units)
-        .filter(|&(_, u)| u > 0)
-        .map(|(t, u)| (t.0, t.1, u as f32 / 255.0))
-        .collect()
-}
-
 /// Render text with optional text-shadow effects.
 ///
 /// Draws shadow passes (in reverse order so first shadow renders on top of later ones)
@@ -821,7 +679,7 @@ pub(super) fn render_text_with_shadow(
         // them like every other length on its way to the painter (#409).
         let sx = x + shadow.offset_x as f64 * scale;
         let sy = y + shadow.offset_y as f64 * scale;
-        render_text_shadow_pass(
+        super::text_shadow::render_text_shadow_pass(
             painter,
             layout,
             sx,
