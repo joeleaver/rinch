@@ -154,9 +154,11 @@ impl Scrollbars {
 }
 
 /// The content extent `(width, height)` along both axes, relative to the
-/// container's content box, from its direct children's layout rects.
+/// container's content box, from its children's layout rects — its direct
+/// children, and the children of any `display: contents` child, which have no
+/// box of their own to measure (issue #396; see `extend_with_children`).
 ///
-/// Only children the container is the **containing block** of are measured —
+/// Only boxes the container is the **containing block** of are measured —
 /// `crate::out_of_flow::contributes_to_scrollable_overflow` is the rule, and
 /// its doc is where the CSS and the Chrome measurements live. A `position:
 /// fixed` child resolves against the viewport and a `position: absolute` one
@@ -224,23 +226,89 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
     let cs = &node.computed_style;
     let content_left = (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64;
     let content_top = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64;
-    let (mut width, mut height) = (0.0_f64, 0.0_f64);
-    for &child_id in &node.children {
-        if let Some(child) = tree.get(child_id) {
-            if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, node_id, child) {
-                continue;
-            }
-            let right = (child.layout.x + child.layout.width) as f64 - content_left;
-            if right > width {
-                width = right;
-            }
-            let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
-            if bottom > height {
-                height = bottom;
-            }
+    let (mut right, mut bottom) = (0.0_f64, 0.0_f64);
+    // The container's own inline content, when it is an IFC root: every line
+    // its inline layout holds, wherever in the DOM the text sits — directly in
+    // it, in a `display: contents` wrapper (every reactive `{|| text}` is one),
+    // or in an inline `<span>` — since none of those owns a box that measures
+    // it. The IFC draws at the content origin (`ifc_root_content_origin`), so
+    // the layout's own size is already in the content frame. Read from the
+    // inline layout rather than from its text children's boxes: a text child
+    // under a wrapper or a span is given no box at all, and a direct one is
+    // given the root's *border*-box width at the border-box origin, which
+    // over-reported a padded container's width by its horizontal padding and
+    // its height by its top padding.
+    let inline_measured = if let Some(inline) = &node.text_layout {
+        right = content_left + inline.layout.width() as f64;
+        bottom = content_top + inline.layout.height() as f64;
+        true
+    } else {
+        false
+    };
+    extend_with_children(
+        tree,
+        node_id,
+        node_id,
+        inline_measured,
+        &mut right,
+        &mut bottom,
+    );
+    (
+        (right - content_left).max(0.0),
+        (bottom - content_top).max(0.0),
+    )
+}
+
+/// Grow `right`/`bottom` (in the scroll container's border-box frame) by every
+/// box among `parent_id`'s children that is `container_id`'s scrollable
+/// content, walking **through** `display: contents` children (issue #396).
+///
+/// A `display: contents` element generates no box. Its children are laid out
+/// in its parent's formatting context — `sync_display_contents` splices them
+/// into the parent's Taffy child list — so their `layout` rects are already in
+/// the container's frame, exactly as a direct child's are, and they are the
+/// container's content as if the wrapper were not there (measured in Chrome:
+/// `tests/contents_scroll_extent_tests.rs`). The wrapper's own `0x0` rect is
+/// not a box and is not measured. Since `rsx!` emits one such wrapper per
+/// reactive text, `if`, `match`, `for` and embedded `Vec<NodeHandle>`, reading
+/// that rect instead made every `for`-built scroll region unscrollable.
+///
+/// The containing-block rule is asked of **the scroll container**, for every
+/// box reached through a wrapper too: a box that is not generated contains
+/// nothing, so a wrapper never stands between a flattened absolute and the
+/// container.
+///
+/// With `inline_measured`, the container's own inline layout has already been
+/// measured, so a text node it lays out is skipped rather than read through
+/// the proxy box `write_inline_positions` gives a direct one.
+fn extend_with_children(
+    tree: &NodeTree,
+    container_id: usize,
+    parent_id: usize,
+    inline_measured: bool,
+    right: &mut f64,
+    bottom: &mut f64,
+) {
+    let Some(parent) = tree.get(parent_id) else {
+        return;
+    };
+    for &child_id in &parent.children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+        if child.taffy_style_owned_by_contents_splice() {
+            extend_with_children(tree, container_id, child_id, inline_measured, right, bottom);
+            continue;
         }
+        if inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
+            continue;
+        }
+        if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, child) {
+            continue;
+        }
+        *right = right.max((child.layout.x + child.layout.width) as f64);
+        *bottom = bottom.max((child.layout.y + child.layout.height) as f64);
     }
-    (width, height)
 }
 
 /// What the built-in `auto` thumb looks like on this container.

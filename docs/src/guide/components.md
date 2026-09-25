@@ -539,11 +539,12 @@ straddles a visibility boundary follows the wrong end of it (#852). As in CSS,
 a descendant that declares `visibility: visible` is painted again.
 
 
-- **It still takes part in layout**, so a hidden overlay that is a direct child
-  of an `overflow: auto` container contributes its box to that container's
-  scrollable extent, and the container grows a scrollbar for content nobody can
-  see. `position: fixed` does not exempt it: `paint::scrollbar::content_extents`
-  measures every child's border box, out-of-flow ones included.
+- **It still takes part in layout**, so a hidden overlay that is an in-flow
+  child of an `overflow: auto` container contributes its box to that
+  container's scrollable extent, and the container grows a scrollbar for
+  content nobody can see — as it would in a browser. A `position: fixed`
+  overlay (`Modal`, `Drawer`) is exempt, since #765: a fixed box is no part of
+  any scroll range below the viewport.
 - **A descendant may declare `visibility: visible`**, and the three readers do
   not agree about what that means. Paint honours it (the node is drawn), the Tab
   order honours it (`collect_focusable_nodes_from` tests each node on its own),

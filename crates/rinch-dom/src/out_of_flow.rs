@@ -93,7 +93,10 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
 
 /// Whether `child` is part of `parent`'s **scrollable overflow area**
 /// (css-overflow-3 §3.1) — the question `paint::scrollbar::content_extents`
-/// asks of every direct child of a scroll container.
+/// asks of every child box of a scroll container: a direct child, or a box
+/// reached through `display: contents` children, for which `parent_id` is
+/// still the scroll container (a wrapper generates no box, so it contains
+/// nothing; issue #396).
 ///
 /// A box swells its parent's scroll range only when that parent is its
 /// containing block. The two out-of-flow positions therefore need the same walk
@@ -123,9 +126,9 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
 /// Note this is *narrower* than "is the box in flow": a `relative` box is
 /// out of flow for nobody and contributes normally, and so does a float.
 ///
-/// The caller walks one level, so a box skipped here is measured by **nobody**:
+/// The caller stops at the first box, so a box skipped here is measured by **nobody**:
 /// the ancestor that really is its containing block never looks past its own
-/// direct children either. Chrome does give it to that ancestor (measured: a
+/// child boxes either. Chrome does give it to that ancestor (measured: a
 /// 700x1500 absolute under a static `overflow: auto` div reaches
 /// `documentElement.scrollHeight`), and closing that needs the recursive union
 /// css-overflow-3 describes rather than a one-level max — issue #770. It is not

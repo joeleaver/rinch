@@ -1177,45 +1177,19 @@ impl DomDocument for RinchDocument {
         self.tree.mark_scrolled(node.0);
     }
 
+    /// The container's content height, from
+    /// [`crate::paint::scrollbar::content_extents`] — the extent the scrollbar
+    /// is painted and hit-tested from, so the wheel (which clamps to this) and
+    /// the bar cannot disagree about what is content (issue #396). This used to
+    /// be a second copy of that walk, without the containing-block rule (#765)
+    /// and without the descent through `display: contents` wrappers.
     fn scroll_height(&self, node: NodeId) -> f64 {
-        let node = match self.tree.nodes.get(node.0) {
-            Some(n) => n,
-            None => return 0.0,
-        };
-        // Taffy child.layout.y is relative to the parent's border box,
-        // so it includes padding-top + border-top. Subtract that offset
-        // to get the content-relative height (consistent with client_height).
-        let content_top = (node.computed_style.padding_top.to_px()
-            + node.computed_style.border_top_width.to_px()) as f64;
-        let mut max_bottom: f64 = 0.0;
-        for &child_id in &node.children {
-            if let Some(child) = self.tree.nodes.get(child_id) {
-                let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
-                if bottom > max_bottom {
-                    max_bottom = bottom;
-                }
-            }
-        }
-        max_bottom
+        crate::paint::scrollbar::content_extents(&self.tree, node.0).1
     }
 
+    /// The container's content width; see [`Self::scroll_height`].
     fn scroll_width(&self, node: NodeId) -> f64 {
-        let node = match self.tree.nodes.get(node.0) {
-            Some(n) => n,
-            None => return 0.0,
-        };
-        let content_left = (node.computed_style.padding_left.to_px()
-            + node.computed_style.border_left_width.to_px()) as f64;
-        let mut max_right: f64 = 0.0;
-        for &child_id in &node.children {
-            if let Some(child) = self.tree.nodes.get(child_id) {
-                let right = (child.layout.x + child.layout.width) as f64 - content_left;
-                if right > max_right {
-                    max_right = right;
-                }
-            }
-        }
-        max_right
+        crate::paint::scrollbar::content_extents(&self.tree, node.0).0
     }
 
     fn client_height(&self, node: NodeId) -> f64 {
