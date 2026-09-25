@@ -69,14 +69,22 @@ fn first_unhung(layout: &parley::Layout<Brush>, text: &str, from: usize) -> Opti
             continue;
         }
         let mut hanging = 0.0f32;
-        let mut cluster = Cluster::from_byte_index(layout, line.text_range().end);
+        let cluster = Cluster::from_byte_index(layout, line.text_range().end);
         match &cluster {
             None => {}
             Some(c) if c.is_hard_line_break() => {}
             Some(c) if is_hanging_space(text, c) => {
-                while let Some(c) = cluster.filter(|c| is_hanging_space(text, c)) {
+                let mut last = 0.0f32;
+                let mut after = cluster;
+                while let Some(c) = after.as_ref().filter(|c| is_hanging_space(text, c)) {
                     hanging += c.advance();
-                    cluster = c.next_logical();
+                    last = c.advance();
+                    after = c.next_logical();
+                }
+                // As the linear pass: the run's last space is left to overflow
+                // when something other than a newline follows it.
+                if after.as_ref().is_some_and(|c| !c.is_hard_line_break()) {
+                    hanging -= last;
                 }
             }
             Some(_) => continue,

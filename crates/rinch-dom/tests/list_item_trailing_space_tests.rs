@@ -438,3 +438,114 @@ fn right_aligned_fit_content_text_starts_at_its_start() {
         assert!(x.abs() < 1.0, "{align}: `abc` at {x}");
     }
 }
+
+// ── Review of #1052 (round 2) ────────────────────────────────────────────
+
+/// A `pre-wrap` block `width` wide whose content is `html`.
+fn html_block(style: &str, html: &str) -> (RinchDocument, NodeId) {
+    let mut d = doc();
+    let body = d.body();
+    let b = el(
+        &mut d,
+        body,
+        "div",
+        &format!(
+            "font-family: ProbeFace; font-size: 16px; line-height: 25px; white-space: pre-wrap; \
+             {style}"
+        ),
+    );
+    d.set_inner_html(b, html);
+    d.resolve_layout(VW, VH);
+    (d, b)
+}
+
+/// A hang in the middle of a paragraph re-flows the rest: after `word` hangs
+/// its four spaces, line two starts with `x` and holds `x y z`. Chrome 153: `x`
+/// ends at 8.73, `y` at 22.22, `z` at 35.56 on line two, `w` on line three. On
+/// `main` the second space started line two and pushed every word 4.5px right.
+#[test]
+fn a_hang_reflows_the_following_line() {
+    let s = "word    x y z w";
+    let (d, b) = block("50px", s);
+    assert_eq!(boxof(&d, b).3, 3.0 * LINE);
+    for (at, x) in [(9, 8.73), (11, 22.22), (13, 35.56)] {
+        let (cx, cy) = caret(&d, b, at);
+        assert_eq!(cy, LINE, "offset {at}");
+        assert!((cx - x).abs() < 0.1, "offset {at}: {cx} vs Chrome {x}");
+    }
+    assert_eq!(caret(&d, b, s.len()).1, 2.0 * LINE);
+}
+
+/// Fifty spaces between two letters in a 60px box all hang on line one. Chrome:
+/// 50 tall, `b` alone on line two (ends at 9.8). On `main`: 100 tall.
+#[test]
+fn a_run_wider_than_the_box_hangs_whole() {
+    let s = format!("a{}b", " ".repeat(50));
+    let (d, b) = block("60px", &s);
+    assert_eq!(boxof(&d, b).3, 2.0 * LINE);
+    let (x, y) = caret(&d, b, s.len());
+    assert_eq!(y, LINE);
+    assert!((x - 9.8).abs() < 0.1, "b ends at {x}");
+}
+
+/// A line holding a larger inline span and an inline box: the table of units
+/// follows mixed font sizes and boxes. Chrome: `cc` ends at 18.28 on line two
+/// (a 30px `BB` on line one), and after an inline-block `bb` ends at 19.59.
+#[test]
+fn mixed_sizes_and_inline_boxes_hang_on_their_line() {
+    let (d, b) = html_block(
+        "width: 60px",
+        "aa<span style=\"font-size: 30px\">BB</span>   cc dd",
+    );
+    let (x, y) = caret(&d, b, "aaBB   cc".len());
+    assert!(y > 0.0, "`cc` is on line two");
+    assert!((x - 18.28).abs() < 0.1, "`cc` ends at {x}");
+    let (d, b) = html_block(
+        "width: 50px",
+        "aa <span style=\"display: inline-block; width: 20px; height: 10px\"></span>   bb cc",
+    );
+    assert_eq!(boxof(&d, b).3, 2.0 * LINE);
+    let (x, y) = caret(&d, b, "aa    bb".len());
+    assert_eq!(y, LINE);
+    assert!((x - 19.59).abs() < 0.1, "`bb` ends at {x}");
+}
+
+/// `overflow-wrap: anywhere` with spaces: the run hangs rather than being split
+/// across lines. Chrome: 50 tall, `cd` ending at 18.94 on line two. On `main`:
+/// 125 tall.
+#[test]
+fn spaces_hang_under_overflow_wrap_anywhere() {
+    let s = format!("ab{}cd", " ".repeat(20));
+    let (d, b) = block("30px; overflow-wrap: anywhere", &s);
+    assert_eq!(boxof(&d, b).3, 2.0 * LINE);
+    let (x, y) = caret(&d, b, s.len());
+    assert_eq!(y, LINE);
+    assert!((x - 18.94).abs() < 0.1, "cd ends at {x}");
+}
+
+/// Justification spreads a line's free space over its word gaps only; hanging
+/// spaces take no part. Chrome 153: `bb` ends flush at 50 on lines one and two.
+/// `main` agrees (it kept one space on the line, which parley leaves out of the
+/// count). With three spaces kept, parley 0.11.1 counts two of them as
+/// justification opportunities (`num_spaces` drops only the last), so `bb` ends
+/// at 44.71: the line is not flush.
+#[test]
+#[ignore = "#1056: parley 0.11.1 counts all but the last kept space as justification opportunities"]
+fn a_justified_line_is_flush_whatever_hangs_after_it() {
+    let s = "aa bb   cc dd   ee ff gg";
+    let (d, b) = block("50px; text-align: justify", s);
+    let (x, y) = caret(&d, b, "aa bb".len());
+    assert_eq!(y, 0.0);
+    assert!((x - 50.0).abs() < 0.5, "`bb` ends at {x}, Chrome 50");
+}
+
+/// An NBSP right after the hanging spaces at the end of the text is not white
+/// space that hangs: it starts line two. Chrome: 50 tall, the NBSP ending at 4.5
+/// on line two. `main` agreed (height 50). The linear pass widens the line for
+/// the spaces, parley then hangs the NBSP itself, and the re-widening loop keeps
+/// it: 25 tall.
+#[test]
+fn an_nbsp_after_hanging_spaces_at_the_end_starts_a_line() {
+    let (d, b) = block("75px", "bullet text  \u{a0}");
+    assert_eq!(boxof(&d, b).3, 2.0 * LINE);
+}

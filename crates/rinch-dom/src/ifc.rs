@@ -188,8 +188,12 @@ impl HangStats {
 /// tabs, and 0.01px (no following word fits in that), and then
 /// [`set_prior_line_width`] puts its alignment width back at `max_width`, so
 /// `text-align: right`/`center` still line the text up against the box edge
-/// with the spaces hanging past it. NBSP does not hang (it is not white space
-/// to §4.1.3): a run of NBSPs stays glued to the word before it.
+/// with the spaces hanging past it. The run's last space is left out of that
+/// room when anything but a newline follows it, so it is parley that hangs it
+/// and commits the line: widened for the whole run, the next thing to overflow
+/// would be whatever follows, and parley hangs an NBSP as readily as a space.
+/// NBSP does not hang (it is not white space to §4.1.3): it stays glued to the
+/// word it belongs to, and after a hung run it starts the next line.
 ///
 /// **Linear in the paragraph.** The common case — no line needs it — costs the
 /// one ordinary break and a scan of the lines. Otherwise the paragraph is
@@ -278,7 +282,20 @@ pub(crate) fn break_lines_hanging_spaces(
             }
             widened_from = data.advance;
             breaker.revert_to(line_start.clone());
-            line_max = data.advance + hanging + 0.01;
+            // Room for every space and tab but the last, which is left to
+            // overflow: parley then hangs a real space and commits the line,
+            // rather than hanging whatever overflows after the run (an NBSP,
+            // which does not hang).
+            let run = units[end..].iter().take_while(|u| u.hangs).count();
+            let last = match units.get(end + run) {
+                // Something follows the run on this line's paragraph: leave the
+                // run's last space to overflow.
+                Some(u) if run > 0 && !u.newline => units[end + run - 1].advance,
+                // The end of the text or a newline: nothing can start the next
+                // line, so the whole run fits.
+                _ => 0.0,
+            };
+            line_max = data.advance + hanging - last + 0.01;
             let state = breaker.state_mut();
             state.set_layout_max_advance(line_max);
             state.set_line_max_advance(line_max);
