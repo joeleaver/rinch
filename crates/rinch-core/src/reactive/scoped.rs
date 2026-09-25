@@ -182,11 +182,175 @@ where
 // ============================================================================
 
 /// The map behind a doc-keyed slot: one entry per registering document, plus
-/// the `None` entry for registrations made outside any dispatch.
+/// the `None` entry for registrations made outside any document.
+///
+/// **Every entry carries the order it was written in, and a read takes the
+/// newer of the caller's own entry and the fallback** (review of PR #960).
+/// Since #295 a `RinchApp` mount and every effect a document owns are marked,
+/// so a component body's registration lands under its document — while a
+/// timer, `run_on_main_thread`, an http/ws completion or an effect created in
+/// `main` is unmarked and lands on the fallback. Were the document's entry to
+/// win unconditionally, a single-document app could never replace, nor clear,
+/// the interceptor it registered at mount. Taking the newer keeps the rule the
+/// single slot this replaced had: the last registration wins, and a clear
+/// clears — see [`clear_doc_scoped_slot`] for the clear's half.
 ///
 /// `BTreeMap` rather than `HashMap` for the `const` initializer — the key set
 /// is a handful of documents, so lookup cost is irrelevant.
-pub type DocScopedSlotMap<T> = BTreeMap<Option<u64>, Rc<T>>;
+pub struct DocScopedSlotMap<T: ?Sized> {
+    entries: BTreeMap<Option<u64>, SlotEntry<T>>,
+    /// Monotonic per slot; the next write's stamp.
+    next_epoch: u64,
+}
+
+/// One document's entry. `value: None` is a **clear made inside that
+/// document** while a fallback exists: it shadows the fallback for that
+/// document alone, until something newer is written. Only `Some` keys ever
+/// hold one, and they are purged as soon as there is no fallback left for them
+/// to shadow, so they are bounded by the number of documents.
+struct SlotEntry<T: ?Sized> {
+    epoch: u64,
+    value: Option<Rc<T>>,
+}
+
+impl<T: ?Sized> DocScopedSlotMap<T> {
+    /// An empty slot — `const`, for a `thread_local!` initializer.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next_epoch: 1,
+        }
+    }
+
+    fn stamp(&mut self) -> u64 {
+        let epoch = self.next_epoch;
+        self.next_epoch += 1;
+        epoch
+    }
+
+    /// The entry a caller in `caller`'s document is served: the newer of its
+    /// own and the fallback. `None` for a clear that shadows the fallback.
+    fn resolve(&self, caller: Option<u64>) -> Option<&Rc<T>> {
+        let fallback = self.entries.get(&None);
+        let own = caller.and_then(|doc| self.entries.get(&Some(doc)));
+        let winner = match (own, fallback) {
+            (Some(own), Some(fallback)) => {
+                if own.epoch > fallback.epoch {
+                    own
+                } else {
+                    fallback
+                }
+            }
+            (Some(entry), None) | (None, Some(entry)) => entry,
+            (None, None) => return None,
+        };
+        winner.value.as_ref()
+    }
+
+    /// Write `value` under `key`, returning what it displaced (to be dropped
+    /// by the caller once the borrow is released).
+    fn install(&mut self, key: Option<u64>, value: Rc<T>) -> Option<Rc<T>> {
+        let epoch = self.stamp();
+        let entry = SlotEntry {
+            epoch,
+            value: Some(value),
+        };
+        let displaced = self.entries.insert(key, entry).and_then(|e| e.value);
+        if key.is_none() {
+            // A fallback newer than every clear: no clear shadows anything now.
+            self.purge_clears();
+        }
+        displaced
+    }
+
+    /// Drop every clear-marker: called whenever the fallback is replaced or
+    /// removed, after which none of them shadows anything.
+    fn purge_clears(&mut self) {
+        self.entries.retain(|_, e| e.value.is_some());
+    }
+
+    /// The clear rule; see [`clear_doc_scoped_slot`].
+    fn clear(&mut self, caller: Option<u64>) -> Vec<Rc<T>> {
+        match caller {
+            None => std::mem::take(&mut self.entries)
+                .into_values()
+                .filter_map(|e| e.value)
+                .collect(),
+            Some(doc) => {
+                let own = self.entries.get(&Some(doc)).map(|e| e.epoch);
+                let fallback = self.entries.get(&None).map(|e| e.epoch);
+                let mut removed = Vec::new();
+                match (own, fallback) {
+                    (None, None) => {}
+                    // The fallback is what this document is served (it has no
+                    // entry, or only an older one): the fallback goes — for
+                    // everyone, the #478 rule — and so does this document's
+                    // older entry, which must not resurface for it.
+                    (None, Some(_)) => removed.extend(self.remove_fallback()),
+                    (Some(own), Some(fallback)) if fallback > own => {
+                        removed.extend(self.remove_fallback());
+                        removed.extend(self.entries.remove(&Some(doc)).and_then(|e| e.value));
+                    }
+                    // Its own entry is what it is served: that goes, and an
+                    // older fallback — which serves the other documents and
+                    // stays for them — is shadowed for this one by a
+                    // clear-marker, so it does not come back here.
+                    (Some(_), fallback) => {
+                        removed.extend(self.entries.remove(&Some(doc)).and_then(|e| e.value));
+                        if fallback.is_some() {
+                            let epoch = self.stamp();
+                            self.entries
+                                .insert(Some(doc), SlotEntry { epoch, value: None });
+                        }
+                    }
+                }
+                removed
+            }
+        }
+    }
+
+    /// Remove the fallback and, with it, every clear-marker (which only ever
+    /// shadowed it).
+    fn remove_fallback(&mut self) -> Option<Rc<T>> {
+        let removed = self.entries.remove(&None).and_then(|e| e.value);
+        self.purge_clears();
+        removed
+    }
+
+    /// Remove `key`'s entry if it still holds `ours` (the unmount cleanup's
+    /// rule 2).
+    fn remove_if_ours(&mut self, key: Option<u64>, ours: &Rc<T>) -> Option<Rc<T>> {
+        let is_ours = self
+            .entries
+            .get(&key)
+            .and_then(|e| e.value.as_ref())
+            .is_some_and(|installed| Rc::ptr_eq(installed, ours));
+        if !is_ours {
+            return None;
+        }
+        let removed = self.entries.remove(&key).and_then(|e| e.value);
+        if key.is_none() {
+            self.purge_clears();
+        }
+        removed
+    }
+}
+
+impl<T: ?Sized> DocScopedSlotMap<T> {
+    /// Whether no registration is live in any document (clear-markers are
+    /// not registrations).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.values().all(|e| e.value.is_none())
+    }
+}
+
+impl<T: ?Sized> Default for DocScopedSlotMap<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// [`install_scoped_slot`], replicated **per document** (issues #340, #478).
 ///
@@ -198,12 +362,12 @@ pub type DocScopedSlotMap<T> = BTreeMap<Option<u64>, Rc<T>>;
 /// #139 for the pointer-capture drag. Here each document gets its own entry,
 /// keyed by [`current_dispatching_doc`] at install time — which covers a
 /// `RinchApp` mount and every effect a document owns, wherever it is flushed
-/// (issue #295); installing with no document marked — from `main`, a timer, or
-/// on a backend that never marks one (rinch-web) — fills the ownerless `None`
-/// entry, which
-/// [`read_doc_scoped_slot`] serves to every document as the fallback. That
-/// keeps the pre-#340 behaviour exactly for the single-document app: register
-/// at startup, intercept everything.
+/// (issue #295); installing with no document marked — from `main`, a timer, a
+/// `run_on_main_thread` callback, or on a backend that never marks one
+/// (rinch-web) — fills the ownerless `None` entry, which
+/// [`read_doc_scoped_slot`] serves to every document **whose own entry is
+/// older**. So the single-document app keeps the single slot's rule wherever
+/// it registers from: the last registration wins.
 ///
 /// Same growth characteristics as [`install_scoped_slot`] — one entry and one
 /// cleanup per (document, component) registration, written once per component.
@@ -226,7 +390,7 @@ where
     let mine: Weak<T> = Rc::downgrade(&value);
     // Rule 3: the displaced value is dropped when `_previous` goes out of scope
     // at the end of this function, long after the `borrow_mut` has ended.
-    let _previous = slot.with(|s| s.borrow_mut().insert(key, value));
+    let _previous = slot.with(|s| s.borrow_mut().install(key, value));
     on_cleanup(move || {
         let Some(ours) = mine.upgrade() else {
             // Rule 2: already replaced by a later registration from the same
@@ -237,14 +401,7 @@ where
             let Ok(mut current) = s.try_borrow_mut() else {
                 return None;
             };
-            if current
-                .get(&key)
-                .is_some_and(|installed| Rc::ptr_eq(installed, &ours))
-            {
-                current.remove(&key)
-            } else {
-                None
-            }
+            current.remove_if_ours(key, &ours)
         });
     })
 }
@@ -252,11 +409,12 @@ where
 /// Clone the value a dispatch should reach out of a doc-keyed slot, so it can
 /// be **called** with no borrow held.
 ///
-/// The dispatching document's own entry wins; a document with none falls back
-/// to the ownerless `None` entry. A dispatch outside any document reaches the
-/// `None` entry only — with several documents' entries live there is no one
-/// right answer for "whose", and rinch-web (which never marks dispatch) only
-/// ever *fills* the `None` entry, so this is also the consistent one.
+/// The dispatching document is served the **newer** of its own entry and the
+/// ownerless `None` entry (see [`DocScopedSlotMap`]). A dispatch outside any
+/// document reaches the `None` entry only — with several documents' entries
+/// live there is no one right answer for "whose", and rinch-web (which never
+/// marks dispatch) only ever *fills* the `None` entry, so this is also the
+/// consistent one.
 pub fn read_doc_scoped_slot<T>(
     slot: &'static LocalKey<RefCell<DocScopedSlotMap<T>>>,
 ) -> Option<Rc<T>>
@@ -264,38 +422,32 @@ where
     T: ?Sized + 'static,
 {
     let caller = current_dispatching_doc();
-    slot.with(|s| {
-        let map = s.borrow();
-        caller
-            .and_then(|doc| map.get(&Some(doc)))
-            .or_else(|| map.get(&None))
-            .cloned()
-    })
+    slot.with(|s| s.borrow().resolve(caller).cloned())
 }
 
-/// Remove the entry a dispatch would reach right now — the resolution rule of
-/// [`read_doc_scoped_slot`], not the raw ambient key.
+/// Clear a doc-keyed slot, so that "a clear clears" holds as it did for the
+/// single slot this replaced.
 ///
-/// Resolving matters: a component that registered with no document marked
-/// (from `main`, or at a rinch-web mount — the `None` entry) and clears from
-/// inside an event handler
-/// (its document's dispatch) must clear the interceptor that is in effect, not
-/// no-op against its document's empty entry. The value is dropped **after**
-/// the borrow ends (rule 3).
+/// - **With no document marked** (from `main`, a timer, a `run_on_main_thread`
+///   callback, rinch-web): every entry goes. Unmarked code speaks for every
+///   document, exactly as its install serves every document — and it is the
+///   only way such code can reach a registration a mount made.
+/// - **Inside a document**: the entry that document is served goes, and
+///   nothing older comes back for it. When that is the fallback (the document
+///   has no entry, or an older one) the fallback is removed for everyone — the
+///   #478 rule, so a handler can clear what `main` registered — along with the
+///   document's older entry. When it is the document's own entry, an older
+///   fallback stays for the other documents and is *shadowed for this one* by
+///   a clear-marker, stamped like a write. Anything written afterwards, from
+///   anywhere, is newer than the marker and wins.
+///
+/// The values are dropped **after** the borrow ends (rule 3).
 pub fn clear_doc_scoped_slot<T>(slot: &'static LocalKey<RefCell<DocScopedSlotMap<T>>>)
 where
     T: ?Sized + 'static,
 {
     let caller = current_dispatching_doc();
-    let _previous = slot.with(|s| {
-        let mut map = s.borrow_mut();
-        if let Some(doc) = caller
-            && let Some(removed) = map.remove(&Some(doc))
-        {
-            return Some(removed);
-        }
-        map.remove(&None)
-    });
+    let _previous = slot.with(|s| s.borrow_mut().clear(caller));
 }
 
 #[cfg(test)]
@@ -679,7 +831,10 @@ mod tests {
 
     /// A clear made **inside** a document leaves that document with nothing,
     /// whichever entry was in effect for it — "clear clears", as the single
-    /// slot this replaced did — and leaves every other document's view alone.
+    /// slot this replaced did. It removes the entry in effect (the #478 rule:
+    /// when that is the fallback, it goes for everyone); when that is the
+    /// document's own entry, an older fallback stays for the other documents
+    /// and is shadowed for this one.
     #[test]
     fn a_documents_clear_leaves_it_nothing_and_others_untouched() {
         use crate::context::push_dispatching_doc;
@@ -733,7 +888,11 @@ mod tests {
             None,
             "neither the fallback nor the older mount entry"
         );
-        assert_eq!(read_as(2), Some(5), "document 2 keeps the fallback");
+        assert_eq!(
+            read_as(2),
+            None,
+            "the fallback was the entry in effect, and a clear removes the entry in effect (#478)"
+        );
 
         // Two documents' own entries stay isolated through all of it.
         {
