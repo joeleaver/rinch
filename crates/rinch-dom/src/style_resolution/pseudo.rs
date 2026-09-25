@@ -97,6 +97,17 @@ impl RinchDocument {
 
             let mut rule_cache_conditions = RuleCacheConditions::default();
 
+            // A `display: contents` element's generated boxes are children of
+            // its layout parent's box, so that is what blockifies them (Stylo's
+            // `layout_parent_style_for_pseudo`; #998).
+            let layout_parent = if parent_style.clone_display().is_contents() {
+                let start = self.tree.nodes[parent_id].parent;
+                self.nearest_non_contents_style(start)
+                    .unwrap_or_else(|| parent_style.clone())
+            } else {
+                parent_style.clone()
+            };
+
             self.stylist.cascade_style_and_visited(
                 Some(RinchNode::new(parent_id, &self.tree)),
                 Some(&pseudo),
@@ -107,7 +118,7 @@ impl RinchDocument {
                 },
                 &guards,
                 Some(parent_style),
-                Some(parent_style),
+                Some(&layout_parent),
                 FirstLineReparenting::No,
                 &Default::default(),
                 None,

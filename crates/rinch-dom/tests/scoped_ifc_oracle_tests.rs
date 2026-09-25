@@ -829,15 +829,16 @@ fn mutate(ctx: &mut Ctx, m: &str) -> bool {
 /// are compared first). Pinned as a list so a fix, or a new divergence, changes
 /// it visibly.
 ///
-/// `contents_under_flex × child_to_inline`: a flex item behind a
-/// `display: contents` wrapper, restyled `display: inline`, is left with no
-/// Taffy parent (`RINCH_TREE_CHECK`'s `C orphan`) and the flex column at its
-/// old height.
+/// `contents_under_flex × child_to_inline` was on this list until #998: a flex
+/// item behind a `display: contents` wrapper, restyled `display: inline`, was
+/// left with no Taffy parent (`RINCH_TREE_CHECK`'s `C orphan`) and the flex
+/// column at its old height. Such an item is blockified now, as CSS asks, so
+/// the restyle leaves it `block` and there is no inline item to orphan.
 ///
 /// (The `chip_* × *abs*` cells were on this list too, and still differ on
 /// `main`: see the out-of-flow arm of `walk`, which no longer compares their
 /// position.)
-const KNOWN_FRESH_DIVERGENCES: &[&str] = &["contents_under_flex × child_to_inline"];
+const KNOWN_FRESH_DIVERGENCES: &[&str] = &[];
 
 /// Every mutation shape in every context: the scoped pass against the
 /// whole-document pass on the same history (the claim), and both against a
