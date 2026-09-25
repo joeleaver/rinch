@@ -2195,4 +2195,183 @@ mod tests {
         items.update(|v| v.push(3));
         assert_eq!(passes.get(), passes_before + 1);
     }
+
+    /// What a row's cleanup saw of its own node: its `data-name`, and whether it
+    /// was still a child of the list's parent.
+    type CleanupSight = Rc<RefCell<Vec<(Option<String>, bool)>>>;
+
+    /// A `view` that stamps `data-name` on its row and registers a cleanup
+    /// recording what that cleanup can still see of the row (issue #356).
+    fn row_that_looks_at_itself_on_cleanup(
+        sight: CleanupSight,
+        parent: NodeHandle,
+    ) -> impl Fn(String, &mut crate::dom::RenderScope) -> NodeHandle + 'static {
+        move |name: String, s: &mut crate::dom::RenderScope| {
+            let row = s.create_element("div");
+            row.set_attribute("data-name", &name);
+            let (me, sight, parent) = (row.clone(), sight.clone(), parent.clone());
+            crate::reactive::on_cleanup(move || {
+                let attached = me
+                    .parent_node()
+                    .is_some_and(|p| p.node_id() == parent.node_id());
+                sight
+                    .borrow_mut()
+                    .push((me.get_attribute("data-name"), attached));
+            });
+            row
+        }
+    }
+
+    /// A removed row's cleanup runs against its node while that node is still
+    /// the live, mounted row (issue #356).
+    ///
+    /// The `Remove` arm used to `discard` the row during the pass and dispose
+    /// its scope at the end of it, so the cleanup ran against a retired node:
+    /// on `rinch-web` (and the mock, which retires the same way) every read
+    /// answered `None` and every write was a silent no-op, while `show_dom`,
+    /// `match_dom` and the component re-render all dispose first. Sampled off
+    /// the fixed point: the removed row is the *middle* one, with a sibling on
+    /// each side, and carries a non-empty attribute.
+    #[test]
+    fn a_removed_rows_cleanup_sees_its_own_live_node() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let sight: CleanupSight = Rc::new(RefCell::new(Vec::new()));
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |s: &String| s.clone(),
+            row_that_looks_at_itself_on_cleanup(sight.clone(), parent.clone()),
+        );
+
+        items.set(vec!["a".to_string(), "c".to_string()]);
+
+        assert_eq!(
+            *sight.borrow(),
+            vec![(Some("b".to_string()), true)],
+            "#356: the cleanup must run before its row is discarded or detached"
+        );
+        // And the row is still released afterwards (#719: it was built by the
+        // row's own scope, so it is discarded).
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(names, vec!["a".to_string(), "c".to_string()]);
+    }
+
+    /// The `Changed` arm too: a row re-rendered because its data changed has its
+    /// old scope disposed while the old node is still mounted (issue #356).
+    #[test]
+    fn a_rerendered_rows_old_cleanup_sees_its_own_live_node() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        // Keyed by the first character, so "b1" -> "b2" is the same key with
+        // different data: a re-render, not a remove + insert.
+        let items = Signal::new(vec!["a1".to_string(), "b1".to_string(), "c1".to_string()]);
+        let sight: CleanupSight = Rc::new(RefCell::new(Vec::new()));
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |s: &String| s[..1].to_string(),
+            row_that_looks_at_itself_on_cleanup(sight.clone(), parent.clone()),
+        );
+
+        items.set(vec!["a1".to_string(), "b2".to_string(), "c1".to_string()]);
+
+        assert_eq!(
+            *sight.borrow(),
+            vec![(Some("b1".to_string()), true)],
+            "#356: the replaced row's cleanup must run before its node is released"
+        );
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a1".to_string(), "b2".to_string(), "c1".to_string()]
+        );
+    }
+
+    /// Deferring the release to the end of the pass must not take out a node
+    /// that the same pass put back (issue #356).
+    ///
+    /// A memoising `view` may hand the *same* cached subtree to a different key.
+    /// When the key that owned it leaves and the new one arrives in one pass,
+    /// the row was detached and then re-inserted — in that order, while removal
+    /// happened inline. With the release parked until after disposal, the
+    /// insert comes first, so a parked release that did not check would detach
+    /// the node the list is now showing.
+    #[test]
+    fn a_parked_release_leaves_a_node_the_same_pass_reused() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        // Built outside every row scope, so each row merely *hands it back*:
+        // `remove`, not `discard` (#719).
+        let shared = scope.create_element("section");
+        shared.set_attribute("data-name", "shared");
+
+        let items = Signal::new(vec![1u32, 2]);
+        let cached = shared.clone();
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |n: &u32| n.to_string(),
+            move |n: u32, s: &mut RenderScope| {
+                if n >= 2 {
+                    cached.clone()
+                } else {
+                    let row = s.create_element("div");
+                    row.set_attribute("data-name", &n.to_string());
+                    row
+                }
+            },
+        );
+
+        // Key 2 leaves and key 3 arrives, each showing the same cached node.
+        items.set(vec![1u32, 3]);
+
+        assert_eq!(
+            shared.parent_node().map(|p| p.node_id()),
+            Some(parent.node_id()),
+            "#356: the release parked for key 2 must not detach the node key 3 now shows"
+        );
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(names, vec!["1".to_string(), "shared".to_string()]);
+    }
 }

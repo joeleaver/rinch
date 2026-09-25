@@ -989,4 +989,52 @@ mod tests {
         items.update(|v| v.push(4));
         assert_eq!(passes.get(), passes_before + 1);
     }
+
+    /// A row that leaves the range has its cleanup run while its node is still
+    /// the live, mounted row (issue #356).
+    ///
+    /// The windowing pass used to `discard` the row as it walked `to_remove`
+    /// and dispose its scope at the end of the pass, so the cleanup ran against
+    /// a retired node — `None` for every read on `rinch-web` and the mock alike.
+    /// The departing row is the middle one, with a sibling on each side.
+    #[test]
+    fn a_departing_rows_cleanup_sees_its_own_live_node() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let items = Signal::new(vec![
+            (1u32, "A".to_string()),
+            (2u32, "B".to_string()),
+            (3u32, "C".to_string()),
+        ]);
+        type Sight = Rc<RefCell<Vec<(Option<String>, bool)>>>;
+        let sight: Sight = Rc::new(RefCell::new(Vec::new()));
+        let log = sight.clone();
+        super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |item: &(u32, String)| item.0,
+            1,
+            move |item: (u32, String), s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.1);
+                let (me, log) = (node.clone(), log.clone());
+                crate::reactive::on_cleanup(move || {
+                    log.borrow_mut()
+                        .push((me.get_attribute("data-name"), me.parent_node().is_some()));
+                });
+                node
+            },
+        );
+
+        items.set(vec![(1u32, "A".to_string()), (3u32, "C".to_string())]);
+
+        assert_eq!(
+            *sight.borrow(),
+            vec![(Some("B".to_string()), true)],
+            "#356: the cleanup must run before its row is discarded or detached"
+        );
+    }
 }
