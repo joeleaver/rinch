@@ -713,6 +713,26 @@ fn a_checkbox_in_a_closing_drawer_slides_out_with_it() {
 
     opened.set(true);
     app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
+    // Let the open settle — the box runs its own opening `visibility`
+    // transition too, and a close taken inside it would start from its
+    // interpolated value rather than from rest.
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        let latest = d
+            .tree
+            .active_transitions
+            .values()
+            .flat_map(|m| m.values())
+            .map(|t| t.start_time_ms + 10_000.0)
+            .fold(0.0_f64, f64::max);
+        rinch_dom::transition::tick_transitions(&mut d.tree, latest);
+    }
+    assert_eq!(
+        visibility_of(&app, cbox),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "precondition: the open drawer's checkbox is visible"
+    );
     opened.set(false);
     app.resolve_and_repaint(VIEWPORT.0 + 2.0, VIEWPORT.1);
 

@@ -3621,7 +3621,9 @@ Three things it deliberately does not do.
   `display: none` while its panel transitioned `transform`, so the slide-in ran
   on desktop only until #703 and had never run on `rinch-web` at all. Its closed
   state is `visibility: hidden` now, like `Popover`'s — hidden, still rendered,
-  and still out of paint, hit testing and the Tab order on both backends.
+  and — once its close has run — out of paint, hit testing and the Tab order
+  on both backends (for the 300ms slide-out the root is held `visible` and
+  still paints, takes clicks and is tabbable, as in a browser; #759).
   **Out of paint now covers the content, not only the box** (#829): desktop used to gate only a hidden
   box's own background, border and shadow, and went on drawing the text its
   IFC laid out — so a closing `Drawer` or `Popover` left its title and body on
@@ -3653,8 +3655,13 @@ Three things it deliberately does not do.
   descendants: rinch's children take their style from Stylo, which knows
   nothing of rinch transitions, so `transition::propagate_inherited_visibility`
   hands the held value down to every descendant whose `visibility` is
-  inherited (read from its Stylo rule chain; one that declares its own is not
-  reached), after every cascade pass and whenever a tick moves the value. A
+  inherited (read from its Stylo rule chain, each rule at its own importance;
+  one that declares its own is not reached), after every cascade pass and
+  whenever a tick moves the value. The cascade also gives an inheriting node
+  its parent's *animated* value as its after-change `visibility`, so a
+  descendant with its own `visibility` transition (`Checkbox`/`Radio`'s
+  `transition: all`) starts nothing on the close pass; the hand-down starts
+  that transition when the held value flips, which is Chrome's order. A
   transition on `color` or `font-size` still stops at its own node. Reopening
   mid-close works because §3 item 3 is implemented now (#693,
   `transition::cancel_unmatched_transitions`): a running transition whose

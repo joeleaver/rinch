@@ -528,8 +528,11 @@ carried `display: none` while closed and its panel carried
 the panel in a single pass, exactly the shape above. So its 300ms slide-in ran
 on desktop only until this change, and had never run on `rinch-web` at all. Its
 closed state is `visibility: hidden` now, which is where `Popover` already was —
-hidden, still **rendered**, and still out of paint, hit testing and the Tab
-order on both backends.
+hidden, still **rendered**, and — once its close has run — out of paint, hit
+testing and the Tab order on both backends. Since issue #759 the close holds the
+root `visible` for the panel's 300ms slide-out (a delayed `visibility`
+transition), so for those 300ms it still paints, takes clicks and is tabbable,
+as in a browser.
 
 The blast radius is wider than "a control restyled in an inactive tab":
 **any component that un-hides an ancestor and retargets a transitioned property
