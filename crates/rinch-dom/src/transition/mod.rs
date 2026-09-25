@@ -260,6 +260,37 @@ pub(crate) fn visibility_is_inherited(tree: &NodeTree, node_id: RawNodeId) -> bo
     true
 }
 
+/// The `visibility` an inheriting `node_id` inherits right now, **animated**:
+/// that of its nearest ancestor that either runs a `visibility` transition or
+/// declares a `visibility` of its own — the ancestor the value actually comes
+/// from. `None` when no such ancestor exists (the value is Stylo's).
+///
+/// Walks past inheriting ancestors because their `computed_style` may still
+/// hold Stylo's after-change value on the pass that is being cascaded: the
+/// hand-down that corrects them runs after the cascade loop. Asked only for a
+/// node that declares its own `visibility` transition, while one runs.
+pub(crate) fn animated_inherited_visibility(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+) -> Option<crate::computed_style::VisibilityValue> {
+    let mut cur = tree.nodes.get(node_id)?.parent;
+    while let Some(id) = cur {
+        let node = tree.nodes.get(id)?;
+        if !node.is_element() {
+            return None;
+        }
+        let transitioning = tree
+            .active_transitions
+            .get(&id)
+            .is_some_and(|m| m.contains_key(&TransitionProperty::Visibility));
+        if transitioning || !visibility_is_inherited(tree, id) {
+            return Some(node.computed_style.visibility);
+        }
+        cur = node.parent;
+    }
+    None
+}
+
 /// Hand `from`'s current `visibility` down to every descendant that inherits
 /// it (#759).
 ///

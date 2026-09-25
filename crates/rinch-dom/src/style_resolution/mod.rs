@@ -723,8 +723,9 @@ impl RinchDocument {
     /// PERFORMANCE: Only processes nodes in `style_dirty_nodes` (set by resolve_styles).
     pub fn apply_stylo_styles_to_taffy(&mut self) {
         use crate::transition::{
-            TransitionProperty, TransitionSpec, apply_value_to_style, cancel_unmatched_transitions,
-            diff_animatable, propagate_inherited_visibility, start_transitions,
+            AnimatableValue, TransitionProperty, TransitionSpec, apply_value_to_style,
+            cancel_unmatched_transitions, diff_animatable, propagate_inherited_visibility,
+            start_transitions,
         };
 
         // Take the dirty nodes list - only these need Taffy sync
@@ -969,32 +970,41 @@ impl RinchDocument {
 
             self.tree.note_background_image(&new_style);
 
-            // An inheriting node's `visibility` is its parent's **animated**
-            // value, not the after-change one Stylo computed (#759; review of
-            // #991, F1). Without this, a descendant that declares its own
-            // `visibility` transition (`transition: all`, as `Checkbox` and
-            // `Radio` do) diffed Stylo's `hidden` against its `visible` on the
-            // very pass a drawer started closing and began its own hide at
-            // t = 0 — vanishing mid-slide while the drawer was still on screen.
-            // Parents are cascaded first, so the parent's `computed_style`
-            // already carries this pass's value. Only asked while some
-            // transition runs, and only where the two values differ, so the
-            // rule-chain read in `visibility_is_inherited` is off every hot path.
-            if !self.tree.active_transitions.is_empty()
-                && let Some(parent_visibility) = self.tree.nodes[node_id]
-                    .parent
-                    .and_then(|p| self.tree.nodes.get(p))
-                    .filter(|p| p.is_element())
-                    .map(|p| p.computed_style.visibility)
-                && parent_visibility != new_style.visibility
-                && crate::transition::visibility_is_inherited(&self.tree, node_id)
-            {
-                new_style.visibility = parent_visibility;
-            }
-
             // Extract transition specs from Stylo
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].transition_specs = transition_specs;
+
+            // An inheriting node that declares its own `visibility` transition
+            // takes its parent's **animated** visibility as its after-change
+            // value, not the one Stylo computed from the parent's after-change
+            // style (#759; review of #991, F1). Without this, such a node
+            // (`transition: all`, as `Checkbox` and `Radio` declare) diffed
+            // Stylo's `hidden` against its `visible` on the very pass a drawer
+            // started closing and began its own hide at t = 0 — vanishing
+            // mid-slide while the drawer was still on screen.
+            //
+            // Only such a node: for every other inheriting node the value
+            // before the transition logic matters to nothing, and the hand-down
+            // after this loop overwrites it with the same answer. Reading every
+            // descendant's rule chain here on a close pass cost `drawer_toggle`
+            // +0.8% instructions for no effect (round-2 review of #991).
+            // The value is read from the nearest ancestor that is not itself
+            // inheriting it (`animated_inherited_visibility`), not from the
+            // parent: a parent that declares no visibility transition has not
+            // been handed the held value yet on this pass.
+            if !self.tree.active_transitions.is_empty()
+                && crate::transition::find_matching_spec(
+                    &self.tree.nodes[node_id].transition_specs,
+                    TransitionProperty::Visibility,
+                )
+                .is_some()
+                && crate::transition::visibility_is_inherited(&self.tree, node_id)
+                && let Some(held) =
+                    crate::transition::animated_inherited_visibility(&self.tree, node_id)
+                && held != new_style.visibility
+            {
+                new_style.visibility = held;
+            }
 
             // css-transitions-1 §3 item 3 (#693): a running transition whose
             // property the new specs no longer match is cancelled — before the
@@ -1015,6 +1025,32 @@ impl RinchDocument {
                 );
                 if had_visibility {
                     visibility_roots.push(node_id);
+                    // css-transitions-1 §3 item 4.1, for the one discrete
+                    // property: a running `visibility` transition whose current
+                    // value already equals the after-change value is cancelled
+                    // when that value is not its end value. `diff_animatable`
+                    // sees no change there — the node reads the animated
+                    // `visible` and the reopened style says `visible` — so the
+                    // transition logic below never reaches the retarget that
+                    // would cancel it, and it ran on to `hidden` in a reopened
+                    // overlay (round-2 review of #991, F2: a `Checkbox`
+                    // reopened during its own hide; a two-way `transition:
+                    // visibility` root reopened mid-close). A continuous
+                    // property can meet the same condition only by landing on
+                    // the exact value, which the retarget arm handles.
+                    let current = self.tree.nodes[node_id].computed_style.visibility;
+                    if let Some(map) = self.tree.active_transitions.get_mut(&node_id)
+                        && let Some(t) = map.get(&TransitionProperty::Visibility)
+                        && current == new_style.visibility
+                        && !t
+                            .to
+                            .same_computed_value(&AnimatableValue::Visibility(new_style.visibility))
+                    {
+                        map.remove(&TransitionProperty::Visibility);
+                        if map.is_empty() {
+                            self.tree.active_transitions.remove(&node_id);
+                        }
+                    }
                 }
             }
 
