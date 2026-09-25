@@ -3378,6 +3378,16 @@ fn paint_node(
                     .and_then(|p| tree.get(p))
                     .map(|p| p.computed_style.text_shadow.as_slice())
                     .unwrap_or(&[]);
+                // Painted in the parent's **current** colour, not the brush
+                // the layout was shaped with (#904): a leaf's layout is rebuilt
+                // only by a compute, and a colour-only change — a hover, every
+                // frame of a `transition: color` — must reach the glyphs
+                // without one. The same default as the fallback below.
+                let color = node
+                    .parent
+                    .and_then(|p| tree.get(p))
+                    .and_then(|p| p.computed_style.color)
+                    .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
                 render_text_with_shadow(
                     painter,
                     cached_layout,
@@ -3387,6 +3397,7 @@ fn paint_node(
                     parent_transform,
                     scale,
                     None,
+                    Some(color),
                 );
                 return;
             }
@@ -3501,6 +3512,7 @@ fn paint_node(
                 text_shadows,
                 parent_transform,
                 scale,
+                None,
                 None,
             );
         }

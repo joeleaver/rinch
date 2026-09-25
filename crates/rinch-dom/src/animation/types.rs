@@ -179,14 +179,6 @@ impl ActiveAnimation {
             .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
     }
 
-    /// Whether any keyframe of this animation sets a property baked into a
-    /// text leaf's cached layout (`TransitionProperty::recolours_text`, #904).
-    pub fn recolours_text(&self) -> bool {
-        self.keyframe_stops
-            .iter()
-            .any(|k| k.values.iter().any(|(p, _)| p.recolours_text()))
-    }
-
     /// Whether this animation has completed all iterations.
     pub fn is_complete(&self, current_time_ms: f64) -> bool {
         if self.paused_elapsed_ms.is_some() {

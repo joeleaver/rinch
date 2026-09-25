@@ -138,26 +138,6 @@ impl TransitionProperty {
         matches!(self, Self::FontSize | Self::All)
     }
 
-    /// Whether interpolating this property changes the **brush** a text
-    /// leaf's cached layout was shaped with: `color`, which Parley bakes into
-    /// every glyph run it builds.
-    ///
-    /// A text leaf — a flex or grid item's text, in a block-level container or
-    /// inside an `inline-flex` / `inline-grid` — is painted from the layout its
-    /// measure built (`Node::cached_text_parley`), and a transition tick writes
-    /// `computed_style` without the cascade that would drop it. So each tick of
-    /// a `transition: color` drops the leaf layouts of the node it runs on
-    /// (`RinchDocument::invalidate_text_leaf_layouts`), or the label paints the
-    /// pre-transition colour for good. Before #904 an `inline-flex` label had
-    /// no cached layout and paint re-shaped it from the live style every
-    /// frame, so caching one made this necessary; a block-level flex item's
-    /// label was frozen already (#679, whose IFC half this does not touch).
-    /// The `All` arm is unreachable for the reason
-    /// [`Self::changes_text_measure`] gives.
-    pub fn recolours_text(&self) -> bool {
-        matches!(self, Self::Color | Self::All)
-    }
-
     /// Whether a transition on this property animates an inset (`left`,
     /// `top`, `right`, `bottom`).
     ///

@@ -136,7 +136,9 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
     // A text leaf that is no IFC member — a flex or grid item's text, in a
     // block-level container or inside an `inline-flex` / `inline-grid` (#904)
     // — is painted from the layout its measure built, cached on the node.
-    // Compared here, run by run, like an IFC root's. An IFC member's is not:
+    // Compared here, run by run, like an IFC root's — except the brush: paint
+    // draws a leaf in its parent's *current* colour, not the one it was shaped
+    // with (#904), so that colour is what is compared. An IFC member's is not:
     // its root paints it, and a layout left from when it was a leaf is read by
     // nothing that paints.
     if let Some(cl) = node
@@ -152,18 +154,22 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
             cl.len(),
             indent = depth * 2
         ));
+        let leaf_paint = node
+            .parent
+            .and_then(|p| doc.tree.get(p))
+            .and_then(|p| p.computed_style.color);
         for (li, line) in cl.lines().enumerate() {
             for item in line.items() {
                 if let parley::layout::PositionedLayoutItem::GlyphRun(gr) = item {
                     out.push(format!(
-                        "{:indent$}  leaf line{li} run x={} base={} adv={} glyphs={} size={} brush={:?}",
+                        "{:indent$}  leaf line{li} run x={} base={} adv={} glyphs={} size={} paint={:?}",
                         "",
                         r(gr.offset()),
                         r(gr.baseline()),
                         r(gr.advance()),
                         gr.glyphs().count(),
                         r(gr.run().font_size()),
-                        gr.style().brush,
+                        leaf_paint,
                         indent = depth * 2
                     ));
                 }
@@ -1996,5 +2002,81 @@ fn a_finished_colour_animation_reaches_an_inline_flex_label() {
     assert_eq!(
         incremental, fresh,
         "red ink after the animation, incremental vs fresh"
+    );
+}
+
+/// A class colour on a text leaf's container, read off the pixels against a
+/// document built in that colour: paint draws the leaf in its parent's current
+/// colour (#904), with no compute and no re-shape.
+fn a_class_colour_reaches_the_leaf_pixels(
+    builder: fn(&mut RinchDocument, &str, &str) -> (NodeId, NodeId),
+    base: &str,
+    hot: &str,
+) {
+    let make = |class: &str| {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(LEAF_CSS);
+        let (c, _) = builder(&mut d, class, "chip label text");
+        settle(&mut d);
+        (d, c)
+    };
+    let red = |px: &[[u8; 4]]| {
+        px.iter()
+            .filter(|p| p[3] > 0 && p[0] as i32 > p[1] as i32 + 80)
+            .count()
+    };
+    let (mut d, c) = make(base);
+    assert_eq!(
+        red(&paint_pixels(&mut d)),
+        0,
+        "counter-oracle: no red ink yet"
+    );
+    d.set_attribute(c, "class", hot);
+    d.resolve_layout(VP.0, VP.1);
+    let incremental = paint_pixels(&mut d);
+    let (mut f, _) = make(hot);
+    let fresh = paint_pixels(&mut f);
+    assert!(
+        red(&fresh) > 0,
+        "counter-oracle: the fresh label draws red ink"
+    );
+    assert!(
+        incremental == fresh,
+        "incremental pixels differ from a fresh document"
+    );
+}
+
+#[test]
+fn a_class_colour_reaches_an_inline_flex_labels_pixels() {
+    a_class_colour_reaches_the_leaf_pixels(inline_flex_doc, "ichip", "ichip hot");
+}
+
+#[test]
+fn a_class_colour_reaches_a_flex_row_labels_pixels() {
+    a_class_colour_reaches_the_leaf_pixels(flex_row_doc, "frow", "frow hot");
+}
+
+/// `text-align` on a flex row whose text leaf wraps: applied when the
+/// compute's layouts are copied, not at paint, so unlike a colour it does need
+/// a compute (#904).
+#[test]
+fn a_flex_row_label_takes_a_class_text_align() {
+    twin(
+        "a_flex_row_label_takes_a_class_text_align",
+        ".frow.narrow { width: 60px; } .frow.right { text-align: right; }",
+        |doc, on| {
+            flex_row_doc(
+                doc,
+                if on {
+                    "frow narrow right"
+                } else {
+                    "frow narrow"
+                },
+                "chip label text",
+            )
+            .0
+        },
+        |doc, c| doc.set_attribute(*c, "class", "frow narrow right"),
     );
 }
