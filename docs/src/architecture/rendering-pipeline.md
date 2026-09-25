@@ -835,10 +835,12 @@ pause every animation beneath them:
 
 Every descendant, not a list of known spinners, because any component or app
 rule can declare an animation. Not the pseudo-elements, although
-`animation-play-state` does not inherit into them, so on rinch-web an `::after`
-spinner under a closed overlay still runs: desktop animates no pseudo-element
-(#925), and rinch-dom matches `::before`/`::after` rules with no ancestor bloom
-filter (#935), so `*::before`/`*::after` rules cost +10% of style instructions
+`animation-play-state` does not inherit into them, so an `::after` spinner
+under a closed overlay still runs — on rinch-web, and since #1004 on desktop
+too, where a generated box carries its pseudo cascade and its animation starts
+(#925; desktop restarts it at every cascade of its originator, #1023), keeping
+the frame clock running. They are left out because rinch-dom matches
+`::before`/`::after` rules with no ancestor bloom filter (#935), so `*::before`/`*::after` rules cost +10% of style instructions
 on every page that loads the component CSS and +71% under a closed drawer.
 `!important` because the `animation` shorthand
 resets `animation-play-state` to `running`: without it the pause loses to any
