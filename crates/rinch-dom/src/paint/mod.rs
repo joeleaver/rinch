@@ -634,6 +634,11 @@ pub struct SurfacePixelData {
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
+    /// Every pixel's alpha is 255 — the producer's promise, checked where the
+    /// frame was submitted (`SurfaceWriter::submit_frame`, on the submitting
+    /// thread). An opaque frame is drawn with no premultiply, and at its
+    /// natural size as a straight row copy (#361). `false` promises nothing.
+    pub opaque: bool,
 }
 
 thread_local! {
@@ -2618,11 +2623,12 @@ fn paint_node(
                     else {
                         return;
                     };
-                    image::paint_image_data(
+                    image::paint_frame_data(
                         painter,
                         &pixels.data[..bytes],
                         pixels.width,
                         pixels.height,
+                        pixels.opaque,
                         rect,
                         scale,
                         crate::computed_style::ObjectFitValue::Contain,
@@ -2690,11 +2696,12 @@ fn paint_node(
                                     // `DecodedImage` first: that is a whole
                                     // frame of memcpy per frame, for nothing.
                                     if surface_visible {
-                                        image::paint_image_data(
+                                        image::paint_frame_data(
                                             painter,
                                             &pixels.data,
                                             pixels.width,
                                             pixels.height,
+                                            pixels.opaque,
                                             rect,
                                             scale,
                                             crate::computed_style::ObjectFitValue::Contain,

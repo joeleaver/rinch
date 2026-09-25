@@ -500,6 +500,7 @@ fn a_hidden_render_surface_draws_no_pixels() {
                 data: [255u8, 0, 0, 255].repeat(10 * 10),
                 width: 10,
                 height: 10,
+                opaque: false,
             },
         );
         rinch_dom::paint::set_surface_pixels(Some(map));

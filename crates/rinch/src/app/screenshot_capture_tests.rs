@@ -28,6 +28,7 @@ fn solid(rgb: [u8; 3], w: u32, h: u32) -> SurfacePixelData {
         data: [rgb[0], rgb[1], rgb[2], 255].repeat((w * h) as usize),
         width: w,
         height: h,
+        opaque: false,
     }
 }
 

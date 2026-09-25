@@ -4318,24 +4318,34 @@ impl RinchApp {
     /// and name their damage. Call [`Self::clear_viewport_frames`] after
     /// [`Self::build_pixels`].
     ///
-    /// The damage is the viewport nodes themselves ([`Self::request_repaint`]
-    /// plus [`Self::mark_viewport_nodes_paint_dirty`]), not a full repaint: a
-    /// frame painted in paint order is repainted with whatever sits over it,
-    /// so a HUD above a game needs no special case to stay drawn.
+    /// The damage is the viewport nodes that delivered a **new** frame
+    /// ([`Self::request_repaint`] plus [`Self::mark_viewport_nodes_paint_dirty`]),
+    /// not a full repaint: a frame painted in paint order is repainted with
+    /// whatever sits over it, so a HUD above a game needs no special case to
+    /// stay drawn. A viewport whose frame did not change is not damaged — a
+    /// hover elsewhere over a paused game does not repaint the game — but its
+    /// frame is still installed, so a region that crosses it for some other
+    /// reason redraws what was there.
     ///
     /// Installs the hole set too, and always — even an empty one — because
     /// `None` means "every viewport punches", which is the GPU compositor's
     /// rule and not this backend's (#186).
     #[cfg(feature = "desktop")]
     pub fn install_viewport_frames(&mut self, frames: crate::render_surface::ViewportFrames) {
-        let crate::render_surface::ViewportFrames { frames, holes } = frames;
+        let crate::render_surface::ViewportFrames {
+            frames,
+            holes,
+            fresh,
+        } = frames;
         rinch_dom::paint::set_active_viewports(Some(holes));
         if frames.is_empty() {
             return;
         }
-        self.request_repaint();
-        let names: Vec<&str> = frames.keys().map(String::as_str).collect();
-        self.mark_viewport_nodes_paint_dirty(&names);
+        if !fresh.is_empty() {
+            self.request_repaint();
+            let names: Vec<&str> = fresh.iter().map(String::as_str).collect();
+            self.mark_viewport_nodes_paint_dirty(&names);
+        }
         rinch_dom::paint::set_viewport_pixels(Some(frames));
     }
 
@@ -5082,6 +5092,7 @@ mod video_inline_dirty_region_tests {
                 data: [rgb[0], rgb[1], rgb[2], 255].repeat(40 * 10),
                 width: 40,
                 height: 10,
+                opaque: false,
             },
         )])
     }

@@ -494,6 +494,19 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > draws the frame `object-fit: contain` inside its box, at its own z-order.
 > Overlays occlude it by ordinary paint order, with no occlusion tracking
 > anywhere, and a new frame's damage is the viewport's box — not a full repaint.
+> A paint with no new frame (a hover elsewhere over a paused game) does not
+> repaint the viewport at all.
+>
+> It is not slower than the blit was. `submit_frame` checks, on the thread that
+> submits, whether every pixel is opaque; an opaque frame is never
+> premultiplied, and one that lands on whole pixels — at its natural size, or
+> scaled to a box whose edges are whole pixels — is copied into the surface row
+> by row, byte-identical to the sampled draw. Measured in release on one host
+> (`game_viewport_inline_bench`), per frame on the UI thread, inline vs the old
+> blit: a 1920×1080 frame in a 1920×1080 viewport 1.5 vs 4.8 ms, the same frame
+> in a 960×540 viewport 2.3 vs 2.3 ms, a 320×180 frame in 640×360 0.7 vs 0.8 ms.
+> A frame with any translucent pixel is premultiplied and sampled per draw, as
+> any image is.
 >
 > What still tells video and `GameViewport` apart is the **hole**:
 >

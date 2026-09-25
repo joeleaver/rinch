@@ -275,8 +275,13 @@ define_counters! {
     PaintSurfaceTrims = "paint_surface_trims",
     /// Software painter: images premultiplied at draw time. A cached `<img>`
     /// or `background-image` is premultiplied once, on its first software
-    /// paint; a live frame source every draw.
+    /// paint; a live frame source every draw, unless its producer vouched it
+    /// opaque (then never).
     ImagePremultiplies = "image_premultiplies",
+    /// Software painter: opaque images copied straight into the surface — an
+    /// unscaled, whole-pixel draw of a frame whose producer vouched every
+    /// pixel opaque, under no partial clip (#361).
+    OpaqueImageCopies = "opaque_image_copies",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).

@@ -228,6 +228,10 @@ pub(crate) struct SurfaceBuffer {
     pixels: Vec<u8>,
     width: u32,
     height: u32,
+    /// Every alpha in `pixels` is 255. Found by `submit_frame` on the thread
+    /// that submits, so the UI thread neither scans nor premultiplies an
+    /// opaque frame (#361).
+    opaque: bool,
 }
 
 // ── SurfaceWriter ────────────────────────────────────────────────────────────
@@ -260,12 +264,18 @@ impl SurfaceWriter {
             pixels.len()
         );
 
+        // Scanned here, before the lock and on the submitting thread: a
+        // producer's frame is usually opaque, and knowing it lets the software
+        // painter skip the premultiply — and, at the viewport's own size, copy
+        // rows instead of sampling (#361).
+        let opaque = pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255);
         {
             let mut buf = self.buffer.lock().unwrap();
             buf.pixels.clear();
             buf.pixels.extend_from_slice(pixels);
             buf.width = width;
             buf.height = height;
+            buf.opaque = opaque;
         }
 
         self.needs_redraw.store(true, Ordering::Release);
@@ -600,6 +610,7 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
             pixels: Vec::new(),
             width: 0,
             height: 0,
+            opaque: false,
         })),
         #[cfg(feature = "gpu")]
         texture_source: Arc::new(Mutex::new(None)),
@@ -833,6 +844,7 @@ pub fn collect_surface_pixels_by_id()
                         data: buf.pixels.clone(),
                         width: buf.width,
                         height: buf.height,
+                        opaque: buf.opaque,
                     },
                 );
             }
@@ -855,6 +867,11 @@ pub struct ViewportFrames {
     /// `rinch_dom::paint::set_active_viewports()` takes. Video is never in it:
     /// it paints its own black letterbox instead (#354).
     pub holes: std::collections::HashSet<String>,
+    /// The names among [`Self::frames`] that delivered a **new** frame since
+    /// the last collection — the only viewports this paint has to repaint. The
+    /// others are in `frames` only so a region that crosses them for another
+    /// reason (a hover, a tick) can redraw the frame already on screen.
+    pub fresh: std::collections::HashSet<String>,
 }
 
 /// Collect the frames the software backend paints **inline**, keyed by
@@ -890,15 +907,19 @@ pub fn collect_viewport_frames_by_name() -> ViewportFrames {
             if surface.texture_source.lock().unwrap().is_some() {
                 continue;
             }
-            surface.needs_redraw.store(false, Ordering::Release);
+            let fresh = surface.needs_redraw.swap(false, Ordering::AcqRel);
             let buf = surface.buffer.lock().unwrap();
             if !buf.pixels.is_empty() {
+                if fresh {
+                    out.fresh.insert(surface.viewport_name.clone());
+                }
                 out.frames.insert(
                     surface.viewport_name.clone(),
                     rinch_dom::paint::SurfacePixelData {
                         data: buf.pixels.clone(),
                         width: buf.width,
                         height: buf.height,
+                        opaque: buf.opaque,
                     },
                 );
                 if !surface.is_video {
@@ -1059,6 +1080,7 @@ pub fn readback_gpu_textures() {
                 buf.pixels = pixels;
                 buf.width = width;
                 buf.height = height;
+                buf.opaque = false; // a texture's alpha is not inspected
                 // Mark as needing redraw so collect_surface_pixels_by_id picks it up
                 surface.needs_redraw.store(true, Ordering::Release);
             }

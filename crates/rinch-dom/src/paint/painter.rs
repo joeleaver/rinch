@@ -131,6 +131,12 @@ pub struct PaintImage<'a> {
     /// premultiplied) can keep that form on the entry instead of converting
     /// on every draw. `None` for a live frame source.
     pub decoded: Option<&'a crate::image_cache::DecodedImage>,
+    /// Every pixel's alpha is 255, as the producer promises (a live frame
+    /// source checks at submit, on its own thread). Opaque pixels are their
+    /// own premultiplied form, so the software painter skips premultiplying
+    /// them, and may copy them straight into the surface when nothing scales,
+    /// rotates or partially clips the draw (#361). `false` promises nothing.
+    pub opaque: bool,
 }
 
 // ── Glyph run ───────────────────────────────────────────────────────────────

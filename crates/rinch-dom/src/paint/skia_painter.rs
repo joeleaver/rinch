@@ -690,8 +690,14 @@ pub struct SkiaPainterStats {
     pub surface_allocs: u64,
     /// Images premultiplied at draw time. Zero for a cached `<img>` or
     /// `background-image` after its first software paint; a live frame
-    /// source (`RenderSurface`, video) is premultiplied per draw.
+    /// source (`RenderSurface`, video, `GameViewport`) is premultiplied per
+    /// draw unless it was submitted opaque, which it never is.
     pub image_premultiplies: u64,
+    /// Opaque images copied straight into the surface row by row, with no
+    /// premultiply and no `draw_pixmap`: an unscaled, unrotated, whole-pixel
+    /// draw the clip in force covers fully (#361 — a software `GameViewport`
+    /// or video frame at its natural size).
+    pub opaque_image_copies: u64,
     /// Pooled surface-sized buffers released by
     /// [`TinySkiaPainter::end_frame`] because no recent frame needed that
     /// many at once.
@@ -710,7 +716,19 @@ impl SkiaPainterStats {
         perf.add(Counter::LayerPx, self.layer_px);
         perf.add(Counter::PaintSurfaceAllocs, self.surface_allocs);
         perf.add(Counter::ImagePremultiplies, self.image_premultiplies);
+        perf.add(Counter::OpaqueImageCopies, self.opaque_image_copies);
         perf.add(Counter::PaintSurfaceTrims, self.surface_trims);
+    }
+}
+
+/// The `[a, b)` columns of row `y` of `dst` that lie inside `inner` (a
+/// clip's fully covered rect, already intersected with `dst`); `(dst.x0,
+/// dst.x0)` when the row misses it.
+fn inner_span(inner: DeviceRect, y: u32, dst: DeviceRect) -> (u32, u32) {
+    if inner.is_empty() || y < inner.y0 || y >= inner.y1 {
+        (dst.x0, dst.x0)
+    } else {
+        (inner.x0, inner.x1)
     }
 }
 
@@ -1035,6 +1053,161 @@ impl TinySkiaPainter {
             transform,
             None,
         );
+    }
+
+    /// Copy an opaque image straight into the surface, if the draw is one a
+    /// copy reproduces **byte for byte**: no rotation or skew, a positive
+    /// scale, destination edges on whole pixels, and no clip that is partial
+    /// anywhere the image lands. Answers `false`, having drawn nothing, for any
+    /// draw it cannot reproduce, which `draw_pixmap` then takes.
+    ///
+    /// Why it is exact: `draw_pixmap` fills the image's transformed rect
+    /// without anti-aliasing (so, with whole-pixel edges, exactly the pixels
+    /// `x0..x1 × y0..y1`), samples each with `FilterQuality::Nearest` in the
+    /// high-precision pipeline — the pixel centre through the inverse
+    /// transform, `(x + 0.5) * isx + ((y + 0.5) * ikx + itx)`, clamped to
+    /// `[0, w - 1ulp]` and truncated — and blends it source-over, which for an
+    /// alpha-255 pixel is the pixel. The same arithmetic, done once per column
+    /// and once per row, is below; `skia_painter_oracle_tests` checks it
+    /// against `draw_pixmap` over a spread of scales and offsets. At scale 1
+    /// it is one `copy_from_slice` per row — for a 1080p `GameViewport` frame
+    /// about seven times cheaper than premultiply plus `draw_pixmap` (#361).
+    fn copy_opaque_image(&mut self, image: &PaintImage<'_>, ts: Transform) -> bool {
+        if ts.kx != 0.0 || ts.ky != 0.0 || ts.sx <= 0.0 || ts.sy <= 0.0 {
+            return false;
+        }
+        let (iw, ih) = (image.width, image.height);
+        let row = iw as usize * 4;
+        if image.data.len() < row * ih as usize {
+            return false;
+        }
+        let (sw, sh) = (self.pixmap.width(), self.pixmap.height());
+        // `draw_pixmap` tiles a surface this big, translating per tile; the
+        // copy does not model that.
+        if sw > 8191 || sh > 8191 {
+            return false;
+        }
+        // The destination rect's edges, as the fill computes them.
+        let whole = |v: f32| {
+            let r = v.round();
+            ((v - r).abs() <= 1e-3).then_some(r as i64)
+        };
+        let (Some(x0), Some(y0), Some(x1), Some(y1)) = (
+            whole(ts.tx),
+            whole(ts.ty),
+            whole(iw as f32 * ts.sx + ts.tx),
+            whole(ih as f32 * ts.sy + ts.ty),
+        ) else {
+            return false;
+        };
+        // The inverse `draw_pixmap` samples through (tiny-skia inverts the
+        // pattern's transform, which is `ts`). No skew, so its cross terms are
+        // (signed) zeros and each output column's source column is the same
+        // on every row.
+        let Some(inv) = ts.invert() else {
+            return false;
+        };
+        if inv.kx != 0.0 || inv.ky != 0.0 {
+            return false;
+        }
+        let (cx0, cy0) = (x0.max(0), y0.max(0));
+        let (cx1, cy1) = (x1.min(sw as i64), y1.min(sh as i64));
+        if cx0 >= cx1 || cy0 >= cy1 {
+            return true; // wholly off the surface: nothing to draw
+        }
+        let mut dst = DeviceRect {
+            x0: cx0 as u32,
+            y0: cy0 as u32,
+            x1: cx1 as u32,
+            y1: cy1 as u32,
+        };
+        // Under a clip, a pixel is written exactly when its mask byte says so,
+        // and that is reproducible only where the byte is 0 or 255. Inside the
+        // mask's fully covered rect every byte is 255; the band between it and
+        // the mask's bounds (a damage rect's one-pixel margin, say) is read,
+        // and a single partial byte there declines the copy.
+        let mut inner = dst;
+        if let Some(m) = &self.clip_mask {
+            dst = dst.intersect(m.bounds);
+            if dst.is_empty() {
+                return true; // wholly clipped away
+            }
+            inner = dst.intersect(m.full);
+            let md = m.mask.data();
+            for y in dst.y0..dst.y1 {
+                let row_bytes = &md[(y * sw) as usize..][..sw as usize];
+                let (a, b) = inner_span(inner, y, dst);
+                let partial = |c: &u8| *c != 0 && *c != 255;
+                if row_bytes[dst.x0 as usize..a as usize].iter().any(partial)
+                    || row_bytes[b as usize..dst.x1 as usize].iter().any(partial)
+                {
+                    return false; // a partial clip: masked coverage is draw_pixmap's
+                }
+            }
+        }
+        self.stats.opaque_image_copies += 1;
+        self.touch(dst);
+
+        // Each destination column's source byte offset. At scale 1 that is
+        // `x - x0`; otherwise `draw_pixmap`'s nearest sample, below.
+        //
+        // `ulp_sub` in tiny-skia's `gather_ix`: the last representable value
+        // below the exclusive limit.
+        let below = |v: f32| f32::from_bits(v.to_bits() - 1);
+        let (wmax, hmax) = (below(iw as f32), below(ih as f32));
+        let unscaled = ts.sx == 1.0 && ts.sy == 1.0;
+        let columns: Vec<usize> = (dst.x0..dst.x1)
+            .map(|x| {
+                if unscaled {
+                    return (x as i64 - x0) as usize * 4;
+                }
+                // `mad(r, sx, mad(g, kx, tx))` with `g * kx` a zero.
+                let u = (x as f32 + 0.5) * inv.sx + inv.tx;
+                u.max(0.0).min(wmax) as usize * 4
+            })
+            .collect();
+        let stride = sw as usize * 4;
+        let mask = self.clip_mask.as_ref().map(|m| m.mask.data());
+        let data = self.pixmap.data_mut();
+        for y in dst.y0..dst.y1 {
+            let src_y = if unscaled {
+                (y as i64 - y0) as usize
+            } else {
+                // `mad(r, ky, mad(g, sy, ty))` with `r * ky` a zero.
+                let v = (y as f32 + 0.5) * inv.sy + inv.ty;
+                v.max(0.0).min(hmax) as usize
+            };
+            let src_row = &image.data[src_y * row..][..row];
+            let out_row = &mut data[y as usize * stride..][..stride];
+            let (a, b) = if mask.is_some() {
+                inner_span(inner, y, dst)
+            } else {
+                (dst.x0, dst.x1)
+            };
+            // The fully covered span: one copy at scale 1.
+            if a < b {
+                let (ca, cb) = ((a - dst.x0) as usize, (b - dst.x0) as usize);
+                let out = &mut out_row[a as usize * 4..b as usize * 4];
+                if unscaled {
+                    out.copy_from_slice(&src_row[columns[ca]..columns[ca] + out.len()]);
+                } else {
+                    for (px, &c) in out.as_chunks_mut::<4>().0.iter_mut().zip(&columns[ca..cb]) {
+                        px.copy_from_slice(&src_row[c..c + 4]);
+                    }
+                }
+            }
+            // The band outside it, where the mask is 0 or 255 (checked above).
+            if let Some(md) = mask {
+                let mrow = &md[(y * sw) as usize..][..sw as usize];
+                for x in (dst.x0..a).chain(b.max(dst.x0)..dst.x1) {
+                    if mrow[x as usize] == 255 {
+                        let c = columns[(x - dst.x0) as usize];
+                        out_row[x as usize * 4..][..4].copy_from_slice(&src_row[c..c + 4]);
+                    }
+                }
+            }
+        }
+        true
     }
 
     // ── Bookkeeping ────────────────────────────────────────────────────
@@ -1442,11 +1615,19 @@ impl Painter for TinySkiaPainter {
             return;
         }
 
+        let ts = affine_to_transform(transform);
+        if image.opaque && !self.reference_mode && self.copy_opaque_image(image, ts) {
+            return;
+        }
+
         // The premultiplied pixels: the image cache's copy when the image came
-        // from one (computed on its first software paint and kept), otherwise
-        // made here, per draw — a live frame source has no cache to keep it in.
+        // from one (computed on its first software paint and kept), the pixels
+        // themselves when every one is opaque, otherwise made here, per draw —
+        // a live frame source has no cache to keep it in.
         let cached = if self.reference_mode {
             None
+        } else if image.opaque {
+            Some(image.data)
         } else {
             image.decoded.map(|d| d.premultiplied())
         };
@@ -1468,7 +1649,6 @@ impl Painter for TinySkiaPainter {
             return;
         };
 
-        let ts = affine_to_transform(transform);
         self.touch_local(0.0, 0.0, image.width as f32, image.height as f32, ts);
         let paint = PixmapPaint::default();
         let mask = self.clip_mask.as_ref().map(|m| &m.mask);

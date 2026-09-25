@@ -2507,6 +2507,7 @@ mod software_video_inline {
             data: [255u8, 0, 255, 255].repeat(40 * 10),
             width: 40,
             height: 10,
+            opaque: false,
         }
     }
 
