@@ -724,3 +724,45 @@ fn an_opacity_transition_into_a_stacking_context_keeps_the_box_hittable() {
     let (app, id) = transition_into_a_stacking_context("opacity", "1", "0.5");
     assert_eq!(hit_at(&app, 50.0, 50.0), Some(id));
 }
+
+/// A `data-onmousemove` handler that only scrolls (#911's partial
+/// invalidation, found by the review of PR #962) must still make hover re-test — `invalidate_scroll` has to move the
+/// generation `move_hit` keys on.
+#[test]
+fn a_mousemove_handler_that_scrolls_makes_hover_retest() {
+    let sc: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let s2 = sc.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let scroller = scope.create_element("div");
+        scroller.set_attribute("style", "height: 200px; overflow-y: auto");
+        let s3 = s2.clone();
+        let id = scope.register_handler(move || {
+            if let Some(n) = s3.borrow().as_ref() {
+                n.set_scroll_top(n.scroll_top() + 30.0);
+            }
+        });
+        scroller.set_attribute("data-onmousemove", &id.0.to_string());
+        for _ in 0..40 {
+            let row = scope.create_element("div");
+            row.set_attribute("style", "height: 20px");
+            scroller.append_child(&row);
+        }
+        root.append_child(&scroller);
+        *s2.borrow_mut() = Some(scroller.clone());
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    frame(&mut app);
+    pointer_move(&mut app, 20.0, 20.0);
+    let s = app.end_perf_frame().unwrap();
+    assert!(
+        sc.borrow().as_ref().unwrap().scroll_top() > 0.0,
+        "positive control: the handler scrolled"
+    );
+    assert_eq!(
+        s.get(Counter::HitTests),
+        2,
+        "the scroll forced a re-test: {s:?}"
+    );
+}

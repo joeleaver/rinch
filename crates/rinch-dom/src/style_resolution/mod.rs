@@ -499,13 +499,22 @@ impl RinchDocument {
         self.tree
             .note_full_restyle(crate::perf::FullRestyleReason::Theme);
         // Clear cached Stylo element data so styles are recomputed.
-        // Also clear text_layout so build_ifc_layouts() doesn't skip
-        // IFC roots whose text content hasn't changed but whose style
-        // (e.g. text color) has — the old Parley layout has stale brushes.
+        //
+        // The text layouts are **not** cleared here (issue #913). Every
+        // element is re-cascaded below, and `apply_stylo_styles_to_taffy`
+        // compares each one's old and new typography
+        // (`ComputedStyle::same_text_layout_inputs`, colour included — it is
+        // baked into the glyphs' brush) and drops the layout of the IFC it
+        // feeds only when that moved: the #654 staleness gate, the same one a
+        // targeted restyle relies on. The comparison reads
+        // `Node::computed_style`, which this loop leaves alone, so it still
+        // sees the style the old layout was built from. Clearing them all made
+        // a dark-mode toggle that changes one variable no text reads re-shape
+        // every paragraph in the window. Regenerated `::before`/`::after`
+        // content still invalidates its root regardless, in the cascade.
         let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for &nid in &node_ids {
             *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
-            self.tree.nodes[nid].text_layout = None;
         }
         // Disable transitions during full restyle — theme changes should apply
         // instantly. Without this, elements with `transition: color` would start
@@ -558,10 +567,12 @@ impl RinchDocument {
         self.apply_stylo_styles_to_taffy();
         self.tree.refreshing_animations = false;
         self.tree.transitions_enabled = transitions_were_enabled;
-        // Force IFC rebuild so text layouts pick up new colors/fonts from
-        // the updated computed styles (text brush is baked into Parley layout).
-        // Also set layout_dirty so resolve_layout doesn't early-return before
-        // reaching the ifc_dirty branch.
+        // Run the whole-document IFC setup pass: the new sheet can change any
+        // element's `display` or `position`, which moves the formatting
+        // structure. That pass re-shapes only the roots whose content
+        // signature moved; a root whose typography moved was dropped by the
+        // cascade above. Also set layout_dirty so resolve_layout doesn't
+        // early-return before reaching the ifc_dirty branch.
         self.tree
             .request_full_ifc(crate::ifc_scope::IfcFullReason::Theme);
         self.tree.layout_dirty = true;

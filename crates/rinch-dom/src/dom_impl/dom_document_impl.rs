@@ -915,12 +915,12 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_scroll_top(&mut self, node: NodeId, scroll_top: f64) {
-        // Anything this can move invalidates the hit tester's memo.
-        self.tree.hit_cache.invalidate();
         if let Some(n) = self.tree.nodes.get_mut(node.0) {
             n.scroll_offset.1 = scroll_top;
         }
-        self.push_dirty_flags(node.0, DirtyFlags::PAINT);
+        // Paint-dirty, and the hit cache's scroll invalidation: the extents
+        // inside the scroller survive (#911).
+        self.tree.mark_scrolled(node.0);
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
@@ -1169,12 +1169,12 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_scroll_left(&mut self, node: NodeId, scroll_left: f64) {
-        // Anything this can move invalidates the hit tester's memo.
-        self.tree.hit_cache.invalidate();
         if let Some(n) = self.tree.nodes.get_mut(node.0) {
             n.scroll_offset.0 = scroll_left;
         }
-        self.push_dirty_flags(node.0, DirtyFlags::PAINT);
+        // Paint-dirty, and the hit cache's scroll invalidation: the extents
+        // inside the scroller survive (#911).
+        self.tree.mark_scrolled(node.0);
     }
 
     fn scroll_height(&self, node: NodeId) -> f64 {
