@@ -969,6 +969,29 @@ impl RinchDocument {
 
             self.tree.note_background_image(&new_style);
 
+            // An inheriting node's `visibility` is its parent's **animated**
+            // value, not the after-change one Stylo computed (#759; review of
+            // #991, F1). Without this, a descendant that declares its own
+            // `visibility` transition (`transition: all`, as `Checkbox` and
+            // `Radio` do) diffed Stylo's `hidden` against its `visible` on the
+            // very pass a drawer started closing and began its own hide at
+            // t = 0 — vanishing mid-slide while the drawer was still on screen.
+            // Parents are cascaded first, so the parent's `computed_style`
+            // already carries this pass's value. Only asked while some
+            // transition runs, and only where the two values differ, so the
+            // rule-chain read in `visibility_is_inherited` is off every hot path.
+            if !self.tree.active_transitions.is_empty()
+                && let Some(parent_visibility) = self.tree.nodes[node_id]
+                    .parent
+                    .and_then(|p| self.tree.nodes.get(p))
+                    .filter(|p| p.is_element())
+                    .map(|p| p.computed_style.visibility)
+                && parent_visibility != new_style.visibility
+                && crate::transition::visibility_is_inherited(&self.tree, node_id)
+            {
+                new_style.visibility = parent_visibility;
+            }
+
             // Extract transition specs from Stylo
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].transition_specs = transition_specs;
@@ -1512,7 +1535,7 @@ impl RinchDocument {
             };
             visibility_roots.sort_by_cached_key(|&id| depth(&self.tree, id));
             for id in visibility_roots {
-                propagate_inherited_visibility(&mut self.tree, id);
+                propagate_inherited_visibility(&mut self.tree, id, current_time_ms);
             }
         }
 

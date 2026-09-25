@@ -38,7 +38,7 @@
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::VisibilityValue;
-use rinch_dom::transition::TransitionProperty;
+use rinch_dom::transition::{AnimatableValue, TransitionProperty};
 
 /// Every size is declared, so no assertion rests on a font metric.
 ///
@@ -61,6 +61,9 @@ const CSS: &str = "
     .box { width: 10px; height: 10px; }
     .box.anim { transition: width 150ms linear; }
     .box.wide { width: 40px; }
+    .cb { transition: all 150ms linear; }
+    #imp.imp-a { visibility: inherit; color: red !important; }
+    .imp-b { visibility: hidden !important; }
 ";
 
 fn vis(doc: &RinchDocument, node: NodeId) -> VisibilityValue {
@@ -339,4 +342,142 @@ fn a_transition_whose_property_stops_matching_is_cancelled() {
         other => panic!("width is not a length: {other:?}"),
     };
     assert_eq!(w, 40.0, "and the box stays at its target, got {w}px");
+}
+
+// ── review of #991 ──────────────────────────────────────────────────────────
+
+/// F1: a descendant whose own `transition` covers `visibility` (`transition:
+/// all`, as `Checkbox` and `Radio` declare) inherits the held `visible` for the
+/// root's whole close, and starts its own hide only when the root flips — as in
+/// Chrome. It used to start that hide at t = 0 from Stylo's `hidden`, and
+/// vanished half way through the drawer's slide.
+#[test]
+fn a_transitioning_descendant_hides_after_its_root_not_during() {
+    let (mut doc, root, child, ..) = mounted("root delayed");
+    doc.set_attribute(child, "class", "kid cb");
+    doc.resolve_layout(801.0, 600.0);
+
+    doc.set_attribute(root, "class", "root delayed shut");
+    doc.resolve_layout(802.0, 600.0);
+    assert!(
+        !doc.tree
+            .active_transitions
+            .get(&child.0)
+            .is_some_and(|m| m.contains_key(&TransitionProperty::Visibility)),
+        "no visibility transition starts on the child at the close: it \
+         inherits the root's held `visible`, so nothing changed for it"
+    );
+    let start = start_of(&doc, root, TransitionProperty::Visibility);
+
+    tick(&mut doc, start + 200.0);
+    assert_eq!(vis(&doc, root), VisibilityValue::Visible, "precondition");
+    assert_eq!(
+        vis(&doc, child),
+        VisibilityValue::Visible,
+        "200ms into the root's 300ms close the child is still visible"
+    );
+
+    tick(&mut doc, start + 301.0);
+    assert_eq!(
+        vis(&doc, root),
+        VisibilityValue::Hidden,
+        "the root has flipped"
+    );
+    assert_eq!(
+        running(&doc, child),
+        1,
+        "and now the child runs its own 150ms hide, from the flip"
+    );
+    assert_eq!(
+        vis(&doc, child),
+        VisibilityValue::Visible,
+        "visible through it"
+    );
+    tick(&mut doc, start + 301.0 + 160.0);
+    assert_eq!(vis(&doc, child), VisibilityValue::Hidden, "then hidden");
+}
+
+/// `visibility_is_inherited` reads each rule at its own importance. Rule A
+/// (`#imp.imp-a`, the more specific) declares `visibility: inherit` *normally*
+/// and something else `!important`, so it has an entry at the important level
+/// too; rule B declares `visibility: hidden !important`, which wins. Reading
+/// A's normal declaration at A's important level answers "inherited" and
+/// brings a hidden box into view for the root's close.
+#[test]
+fn an_important_hidden_beats_a_more_specific_normal_inherit() {
+    let (mut doc, root, child, ..) = mounted("root delayed");
+    doc.set_attribute(child, "id", "imp");
+    doc.set_attribute(child, "class", "kid imp-a imp-b");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(vis(&doc, child), VisibilityValue::Hidden, "precondition");
+
+    doc.set_attribute(root, "class", "root delayed shut");
+    doc.resolve_layout(802.0, 600.0);
+    assert_eq!(
+        vis(&doc, root),
+        VisibilityValue::Visible,
+        "precondition: held"
+    );
+    assert_eq!(
+        vis(&doc, child),
+        VisibilityValue::Hidden,
+        "the `!important` hidden is the child's own value; it is not reached"
+    );
+}
+
+/// The walk leaves a descendant running its own `visibility` transition alone:
+/// that node's value is its transition's. Constructed — a transition on an
+/// inheriting node running under a live ancestor transition is otherwise
+/// reached only through a reopen race — so this fixture is the sole witness of
+/// the `own_transition` clause.
+#[test]
+fn the_walk_does_not_overwrite_a_descendants_own_transition() {
+    let (mut doc, root, child, ..) = mounted("root delayed");
+    doc.set_attribute(root, "class", "root delayed shut");
+    doc.resolve_layout(801.0, 600.0);
+    let start = start_of(&doc, root, TransitionProperty::Visibility);
+
+    // Give the child a running hide of its own, currently reading `hidden`.
+    let mut own = doc.tree.active_transitions[&root.0][&TransitionProperty::Visibility].clone();
+    own.from = AnimatableValue::Visibility(VisibilityValue::Hidden);
+    own.to = AnimatableValue::Visibility(VisibilityValue::Hidden);
+    own.reversing_adjusted_start_value = own.from.clone();
+    doc.tree
+        .active_transitions
+        .entry(child.0)
+        .or_default()
+        .insert(TransitionProperty::Visibility, own);
+    doc.tree.nodes[child.0].computed_style.visibility = VisibilityValue::Hidden;
+
+    rinch_dom::transition::propagate_inherited_visibility(&mut doc.tree, root.0, start + 10.0);
+    assert_eq!(
+        vis(&doc, child),
+        VisibilityValue::Hidden,
+        "the root's held `visible` does not overwrite the child's own transition"
+    );
+}
+
+/// A descendant the hand-down changes is pushed paint-dirty: its pixels are its
+/// own, and a descendant can paint outside its root's box.
+#[test]
+fn a_handed_down_change_marks_the_descendant_for_repaint() {
+    let (mut doc, root, child, grandchild, _) = mounted("root delayed");
+    doc.set_attribute(root, "class", "root delayed shut");
+    doc.resolve_layout(801.0, 600.0);
+    let start = start_of(&doc, root, TransitionProperty::Visibility);
+    doc.tree.paint_dirty_nodes.clear();
+
+    tick(&mut doc, start + 301.0);
+    assert_eq!(
+        vis(&doc, grandchild),
+        VisibilityValue::Hidden,
+        "precondition"
+    );
+    for n in [child, grandchild] {
+        assert!(
+            doc.tree.paint_dirty_nodes.contains(&n.0),
+            "node {} was hidden by the hand-down and must be repainted",
+            n.0
+        );
+    }
 }

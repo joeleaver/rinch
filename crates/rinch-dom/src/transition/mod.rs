@@ -223,7 +223,7 @@ pub fn cancel_unmatched_transitions(
 ///
 /// Asked only while a `visibility` transition is being propagated, so it costs
 /// nothing to a document with none running.
-fn visibility_is_inherited(tree: &NodeTree, node_id: RawNodeId) -> bool {
+pub(crate) fn visibility_is_inherited(tree: &NodeTree, node_id: RawNodeId) -> bool {
     use style::properties::{CSSWideKeyword, LonghandId, PropertyDeclarationId};
 
     let data = tree.nodes[node_id].stylo_element_data.borrow();
@@ -283,7 +283,17 @@ fn visibility_is_inherited(tree: &NodeTree, node_id: RawNodeId) -> bool {
 /// for a closing overlay is once, at the end. When no transition is running the
 /// value handed down equals the one Stylo computed, so a call is a no-op in
 /// effect; it is simply never made then.
-pub fn propagate_inherited_visibility(tree: &mut NodeTree, from: RawNodeId) {
+/// **A descendant that declares its own `visibility` transition** (a
+/// `Checkbox`'s `transition: all 150ms`) is not written: the change reaches it
+/// as a *change of its inherited value*, which is exactly what starts a
+/// transition in CSS, so one is started for it here at `now` and its animated
+/// value is what its own descendants inherit. That is Chrome's order of events
+/// for a closing drawer holding a checkbox: the checkbox inherits the held
+/// `visible` for the drawer's 300ms and runs its own 150ms hide only once the
+/// drawer's value flips (review of #991, F1). The cascade keeps it from starting
+/// one any earlier — see `apply_stylo_styles_to_taffy`, which gives an
+/// inheriting node its parent's *animated* visibility, not Stylo's.
+pub fn propagate_inherited_visibility(tree: &mut NodeTree, from: RawNodeId, now: f64) {
     use crate::computed_style::VisibilityValue;
 
     if !tree.nodes.contains(from) {
@@ -311,12 +321,43 @@ pub fn propagate_inherited_visibility(tree: &mut NodeTree, from: RawNodeId) {
         if own_transition || !visibility_is_inherited(tree, id) {
             continue;
         }
-        let node = &mut tree.nodes[id];
-        if node.computed_style.visibility != inherited {
-            node.computed_style.visibility = inherited;
-            node.dirty.insert(DirtyFlags::PAINT);
-            tree.paint_dirty_nodes.push(id);
-            changed = true;
+        let old = tree.nodes[id].computed_style.visibility;
+        if old != inherited {
+            let mut value = inherited;
+            let node = &tree.nodes[id];
+            if tree.transitions_enabled
+                && node.computed_style.display != crate::computed_style::DisplayValue::None
+                && find_matching_spec(&node.transition_specs, TransitionProperty::Visibility)
+                    .is_some()
+            {
+                let specs = node.transition_specs.clone();
+                let change = PropertyChange {
+                    property: TransitionProperty::Visibility,
+                    old_value: AnimatableValue::Visibility(old),
+                    new_value: AnimatableValue::Visibility(inherited),
+                };
+                let map = tree.active_transitions.entry(id).or_default();
+                start_transitions(map, &specs, std::slice::from_ref(&change), now);
+                if let Some(AnimatableValue::Visibility(v)) = map
+                    .get(&TransitionProperty::Visibility)
+                    .and_then(|t| t.value_at(now))
+                {
+                    value = v;
+                }
+                if map.is_empty() {
+                    tree.active_transitions.remove(&id);
+                }
+            }
+            let node = &mut tree.nodes[id];
+            if node.computed_style.visibility != value {
+                node.computed_style.visibility = value;
+                node.dirty.insert(DirtyFlags::PAINT);
+                tree.paint_dirty_nodes.push(id);
+                changed = true;
+            }
+            let value = tree.nodes[id].computed_style.visibility;
+            stack.extend(tree.nodes[id].children.iter().map(|&c| (c, value)));
+            continue;
         }
         stack.extend(tree.nodes[id].children.iter().map(|&c| (c, inherited)));
     }
@@ -418,7 +459,7 @@ pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         if let Some(before) = visibility_before
             && tree.nodes[node_id].computed_style.visibility != before
         {
-            propagate_inherited_visibility(tree, node_id);
+            propagate_inherited_visibility(tree, node_id, current_time_ms);
         }
     }
 

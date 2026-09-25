@@ -664,3 +664,88 @@ fn reopening_during_the_slide_out_keeps_the_drawer_open() {
         "the reopened drawer is still visible after the close would have ended"
     );
 }
+
+/// A `Checkbox` in a closing drawer stays on screen for the whole slide-out
+/// (review of #991, F1).
+///
+/// Its box declares `transition: all 150ms ease`, so it has a `visibility`
+/// transition of its own. It used to start that transition on the close pass —
+/// Stylo computes it `hidden` there — and vanished at 150ms, half way through
+/// the 300ms slide, while its label went on sliding. In Chrome it inherits the
+/// drawer root's held `visible` and runs its own hide only after the root flips.
+#[test]
+fn a_checkbox_in_a_closing_drawer_slides_out_with_it() {
+    use rinch_components::Checkbox;
+    const BOX: &str = "rinch-checkbox__box";
+
+    let opened = Signal::new(false);
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let cb = Checkbox {
+            label: "Remember me".to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let drawer = Drawer {
+            opened_fn: Some(std::rc::Rc::new(move || opened.get())),
+            position: "left".to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[cb]);
+        root.append_child(&drawer);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(&rinch_components::generate_component_css());
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+    let root = node_with_class(&app, ROOT);
+    let cbox = node_with_class(&app, BOX);
+    assert!(
+        transition_specs(&app, cbox) > 0,
+        "precondition: the checkbox box declares a transition of its own"
+    );
+
+    opened.set(true);
+    app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
+    opened.set(false);
+    app.resolve_and_repaint(VIEWPORT.0 + 2.0, VIEWPORT.1);
+
+    let start = {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree.active_transitions[&root][&TransitionProperty::Visibility].start_time_ms
+    };
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        rinch_dom::transition::tick_transitions(&mut d.tree, start + 200.0);
+    }
+    assert_eq!(
+        visibility_of(&app, root),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "precondition: 200ms in, the drawer is still sliding out"
+    );
+    assert_eq!(
+        visibility_of(&app, cbox),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "and so is the checkbox box — it has not run its own hide early"
+    );
+
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        rinch_dom::transition::tick_transitions(&mut d.tree, start + 301.0);
+        rinch_dom::transition::tick_transitions(&mut d.tree, start + 1000.0);
+    }
+    assert_eq!(
+        visibility_of(&app, cbox),
+        rinch_dom::computed_style::VisibilityValue::Hidden,
+        "and it is hidden once the drawer's close and its own have run"
+    );
+}
