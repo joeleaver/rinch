@@ -23,6 +23,17 @@
 //! `hiding_a_span_inside_a_line_repaints_it_incrementally`, which asserts the
 //! region it took.
 //!
+//! **Since #759 neither component closes that way by default.** Both now hold
+//! their closed state `visible` for the length of the slide or fade (a delayed
+//! `visibility` transition), so the frame after a close legitimately paints the
+//! panel *and* its text, and by the time the root hides the panel is off
+//! screen or transparent — the fixed point this file is built to stay off. So
+//! each fixture restores the instant hide with an app stylesheet
+//! ([`INSTANT_HIDE_DRAWER`], [`INSTANT_HIDE_POPOVER`]): the shape is still
+//! reachable by any app that writes it, and #829's guarantee is about paint,
+//! not about the components' defaults. The default close is pinned by
+//! `drawer_open_animation_tests` and `overlay_animation_audit_tests`.
+//!
 //! `#817`'s text context menu is covered by
 //! `text_context_menu_tests::closed_panel_against_paint`; it hides its panel
 //! with `display: none` and is unaffected either way.
@@ -35,7 +46,20 @@ use std::rc::Rc;
 
 const VP: (u32, u32) = (800, 600);
 
-fn mount(build: impl Fn(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
+/// Restores the Drawer's pre-#759 close: the root hides on the close pass
+/// while the panel slides back behind it.
+const INSTANT_HIDE_DRAWER: &str =
+    ".rinch-drawer__root--hidden { transition: none !important; }";
+
+/// Restores the Popover's pre-#759 close, as desktop used to run it: the
+/// dropdown hides on the close pass while its `opacity` fades behind it.
+const INSTANT_HIDE_POPOVER: &str =
+    ".rinch-popover__dropdown { transition: opacity 150ms ease, transform 150ms ease !important; }";
+
+fn mount(
+    extra_css: &str,
+    build: impl Fn(&mut RenderScope) -> NodeHandle + 'static,
+) -> RinchApp {
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         let child = build(scope);
@@ -47,6 +71,9 @@ fn mount(build: impl Fn(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
         d.load_css(&rinch_components::generate_component_css());
+        if !extra_css.is_empty() {
+            d.load_css(extra_css);
+        }
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
@@ -105,7 +132,7 @@ fn settle(app: &mut RinchApp) {
 #[test]
 fn a_drawer_closing_over_its_slide_paints_no_text() {
     let opened = Signal::new(false);
-    let mut app = mount(move |scope| {
+    let mut app = mount(INSTANT_HIDE_DRAWER, move |scope| {
         let body = scope.create_element("p");
         body.set_attribute("style", "font-size: 20px; line-height: 24px; color: black");
         let text = scope.create_text("Drawer body text that must not linger");
@@ -166,7 +193,7 @@ fn a_drawer_closing_over_its_slide_paints_no_text() {
 #[test]
 fn a_popover_closing_over_its_fade_paints_no_text() {
     let opened = Signal::new(false);
-    let mut app = mount(move |scope| {
+    let mut app = mount(INSTANT_HIDE_POPOVER, move |scope| {
         let target = PopoverTarget.render(scope, &[]);
         let inner = scope.create_element("div");
         inner.set_attribute("style", "font-size: 20px; line-height: 24px; color: black");
@@ -248,7 +275,7 @@ fn red_px(px: &[u8]) -> usize {
 /// `hidden`; and, when `other` is set, a 20x20 box 200px below whose background
 /// changes in the same effect — an unrelated paint change in the same frame.
 fn line_page(hidden: Signal<bool>, other: bool) -> RinchApp {
-    mount(move |scope| {
+    mount("", move |scope| {
         let wrap = scope.create_element("div");
         let line = scope.create_element("div");
         line.set_attribute(
@@ -355,7 +382,7 @@ fn hiding_a_span_inside_a_line_repaints_it_incrementally() {
 #[test]
 fn a_span_toggled_as_its_line_moves_leaves_no_ghost() {
     let hidden = Signal::new(false);
-    let mut app = mount(move |scope| {
+    let mut app = mount("", move |scope| {
         let wrap = scope.create_element("div");
         let line = scope.create_element("div");
         line.set_attribute(
