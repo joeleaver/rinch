@@ -46,9 +46,15 @@ pub(crate) const REACH_PER_BLUR: f64 = 1.5;
 pub const TAP_GLYPH_BUDGET: usize = 20_000;
 
 /// The largest mask, in pixels, the software rasteriser blurs; a bigger one
-/// (a huge transformed text block) falls back to the kernel of copies.
+/// (a huge transformed text block — a translate-only one is cropped to what
+/// can be seen) falls back to the kernel of copies.
 #[cfg(feature = "software-renderer")]
 const MAX_MASK_PX: usize = 16 << 20;
+
+/// The longest side of a mask: the image goes to Vello's image atlas, whose
+/// textures are bounded by wgpu's default 8192 limit.
+#[cfg(feature = "software-renderer")]
+const MAX_MASK_SIDE: usize = 4096;
 
 thread_local! {
     /// Draw blurred shadows as a kernel of copies even where the software
@@ -222,7 +228,7 @@ fn draw_masked(
         return true; // nothing of it can be seen
     }
     let (w, h) = (area.width() as usize, area.height() as usize);
-    if w.saturating_mul(h) > MAX_MASK_PX {
+    if w.saturating_mul(h) > MAX_MASK_PX || w > MAX_MASK_SIDE || h > MAX_MASK_SIDE {
         return false;
     }
 
