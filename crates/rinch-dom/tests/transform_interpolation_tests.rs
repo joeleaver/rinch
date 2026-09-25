@@ -205,6 +205,21 @@ fn none_to_a_rotation_is_a_rotation_from_zero() {
     );
 }
 
+/// The padding is a `rotate(0deg)` *function*, so `none` → `rotate(270deg)`
+/// goes the long way round, by function — decomposing the pair would take
+/// the short way, −90°.
+#[test]
+fn none_pads_by_function_so_a_long_turn_stays_long() {
+    check_transition(
+        "none",
+        "rotate(270deg)",
+        &[
+            (0.2, [0.587785, 0.809017, -0.809017, 0.587785, 0.0, 0.0]),
+            (0.8, [-0.809017, -0.587785, 0.587785, -0.809017, 0.0, 0.0]),
+        ],
+    );
+}
+
 /// A shorter list is padded with identity functions: `scale` runs 1 → 2
 /// alongside the rotation.
 #[test]
@@ -283,6 +298,21 @@ fn a_rotation_to_a_scale_decomposes() {
     ];
     check_transition("rotate(0deg)", "scale(2)", &samples);
     check_keyframes("rotate(0deg)", "scale(2)", &samples);
+}
+
+/// A decomposed rotation takes the short way: 170° → −170° through 180°,
+/// where the same pair by function goes through 0°
+/// (`a_rotation_angle_is_interpolated_linearly_not_shortest_path`).
+#[test]
+fn a_decomposed_rotation_takes_the_short_way() {
+    check_transition(
+        "rotate(170deg)",
+        "scale(1) rotate(-170deg)",
+        &[
+            (0.2, [-0.994522, 0.104528, -0.104528, -0.994522, 0.0, 0.0]),
+            (0.8, [-0.994522, -0.104528, 0.104528, -0.994522, 0.0, 0.0]),
+        ],
+    );
 }
 
 /// A reflection against a rotation: the decomposition's flipped axis.
