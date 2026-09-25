@@ -526,7 +526,9 @@ Not reported: a double or triple press (they select a word or a block), the
 secondary button (the context menu keeps its own link handling), a press on an image
 inside a link (it selects the image), and hover during a drag-select or a
 drag-and-drop. A callback runs with no internal borrow held, so it may re-enter the
-handle — load another document, read the selection. A pointer move pays nothing for
+handle — load another document, read the selection. It also runs untracked: a
+signal it reads never becomes a dependency of an effect that happened to call
+`dispatch_link_click` (issue #931). A pointer move pays nothing for
 hover while no editor on the thread has an `on_link_hover` callback; with one it
 reuses the move's own hit test on desktop.
 
@@ -623,7 +625,10 @@ editor.on_key(move |key| {
 Every callback runs with no internal borrow held, so each may call back into the
 handle: read the document, run `update(..)` or `toggle_link(..)`, move the
 selection. A selection move made from `on_selection_change` calls it again, from
-inside itself. Each is one callback per handle (a second registration replaces the
+inside itself. Every callback also runs **untracked** (issue #931): an app effect
+that calls `set_selection`, runs a `command` or offers a key calls these
+synchronously, and the popup's own signals a callback reads do not become that
+effect's dependencies. Each is one callback per handle (a second registration replaces the
 first), like `on_change`, and costs nothing while none is registered.
 
 **Why `on_caret_moved` and not `on_selection_change` for geometry.** On the web the
