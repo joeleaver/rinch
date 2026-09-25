@@ -424,6 +424,75 @@ fn a_text_leaf_with_no_cached_layout_is_shaped_by_paint() {
     );
 }
 
+/// A colour-only restyle of a container whose **own** text is a flex item —
+/// a hover, in effect — after one settled, painted frame. Since #904 paint
+/// draws a text leaf in its parent's current colour, so this takes the cheap
+/// path: no Taffy compute, no shape of any kind. #904's first cut rebuilt the
+/// leaf's layout through a compute instead, 3 µs → 308 µs per hover over 500
+/// rows (its review), which is what these two pin against.
+fn colour_hover_frame(display: &str) -> FrameStats {
+    let mut doc = doc_with(&format!(
+        ".row {{ display: {display}; width: 200px; }} .row.hot {{ color: rgb(200, 10, 10); }}"
+    ));
+    let body = doc.body();
+    let d = el(&mut doc, body, "div", "row");
+    text(&mut doc, d, "flex item text");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.reset();
+    doc.set_attribute(d, "class", "row hot");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.end_frame()
+}
+
+#[test]
+fn a_colour_hover_on_a_flex_items_text_skips_layout() {
+    let s = colour_hover_frame("flex");
+    expect(
+        "colour hover, flex text leaf",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+#[test]
+fn a_colour_hover_on_an_inline_flex_label_skips_layout() {
+    let s = colour_hover_frame("inline-flex");
+    // The one shape is the **line around** the chip: an `inline-flex` is a
+    // member of the IFC it sits in, and a member's restyle rebuilds that IFC
+    // (`ShapeIfcBuild`, no compute: `LayoutSkippedTextOnly`). The label itself
+    // is neither measured nor shaped.
+    expect(
+        "colour hover, inline-flex label",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 // ── pseudo_element_passes ──────────────────────────────────────────────────
 
 /// A sheet with a `::before` rule and no `::after` rule: one pass per cascaded
