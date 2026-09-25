@@ -13,12 +13,21 @@
 //! runs (`AboutToWait`) and a redraw when one is asked for — never by calling
 //! `resolve_and_repaint` or `refresh_editor_overlays` directly, because the
 //! point is that the runtime wakes for the change by itself.
+//!
+//! The text is set in the bundled Inter (`sans-serif`, claimed by an app font)
+//! with a declared `font-size` and `line-height`, and every position is checked
+//! against the paragraph's own box: where inside a line box Parley puts a
+//! selection rect depends on the face's metrics, and CI's DejaVu put the same
+//! highlight a pixel lower than this host's Noto.
 
 use super::hit_testing::painted_element_box;
 use super::*;
 use rinch_editor_core::{Pos, Selection};
 
 const VP: (u32, u32) = (800, 600);
+
+/// The bundled face the text is set in — see the module doc.
+const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
 /// Paragraph `i` is `line NNN`: 8 characters, spanning `1 + 10i` to `9 + 10i`.
 fn start_of(i: usize) -> Pos {
@@ -52,6 +61,7 @@ fn page() -> Page {
         root.append_child(&editor);
         root
     });
+    app.register_app_font(AppFont::sans_serif(INTER));
     app.mount_component(800.0, 600.0);
     app.resolve_and_repaint(800.0, 600.0);
     let mut page = Page { app, handle };
@@ -92,6 +102,24 @@ fn highlights(app: &RinchApp) -> Vec<(f32, f32, f32, f32)> {
         .collect()
 }
 
+/// Paragraph `i`'s painted box: one 24px line, so its line box.
+fn para_box(app: &RinchApp, i: usize) -> (f32, f32, f32, f32) {
+    let doc = app.doc.as_ref().unwrap().borrow();
+    let ps = doc.query_selector_all("p");
+    assert_eq!(ps.len(), 6, "the six paragraphs");
+    painted_element_box(&doc.tree, ps[i].0)
+}
+
+/// The editor container's left and top border widths. The overlays are
+/// anchored at its padding box, where the text's own geometry is measured from
+/// its border box, so they sit this far right of and below the text.
+fn editor_border(app: &RinchApp) -> (f32, f32) {
+    let doc = app.doc.as_ref().unwrap().borrow();
+    let ed = doc.query_selector_all("[data-pm-editor]");
+    let cs = &doc.tree.nodes[ed[0].0].computed_style;
+    (cs.border_left_width.to_px(), cs.border_top_width.to_px())
+}
+
 /// The caret overlay's painted box, if it is shown.
 fn caret_box(app: &RinchApp) -> Option<(f32, f32, f32, f32)> {
     let doc = app.doc.as_ref().unwrap().borrow();
@@ -118,19 +146,23 @@ fn a_range_set_from_app_code_draws_its_highlight() {
         .set_selection(Selection::text(start_of(2), end_of(2)));
     idle(&mut page.app);
 
-    // Within 3px: the overlays are placed against the container's box, which
-    // `editor_caret_point` does not share exactly. Unfixed, nothing is drawn;
-    // a stale caret sits ~140px away.
     let rects = highlights(&page.app);
     assert_eq!(rects.len(), 1, "one line selected: {rects:?}");
-    let (_, y, w, h) = rects[0];
-    let (_, line_y, line_h) = page
-        .app
-        .editor_caret_point(&page.handle, start_of(2))
-        .expect("the third paragraph has geometry");
+    let (x, y, w, h) = rects[0];
+    let (px, py, _, ph) = para_box(&page.app, 2);
+    let (bl, bt) = editor_border(&page.app);
+    assert_eq!(x, px + bl, "the highlight starts at the line's start");
+    // `selection_rects_for_layout` puts the rect's top at `baseline - ascent`
+    // and gives it the line's height, so it starts one half-leading below the
+    // line box — `(24 - (ascent + descent)) / 2`, a font metric (3px in the
+    // bundled Inter; host faces gave 1px, 2px on CI's DejaVu, 4px on another) — and overhangs the
+    // line's bottom by as much. What is font-independent: the full line height,
+    // and a top in the upper half of the third line's box (a stale highlight,
+    // or one on another line, is 36px away).
+    assert_eq!(h, ph, "the highlight is one line tall");
     assert!(
-        (y - line_y).abs() < 3.0 && (h - line_h).abs() < 1.0,
-        "the highlight sits on the third line: {:?} vs caret line y {line_y} h {line_h}",
+        y >= py + bt && y < py + bt + ph / 2.0,
+        "the highlight sits on the third line: {:?} vs line box y {py} h {ph}",
         rects[0]
     );
     assert!(w > 20.0, "and spans its text: {w}");
@@ -144,14 +176,23 @@ fn a_caret_set_from_app_code_is_drawn_where_it_now_is() {
     page.handle.set_selection(Selection::cursor(target));
     idle(&mut page.app);
 
-    let (cx, cy, _) = page
+    let (cx, _, _) = page
         .app
         .editor_caret_point(&page.handle, target)
         .expect("the fifth paragraph has geometry");
-    let (x, y, _, _) = caret_box(&page.app).expect("the caret is shown");
+    let (_, py, _, ph) = para_box(&page.app, 4);
+    let (bl, bt) = editor_border(&page.app);
+    let (x, y, _, h) = caret_box(&page.app).expect("the caret is shown");
+    assert_eq!(
+        (y, h),
+        (py + bt, ph),
+        "the caret spans the fifth line's box (a stale caret sits on the first)"
+    );
+    // The overlay's x is the text caret's, snapped to a whole pixel.
     assert!(
-        (x - cx).abs() < 3.0 && (y - cy).abs() < 3.0,
-        "the caret is drawn at ({x}, {y}), where the selection puts it at ({cx}, {cy})"
+        (x - (cx + bl)).abs() <= 1.0,
+        "the caret is drawn at x {x}, the selection puts it at {}",
+        cx + bl
     );
 }
 
