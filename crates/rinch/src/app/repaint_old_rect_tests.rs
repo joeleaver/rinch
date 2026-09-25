@@ -1354,15 +1354,15 @@ fn a_static_row_shifted_by_reflow_clears_its_spans_old_text_shadow() {
     });
 }
 
-/// A span's shadow given in place and then carried off by reflow: the
-/// paragraph was not repainted for the restyle (only its span was dirty), so
-/// its painted ink must have been brought up to the span's new shadow when
-/// that frame was consumed (#1048).
+/// A span's shadow given in place, then dropped in the frame reflow moves its
+/// paragraph: the paragraph was not itself dirty for the restyle (only its
+/// span was), so its painted ink must have been brought up to the span's new
+/// shadow when that frame was consumed (#1048).
 ///
 /// Kills: `consume_paint_dirty` not refreshing the IFC root's ink when a
 /// box-less member is consumed (the moved paragraph's old shadow stays).
 #[test]
-fn a_span_shadow_added_then_moved_by_reflow_is_cleared() {
+fn a_span_shadow_added_then_dropped_as_reflow_moves_it_is_cleared() {
     let (mut app, hs) = mount_with(|scope| {
         let outer = scope.create_element("div");
         outer.set_attribute("style", "width: 600px; height: 400px");
@@ -1388,7 +1388,10 @@ fn a_span_shadow_added_then_moved_by_reflow_is_cleared() {
         ink_in(&inc, (0, 154, 90, 186)) > 100,
         "positive control: the shadow is drawn"
     );
+    // Moved and dropped in one frame: neither the paragraph's ink now nor the
+    // span's names where the old shadow is, only the paragraph's painted ink.
     hs[0].set_style("height", "40px");
+    hs[1].set_style("text-shadow", "none");
     resolve(&mut app);
     let (inc, stats) = incremental_frame(&mut app);
     assert_incremental(&stats);
