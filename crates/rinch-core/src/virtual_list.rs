@@ -1035,4 +1035,46 @@ mod tests {
             "#356: the cleanup must run before its row is discarded or detached"
         );
     }
+
+    /// The parked release leaves a node the same pass put back (issue #356):
+    /// a memoising `view` handing the departing key's node to an arriving one.
+    /// The re-append has already placed it by the time the release runs.
+    #[test]
+    fn a_parked_release_leaves_a_node_the_same_pass_reused() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        // Built outside every row scope, so a row only hands it back (#719).
+        let shared = scope.create_element("section");
+        shared.set_attribute("data-name", "shared");
+
+        let items = Signal::new(vec![1u32, 2]);
+        let cached = shared.clone();
+        super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |n: &u32| *n,
+            1,
+            move |n: u32, s: &mut RenderScope| {
+                if n >= 2 {
+                    cached.clone()
+                } else {
+                    let row = s.create_element("div");
+                    row.set_attribute("data-name", &n.to_string());
+                    row
+                }
+            },
+        );
+        let window = shared.parent_node().expect("precondition: the shared row is mounted");
+
+        items.set(vec![1u32, 3]);
+
+        assert_eq!(
+            row_names(&window),
+            vec!["1".to_string(), "shared".to_string()],
+            "#356: the release parked for key 2 must not detach the node key 3 now shows"
+        );
+    }
 }
