@@ -209,6 +209,14 @@ fn a_negative_spread_shrinks_the_radius() {
     assert_radius(&p, Corner::BottomRight, 8.0, -4.0, 40.0, 40.0);
 }
 
+/// ...and floors it at zero: a 2px radius spread by -6px is a square corner,
+/// not a negative radius.
+#[test]
+fn a_negative_spread_past_the_radius_leaves_a_square_corner() {
+    let p = painted("border-radius: 2px; box-shadow: 40px 40px 0 -6px rgb(0,0,0)");
+    assert_radius(&p, Corner::BottomRight, 2.0, -6.0, 40.0, 40.0);
+}
+
 /// The blurred shadow's layers carry the spread shape's radius too. Blur 2px
 /// and spread 20px expand the outermost layer by `1 + 20 = 21`; its radius is
 /// the spread shape's `13.76` plus the one pixel of blur, so its arc crosses
