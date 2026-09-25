@@ -634,11 +634,21 @@ interceptors (`dispatch_keyboard_event` / `dispatch_paste_event` are public).
 callback — use it there, not `untracked`. Not wrapped, because nothing reaches
 them from inside an effect: the focus-registry callbacks and menu callbacks
 (both `pub(crate)`, run by the runtime from events or the deferred focus work),
-and Drag's `on_move`/`on_end` (pointer events). Also not yet wrapped: the
-editor's collaboration `outbound` sink, issue #948. Deliberately **not** wrapped: an
-`EditorHandle::update` `build` closure, and plugin code (`Plugin::apply`,
-`decorations`, `handle_paste`), which runs under the core borrow beside that
-closure — issue #943.
+and Drag's `on_move`/`on_end` (pointer events). **Editor plugin code runs
+untracked too** (issue #943), by a different route: `EditorHandle`'s core guards
+(`CoreGuard`, `CoreMutGuard`) hold a `rinch_core::reactive::suspend_tracking()`
+guard — `untracked_handler` as a value — for as long as the core is borrowed, so
+`Plugin::apply`, `init_state`, `decorations` (the view's diff), `handle_paste`, a
+plugin's command (`command` and `can_run` alike) and an input rule are untracked
+wherever the handle itself runs them, including through `add_plugin`, a load and
+`collab_receive`; the two constructors wrap `EditorState::create` and the first
+projection in `untracked_handler`. A new internal site under the guard needs
+nothing. The collaboration `outbound` sink runs under the same guard and wraps
+itself in `untracked_handler` as well (#948). Deliberately **not** untracked: the
+`EditorHandle::update` `build` closure, the caller's own code — `dispatch_inner`
+lifts the suspension for that closure alone, so plugin code *it* calls
+(`update(|s| { s.apply(..); … })`) is tracked as the caller's. The guard type
+`TrackingSuspended` is `!Send`/`!Sync`: the stack it restores is thread-local.
 
 ## Component Props
 
@@ -2070,6 +2080,17 @@ went stale on class toggles, insertions and removals. Now:
   `HAS_EMPTY_SELECTOR` flags say an insertion or removal can reach, and an
   `<ol>`'s later `<li>` markers. `:empty` follows the spec: no element child
   (generated boxes aside) and no non-empty text.
+- **A move within one parent keeps its style and its own text layout** (#914)
+  — a keyed `for` reorder, which moves a live row with `insert_before`. Its
+  ancestor chain is unchanged, so only a positional selector can see the move,
+  and the two `note_child_list_changed` calls (old index, new index) mark the
+  moved node itself whenever the parent's flags say one can
+  (`keeps_style_across_move`). Nor does a move drop the node's **own** IFC
+  layout, only the one it was a member of (`invalidate_ifc_left_by`): a
+  typography change its new position brings arrives through the cascade's
+  text-input comparison like any other. A move to **another** parent still
+  re-cascades the subtree. Before, every moved row was re-cascaded and
+  re-shaped — twice per row on a reversed list.
 - **The cascade propagates, it does not blanket.** `resolve_styles_recursive`
   cascades a node that has no style or a hint, then asks `child_cascade(old,
   new)`: children follow when an inherited struct, a custom property, the
@@ -3453,7 +3474,9 @@ cascade's `serif`. And connectivity is asked at **resolve** time, not where the
 entry was pushed, so a node classed while detached and spliced in before the next
 layout is still styled by that same entry. Entering the document is what styles a
 node, through `recompute_node_styles_recursive`, which every insertion route ends
-in (`append_child`, `insert_before`, `insert_child`, `replace_node`).
+in (`append_child`, `insert_before`, `insert_child`, `replace_node`) — except a
+styled node moved within its own parent, which never left and keeps its style
+(#914, see **Style invalidation**).
 
 **A subtree that leaves the document loses its before-change style** (#699) —
 the same rule as above, read from the other end. A node styled while it was

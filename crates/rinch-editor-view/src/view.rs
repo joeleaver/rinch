@@ -447,43 +447,78 @@ impl ViewDesc {
         true
     }
 
-    /// Reconcile this descriptor's children against `new`'s children: a positional
-    /// diff that recurses (with the `same_ref` fast skip), replaces a child whose
-    /// kind changed, appends new trailing children, and removes surplus ones.
+    /// Reconcile this descriptor's children against `new`'s children.
     ///
-    /// Positional (not keyed) is correct and minimal for text editing, where edits
-    /// are local; a keyed/LIS pass can replace this if reorder churn ever matters.
+    /// The children `new` shares with the old node by reference (`same_ref`) at
+    /// the **start** and at the **end** are matched first and left alone; only
+    /// the stretch between them is diffed, positionally: a child patched in
+    /// place where it can be, replaced where its kind changed, new children
+    /// inserted before the unchanged suffix, surplus ones discarded.
+    ///
+    /// Matching the suffix is what keeps a structural edit local (issue #905).
+    /// A purely positional diff re-pointed every block after a split or join
+    /// at its neighbour's host, rewriting each one's text — so one Enter in a
+    /// long document re-shaped every paragraph below the caret on the desktop.
+    /// A keyed/LIS pass is still not needed: an edit typically changes one contiguous
+    /// stretch of siblings, which is exactly what prefix + suffix isolate.
     fn diff_children(&mut self, new: &Node, doc: &DocRef) {
         let new_count = new.child_count();
-        for i in 0..new_count {
+        let old_count = self.children.len();
+        let mut start = 0;
+        while start < old_count
+            && start < new_count
+            && self.children[start].node.same_ref(new.child(start))
+        {
+            start += 1;
+        }
+        let (mut old_end, mut new_end) = (old_count, new_count);
+        while old_end > start
+            && new_end > start
+            && self.children[old_end - 1]
+                .node
+                .same_ref(new.child(new_end - 1))
+        {
+            old_end -= 1;
+            new_end -= 1;
+        }
+        // The changed stretch: `old[start..old_end]` becomes `new[start..new_end]`.
+        let common = (old_end - start).min(new_end - start);
+        for i in start..start + common {
             let new_child = new.child(i);
-            if i < self.children.len() {
-                if self.children[i].update(new_child, doc) {
-                    continue;
-                }
-                // Kind changed — build a replacement and swap it into the host
-                // (by the placed `outer` node, which differs from `dom` for a
-                // mark-wrapped run).
-                if let Some(replacement) = ViewDesc::build(new_child, doc) {
-                    self.children[i].outer.replace_with(&replacement.outer);
-                    // `replace_with` *detaches* the node it displaces (issue
-                    // #719); the `ViewDesc` holding it is overwritten on the
-                    // next line, so nothing can show it again. Say so, or the
-                    // browser backend pins it for the life of the page — this
-                    // is a per-keystroke path.
-                    self.children[i].outer.discard();
-                    self.children[i] = replacement;
-                }
-            } else if let Some(new_desc) = ViewDesc::build(new_child, doc) {
-                self.dom.append_child(&new_desc.outer);
-                self.children.push(new_desc);
+            if self.children[i].update(new_child, doc) {
+                continue;
+            }
+            // Kind changed — build a replacement and swap it into the host
+            // (by the placed `outer` node, which differs from `dom` for a
+            // mark-wrapped run).
+            if let Some(replacement) = ViewDesc::build(new_child, doc) {
+                self.children[i].outer.replace_with(&replacement.outer);
+                // `replace_with` *detaches* the node it displaces (issue
+                // #719); the `ViewDesc` holding it is overwritten on the
+                // next line, so nothing can show it again. Say so, or the
+                // browser backend pins it for the life of the page — this
+                // is a per-keystroke path.
+                self.children[i].outer.discard();
+                self.children[i] = replacement;
             }
         }
-        while self.children.len() > new_count {
-            // `pop` keeps removal O(1) and order-independent (host removal is by id).
-            if let Some(extra) = self.children.pop() {
-                // Popped off the end and dropped — `discard`, not `remove`
-                // (issue #719).
+        let at = start + common;
+        if new_end - start > common {
+            // New children go in before the unchanged suffix (or at the end).
+            let mut built = Vec::with_capacity(new_end - at);
+            for i in at..new_end {
+                if let Some(new_desc) = ViewDesc::build(new.child(i), doc) {
+                    match self.children.get(old_end) {
+                        Some(next) => self.dom.insert_before(&new_desc.outer, &next.outer),
+                        None => self.dom.append_child(&new_desc.outer),
+                    }
+                    built.push(new_desc);
+                }
+            }
+            self.children.splice(at..at, built);
+        } else if old_end > at {
+            // Dropped for good — `discard`, not `remove` (issue #719).
+            for extra in self.children.drain(at..old_end) {
                 extra.outer.discard();
             }
         }
@@ -2245,6 +2280,203 @@ mod tests {
         );
         assert_eq!(text(&h, blocks[0]).as_deref(), Some("a"));
         assert_eq!(text(&h, blocks[1]).as_deref(), Some("b"));
+    }
+
+    /// The text of each block the container holds, in order (overlays have
+    /// no `data-pm-type` and are skipped).
+    fn block_texts(h: &Harness) -> Vec<(NodeId, String)> {
+        children(h, h.container_id)
+            .into_iter()
+            .filter(|&id| pm_type(h, id).is_some())
+            .map(|id| (id, text(h, id).unwrap_or_default()))
+            .collect()
+    }
+
+    /// The host element currently showing `t`.
+    fn host_of(h: &Harness, t: &str) -> NodeId {
+        block_texts(h)
+            .into_iter()
+            .find(|(_, s)| s == t)
+            .unwrap_or_else(|| panic!("no block shows {t:?}"))
+            .0
+    }
+
+    /// Splitting a block in the **middle** of the document keeps every block
+    /// after it on its own host node (issue #905).
+    ///
+    /// The diff used to be purely positional, so inserting one block shifted
+    /// every later model block onto its predecessor's host: each one's text
+    /// was rewritten (`set_text`) and every paragraph below the caret was
+    /// re-shaped on the desktop — 31 shapes for one Enter in 30 paragraphs.
+    /// Matching the unchanged (`same_ref`) prefix and suffix first leaves them
+    /// alone. Off the fixed point: the split is neither the first nor the last
+    /// block, and two blocks follow it, so a positional diff moves both.
+    #[test]
+    fn a_split_in_the_middle_keeps_the_blocks_after_it_on_their_hosts() {
+        let h = harness();
+        let s = schema();
+        let mut st = state(
+            s.clone(),
+            doc_node(
+                &s,
+                vec![para(&s, "a"), para(&s, "bc"), para(&s, "d"), para(&s, "e")],
+            ),
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let (a, bc, d, e) = (
+            host_of(&h, "a"),
+            host_of(&h, "bc"),
+            host_of(&h, "d"),
+            host_of(&h, "e"),
+        );
+        let (d_text, e_text) = (children(&h, d)[0], children(&h, e)[0]);
+
+        // 0[p 1 a 2]3[p 4 b 5 c 6]7 — split between "b" and "c".
+        st.selection = Selection::cursor(rinch_editor_core::Pos(5));
+        let next = st.run("splitBlock").expect("split applies");
+        view.update_dom(&st, &next);
+
+        let after: Vec<String> = block_texts(&h).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(
+            after,
+            ["a", "b", "c", "d", "e"],
+            "the host reads as the model"
+        );
+        assert_eq!(host_of(&h, "a"), a, "the block before is untouched");
+        assert_eq!(host_of(&h, "b"), bc, "the split block is patched in place");
+        assert_eq!(host_of(&h, "d"), d, "#905: `d` stays on its own host");
+        assert_eq!(host_of(&h, "e"), e, "#905: `e` stays on its own host");
+        assert_eq!(children(&h, d)[0], d_text, "and on its own text node");
+        assert_eq!(children(&h, e)[0], e_text, "and on its own text node");
+    }
+
+    /// Joining two blocks in the middle of the document keeps the blocks after
+    /// the join on their hosts, and discards the joined-away block's host — not
+    /// the last one (issue #905).
+    #[test]
+    fn a_join_in_the_middle_discards_the_joined_block_not_the_last() {
+        let h = harness();
+        let s = schema();
+        let mut st = state(
+            s.clone(),
+            doc_node(
+                &s,
+                vec![
+                    para(&s, "a"),
+                    para(&s, "b"),
+                    para(&s, "c"),
+                    para(&s, "d"),
+                    para(&s, "e"),
+                ],
+            ),
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let (b, c, d, e) = (
+            host_of(&h, "b"),
+            host_of(&h, "c"),
+            host_of(&h, "d"),
+            host_of(&h, "e"),
+        );
+
+        // 0[p1 a 2]3[p4 b 5]6[p7 c 8]9 — Backspace at the start of "c".
+        st.selection = Selection::cursor(rinch_editor_core::Pos(7));
+        let next = st.run("deleteCharBackward").expect("join applies");
+        view.update_dom(&st, &next);
+
+        let after: Vec<String> = block_texts(&h).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(after, ["a", "bc", "d", "e"], "the host reads as the model");
+        assert_eq!(host_of(&h, "bc"), b, "the joined block is patched in place");
+        assert_eq!(host_of(&h, "d"), d, "#905: `d` stays on its own host");
+        assert_eq!(host_of(&h, "e"), e, "#905: `e` stays on its own host");
+        assert_eq!(tag(&h, c), None, "#719: the joined-away block is discarded");
+    }
+
+    /// Whatever the edit, the host's blocks read as the model's, in order —
+    /// inserted and removed at the start, the middle and the end, several at
+    /// once, and with a changed block between two unchanged ones.
+    #[test]
+    fn the_host_reads_as_the_model_after_inserts_and_removals_anywhere() {
+        let s = schema();
+        let texts = |v: &[&str]| -> Node { doc_node(&s, v.iter().map(|t| para(&s, t)).collect()) };
+        let cases: &[(&[&str], &[&str])] = &[
+            (&["a", "b", "c"], &["x", "a", "b", "c"]),
+            (&["a", "b", "c"], &["a", "b", "c", "x"]),
+            (&["a", "b", "c"], &["a", "x", "y", "b", "c"]),
+            (&["a", "b", "c", "d"], &["a", "d"]),
+            (&["a", "b", "c", "d"], &["b", "c", "d"]),
+            (&["a", "b", "c", "d"], &["a", "b", "c"]),
+            (&["a", "b", "c"], &["a", "x", "c"]),
+            (&["a", "b", "c"], &["a", "x", "y", "z", "c"]),
+            (&["a", "b", "c", "d"], &["a", "x", "d"]),
+            (&["a"], &["x", "y"]),
+        ];
+        for (before, after) in cases {
+            let h = harness();
+            let old = texts(before);
+            let st = state(s.clone(), old.clone());
+            let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+            // Keep the unchanged blocks as the SAME `Rc`s, as a real
+            // transaction does, so the diff can match them.
+            let blocks: Vec<Node> = after
+                .iter()
+                .map(|t| {
+                    (0..old.child_count())
+                        .map(|i| old.child(i))
+                        .find(|c| c.child(0).text() == Some(*t))
+                        .cloned()
+                        .unwrap_or_else(|| para(&s, t))
+                })
+                .collect();
+            let mut next = st.clone();
+            next.doc = doc_node(&s, blocks);
+            view.update_dom(&st, &next);
+            let got: Vec<String> = block_texts(&h).into_iter().map(|(_, t)| t).collect();
+            assert_eq!(&got, after, "{before:?} -> {after:?}");
+        }
+    }
+
+    /// A run inserted in front of an unchanged **mark-wrapped** run goes in
+    /// before the run's outermost wrapper, not inside it (issue #905's review).
+    ///
+    /// The suffix a new child is inserted before is placed by its `outer`
+    /// node; for a bold run that is the `<strong>`, while its `dom` is the text
+    /// node inside it. Inserting before `dom` would put the plain text inside
+    /// the `<strong>`. A block's `outer` and `dom` are one node, so no
+    /// block-level fixture can tell the two apart.
+    #[test]
+    fn a_run_typed_in_front_of_a_bold_run_lands_outside_its_wrapper() {
+        let h = harness();
+        let s = schema();
+        let bold = mk(&s, "bold", rinch_editor_core::Attrs::default());
+        let old = doc_node(&s, vec![marked_para(&s, "b", vec![bold])]);
+        let st = state(s.clone(), old.clone());
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let p = children(&h, h.container_id)[0];
+        let strong = children(&h, p)[0];
+        assert_eq!(tag(&h, strong).as_deref(), Some("strong"), "precondition");
+
+        // The same bold run (`same_ref`), with a plain run in front of it.
+        let bold_run = old.child(0).child(0).clone();
+        let para = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![s.text("a").unwrap(), bold_run]),
+            )
+            .unwrap();
+        let mut next = st.clone();
+        next.doc = doc_node(&s, vec![para]);
+        view.update_dom(&st, &next);
+
+        let kids = children(&h, p);
+        assert_eq!(kids.len(), 2, "a plain run and the bold run: {kids:?}");
+        assert_eq!(tag(&h, kids[0]), None, "the new run is a bare text node");
+        assert_eq!(text(&h, kids[0]).as_deref(), Some("a"));
+        assert_eq!(kids[1], strong, "the bold run keeps its wrapper");
+        assert_eq!(
+            text(&h, strong).as_deref(),
+            Some("b"),
+            "and nothing joins it"
+        );
     }
 
     #[test]

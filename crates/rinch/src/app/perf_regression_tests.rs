@@ -470,8 +470,11 @@ fn row_count(app: &RinchApp) -> usize {
 ///   fixes).
 /// - **Two clip masks cover 367 044 px** for that 122 816 px repaint: the
 ///   damage's own clip and the scroller's, each filled over its bounds.
-/// - **#914 (this scenario only):** the moved row is re-cascaded and re-shaped (`elements_cascaded` 1,
-///   `shape_measure_ifc` 1) though neither its style nor its text changed.
+/// - **#914, fixed:** the moved row is neither re-cascaded nor re-shaped
+///   (`elements_cascaded` 0, `shape_*` 0): a move within one parent keeps its
+///   style (`keeps_style_across_move`) and its own IFC layout
+///   (`invalidate_ifc_left_by`). The one `ifc_measure_invalidations` left is
+///   the parent's (`invalidate_parent_ifc`).
 #[test]
 fn a_keyed_for_moves_one_row() {
     let (mut app, list) = mount_list();
@@ -486,20 +489,13 @@ fn a_keyed_for_moves_one_row() {
         "for: move one row",
         &s,
         &[
-            (StyleResolves, 2),
-            (ElementsCascaded, 1),
-            (StyleNodesVisited, 1),
-            (TaffyStyleSyncs, 1),
-            (ShapeMeasureIfc, 1),
-            (ShapeIfcBuild, 1),
-            (IfcMeasureInvalidations, 2),
+            (IfcMeasureInvalidations, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
             (IfcScopeContainers, 2),
             (IfcScopeNodes, 203),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 1),
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),

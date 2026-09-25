@@ -1189,3 +1189,223 @@ fn a_font_change_on_a_split_inline_with_a_normal_line_height() {
         |doc, span| doc.set_attribute(*span, "class", "b d a"),
     );
 }
+
+// ── A connected move keeps the moved root's own layout (#914) ───────────────
+//
+// A keyed `for` reorder repositions a live row with `insert_before`, and the
+// move verbs no longer drop the moved node's **own** IFC layout nor re-cascade
+// it when it stays under the same parent: its content is unchanged, and what
+// its position can change is left to the cascade's typography comparison and
+// to the selector flags (`note_child_list_changed`). Each fixture below is a
+// move where the moved row's text *does* have to change, through one of those
+// two routes — so a move path that kept too much fails here.
+
+/// Two lists, the second one's rows inherit a different colour, size and
+/// letter-spacing. A row moved **between** them is re-cascaded (the parent
+/// changed), and its glyphs must follow the new inherited typography.
+#[test]
+fn a_row_moved_to_another_parent_takes_its_inherited_typography() {
+    twin(
+        "a_row_moved_to_another_parent_takes_its_inherited_typography",
+        ".big { color: rgb(0, 120, 200); font-size: 20px; line-height: 26px; \
+                letter-spacing: 3px; }",
+        |doc, on| {
+            let body = doc.body();
+            let mk_row = |doc: &mut RinchDocument, label: &str| {
+                let row = doc.create_element("div");
+                doc.set_attribute(row, "class", "row");
+                let t = doc.create_text(label);
+                doc.append_child(row, t);
+                row
+            };
+            let a = doc.create_element("div");
+            doc.set_attribute(a, "class", "list box");
+            let b = doc.create_element("div");
+            doc.set_attribute(b, "class", "list box big");
+            let r0 = mk_row(doc, LABELS[0]);
+            let r1 = mk_row(doc, LABELS[1]);
+            let r2 = mk_row(doc, LABELS[2]);
+            let r3 = mk_row(doc, LABELS[3]);
+            doc.append_child(a, r0);
+            if !on {
+                doc.append_child(a, r1);
+            }
+            doc.append_child(a, r2);
+            doc.append_child(b, r3);
+            if on {
+                doc.append_child(b, r1);
+            }
+            doc.append_child(body, a);
+            doc.append_child(body, b);
+            (b, r1)
+        },
+        |doc, (b, r1)| doc.append_child(*b, *r1),
+    );
+}
+
+/// Same parent, and a structural selector that sets typography: the row that
+/// lands at `:nth-child(2)` must be re-cascaded and re-shaped although its
+/// parent did not change, and the row it displaced must lose that style.
+#[test]
+fn a_row_moved_into_an_nth_child_slot_takes_its_typography() {
+    twin(
+        "a_row_moved_into_an_nth_child_slot_takes_its_typography",
+        ".row:nth-child(2) { color: rgb(200, 30, 30); font-size: 22px; line-height: 28px; }",
+        |doc, on| {
+            let l: Vec<&str> = if on {
+                vec![LABELS[0], LABELS[3], LABELS[1], LABELS[2]]
+            } else {
+                LABELS.to_vec()
+            };
+            list_doc(doc, &l)
+        },
+        |doc, (list, rows)| doc.insert_before(*list, rows[3], rows[1]),
+    );
+}
+
+/// `:first-child` and `+`: moving the last row to the front changes which row
+/// is first and which follows which, in one parent.
+#[test]
+fn a_row_moved_to_the_front_takes_first_child_and_sibling_typography() {
+    twin(
+        "a_row_moved_to_the_front_takes_first_child_and_sibling_typography",
+        ".row:first-child { font-size: 22px; line-height: 28px; } \
+         .row:first-child + .row { color: rgb(0, 150, 0); letter-spacing: 3px; }",
+        |doc, on| {
+            let l: Vec<&str> = if on {
+                vec![LABELS[3], LABELS[0], LABELS[1], LABELS[2]]
+            } else {
+                LABELS.to_vec()
+            };
+            list_doc(doc, &l)
+        },
+        |doc, (list, rows)| doc.insert_before(*list, rows[3], rows[0]),
+    );
+}
+
+/// An atomic inline (`inline-block` chip, an IFC root of its own text) moved
+/// from one paragraph into another whose inherited colour and size differ:
+/// both paragraphs' layouts change, and so do the chip's own glyphs.
+#[test]
+fn a_chip_moved_between_paragraphs_takes_the_new_typography() {
+    twin(
+        "a_chip_moved_between_paragraphs_takes_the_new_typography",
+        ".p2 { color: rgb(0, 120, 200); font-size: 20px; line-height: 26px; }",
+        |doc, on| {
+            let body = doc.body();
+            let p1 = doc.create_element("p");
+            doc.set_attribute(p1, "class", "box");
+            let t1 = doc.create_text("first paragraph text that wraps in the box ");
+            doc.append_child(p1, t1);
+            let p2 = doc.create_element("p");
+            doc.set_attribute(p2, "class", "box p2");
+            let t2 = doc.create_text("second paragraph ");
+            doc.append_child(p2, t2);
+            let chip = doc.create_element("span");
+            doc.set_attribute(chip, "class", "chip");
+            let ct = doc.create_text("chip label");
+            doc.append_child(chip, ct);
+            doc.append_child(if on { p2 } else { p1 }, chip);
+            doc.append_child(body, p1);
+            doc.append_child(body, p2);
+            (p2, chip)
+        },
+        |doc, (p2, chip)| doc.append_child(*p2, *chip),
+    );
+}
+
+/// Width alone: a row moved from a 180px list into a 320px one, with no
+/// typography between them to change. The cascade has nothing to drop, so the
+/// re-break at the new width is the measure cache's and `build_ifc_layouts`'
+/// width key, not an invalidation.
+#[test]
+fn a_row_moved_to_a_wider_parent_rebreaks_at_its_width() {
+    twin(
+        "a_row_moved_to_a_wider_parent_rebreaks_at_its_width",
+        ".wide { width: 320px; }",
+        |doc, on| {
+            let body = doc.body();
+            let mk_row = |doc: &mut RinchDocument, label: &str| {
+                let row = doc.create_element("div");
+                doc.set_attribute(row, "class", "row");
+                let t = doc.create_text(label);
+                doc.append_child(row, t);
+                row
+            };
+            let a = doc.create_element("div");
+            doc.set_attribute(a, "class", "list box");
+            let b = doc.create_element("div");
+            doc.set_attribute(b, "class", "list wide");
+            let r0 = mk_row(doc, LABELS[0]);
+            let r1 = mk_row(doc, LABELS[2]);
+            doc.append_child(if on { b } else { a }, r0);
+            doc.append_child(a, r1);
+            doc.append_child(body, a);
+            doc.append_child(body, b);
+            (b, r0)
+        },
+        |doc, (b, r0)| doc.append_child(*b, *r0),
+    );
+}
+
+// ── A pure edge-child sheet: the moved row's only restyle (review of #949) ──
+//
+// With only `:first-child` / `:last-child` in the sheet the list carries
+// `HAS_EDGE_CHILD_SELECTOR` and nothing else, so the moved row — which keeps
+// its style across a move within its parent — is restyled by one mark alone:
+// the `after` child at its new index in `note_child_list_changed`. (The
+// `:first-child` fixture above also has `+`, whose later-siblings flag masks
+// that mark.)
+
+fn edge_list(doc: &mut RinchDocument, labels: &[&str]) -> (NodeId, Vec<NodeId>) {
+    let body = doc.body();
+    let list = doc.create_element("div");
+    doc.set_attribute(list, "class", "list box");
+    let mut rows = Vec::new();
+    for l in labels {
+        let row = doc.create_element("div");
+        doc.set_attribute(row, "class", "row");
+        let span = doc.create_element("span");
+        let t = doc.create_text(l);
+        doc.append_child(span, t);
+        doc.append_child(row, span);
+        doc.append_child(list, row);
+        rows.push(row);
+    }
+    doc.append_child(body, list);
+    (list, rows)
+}
+
+#[test]
+fn a_row_moved_to_the_front_under_only_first_child() {
+    twin(
+        "a_row_moved_to_the_front_under_only_first_child",
+        ".row:first-child { font-size: 22px; line-height: 28px; }",
+        |doc, on| {
+            let l: Vec<&str> = if on {
+                vec![LABELS[3], LABELS[0], LABELS[1], LABELS[2]]
+            } else {
+                LABELS.to_vec()
+            };
+            edge_list(doc, &l)
+        },
+        |doc, (list, rows)| doc.insert_before(*list, rows[3], rows[0]),
+    );
+}
+
+#[test]
+fn a_row_moved_to_the_end_under_only_last_child() {
+    twin(
+        "a_row_moved_to_the_end_under_only_last_child",
+        ".row:last-child { font-size: 22px; line-height: 28px; }",
+        |doc, on| {
+            let l: Vec<&str> = if on {
+                vec![LABELS[1], LABELS[2], LABELS[3], LABELS[0]]
+            } else {
+                LABELS.to_vec()
+            };
+            edge_list(doc, &l)
+        },
+        |doc, (list, rows)| doc.append_child(*list, rows[0]),
+    );
+}

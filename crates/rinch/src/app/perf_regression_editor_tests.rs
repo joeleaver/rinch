@@ -278,13 +278,12 @@ fn arrow_right() {
 
 /// Enter in the middle of a paragraph: one block becomes two.
 ///
-/// **Finding, pinned as it is — #905; a fix must LOWER this number, and its PR updates the pin:** every paragraph is re-shaped
-/// (`shape_measure_ifc` 31), not the two the split touched. **Not the
-/// structural pass's signatures:** with the scoped pass (#895) only the one
-/// split block's signature moves (`ifc_signature_changes` 1, was 31 when every
-/// structural pass re-signed the whole document), and the 31 shapes are
-/// unchanged — so the drops come in through `ifc_measure_invalidations` (92,
-/// about three per block), whose source is not traced here. Two
+/// Only the two blocks the split touched are shaped (`shape_measure_ifc` 2).
+/// It was every paragraph (31) until #905: the view's child diff was
+/// positional, so the new block shifted every later model block onto its
+/// predecessor's host and rewrote each one's text (`ifc_measure_invalidations`
+/// 92, three per block). The diff now matches the unchanged prefix and suffix
+/// first and inserts the new block between them. Two
 /// resolves, as for a keystroke, the second paint-only since #906 (one
 /// Taffy compute, was 2). The full repaint is legitimate: every block
 /// below the caret moves, which is more than half the window.
@@ -309,9 +308,9 @@ fn enter_splits_a_paragraph() {
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 1),
-            (ShapeMeasureIfc, 31),
-            (ShapeIfcBuild, 31),
-            (IfcMeasureInvalidations, 92),
+            (ShapeMeasureIfc, 2),
+            (ShapeIfcBuild, 2),
+            (IfcMeasureInvalidations, 5),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
@@ -320,7 +319,7 @@ fn enter_splits_a_paragraph() {
             (IfcScopeContainers, 2),
             (IfcScopeNodes, 34),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 31),
+            (TaffyMeasureCalls, 2),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullRegionTooLarge, 1),
@@ -337,10 +336,9 @@ fn enter_splits_a_paragraph() {
 
 /// Backspace at the start of the second paragraph joins it to the first.
 ///
-/// **Finding, pinned as it is — #905; a fix must LOWER this number, and its PR updates the pin:** the mirror of `enter_splits_a_paragraph` —
-/// the blocks after the join are re-shaped with it (`shape_measure_ifc` 29), and
-/// as there, not through signatures (`ifc_signature_changes` 0 since #895, was
-/// 29) but through `ifc_measure_invalidations` (88). One Taffy compute; the
+/// The mirror of `enter_splits_a_paragraph`: only the joined block is shaped
+/// (`shape_measure_ifc` 1, was 29 until #905, when every block after the join
+/// was shifted onto its neighbour's host). One Taffy compute; the
 /// caret pass's resolve is paint-only since #906 (was 2).
 #[test]
 fn backspace_joins_two_paragraphs() {
@@ -363,9 +361,9 @@ fn backspace_joins_two_paragraphs() {
             (PseudoElementPasses, 2),
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 2),
-            (ShapeMeasureIfc, 29),
-            (ShapeIfcBuild, 29),
-            (IfcMeasureInvalidations, 88),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 4),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -373,7 +371,7 @@ fn backspace_joins_two_paragraphs() {
             (IfcScopeContainers, 1),
             (IfcScopeNodes, 31),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 29),
+            (TaffyMeasureCalls, 1),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullRegionTooLarge, 1),

@@ -1986,8 +1986,16 @@ fn paints_nothing_without_visit(
     parent_transform: Affine,
     depth: usize,
 ) -> bool {
-    // Bounded like every other walk here; past it, visit and let paint decide.
-    const MAX_DEPTH: usize = 32;
+    // Shallow on purpose; past it, visit and let paint decide. Every level
+    // that *is* visited asks this again of its own children, so a subtree
+    // outside the cull whose content reaches back in late in DOM order is
+    // re-walked once per level of nesting above it. The cap bounds that to
+    // `MAX_DEPTH + 1` rect tests per node, where 32 let it grow with the
+    // nesting: 2000 `column-reverse` rows under 30 overflowing wrappers
+    // painted in 0.30 ms against 0.13 ms with no cull, and 0.15 ms with this
+    // cap (review of #957, release, best of 5). A list row — the row, its
+    // content, a line or two inside that — still prunes whole within it.
+    const MAX_DEPTH: usize = 3;
     if depth > MAX_DEPTH {
         return false;
     }

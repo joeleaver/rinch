@@ -112,12 +112,13 @@ impl DomDocument for RinchDocument {
         self.tree.hit_cache.invalidate();
         let p = parent.0;
         let c = child.0;
-        // Invalidate old IFC if child was in one
-        self.invalidate_ifc_for_node(c);
+        // Invalidate the IFC the child was a member of — not its own (#914).
+        self.invalidate_ifc_left_by(c);
         self.clear_ifc_root_recursive(c);
         // Remove from old parent if any (both DOM and Taffy). The Taffy side
         // must remove the node's *contribution*, not just its own id — a
         // spliced `display: contents` node's slots are its children's (#517).
+        let restyle = !self.keeps_style_across_move(c, p);
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
@@ -159,7 +160,9 @@ impl DomDocument for RinchDocument {
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors.
         // Suppressed during bulk DOM operations (render_block_at) to batch into one pass.
-        if !self.tree.suppress_inline_restyle {
+        if !restyle {
+            // A move within one parent (#914): see `keeps_style_across_move`.
+        } else if !self.tree.suppress_inline_restyle {
             self.recompute_node_styles_recursive(c);
         } else {
             // Deferred, not skipped: the subtree is left unstyled and recorded
@@ -211,11 +214,12 @@ impl DomDocument for RinchDocument {
         let p = parent.0;
         let c = child.0;
         let r = reference.0;
-        // Invalidate old IFC
-        self.invalidate_ifc_for_node(c);
+        // Invalidate the IFC the child was a member of — not its own (#914).
+        self.invalidate_ifc_left_by(c);
         self.clear_ifc_root_recursive(c);
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
+        let restyle = !self.keeps_style_across_move(c, p);
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
@@ -263,8 +267,11 @@ impl DomDocument for RinchDocument {
 
         self.note_child_inserted(p, c, true);
 
-        // Recompute styles for the inserted subtree to pick up ancestor-based selectors
-        self.recompute_node_styles_recursive(c);
+        // Recompute styles for the inserted subtree to pick up ancestor-based
+        // selectors — unless it only moved within its parent (#914).
+        if restyle {
+            self.recompute_node_styles_recursive(c);
+        }
 
         // The insertion rule (#692), as in `append_child`. This is the path a
         // keyed `for` row arrives through: `rinch_core::for_loop` places each
@@ -817,11 +824,12 @@ impl DomDocument for RinchDocument {
         self.tree.hit_cache.invalidate();
         let p = parent.0;
         let c = child.0;
-        // Invalidate old IFC
-        self.invalidate_ifc_for_node(c);
+        // Invalidate the IFC the child was a member of — not its own (#914).
+        self.invalidate_ifc_left_by(c);
         self.clear_ifc_root_recursive(c);
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
+        let restyle = !self.keeps_style_across_move(c, p);
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
@@ -862,8 +870,11 @@ impl DomDocument for RinchDocument {
 
         self.note_child_inserted(p, c, true);
 
-        // Recompute styles for the inserted subtree to pick up ancestor-based selectors
-        self.recompute_node_styles_recursive(c);
+        // Recompute styles for the inserted subtree to pick up ancestor-based
+        // selectors — unless it only moved within its parent (#914).
+        if restyle {
+            self.recompute_node_styles_recursive(c);
+        }
 
         // The same insertion rule as `append_child` (#692) — and the one that
         // shows it is "last inserted" rather than "last in tree order": Chrome
