@@ -1255,6 +1255,105 @@ fn a_text_shadow_added_in_place_is_painted_whole() {
     );
 }
 
+// ── #1048: a span's own `text-shadow` is ink of the paragraph it flows in ──
+
+/// [`text_panel`], but the box declares no shadow and its text sits in a
+/// `<span>` that does: a flowed inline owns no box, so only the IFC root's
+/// rect, grown by its **members'** shadow reach, can name the shadow's pixels.
+fn span_text_panel(shadow: &str) -> (RinchApp, NodeHandle) {
+    let shadow = shadow.to_string();
+    let (app, hs) = mount_with(move |scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let root = el(
+            scope,
+            &outer,
+            "position: relative; width: 10px; height: 10px",
+        );
+        let b = el(
+            scope,
+            &root,
+            "position: absolute; left: 20px; top: 150px; width: 200px; height: 20px; \
+             font-size: 16px; line-height: 20px; color: rgb(0, 0, 0)",
+        );
+        let span = scope.create_element("span");
+        span.set_attribute("style", &format!("text-shadow: {shadow}"));
+        b.append_child(&span);
+        let t = scope.create_text("HHHH HHHH");
+        span.append_child(&t);
+        (outer, vec![span])
+    });
+    (app, hs[0].clone())
+}
+
+/// A span's text-shadow dropped in place is cleared (#1048).
+///
+/// Kills: the span's damage falling back to the paragraph's bare box (the
+/// shadow 60px below it is never repainted).
+#[test]
+fn a_span_text_shadow_dropped_in_place_is_cleared() {
+    let (mut app, span) = span_text_panel("0 60px 6px rgb(255, 0, 0)");
+    assert_clean_after(&mut app, TEXT_SHADOW_BAND, |app| {
+        span.set_style("text-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// A span's text-shadow added in place is painted whole (#1048).
+///
+/// Kills: the span's new reach missing from the damage, or the paint prune
+/// testing the paragraph's own ink only (its box is outside the band, so the
+/// incremental frame never draws the shadow there).
+#[test]
+fn a_span_text_shadow_added_in_place_is_painted_whole() {
+    let (mut app, span) = span_text_panel("none");
+    let _ = full_frame(&mut app);
+    span.set_style("text-shadow", "0 60px 6px rgb(255, 0, 0)");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert!(
+        ink_in(&full, TEXT_SHADOW_BAND) > 100,
+        "positive control: the span's new shadow is there"
+    );
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
+/// A static paragraph shifted down by reflow, its span's shadow 60px below its
+/// box: the paragraph's painted ink must hold its span's shadow reach (#1048).
+///
+/// Kills: `PaintedState` recording the IFC root's own ink only (the old shadow
+/// is left behind).
+#[test]
+fn a_static_row_shifted_by_reflow_clears_its_spans_old_text_shadow() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let col = el(scope, &outer, "width: 300px");
+        let spacer = el(scope, &col, "height: 100px");
+        let row = el(
+            scope,
+            &col,
+            "height: 20px; font-size: 16px; line-height: 20px; color: rgb(0, 0, 0)",
+        );
+        let span = scope.create_element("span");
+        span.set_attribute("style", "text-shadow: 0 60px 6px rgb(255, 0, 0)");
+        row.append_child(&span);
+        let t = scope.create_text("HHHH HHHH");
+        span.append_child(&t);
+        (outer, vec![spacer])
+    });
+    assert_clean_after(&mut app, (0, 154, 90, 186), |app| {
+        hs[0].set_style("height", "40px");
+        resolve(app);
+    });
+}
+
 // ── #997: backface-visibility and transform-origin z ─────────────────────────
 /// A change that hides or shows a box through its backface, or moves it by its
 /// origin's z, repaints incrementally and matches a full frame. The first pins
