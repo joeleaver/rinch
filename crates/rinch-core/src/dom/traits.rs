@@ -645,6 +645,10 @@ pub trait DomDocument {
     /// box's origin, one line high, which is where an editor paints the caret on
     /// a blank line. `None` when the node is unknown or has not been laid out.
     ///
+    /// At a soft line wrap it answers the **downstream** caret, at the start of
+    /// the lower line, on both backends; see
+    /// [`Self::query_caret_rect_with_affinity`] for the other side.
+    ///
     /// Backs `EditorHandle::caret_rect`. Default `None`: a host with no geometry
     /// (the mock document) has no screen to answer for.
     fn query_caret_rect(&self, _node_id: u64, _byte_offset: usize) -> Option<(f32, f32, f32)> {

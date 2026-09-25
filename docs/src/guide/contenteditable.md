@@ -137,9 +137,11 @@ Command names are case-sensitive. The full catalogue:
 > lands after the line's last letter (typing appends to the upper line), and a
 > soft-line delete backward right after Home deletes one character, as Chrome
 > does. The hint is view state, not part of the `Selection`: it applies only
-> while the selection is the one it came with, so typing, any edit that moves the
-> caret, undo, a load or a plain `set_selection` returns the caret to the lower
-> line's start. Set it yourself with `EditorHandle::set_selection_with_affinity`;
+> while the selection is the one it came with, so typing, an edit in the caret's
+> own paragraph, undo, a load or a plain `set_selection` returns the caret to the
+> lower line's start. An edit that only shifts the caret — in an earlier
+> paragraph, a collaborator typing above — carries the hint along, so the caret
+> stays at the end of its line. Set it yourself with `EditorHandle::set_selection_with_affinity`;
 > read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
 >
 > Where this still differs from a browser field:

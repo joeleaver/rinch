@@ -1823,9 +1823,11 @@ impl EditorHandle {
     /// `Downstream` for Home. The hint is **view state**, not part of the
     /// model's [`Selection`]: it lives beside the selection it was set with and
     /// applies only while the selection is still that one, so any other change
-    /// of selection — typing, an edit, undo, a load, a remote edit that moves
-    /// the caret, a plain `set_selection` — returns the caret to downstream. A
-    /// remote edit that leaves the caret where it was keeps it.
+    /// of selection — typing, an edit at the caret, undo, a load, a plain
+    /// `set_selection` — returns the caret to downstream. A
+    /// remote edit, or a local one, that only shifts the caret — an edit in an
+    /// earlier paragraph, a peer typing above — carries it to the shifted
+    /// caret, since the caret's own line is unchanged.
     ///
     /// It reaches the caret overlay, [`caret_rect`](Self::caret_rect) at the
     /// head, and through them the platforms' visual-line motions (Home / End,

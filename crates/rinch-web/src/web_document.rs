@@ -1635,20 +1635,10 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// Downstream at a soft wrap, as on desktop — see
+    /// [`Self::query_caret_position_with_affinity`].
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
-        let n = self.nodes.get(&(node_id as usize))?;
-        let (text_node, utf16_offset) = find_text_node_at_byte_offset(n, byte_offset)?;
-        let range = self.browser_doc.create_range().ok()?;
-        range.set_start(&text_node, utf16_offset).ok()?;
-        range.set_end(&text_node, utf16_offset).ok()?;
-        let rect = range.get_bounding_client_rect();
-        // Get the block element's rect to compute relative coordinates
-        let el: web_sys::Element = n.clone().dyn_into().ok()?;
-        let block_rect = el.get_bounding_client_rect();
-        Some((
-            (rect.x() - block_rect.x()) as f32,
-            (rect.y() - block_rect.y()) as f32,
-        ))
+        self.query_caret_position_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
 
     fn query_caret_position_with_affinity(
@@ -1671,22 +1661,8 @@ impl DomDocument for WebDocument {
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
         let block = self.nodes.get(&(node_id as usize))?;
-        self.text_caret_viewport_rect(block, byte_offset, affinity)
-            .or_else(|| self.query_caret_rect(node_id, byte_offset))
-    }
-
-    fn query_caret_rect(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32, f32)> {
-        let block = self.nodes.get(&(node_id as usize))?;
-        // A collapsed `Range` at the text position: the browser's own caret box.
-        if let Some((text_node, off)) = find_text_node_at_byte_offset(block, byte_offset)
-            && let Ok(range) = self.browser_doc.create_range()
-            && range.set_start(&text_node, off).is_ok()
-            && range.set_end(&text_node, off).is_ok()
-        {
-            let r = range.get_bounding_client_rect();
-            if r.height() > 0.0 {
-                return Some((r.x() as f32, r.y() as f32, r.height() as f32));
-            }
+        if let Some(rect) = self.text_caret_viewport_rect(block, byte_offset, affinity) {
+            return Some(rect);
         }
         // No text node (an empty block): the block's own box, one line high.
         let el = block.dyn_ref::<web_sys::Element>()?;
@@ -1697,6 +1673,12 @@ impl DomDocument for WebDocument {
             18.0
         };
         Some((r.x() as f32, r.y() as f32, h))
+    }
+
+    /// Downstream at a soft wrap, as on desktop — see
+    /// [`Self::query_caret_rect_with_affinity`].
+    fn query_caret_rect(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32, f32)> {
+        self.query_caret_rect_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
 
     fn query_glyph_bounds(&self, node_id: u64, byte_offset: usize) -> Option<GlyphBounds> {
