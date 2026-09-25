@@ -71,6 +71,18 @@ fn a_fixed_box_under_a_transformed_contents_wrapper_is_hit_outside_the_clipper()
     assert_eq!(hit_test(&doc.tree, 200.0, 200.0), Some(id_of(&doc, "t")));
 }
 
+/// `position: fixed` on a contents element anchors nothing to the viewport.
+#[test]
+fn an_in_flow_child_of_a_fixed_contents_wrapper_is_hit_in_the_clipper() {
+    let doc = clip_doc(
+        "display: contents; position: fixed",
+        "width: 50px; height: 50px",
+    );
+    let t = id_of(&doc, "t");
+    assert_eq!(hit_test(&doc.tree, 105.0, 85.0), Some(t), "Chrome 153: `t`");
+    assert_ne!(hit_test(&doc.tree, 10.0, 10.0), Some(t));
+}
+
 /// The control: a boxed `relative` wrapper is the containing block and sits
 /// inside the clipper, so the absolute is not hit outside it.
 #[test]

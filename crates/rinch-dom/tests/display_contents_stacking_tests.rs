@@ -144,6 +144,29 @@ fn a_contents_element_does_not_clip() {
     );
 }
 
+/// `position: fixed` on a contents element anchors nothing to the viewport:
+/// its in-flow child sits in the clipper, at (60, 40), where Chrome 153 puts
+/// it. Every coordinate walk that stops at a fixed ancestor
+/// (`compute_absolute_position`, the out-of-flow patch that uses it) used to
+/// stop at the wrapper and read its `0,0` layout as a viewport position.
+#[test]
+fn a_fixed_contents_wrapper_anchors_nothing_to_the_viewport() {
+    let (doc, _w, t) = clip_fixture(
+        "display: contents; position: fixed",
+        "height: 50px; width: 50px",
+    );
+    assert_eq!(
+        rinch_dom::paint::compute_absolute_position(&doc.tree, t.0, 1.0),
+        (60.0, 40.0)
+    );
+    let (doc, _w, abs) = clip_fixture("display: contents; position: fixed", ABS);
+    assert_eq!(
+        rinch_dom::paint::compute_absolute_position(&doc.tree, abs.0, 1.0),
+        (10.0, 20.0),
+        "and an absolute under it still resolves against the ICB"
+    );
+}
+
 // ── The clip chain ───────────────────────────────────────────────────────────
 
 /// The absolute is an entry of the **body's** sequence, with an empty chain:
@@ -254,6 +277,21 @@ mod painted {
             pixel_at(&painter, 312, 200),
             NOTHING,
             "and untranslated: the transform does not apply"
+        );
+    }
+
+    #[test]
+    fn an_in_flow_child_of_a_fixed_contents_wrapper_paints_in_the_clipper() {
+        let (mut doc, ..) = clip_fixture(
+            "display: contents; position: fixed",
+            "height: 50px; width: 50px",
+        );
+        let painter = paint(&mut doc);
+        assert_eq!(pixel_at(&painter, 105, 85), FULL_RED, "Chrome 153: `t`");
+        assert_eq!(
+            pixel_at(&painter, 10, 10),
+            NOTHING,
+            "not at the viewport origin"
         );
     }
 
@@ -373,11 +411,4 @@ mod painted {
             );
         }
     }
-}
-#[test]
-fn zz_probe_fixed() {
-    let (doc, w, abs) = clip_fixture("display: contents; position: fixed", ABS);
-    let o = body_order(&doc);
-    eprintln!("abs layout {:?} wlayout {:?} onscreen {:?} order {:?}", doc.tree.get(abs.0).unwrap().layout, doc.tree.get(w.0).unwrap().layout, rinch_dom::paint::compute_absolute_position(&doc.tree, abs.0, 1.0), o);
-    panic!();
 }
