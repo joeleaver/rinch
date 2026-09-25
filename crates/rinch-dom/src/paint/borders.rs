@@ -2,9 +2,9 @@
 
 use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, BezPath, Cap, Point, Rect, RoundedRectRadii, Shape, Stroke};
+use peniko::kurbo::{Affine, BezPath, Cap, Point, Rect, RoundedRectRadii, Shape, Stroke, Vec2};
 
-use super::painter::Painter;
+use super::painter::{PaintShape, Painter};
 use crate::computed_style::BorderStyleValue;
 use crate::node::Node;
 
@@ -612,7 +612,8 @@ pub(super) fn paint_box_shadow(
     };
 
     for shadow in shadows {
-        // TODO: inset shadows not yet supported
+        // Inset shadows are painted above the background, by
+        // `paint_inset_box_shadow`.
         if shadow.inset {
             continue;
         }
@@ -728,5 +729,191 @@ pub(super) fn paint_box_shadow(
                 painter.fill_color(Fill::NonZero, transform, color, &outer.into());
             }
         }
+    }
+}
+
+/// The standard normal CDF, `Φ(z)`, from Abramowitz & Stegun 7.1.26's `erf`
+/// (absolute error under 1.5e-7 — far below one 8-bit alpha level).
+fn normal_cdf(z: f64) -> f64 {
+    let x = z.abs() / std::f64::consts::SQRT_2;
+    let t = 1.0 / (1.0 + 0.327_591_1 * x);
+    let poly = t
+        * (0.254_829_592
+            + t * (-0.284_496_736
+                + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
+    let erf = 1.0 - poly * (-x * x).exp();
+    if z >= 0.0 {
+        0.5 * (1.0 + erf)
+    } else {
+        0.5 * (1.0 - erf)
+    }
+}
+
+/// Paint the `inset` shadows of `shadows` (#974). Called after the element's
+/// background and before its border, which is where css-backgrounds-3 §7.1
+/// puts an inner shadow; the outer ones are `paint_box_shadow`'s.
+///
+/// An inner shadow is drawn inside the **padding** box, as if everything
+/// outside the padding edge were opaque: the shadow is the padding box minus
+/// a hole, the hole being the padding box moved by the offset and shrunk by
+/// the spread, its radii the padding box's shrunk by the spread (the inset
+/// half of §7.1.1 — a negative spread grows them by the ratio rule outer
+/// shadows use). Everything is clipped to the padding box's rounded shape.
+///
+/// A blur is a Gaussian of `sigma = blur / 2` across the hole's edge, which is
+/// what Chrome 153 paints (measured, `tests/box_shadow_inset_tests.rs`). It is
+/// approximated by nested holes — each layer the padding box minus the hole
+/// moved `e` further in, for `e` stepping across `[-blur, blur]` — whose
+/// alphas are chosen so that a point covered by the innermost `m` layers
+/// composites (source-over, one colour) to exactly the Gaussian's value at the
+/// middle of its step. Deep in the shadow every layer covers, and the
+/// composite is the shadow colour itself.
+///
+/// Nothing is drawn outside the border box, so no ink reach, layer bound or
+/// damage rect needs to know about an inset shadow (`own_ink_outsets` and
+/// `layer_bounds` skip them).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_inset_box_shadow(
+    painter: &mut dyn Painter,
+    shadows: &[crate::computed_style::BoxShadowValue],
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    scale: f64,
+    radii: RoundedRectRadii,
+    node: &Node,
+    transform: Affine,
+) {
+    if !shadows.iter().any(|s| s.inset) {
+        return;
+    }
+    let cs = &node.computed_style;
+    let width = |w: f32, style: BorderStyleValue| {
+        if matches!(style, BorderStyleValue::None | BorderStyleValue::Hidden) {
+            0.0
+        } else {
+            w.max(0.0) as f64 * scale
+        }
+    };
+    let bt = width(cs.border_top_width.to_px(), cs.border_top_style);
+    let br = width(cs.border_right_width.to_px(), cs.border_right_style);
+    let bb = width(cs.border_bottom_width.to_px(), cs.border_bottom_style);
+    let bl = width(cs.border_left_width.to_px(), cs.border_left_style);
+    let pad = Rect::new(x + bl, y + bt, x + w - br, y + h - bb);
+    if pad.width() <= 0.0 || pad.height() <= 0.0 {
+        return;
+    }
+    // The padding box's radii: the border radius less the adjacent borders.
+    // CSS makes a corner elliptical when its two borders differ; kurbo's radii
+    // are circular, so the corner takes the larger border, which keeps the
+    // padding shape inside the border shape.
+    let pad_radii = RoundedRectRadii::new(
+        (radii.top_left - bt.max(bl)).max(0.0),
+        (radii.top_right - bt.max(br)).max(0.0),
+        (radii.bottom_right - bb.max(br)).max(0.0),
+        (radii.bottom_left - bb.max(bl)).max(0.0),
+    );
+    let rounded = pad_radii.top_left > 0.0
+        || pad_radii.top_right > 0.0
+        || pad_radii.bottom_right > 0.0
+        || pad_radii.bottom_left > 0.0;
+    let clip: PaintShape = if rounded {
+        pad.to_rounded_rect(pad_radii).into()
+    } else {
+        pad.into()
+    };
+
+    // The first shadow is on top, so paint back to front.
+    for shadow in shadows.iter().rev().filter(|s| s.inset) {
+        let offset_x = shadow.offset_x as f64 * scale;
+        let offset_y = shadow.offset_y as f64 * scale;
+        let blur = shadow.blur_radius.max(0.0) as f64 * scale;
+        let spread = shadow.spread_radius as f64 * scale;
+        let color: AlphaColor<Srgb> = shadow
+            .color
+            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40));
+        let base_alpha = color.components[3] as f64;
+        if base_alpha <= 0.0 {
+            continue;
+        }
+        let hole_radii = RoundedRectRadii::new(
+            spread_corner_radius(pad_radii.top_left, -spread),
+            spread_corner_radius(pad_radii.top_right, -spread),
+            spread_corner_radius(pad_radii.bottom_right, -spread),
+            spread_corner_radius(pad_radii.bottom_left, -spread),
+        );
+        let base_hole = pad + Vec2::new(offset_x, offset_y);
+
+        // `(inset, alpha)` per layer, painted in this order. `inset` is how
+        // much further than the spread the layer's hole is shrunk.
+        let layers: Vec<(f64, f64)> = if blur > 0.0 {
+            const N: usize = 12;
+            let sigma = blur * 0.5;
+            let step = 2.0 * blur / N as f64;
+            // Layer `j`'s hole edge sits at depth `e_j` into the hole; a point
+            // at depth `p` is covered by every layer with `e_j > p`. The
+            // target coverage for the points first covered by layer `j`
+            // (`p` in `(e_{j-1}, e_j]`) is the Gaussian's at the step's
+            // middle; the deepest band (every layer) is the full colour.
+            let edge = |j: usize| -blur + (j + 1) as f64 * step;
+            let target = |j: usize| -> f64 {
+                if j == 0 {
+                    base_alpha
+                } else if j >= N {
+                    0.0
+                } else {
+                    base_alpha * (1.0 - normal_cdf((edge(j) - step * 0.5) / sigma))
+                }
+            };
+            (0..N)
+                .map(|j| {
+                    let (t, next) = (target(j), target(j + 1));
+                    let a = if next >= 1.0 {
+                        0.0
+                    } else {
+                        ((t - next) / (1.0 - next)).clamp(0.0, 1.0)
+                    };
+                    (edge(j), a)
+                })
+                .collect()
+        } else {
+            vec![(0.0, base_alpha)]
+        };
+
+        painter.push_clip(Fill::NonZero, transform, &clip);
+        for (e, a) in layers {
+            if a * 255.0 < 0.5 {
+                continue;
+            }
+            let layer_color = color.with_alpha(a as f32);
+            let shrink = spread + e;
+            let hole = base_hole.inset(-shrink);
+            if hole.width() <= 0.0 || hole.height() <= 0.0 {
+                // No hole left: the whole padding box is shadow.
+                painter.fill_color(Fill::NonZero, transform, layer_color, &clip);
+                continue;
+            }
+            let hole_path: BezPath = if rounded {
+                let shrink_r = |r: f64| if r > 0.0 { (r - e).max(0.0) } else { 0.0 };
+                let r = RoundedRectRadii::new(
+                    shrink_r(hole_radii.top_left),
+                    shrink_r(hole_radii.top_right),
+                    shrink_r(hole_radii.bottom_right),
+                    shrink_r(hole_radii.bottom_left),
+                );
+                hole.to_rounded_rect(r).into_path(0.1)
+            } else {
+                hole.into_path(0.1)
+            };
+            // The padding box (and the hole, wherever the offset took it)
+            // with the hole cut out by `EvenOdd`; the clip trims it to the
+            // padding shape. The outer rect contains the hole, so the
+            // even-odd count only ever subtracts.
+            let mut path = pad.union(hole).inflate(1.0, 1.0).into_path(0.1);
+            path.extend(hole_path.iter());
+            painter.fill_color(Fill::EvenOdd, transform, layer_color, &path.into());
+        }
+        painter.pop_layer();
     }
 }

@@ -3053,6 +3053,23 @@ fn paint_node(
                     }
                 }
 
+                // Inset shadows: above the background, below the border
+                // (css-backgrounds-3 §7.1; #974).
+                if !node.computed_style.box_shadow.is_empty() {
+                    borders::paint_inset_box_shadow(
+                        painter,
+                        &node.computed_style.box_shadow,
+                        x,
+                        y,
+                        w,
+                        h,
+                        scale,
+                        radii,
+                        node,
+                        node_transform,
+                    );
+                }
+
                 // Render borders per-side with style support
                 paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
 
