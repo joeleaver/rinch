@@ -691,3 +691,64 @@ fn a_blurred_shadows_interior_is_its_colour() {
         }
     }
 }
+
+/// Blurred masks are kept between paints, keyed by what was rasterised: a
+/// second paint of the same page is the same pixels, and one after the text
+/// or the shadow's colour changed is what a fresh document paints — never a
+/// stale mask.
+///
+/// Kills: a cache key that leaves out the glyphs (the old text's shadow is
+/// served for the new text); the colour baked into the cached mask (the old
+/// colour is served).
+#[test]
+fn a_cached_shadow_mask_is_never_stale() {
+    let style = |c: &str| format!("{BASE}; text-shadow: 0 40px 6px {c}");
+    let fresh = |text: &str, c: &str| {
+        let mut d = document(&style(c), &[(text, None)]);
+        paint(&mut d, 1.5).0
+    };
+    // Same thread, so the cache is shared across all of these.
+    let mut doc = document(&style("rgb(255, 0, 0)"), &[("HxH", None)]);
+    let first = paint(&mut doc, 1.5).0;
+    let again = paint(&mut doc, 1.5).0;
+    assert!(
+        first == again,
+        "a repaint of an unchanged page changed its pixels"
+    );
+
+    // The text changes: the text node is the div's only child.
+    let body = doc.body();
+    let div = doc.tree.get(body.0).unwrap().children[0];
+    let text = doc.tree.get(div).unwrap().children[0];
+    doc.set_text_content(rinch_core::dom::NodeId(text), "xHx");
+    doc.resolve_layout(VW, VH + 1.0);
+    doc.resolve_layout(VW, VH);
+    let changed = paint(&mut doc, 1.5).0;
+    assert!(changed != first, "positive control: new text, new pixels");
+    assert!(
+        changed == fresh("xHx", "rgb(255, 0, 0)"),
+        "the new text's shadow is not what a fresh document paints: a stale mask"
+    );
+
+    let mut blue = document(&style("rgb(0, 0, 255)"), &[("HxH", None)]);
+    let blue_px = paint(&mut blue, 1.5).0;
+    assert!(
+        blue_px != first,
+        "positive control: a blue shadow differs from a red one"
+    );
+    // The blue shadow is drawn from the red one's cached mask: its pixels are
+    // blue-tinted and none of them red.
+    let reddish = blue_px
+        .iter()
+        .filter(|&&[r, g, b, _]| r >= 254 && g <= 248 && b <= 248)
+        .count();
+    let bluish = blue_px
+        .iter()
+        .filter(|&&[r, g, b, _]| b >= 254 && r <= 248 && g <= 248)
+        .count();
+    assert!(
+        reddish == 0 && bluish > 100,
+        "the blue shadow painted {reddish} red and {bluish} blue pixels: the colour is \
+         applied at draw time, never cached"
+    );
+}

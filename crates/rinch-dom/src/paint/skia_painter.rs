@@ -1679,6 +1679,111 @@ impl Painter for TinySkiaPainter {
         self.pixmap.draw_pixmap(0, 0, src, &paint, ts, mask);
     }
 
+    fn draw_alpha_mask(
+        &mut self,
+        mask: &[u8],
+        width: u32,
+        height: u32,
+        color: peniko::color::AlphaColor<peniko::color::Srgb>,
+        transform: Affine,
+    ) {
+        if width == 0 || height == 0 || mask.len() != (width * height) as usize {
+            return;
+        }
+        let c = transform.as_coeffs();
+        // Not a cache, so taken in reference mode too (whose masks are
+        // fresh allocations rather than pooled ones).
+        if c[0] == 1.0
+            && c[1] == 0.0
+            && c[2] == 0.0
+            && c[3] == 1.0
+            && c[4].fract() == 0.0
+            && c[5].fract() == 0.0
+        {
+            // On whole pixels: the coverage goes into a pooled surface mask,
+            // intersected with the clip in force, and the colour is filled
+            // through it — tiny-skia's solid-colour mask fill, with no RGBA
+            // intermediate at all.
+            let (sw, sh) = (self.pixmap.width() as i64, self.pixmap.height() as i64);
+            let (ox, oy, w, h) = (c[4] as i64, c[5] as i64, width as i64, height as i64);
+            let (x0, y0) = (ox.max(0), oy.max(0));
+            let (x1, y1) = ((ox + w).min(sw), (oy + h).min(sh));
+            if x0 >= x1 || y0 >= y1 {
+                return;
+            }
+            let mut m = self.acquire_mask();
+            {
+                let stride = sw as usize;
+                let clip = self.clip_mask.as_ref().map(|c| c.mask.data());
+                let data = m.data_mut();
+                let span = (x1 - x0) as usize;
+                for y in y0..y1 {
+                    let src_at = ((y - oy) * w + (x0 - ox)) as usize;
+                    let src = &mask[src_at..src_at + span];
+                    let at = y as usize * stride + x0 as usize;
+                    let dst = &mut data[at..at + span];
+                    match clip {
+                        None => dst.copy_from_slice(src),
+                        Some(clip) => {
+                            for ((d, &s), &k) in dst.iter_mut().zip(src).zip(&clip[at..at + span]) {
+                                *d = ((s as u32 * k as u32 + 127) / 255) as u8;
+                            }
+                        }
+                    }
+                }
+            }
+            let bounds = DeviceRect {
+                x0: x0 as u32,
+                y0: y0 as u32,
+                x1: x1 as u32,
+                y1: y1 as u32,
+            };
+            self.touch(bounds);
+            if let Some(rect) =
+                tiny_skia::Rect::from_ltrb(x0 as f32, y0 as f32, x1 as f32, y1 as f32)
+            {
+                let paint = Paint {
+                    shader: tiny_skia::Shader::SolidColor(to_skia_color(color)),
+                    anti_alias: false,
+                    ..Paint::default()
+                };
+                self.pixmap
+                    .fill_rect(rect, &paint, Transform::identity(), Some(&m));
+            }
+            self.release_mask(ClipMask {
+                mask: m,
+                bounds,
+                full: DeviceRect::EMPTY,
+            });
+            return;
+        }
+        // Premultiplied straight from the coverage: one pass, no straight-
+        // alpha intermediate to premultiply again.
+        let [r, g, b, a] = color.to_rgba8().to_u8_array();
+        let a = a as u32;
+        let premul = |c: u8, m: u32| ((c as u32 * m + 127) / 255) as u8;
+        let mut data = vec![0_u8; mask.len() * 4];
+        for (px, &m) in data.chunks_exact_mut(4).zip(mask) {
+            if m != 0 {
+                let alpha = (m as u32 * a + 127) / 255;
+                px.copy_from_slice(&[
+                    premul(r, alpha),
+                    premul(g, alpha),
+                    premul(b, alpha),
+                    alpha as u8,
+                ]);
+            }
+        }
+        let Some(src) = PixmapRef::from_bytes(&data, width, height) else {
+            return;
+        };
+        let ts = affine_to_transform(transform);
+        self.touch_local(0.0, 0.0, width as f32, height as f32, ts);
+        let paint = PixmapPaint::default();
+        let clip = self.clip_mask.as_ref().map(|m| &m.mask);
+        self.pixmap.draw_pixmap(0, 0, src, &paint, ts, clip);
+    }
+
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
         self.stats.clip_masks += 1;
         let previous_mask = self.clip_mask.take();

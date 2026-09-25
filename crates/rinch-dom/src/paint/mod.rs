@@ -809,6 +809,17 @@ impl Painter for ClipTrackingPainter<'_> {
     fn draw_image(&mut self, image: &painter::PaintImage<'_>, transform: Affine) {
         self.inner.draw_image(image, transform);
     }
+    fn draw_alpha_mask(
+        &mut self,
+        mask: &[u8],
+        width: u32,
+        height: u32,
+        color: AlphaColor<Srgb>,
+        transform: Affine,
+    ) {
+        self.inner
+            .draw_alpha_mask(mask, width, height, color, transform);
+    }
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
         let bounds = transform
             .transform_rect_bbox(shape.bounding_box())

@@ -32,7 +32,7 @@ use peniko::Brush;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Rect};
 
-use super::painter::{BlendMode, PaintImage, PaintShape, Painter};
+use super::painter::{BlendMode, PaintShape, Painter};
 use super::text::{TextMask, draw_shadow_copy};
 
 /// How far a blurred `text-shadow` reaches past its offset copy, as a
@@ -65,6 +65,8 @@ thread_local! {
     /// The pixmap blurred shadows are rasterised into, kept across paints so
     /// its glyph cache stays warm; it only ever grows, to the largest mask
     /// drawn, which is bounded by what can be seen.
+    #[cfg(feature = "software-renderer")]
+    static MASK_CACHE: std::cell::RefCell<MaskCache> = std::cell::RefCell::new(MaskCache::default());
     #[cfg(feature = "software-renderer")]
     static SCRATCH: std::cell::RefCell<Option<super::skia_painter::TinySkiaPainter>> =
         const { std::cell::RefCell::new(None) };
@@ -147,31 +149,36 @@ pub(super) fn render_text_shadow_pass(
     );
 }
 
-/// The text's own extent relative to its origin, in physical px: its line
-/// boxes, grown by how far glyph ink may reach past them.
+/// The text's own extent relative to its origin, in physical px: each line
+/// from its first glyph run's start to its last one's end and from its top to
+/// its bottom (ascent and descent, or the line box when that is taller),
+/// grown by how far glyph ink may reach past them.
 fn text_extent(layout: &parley::layout::Layout<Brush>, scale: f64) -> Rect {
-    let ink = layout_ink_margin(layout) * scale;
-    Rect::new(
-        -ink,
-        -ink,
-        layout.full_width().max(layout.width()) as f64 * scale + ink,
-        layout.height() as f64 * scale + ink,
-    )
-}
-
-/// How far, in layout px, glyph ink may reach past `layout`'s line boxes: an
-/// italic's overhang, a tall accent, a wavy underline. Half the largest font
-/// size, which is generous; it only sizes a mask or a layer's bounds.
-fn layout_ink_margin(layout: &parley::layout::Layout<Brush>) -> f64 {
+    let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     for line in layout.lines() {
+        let m = line.metrics();
+        let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
         for item in line.items() {
             if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                x0 = x0.min(run.offset());
+                x1 = x1.max(run.offset() + run.advance());
                 size = size.max(run.run().font_size());
             }
         }
+        if x0 > x1 {
+            continue;
+        }
+        let top = m.block_min_coord.min(m.baseline - m.ascent);
+        let bottom = m.block_max_coord.max(m.baseline + m.descent);
+        let line_rect = Rect::new(x0 as f64, top as f64, x1 as f64, bottom as f64);
+        r = Some(r.map_or(line_rect, |r| r.union(line_rect)));
     }
-    size as f64 * 0.5
+    // An italic's overhang, a tall accent, a wavy underline below the
+    // descent: a quarter of the largest font size.
+    let ink = size as f64 * 0.25;
+    let r = r.unwrap_or(Rect::ZERO).inflate(ink, ink);
+    Rect::new(r.x0 * scale, r.y0 * scale, r.x1 * scale, r.y1 * scale)
 }
 
 // ── The blurred mask (software rasteriser compiled in) ─────────────────────
@@ -232,6 +239,43 @@ fn draw_masked(
         return false;
     }
 
+    // Every call the copy would make, hashed in the mask's own space: the
+    // same calls rasterise to the same coverage, wherever on the surface the
+    // mask lands (a scroll by whole pixels, a repaint of an unchanged page).
+    let key = {
+        let mut hasher = CallHasher::default();
+        draw_shadow_copy(
+            &mut hasher,
+            layout,
+            ox - area.x0,
+            oy - area.y0,
+            &Brush::Solid(AlphaColor::<Srgb>::from_rgba8(255, 255, 255, 255)),
+            Affine::IDENTITY,
+            scale,
+            mask,
+            wavy,
+        );
+        use std::hash::Hasher;
+        hasher.0.write_u64(sigma.to_bits());
+        hasher.0.write_usize(w);
+        hasher.0.write_usize(h);
+        hasher.0.finish()
+    };
+    let draw_at = image_transform * Affine::translate((area.x0, area.y0));
+    let hit = MASK_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let Some(entry) = c.get(key) else {
+            return false;
+        };
+        if let Some(m) = entry {
+            painter.draw_alpha_mask(m, w as u32, h as u32, color, draw_at);
+        }
+        true
+    });
+    if hit {
+        return true;
+    }
+
     // Rasterise: coverage is the alpha of an opaque copy.
     let mut coverage = vec![0.0_f32; w * h];
     let mut any = false;
@@ -271,40 +315,183 @@ fn draw_masked(
         }
     });
     if !any {
+        MASK_CACHE.with(|c| c.borrow_mut().insert(key, None));
         return true;
     }
-
     blur_2d(&blur, &mut coverage, w, h);
 
-    let [r, g, b, a] = color.components;
-    let (r, g, b) = (
-        (r.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (g.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (b.clamp(0.0, 1.0) * 255.0).round() as u8,
-    );
-    let alpha = a.clamp(0.0, 1.0) * 255.0;
-    let mut rgba = vec![0_u8; w * h * 4];
-    for (px, &cov) in rgba.chunks_exact_mut(4).zip(&coverage) {
-        let a = (cov * alpha).round().clamp(0.0, 255.0) as u8;
-        if a != 0 {
-            px.copy_from_slice(&[r, g, b, a]);
-        }
-    }
-    painter.draw_image(
-        &PaintImage {
-            data: &rgba,
-            width: w as u32,
-            height: h as u32,
-            decoded: None,
-            opaque: false,
-        },
-        image_transform * Affine::translate((area.x0, area.y0)),
-    );
+    let mask8: Vec<u8> = coverage
+        .iter()
+        .map(|&c| (c * 255.0).round().clamp(0.0, 255.0) as u8)
+        .collect();
+    painter.draw_alpha_mask(&mask8, w as u32, h as u32, color, draw_at);
+    MASK_CACHE.with(|c| c.borrow_mut().insert(key, Some(mask8)));
     true
 }
 
+/// The most bytes of blurred masks kept between paints.
+#[cfg(feature = "software-renderer")]
+const MASK_CACHE_BYTES: usize = 32 << 20;
+
+/// Blurred shadow masks kept between paints, keyed by the hash of every call
+/// that rasterised them ([`CallHasher`]) and the blur and size, least
+/// recently used first out past [`MASK_CACHE_BYTES`]. `None` is a mask that
+/// came out empty. A page of shadowed text is rasterised and blurred once, not
+/// every frame — which matters most on the GPU path, where every frame paints
+/// everything.
+#[cfg(feature = "software-renderer")]
+#[derive(Default)]
+struct MaskCache {
+    entries: rustc_hash::FxHashMap<u64, (Option<Vec<u8>>, u64)>,
+    bytes: usize,
+    clock: u64,
+}
+
+#[cfg(feature = "software-renderer")]
+impl MaskCache {
+    fn get(&mut self, key: u64) -> Option<Option<&Vec<u8>>> {
+        self.clock += 1;
+        let clock = self.clock;
+        self.entries.get_mut(&key).map(|e| {
+            e.1 = clock;
+            e.0.as_ref()
+        })
+    }
+
+    fn insert(&mut self, key: u64, mask: Option<Vec<u8>>) {
+        let size = mask.as_ref().map_or(0, Vec::len) + 64;
+        if size > MASK_CACHE_BYTES {
+            return;
+        }
+        while self.bytes + size > MASK_CACHE_BYTES {
+            let Some((&old, _)) = self.entries.iter().min_by_key(|(_, e)| e.1) else {
+                break;
+            };
+            if let Some((m, _)) = self.entries.remove(&old) {
+                self.bytes -= m.map_or(0, |m| m.len()) + 64;
+            }
+        }
+        self.clock += 1;
+        if let Some((m, _)) = self.entries.insert(key, (mask, self.clock)) {
+            self.bytes -= m.map_or(0, |m| m.len()) + 64;
+        }
+        self.bytes += size;
+    }
+}
+
+/// A [`Painter`] that draws nothing and hashes every call it is handed, in
+/// the terms that decide its pixels: the font file and size, every transform,
+/// every glyph and its position, every stroke and its shape.
+#[cfg(feature = "software-renderer")]
+#[derive(Default)]
+struct CallHasher(rustc_hash::FxHasher);
+
+#[cfg(feature = "software-renderer")]
+impl CallHasher {
+    fn affine(&mut self, a: Affine) {
+        use std::hash::Hasher;
+        for c in a.as_coeffs() {
+            self.0.write_u64(c.to_bits());
+        }
+    }
+
+    fn shape(&mut self, shape: &PaintShape) {
+        use std::hash::Hasher;
+        let b = shape.bounding_box();
+        for v in [b.x0, b.y0, b.x1, b.y1] {
+            self.0.write_u64(v.to_bits());
+        }
+        if let PaintShape::BezPath(p) = shape {
+            for el in p.elements() {
+                for pt in [el.end_point()].into_iter().flatten() {
+                    self.0.write_u64(pt.x.to_bits());
+                    self.0.write_u64(pt.y.to_bits());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "software-renderer")]
+impl Painter for CallHasher {
+    fn reset(&mut self) {}
+    fn fill(&mut self, fill: peniko::Fill, transform: Affine, _: &Brush, shape: &PaintShape) {
+        use std::hash::Hasher;
+        self.0.write_u8(1 + fill as u8);
+        self.affine(transform);
+        self.shape(shape);
+    }
+    fn stroke(
+        &mut self,
+        stroke: &peniko::kurbo::Stroke,
+        transform: Affine,
+        _: &Brush,
+        shape: &PaintShape,
+    ) {
+        use std::hash::Hasher;
+        self.0.write_u8(3);
+        self.0.write_u64(stroke.width.to_bits());
+        self.affine(transform);
+        self.shape(shape);
+    }
+    fn draw_glyphs(
+        &mut self,
+        font: &peniko::FontData,
+        font_size: f32,
+        transform: Affine,
+        glyph_transform: Option<Affine>,
+        _: &Brush,
+        hint: bool,
+        normalized_coords: &[i16],
+        glyphs: &[super::painter::PaintGlyph],
+    ) {
+        use std::hash::Hasher;
+        self.0.write_u8(4);
+        self.0.write_u64(font.data.id());
+        self.0.write_u32(font.index);
+        self.0.write_u32(font_size.to_bits());
+        self.affine(transform);
+        if let Some(g) = glyph_transform {
+            self.affine(g);
+        }
+        self.0.write_u8(hint as u8);
+        for c in normalized_coords {
+            self.0.write_i16(*c);
+        }
+        self.0.write_usize(glyphs.len());
+        for g in glyphs {
+            self.0.write_u32(g.id);
+            self.0.write_u32(g.x.to_bits());
+            self.0.write_u32(g.y.to_bits());
+        }
+    }
+    fn draw_image(&mut self, _: &super::painter::PaintImage<'_>, transform: Affine) {
+        use std::hash::Hasher;
+        self.0.write_u8(5);
+        self.affine(transform);
+    }
+    fn push_clip(&mut self, _: peniko::Fill, transform: Affine, shape: &PaintShape) {
+        use std::hash::Hasher;
+        self.0.write_u8(6);
+        self.affine(transform);
+        self.shape(shape);
+    }
+    fn push_layer(&mut self, _: BlendMode, opacity: f32, transform: Affine, shape: &PaintShape) {
+        use std::hash::Hasher;
+        self.0.write_u8(7);
+        self.0.write_u32(opacity.to_bits());
+        self.affine(transform);
+        self.shape(shape);
+    }
+    fn pop_layer(&mut self) {
+        use std::hash::Hasher;
+        self.0.write_u8(8);
+    }
+}
+
 /// Blur a `w` x `h` coverage mask in place, rows then columns. A row with no
-/// coverage stays empty through the row pass, so it is skipped.
+/// coverage stays empty through the row pass, so it is skipped; the column
+/// pass sweeps whole rows at a time, so it reads the mask in order.
 #[cfg(feature = "software-renderer")]
 fn blur_2d(blur: &Blur1d, mask: &mut [f32], w: usize, h: usize) {
     let mut tmp = Vec::new();
@@ -313,28 +500,15 @@ fn blur_2d(blur: &Blur1d, mask: &mut [f32], w: usize, h: usize) {
             blur.apply(row, &mut tmp);
         }
     }
-    let mut col = vec![0.0_f32; h];
-    for x in 0..w {
-        let mut any = false;
-        for (y, v) in col.iter_mut().enumerate() {
-            *v = mask[y * w + x];
-            any |= *v != 0.0;
-        }
-        if !any {
-            continue;
-        }
-        blur.apply(&mut col, &mut tmp);
-        for (y, v) in col.iter().enumerate() {
-            mask[y * w + x] = *v;
-        }
-    }
+    blur.apply_columns(mask, w, h);
 }
 
 /// Past this `sigma` a 1-D blur is three box blurs rather than a sampled
 /// Gaussian kernel: the kernel costs `6 sigma` per sample, the boxes a
-/// constant, and above it the boxes are within a level of the Gaussian.
+/// constant. (PR #1014's copy switches at 2.5; a text shadow is blurred over
+/// far more pixels than an inset box shadow, so it switches sooner.)
 #[cfg(feature = "software-renderer")]
-const DIRECT_KERNEL_MAX_SIGMA: f64 = 2.5;
+const DIRECT_KERNEL_MAX_SIGMA: f64 = 1.25;
 
 /// A 1-D approximation of a Gaussian blur of standard deviation `sigma`: a
 /// sampled kernel out to `3 sigma` for a small `sigma`, three box blurs
@@ -385,6 +559,65 @@ impl Blur1d {
         match self {
             Blur1d::Kernel(k) => k.len() / 2,
             Blur1d::Boxes(w) => w.iter().map(|w| w / 2).sum(),
+        }
+    }
+
+    /// Blur every column of the `w` x `h` row-major `mask` in place,
+    /// sweeping rows so the mask is read in memory order.
+    fn apply_columns(&self, mask: &mut [f32], w: usize, h: usize) {
+        let mut src = mask.to_vec();
+        match self {
+            Blur1d::Kernel(k) => {
+                let r = k.len() / 2;
+                for y in 0..h {
+                    let out = &mut mask[y * w..(y + 1) * w];
+                    out.fill(0.0);
+                    let lo = y.saturating_sub(r);
+                    let hi = (y + r).min(h - 1);
+                    for sy in lo..=hi {
+                        let kv = k[sy + r - y];
+                        let row = &src[sy * w..(sy + 1) * w];
+                        for (o, v) in out.iter_mut().zip(row) {
+                            *o += kv * v;
+                        }
+                    }
+                }
+            }
+            Blur1d::Boxes(widths) => {
+                let mut sum = vec![0.0_f32; w];
+                for &bw in widths {
+                    let r = bw / 2;
+                    if r == 0 {
+                        continue;
+                    }
+                    let norm = 1.0 / bw as f32;
+                    sum.fill(0.0);
+                    for sy in 0..r.min(h) {
+                        for (s, v) in sum.iter_mut().zip(&src[sy * w..(sy + 1) * w]) {
+                            *s += v;
+                        }
+                    }
+                    for y in 0..h {
+                        if y + r < h {
+                            let add = &src[(y + r) * w..(y + r + 1) * w];
+                            for (s, v) in sum.iter_mut().zip(add) {
+                                *s += v;
+                            }
+                        }
+                        let out = &mut mask[y * w..(y + 1) * w];
+                        for (o, s) in out.iter_mut().zip(&sum) {
+                            *o = s * norm;
+                        }
+                        if y >= r {
+                            let sub = &src[(y - r) * w..(y - r + 1) * w];
+                            for (s, v) in sum.iter_mut().zip(sub) {
+                                *s -= v;
+                            }
+                        }
+                    }
+                    src.copy_from_slice(mask);
+                }
+            }
         }
     }
 

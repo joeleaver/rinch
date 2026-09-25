@@ -216,6 +216,40 @@ pub trait Painter {
     /// Draw an RGBA8 image with the given transform.
     fn draw_image(&mut self, image: &PaintImage<'_>, transform: Affine);
 
+    /// Fill `color` through a `width` x `height` coverage mask (one byte per
+    /// pixel, 255 = fully covered), placed by `transform` like an image. A
+    /// blurred `text-shadow` is drawn this way (#980).
+    ///
+    /// The default builds a straight-alpha image and calls
+    /// [`draw_image`](Self::draw_image); a backend can do it without the
+    /// intermediate.
+    fn draw_alpha_mask(
+        &mut self,
+        mask: &[u8],
+        width: u32,
+        height: u32,
+        color: AlphaColor<Srgb>,
+        transform: Affine,
+    ) {
+        let [r, g, b, a] = color.to_rgba8().to_u8_array();
+        let mut rgba = vec![0_u8; mask.len() * 4];
+        for (px, &m) in rgba.chunks_exact_mut(4).zip(mask) {
+            if m != 0 {
+                px.copy_from_slice(&[r, g, b, ((m as u32 * a as u32 + 127) / 255) as u8]);
+            }
+        }
+        self.draw_image(
+            &PaintImage {
+                data: &rgba,
+                width,
+                height,
+                decoded: None,
+                opaque: false,
+            },
+            transform,
+        );
+    }
+
     /// Push a clip layer — all subsequent drawing is clipped to the shape.
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape);
 
