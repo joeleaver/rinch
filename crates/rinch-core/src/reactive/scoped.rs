@@ -188,8 +188,9 @@ where
 /// newer of the caller's own entry and the fallback** (review of PR #960).
 /// Since #295 a `RinchApp` mount and every effect a document owns are marked,
 /// so a component body's registration lands under its document — while a
-/// timer, `run_on_main_thread`, an http/ws completion or an effect created in
-/// `main` is unmarked and lands on the fallback. Were the document's entry to
+/// timer, `run_on_main_thread` closure, http/ws completion or effect created
+/// in `main` is unmarked and lands on the fallback (one armed inside a
+/// document runs under it, issue #963). Were the document's entry to
 /// win unconditionally, a single-document app could never replace, nor clear,
 /// the interceptor it registered at mount. Taking the newer keeps the rule the
 /// single slot this replaced had: the last registration wins, and a clear
@@ -362,8 +363,9 @@ impl<T: ?Sized> Default for DocScopedSlotMap<T> {
 /// #139 for the pointer-capture drag. Here each document gets its own entry,
 /// keyed by [`current_dispatching_doc`] at install time — which covers a
 /// `RinchApp` mount and every effect a document owns, wherever it is flushed
-/// (issue #295); installing with no document marked — from `main`, a timer, a
-/// `run_on_main_thread` callback, or on a backend that never marks one
+/// (issue #295), and every timer, `run_on_main_thread` closure and socket
+/// callback armed from one (issue #963); installing with no document marked —
+/// from `main`, a timer armed there, or on a backend that never marks one
 /// (rinch-web) — fills the ownerless `None` entry, which
 /// [`read_doc_scoped_slot`] serves to every document **whose own entry is
 /// older**. So the single-document app keeps the single slot's rule wherever
@@ -428,8 +430,8 @@ where
 /// Clear a doc-keyed slot, so that "a clear clears" holds as it did for the
 /// single slot this replaced.
 ///
-/// - **With no document marked** (from `main`, a timer, a `run_on_main_thread`
-///   callback, rinch-web): every entry goes. Unmarked code speaks for every
+/// - **With no document marked** (from `main`, a timer or `run_on_main_thread`
+///   closure armed there, rinch-web): every entry goes. Unmarked code speaks for every
 ///   document, exactly as its install serves every document — and it is the
 ///   only way such code can reach a registration a mount made.
 /// - **Inside a document**: the entry that document is served goes, and
@@ -981,14 +983,14 @@ mod tests {
         );
     }
 
-    /// **Pins an accepted trade-off, not a goal** (review of PR #960; #963).
-    /// Code outside any document — a timer, `run_on_main_thread`, an http/ws
-    /// completion — cannot be attributed to the document that armed it, so its
-    /// install is newer than every document's own entry and shadows them all,
-    /// and its clear wipes them all. Registrations *inside* documents stay
-    /// isolated (the last step). When #963 runs such callbacks under their
-    /// owner's document, steps 2 and 3 flip to `(99, 20)` and `(None, 20)`, and
-    /// this fixture should be updated to say so.
+    /// **Pins the slot rule for code genuinely outside any document** (review
+    /// of PR #960). An unmarked install — from `main`, or a timer armed there —
+    /// is newer than every document's own entry and shadows them all, and an
+    /// unmarked clear wipes them all. Registrations *inside* documents stay
+    /// isolated (the last step). Since #963 a timer, `run_on_main_thread`
+    /// closure or http/ws completion armed *inside* a document runs under it,
+    /// so it takes the marked path instead (`timer::tests::a_timer_registers_*`);
+    /// what is left here is code no document owns.
     #[test]
     fn an_unmarked_install_or_clear_reaches_every_documents_entry() {
         use crate::context::push_dispatching_doc;

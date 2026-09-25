@@ -666,6 +666,76 @@ pub fn create_video_surface(viewport_name: &str) -> RenderSurfaceHandle {
     create_named_surface(viewport_name, true)
 }
 
+/// A callback receiving decoded RGBA frames as `(pixels, width, height)` —
+/// the shape of `rinch_video`'s `FrameSink`.
+pub type VideoFrameSink = Arc<dyn Fn(&[u8], u32, u32) + Send + Sync>;
+
+/// The frame sink a **video player** delivers decoded frames through: a video
+/// surface named `viewport_id` plus a closure that submits into it.
+///
+/// This is what the desktop shell hands `rinch_video::set_frame_sink_factory`.
+///
+/// **The sink owns the surface's registration** (issue #363): the surface stays
+/// in the registry while any clone of the sink is alive and is unregistered
+/// when the last one drops — which a player does on `cleanup()` (what
+/// `use_video_player` runs when its component unmounts) and when it is itself
+/// dropped. The factory runs before any DOM exists, with no render scope to tie
+/// the surface to, which is why the handle used to be `mem::forget`-leaked:
+/// every video ever played kept a registered surface, holding its last decoded
+/// frame, for the rest of the process.
+pub fn create_video_frame_sink(viewport_id: &str) -> VideoFrameSink {
+    let handle = create_video_surface(viewport_id);
+    let writer = handle.writer();
+    let lease = SurfaceLease {
+        id: handle.id,
+        thread: std::thread::current().id(),
+    };
+    Arc::new(move |pixels: &[u8], w: u32, h: u32| {
+        let _ = &lease; // owned by the closure: released with its last clone
+        writer.submit_frame(pixels, w, h);
+    })
+}
+
+/// Unregisters a surface when dropped.
+///
+/// The registry is thread-local, so a drop on another thread cannot reach it:
+/// that release is queued for the main thread instead (the sink is `Send`, even
+/// though every player in the workspace drops it on the main thread), and runs
+/// at the next drain of the main-thread queue. It does not wake the event loop
+/// to get there: `run_on_main_thread` would, but it panics where no dispatcher
+/// is registered, which a `Drop` must not risk, and a surface released one wake
+/// late costs nothing but its buffer until then. Every host drains the queue
+/// (desktop on each wake and paint, Android per frame, embed per `update`).
+///
+/// A lease dropped after the thread's registry was destroyed — a player still
+/// playing at thread or process exit, whose `ACTIVE_PLAYERS` entry is torn down
+/// after the registry — has nothing left to unregister and does nothing: a
+/// `with` there would panic inside a TLS destructor, which aborts.
+struct SurfaceLease {
+    id: usize,
+    thread: std::thread::ThreadId,
+}
+
+impl Drop for SurfaceLease {
+    fn drop(&mut self) {
+        let id = self.id;
+        // A drop from inside a registry walk (a render callback letting go of a
+        // player) cannot take the registry mutably either; defer it the same way.
+        // At thread exit (and at process exit, for the main thread) the
+        // registry may already have been destroyed: then there is nothing left
+        // to unregister, and `with` would panic inside a TLS destructor (abort).
+        let Ok(registry_free) = SURFACE_REGISTRY.try_with(|reg| reg.try_borrow_mut().is_ok())
+        else {
+            return;
+        };
+        if std::thread::current().id() == self.thread && registry_free {
+            unregister_render_surface(id);
+        } else {
+            rinch_core::queue_main_callback(Box::new(move || unregister_render_surface(id)));
+        }
+    }
+}
+
 fn create_named_surface(viewport_name: &str, is_video: bool) -> RenderSurfaceHandle {
     let id = next_surface_id();
     let handle = new_surface_handle(id, viewport_name.to_string(), is_video);
@@ -1927,3 +1997,7 @@ mod compositor_routing_tests {
         unregister_render_surface(surface.id());
     }
 }
+
+#[cfg(all(test, feature = "video"))]
+#[path = "video_surface_lifetime_tests.rs"]
+mod video_surface_lifetime_tests;

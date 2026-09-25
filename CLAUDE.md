@@ -965,7 +965,11 @@ layout pass. `run_on_main_thread` and everything riding it (`set_timeout`,
 `rinch-http`, `rinch-ws`) work in embed for the same reason. The queue itself
 lives in `rinch-core` (`queue_main_callback` / `drain_main_callbacks`) so the
 desktop shell, the Android loop and embed all share one; the shell's dispatcher
-adds the "wake the event loop" side effect that embed has no use for.
+adds the "wake the event loop" side effect that embed has no use for. That wake
+is coalesced (one pending `ReRender` at a time), so a callback queued between a
+wake's callback drain and its native-event drain would fold into the wake being
+served; the wake therefore asks `rinch_core::main_callbacks_pending()` after the
+native drain and owes itself another (`drain_wake_queues`, issue #988).
 
 ## Native Menus
 
@@ -1396,15 +1400,23 @@ thread, and so are two embedded `RinchContext`s. Only the document whose events
 armed the drag drives it: another document's `MouseMove` does not reach
 `on_move`, its `MouseUp` does not fire `on_end`, and `Drag::is_active()` answers
 `false` there (so a drag in one window never freezes hover in the other). A drag
-armed **outside** any event dispatch — from a timer, a menu callback, or on
-rinch-web, which has one page-wide pointer stream — belongs to no document in
-particular and stays drivable by anybody. Nothing changes for a single-window
+armed **outside** any document — from a timer armed in `main`, a menu
+callback, or on rinch-web, which has one page-wide pointer stream — belongs to
+no document in particular and stays drivable by anybody. Nothing changes for a single-window
 app. **An effect counts as its document's code** (issue #295): the effect queue
 is thread-global, so a write in document A's handler flushes document B's
 effects inside A's `handle_event` — but every `Effect` and `Memo` records the
 document current at its creation (`RinchApp::mount_component` marks the mount,
 `handle_event` the dispatch) and re-enters it around every run, so a drag armed,
-or an interceptor registered, from B's effect belongs to B. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
+or an interceptor registered, from B's effect belongs to B. **So does a timer,
+a parked continuation (an `rinch-http` completion), a `run_on_main_thread`
+closure and a `rinch-ws` callback** (issue #963): each records the document
+current where it was armed, queued or registered (`main_thread::Parked::doc`,
+the `MAIN_QUEUE` entry, `rinch-ws`'s `Slot::doc`) and runs under it, so its
+interceptor install or clear is that document's rather than reaching every
+document on the thread; one armed from `main` or queued from a worker thread
+runs under none. Menu, focus-registry and `rinch-android` callbacks still run
+unmarked when the platform fires them outside a dispatch. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
 the pointer is grabbed to the pressing window while a button is held — so this
 matters for an embed host pumping several contexts from one event stream, and
 for a drag left live past a missed `MouseUp`.)
@@ -1441,14 +1453,45 @@ The backend says which by calling `update_drag_with_button(x, y,
 PrimaryButton::{Down,Up,Unknown})`; `update_drag(x, y)` is exactly the `Unknown`
 form. Three states rather than a bool because a backend that cannot see the
 button state is a real case: **rinch-web reports `Down`/`Up` from `buttons & 1`
-and heals; desktop reports `Unknown` and does not.** `PlatformEvent::MouseMove`
-carries no button mask, and neither does winit's `PointerMoved` behind it, so
-desktop has no independent source of truth — and a flag the runtime kept itself
-would be no help, since the missed `MouseUp` that strands the drag is the same
-event that would have cleared the flag. Tracked in **issue #294**. Nothing is
-ever ended on a guess: `Unknown` behaves exactly like `Down`. The heal is
-document-scoped like the rest of the drag — another document's idle pointer
-cannot tear down this one's live drag.
+and heals on the move; desktop reports `Unknown` and does not.**
+`PlatformEvent::MouseMove` carries no button mask, and neither does winit's
+`PointerMoved` behind it, so desktop has no source of truth on a move — and a
+flag the runtime kept itself would be no help, since the missed `MouseUp` that
+strands the drag is the same event that would have cleared the flag. Nothing is
+ever ended on a guess: `Unknown` behaves exactly like `Down`.
+
+**Desktop heals on the next event that proves the release was missed** (issue
+#381), through `rinch_core::heal_missed_release` — the same `on_cancel` ending,
+at the last move. Two events count: a **left `MouseDown`** while the drag is
+live (a button cannot be pressed twice without a release in between), handled
+*before* the press is dispatched so its handlers never see the stranded drag
+and a drag the press arms is not the one ended; and **`WindowFocus(false)`**.
+The blur rule is a trade-off, not a proof: on Windows deactivation takes the
+pointer capture and the release does go to another window, but on X11/Wayland
+the press's implicit pointer grab still delivers it, and a blur mid-drag can
+come from a transient keyboard grab (a global hotkey, a WM holding Alt+Tab) —
+that healthy drag is cancelled too, and its release then commits nothing.
+Accepted because it fails safe: a cancel, never a wrong commit. Before #381 the next unrelated
+click's `MouseUp` ran `finish_drag` and **committed** the stranded drag's
+`on_end` at that click's position. A right or middle press proves nothing (a
+chord can be real) and ends nothing. The left-press proof assumes a
+primary-button drag — `Drag` does not record which button armed it — so a
+middle- or right-button drag is ended by a left chord press (it used to be
+committed by that press's release), and a "grab mode" drag armed with no
+button held (a shortcut, a timer) and placed with a click is cancelled by that
+click, as rinch-web cancels it on its first move: arm a `Drag` from a press. Both events also release the editor's
+drag-select (`registry::DRAG`, the same shape — #294). What is left: between the
+swallowed release and that next press or blur, the drag still follows a pointer
+with no button held — a native context menu that takes a grab without blurring
+the window leaves exactly that — and only an OS query for the button state
+(`XQueryPointer`, `GetAsyncKeyState`, `pressedMouseButtons`; Wayland has none)
+could close it. Because the shell folds a desktop touch contact into a left
+press, a second finger's press ends a drag the first finger is making, as a
+second finger's drag already does on rinch-web. Every heal is document-scoped
+like the rest of the drag — another document's idle pointer, press or blur
+cannot tear down this one's live drag. Pins: `app/missed_release_381_tests.rs`.
+The DOM DnD suite, the scrollbar drag and the read-only text-selection drag
+strand the same way and are not healed yet (#1028).
 
 ### File Drop (OS → App)
 
@@ -1859,7 +1902,7 @@ Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
 
-**The damage is named, and it is a short list of rects** (`paint::compute_damage` → `paint::DamageRegion`). A software frame repaints what its damage names: the paint-dirty nodes, removed nodes' rects, and the drag ghost's and inspect highlight's old *and* new rects (`last_ghost_rect`, `last_inspect_rect` — both translucent, so their rect is repainted every frame they are up). **A frame in which nothing was marked paints nothing** (`repaint_none`): an empty damage used to mean "repaint everything", which made every alt-tab, focus move, selection clear, IME preedit and scroll into view a full repaint and hid sites that forgot to name their node. So a change that reaches pixels without a `DomDocument` write — a shell-written attribute such as `data-text-sel`, `data-focused`, `data-preedit`, a `scroll_offset` — must call `NodeTree::mark_paint_dirty` on its node. **A marked node that names no rect of its own still damages something**: `compute_damage` falls back to the ancestor that paints it (`boxed_owner`: the `<select>` for an `<option>` or its text, else the nearest ancestor with a box), and names nothing only for a node that is detached or has a `display: none` *ancestor* (its own `display` is not asked: a span that has just become `display: none` still has last frame's glyphs on screen). An IFC root whose text layout is rebuilt, or that stops being a root, is pushed paint-dirty too: new glyphs are a paint change whether or not its box moved. `<style>`, `<script>`, `<head>`, `<meta>`, `<link>` and `<title>` compute `display: none` (the UA sheet's value; `apply_stylo_styles_to_taffy` skips them and used to leave the default `Flex`, which made a `<style>`'s CSS text an IFC line that flipped its box every structural pass and dragged the fallback to the page root). A box-less element with children (a `display: contents` wrapper, a 0x0 positioned anchor) names its subtree's painted bounds now *and* where they were last painted, so a moved tooltip anchor takes its child's old pixels along. `RinchApp::request_repaint` schedules a frame whose damage is named; `RinchApp::mark_scene_dirty` says "something changed, I don't know what" and repaints in full when nothing else is damaged (`repaint_full_unattributed` — the framework's own callers are window re-creation and the GPU path's surface readback, where every frame is full anyway; the software `GameViewport` frames were one until #361 painted them inline with the viewport's box as their damage). A whole-document restyle (`NodeTree::note_full_restyle`: stylesheet, viewport, DPR, root font-size, theme) sets `whole_document_damaged` and repaints in full (`repaint_full_restyle`). The rects are up to `MAX_DAMAGE_RECTS` (8), pairwise disjoint, merged only where they overlap or one rect wastes little; each is cleared on its own, paint prunes subtrees touching none of them, and draws through one clip — their union as a path. "Too big" is the **sum** of their areas against `FULL_REPAINT_FRACTION`. Pins: `crates/rinch/src/app/named_damage_tests.rs` (a local pixel oracle per converted site, each killed by removing that site's damage) and `rinch_dom::paint::damage`'s unit tests.
+**The damage is named, and it is a short list of rects** (`paint::compute_damage` → `paint::DamageRegion`). A software frame repaints what its damage names: the paint-dirty nodes, removed nodes' rects, and the drag ghost's and inspect highlight's old *and* new rects (`last_ghost_rect`, `last_inspect_rect` — both translucent, so their rect is repainted every frame they are up). **A frame in which nothing was marked paints nothing** (`repaint_none`): an empty damage used to mean "repaint everything", which made every alt-tab, focus move, selection clear, IME preedit and scroll into view a full repaint and hid sites that forgot to name their node. So a change that reaches pixels without a `DomDocument` write — a shell-written attribute such as `data-text-sel`, `data-focused`, `data-preedit`, a `scroll_offset` — must call `NodeTree::mark_paint_dirty` on its node. **A marked node that names no rect of its own still damages something**: `compute_damage` falls back to the ancestor that paints it (`boxed_owner`: the `<select>` for an `<option>` or its text, else the nearest ancestor with a box), and names nothing only for a node that is detached or has a `display: none` *ancestor* (its own `display` is not asked: a span that has just become `display: none` still has last frame's glyphs on screen). An IFC root whose text layout is rebuilt, or that stops being a root, is pushed paint-dirty too: new glyphs are a paint change whether or not its box moved. `<style>`, `<script>`, `<head>`, `<meta>`, `<link>` and `<title>` compute `display: none` (the UA sheet's value; `apply_stylo_styles_to_taffy` skips them and used to leave the default `Flex`, which made a `<style>`'s CSS text an IFC line that flipped its box every structural pass and dragged the fallback to the page root). A box-less element with children (a `display: contents` wrapper, a 0x0 positioned anchor) names its subtree's painted bounds now *and* where they were last painted, so a moved tooltip anchor takes its child's old pixels along. `RinchApp::request_repaint` schedules a frame whose damage is named; `RinchApp::mark_scene_dirty` says "something changed, I don't know what" and repaints in full when nothing else is damaged (`repaint_full_unattributed` — the framework's own callers are window re-creation and the GPU path's surface readback, where every frame is full anyway; the software `GameViewport` frames were one until #361 painted them inline with the viewport's box as their damage). A whole-document restyle (`NodeTree::note_full_restyle`: stylesheet, viewport, DPR, root font-size, theme) sets `whole_document_damaged` and repaints in full (`repaint_full_restyle`). The rects are up to `MAX_DAMAGE_RECTS` (8), pairwise disjoint, merged only where they overlap or one rect wastes little; each is cleared on its own, paint prunes subtrees touching none of them, and draws through one clip — their union as a path, opened with `TinySkiaPainter::push_damage_clip`, not a plain `push_clip`. That clip is not a mask to what it contains (#1007): tiny-skia draws an opaque fill through a different pipeline with a mask than without one (`Source` + lerp against scale + `SourceOver`), and the two round an anti-aliased edge pixel one LSB apart, so while it is the only clip open, a fill or stroke lying inside one damage rect is drawn unmasked, as the full repaint draws it. Any clip pushed above it — one `push_clip` skips as covering the damage included — ends that until its pop; an opacity layer does not. A box that straddles a damage rect's edge is still masked, so its opaque edge pixels inside the damage can still be one LSB from a full repaint's. Pins: `crates/rinch-dom/tests/damage_clip_pipeline_tests.rs`, `damage_clip_escape_tests.rs` (nothing drawn unmasked leaves the damage, miter spikes included), and `r2d-round` in `game_viewport_inline_tests::fresh_frames_match_the_reference_draw`. "Too big" is the **sum** of their areas against `FULL_REPAINT_FRACTION`. Pins: `crates/rinch/src/app/named_damage_tests.rs` (a local pixel oracle per converted site, each killed by removing that site's damage) and `rinch_dom::paint::damage`'s unit tests.
 
 **A dirty region clears what the last paint drew, not what the tree says now.** Each node keeps what it was last *painted* with — `prev_layout` (its box) and `Node::painted` (its own `box-shadow`/`outline` reach, its own transform, and whether it clipped and how it was positioned — #909) — all **parent-relative**, and only the paint that consumes the region writes them (`NodeTree::consume_paint_dirty`, O(1) per dirty node; the software dirty-region frame, a full software repaint and `build_scene` all call it). `paint::previous_painted_rect` sums them up the box-tree chain, so a node's old rect is exact however many resolves ran since, when an *ancestor* moved rather than the node, and when its ink or transform changed in the same frame. `compute_dirty_region` takes, per dirty node, that painted rect and its current box grown by its current own ink; a **positioned** box (`absolute`, `fixed`, `relative`) whose position changed is also grown by its subtree's reach (`opacity_layer_bounds`), which is what carries an untouched overflowing child along with a dragged panel or a reflow-shifted `relative` row (a subtree that walk cannot bound repaints in full). Static boxes are not walked — a reflow shifts every row — so a static box's in-flow child whose own ink reaches past a reflow-shifted parent is not covered (#880's probe J2, also on main); and the region stops being measured once it reaches `paint::FULL_REPAINT_FRACTION` of the surface. A removal records each removed node's painted rect, children before the parent's state is forgotten. This is what let the editor overlays (caret, selection, node outline) and the inset fast path (#280) stop forcing a full repaint per keystroke and per drag move: a second resolve used to overwrite the old rect, and the forced full repaint also hid a move and an ink change landing in one frame (#880's review). An IFC's direct write of an atomic inline's position pushes the box paint-dirty when it moves, so a chip moved by the text before it is repainted, overflowing children and all. `build_scene` also sets `has_previous_frame = false`, so a software frame after a GPU one is full. Not covered: a descendant's `text-shadow`, a `filter` reach, and the #550 partial escape of an absolute from an `overflow` box inside a moved subtree. Pins: `crates/rinch/src/app/repaint_old_rect_tests.rs` (and `build_scene_consume_tests.rs`, `--features embed`).
 
@@ -3787,11 +3830,18 @@ Three things it deliberately does not do.
   `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused`.
   A browser stops the spinner during a popover's or hover card's 150ms
   fade-out, since the pause lands when the dropdown starts to close. **No
-  `*::before` / `*::after`**, so on rinch-web a pseudo-element spinner under a
-  closed overlay still runs: desktop animates no pseudo-element (#925), and
-  rinch-dom matches pseudo-element rules with no bloom filter (#935), so those
-  selectors cost +10% of style instructions on every page loading the
-  component CSS (+71% under a closed drawer). `rinch-bench`'s `drawer_toggle`
+  `*::before` / `*::after`**, so a pseudo-element spinner under a closed
+  overlay still runs — on rinch-web, and since #1004 on desktop too, where a
+  generated box now carries its pseudo cascade and its `@keyframes` animation
+  starts (it did not before, #925), keeping the frame clock running under a
+  closed drawer. Desktop restarts such an animation at every cascade of its
+  originator, which regenerates the box (#1023). The pause selectors were left
+  out because rinch-dom matches pseudo-element rules with no bloom filter
+  (#935), so they cost +10% of style instructions on every page loading the
+  component CSS (+71% under a closed drawer); now that they would pause
+  something on desktop, that trade is worth revisiting (no component in the
+  library's stylesheets declares an animation on a pseudo-element today, by a
+  grep of `crates/rinch-components/src/styles`). `rinch-bench`'s `drawer_toggle`
   bench, which loads the theme and component CSS, is there to catch that
   class of cost.
   `LoadingOverlay` is the other `visibility: hidden` overlay and declares no
@@ -4019,6 +4069,25 @@ rsx! {
 ```
 
 Pattern bindings and guards are supported — each arm re-evaluates the scrutinee to extract bound values.
+
+**A braced arm body is decided by how it starts** (issue #395). It holds rsx
+children — several nodes, like an `if`/`for` body — when it starts with `let`,
+or with an rsx *head* (`Name {`, a string literal, `if`/`for`/`match`, or a
+braced interpolation) **followed by another node**:
+`0 => { h2 { "Home" } p { "…" } }`, `{ {label} span {} }`. A lone element or
+literal is that one node. Everything else is the one braced expression it always
+was: `0 => { overview_section(__scope) }` (ui-zoo's routing), `0 => {a.clone()}`,
+and a head followed by `.` or an operator (`{ "a".to_string() }`,
+`{ if … {} else {} .len() }`). `{ Point { x: 1 } }` is therefore a component, as
+unbraced; a path (`geom::Point { … }`), and a struct literal that cannot be an
+element (`{ Foo { a } }`, `{ Foo { ..Default::default() } }`, a method called on
+one), stay expressions. Lone control flow in braces is still #221's transparent
+brace, diagnostic included. In a multi-node arm the rsx parser reports a typo at
+the typo, including one inside a leading `if`/`for`/`match`: a head that fails
+to parse is skipped **by tokens** to see whether a node follows it — a
+diagnostic-only heuristic that a brace in the condition (`if let Foo { a } = x`)
+can defeat (`parse_braced_arm_body`, `failed_head_is_rsx`,
+`crates/rinch-macros/src/node.rs`).
 
 **Runtime desugaring:** `if` → `show_dom()`, `for` → `for_each_dom_typed()`, `match` → `match_dom()`.
 
@@ -4365,7 +4434,7 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for fourteen benchmarks, on the
+It records Callgrind instruction counts (Gungraun) for sixteen benchmarks, on the
 PR's merge commit and on its first parent (the current `main` tip). The report
 is a table in the job summary and one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks

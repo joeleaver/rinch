@@ -251,6 +251,12 @@ define_counters! {
     /// Stacking-order sequences built (`stacking_paint_order`), by paint and
     /// hit testing alike.
     StackingOrderBuilds = "stacking_order_builds",
+    /// Pixels of blurred `inset` box-shadow built by paint (#974): the
+    /// image each blurred inset shadow is computed over, cropped to what the
+    /// frame can show — render target, open clips and a partial repaint's
+    /// damage. Rebuilt on every paint of the box (no cache), so a small
+    /// repaint inside a large shadowed panel should cost a small number here.
+    InsetShadowMaskPx = "inset_shadow_mask_px",
     /// Software painter: glyphs drawn from its rasterised-glyph cache.
     GlyphCacheHits = "glyph_cache_hits",
     /// Software painter: glyphs it had to rasterise (and then cached).
