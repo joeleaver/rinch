@@ -1147,3 +1147,76 @@ mod editor {
         }
     }
 }
+
+// ── `text-shadow` is ink too (#980) ──────────────────────────────────────
+
+/// A box at (20, 150) holding a line of text whose `text-shadow` falls 60px
+/// below it and is blurred by 6px — wholly outside the box and past the 4px
+/// dirty margin, so only the shadow's own ink reach can name its pixels.
+fn text_panel(shadow: &str) -> (RinchApp, NodeHandle) {
+    let shadow = shadow.to_string();
+    let (app, hs) = mount_with(move |scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let root = el(scope, &outer, "position: relative; width: 10px; height: 10px");
+        let b = el(
+            scope,
+            &root,
+            &format!(
+                "position: absolute; left: 20px; top: 150px; width: 80px; height: 20px; \
+                 font-size: 16px; line-height: 20px; color: rgb(0, 0, 0); \
+                 text-shadow: {shadow}"
+            ),
+        );
+        let t = scope.create_text("HHHH HHHH");
+        b.append_child(&t);
+        (outer, vec![b])
+    });
+    (app, hs[0].clone())
+}
+
+/// The band the shadow of [`text_panel`]'s text is painted in.
+const TEXT_SHADOW_BAND: (i32, i32, i32, i32) = (20, 206, 80, 234);
+
+/// A box moved with its text: the text's shadow, 60px below the box, is
+/// cleared where it was painted (it used to be no part of any node's ink).
+#[test]
+fn a_moved_box_clears_its_old_text_shadow() {
+    let (mut app, b) = text_panel("0 60px 6px rgb(255, 0, 0)");
+    assert_clean_after(&mut app, TEXT_SHADOW_BAND, |app| {
+        b.set_style("left", "300px");
+        b.set_style("top", "20px");
+        resolve(app);
+    });
+}
+
+/// A text-shadow dropped in place is cleared.
+#[test]
+fn a_text_shadow_dropped_in_place_is_cleared() {
+    let (mut app, b) = text_panel("0 60px 6px rgb(255, 0, 0)");
+    assert_clean_after(&mut app, TEXT_SHADOW_BAND, |app| {
+        b.set_style("text-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// A text-shadow added in place is painted whole, blur and all.
+#[test]
+fn a_text_shadow_added_in_place_is_painted_whole() {
+    let (mut app, b) = text_panel("none");
+    let _ = full_frame(&mut app);
+    b.set_style("text-shadow", "0 60px 6px rgb(255, 0, 0)");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert!(
+        ink_in(&full, TEXT_SHADOW_BAND) > 100,
+        "positive control: the new shadow is there"
+    );
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
