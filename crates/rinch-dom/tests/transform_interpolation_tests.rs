@@ -23,6 +23,10 @@
 //! more than one wrong interpolation (the elementwise lerp of `rotate(170deg)`
 //! and `rotate(-170deg) scale(1.5)` also lands on a diagonal matrix there).
 
+// The expected matrices are Chrome's printed numbers, `0.707107` among them,
+// kept verbatim rather than respelled as `FRAC_1_SQRT_2`.
+#![allow(clippy::approx_constant)]
+
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::transition::{AnimatableValue, TransformOp, TransitionProperty};
