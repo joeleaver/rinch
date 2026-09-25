@@ -1409,3 +1409,228 @@ fn a_row_moved_to_the_end_under_only_last_child() {
         |doc, (list, rows)| doc.append_child(*list, rows[0]),
     );
 }
+
+// ── A whole-document restyle keeps what its typography did not move (#913) ──
+//
+// A theme change replaces the theme sheet and re-cascades every element
+// (`recompute_all_styles_full`). It used to drop every IFC's paint layout on
+// the way in, whatever the new sheet changed; it now leaves that to the same
+// per-node comparison a targeted restyle uses
+// (`ComputedStyle::same_text_layout_inputs`). Each fixture below is a theme
+// toggle whose variable **does** reach text, through a different route — the
+// root's own style, an inline span, an anonymous box, an atomic inline, a
+// generated box — so a full restyle that kept too much fails here. State A
+// sets `:root { --t… }` to one value, state B to another; the change is
+// exactly what `RinchApp` does on a theme change.
+
+const THEME_A: &str = ":root { --tc: rgb(10, 20, 30); --tfs: 16px; --tls: 1px; \
+     --tff: sans-serif; --tbg: rgb(250, 240, 10); --tw: 400; \
+     --tcontent: \"one \"; }";
+const THEME_B: &str = ":root { --tc: rgb(200, 100, 50); --tfs: 23px; --tls: 3px; \
+     --tff: monospace; --tbg: rgb(10, 200, 240); --tw: 700; \
+     --tcontent: \"a longer prefix \"; }";
+
+fn toggle_theme(doc: &mut RinchDocument) {
+    doc.update_theme_variables(THEME_B);
+    doc.recompute_all_styles_full();
+}
+
+macro_rules! theme_typography {
+    ($name:ident, $css:expr, $build:expr) => {
+        #[test]
+        fn $name() {
+            twin(
+                stringify!($name),
+                $css,
+                |doc, on| {
+                    doc.set_theme_css(if on { THEME_B } else { THEME_A });
+                    #[allow(clippy::redundant_closure_call)]
+                    ($build)(doc, on)
+                },
+                |doc, _| toggle_theme(doc),
+            );
+        }
+    };
+}
+
+fn ifc_doc_off(doc: &mut RinchDocument, _on: bool) -> NodeId {
+    ifc_doc(doc, false)
+}
+
+theme_typography!(
+    a_theme_colour_on_the_root,
+    ".box { color: var(--tc); }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_colour_inherited_from_the_body,
+    "body { color: var(--tc); }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_font_size_on_the_root,
+    ".box { font-size: var(--tfs); }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_letter_spacing_on_the_root,
+    ".box { letter-spacing: var(--tls); }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_font_family_on_the_root,
+    ".box { font-family: var(--tff); }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_font_weight_on_the_span_only,
+    "span { font-weight: var(--tw); }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_colour_on_the_span_only,
+    "span { color: var(--tc); }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_inline_background_on_the_span_only,
+    "span { background-color: var(--tbg); padding-left: 9px; }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_string_in_generated_content,
+    ".box::before { content: var(--tcontent); }",
+    ifc_doc_off
+);
+theme_typography!(
+    a_theme_colour_on_an_atomic_members_own_text,
+    ".chip { color: var(--tc); }",
+    |doc: &mut RinchDocument, _on: bool| chip_doc(doc, false)
+);
+theme_typography!(
+    a_theme_font_size_on_an_atomic_members_own_text,
+    ".chip { font-size: var(--tfs); }",
+    |doc: &mut RinchDocument, _on: bool| chip_doc(doc, false)
+);
+theme_typography!(
+    a_theme_colour_reaches_an_anonymous_block_box,
+    ".a { color: var(--tc); line-height: 1.25; } .b { width: 2em; }",
+    |doc: &mut RinchDocument, _on: bool| {
+        let body = doc.body();
+        let a = doc.create_element("div");
+        doc.set_attribute(a, "class", "a");
+        doc.append_child(body, a);
+        let t = doc.create_text("some text beside a block");
+        doc.append_child(a, t);
+        let li = doc.create_element("li");
+        doc.set_attribute(li, "class", "b");
+        doc.append_child(a, li);
+        a
+    }
+);
+theme_typography!(
+    a_theme_colour_on_a_split_inline_reaches_its_anonymous_box,
+    ".b { color: var(--tc); line-height: 1.25; }",
+    |doc: &mut RinchDocument, _on: bool| {
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.append_child(body, div);
+        let span = doc.create_element("span");
+        doc.set_attribute(span, "class", "b");
+        doc.append_child(div, span);
+        let t = doc.create_text("split text");
+        doc.append_child(span, t);
+        let inner = doc.create_element("fieldset");
+        doc.append_child(span, inner);
+        span
+    }
+);
+
+/// The #913 shape itself: the theme changes a variable that **no text** reads
+/// (a wrapper's background). The layout must equal a fresh one — there is no
+/// counter-oracle, since nothing is meant to move — and no IFC may be
+/// re-shaped: every paragraph keeps the layout it had.
+#[test]
+fn a_theme_change_that_reaches_no_text_reshapes_nothing() {
+    let css =
+        ".wrap { background-color: var(--tbg); } .box { color: var(--tc-unused, rgb(1, 2, 3)); }";
+    let make = |theme: &str| {
+        let mut doc = RinchDocument::new();
+        doc.load_css(BASE_CSS);
+        doc.load_css(css);
+        doc.set_theme_css(theme);
+        let _ = ifc_doc(&mut doc, false);
+        // A second paragraph, and an atomic inline with an IFC of its own.
+        let _ = chip_doc(&mut doc, false);
+        // No anonymous block box: the whole-document IFC setup pass a theme
+        // change runs re-mints those, and re-shapes their text whatever the
+        // restyle did (#964).
+        settle(&mut doc);
+        doc
+    };
+    let mut doc = make(THEME_A);
+    let _ = doc.tree.perf.end_frame();
+    toggle_theme(&mut doc);
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(
+        s.get(rinch_dom::perf::Counter::FullRestyleTheme),
+        1,
+        "positive control: the full restyle ran: {s:?}"
+    );
+    assert!(
+        s.get(rinch_dom::perf::Counter::ElementsCascaded) > 5,
+        "positive control: every element was re-cascaded: {s:?}"
+    );
+    assert_eq!(
+        s.get(rinch_dom::perf::Counter::ShapeIfcBuild),
+        0,
+        "a theme change that reaches no text rebuilt a paint layout: {s:?}"
+    );
+    let fresh = make(THEME_B);
+    assert_eq!(snapshot(&doc), snapshot(&fresh));
+}
+
+/// The pixels of a theme colour change on an IFC root, incremental against
+/// fresh: the brush is baked into the Parley layout, so a kept layout would
+/// paint the old colour.
+#[test]
+fn a_theme_colour_change_reaches_the_pixels() {
+    let css = ".box { color: var(--tc); }";
+    let make = |theme: &str| {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(css);
+        d.set_theme_css(theme);
+        let _ = ifc_doc(&mut d, false);
+        settle(&mut d);
+        d
+    };
+    let mut before = make(THEME_A);
+    let before_px = paint_pixels(&mut before);
+    let mut doc = make(THEME_A);
+    toggle_theme(&mut doc);
+    doc.resolve_layout(VP.0, VP.1);
+    let incremental = paint_pixels(&mut doc);
+    let mut fresh = make(THEME_B);
+    let fresh_px = paint_pixels(&mut fresh);
+    let orange = |px: &Vec<[u8; 4]>| {
+        px.iter()
+            .filter(|p| p[0] > 120 && p[2] < 90 && p[0] > p[2] + 60)
+            .count()
+    };
+    assert_eq!(
+        orange(&before_px),
+        0,
+        "counter-oracle: state A has no orange ink"
+    );
+    assert!(
+        orange(&fresh_px) > 20,
+        "counter-oracle: state B has orange ink"
+    );
+    assert_eq!(orange(&incremental), orange(&fresh_px));
+    assert!(
+        incremental == fresh_px,
+        "incremental pixels differ from fresh"
+    );
+}

@@ -2131,7 +2131,11 @@ input a shaped layout is built from:
   `invalidate_descendant_styles`, `set_attribute`/`remove_attribute` and
   `set_style` used to drop every text layout under the restyled node, so a
   colour-only hover re-shaped all of it; now it re-shapes nothing and takes
-  the paint-only path. Regenerated `::before`/`::after`/list-marker content is
+  the paint-only path. The whole-document restyle a theme change runs
+  (`recompute_all_styles_full`) is no exception (#913): it re-cascades every
+  element and the same comparison decides, so a dark-mode toggle whose
+  variables reach no text re-shapes nothing — only its whole-document IFC
+  setup pass still re-shapes each anonymous block box (#964). Regenerated `::before`/`::after`/list-marker content is
   the one restyle that invalidates regardless, because the nodes an inline
   layout names were freed and minted again.
 - **A structural pass drops only the roots whose content moved**

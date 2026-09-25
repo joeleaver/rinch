@@ -867,9 +867,10 @@ fn ten_queued_drag_moves_lay_out_once() {
 /// A dark-mode toggle: the document restyles in full and the frame repaints in
 /// full, for the theme reason.
 ///
-/// **A finding, pinned as it is — #913; a fix must LOWER this number, and its PR updates the pin.** Every paragraph's paint layout is rebuilt
-/// (`shape_ifc_build` 211: every row and side-scroller row) — a full restyle drops them — though the one
-/// variable the toggle changes is used by no text here.
+/// No paint layout is rebuilt (`shape_ifc_build` 0, #913): the one variable the
+/// toggle changes is used by no text here, and the full restyle drops an IFC's
+/// layout only when that IFC's typography moved. It used to drop all of them —
+/// 211, every row and side-scroller row.
 #[cfg(feature = "theme")]
 #[test]
 fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
@@ -892,7 +893,6 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (FullRestyleTheme, 1),
             (FullStyleWalks, 1),
             (TaffyStyleSyncs, 216),
-            (ShapeIfcBuild, 211),
             (ShapePaint, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
