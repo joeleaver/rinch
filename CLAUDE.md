@@ -1432,14 +1432,45 @@ The backend says which by calling `update_drag_with_button(x, y,
 PrimaryButton::{Down,Up,Unknown})`; `update_drag(x, y)` is exactly the `Unknown`
 form. Three states rather than a bool because a backend that cannot see the
 button state is a real case: **rinch-web reports `Down`/`Up` from `buttons & 1`
-and heals; desktop reports `Unknown` and does not.** `PlatformEvent::MouseMove`
-carries no button mask, and neither does winit's `PointerMoved` behind it, so
-desktop has no independent source of truth — and a flag the runtime kept itself
-would be no help, since the missed `MouseUp` that strands the drag is the same
-event that would have cleared the flag. Tracked in **issue #294**. Nothing is
-ever ended on a guess: `Unknown` behaves exactly like `Down`. The heal is
-document-scoped like the rest of the drag — another document's idle pointer
-cannot tear down this one's live drag.
+and heals on the move; desktop reports `Unknown` and does not.**
+`PlatformEvent::MouseMove` carries no button mask, and neither does winit's
+`PointerMoved` behind it, so desktop has no source of truth on a move — and a
+flag the runtime kept itself would be no help, since the missed `MouseUp` that
+strands the drag is the same event that would have cleared the flag. Nothing is
+ever ended on a guess: `Unknown` behaves exactly like `Down`.
+
+**Desktop heals on the next event that proves the release was missed** (issue
+#381), through `rinch_core::heal_missed_release` — the same `on_cancel` ending,
+at the last move. Two events count: a **left `MouseDown`** while the drag is
+live (a button cannot be pressed twice without a release in between), handled
+*before* the press is dispatched so its handlers never see the stranded drag
+and a drag the press arms is not the one ended; and **`WindowFocus(false)`**.
+The blur rule is a trade-off, not a proof: on Windows deactivation takes the
+pointer capture and the release does go to another window, but on X11/Wayland
+the press's implicit pointer grab still delivers it, and a blur mid-drag can
+come from a transient keyboard grab (a global hotkey, a WM holding Alt+Tab) —
+that healthy drag is cancelled too, and its release then commits nothing.
+Accepted because it fails safe: a cancel, never a wrong commit. Before #381 the next unrelated
+click's `MouseUp` ran `finish_drag` and **committed** the stranded drag's
+`on_end` at that click's position. A right or middle press proves nothing (a
+chord can be real) and ends nothing. The left-press proof assumes a
+primary-button drag — `Drag` does not record which button armed it — so a
+middle- or right-button drag is ended by a left chord press (it used to be
+committed by that press's release), and a "grab mode" drag armed with no
+button held (a shortcut, a timer) and placed with a click is cancelled by that
+click, as rinch-web cancels it on its first move: arm a `Drag` from a press. Both events also release the editor's
+drag-select (`registry::DRAG`, the same shape — #294). What is left: between the
+swallowed release and that next press or blur, the drag still follows a pointer
+with no button held — a native context menu that takes a grab without blurring
+the window leaves exactly that — and only an OS query for the button state
+(`XQueryPointer`, `GetAsyncKeyState`, `pressedMouseButtons`; Wayland has none)
+could close it. Because the shell folds a desktop touch contact into a left
+press, a second finger's press ends a drag the first finger is making, as a
+second finger's drag already does on rinch-web. Every heal is document-scoped
+like the rest of the drag — another document's idle pointer, press or blur
+cannot tear down this one's live drag. Pins: `app/missed_release_381_tests.rs`.
+The DOM DnD suite, the scrollbar drag and the read-only text-selection drag
+strand the same way and are not healed yet (#1028).
 
 ### File Drop (OS → App)
 
@@ -3778,11 +3809,18 @@ Three things it deliberately does not do.
   `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused`.
   A browser stops the spinner during a popover's or hover card's 150ms
   fade-out, since the pause lands when the dropdown starts to close. **No
-  `*::before` / `*::after`**, so on rinch-web a pseudo-element spinner under a
-  closed overlay still runs: desktop animates no pseudo-element (#925), and
-  rinch-dom matches pseudo-element rules with no bloom filter (#935), so those
-  selectors cost +10% of style instructions on every page loading the
-  component CSS (+71% under a closed drawer). `rinch-bench`'s `drawer_toggle`
+  `*::before` / `*::after`**, so a pseudo-element spinner under a closed
+  overlay still runs — on rinch-web, and since #1004 on desktop too, where a
+  generated box now carries its pseudo cascade and its `@keyframes` animation
+  starts (it did not before, #925), keeping the frame clock running under a
+  closed drawer. Desktop restarts such an animation at every cascade of its
+  originator, which regenerates the box (#1023). The pause selectors were left
+  out because rinch-dom matches pseudo-element rules with no bloom filter
+  (#935), so they cost +10% of style instructions on every page loading the
+  component CSS (+71% under a closed drawer); now that they would pause
+  something on desktop, that trade is worth revisiting (no component in the
+  library's stylesheets declares an animation on a pseudo-element today, by a
+  grep of `crates/rinch-components/src/styles`). `rinch-bench`'s `drawer_toggle`
   bench, which loads the theme and component CSS, is there to catch that
   class of cost.
   `LoadingOverlay` is the other `visibility: hidden` overlay and declares no

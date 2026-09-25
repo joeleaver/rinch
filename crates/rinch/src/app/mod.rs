@@ -87,6 +87,8 @@ mod key_event_data_tests;
 mod key_repeat_tests;
 #[cfg(test)]
 mod late_children_716_tests;
+#[cfg(test)]
+mod missed_release_381_tests;
 #[cfg(all(test, software_shell))]
 mod named_damage_tests;
 #[cfg(test)]
