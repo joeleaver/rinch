@@ -519,20 +519,15 @@ fn an_ifc_roots_ellipsis_truncation_is_measured_with_the_spacing() {
     }
 }
 
-/// The other `text-overflow: ellipsis` path: a text node measured through its
-/// `TextMeasure` context (a flex item, as above) is truncated by the
-/// `ellipsis_rebuilds` loop rather than by `build_ellipsis_layout`. Same three
-/// throwaway builders, a different function.
-///
-/// Counted in glyphs because this path keeps no truncated string — the result
-/// is a bare `parley::Layout` on the text node. The reference for the width
-/// half therefore comes from the IFC path, and **the coupling is asserted
-/// rather than assumed**: the two paths must truncate the same input in the
-/// same box to the same number of glyphs, which is a cross-path invariant worth
-/// pinning on its own.
+/// The other `text-overflow: ellipsis` path — a text node measured through
+/// its `TextMeasure` context (a flex item) — is no longer taken (#904's second
+/// review): that text is an anonymous flex item, which does not clip, and
+/// Chrome 153 draws it clipped with no "…". This fixture used to pin that
+/// path's spacing (#698); it now pins that the flex item's text is kept whole,
+/// spaced or not, so the rebuild (and its spacing) cannot come back unnoticed.
 #[test]
-fn a_flex_items_ellipsis_truncation_is_measured_with_the_spacing() {
-    fn truncate(extra: &str, text: &str) -> (usize, f32) {
+fn a_flex_items_text_is_not_ellipsized() {
+    fn glyphs(extra: &str, text: &str) -> usize {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let c = el(
@@ -551,48 +546,20 @@ fn a_flex_items_ellipsis_truncation_is_measured_with_the_spacing() {
             .cached_text_parley
             .as_ref()
             .expect("the flex item's text was never cached");
-        (glyph_count(l), l.width())
+        glyph_count(l)
     }
     for c in CASES {
-        let (plain_n, _) = truncate("", c.long);
-        let (spaced_n, spaced_w) = truncate(c.decl, c.long);
         let full = c.long.chars().count();
-        assert!(
-            plain_n > 0 && plain_n < full,
-            "{}: positive control — {plain_n} glyphs is not a truncation of \
-             {full} characters",
-            c.name
-        );
-        assert!(
-            spaced_n + 2 <= plain_n,
-            "{}: fewer spaced glyphs must fit in the same 150px box; \
-             got {plain_n} -> {spaced_n}",
-            c.decl
-        );
-        assert!(
-            spaced_w <= 150.0,
-            "{}: the truncation must fit the 150px box; got {spaced_w}",
-            c.decl
-        );
-
-        // The reference string, and the invariant that lets it be one.
+        // Counter-oracle: the same text in a block container does ellipsize.
         let (ifc_text, _) = ellipsis_ifc(c.decl, c.long);
-        assert_eq!(
-            ifc_text.chars().count(),
-            spaced_n,
-            "{}: the two ellipsis paths truncated the same input in the same \
-             box differently ({ifc_text:?} against {spaced_n} glyphs), so the \
-             width reference below is not this layout's string",
-            c.decl
-        );
-        let unspaced = ifc_line_width("", &ifc_text);
         assert!(
-            spaced_w - unspaced > 20.0,
-            "{}: the final layout must shape {ifc_text:?} WITH the declaration \
-             — the same string unspaced is {unspaced}, which is what a final \
-             builder that dropped it would return; got {spaced_w}",
+            ifc_text.chars().count() < full,
+            "{}: positive control — the block container truncates",
             c.decl
         );
+        for extra in ["", c.decl] {
+            assert_eq!(glyphs(extra, c.long), full, "{}: {extra:?}", c.name);
+        }
     }
 }
 
