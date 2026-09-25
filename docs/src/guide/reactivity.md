@@ -251,9 +251,33 @@ Only tracking changes: batching is untouched, so a handler's writes inside an
 event handler still flush once, when the batch ends. An effect the handler
 creates, or one its writes run, tracks normally.
 
-This covers those five types. A closure a component stores and calls itself —
-an `Rc<dyn Fn()>`, a `render_fn` — is an ordinary call and is tracked like any
-other code in the effect; that is what a `_fn` prop such as `value_fn` relies on.
+The same holds for the other app callbacks rinch runs synchronously from a call
+you can make inside an effect (issue #931):
+
+- the rich-text editor's `EditorHandle` hooks — `on_change`,
+  `on_selection_change`, `on_caret_moved`, `on_key`, `on_link_click` and
+  `on_link_hover` — so an app effect that calls `set_selection`, runs a
+  `command` or offers a key is not subscribed to a popup hook's own `open`
+  signal;
+- the child observers (`rinch_core::dom::on_child_inserted` /
+  `on_child_removed`), which every `for` reconcile, `if` branch swap and
+  component re-render reaches from inside its effect;
+- the selection and selection-sync callbacks (`query_selection_ranges`,
+  `fire_selection_sync`), the keyboard and paste interceptors
+  (`dispatch_keyboard_event`, `dispatch_paste_event`), the dismiss stack
+  (`dispatch_dismiss`) and `Drag::cancel`'s `on_cancel`.
+
+A closure you pass *as the call itself* is not one of these: the `build` closure
+of `EditorHandle::update(|state| …)` runs as part of your own code, and a signal
+it reads is your effect's dependency like any other.
+
+If you write a component or library that stores an app's callback and calls it
+later, call it through `rinch_core::untracked_handler(|| cb(..))` for the same
+reason. The five callback types do this in their `invoke`; a bare `Rc<dyn Fn()>`
+does not. A closure a component stores and calls itself — an `Rc<dyn Fn()>`, a
+`render_fn` — is an ordinary call and is tracked like any other code in the
+effect; that is what a `_fn` prop such as `value_fn` relies on, and why the
+choice is yours.
 
 ## Memory Management with Scopes
 

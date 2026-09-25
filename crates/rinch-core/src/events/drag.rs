@@ -429,7 +429,11 @@ impl Drag {
             // handler (review of #942, F1), and state `on_cancel` creates — or a
             // store it looks up — must belong to the component that armed it.
             let _doc = state.doc.map(crate::context::push_dispatching_doc);
-            let run = || crate::reactive::batch(|| on_cancel(x, y));
+            // Untracked (#931): `Drag::cancel` is public and may be called from
+            // inside an effect, which must not subscribe to what `on_cancel` reads.
+            let run = || {
+                crate::reactive::batch(|| crate::reactive::untracked_handler(|| on_cancel(x, y)))
+            };
             match &state.owner {
                 Some(owner) => owner.run(run),
                 None => crate::reactive::unowned(run),

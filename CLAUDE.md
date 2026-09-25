@@ -622,7 +622,23 @@ at any nesting depth — it suspends the whole observer stack
 (which leaks to an outer effect only during a run nested inside that outer
 effect's run — #932).
 Batching and flushing are unchanged. So `onchange.invoke(v)` in a coordinating
-effect needs no hand-written `untracked`.
+effect needs no hand-written `untracked`. **The other synchronously-run app
+callbacks go through the same function** (issue #931): the editor's `Hook::invoke`
+(`on_change`/`on_selection_change`/`on_caret_moved`/`on_key`) and its
+`on_link_click`/`on_link_hover`; the child observers (`dom::late_child::notify`,
+reached from inside every `for`/`if`/component-re-render effect); the selection
+and selection-sync callbacks; `dispatch_dismiss`; `Drag::cancel`'s `on_cancel`
+(which #942's superseding `Drag::start` also reaches); and the keyboard and paste
+interceptors (`dispatch_keyboard_event` / `dispatch_paste_event` are public).
+`rinch_core::untracked_handler` is public for any new slot that stores an app's
+callback — use it there, not `untracked`. Not wrapped, because nothing reaches
+them from inside an effect: the focus-registry callbacks and menu callbacks
+(both `pub(crate)`, run by the runtime from events or the deferred focus work),
+and Drag's `on_move`/`on_end` (pointer events). Also not yet wrapped: the
+editor's collaboration `outbound` sink, issue #948. Deliberately **not** wrapped: an
+`EditorHandle::update` `build` closure, and plugin code (`Plugin::apply`,
+`decorations`, `handle_paste`), which runs under the core borrow beside that
+closure — issue #943.
 
 ## Component Props
 

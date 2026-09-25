@@ -412,9 +412,14 @@ fn notify(parent: &NodeHandle, subject: &NodeHandle, half: Half) {
 
     DISPATCHING.with(|d| d.set(true));
     let _guard = DispatchGuard;
-    for observer in observers {
-        observer(subject);
-    }
+    // Untracked (#931): an insertion or removal is very often made from inside
+    // an effect — every `for` reconcile, `if` branch swap and component
+    // re-render — and an observer's reads are not that effect's dependencies.
+    crate::reactive::untracked_handler(|| {
+        for observer in observers {
+            observer(subject);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -950,5 +955,80 @@ mod tests {
 
         forget((root.doc_key(), root.node_id()), Half::Inserted);
         forget((root.doc_key(), root.node_id()), Half::Removed);
+    }
+
+    /// An observer runs inside whatever effect made the insertion or removal
+    /// — every `for` reconcile, `if` branch swap and component re-render is
+    /// one — so its reads must subscribe nobody (issue #931). The effect is
+    /// created inside another effect's run, two frames deep, which is what
+    /// tells whole-stack suspension apart from plain `untracked` (#932).
+    fn assert_observer_untracked(
+        register: impl FnOnce(&NodeHandle, Rc<dyn Fn()>),
+        drive: fn(&Rc<RefCell<MockDomDocument>>, &NodeHandle),
+    ) {
+        use crate::reactive::{Effect, Signal};
+        use std::cell::Cell;
+        let (own, store) = (Signal::new(0), Signal::new(0));
+        let fired = Rc::new(Cell::new(0u32));
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        register(&root, {
+            let fired = fired.clone();
+            Rc::new(move || {
+                fired.set(fired.get() + 1);
+                store.get();
+            })
+        });
+        let (outer, inner) = (Rc::new(Cell::new(0u32)), Rc::new(Cell::new(0u32)));
+        let slot: Rc<RefCell<Option<Effect>>> = Rc::default();
+        let _outer = Effect::new({
+            let (outer, inner, slot, root) =
+                (outer.clone(), inner.clone(), slot.clone(), root.clone());
+            move || {
+                outer.set(outer.get() + 1);
+                let (inner, d, root) = (inner.clone(), d.clone(), root.clone());
+                slot.replace(Some(Effect::new(move || {
+                    own.get();
+                    inner.set(inner.get() + 1);
+                    drive(&d, &root);
+                })));
+            }
+        });
+        assert_eq!(
+            fired.get(),
+            1,
+            "control: the observer ran inside the effect"
+        );
+        store.set(1);
+        assert_eq!(
+            (outer.get(), inner.get()),
+            (1, 1),
+            "a signal only the observer read re-ran an effect"
+        );
+        own.set(1);
+        assert_eq!(inner.get(), 2, "positive control: the effect is live");
+        forget((root.doc_key(), root.node_id()), Half::Inserted);
+        forget((root.doc_key(), root.node_id()), Half::Removed);
+    }
+
+    #[test]
+    fn an_insertion_observer_run_from_an_effect_subscribes_nobody() {
+        assert_observer_untracked(
+            |root, obs| on_child_inserted(root, move |_| obs()),
+            |d, root| root.append_child(&element(d, "b")),
+        );
+    }
+
+    #[test]
+    fn a_removal_observer_run_from_an_effect_subscribes_nobody() {
+        assert_observer_untracked(
+            |root, obs| on_child_removed(root, move |_| obs()),
+            |d, root| {
+                let row = element(d, "b");
+                root.append_child(&row);
+                row.remove();
+            },
+        );
     }
 }

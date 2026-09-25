@@ -19,7 +19,7 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
-use rinch_core::reactive::{Owner, current_owner, unowned};
+use rinch_core::reactive::{Owner, current_owner, unowned, untracked_handler};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
@@ -165,11 +165,17 @@ impl<F: ?Sized> Hook<F> {
 
     /// Run `call` on the callback inside its owner — or not at all, answering
     /// `None`, once the owner is disposed.
+    ///
+    /// **Untracked** (#931): an app effect that moves the selection, runs a
+    /// command or offers a key calls these hooks synchronously, and what a hook
+    /// reads (a popup's own `open` signal) must not become that effect's
+    /// dependency. The whole observer stack is suspended, not only its top —
+    /// see [`untracked_handler`].
     fn invoke<R>(&self, call: impl FnOnce(&F) -> R) -> Option<R> {
         match &self.owner {
             Some(owner) if !owner.is_alive() => None,
-            Some(owner) => Some(owner.run(|| call(&self.cb))),
-            None => Some(unowned(|| call(&self.cb))),
+            Some(owner) => Some(untracked_handler(|| owner.run(|| call(&self.cb)))),
+            None => Some(untracked_handler(|| unowned(|| call(&self.cb)))),
         }
     }
 }
@@ -1092,7 +1098,8 @@ impl EditorHandle {
     /// with no internal borrow held.
     pub fn dispatch_link_click(&self, click: &LinkClick) -> bool {
         let cb = self.core().on_link_click.clone();
-        cb.is_some_and(|cb| cb(click))
+        // Untracked, like the hooks (#931).
+        cb.is_some_and(|cb| untracked_handler(|| cb(click)))
     }
 
     /// Whether an [`on_link_click`](Self::on_link_click) callback is
@@ -1140,7 +1147,8 @@ impl EditorHandle {
     pub(crate) fn notify_link_hover(&self, hover: Option<&LinkHover>) {
         let cb = self.core().on_link_hover.clone();
         if let Some(cb) = cb {
-            cb(hover);
+            // Untracked, like the hooks (#931).
+            untracked_handler(|| cb(hover));
         }
     }
 
@@ -6228,6 +6236,194 @@ mod tests {
             });
             h.handle.insert_text("z");
             assert_eq!(late.get(), 1, "an ownerless callback keeps firing");
+        }
+
+        /// Issue #931: every hook runs untracked. `register` installs the hook
+        /// under test with a body that calls the `reads` it is handed (which
+        /// counts a firing and reads a signal nothing else reads); `drive`
+        /// makes the hook fire, and is called from an app effect created
+        /// inside another effect's run — two frames deep on the observer
+        /// stack, which is what tells whole-stack suspension apart from plain
+        /// `untracked` (#932). Writing the hook's signal must re-run neither
+        /// effect.
+        fn assert_hook_untracked(register: impl FnOnce(Rc<dyn Fn()>), drive: impl Fn() + 'static) {
+            use rinch_core::reactive::{Effect, Signal};
+            let (own, store) = (Signal::new(0u32), Signal::new(0u32));
+            let fired = Rc::new(Cell::new(0u32));
+            register({
+                let fired = fired.clone();
+                Rc::new(move || {
+                    fired.set(fired.get() + 1);
+                    let _ = store.get();
+                })
+            });
+            let drive = Rc::new(drive);
+            let (outer, inner) = (Rc::new(Cell::new(0u32)), Rc::new(Cell::new(0u32)));
+            let slot: Rc<RefCell<Option<Effect>>> = Rc::default();
+            let _outer = Effect::new({
+                let (outer, inner, slot) = (outer.clone(), inner.clone(), slot.clone());
+                move || {
+                    outer.set(outer.get() + 1);
+                    let (inner, drive) = (inner.clone(), drive.clone());
+                    slot.replace(Some(Effect::new(move || {
+                        let _ = own.get();
+                        inner.set(inner.get() + 1);
+                        drive();
+                    })));
+                }
+            });
+            assert_eq!(fired.get(), 1, "control: the hook fired inside the effect");
+            store.set(1);
+            assert_eq!(
+                (outer.get(), inner.get()),
+                (1, 1),
+                "a signal only the hook read re-ran the app effect that drove it"
+            );
+            own.set(1);
+            assert_eq!(inner.get(), 2, "positive control: the app effect is live");
+            assert_eq!(fired.get(), 2, "and its re-run fired the hook again");
+        }
+
+        /// A caret that moves on every call: `a`, `b`, `a`, `b`, …
+        fn alternating(a: usize, b: usize) -> impl Fn() -> Selection {
+            let flip = Cell::new(false);
+            move || {
+                flip.set(!flip.get());
+                Selection::cursor(Pos(if flip.get() { a } else { b }))
+            }
+        }
+
+        #[test]
+        fn the_selection_hook_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs().handle;
+            let next = alternating(3, 4);
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| h.on_selection_change(move |_| reads()),
+                move || driven.set_selection(next()),
+            );
+        }
+
+        /// The same, for a hook a component registered: it runs inside its
+        /// owner, which is a different branch of `Hook::invoke`.
+        #[test]
+        fn an_owned_hook_run_from_an_effect_subscribes_nobody() {
+            use rinch_core::reactive::Scope;
+            let h = two_paragraphs().handle;
+            let scope = Scope::new();
+            let next = alternating(3, 4);
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| scope.run(|| h.on_selection_change(move |_| reads())),
+                move || driven.set_selection(next()),
+            );
+        }
+
+        #[test]
+        fn the_change_hook_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs().handle;
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| h.on_change(move || reads()),
+                move || {
+                    driven.insert_text("x");
+                },
+            );
+        }
+
+        #[test]
+        fn the_key_hook_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs().handle;
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| {
+                    h.on_key(move |_| {
+                        reads();
+                        false
+                    })
+                },
+                move || {
+                    driven.offer_key(&key("Escape"));
+                },
+            );
+        }
+
+        #[test]
+        fn the_caret_moved_hook_run_from_an_effect_subscribes_nobody() {
+            // Empty paragraphs, laid out by hand: the mock measures no text,
+            // and a caret needs somewhere to land (0[p 1]2[p 3]4).
+            let s = schema();
+            let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+            let h = mount(doc_node(&s, vec![empty(), empty()]));
+            let blocks = children(&h, h.container_id);
+            {
+                let mut m = h.mock.borrow_mut();
+                for (i, b) in blocks.iter().enumerate() {
+                    m.__set_node_layout(*b, 0.0, i as f32 * 20.0, 200.0, 20.0);
+                }
+            }
+            let next = alternating(3, 1);
+            let driven = h.handle.clone();
+            assert_hook_untracked(
+                |reads| h.handle.on_caret_moved(move || reads()),
+                move || {
+                    driven.set_selection(next());
+                    driven.update_caret();
+                },
+            );
+        }
+
+        /// `go <a>here</a> and <a>there</a>`: "here" is 4..8, "there" 13..18.
+        fn linked() -> EditorHandle {
+            let h = crate::create_editor();
+            assert!(h.load_html(r#"<p>go <a href="a:1">here</a> and <a href="b:2">there</a></p>"#));
+            h
+        }
+
+        #[test]
+        fn the_link_click_hook_run_from_an_effect_subscribes_nobody() {
+            let h = linked();
+            let click = crate::LinkClick {
+                link: h.link_at(Pos(4)).expect("on a link"),
+                primary: true,
+                ctrl: true,
+                meta: false,
+                shift: false,
+                alt: false,
+            };
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| {
+                    h.on_link_click(move |_| {
+                        reads();
+                        true
+                    })
+                },
+                move || {
+                    driven.dispatch_link_click(&click);
+                },
+            );
+        }
+
+        #[test]
+        fn the_link_hover_hook_run_from_an_effect_subscribes_nobody() {
+            let h = linked();
+            let hovers = [4, 13].map(|p| crate::LinkHover {
+                link: h.link_at(Pos(p)).expect("on a link"),
+                rect: rinch_core::reactive::ElementBounds::default(),
+            });
+            let flip = Cell::new(0usize);
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| h.on_link_hover(move |_| reads()),
+                move || {
+                    // A different link each run, so each one is a change.
+                    flip.set(flip.get() + 1);
+                    let hover = hovers[flip.get() % 2].clone();
+                    crate::registry::set_link_hover(Some(931), Some((driven.clone(), hover)));
+                },
+            );
+            crate::registry::set_link_hover(Some(931), None);
         }
 
         /// `<p>hello</p><p>world</p>`: "hello" is 1..6, "world" is 8..13.
