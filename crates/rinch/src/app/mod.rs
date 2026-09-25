@@ -64,6 +64,8 @@ mod focus_lifecycle_tests;
 mod font_tests;
 #[cfg(test)]
 mod frozen_component_box_tests;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod game_viewport_inline_tests;
 #[cfg(test)]
 mod hidden_animation_frames_tests;
 #[cfg(test)]
@@ -4311,10 +4313,43 @@ impl RinchApp {
         None
     }
 
+    /// Hand this paint the frames the software backend draws **inline** at
+    /// their `data-viewport` nodes — video (#358) and `GameViewport` (#361) —
+    /// and name their damage. Call [`Self::clear_viewport_frames`] after
+    /// [`Self::build_pixels`].
+    ///
+    /// The damage is the viewport nodes themselves ([`Self::request_repaint`]
+    /// plus [`Self::mark_viewport_nodes_paint_dirty`]), not a full repaint: a
+    /// frame painted in paint order is repainted with whatever sits over it,
+    /// so a HUD above a game needs no special case to stay drawn.
+    ///
+    /// Installs the hole set too, and always — even an empty one — because
+    /// `None` means "every viewport punches", which is the GPU compositor's
+    /// rule and not this backend's (#186).
+    #[cfg(feature = "desktop")]
+    pub fn install_viewport_frames(&mut self, frames: crate::render_surface::ViewportFrames) {
+        let crate::render_surface::ViewportFrames { frames, holes } = frames;
+        rinch_dom::paint::set_active_viewports(Some(holes));
+        if frames.is_empty() {
+            return;
+        }
+        self.request_repaint();
+        let names: Vec<&str> = frames.keys().map(String::as_str).collect();
+        self.mark_viewport_nodes_paint_dirty(&names);
+        rinch_dom::paint::set_viewport_pixels(Some(frames));
+    }
+
+    /// Undo [`Self::install_viewport_frames`] once the frame is painted.
+    #[cfg(feature = "desktop")]
+    pub fn clear_viewport_frames() {
+        rinch_dom::paint::set_active_viewports(None);
+        rinch_dom::paint::set_viewport_pixels(None);
+    }
+
     /// Mark every `data-viewport` node whose name is in `names` paint-dirty.
     ///
-    /// The software backend paints video frames **inline** now (issue #358),
-    /// which puts them under the dirty-region cache — and a node that is not in
+    /// The software backend paints video and `GameViewport` frames **inline**
+    /// now (issues #358, #361), which puts them under the dirty-region cache — and a node that is not in
     /// `paint_dirty_nodes` is skipped when a region is in force. A video would
     /// therefore freeze on screen the moment any *other* node dirtied a small
     /// region, and one always does: the video controls' own timestamp ticks

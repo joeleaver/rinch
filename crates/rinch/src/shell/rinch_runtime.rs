@@ -958,104 +958,28 @@ impl RinchRuntime {
             }
         }
 
-        // Collect compositor-path surface frames (video, GameViewport).
-        let compositor_frames = crate::render_surface::collect_surface_frames();
-        if !compositor_frames.is_empty() {
-            // Unattributed on purpose: these frames are blitted over the
-            // finished pixels, after paint, with no damage of their own
-            // (#361), and a full repaint is what keeps a HUD drawn over them.
-            self.app.mark_scene_dirty();
-        }
-
-        // Only a viewport with a frame this cycle gets a hole punched in its
-        // ancestors' backgrounds. The GPU path has always filtered this way;
-        // the software path never installed a filter at all, so every
-        // `data-viewport` node punched whether or not anything would fill it
-        // (issue #186). Software blits these frames over the UI further down,
-        // so a punched hole with no frame is pure background loss.
-        let active_viewports: std::collections::HashSet<String> = compositor_frames
-            .iter()
-            .map(|(viewport_name, _, _, _)| viewport_name.clone())
-            .collect();
-        rinch_dom::paint::set_active_viewports(Some(active_viewports));
-
-        // Video frames paint **inline**, during paint, at the viewport node's
-        // own z-order (issue #358) — not blitted over the finished pixels the
-        // way `compositor_frames` are below. That is what lets a drawer, a
-        // modal or a dropdown above a playing video survive: ordinary paint
-        // order does the occluding, with no occlusion tracking anywhere.
+        // Video and `GameViewport` frames paint **inline**, during paint, at
+        // the viewport node's own z-order (issues #358, #361) — the software
+        // backend has no compositor path. That is what lets a drawer, a modal,
+        // a dropdown or a game's HUD above one survive: ordinary paint order
+        // does the occluding, with no occlusion tracking anywhere. They used to
+        // be blitted over the finished pixels, which destroyed all of those.
         //
-        // The hole-punch disappears with it, for free and with no code: video
-        // is no longer in `compositor_frames`, so it is absent from
-        // `active_viewports`, and #186's filter already reads "absent ⇒ do not
-        // punch". `rinch-dom` then aspect-fits the frame with `object-fit:
-        // contain` over an opaque black fill, which is #354's letterbox bars on
-        // this backend.
-        let video_frames = crate::render_surface::collect_video_frames_by_name();
-        if !video_frames.is_empty() {
-            // The damage is the viewport nodes, marked just below.
-            self.app.request_repaint();
-            // Inline painting is subject to the dirty-region cache, so the
-            // viewport nodes have to be marked explicitly or a small dirty
-            // region elsewhere (the controls' ticking timestamp) freezes the
-            // video. See `mark_viewport_nodes_paint_dirty`.
-            let names: Vec<&str> = video_frames.keys().map(String::as_str).collect();
-            self.app.mark_viewport_nodes_paint_dirty(&names);
-            rinch_dom::paint::set_viewport_pixels(Some(video_frames));
-        }
+        // Only a `GameViewport` still punches a hole in its ancestors'
+        // backgrounds, and only while it has a frame (#186); its letterbox is
+        // that hole. Video punches none and `rinch-dom` aspect-fits it over an
+        // opaque black fill, which is #354's letterbox bars on this backend.
+        //
+        // Inline painting is subject to the dirty-region cache, so the viewport
+        // nodes are marked as the damage — see `install_viewport_frames`.
+        self.app
+            .install_viewport_frames(crate::render_surface::collect_viewport_frames_by_name());
 
         // Build the scene — surfaces paint inline at their layout positions
         let (_base, w, h) = self.app.build_pixels(scale, size, transparent);
 
-        rinch_dom::paint::set_active_viewports(None);
+        RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
-        rinch_dom::paint::set_viewport_pixels(None);
-
-        // Resolve viewport rects and clip rects for compositor frames before
-        // borrowing pixels mutably.
-        let blit_ops: Vec<_> = compositor_frames
-            .iter()
-            .filter_map(|(viewport_name, src_pixels, src_w, src_h)| {
-                let (viewport, _radii) = self.app.viewport_rect_with_radius(viewport_name)?;
-                let dst_x = (viewport.0 * s) as i32;
-                let dst_y = (viewport.1 * s) as i32;
-                let dst_w = (viewport.2 * s) as u32;
-                let dst_h = (viewport.3 * s) as u32;
-                let src_aspect = *src_w as f32 / (*src_h).max(1) as f32;
-                let vp_aspect = dst_w as f32 / dst_h.max(1) as f32;
-                let (bx, by, bw, bh) = if (src_aspect - vp_aspect).abs() < 0.001 {
-                    (dst_x, dst_y, dst_w, dst_h)
-                } else if src_aspect > vp_aspect {
-                    let fit_h = (dst_w as f32 / src_aspect) as u32;
-                    let offset_y = (dst_h - fit_h) as i32 / 2;
-                    (dst_x, dst_y + offset_y, dst_w, fit_h)
-                } else {
-                    let fit_w = (dst_h as f32 * src_aspect) as u32;
-                    let offset_x = (dst_w - fit_w) as i32 / 2;
-                    (dst_x + offset_x, dst_y, fit_w, dst_h)
-                };
-                // Get clip rect from nearest overflow-clipping ancestor
-                let clip = self.app.viewport_clip_rect(viewport_name).map(|cr| {
-                    (
-                        (cr.0 * s) as i32,
-                        (cr.1 * s) as i32,
-                        (cr.2 * s) as u32,
-                        (cr.3 * s) as u32,
-                    )
-                });
-                Some((src_pixels.as_slice(), *src_w, *src_h, bx, by, bw, bh, clip))
-            })
-            .collect();
-
-        // Blit compositor surface frames (video) onto the pixel buffer.
-        if !blit_ops.is_empty() {
-            if let Some(painter) = self.app.skia_painter.as_mut() {
-                let pixels = painter.pixels_mut();
-                for &(src_pixels, src_w, src_h, bx, by, bw, bh, clip) in &blit_ops {
-                    blit_rgba(pixels, w, h, src_pixels, src_w, src_h, bx, by, bw, bh, clip);
-                }
-            }
-        }
 
         let pixels = self
             .app
@@ -2734,83 +2658,6 @@ fn announce_software_renderer() {
         );
     } else {
         tracing::info!("rinch: presenting with the software renderer");
-    }
-}
-
-// ── Software compositor blit helper ──────────────────────────────────────────
-
-/// Nearest-neighbor blit of an RGBA source into a destination pixel buffer.
-///
-/// Scales `src` (src_w x src_h) into the destination rectangle
-/// (blit_x, blit_y, blit_w, blit_h) within the `dst` buffer (dst_w x dst_h).
-/// Clips to both destination bounds and an optional clip rect from a parent
-/// overflow container.
-#[allow(clippy::too_many_arguments)]
-fn blit_rgba(
-    dst: &mut [u8],
-    dst_w: u32,
-    dst_h: u32,
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    blit_x: i32,
-    blit_y: i32,
-    blit_w: u32,
-    blit_h: u32,
-    clip: Option<(i32, i32, u32, u32)>,
-) {
-    if blit_w == 0 || blit_h == 0 || src_w == 0 || src_h == 0 {
-        return;
-    }
-
-    // Compute effective clip bounds (intersection of dst bounds and clip rect)
-    let (clip_min_x, clip_min_y, clip_max_x, clip_max_y) = if let Some((cx, cy, cw, ch)) = clip {
-        (cx, cy, cx + cw as i32, cy + ch as i32)
-    } else {
-        (0, 0, dst_w as i32, dst_h as i32)
-    };
-
-    let dst_stride = dst_w as usize * 4;
-    let src_stride = src_w as usize * 4;
-
-    for dy in 0..blit_h {
-        let out_y = blit_y + dy as i32;
-        if out_y < 0 || out_y >= dst_h as i32 || out_y < clip_min_y || out_y >= clip_max_y {
-            continue;
-        }
-        let sy = ((dy as f32 / blit_h as f32) * src_h as f32) as u32;
-        let sy = sy.min(src_h - 1) as usize;
-
-        for dx in 0..blit_w {
-            let out_x = blit_x + dx as i32;
-            if out_x < 0 || out_x >= dst_w as i32 || out_x < clip_min_x || out_x >= clip_max_x {
-                continue;
-            }
-            let sx = ((dx as f32 / blit_w as f32) * src_w as f32) as u32;
-            let sx = sx.min(src_w - 1) as usize;
-
-            let src_off = sy * src_stride + sx * 4;
-            let dst_off = out_y as usize * dst_stride + out_x as usize * 4;
-
-            if src_off + 3 < src.len() && dst_off + 3 < dst.len() {
-                let r = src[src_off];
-                let g = src[src_off + 1];
-                let b = src[src_off + 2];
-                let a = src[src_off + 3];
-                if a == 255 {
-                    dst[dst_off] = r;
-                    dst[dst_off + 1] = g;
-                    dst[dst_off + 2] = b;
-                    dst[dst_off + 3] = a;
-                } else if a > 0 {
-                    let af = a as f32 / 255.0;
-                    dst[dst_off] = (r as f32 * af) as u8;
-                    dst[dst_off + 1] = (g as f32 * af) as u8;
-                    dst[dst_off + 2] = (b as f32 * af) as u8;
-                    dst[dst_off + 3] = a;
-                }
-            }
-        }
     }
 }
 
