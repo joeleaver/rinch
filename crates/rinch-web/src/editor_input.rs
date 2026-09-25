@@ -72,7 +72,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 use rinch_editor_core::{CursorMotion, PasteContent, Pos, Selection};
-use rinch_editor_view::{EditorHandle, LinkClick, LinkHover, LinkSpan, registry};
+use rinch_editor_view::{CaretAffinity, EditorHandle, LinkClick, LinkHover, LinkSpan, registry};
 
 use crate::event_delegation::{
     compute_byte_offset_in_block, drag_machine, modifiers_from_key_event, nearest_handler,
@@ -1259,11 +1259,15 @@ enum EditIntent {
     InsertText,
     /// Run a named editor command.
     Command(&'static str),
-    /// Extend the selection over `motion`, then delete it — the model-line deletes a
-    /// soft keyboard or Cmd+Backspace asks for, which the core has no command for:
-    /// whether a "line" is the visual line or the textblock is still open (#301).
-    /// Word deletes are core commands (`deleteWordBackward` / `deleteWordForward`,
-    /// #303) and name them.
+    /// Delete to the edge of the **visual** line the caret is on (`forward`: its
+    /// end) — `deleteSoftLine*`, what a soft keyboard or Cmd+Backspace asks for
+    /// (#301). Resolved from the browser's layout by [`visual_line_bound`]; the
+    /// textblock edge without geometry.
+    DeleteToVisualLine { forward: bool },
+    /// Extend the selection over `motion`, then delete it — `deleteHardLine*`,
+    /// which means the textblock's edge. The core has no command for either line
+    /// delete; word deletes are core commands (`deleteWordBackward` /
+    /// `deleteWordForward`, #303) and name them.
     DeleteTo(CursorMotion),
     /// Let the browser make the edit in the mirrored textarea and recover it by diff
     /// on the following `input` — the only honest way to apply an edit whose extent
@@ -1300,12 +1304,12 @@ fn edit_intent(input_type: &str) -> EditIntent {
         // The core commands carry the block-edge and inline-atom rules (#303).
         "deleteWordBackward" => EditIntent::Command("deleteWordBackward"),
         "deleteWordForward" => EditIntent::Command("deleteWordForward"),
-        "deleteSoftLineBackward" | "deleteHardLineBackward" => {
-            EditIntent::DeleteTo(CursorMotion::LineStart)
-        }
-        "deleteSoftLineForward" | "deleteHardLineForward" => {
-            EditIntent::DeleteTo(CursorMotion::LineEnd)
-        }
+        // A soft line is the visual line the caret is on; a hard line is the
+        // textblock (#301).
+        "deleteSoftLineBackward" => EditIntent::DeleteToVisualLine { forward: false },
+        "deleteSoftLineForward" => EditIntent::DeleteToVisualLine { forward: true },
+        "deleteHardLineBackward" => EditIntent::DeleteTo(CursorMotion::LineStart),
+        "deleteHardLineForward" => EditIntent::DeleteTo(CursorMotion::LineEnd),
         "historyUndo" => EditIntent::Command("undo"),
         "historyRedo" => EditIntent::Command("redo"),
         // The `cut` / `paste` listeners already ran and applied their own edit.
@@ -1320,15 +1324,52 @@ fn delete_to(handle: &EditorHandle, motion: CursorMotion) -> bool {
     if handle.selection().is_empty() {
         handle.move_cursor(motion, true);
     }
+    delete_extended(handle, !matches!(motion, CursorMotion::LineStart))
+}
+
+/// Delete from the caret to the edge of its visual line ([`visual_line_bound`]),
+/// or to the textblock's edge when there is no geometry to ask. An already
+/// non-empty selection is deleted as it stands.
+fn delete_to_visual_line(
+    handle: &EditorHandle,
+    container_nid: usize,
+    doc: &web_sys::Document,
+    forward: bool,
+) -> bool {
+    let sel = handle.selection();
+    if sel.is_empty() {
+        let head = sel.head();
+        match visual_line_bound(handle, container_nid, doc, head, forward) {
+            Some(edge) if edge != head => handle.set_selection(Selection::text(head, edge)),
+            Some(_) => {}
+            None => {
+                handle.move_cursor(
+                    if forward {
+                        CursorMotion::LineEnd
+                    } else {
+                        CursorMotion::LineStart
+                    },
+                    true,
+                );
+            }
+        }
+    }
+    delete_extended(handle, forward)
+}
+
+/// Delete the selection a line delete extended over; if the extension had
+/// nowhere to go, delete one character in its direction instead.
+fn delete_extended(handle: &EditorHandle, forward: bool) -> bool {
     if handle.selection().is_empty() {
-        // The motion had nowhere to go: a model-line motion is *within* a textblock,
-        // so at a block edge it resolves to the caret's own position and leaves the
-        // selection collapsed. A line delete there means what Backspace and Delete
-        // mean — join with the adjacent block. Without this the gesture is swallowed
+        // The motion had nowhere to go: the caret is already at the line's edge —
+        // for a model-line motion, the textblock's. A line delete there means what
+        // Backspace and Delete mean — join with the adjacent block, or at a soft
+        // wrap take the character there. Without this the gesture is swallowed
         // silently, because the `beforeinput` was already `preventDefault`ed.
-        return handle.command(match motion {
-            CursorMotion::LineStart => "deleteCharBackward",
-            _ => "deleteCharForward",
+        return handle.command(if forward {
+            "deleteCharForward"
+        } else {
+            "deleteCharBackward"
         });
     }
     handle.command("deleteSelection")
@@ -1349,7 +1390,7 @@ fn on_before_input(event: &web_sys::InputEvent) {
     // not, since it fires only `paste` (measured). The cycle ends first so the field
     // the browser is about to edit is the mirror, not the sentinels.
     end_context_menu_cycle();
-    let Some((_, handle)) = focused_handle() else {
+    let Some((container_nid, handle)) = focused_handle() else {
         return;
     };
     let handled = match edit_intent(&event.input_type()) {
@@ -1375,6 +1416,20 @@ fn on_before_input(event: &web_sys::InputEvent) {
         EditIntent::DeleteTo(motion) => {
             event.prevent_default();
             delete_to(&handle, motion)
+        }
+        EditIntent::DeleteToVisualLine { forward } => {
+            event.prevent_default();
+            match web_sys::window().and_then(|w| w.document()) {
+                Some(doc) => delete_to_visual_line(&handle, container_nid, &doc, forward),
+                None => delete_to(
+                    &handle,
+                    if forward {
+                        CursorMotion::LineEnd
+                    } else {
+                        CursorMotion::LineStart
+                    },
+                ),
+            }
         }
     };
     // Typing is a caret move as much as an edit: drop any vertical-motion goal column
@@ -1806,7 +1861,10 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
                 registry::begin_drag(None, container_nid, anchor.0);
             }
             _ => {
-                handle.set_selection(Selection::cursor(clicked));
+                // A press past a wrapped line's end lands on its wrap point,
+                // and belongs to the line pressed on (#301).
+                let affinity = hit_affinity(&handle, clicked, y).0;
+                handle.set_selection_with_affinity(Selection::cursor(clicked), affinity);
                 registry::begin_drag(None, container_nid, clicked.0);
             }
         }
@@ -2038,22 +2096,11 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
             },
             shift,
         ),
-        "Home" => handle.move_cursor(
-            if ctrl {
-                CursorMotion::DocStart
-            } else {
-                CursorMotion::LineStart
-            },
-            shift,
-        ),
-        "End" => handle.move_cursor(
-            if ctrl {
-                CursorMotion::DocEnd
-            } else {
-                CursorMotion::LineEnd
-            },
-            shift,
-        ),
+        "Home" if ctrl => handle.move_cursor(CursorMotion::DocStart, shift),
+        "End" if ctrl => handle.move_cursor(CursorMotion::DocEnd, shift),
+        // The visual line's edges, as on desktop (#301).
+        "Home" => move_to_line_edge(&handle, container_nid, doc, false, shift),
+        "End" => move_to_line_edge(&handle, container_nid, doc, true, shift),
         // 2. Tab: table cell-nav (shared) first; else the keymap resolves
         //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below. Consumed either way.
         "Tab" if handle.tab_cell(shift) => true,
@@ -2111,25 +2158,32 @@ fn vertical_step(
     // threshold. Otherwise the probe snapped back to the current line (the target line
     // is an empty block with no text to hit-test, or a block atom is in the way).
     let head_tb = handle.caret_address(head).map(|(t, _)| t);
+    // The hit and the side of a soft wrap it belongs to (#301): a goal column
+    // past the target line's end lands on its wrap point, which is drawn on
+    // that line only upstream.
     let geo_head = resolve_editor_point(doc, gx, ty)
         .filter(|hit| hit.container_nid == container_nid)
         .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
-        .filter(|&p| {
+        .map(|p| (p, hit_affinity(handle, p, ty)))
+        .filter(|&(p, (_, rect))| {
             if handle.caret_address(p).map(|(t, _)| t) != head_tb {
                 return true; // different textblock — a real line change
             }
-            match head_screen_rect(handle, p) {
+            match rect {
                 Some((_, py, _)) if down => py > hy + hh * 0.5,
                 Some((_, py, _)) => py < hy - hh * 0.5,
                 None => false,
             }
-        });
+        })
+        .map(|(p, (affinity, _))| (p, affinity));
 
     // Stuck — step to the adjacent textblock in the model so the caret can still land
     // on a blank line above/below (or past a block atom). Mirrors the desktop fallback.
-    let Some(new_head) =
-        geo_head.or_else(|| handle.vertical_block_fallback(down).map(|s| s.head()))
-    else {
+    let Some((new_head, affinity)) = geo_head.or_else(|| {
+        handle
+            .vertical_block_fallback(down)
+            .map(|s| (s.head(), CaretAffinity::Downstream))
+    }) else {
         return false;
     };
 
@@ -2138,8 +2192,154 @@ fn vertical_step(
     } else {
         Selection::cursor(new_head)
     };
-    handle.set_selection(sel);
+    handle.set_selection_with_affinity(sel, affinity);
     true
+}
+
+/// Which side of a soft wrap a caret placed at `pos` by a hit at viewport `y`
+/// belongs to (#301), and its rect on that side: `Upstream` when the upstream
+/// caret is **nearer** `y` than the downstream one — a hit past a wrapped
+/// line's end, which lands on the wrap point — else `Downstream`. Anywhere but
+/// a wrap point both sides are one caret and the answer is `Downstream`.
+///
+/// Nearness, not containment: a caret rect covers the glyphs, not the line
+/// box, so a hit in the leading above or below them lies in neither rect.
+/// Vertical motion probes 1.5 caret heights below the caret's top, which on a
+/// face with a short caret in a tall line is exactly there.
+fn hit_affinity(
+    handle: &EditorHandle,
+    pos: Pos,
+    y: f32,
+) -> (CaretAffinity, Option<(f32, f32, f32)>) {
+    let rect = |affinity| {
+        handle
+            .caret_rect_with_affinity(pos, affinity)
+            .map(|r| (r.x, r.y, r.height))
+    };
+    // Nearness, not containment: a caret rect covers the glyphs, not the
+    // line box, so a hit in the leading above or below them lies in neither.
+    // Distance from `y` to the rect's vertical span, 0 inside it.
+    let distance = |r: Option<(f32, f32, f32)>| {
+        r.map_or(f32::INFINITY, |(_, ry, rh)| {
+            (ry - y).max(y - (ry + rh)).max(0.0)
+        })
+    };
+    let down = rect(CaretAffinity::Downstream);
+    if distance(down) > 0.0 {
+        let up = rect(CaretAffinity::Upstream);
+        if distance(up) < distance(down) {
+            return (CaretAffinity::Upstream, up);
+        }
+    }
+    (CaretAffinity::Downstream, down)
+}
+
+/// Home / End: move the head to the edge of its visual line, collapsing or
+/// (`extend`, Shift) extending. The textblock's edge without geometry — an empty
+/// block, or a caret with no rect.
+fn move_to_line_edge(
+    handle: &EditorHandle,
+    container_nid: usize,
+    doc: &web_sys::Document,
+    end: bool,
+    extend: bool,
+) -> bool {
+    let sel = handle.selection();
+    let head = sel.head();
+    let Some(edge) = visual_line_bound(handle, container_nid, doc, head, end) else {
+        return handle.move_cursor(
+            if end {
+                CursorMotion::LineEnd
+            } else {
+                CursorMotion::LineStart
+            },
+            extend,
+        );
+    };
+    // At a soft wrap the end of a line and the start of the next are one model
+    // position. End's is the upper line's, so it is drawn there (upstream);
+    // Home's is the lower line's (downstream, the default) (#301).
+    let affinity = if end && is_wrap_below(handle, head, edge) {
+        CaretAffinity::Upstream
+    } else {
+        CaretAffinity::Downstream
+    };
+    handle.set_selection_with_affinity(
+        if extend {
+            Selection::text(sel.anchor(), edge)
+        } else {
+            Selection::cursor(edge)
+        },
+        affinity,
+    );
+    true
+}
+
+/// Whether `edge`, the end of the visual line the caret at `head` is drawn on,
+/// is a soft-wrap point: a downstream caret there is drawn on a later line.
+fn is_wrap_below(handle: &EditorHandle, head: Pos, edge: Pos) -> bool {
+    let (Some((_, hy, hh)), Some(down)) = (
+        head_screen_rect(handle, head),
+        handle.caret_rect_with_affinity(edge, CaretAffinity::Downstream),
+    ) else {
+        return false;
+    };
+    down.y > hy + hh * 0.5
+}
+
+/// The model position at the start (`end == false`) or end of the visual line
+/// the caret at `head` is drawn on — the web twin of desktop's
+/// `RinchApp::visual_line_bound`.
+///
+/// Hit-tests the textblock just inside **both** edges of its box at the
+/// vertical middle of the caret's line, and takes the smaller position as the
+/// start and the larger as the end. Probing both sides, rather than choosing one
+/// by `direction`, is what makes a right-to-left line right: its logical start
+/// is at its right edge — unless the line's text is itself left-to-right, when
+/// it is at the left again whatever the paragraph's `direction` says. A line
+/// that *mixes* directions has logical edges that need not sit at either visual
+/// edge; there this answers the extremes of the two probes, which is inside the
+/// line but may fall short of its logical edge (not handled, as on desktop).
+///
+/// The end of a wrapped line is the wrap point — the same model position as the
+/// next line's start. `None` without geometry (no caret rect, a probe landing
+/// outside the caret's textblock, or an answer on the wrong side of `head`) —
+/// which includes a caret line scrolled out of the viewport, where
+/// `caretRangeFromPoint` answers nothing (#1026); the callers then fall back to
+/// the textblock's edge.
+fn visual_line_bound(
+    handle: &EditorHandle,
+    container_nid: usize,
+    doc: &web_sys::Document,
+    head: Pos,
+    end: bool,
+) -> Option<Pos> {
+    let (_, hy, hh) = head_screen_rect(handle, head)?;
+    let (tb, _) = handle.caret_address(head)?;
+    let el = node_by_nid(tb)?.dyn_into::<web_sys::Element>().ok()?;
+    // Just inside the BORDER box, in the same viewport space the caret rect and
+    // `caretRangeFromPoint` use. `getBoundingClientRect` is scaled by a
+    // `transform` or CSS `zoom` on the way to the viewport, while `clientLeft`,
+    // `clientWidth` and the computed padding are not, so a content box built from
+    // them lands off the line under either (desktop pushes its edges through the
+    // painted transform for the same reason, #203). A point in the padding or
+    // border still resolves to the nearest position on the line (measured,
+    // Chrome 153, a 60px-padded, 7px-bordered paragraph).
+    let rect = el.get_bounding_client_rect();
+    let (left, right) = (rect.left() as f32, rect.right() as f32);
+    let y = hy + hh * 0.5;
+    let probe = |x: f32| {
+        resolve_editor_point(doc, x, y)
+            .filter(|hit| hit.container_nid == container_nid && hit.textblock_nid == tb)
+            .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+    };
+    let hits = [probe(left + 1.0), probe(right - 1.0)];
+    let found = hits.iter().flatten().copied();
+    if end {
+        found.max_by_key(|p| p.0).filter(|p| p.0 >= head.0)
+    } else {
+        found.min_by_key(|p| p.0).filter(|p| p.0 <= head.0)
+    }
 }
 
 /// The viewport `(x, y, height)` of the caret at model `pos`:
@@ -2710,17 +2910,25 @@ mod tests {
             edit_intent("deleteWordForward"),
             EditIntent::Command("deleteWordForward")
         );
-        // "soft" and "hard" line deletes differ only in how the browser found the
-        // boundary; both mean "to the edge of this line" on the model.
-        for t in ["deleteSoftLineBackward", "deleteHardLineBackward"] {
-            assert_eq!(
-                edit_intent(t),
-                EditIntent::DeleteTo(CursorMotion::LineStart)
-            );
-        }
-        for t in ["deleteSoftLineForward", "deleteHardLineForward"] {
-            assert_eq!(edit_intent(t), EditIntent::DeleteTo(CursorMotion::LineEnd));
-        }
+        // A soft line is the visual line (#301) — resolved from layout, which
+        // `tests/editor_soft_line.rs` drives in Chrome — and a hard line is the
+        // textblock, the model's line edge.
+        assert_eq!(
+            edit_intent("deleteSoftLineBackward"),
+            EditIntent::DeleteToVisualLine { forward: false }
+        );
+        assert_eq!(
+            edit_intent("deleteSoftLineForward"),
+            EditIntent::DeleteToVisualLine { forward: true }
+        );
+        assert_eq!(
+            edit_intent("deleteHardLineBackward"),
+            EditIntent::DeleteTo(CursorMotion::LineStart)
+        );
+        assert_eq!(
+            edit_intent("deleteHardLineForward"),
+            EditIntent::DeleteTo(CursorMotion::LineEnd)
+        );
     }
 
     #[test]

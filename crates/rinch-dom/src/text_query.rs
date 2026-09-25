@@ -6,6 +6,7 @@
 use parley::Cursor;
 use parley::layout::Affinity;
 use peniko::Brush;
+use rinch_core::dom::CaretAffinity;
 
 /// Bounding box for a glyph cluster.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -33,19 +34,30 @@ pub fn caret_position_for_offset(
     node_id: u64,
     byte_offset: usize,
 ) -> Option<(f32, f32)> {
+    caret_position_for_offset_with_affinity(doc, node_id, byte_offset, CaretAffinity::Downstream)
+}
+
+/// [`caret_position_for_offset`] for a caret with `affinity` at a soft wrap
+/// (#301): `Upstream` there is the end of the upper line.
+pub fn caret_position_for_offset_with_affinity(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32)> {
     let node = doc.tree.nodes.get(node_id as usize)?;
+    let at = |layout: &parley::layout::Layout<Brush>| {
+        caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity)
+    };
 
     // Check inline layout first (IFC root)
     if let Some(ref inline_layout) = node.text_layout {
-        return Some(caret_position_for_offset_layout(
-            &inline_layout.layout,
-            byte_offset,
-        ));
+        return Some(at(&inline_layout.layout));
     }
 
     // Check cached standalone text layout
     if let Some(ref layout) = node.cached_text_parley {
-        return Some(caret_position_for_offset_layout(layout, byte_offset));
+        return Some(at(layout));
     }
 
     // For block elements with a single text child (non-IFC case),
@@ -54,7 +66,7 @@ pub fn caret_position_for_offset(
         if let Some(child) = doc.tree.nodes.get(child_id)
             && let Some(ref layout) = child.cached_text_parley
         {
-            return Some(caret_position_for_offset_layout(layout, byte_offset));
+            return Some(at(layout));
         }
     }
 
@@ -119,7 +131,70 @@ pub fn caret_position_for_offset_layout(
     layout: &parley::layout::Layout<Brush>,
     byte_offset: usize,
 ) -> (f32, f32) {
-    let cursor = Cursor::from_byte_index(layout, byte_offset, Affinity::Downstream);
+    caret_position_for_offset_layout_with_affinity(layout, byte_offset, CaretAffinity::Downstream)
+}
+
+/// If `byte_offset` sits in the whitespace that hangs at the end of a
+/// soft-wrapped line — the only thing between it and the wrap — the line's end
+/// (`Line::text_range().end`, the wrap point) — else `None` (#301).
+///
+/// A hit-test past a ragged line's end answers the position *before* its
+/// hanging space; the line's own end, which End and a line delete want, is the
+/// position after it: the same model position as the next line's start.
+pub fn hanging_whitespace_end(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+) -> Option<usize> {
+    use parley::layout::{BreakReason, Cluster};
+    let mut cluster = Cluster::from_byte_index(layout, byte_offset)?;
+    let line = cluster.line();
+    if !matches!(
+        line.break_reason(),
+        BreakReason::Regular | BreakReason::Emergency
+    ) {
+        return None;
+    }
+    let end = line.text_range().end;
+    loop {
+        if !cluster.source_char().is_whitespace() {
+            return None;
+        }
+        if cluster.text_range().end >= end {
+            return Some(end);
+        }
+        cluster = cluster.next_logical()?;
+    }
+}
+
+/// [`hanging_whitespace_end`] in the text-bearing element `node_id`'s layout.
+pub fn hanging_whitespace_end_for_node(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+) -> Option<usize> {
+    let node = doc.tree.nodes.get(node_id as usize)?;
+    if let Some(ref inline_layout) = node.text_layout {
+        return hanging_whitespace_end(&inline_layout.layout, byte_offset);
+    }
+    if let Some(ref layout) = node.cached_text_parley {
+        return hanging_whitespace_end(layout, byte_offset);
+    }
+    None
+}
+
+/// [`caret_position_for_offset_layout`] for a caret with `affinity` at a soft
+/// wrap (#301): Parley's own `Cursor` affinity, whose geometry puts an
+/// `Upstream` caret at a soft line break at the end of the upper line.
+pub fn caret_position_for_offset_layout_with_affinity(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> (f32, f32) {
+    let affinity = match affinity {
+        CaretAffinity::Downstream => Affinity::Downstream,
+        CaretAffinity::Upstream => Affinity::Upstream,
+    };
+    let cursor = Cursor::from_byte_index(layout, byte_offset, affinity);
     let geom = cursor.geometry(layout, 0.0);
     (geom.x0 as f32, geom.y0 as f32)
 }

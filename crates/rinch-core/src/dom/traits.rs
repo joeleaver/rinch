@@ -95,6 +95,24 @@ impl_into_node_for_display!(
     i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, bool, char
 );
 
+/// Which side of a soft line wrap a text caret belongs to (#301).
+///
+/// The end of one visual line and the start of the next are one text position,
+/// so a caret there could be drawn in either place. `Downstream` — the default —
+/// draws it at the start of the lower line; `Upstream` at the end of the upper
+/// one. Anywhere but a soft wrap the two are the same caret. The rich-text
+/// editor keeps the hint beside its selection
+/// (`EditorHandle::caret_affinity`); Parley calls the same thing
+/// `parley::Affinity`, CodeMirror `SelectionRange.assoc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum CaretAffinity {
+    /// At a soft wrap, the start of the lower line.
+    #[default]
+    Downstream,
+    /// At a soft wrap, the end of the upper line.
+    Upstream,
+}
+
 /// Bounding box for a glyph cluster.
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphBounds {
@@ -627,10 +645,39 @@ pub trait DomDocument {
     /// box's origin, one line high, which is where an editor paints the caret on
     /// a blank line. `None` when the node is unknown or has not been laid out.
     ///
+    /// At a soft line wrap it answers the **downstream** caret, at the start of
+    /// the lower line, on both backends; see
+    /// [`Self::query_caret_rect_with_affinity`] for the other side.
+    ///
     /// Backs `EditorHandle::caret_rect`. Default `None`: a host with no geometry
     /// (the mock document) has no screen to answer for.
     fn query_caret_rect(&self, _node_id: u64, _byte_offset: usize) -> Option<(f32, f32, f32)> {
         None
+    }
+
+    /// [`Self::query_caret_rect`] for a caret with `affinity` at a soft wrap
+    /// (#301): an `Upstream` caret there is drawn at the end of the upper line,
+    /// a `Downstream` one at the start of the lower. Anywhere else it is the same
+    /// answer. Default: the affinity-blind [`Self::query_caret_rect`].
+    fn query_caret_rect_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        _affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        self.query_caret_rect(node_id, byte_offset)
+    }
+
+    /// [`Self::query_caret_position`] for a caret with `affinity` at a soft
+    /// wrap (#301), layout-local like it. Default: the affinity-blind
+    /// [`Self::query_caret_position`].
+    fn query_caret_position_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        _affinity: CaretAffinity,
+    ) -> Option<(f32, f32)> {
+        self.query_caret_position(node_id, byte_offset)
     }
 
     /// Get the tag name of an element node.
