@@ -762,6 +762,12 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // Drain cross-thread callbacks
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
+        // Then the work other threads sent the app itself — a plain `<input>`
+        // paste's completion (issue #328). Android's clipboard answers inline,
+        // so a toolbar Paste handled above lands here, in the same iteration.
+        if app.run_deferred_work() > 0 {
+            REDRAW_PENDING.store(true, Ordering::Release);
+        }
 
         // The frame clock. Every time-driven thing `RinchApp` owns — CSS
         // transitions, CSS animations, the dirty state the input handlers

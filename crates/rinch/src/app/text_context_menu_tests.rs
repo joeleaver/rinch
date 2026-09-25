@@ -815,6 +815,11 @@ fn by_chord_and_by_item(
             key_with(&mut app, chord, None, primary());
         }
         assert_eq!(app.focus_target, FocusTarget::Input(ids.input));
+        if action == TextEditAction::Paste {
+            // The paste reads the clipboard off the UI thread and lands on a
+            // later turn (issue #328), by the chord and the item alike.
+            assert_eq!(super::input_paste_async_tests::settle(&mut app), 1);
+        }
         let clip = rinch_clipboard::paste_text().unwrap_or_default();
         (field_state(&app, ids.input), clip)
     };

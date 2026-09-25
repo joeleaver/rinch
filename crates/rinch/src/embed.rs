@@ -240,6 +240,10 @@ impl RinchContext {
         // single layout pass below absorb all of them.
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
+        // Work a background thread sent the app itself — a plain `<input>`
+        // paste whose clipboard read answered (issue #328) — lands with the
+        // queued writes, before this frame's events.
+        let deferred_ran = self.app.run_deferred_work() > 0;
 
         // Process each event
         for event in events {
@@ -250,7 +254,7 @@ impl RinchContext {
         }
 
         // If signals changed, resolve layout
-        if self.dirty.swap(false, Ordering::AcqRel) || self.app.has_dirty_nodes() {
+        if self.dirty.swap(false, Ordering::AcqRel) || deferred_ran || self.app.has_dirty_nodes() {
             let (w, h) = self.logical_size();
             if self.app.resolve_and_repaint(w, h) {
                 // Deduplicate RequestRedraw

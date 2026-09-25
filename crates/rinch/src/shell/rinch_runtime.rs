@@ -1768,6 +1768,20 @@ impl ApplicationHandler for RinchRuntime {
         // Drain main-thread callback queue.
         rinch_core::drain_main_callbacks();
 
+        // Then the work other threads sent an app itself (issue #328): a plain
+        // `<input>` paste whose clipboard read just answered. Its wake is one
+        // of the callbacks drained above, so this is the turn it asked for.
+        // It dirties the field it pastes into, but a field with no layout
+        // change leaves `has_pending_layout` false, so ask for the frame here.
+        let deferred_ran = self.app.run_deferred_work() > 0;
+        if let Some(dt_app) = &mut self.devtools_app
+            && dt_app.run_deferred_work() > 0
+        {
+            if let Some(w) = &self.devtools_window {
+                w.request_redraw();
+            }
+        }
+
         // Drain queued native events.
         self.drain_native_events(event_loop);
 
@@ -1779,7 +1793,7 @@ impl ApplicationHandler for RinchRuntime {
         // background-thread updates reliably show up instead of waiting for the
         // next input event. Wakes that change nothing (window controls, debug
         // commands, no-op callbacks) skip the redraw.
-        if rinch_core::signals_changed() || self.app.has_pending_layout() {
+        if deferred_ran || rinch_core::signals_changed() || self.app.has_pending_layout() {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }

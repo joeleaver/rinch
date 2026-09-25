@@ -128,8 +128,9 @@ fn ctrl_v(app: &mut RinchApp) {
 /// Wait for the clipboard worker to answer and the deferred completion to
 /// run; answers how many completions ran. Panics after five seconds, so a
 /// completion that never arrives fails loudly rather than reading as a
-/// dropped paste.
-fn settle(app: &mut RinchApp) -> usize {
+/// dropped paste. Shared with `text_context_menu_tests`, whose Paste item
+/// runs this same asynchronous path.
+pub(super) fn settle(app: &mut RinchApp) -> usize {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         rinch_core::drain_main_callbacks();
@@ -338,7 +339,10 @@ fn a_readonly_field_starts_no_read() {
     let (mut app, ids, _log) = page(&[("readonly", "")]);
     focus_and_select(&mut app, ids.input);
     clip("XYZ");
-    assert!(!app.handle_paste(), "no clipboard read for a readonly field");
+    assert!(
+        !app.handle_paste(),
+        "no clipboard read for a readonly field"
+    );
     assert_eq!(field(&app, ids.input), state("hello world", 2, 5));
 
     // Control: the same field without `readonly` does start one.
@@ -405,7 +409,10 @@ fn deferred_work_runs_once_in_order_with_the_app() {
     });
     worker.join().unwrap();
     assert_eq!(app.run_deferred_work(), 3);
-    assert_eq!(attr(&app, ids.textarea, "data-order").as_deref(), Some("abc"));
+    assert_eq!(
+        attr(&app, ids.textarea, "data-order").as_deref(),
+        Some("abc")
+    );
     assert_eq!(app.run_deferred_work(), 0, "each item runs once");
 }
 
