@@ -414,6 +414,17 @@ moving the caret into a block of a virtualized editor that has never been laid o
 block is on screen (issue #845). An app that wants either on screen asks for it with
 `scroll_into_view`, below.
 
+### Setting the selection from code
+
+`set_selection`, `command("selectAll")` and any other change to the selection made
+by app code — from a toolbar button, a menu, a timer or an effect — draws the caret
+and the selection highlight without an input event in the editor. On **desktop**
+(and in an embedded `RinchContext`) the change wakes the runtime for one layout and
+overlay pass, like any other change to the page; on the **web** the overlays are
+redrawn in a microtask, once the code that made the change has returned. Only a
+focused editor draws a caret or a highlight, on both backends: set on an editor
+that is not focused, the selection is shown when it is focused.
+
 ### Focus and scrolling from code
 
 Opening a note at a link — select the words the link quotes, bring them on screen,
