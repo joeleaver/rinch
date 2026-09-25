@@ -14,9 +14,9 @@
 //! |---|---|---|
 //! | `shape_paint` | `paint/select.rs` (closed `<select>` label) | [`a_select_label_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
-//! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`an_inline_flex_label_is_reshaped_by_every_paint`] — no `perf_counter_baselines` scenario reaches it (their chips are `inline-block`, whose text is an IFC) |
+//! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
-//! | `ellipsis_builds` | `ifc.rs`, text leaf | [`a_text_leaf_ellipsis`] |
+//! | `ellipsis_builds` | `ifc.rs`, text leaf | **unreached since #904** — [`a_text_leaf_ellipsis`] pins that a flex item's text builds none |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::InlineRoot` | [`an_inline_block_holding_an_ifc`] |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::Text` | [`an_inline_flex_holding_a_text_leaf`] |
 //! | `pseudo_element_passes` | `resolve.rs`, `::before` | [`only_before_rules`] |
@@ -213,9 +213,13 @@ fn an_ifc_root_ellipsis() {
     );
 }
 
-/// The same truncation on a text node that is **not** in an IFC — the direct
-/// text child of a flex container, laid out as a leaf — takes the text-leaf
-/// rebuild instead.
+/// The same declarations on a text node that is **not** in an IFC — the
+/// direct text child of a flex container, laid out as a leaf — build **no**
+/// ellipsis (`ellipsis_builds` 1 → 0, #904's second review): that text is an
+/// anonymous flex item, which does not clip, and Chrome 153 draws it clipped
+/// with no "…". A leaf's parent is always a flex or grid container (or a
+/// `display: contents` element in one), so the text-leaf rebuild site in
+/// `copy_cached_text_layouts` is no longer reached; this frame pins that.
 #[test]
 fn a_text_leaf_ellipsis() {
     let mut doc = doc_with(
@@ -238,7 +242,6 @@ fn a_text_leaf_ellipsis() {
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 2),
             (ShapeMeasureText, 4),
-            (EllipsisBuilds, 1),
             (IfcMeasureInvalidations, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
@@ -299,6 +302,8 @@ fn an_inline_block_holding_an_ifc() {
 
 /// An `inline-flex` whose only child is a text node: that text is a flex item,
 /// measured as a leaf through `NodeContext::Text` inside the atomic compute.
+/// Its first paint shapes nothing since #904 (`shape_paint` 1 → 0): the
+/// compute keeps the layout its measure built.
 #[test]
 fn an_inline_flex_holding_a_text_leaf() {
     let mut doc = doc_with(".chip { display: inline-flex; padding: 2px; }");
@@ -322,7 +327,6 @@ fn an_inline_flex_holding_a_text_leaf() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (ShapeAtomicInline, 4),
-            (ShapePaint, 1),
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),
@@ -340,17 +344,19 @@ fn an_inline_flex_holding_a_text_leaf() {
     );
 }
 
-/// **A finding, pinned as it is — #904; a fix must LOWER this number, and its PR updates the pin.** The same `inline-flex` painted again with
-/// nothing changed: its text has no cached layout (it is a flex item inside a
-/// detached atomic compute, so neither `build_ifc_layouts` nor the text-leaf
-/// cache holds one), and paint's fallback shapes it — on **every** frame
-/// (`shape_paint` 1 on an idle repaint). `Button`, `Badge`, `ActionIcon`,
-/// `Pagination` and `Center` are all `inline-flex`, so a label directly inside
-/// one is re-shaped by each paint that reaches it. This is also the only
-/// scenario that reaches `shape_paint`'s third site (`paint/mod.rs`). A fix
-/// that caches the layout moves this to 0; update it and say so.
+/// **Was a finding, #904; fixed.** The same `inline-flex` painted again with
+/// nothing changed. Its text is a flex item inside a detached atomic compute
+/// (`measure_inline_blocks`), so no root-compute measure and no IFC reaches it;
+/// until #904 that compute kept none of the layouts its measure built, and
+/// paint's fallback shaped the label on **every** frame (`shape_paint` 1 on an
+/// idle repaint). `Button`, `Badge`, `ActionIcon`, `Pagination` and `Center`
+/// are all `inline-flex`. The compute now keeps them
+/// (`NodeTree::atomic_leaf_layouts`), so this repaint shapes nothing — the
+/// same frame as [`a_flex_item_text_leaf_is_not_reshaped_by_paint`] plus the
+/// paragraph around the chip. The fallback site keeps its coverage in
+/// [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`].
 #[test]
-fn an_inline_flex_label_is_reshaped_by_every_paint() {
+fn an_inline_flex_label_is_not_reshaped_by_paint() {
     let mut doc = doc_with(".chip { display: inline-flex; padding: 2px; }");
     let body = doc.body();
     let p = el(&mut doc, body, "p", "");
@@ -362,7 +368,6 @@ fn an_inline_flex_label_is_reshaped_by_every_paint() {
         "inline-flex label repaint",
         &s,
         &[
-            (ShapePaint, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 4),
@@ -387,6 +392,104 @@ fn a_flex_item_text_leaf_is_not_reshaped_by_paint() {
         &[
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// `shape_paint`'s third site (`paint/mod.rs`): a text leaf that reaches paint
+/// with no cached layout is shaped by paint itself. Since #904 a text leaf
+/// keeps the layout its measure shaped, in the root compute and the atomic one
+/// alike, so this state is **constructed** — the
+/// control's flex text with its cached layout taken away — and it is what
+/// keeps that increment site covered. Exactly 1: one leaf, one frame.
+#[test]
+fn a_text_leaf_with_no_cached_layout_is_shaped_by_paint() {
+    let mut doc = doc_with(".row { display: flex; width: 200px; }");
+    let body = doc.body();
+    let d = el(&mut doc, body, "div", "row");
+    let t = text(&mut doc, d, "flex item text");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.nodes[t.0].cached_text_parley = None;
+    let s = repaint_frame(&mut doc);
+    expect(
+        "text leaf with no cached layout",
+        &s,
+        &[
+            (ShapePaint, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A colour-only restyle of a container whose **own** text is a flex item —
+/// a hover, in effect — after one settled, painted frame. Since #904 paint
+/// draws a text leaf in its parent's current colour, so this takes the cheap
+/// path: no Taffy compute, no shape of any kind. #904's first cut rebuilt the
+/// leaf's layout through a compute instead, 3 µs → 308 µs per hover over 500
+/// rows (its review), which is what these two pin against.
+fn colour_hover_frame(display: &str) -> FrameStats {
+    let mut doc = doc_with(&format!(
+        ".row {{ display: {display}; width: 200px; }} .row.hot {{ color: rgb(200, 10, 10); }}"
+    ));
+    let body = doc.body();
+    let d = el(&mut doc, body, "div", "row");
+    text(&mut doc, d, "flex item text");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.reset();
+    doc.set_attribute(d, "class", "row hot");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.end_frame()
+}
+
+#[test]
+fn a_colour_hover_on_a_flex_items_text_skips_layout() {
+    let s = colour_hover_frame("flex");
+    expect(
+        "colour hover, flex text leaf",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+#[test]
+fn a_colour_hover_on_an_inline_flex_label_skips_layout() {
+    let s = colour_hover_frame("inline-flex");
+    // The one shape is the **line around** the chip: an `inline-flex` is a
+    // member of the IFC it sits in, and a member's restyle rebuilds that IFC
+    // (`ShapeIfcBuild`, no compute: `LayoutSkippedTextOnly`). The label itself
+    // is neither measured nor shaped.
+    expect(
+        "colour hover, inline-flex label",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
             (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
         ],

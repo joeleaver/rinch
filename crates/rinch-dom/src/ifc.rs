@@ -341,7 +341,12 @@ impl RinchDocument {
                 use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
                 let cs = &self.tree.nodes[root_id].computed_style;
                 let container_width = max_width.unwrap_or(f32::INFINITY);
+                // A grid (or flex) container holding only text is laid out
+                // here as an IFC root, but that text is an anonymous item of
+                // the container, which does not clip — so no "…", as in
+                // Chrome (#904's second review; see `copy_cached_text_layouts`).
                 if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
+                    && !cs.display.is_flex_or_grid_container()
                     && matches!(
                         cs.white_space,
                         WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
@@ -390,7 +395,9 @@ impl RinchDocument {
         &mut self,
         cache: HashMap<(usize, u32), parley::layout::Layout<Brush>>,
     ) {
-        use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
+        use crate::computed_style::{
+            DisplayValue, OverflowValue, TextOverflowValue, WhiteSpaceValue,
+        };
 
         // First collect node IDs and their layouts to apply. Only a node the
         // compute measured can have an entry, so walk the cache's nodes rather
@@ -408,6 +415,20 @@ impl RinchDocument {
                 } // Skip IFC-managed nodes
                 if !matches!(&node.kind, NodeKind::Text(_)) {
                     return None;
+                }
+
+                // The final width the measure was called with is the box's
+                // **unrounded** width: Taffy rounds `layout` to whole pixels,
+                // and a 45.34px min-content grid column rounded to 45 missed its
+                // own layout and fell through to the unwrapped max-content one
+                // below — one line painted across a box laid out for seven
+                // (#904's review, found on an `inline-grid`).
+                let unrounded = node
+                    .taffy_id
+                    .and_then(|t| self.tree.taffy.unrounded_layout(t).size.width.into())
+                    .filter(|w: &f32| *w > 0.0);
+                if let Some(layout) = unrounded.and_then(|w| cache.get(&(id, w.to_bits()))) {
+                    return Some((id, layout.clone()));
                 }
 
                 let width = node.layout.width;
@@ -458,16 +479,30 @@ impl RinchDocument {
                 parent_id
                     .and_then(|p| self.tree.nodes.get(p))
                     .is_some_and(|parent| {
-                        matches!(
-                            parent.computed_style.text_overflow,
-                            TextOverflowValue::Ellipsis
-                        ) && matches!(
-                            parent.computed_style.white_space,
-                            WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                        ) && matches!(
-                            parent.computed_style.overflow_x,
-                            OverflowValue::Hidden | OverflowValue::Clip
-                        )
+                        // A flex or grid container's own text sits in an
+                        // anonymous item, which does not clip, so it never
+                        // ellipsizes — Chrome 153 draws no "…" there, only the
+                        // clipped text (#904's second review). Only a block
+                        // container's own text does.
+                        //
+                        // A leaf's parent is always one of those, or a
+                        // `display: contents` element inside one, which
+                        // generates no box to clip — so no leaf ellipsizes and
+                        // the rebuild below is unreached (tracked separately).
+                        !parent.computed_style.display.is_flex_or_grid_container()
+                            && parent.computed_style.display != DisplayValue::Contents
+                            && matches!(
+                                parent.computed_style.text_overflow,
+                                TextOverflowValue::Ellipsis
+                            )
+                            && matches!(
+                                parent.computed_style.white_space,
+                                WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
+                            )
+                            && matches!(
+                                parent.computed_style.overflow_x,
+                                OverflowValue::Hidden | OverflowValue::Clip
+                            )
                     });
 
             if needs_ellipsis {
@@ -4040,6 +4075,9 @@ impl RinchDocument {
         // `tree.nodes.get_mut` free after the call returns.
         let nodes = &tree.nodes;
         let perf = &tree.perf;
+        // The layouts this compute's text leaves are measured with, kept for
+        // paint (#904) — see `NodeTree::atomic_leaf_layouts`.
+        let mut leaf_layouts: HashMap<(usize, u32), parley::layout::Layout<Brush>> = HashMap::new();
         perf.bump(crate::perf::Counter::InlineBlockComputes);
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
@@ -4113,10 +4151,16 @@ impl RinchDocument {
                             known_dims.width.or(max_width)
                         };
                         layout.break_all_lines(wrap_width);
-                        taffy::Size {
+                        let size = taffy::Size {
                             width: known_dims.width.unwrap_or(layout.width()),
                             height: known_dims.height.unwrap_or(layout.height()),
-                        }
+                        };
+                        // Keyed exactly as the root compute keys its own text
+                        // leaves, so `copy_cached_text_layouts` picks between
+                        // them by the same rule.
+                        let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                        leaf_layouts.insert((text.node_id, wrap_bits), layout);
+                        size
                     }
                     Some(NodeContext::Image { width, height, .. }) => {
                         let iw = *width as f32;
@@ -4139,6 +4183,7 @@ impl RinchDocument {
                 }
             },
         );
+        tree.atomic_leaf_layouts.extend(leaf_layouts);
     }
 
     /// Measure a set of detached atomic inlines (`inline-block`, `inline-flex`,
@@ -5630,5 +5675,69 @@ impl RinchDocument {
         if atomic_changed {
             self.remeasure_dirty_atomic_inlines();
         }
+    }
+}
+
+#[cfg(test)]
+mod atomic_leaf_layout_tests {
+    use crate::RinchDocument;
+    use rinch_core::dom::DomDocument;
+
+    /// The keying rule of `NodeTree::atomic_leaf_layouts` (#904): each layout
+    /// the atomic compute's text measure builds is filed under the width it
+    /// was wrapped at, as the root compute files its own. Nothing behavioural
+    /// pins it — `copy_cached_text_layouts` falls back to the `u32::MAX` entry,
+    /// and the last measure Taffy makes is usually the final one — so filing
+    /// every layout under `u32::MAX` left every other fixture green (#904's
+    /// review, M6). Here the final width is a min-content grid column, 45.3px
+    /// and not a whole pixel, which the box's unrounded width must name.
+    #[test]
+    fn a_leaf_layout_is_filed_under_the_width_it_was_wrapped_at() {
+        let mut doc = RinchDocument::new();
+        doc.load_css(
+            "body { font-family: sans-serif; font-size: 16px; line-height: 20px; }
+             .c { display: inline-grid; grid-template-columns: min-content; }",
+        );
+        let body = doc.body();
+        let c = doc.create_element("span");
+        doc.set_attribute(c, "class", "c");
+        let t = doc.create_text("a long chip label text that wraps");
+        doc.append_child(c, t);
+        doc.append_child(body, c);
+        doc.resolve_layout(800.0, 600.0);
+        doc.resolve_layout(800.0, 600.0);
+
+        let leaf_taffy = doc.tree.nodes[t.0]
+            .taffy_id
+            .expect("the leaf has a Taffy node");
+        let final_width = doc.tree.taffy.unrounded_layout(leaf_taffy).size.width;
+        assert!(
+            final_width.fract() != 0.0,
+            "counter-oracle: the column is not a whole pixel ({final_width})"
+        );
+
+        // Measure the atomic inline again, and read what it filed before a
+        // layout pass hands it on.
+        let _ = doc.tree.taffy.mark_dirty(leaf_taffy);
+        doc.compute_inline_block_layouts();
+        let keys: Vec<u32> = doc
+            .tree
+            .atomic_leaf_layouts
+            .keys()
+            .filter(|(id, _)| *id == t.0)
+            .map(|&(_, bits)| bits)
+            .collect();
+        assert!(
+            keys.contains(&final_width.to_bits()),
+            "a layout filed under the final width {final_width}; keys were {:?}",
+            keys.iter().map(|&b| f32::from_bits(b)).collect::<Vec<_>>()
+        );
+        let n = doc.tree.nodes[t.0].layout.height;
+        let cached = doc.tree.nodes[t.0].cached_text_parley.as_ref().unwrap();
+        assert_eq!(
+            cached.height(),
+            n,
+            "the painted layout is the one laid out for the box, not the unwrapped line"
+        );
     }
 }

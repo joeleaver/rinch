@@ -1170,23 +1170,21 @@ impl Walk<'_> {
 
 /// `rect` grown by however far `node`'s `text-shadow` carries its glyphs.
 ///
-/// `render_text_with_shadow` offsets the shadow pass in *unscaled* layout units
-/// while the main text is drawn scaled, so the reach is taken at whichever of
-/// the two is larger; a shadow drawn nearer than the rect allows is not a
-/// problem, one drawn further is. The blur radius is included even though this
-/// painter draws shadow text without blurring it, because the day it does the
-/// glyphs will spread by it.
+/// `render_text_with_shadow` draws each shadow pass `offset × scale` physical
+/// px from the scaled text, at the text's own size (#409), so the reach is the
+/// offset plus the blur radius, times `scale`. The blur radius is included even
+/// though this painter draws shadow text without blurring it, because the day
+/// it does the glyphs will spread by it.
 fn text_shadow_reach(rect: Rect, node: &Node, scale: f64) -> Rect {
     let shadows = &node.computed_style.text_shadow;
     if shadows.is_empty() {
         return rect;
     }
-    let unit = scale.max(1.0);
     let mut grown = rect;
     for shadow in shadows {
-        let blur = shadow.blur_radius.abs() as f64 * unit;
-        let dx = shadow.offset_x as f64 * unit;
-        let dy = shadow.offset_y as f64 * unit;
+        let blur = shadow.blur_radius.abs() as f64 * scale;
+        let dx = shadow.offset_x as f64 * scale;
+        let dy = shadow.offset_y as f64 * scale;
         grown = grown.union(Rect::new(
             rect.x0 + dx - blur,
             rect.y0 + dy - blur,

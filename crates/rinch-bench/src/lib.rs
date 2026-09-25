@@ -201,6 +201,71 @@ pub fn op_hover(mut f: ListFixture) -> ListFixture {
     f
 }
 
+const FLEX_LABEL_CSS: &str = "
+    body { margin: 0; font-family: Inter; font-size: 16px; line-height: 20px; }
+    .list { display: flex; flex-direction: column; }
+    .frow { display: flex; padding: 2px; }
+    .frow:hover { color: rgb(200, 0, 0); }
+";
+
+/// `LIST_ROWS` × `div.frow` (`display: flex`), each holding its text
+/// **directly**: a flex item's text leaf, painted from the layout its measure
+/// built. The hover rule is colour-only, which paint applies to a leaf itself
+/// (#904) — its first cut ran a Taffy compute per hover here instead.
+fn build_flex_labels() -> ListFixture {
+    let mut doc = new_document();
+    doc.load_css(FLEX_LABEL_CSS);
+    let body = doc.body();
+    let list = doc.create_element("div");
+    doc.set_attribute(list, "class", "list");
+    let mut rows = Vec::with_capacity(LIST_ROWS);
+    let mut texts = Vec::with_capacity(LIST_ROWS);
+    for i in 0..LIST_ROWS {
+        let row = doc.create_element("div");
+        doc.set_attribute(row, "class", "frow");
+        let t = doc.create_text(&format!("Row number {i} with some text"));
+        doc.append_child(row, t);
+        doc.append_child(list, row);
+        rows.push(row);
+        texts.push(t);
+    }
+    doc.append_child(body, list);
+    let mut f = ListFixture {
+        doc,
+        list,
+        rows,
+        texts,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.layout();
+    f.layout();
+    f.paint();
+    f
+}
+
+/// The flex-label list, with row 5 hovered and un-hovered once.
+pub fn setup_flex_label_hover() -> ListFixture {
+    let mut f = build_flex_labels();
+    let r = f.rows[5];
+    f.hover(Some(r));
+    f.layout();
+    f.paint();
+    f.hover(None);
+    f.layout();
+    f.paint();
+    f
+}
+
+/// A colour-only `:hover` on one flex row whose text is a leaf, then the
+/// frame's layout pass and paint.
+pub fn op_flex_label_hover(mut f: ListFixture) -> ListFixture {
+    let r = f.rows[10];
+    f.hover(Some(r));
+    f.layout();
+    f.paint();
+    f
+}
+
 /// The list, with row 5's class toggled on and off once.
 pub fn setup_class_toggle() -> ListFixture {
     let mut f = build_list();

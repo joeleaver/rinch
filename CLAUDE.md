@@ -1974,10 +1974,22 @@ box:
   `layout_dirty` for them. That predicate is deliberately **narrower** than
   `same_text_layout_inputs` (#654), which decides whether the *glyphs* must be
   re-shaped: `color` is baked into the glyphs and moves no box, so a
-  `:hover { color }` still takes the cheap path — pinned by
+  `:hover { color }` on IFC text still takes the cheap path — pinned by
   `frozen_box_remeasure_tests::a_colour_only_restyle_still_skips_taffy`, which
   reads `tree.taffy_computes`, the counter that exists because nothing else
   distinguishes "took the cheap path" from "recomputed and got the same answer".
+  A text **leaf** — a flex or grid item's own text, in a block-level container
+  or inside an `inline-flex` / `inline-grid` such as a `Button` label — is
+  cheaper still: it is painted from the layout its *measure* built
+  (`Node::cached_text_parley`), which only a compute rebuilds, so paint draws it
+  in its parent's **current** computed colour instead of the brush it was shaped
+  with (`render_text`'s `color` override, #904). A colour change or a colour
+  transition frame on it re-shapes nothing and runs no compute
+  (`perf_regression_scenarios::a_colour_hover_on_*`); it used to leave a
+  block-level flex item's label in its old colour. Nor does a flex or grid
+  container's own text take its `text-overflow: ellipsis`: that text is an
+  anonymous item, which does not clip, and Chrome 153 draws it clipped with no
+  "…" (`DisplayValue::is_flex_or_grid_container`, #904).
   Cost, measured on 500 rows: a whole-document typography swap goes 7.4 → 16.1ms,
   a one-row hover 0.60 → 0.70ms.
   **Being in that list is necessary and was not sufficient** (#698):
@@ -2017,7 +2029,10 @@ box:
   frame. **Their Taffy re-sync marks atomic inlines separately**, because that
   pre-pass fires only for `font-size` while a `transition: width` on a box
   *inside* an `inline-block` is #661's own symptom reached without the cascade
-  (found by the review of #694).
+  (found by the review of #694). A `color` tick reaches a text **leaf** with no
+  invalidation at all, because paint colours a leaf from the live style (#904);
+  an IFC's `text_layout` carries the brush and is **not** dropped by a tick:
+  that is #679.
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
   not the cascade's.** That pass stores it as `Display::None`
   (`node::display_contents_taffy_style`), while `to_taffy_style` maps `contents`
@@ -2035,7 +2050,13 @@ what a typography change owes: the IFC's Parley layout, the box of any atomic
 inline above it, and the `NodeContext::Text` a text child is measured through
 when it is a flex or grid item — plus the Taffy `mark_dirty` beside that last
 one, since Taffy caches a leaf measure per available space and serves the stale
-one back otherwise.
+one back otherwise. Such a leaf is painted from the layout its measure built:
+the root compute's for a block-level container and the detached atomic
+compute's (`measure_inline_blocks`, which keeps them in
+`NodeTree::atomic_leaf_layouts` until `copy_cached_text_layouts`, filed under
+the width they were wrapped at and picked by the box's **unrounded** width) for
+an `inline-flex` / `inline-grid`; before #904 the latter kept none, and paint
+re-shaped every such label on every frame.
 
 **A resize restyles only what the size reaches** (`RinchDocument::restyle_for_viewport_change`).
 `Stylist::set_device` answers which stylesheet origins' media-query results
@@ -4220,7 +4241,7 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for thirteen benchmarks, on the
+It records Callgrind instruction counts (Gungraun) for fourteen benchmarks, on the
 PR's merge commit and on its first parent (the current `main` tip). The report
 is a table in the job summary and one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks
