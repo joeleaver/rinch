@@ -2607,6 +2607,8 @@ impl RinchApp {
     /// for two caret positions — and a caret there paints at the start of the
     /// next line, since the caret carries no affinity (#941). Stopping one
     /// character short keeps the caret on the line it was sent to.
+    /// The same offset ends a line broken by a hard break, whose last
+    /// character is its `\n`.
     fn soft_wrapped_line_end(
         text: &str,
         range: &std::ops::Range<usize>,
@@ -2664,8 +2666,8 @@ impl RinchApp {
     /// caret at byte `origin` paints on, in `layout` laid out over `text`
     /// (issue #933). A line that ends in a hard break ends before its `\n`; a
     /// soft-wrapped one ends one character short of the wrap
-    /// ([`Self::soft_wrapped_line_end`], #941). `None` for a layout with no
-    /// lines.
+    /// ([`Self::soft_wrapped_line_end`], #941); the last line ends with the
+    /// text. `None` for a layout with no lines.
     fn visual_line_edge(
         layout: &parley::layout::Layout<peniko::Brush>,
         text: &str,
@@ -2678,15 +2680,12 @@ impl RinchApp {
         if !end {
             return Some(range.start);
         }
-        let line = text.get(range.clone())?;
-        let content = line
-            .strip_suffix('\n')
-            .map(|l| l.strip_suffix('\r').unwrap_or(l));
-        if let Some(content) = content {
-            return Some(range.start + content.len());
-        }
+        // A line that another follows ends before its last character. For a
+        // hard break that is the `\n` (Parley's line range includes it); for
+        // a soft wrap it is the character the wrap point follows, one short of
+        // the line's true end ([`Self::soft_wrapped_line_end`], #941).
         match lines.get(current + 1) {
-            Some((_, _, next)) if next.start == range.end && next.start > range.start => {
+            Some((_, _, next)) if next.start > range.start => {
                 Some(Self::soft_wrapped_line_end(text, range, next.start))
             }
             _ => Some(range.end),
