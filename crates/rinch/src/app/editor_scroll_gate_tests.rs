@@ -343,7 +343,14 @@ fn typing_that_wraps_below_the_fold_follows_the_caret_onto_the_new_line() {
             let (n, v) = d.split_once(':')?;
             let args = v.trim().strip_prefix("translate(")?.strip_suffix(')')?;
             (n.trim() == "transform")
-                .then(|| args.split(',').nth(1)?.trim().trim_end_matches("px").parse::<f64>().ok())
+                .then(|| {
+                    args.split(',')
+                        .nth(1)?
+                        .trim()
+                        .trim_end_matches("px")
+                        .parse::<f64>()
+                        .ok()
+                })
                 .flatten()
         })
         .expect("transform");

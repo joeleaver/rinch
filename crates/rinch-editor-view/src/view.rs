@@ -2870,7 +2870,9 @@ mod tests {
                     let args = v.trim().strip_prefix("translate(")?.strip_suffix(')')?;
                     let (x, y) = args.split_once(',')?;
                     let px = |s: &str| s.trim().trim_end_matches("px").parse::<f32>().ok();
-                    (n.trim() == "transform").then(|| Some((px(x)?, px(y)?))).flatten()
+                    (n.trim() == "transform")
+                        .then(|| Some((px(x)?, px(y)?)))
+                        .flatten()
                 })
                 .expect("a transform");
             (x.round() as i32, y.round() as i32)

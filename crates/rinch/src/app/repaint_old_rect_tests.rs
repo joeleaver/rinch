@@ -985,7 +985,8 @@ mod editor {
         app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
         app.focus_target = FocusTarget::Editor(ed.get());
         let mut p = Page { app, handle };
-        p.handle.set_selection(Selection::cursor(Pos(1 + 31 * 2 + 3)));
+        p.handle
+            .set_selection(Selection::cursor(Pos(1 + 31 * 2 + 3)));
         p.app.refresh_editor_overlays();
         about_to_wait(&mut p.app);
         let shown = full_frame(&mut p.app);
