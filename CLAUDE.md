@@ -1390,7 +1390,12 @@ armed the drag drives it: another document's `MouseMove` does not reach
 armed **outside** any event dispatch — from a timer, a menu callback, or on
 rinch-web, which has one page-wide pointer stream — belongs to no document in
 particular and stays drivable by anybody. Nothing changes for a single-window
-app. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
+app. **An effect counts as its document's code** (issue #295): the effect queue
+is thread-global, so a write in document A's handler flushes document B's
+effects inside A's `handle_event` — but every `Effect` and `Memo` records the
+document current at its creation (`RinchApp::mount_component` marks the mount,
+`handle_event` the dispatch) and re-enters it around every run, so a drag armed,
+or an interceptor registered, from B's effect belongs to B. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
 the pointer is grabbed to the pressing window while a button is held — so this
 matters for an embed host pumping several contexts from one event stream, and
 for a drag left live past a missed `MouseUp`.)
