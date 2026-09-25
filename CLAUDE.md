@@ -1369,6 +1369,25 @@ the pointer is grabbed to the pressing window while a button is held — so this
 matters for an embed host pumping several contexts from one event stream, and
 for a drag left live past a missed `MouseUp`.)
 
+**Arming a drag ends the live one through its `on_cancel` (issue #293)** —
+whichever document armed it, the same one or another. There is one slot, and a
+press that arms a drag while another is live usually means the old drag's
+release was never delivered: swallowed in its own document (#189), or in
+another document on the thread, since the pointer is grabbed to the pressing
+window while a button is held. So `Drag::start()` ends it the #189 way —
+`on_cancel` with the last coordinates it delivered, never `on_end` — before
+arming the new one. It used to drop the old drag with neither callback run,
+which #139 made reachable: a second document's `is_active()` answers `false`,
+so it no longer held off arming. A superseded drag whose arming scope was
+disposed is dropped silently (#141), and a drag armed from inside the
+superseded one's `on_cancel` is superseded in turn (at most 8 cancels per
+`start()`, then the leftover is dropped with a warning). Every `on_cancel` —
+this one, a heal, a pointer-cancel — runs under its own drag's owner and
+arming document, not the caller's. A second finger's press on rinch-web is a
+press like any other, so its drag cancels the first finger's. Two *simultaneous*
+pointer-capture drags — one per finger, or one per context — are not possible:
+the slot holds one.
+
 **A drag whose release was swallowed heals itself (issue #189).** A native
 context menu, a modal dialog, a window-manager grab, or the pointer leaving a
 non-capturing surface can eat the `pointerup` that should have ended a drag,
