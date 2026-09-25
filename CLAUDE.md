@@ -1391,15 +1391,23 @@ thread, and so are two embedded `RinchContext`s. Only the document whose events
 armed the drag drives it: another document's `MouseMove` does not reach
 `on_move`, its `MouseUp` does not fire `on_end`, and `Drag::is_active()` answers
 `false` there (so a drag in one window never freezes hover in the other). A drag
-armed **outside** any event dispatch — from a timer, a menu callback, or on
-rinch-web, which has one page-wide pointer stream — belongs to no document in
-particular and stays drivable by anybody. Nothing changes for a single-window
+armed **outside** any document — from a timer armed in `main`, a menu
+callback, or on rinch-web, which has one page-wide pointer stream — belongs to
+no document in particular and stays drivable by anybody. Nothing changes for a single-window
 app. **An effect counts as its document's code** (issue #295): the effect queue
 is thread-global, so a write in document A's handler flushes document B's
 effects inside A's `handle_event` — but every `Effect` and `Memo` records the
 document current at its creation (`RinchApp::mount_component` marks the mount,
 `handle_event` the dispatch) and re-enters it around every run, so a drag armed,
-or an interceptor registered, from B's effect belongs to B. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
+or an interceptor registered, from B's effect belongs to B. **So does a timer,
+a parked continuation (an `rinch-http` completion), a `run_on_main_thread`
+closure and a `rinch-ws` callback** (issue #963): each records the document
+current where it was armed, queued or registered (`main_thread::Parked::doc`,
+the `MAIN_QUEUE` entry, `rinch-ws`'s `Slot::doc`) and runs under it, so its
+interceptor install or clear is that document's rather than reaching every
+document on the thread; one armed from `main` or queued from a worker thread
+runs under none. Menu, focus-registry and `rinch-android` callbacks still run
+unmarked when the platform fires them outside a dispatch. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
 the pointer is grabbed to the pressing window while a button is held — so this
 matters for an embed host pumping several contexts from one event stream, and
 for a drag left live past a missed `MouseUp`.)

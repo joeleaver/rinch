@@ -101,8 +101,9 @@ struct ActiveDrag {
     /// still alive"; this asks "is this event stream the one that armed me".
     /// Both documents in the bug have live owners.
     ///
-    /// `None` means the drag was armed outside any dispatch — a timer, a menu
-    /// callback, a backend with one page-wide event stream (rinch-web) — and is
+    /// `None` means the drag was armed outside any document — a timer armed
+    /// from `main` (one armed inside a document runs as that document's code,
+    /// issue #963), a menu callback, a backend with one page-wide event stream (rinch-web) — and is
     /// drivable by anybody. A drag is refused **only** when both keys are `Some`
     /// and differ; anything stricter would wedge hover, surface events and text
     /// selection in the drag's *own* document, since all three gate on
@@ -1078,8 +1079,8 @@ mod tests {
         assert_eq!(end.get(), Some((30.0, 40.0)));
     }
 
-    /// A drag armed outside any dispatch — a timer, a menu callback, or a
-    /// backend with a single page-wide pointer stream (rinch-web, which pushes
+    /// A drag armed outside any document — a timer armed from `main`, a menu
+    /// callback, or a backend with a single page-wide pointer stream (rinch-web, which pushes
     /// no marker at all) — belongs to nobody and stays drivable by everybody.
     ///
     /// This is what keeps the fix free of rinch-web changes.

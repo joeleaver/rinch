@@ -238,6 +238,66 @@ mod tests {
         clear_timeout(t);
     }
 
+    /// A timer fires outside any document — the shells drain it between
+    /// events — but it runs as the code of the document that armed it (issue
+    /// #963). So an interceptor a timer armed in document 1 registers, and one
+    /// it clears, is document 1's: document 2's own interceptor is untouched
+    /// by both. Before, the fire ran unmarked, and an unmarked install or clear
+    /// reaches every document on the thread (#960's slot rule).
+    #[test]
+    fn a_timer_registers_and_clears_interceptors_for_the_document_that_armed_it() {
+        use crate::context::push_dispatching_doc;
+        use crate::events::{
+            KeyEventData, clear_keyboard_interceptor, dispatch_keyboard_event,
+            set_keyboard_interceptor,
+        };
+        use std::cell::RefCell;
+
+        install_manual_backend();
+        clear_keyboard_interceptor();
+        let hits: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let key = KeyEventData::new("x".to_string(), "KeyX".to_string());
+        let dispatch_as = |doc: u64| {
+            let _d = push_dispatching_doc(doc);
+            dispatch_keyboard_event(&key)
+        };
+
+        {
+            let _b = push_dispatching_doc(2);
+            let h = hits.clone();
+            set_keyboard_interceptor(move |_| {
+                h.borrow_mut().push("doc2");
+                true
+            });
+        }
+        {
+            let _a = push_dispatching_doc(1);
+            let h = hits.clone();
+            set_timeout(0, move || {
+                set_keyboard_interceptor(move |_| {
+                    h.borrow_mut().push("doc1-timer");
+                    true
+                })
+            });
+        }
+        drain_and_fire();
+        assert!(dispatch_as(1));
+        assert!(dispatch_as(2));
+        assert_eq!(*hits.borrow(), ["doc1-timer", "doc2"]);
+
+        {
+            let _a = push_dispatching_doc(1);
+            set_timeout(0, clear_keyboard_interceptor);
+        }
+        drain_and_fire();
+        hits.borrow_mut().clear();
+        assert!(!dispatch_as(1), "document 1's timer cleared document 1's");
+        assert!(dispatch_as(2), "and left document 2's alone");
+        assert_eq!(*hits.borrow(), ["doc2"]);
+
+        clear_keyboard_interceptor();
+    }
+
     #[test]
     fn callback_need_not_be_send_and_may_be_re_armed() {
         install_manual_backend();

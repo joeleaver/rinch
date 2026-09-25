@@ -169,6 +169,12 @@ fn drain_wake_queues<S>(
 /// the wake — without it a closure queued while the loop is idle would sit
 /// there until something else happened to wake it.
 ///
+/// It **always queues**, even when called on the main thread, and the closure
+/// runs under the document current where it was queued (issue #963) — the
+/// handler's document from inside a dispatch, none from a worker thread.
+/// [`rinch_core::run_on_main_thread`] differs: called on the main thread it runs
+/// `f` inline, under whatever document is current right then.
+///
 /// # Example
 ///
 /// ```ignore

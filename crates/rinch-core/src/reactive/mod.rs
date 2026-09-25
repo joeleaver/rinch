@@ -381,7 +381,11 @@ pub fn set_cross_thread_dispatcher_if_unset(dispatcher: fn(Box<dyn FnOnce() + Se
 /// `embed`-only build had nowhere to put a cross-thread closure and
 /// [`Signal::send`](crate::Signal::send) panicked in the one mode most likely to
 /// want it (issue #172).
-static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
+///
+/// Each closure is queued beside the raw `doc_key` of the document whose code
+/// queued it (`0` = none) and runs under it — see [`queue_main_callback`].
+#[allow(clippy::type_complexity)]
+static MAIN_QUEUE: Mutex<Vec<(u64, Box<dyn FnOnce() + Send>)>> = Mutex::new(Vec::new());
 
 /// Push `f` onto the shared main-thread queue.
 ///
@@ -389,10 +393,18 @@ static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new())
 /// its event loop, which it then does once per batch rather than once per
 /// closure. A host with nothing to wake (an embedded context, whose game loop is
 /// already turning) ignores it.
+///
+/// `f` will run under the document current **here**, on the thread that queues
+/// it (issue #963): the document whose code queued it on the main thread, and
+/// none for a closure queued from a worker thread, which is no document's code.
+/// The drain runs between events, or inside another embedded context's
+/// `update()`, so without this a closure queued by one document's handler ran
+/// under no document or a borrowed one.
 pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
+    let doc = crate::context::current_dispatching_doc().unwrap_or(0);
     let mut queue = MAIN_QUEUE.lock().unwrap();
     let was_empty = queue.is_empty();
-    queue.push(f);
+    queue.push((doc, f));
     was_empty
 }
 
@@ -405,11 +417,14 @@ pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
 /// whoever runs it. The document it ultimately touches is still repainted by its
 /// own host, because a signal change notifies every subscriber (issue #134).
 pub fn drain_main_callbacks() {
-    let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
+    let callbacks: Vec<(u64, Box<dyn FnOnce() + Send>)> =
+        MAIN_QUEUE.lock().unwrap().drain(..).collect();
     // One transaction per callback, not one for the whole drain: callbacks are
     // queued independently (a `Signal::send`, a timer, a parked continuation),
-    // and a later one may rely on an earlier one's effects having run.
-    for callback in callbacks {
+    // and a later one may rely on an earlier one's effects having run. Each runs
+    // under the document that queued it (issue #963).
+    for (doc, callback) in callbacks {
+        let _doc = crate::context::push_dispatching_doc(doc);
         batch(callback);
     }
 }
