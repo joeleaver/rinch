@@ -911,19 +911,28 @@ struct ShadowImage {
     height: u32,
 }
 
-/// The largest blur mask built for one inset shadow, in pixels. Past it the
-/// shadow is not drawn: an inset shadow on a box this size is a whole screen
-/// of mask per frame, and the mask is cropped to what can be seen first.
-const MAX_INSET_MASK_PIXELS: usize = 16 * 1024 * 1024;
+/// The largest blurred inset shadow built, in image pixels. Past it the
+/// shadow is not drawn. The image is cropped to what can be seen first
+/// (under a translation), so only a rotated or scaled box this large reaches
+/// it.
+const MAX_INSET_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
+
+/// Past this `sigma` a 1-D blur is three box blurs rather than a sampled
+/// Gaussian kernel: the kernel costs `6 sigma` per sample, the boxes a
+/// constant, and above it the boxes are within a level of the Gaussian.
+const DIRECT_KERNEL_MAX_SIGMA: f64 = 8.0;
 
 /// The blurred inset shadow over the padding box `pad` (device pixels), as an
 /// image and the device-space origin to draw it at; `None` when nothing of it
 /// can be seen.
 ///
-/// The hole's coverage is rasterised with its rounded corners (pixel-centre
-/// signed distance, one pixel of anti-aliasing) over `pad` grown by the blur's
-/// reach, blurred by three box blurs per axis approximating a Gaussian of
-/// `sigma`, and each pixel of `pad` takes `alpha * (1 - blurred hole)`.
+/// The shadow's alpha is the colour's alpha times one minus the hole's
+/// coverage blurred by a Gaussian of `sigma`. The hole is a rounded rect, and
+/// the blur is computed as the rect's (which is separable: the product of two
+/// 1-D blurs, so O(width + height)) less, at each rounded corner, the blur of
+/// the sliver the rounding takes off the rect (a 2-D blur, but only over the
+/// corner's own square grown by the blur's reach). So the cost is the image
+/// itself plus four small corner patches, whatever the blur.
 fn blurred_inset_image(
     pad: Rect,
     hole: Rect,
@@ -951,67 +960,123 @@ fn blurred_inset_image(
     if area.width() <= 0.0 || area.height() <= 0.0 {
         return None;
     }
-    let boxes = gaussian_boxes(sigma);
-    // How far the three box blurs reach: the sum of their radii.
-    let reach = boxes.iter().map(|b| b / 2).sum::<usize>() + 1;
     let (iw, ih) = (area.width() as usize, area.height() as usize);
-    let (ew, eh) = (iw + 2 * reach, ih + 2 * reach);
-    if ew.saturating_mul(eh) > MAX_INSET_MASK_PIXELS {
+    if iw.saturating_mul(ih) > MAX_INSET_IMAGE_PIXELS {
         return None;
     }
-    let ox = area.x0 - reach as f64;
-    let oy = area.y0 - reach as f64;
+    let blur = Blur1d::new(sigma);
+    let reach = blur.reach();
 
-    // The hole's coverage, 1 inside, 0 outside.
-    let mut mask = vec![0.0f32; ew * eh];
-    for j in 0..eh {
-        let py = oy + j as f64 + 0.5;
-        if py < hole.y0 - 1.0 || py > hole.y1 + 1.0 {
+    // The rect's blurred coverage, one axis at a time, over the image grown
+    // by the reach (what lies further out cannot reach the image).
+    let axis = |lo: f64, h0: f64, h1: f64, n: usize| -> Vec<f32> {
+        let mut line: Vec<f32> = (0..n + 2 * reach)
+            .map(|i| {
+                let p = lo - reach as f64 + i as f64;
+                ((p + 1.0).min(h1) - p.max(h0)).max(0.0) as f32
+            })
+            .collect();
+        blur.apply(&mut line);
+        line.drain(..reach);
+        line.truncate(n);
+        line
+    };
+    let bx = axis(area.x0, hole.x0, hole.x1, iw);
+    let by = axis(area.y0, hole.y0, hole.y1, ih);
+    let mut covered = vec![0.0f32; iw * ih];
+    for (j, row) in covered.chunks_exact_mut(iw).enumerate() {
+        for (v, &x) in row.iter_mut().zip(&bx) {
+            *v = x * by[j];
+        }
+    }
+
+    // Less each rounded corner's sliver, blurred.
+    let limit = (hole.width().min(hole.height()) * 0.5).max(0.0);
+    let corners = [
+        (hole_radii.top_left, hole.x0, hole.y0, 1.0, 1.0),
+        (hole_radii.top_right, hole.x1, hole.y0, -1.0, 1.0),
+        (hole_radii.bottom_right, hole.x1, hole.y1, -1.0, -1.0),
+        (hole_radii.bottom_left, hole.x0, hole.y1, 1.0, -1.0),
+    ];
+    for (r, hx, hy, sx, sy) in corners {
+        let r = r.min(limit);
+        if r <= 0.0 {
             continue;
         }
-        let row = &mut mask[j * ew..(j + 1) * ew];
-        for (i, m) in row.iter_mut().enumerate() {
-            let px = ox + i as f64 + 0.5;
-            let d = rounded_rect_distance(hole, hole_radii, px, py);
-            *m = (0.5 - d).clamp(0.0, 1.0) as f32;
+        // The corner's square, and the arc's centre.
+        let sq = Rect::new(hx, hy, hx + sx * r, hy + sy * r).abs();
+        let (ccx, ccy) = (hx + sx * r, hy + sy * r);
+        // The patch: the square on whole pixels, grown by the reach, kept to
+        // the image grown by the reach.
+        let px0 = (sq.x0.floor() as i64 - reach as i64).max(area.x0 as i64 - reach as i64);
+        let py0 = (sq.y0.floor() as i64 - reach as i64).max(area.y0 as i64 - reach as i64);
+        let px1 = (sq.x1.ceil() as i64 + reach as i64).min(area.x1 as i64 + reach as i64);
+        let py1 = (sq.y1.ceil() as i64 + reach as i64).min(area.y1 as i64 + reach as i64);
+        if px1 <= px0 || py1 <= py0 {
+            continue;
         }
-    }
-
-    let mut scratch = vec![0.0f32; ew.max(eh)];
-    let mut line = vec![0.0f32; ew.max(eh)];
-    // Rows.
-    for j in 0..eh {
-        let row = &mut mask[j * ew..(j + 1) * ew];
-        for &b in &boxes {
-            box_blur_line(row, &mut scratch[..ew], b / 2);
+        let (pw, ph) = ((px1 - px0) as usize, (py1 - py0) as usize);
+        // The sliver: the part of the pixel inside the rect's corner square
+        // and outside the arc, approximated at the pixel centre with one
+        // pixel of anti-aliasing across the arc.
+        let mut patch = vec![0.0f32; pw * ph];
+        for j in 0..ph {
+            let y = (py0 + j as i64) as f64;
+            let oy = ((y + 1.0).min(sq.y1) - y.max(sq.y0)).max(0.0);
+            if oy <= 0.0 {
+                continue;
+            }
+            for i in 0..pw {
+                let x = (px0 + i as i64) as f64;
+                let ox = ((x + 1.0).min(sq.x1) - x.max(sq.x0)).max(0.0);
+                if ox <= 0.0 {
+                    continue;
+                }
+                let d = (x + 0.5 - ccx).hypot(y + 0.5 - ccy) - r;
+                let outside_arc = (0.5 + d).clamp(0.0, 1.0);
+                patch[j * pw + i] = (ox * oy * outside_arc) as f32;
+            }
         }
-    }
-    // Columns (only those the image keeps).
-    for i in reach..reach + iw {
-        for j in 0..eh {
-            line[j] = mask[j * ew + i];
+        for row in patch.chunks_exact_mut(pw) {
+            blur.apply(row);
         }
-        for &b in &boxes {
-            box_blur_line(&mut line[..eh], &mut scratch[..eh], b / 2);
+        let mut col = vec![0.0f32; ph];
+        for i in 0..pw {
+            for j in 0..ph {
+                col[j] = patch[j * pw + i];
+            }
+            blur.apply(&mut col);
+            for j in 0..ph {
+                patch[j * pw + i] = col[j];
+            }
         }
-        for j in 0..eh {
-            mask[j * ew + i] = line[j];
+        // Subtract where the patch meets the image.
+        let ax0 = area.x0 as i64;
+        let ay0 = area.y0 as i64;
+        for j in 0..ph {
+            let iy = py0 + j as i64 - ay0;
+            if iy < 0 || iy >= ih as i64 {
+                continue;
+            }
+            for i in 0..pw {
+                let ix = px0 + i as i64 - ax0;
+                if ix < 0 || ix >= iw as i64 {
+                    continue;
+                }
+                covered[iy as usize * iw + ix as usize] -= patch[j * pw + i];
+            }
         }
     }
 
     let rgba = color.to_rgba8();
     let alpha = color.components[3];
     let mut data = vec![0u8; iw * ih * 4];
-    for j in 0..ih {
-        let src = &mask[(j + reach) * ew + reach..(j + reach) * ew + reach + iw];
-        let dst = &mut data[j * iw * 4..(j + 1) * iw * 4];
-        for (px, &m) in dst.chunks_exact_mut(4).zip(src) {
-            let a = alpha * (1.0 - m.clamp(0.0, 1.0));
-            px[0] = rgba.r;
-            px[1] = rgba.g;
-            px[2] = rgba.b;
-            px[3] = (a * 255.0).round() as u8;
-        }
+    for (px, &m) in data.chunks_exact_mut(4).zip(&covered) {
+        let a = alpha * (1.0 - m.clamp(0.0, 1.0));
+        px[0] = rgba.r;
+        px[1] = rgba.g;
+        px[2] = rgba.b;
+        px[3] = (a * 255.0).round() as u8;
     }
     Some((
         Vec2::new(area.x0, area.y0),
@@ -1023,70 +1088,90 @@ fn blurred_inset_image(
     ))
 }
 
-/// The signed distance from `(px, py)` to the edge of the rounded rect
-/// `rect`/`radii`: negative inside. Each corner's radius is clamped to half
-/// the rect's smaller side, as kurbo's `RoundedRect` clamps it.
-fn rounded_rect_distance(rect: Rect, radii: RoundedRectRadii, px: f64, py: f64) -> f64 {
-    let cx = (rect.x0 + rect.x1) * 0.5;
-    let cy = (rect.y0 + rect.y1) * 0.5;
-    let hw = rect.width() * 0.5;
-    let hh = rect.height() * 0.5;
-    let (dx, dy) = (px - cx, py - cy);
-    let r = match (dx < 0.0, dy < 0.0) {
-        (true, true) => radii.top_left,
-        (false, true) => radii.top_right,
-        (false, false) => radii.bottom_right,
-        (true, false) => radii.bottom_left,
-    }
-    .min(hw.min(hh))
-    .max(0.0);
-    let qx = dx.abs() - (hw - r);
-    let qy = dy.abs() - (hh - r);
-    let outside = qx.max(0.0).hypot(qy.max(0.0));
-    outside + qx.max(qy).min(0.0) - r
+/// A 1-D approximation of a Gaussian blur of standard deviation `sigma`: a
+/// sampled kernel for a small `sigma`, three box blurs (Kovesi, "Fast
+/// Almost-Gaussian Filtering") for a large one. Values past either end of a
+/// line count as zero.
+enum Blur1d {
+    Kernel(Vec<f32>),
+    Boxes([usize; 3]),
 }
 
-/// Three odd box widths whose successive blurs approximate a Gaussian of
-/// standard deviation `sigma` (Kovesi, "Fast Almost-Gaussian Filtering").
-fn gaussian_boxes(sigma: f64) -> [usize; 3] {
-    const N: f64 = 3.0;
-    let ideal = (12.0 * sigma * sigma / N + 1.0).sqrt();
-    let mut wl = ideal.floor() as i64;
-    if wl % 2 == 0 {
-        wl -= 1;
-    }
-    let wl = wl.max(1);
-    let wu = wl + 2;
-    let wlf = wl as f64;
-    let m = ((12.0 * sigma * sigma - N * wlf * wlf - 4.0 * N * wlf - 3.0 * N) / (-4.0 * wlf - 4.0))
-        .round() as i64;
-    let mut out = [0usize; 3];
-    for (i, o) in out.iter_mut().enumerate() {
-        *o = if (i as i64) < m { wl } else { wu } as usize;
-    }
-    out
-}
-
-/// One box blur of radius `r` along `line`, in place; values past either end
-/// count as zero.
-fn box_blur_line(line: &mut [f32], scratch: &mut [f32], r: usize) {
-    if r == 0 {
-        return;
-    }
-    let n = line.len();
-    scratch[..n].copy_from_slice(line);
-    let norm = 1.0 / (2 * r + 1) as f32;
-    let mut sum = 0.0f32;
-    for &v in scratch.iter().take(r.min(n)) {
-        sum += v;
-    }
-    for i in 0..n {
-        if i + r < n {
-            sum += scratch[i + r];
+impl Blur1d {
+    fn new(sigma: f64) -> Self {
+        if sigma <= DIRECT_KERNEL_MAX_SIGMA {
+            let radius = (3.0 * sigma).ceil().max(1.0) as i64;
+            let mut k: Vec<f64> = (-radius..=radius)
+                .map(|i| (-(i as f64).powi(2) / (2.0 * sigma * sigma)).exp())
+                .collect();
+            let sum: f64 = k.iter().sum();
+            k.iter_mut().for_each(|v| *v /= sum);
+            Blur1d::Kernel(k.into_iter().map(|v| v as f32).collect())
+        } else {
+            const N: f64 = 3.0;
+            let ideal = (12.0 * sigma * sigma / N + 1.0).sqrt();
+            let mut wl = ideal.floor() as i64;
+            if wl % 2 == 0 {
+                wl -= 1;
+            }
+            let wl = wl.max(1);
+            let wlf = wl as f64;
+            let m = ((12.0 * sigma * sigma - N * wlf * wlf - 4.0 * N * wlf - 3.0 * N)
+                / (-4.0 * wlf - 4.0))
+                .round() as i64;
+            let mut widths = [0usize; 3];
+            for (i, w) in widths.iter_mut().enumerate() {
+                *w = if (i as i64) < m { wl } else { wl + 2 } as usize;
+            }
+            Blur1d::Boxes(widths)
         }
-        line[i] = sum * norm;
-        if i >= r {
-            sum -= scratch[i - r];
+    }
+
+    /// How far one sample's value spreads, in samples.
+    fn reach(&self) -> usize {
+        match self {
+            Blur1d::Kernel(k) => k.len() / 2,
+            Blur1d::Boxes(w) => w.iter().map(|w| w / 2).sum(),
+        }
+    }
+
+    fn apply(&self, line: &mut [f32]) {
+        let src = line.to_vec();
+        let n = line.len();
+        match self {
+            Blur1d::Kernel(k) => {
+                let r = k.len() / 2;
+                for (i, out) in line.iter_mut().enumerate() {
+                    let lo = i.saturating_sub(r);
+                    let hi = (i + r).min(n - 1);
+                    let mut acc = 0.0f32;
+                    for (s, v) in src[lo..=hi].iter().enumerate() {
+                        acc += v * k[lo + s + r - i];
+                    }
+                    *out = acc;
+                }
+            }
+            Blur1d::Boxes(widths) => {
+                let mut src = src;
+                for &w in widths {
+                    let r = w / 2;
+                    if r == 0 {
+                        continue;
+                    }
+                    let norm = 1.0 / w as f32;
+                    let mut sum: f32 = src.iter().take(r.min(n)).sum();
+                    for i in 0..n {
+                        if i + r < n {
+                            sum += src[i + r];
+                        }
+                        line[i] = sum * norm;
+                        if i >= r {
+                            sum -= src[i - r];
+                        }
+                    }
+                    src.copy_from_slice(line);
+                }
+            }
         }
     }
 }
