@@ -224,7 +224,8 @@ PRs do not collide in one file.
 - `crates/rinch-dom/tests/perf_regression_scenarios.rs` has one scenario per
   **increment site** of every counter that has more than one site. `shape_paint`
   has three (a `<select>` label, an `<input>` value, and text with no cached
-  layout), `ellipsis_builds` two, `shape_atomic_inline` two and
+  layout — a constructed state since #904, when an `inline-flex` label stopped
+  reaching it), `ellipsis_builds` two, `shape_atomic_inline` two and
   `pseudo_element_passes` two. A per-counter check cannot see a deleted
   increment while a sibling site still fires; one document per site can.
 - `crates/rinch/src/app/perf_regression_tests.rs` drives a real `RinchApp` the

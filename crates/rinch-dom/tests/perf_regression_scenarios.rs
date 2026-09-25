@@ -14,7 +14,7 @@
 //! |---|---|---|
 //! | `shape_paint` | `paint/select.rs` (closed `<select>` label) | [`a_select_label_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
-//! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — a constructed state: since #904 every leaf a measure reached keeps its layout |
+//! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
 //! | `ellipsis_builds` | `ifc.rs`, text leaf | [`a_text_leaf_ellipsis`] |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::InlineRoot` | [`an_inline_block_holding_an_ifc`] |
@@ -396,8 +396,9 @@ fn a_flex_item_text_leaf_is_not_reshaped_by_paint() {
 }
 
 /// `shape_paint`'s third site (`paint/mod.rs`): a text leaf that reaches paint
-/// with no cached layout is shaped by paint itself. Since #904 every leaf a
-/// measure reached keeps its layout, so this state is **constructed** — the
+/// with no cached layout is shaped by paint itself. Since #904 a text leaf
+/// keeps the layout its measure shaped, in the root compute and the atomic one
+/// alike, so this state is **constructed** — the
 /// control's flex text with its cached layout taken away — and it is what
 /// keeps that increment site covered. Exactly 1: one leaf, one frame.
 #[test]
