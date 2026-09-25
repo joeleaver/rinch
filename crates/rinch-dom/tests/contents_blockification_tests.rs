@@ -167,8 +167,8 @@ fn a_child_inserted_behind_a_styled_wrapper_is_blockified() {
 /// **What this pins today is the element-cascade route, not
 /// `resolve_pseudo_element`'s.** The generated `<span>` is walked and
 /// re-cascaded as a plain child of the wrapper right after it is created, which
-/// replaces the style the pseudo cascade gave it (a pre-existing defect, filed
-/// separately — it also drops a `::before`'s own `color`). So the pseudo
+/// replaces the style the pseudo cascade gave it (a pre-existing defect,
+/// #1004 — it also drops a `::before`'s own `color`). So the pseudo
 /// cascade's layout parent is not observable here until that is fixed.
 #[test]
 fn a_contents_elements_before_in_a_flex_container_is_blockified() {
