@@ -369,7 +369,7 @@ line the text soft-wrapped onto counts, as in a browser — aiming at the column
 the first of a run of vertical moves started from, so a short line in between
 does not pull the caret left for good. On desktop this reads the same text
 layout a click is hit-tested against, so the caret lands where a click at that
-height would put it. ArrowUp on the first line goes to the start of the text and
+height would put it (except at a soft-wrap point, below). ArrowUp on the first line goes to the start of the text and
 ArrowDown on the last line to its end; in a single-line `<input>` that is all
 they do (Chrome's behaviour on Linux and Windows). Shift extends the selection.
 Without Shift a selection collapses, moving from its start (up) or its end
@@ -379,7 +379,9 @@ there, which desktop does not do.
 Where a soft-wrapped line is shorter than the column aimed at, desktop stops
 one character before the wrap point, since a caret at the wrap point itself
 would be drawn at the start of the next line. A browser keeps a caret affinity
-for that and places it after the last character instead.
+for that and places it after the last character instead. Where the wrap is
+at a space the space hangs and nothing looks different; in text with no
+spaces (CJK) the caret is visibly one column short.
 
 ### Sizing a `<textarea>`
 
