@@ -4058,10 +4058,15 @@ literal is that one node. Everything else is the one braced expression it always
 was: `0 => { overview_section(__scope) }` (ui-zoo's routing), `0 => {a.clone()}`,
 and a head followed by `.` or an operator (`{ "a".to_string() }`,
 `{ if … {} else {} .len() }`). `{ Point { x: 1 } }` is therefore a component, as
-unbraced; a path (`geom::Point { … }`) stays an expression. Lone control flow in
-braces is still #221's transparent brace, diagnostic included; a typo in a
-multi-node arm is reported at the typo, not as #221's message
-(`parse_braced_arm_body`, `crates/rinch-macros/src/node.rs`).
+unbraced; a path (`geom::Point { … }`), and a struct literal that cannot be an
+element (`{ Foo { a } }`, `{ Foo { ..Default::default() } }`, a method called on
+one), stay expressions. Lone control flow in braces is still #221's transparent
+brace, diagnostic included. In a multi-node arm the rsx parser reports a typo at
+the typo, including one inside a leading `if`/`for`/`match`: a head that fails
+to parse is skipped **by tokens** to see whether a node follows it — a
+diagnostic-only heuristic that a brace in the condition (`if let Foo { a } = x`)
+can defeat (`parse_braced_arm_body`, `failed_head_is_rsx`,
+`crates/rinch-macros/src/node.rs`).
 
 **Runtime desugaring:** `if` → `show_dom()`, `for` → `for_each_dom_typed()`, `match` → `match_dom()`.
 

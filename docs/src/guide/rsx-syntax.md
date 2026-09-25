@@ -1085,13 +1085,21 @@ What the braces hold is decided by how they **start**:
   [Braces around control flow](#braces-around-control-flow).
 
 (Until issue #395 only a body starting with `let` could hold more than one node.)
-A mistake inside a multi-node arm is reported where it is, like one in any
-other rsx body.
+A mistake inside a multi-node arm is reported by the rsx parser, at the
+mistake, like one in any other rsx body — including one inside a leading
+`if`/`for`/`match` when another node follows it. (Finding that following node
+after a head that failed to parse is a token-level heuristic: a condition that
+itself holds braces, such as `if let Foo { a } = x`, can defeat it and leave you
+with the single-node error instead.) A lone braced `if`/`for`/`match` whose
+bodies are not rsx still gets the "renders once" error described under
+[Braces around control flow](#braces-around-control-flow).
 
 One consequence: `{ Point { x: 1 } }` in an arm is a component named `Point`,
-exactly as `Point { x: 1 }` unbraced is, not a Rust struct literal. A path such
-as `geom::Point { x: 1 }` is not an element name, so it stays an expression, and
-so does `{ Point { x: 1 }.into_node(__scope) }`.
+exactly as `Point { x: 1 }` unbraced is, not a Rust struct literal. A struct
+literal that cannot be an element — shorthand fields (`{ Foo { a } }`), a `..`
+base (`{ Foo { ..Default::default() } }`), or one with a method called on it
+(`{ Point { x: 1 }.into_node(__scope) }`) — stays an expression, and so does a
+path such as `geom::Point { x: 1 }`, which is not an element name.
 
 #### How `match` works internally
 
