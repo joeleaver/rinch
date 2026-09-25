@@ -12,10 +12,9 @@
 //! background, so an outer shadow is visible only outside the border box.
 //!
 //! The fixtures are off the fixed point on purpose: a two-shadow list whose
-//! first shadow is the *smaller* one passes against a "biggest first" sort as
-//! well as against the reversal, so the second fixture puts the bigger one
-//! first, and the third uses three shadows — which a swap of the first and
-//! last alone does not reverse.
+//! first shadow is the *smaller* one passes against a "paint the biggest
+//! spread first" sort as well as against the reversal, so the second fixture
+//! puts the bigger one first.
 
 #![cfg(feature = "software-renderer")]
 
