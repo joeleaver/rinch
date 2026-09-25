@@ -26,7 +26,8 @@
 //! 2. The pending queue is drained FIFO, so the order observers were queued in
 //!    is the order they run in. (An effect that writes a signal while running
 //!    queues that signal's observers *behind* the current flush, rather than
-//!    ahead of it.)
+//!    ahead of it — except the running effect itself, which a write flushed
+//!    during its own body skips rather than queues; see [`Effect`], #343.)
 //!
 //! # Liveness
 //!

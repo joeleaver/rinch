@@ -1176,11 +1176,14 @@ mod tests {
         // write re-enters the reconcile effect rather than merely waking a
         // bystander.
         let churn = Signal::new(0);
+        let reconciles = Rc::new(std::cell::Cell::new(0));
+        let counted = reconciles.clone();
 
         let marker = super::for_each_dom_typed(
             &mut scope,
             &parent,
             move || {
+                counted.set(counted.get() + 1);
                 churn.get();
                 items.get()
             },
@@ -1192,11 +1195,23 @@ mod tests {
         );
         let _ = marker;
 
+        let mounted = reconciles.get();
+
         // Drops item "a": its cleanup writes `churn`, whose flush re-enters this
         // reconcile.
         items.update(|v| v.retain(|i| i.id == "b"));
 
         assert_eq!(churn.get(), 1, "exactly the removed item's cleanup ran");
+        // The cleanup's write is a wake the reconcile gives itself while it is
+        // running, and that wake is dropped (issue #343): the list reconciled
+        // once for the removal and not again for `churn`. Were it re-run
+        // instead, a row whose cleanup writes list state would make every
+        // reconcile schedule another.
+        assert_eq!(
+            reconciles.get() - mounted,
+            1,
+            "one pass for the removal; the cleanup's own wake was dropped"
+        );
     }
 
     // -----------------------------------------------------------------
