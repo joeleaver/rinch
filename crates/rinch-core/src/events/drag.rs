@@ -282,7 +282,9 @@ impl Drag {
 
     /// Set the callback invoked once if the drag is cancelled via
     /// [`Drag::cancel`] (e.g. the web backend's `pointercancel` — a
-    /// touch-scroll takeover, system gesture, or pointer-capture loss).
+    /// touch-scroll takeover, system gesture, or pointer-capture loss), healed
+    /// after a missed release (issue #189), or superseded by another
+    /// [`Drag::start`] while still live (issue #293).
     ///
     /// Receives the last coordinates delivered to `on_move`, in the same
     /// coordinate space (raw pixels for `absolute`, 0.0–1.0 for `percent`);
@@ -306,6 +308,22 @@ impl Drag {
     }
 
     /// Activate the drag. Call from a mousedown/click handler.
+    ///
+    /// **A drag already live is ended first, through its `on_cancel`** (issue
+    /// #293) — whichever document armed it. There is one pointer and one drag
+    /// slot, so a new press arming a drag while another is live means the
+    /// earlier drag's release was never delivered: a `MouseUp` swallowed in its
+    /// own document (#189), or — since the pointer is grabbed to the pressing
+    /// window while a button is held — in another document on the same thread
+    /// (a DevTools window, a second embedded `RinchContext`). That is the #189
+    /// ending: no trustworthy commit position, so `on_end` does not run and
+    /// `on_cancel` gets the last coordinates the old drag delivered. A drag
+    /// whose arming scope has been disposed is dropped silently instead, as
+    /// everywhere else — its `on_cancel` would read freed state.
+    ///
+    /// `on_cancel` runs before the new drag is armed and with no drag active,
+    /// so it may query the drag API or arm a drag of its own; a drag it arms
+    /// is superseded by this one in turn, through its own `on_cancel`.
     pub fn start(self) {
         let on_move: Rc<dyn Fn(f32, f32)> = match self.on_move {
             Some(f) => Rc::from(f),
@@ -322,6 +340,20 @@ impl Drag {
         // the dispatching document is ambient right now and gone by the time
         // `on_move` fires (issue #139).
         let doc = crate::context::current_dispatching_doc();
+        // Every drag live at this point is superseded, after the context above
+        // was captured so no `on_cancel` can disturb it. The loop covers a
+        // drag armed from inside a superseded drag's `on_cancel`.
+        loop {
+            discard_if_abandoned();
+            if !ACTIVE_DRAG.with(|drag| drag.borrow().is_some()) {
+                break;
+            }
+            tracing::debug!("a new drag supersedes a live one; cancelling it");
+            Drag::cancel();
+        }
+        // Nothing can sit in the slot here — the loop above emptied it and
+        // nothing since has run user code — but a replace keeps the drop of
+        // anything that did outside the borrow.
         let previous = ACTIVE_DRAG.with(|drag| {
             drag.borrow_mut().replace(ActiveDrag {
                 mode: self.mode,
@@ -335,8 +367,7 @@ impl Drag {
                 doc,
             })
         });
-        // Dropped outside the borrow: a superseded drag's callbacks are
-        // arbitrary user closures, and their `Drop` may query the drag state.
+        debug_assert!(previous.is_none(), "the supersede loop emptied the slot");
         drop(previous);
     }
 
