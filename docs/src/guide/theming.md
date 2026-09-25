@@ -504,9 +504,12 @@ Where desktop still differs from a browser:
   A `relative` child with no offset is measured like any other.
 - **An absolute whose containing block is further up than its parent** is
   counted by no scroll container at all; a browser counts it in that ancestor.
-  The exception is a parent that is an inline element such as a `<span>` (at
-  any depth of them) sitting directly in the containing block: the box then
-  counts there, as a browser counts it.
+  The exception is a parent that is a non-positioned inline element such as a
+  plain `<span>` (at any depth of them) sitting directly in the containing
+  block: the box then counts there, as a browser counts it. Under a
+  `position: relative` span — which is then the box's containing block — it
+  is counted only when the scroll container is itself positioned, and at the
+  wrong offset (#1049).
 - **A child's `transform` and its end margins** do not extend the scroll range;
   a browser's scroll range includes both.
 
