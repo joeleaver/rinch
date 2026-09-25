@@ -3156,15 +3156,39 @@ impl RinchApp {
         let state = handle.state();
         let doc = state.doc.clone();
         let head = state.selection.head();
-        let new_head: Option<Pos> = match motion {
+        use rinch_core::dom::CaretAffinity;
+        let new_head: Option<(Pos, CaretAffinity)> = match motion {
             // Visual-line edge for wrapped paragraphs (geometry), falling back to
             // the block edge when the caret has no Parley layout (an empty block).
+            // Home's edge is drawn at the start of its line (downstream, the
+            // default); End's at the end of its line, upstream when it is a soft
+            // wrap point — the same model position as the next line's start
+            // (#301).
             Motion::LineStart => self
                 .visual_line_bound(handle, head, false)
-                .or_else(|| core_motion::line_boundary(&doc, head, false)),
+                .or_else(|| core_motion::line_boundary(&doc, head, false))
+                .map(|p| (p, CaretAffinity::Downstream)),
             Motion::LineEnd => self
                 .visual_line_bound(handle, head, true)
-                .or_else(|| core_motion::line_boundary(&doc, head, true)),
+                .map(|p| {
+                    let wrap = matches!(
+                        (
+                            self.editor_caret_point(handle, head),
+                            self.editor_caret_point_with(handle, p, CaretAffinity::Downstream),
+                        ),
+                        (Some((_, hy, hh)), Some((_, py, _))) if py > hy + hh * 0.5
+                    );
+                    let affinity = if wrap {
+                        CaretAffinity::Upstream
+                    } else {
+                        CaretAffinity::Downstream
+                    };
+                    (p, affinity)
+                })
+                .or_else(|| {
+                    core_motion::line_boundary(&doc, head, true)
+                        .map(|p| (p, CaretAffinity::Downstream))
+                }),
             Motion::LineUp | Motion::LineDown => {
                 // Establish the goal column from the current caret on the first
                 // vertical step, then reuse it so the cursor keeps its horizontal
@@ -3174,19 +3198,19 @@ impl RinchApp {
                     .or_else(|| self.editor_caret_point(handle, head).map(|(x, _, _)| x));
                 self.editor_goal_x = goal_x;
                 self.vertical_step(handle, head, matches!(motion, Motion::LineDown), goal_x)
-                    .map(|sel| sel.head())
+                    .map(|(sel, affinity)| (sel.head(), affinity))
             }
             // The model motions returned early via `handle.move_cursor` above.
             _ => None,
         };
         match new_head {
-            Some(nh) => {
+            Some((nh, affinity)) => {
                 let sel = if extend {
                     Selection::text(state.selection.anchor(), nh)
                 } else {
                     Selection::cursor(nh)
                 };
-                handle.set_selection(sel);
+                handle.set_selection_with_affinity(sel, affinity);
                 true
             }
             None => false,
@@ -3675,11 +3699,55 @@ impl RinchApp {
         handle: &crate::editor::EditorHandle,
         pos: rinch_editor_core::Pos,
     ) -> Option<(f32, f32, f32)> {
+        self.editor_caret_point_with(handle, pos, handle.caret_affinity_at(pos))
+    }
+
+    /// [`Self::editor_caret_point`] on `affinity`'s side of a soft wrap
+    /// (#301). `editor_caret_point` itself draws `pos` the way the editor
+    /// does: with the selection's caret-affinity hint at its head, downstream
+    /// anywhere else.
+    pub(crate) fn editor_caret_point_with(
+        &self,
+        handle: &crate::editor::EditorHandle,
+        pos: rinch_editor_core::Pos,
+        affinity: rinch_core::dom::CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
         let (tb, flat) = handle.caret_address(pos)?;
         let doc = self.doc.clone()?;
         // Text only: vertical motion falls back to the model on a blank line,
         // where `DomDocument::query_caret_rect` would answer the block's box.
-        doc.borrow().text_caret_window_rect(tb, flat)
+        doc.borrow()
+            .text_caret_window_rect_with_affinity(tb, flat, affinity)
+    }
+
+    /// Which side of a soft wrap a caret placed at `pos` by a hit at window
+    /// `y` belongs to (#301), and its point on that side: `Upstream` when the
+    /// upstream caret is nearer `y` than the downstream one — a hit past a
+    /// wrapped line's end, which lands on the wrap point — else `Downstream`. Anywhere but a
+    /// wrap point both sides are one caret, and the answer is `Downstream`.
+    pub(crate) fn editor_hit_affinity(
+        &self,
+        handle: &crate::editor::EditorHandle,
+        pos: rinch_editor_core::Pos,
+        y: f32,
+    ) -> (rinch_core::dom::CaretAffinity, Option<(f32, f32, f32)>) {
+        use rinch_core::dom::CaretAffinity;
+        // Nearness, not containment: a caret rect covers the glyphs, not the
+        // line box, so a hit in the leading above or below them lies in neither.
+        // Distance from `y` to the rect's vertical span, 0 inside it.
+        let distance = |r: Option<(f32, f32, f32)>| {
+            r.map_or(f32::INFINITY, |(_, ry, rh)| {
+                (ry - y).max(y - (ry + rh)).max(0.0)
+            })
+        };
+        let down = self.editor_caret_point_with(handle, pos, CaretAffinity::Downstream);
+        if distance(down) > 0.0 {
+            let up = self.editor_caret_point_with(handle, pos, CaretAffinity::Upstream);
+            if distance(up) < distance(down) {
+                return (CaretAffinity::Upstream, up);
+            }
+        }
+        (CaretAffinity::Downstream, down)
     }
 
     /// One vertical cursor step (Up / Down), as a text cursor. First tries the
@@ -3695,36 +3763,40 @@ impl RinchApp {
         head: rinch_editor_core::Pos,
         down: bool,
         goal_x: Option<f32>,
-    ) -> Option<rinch_editor_core::Selection> {
+    ) -> Option<(rinch_editor_core::Selection, rinch_core::dom::CaretAffinity)> {
+        use rinch_core::dom::CaretAffinity;
         use rinch_editor_core::{Pos, Selection};
         let doc = handle.doc();
         if let Some((cx, cy, ch)) = self.editor_caret_point(handle, head)
+            && let ty = if down { cy + ch * 1.5 } else { cy - ch * 0.5 }
             && let Some((_c, tb, ifc)) = {
                 // Hit-test at the goal column (preserved across consecutive
                 // Up/Down), falling back to the live caret x for the first step.
                 let tx = goal_x.unwrap_or(cx);
-                let ty = if down { cy + ch * 1.5 } else { cy - ch * 0.5 };
                 self.editor_point_address(tx, ty)
             }
             && let Some(p) = handle.pos_at(tb, ifc)
         {
+            // A goal column past the target line's end lands on its wrap
+            // point, which is drawn on that line only upstream (#301).
+            let (affinity, rect) = self.editor_hit_affinity(handle, p, ty);
             // A move into a *different* textblock is always a real line change.
             let head_tb = handle.caret_address(head).map(|(t, _)| t);
             let p_tb = handle.caret_address(p).map(|(t, _)| t);
             if p_tb != head_tb {
-                return Some(Selection::cursor(p));
+                return Some((Selection::cursor(p), affinity));
             }
             // Same textblock: accept only if the caret actually advanced to a
             // different visual line (a wrapped paragraph) — otherwise the target
             // point snapped back to the current line (a block atom is in the way).
-            if let Some((_, py, _)) = self.editor_caret_point(handle, p) {
+            if let Some((_, py, _)) = rect {
                 let advanced = if down {
                     py > cy + ch * 0.5
                 } else {
                     py < cy - ch * 0.5
                 };
                 if advanced {
-                    return Some(Selection::cursor(p));
+                    return Some((Selection::cursor(p), affinity));
                 }
             }
         }
@@ -3748,6 +3820,7 @@ impl RinchApp {
             Pos(probe.min(doc.content_size())),
             if down { 1 } else { -1 },
         )
+        .map(|sel| (sel, CaretAffinity::Downstream))
     }
 
     /// The model position at the start (`end = false`) or end (`end = true`) of the
@@ -3787,19 +3860,22 @@ impl RinchApp {
             content_left + 1.0
         };
         let (_c, tb2, ifc) = self.editor_point_address(tx, ty)?;
-        let p = handle.pos_at(tb2, ifc)?;
-        // At a soft-wrap boundary the end-of-line byte is the same model position as
-        // the start of the next visual line, and rinch-dom renders its caret with
-        // *downstream* affinity (at the next line's start). For End, step back one
-        // position when the target spilled onto the next line so the caret stays at
-        // the visual end of the current line.
-        if end
-            && let Some((_, py, _)) = self.editor_caret_point(handle, p)
-            && py > cy + ch * 0.5
-        {
-            return Some(rinch_editor_core::Pos(p.0.saturating_sub(1)));
-        }
-        Some(p)
+        // At a soft wrap the end-of-line position is the same model position as
+        // the start of the next visual line. It is the answer as it stands: End
+        // draws it at the end of this line by setting the caret-affinity hint
+        // (#301), where it used to step back one position — which, inside a word
+        // broken by `overflow-wrap`, stopped before the line's last letter. A hit
+        // past a ragged line's end answers the position before its hanging space;
+        // the line's end is after it.
+        let ifc = if end {
+            let doc = self.doc.clone()?;
+            let d = doc.borrow();
+            rinch_dom::text_query::hanging_whitespace_end_for_node(&d, tb2 as u64, ifc)
+                .unwrap_or(ifc)
+        } else {
+            ifc
+        };
+        handle.pos_at(tb2, ifc)
     }
 
     /// The id of the `data-pm-editor` container under window/logical point
@@ -4095,7 +4171,14 @@ impl RinchApp {
                 _ if shift => (Selection::text(prior_anchor, clicked), Some(prior_anchor)),
                 _ => (Selection::cursor(clicked), Some(clicked)),
             };
-            handle.set_selection(selection);
+            // A press past a wrapped line's end lands on its wrap point, and
+            // belongs to the line pressed on (#301).
+            let affinity = if selection.is_empty() {
+                self.editor_hit_affinity(&handle, clicked, y).0
+            } else {
+                rinch_core::dom::CaretAffinity::Downstream
+            };
+            handle.set_selection_with_affinity(selection, affinity);
             if let Some(anchor) = drag_anchor {
                 crate::editor::begin_drag(self.input_doc(), container, anchor.0);
             }

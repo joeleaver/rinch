@@ -1,0 +1,954 @@
+//! Visual-line edges on the web (issue #301): `deleteSoftLineBackward` /
+//! `deleteSoftLineForward` — what an on-screen keyboard and Cmd+Backspace /
+//! Cmd+Delete send — and Home / End delete to and move to the edge of the
+//! **visual** line the caret is on, as every browser field does. They used to go
+//! to the edge of the whole textblock, so on a paragraph wrapped over several
+//! lines a soft-line delete on line 2 took line 1 with it.
+//! `deleteHardLine*` keeps the textblock edge.
+//!
+//! The oracle is Chrome itself: a `contenteditable` twin of the paragraph, given
+//! the paragraph's own computed typography and content width, is asked where
+//! `Selection.modify(.., "lineboundary")` lands from the same character offset.
+//! The right-to-left fixtures check against the line breaks measured off the
+//! paragraph's own glyph rects instead (Chrome's `modify` answered 25 for a line
+//! starting at 12 in an RTL paragraph of Latin text). Either way nothing here pins
+//! a font's advance widths — the line breaks are measured, on whatever fonts the
+//! host has.
+//!
+//! ```text
+//! CHROMEDRIVER=/path/to/chromedriver \
+//!   cargo test -p rinch-web --target wasm32-unknown-unknown --test editor_soft_line
+//! ```
+//!
+//! Every fixture mounts through `rinch_web::mount_into`, focuses with a genuine
+//! press and checks the capture textarea holds focus before asserting anything.
+#![cfg(target_arch = "wasm32")]
+
+use rinch_core::dom::RenderScope;
+use rinch_core::element::ThemeProviderProps;
+use rinch_editor_core::{Pos, Selection};
+use rinch_web::{EditorHandle, RootHandle, create_editor};
+use wasm_bindgen::JsCast;
+use wasm_bindgen_test::*;
+
+wasm_bindgen_test_configure!(run_in_browser);
+
+fn document() -> web_sys::Document {
+    web_sys::window().unwrap().document().unwrap()
+}
+
+const HOST_MARKER: &str = "data-test-host-soft-line";
+
+/// Words of uneven length, so no line break sits on an evenly spaced grid.
+const TEXT: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike";
+
+struct Fixture {
+    root: RootHandle,
+    host: web_sys::Element,
+    handle: EditorHandle,
+    text: &'static str,
+}
+
+impl Fixture {
+    /// One editor holding `text` in one paragraph, 180px wide so it wraps over
+    /// several lines. Not focused yet: [`Fixture::focus`].
+    fn mounted(text: &'static str, style: &str) -> Self {
+        if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
+            for i in 0..stale.length() {
+                if let Some(node) = stale.item(i)
+                    && let Ok(el) = node.dyn_into::<web_sys::Element>()
+                {
+                    el.remove();
+                }
+            }
+        }
+        let host = document().create_element("div").unwrap();
+        host.set_attribute(HOST_MARKER, "").unwrap();
+        host.set_attribute(
+            "style",
+            &format!(
+                "font-family: monospace; font-size: 16px; line-height: 24px; \
+                 padding: 20px; width: 180px; {style}"
+            ),
+        )
+        .unwrap();
+        document().body().unwrap().append_child(&host).unwrap();
+        let handle = create_editor();
+        assert!(handle.load_html(&format!("<p>{text}</p>")));
+        let mounted = handle.clone();
+        let root = rinch_web::mount_into(
+            &host,
+            ThemeProviderProps::default(),
+            move |scope: &mut RenderScope| mounted.mount(scope),
+        );
+        Self {
+            root,
+            host,
+            handle,
+            text,
+        }
+    }
+
+    /// [`Fixture::mounted`], handing the editor's container out through `slot`.
+    fn mounted_capturing(
+        text: &'static str,
+        style: &str,
+        slot: std::rc::Rc<std::cell::RefCell<Option<rinch_core::dom::NodeHandle>>>,
+    ) -> Self {
+        let f = Self::mounted(text, style);
+        f.root.unmount();
+        f.host.remove();
+        let host = document().create_element("div").unwrap();
+        host.set_attribute(HOST_MARKER, "").unwrap();
+        host.set_attribute(
+            "style",
+            &format!(
+                "font-family: monospace; font-size: 16px; line-height: 24px; \
+                 padding: 20px; width: 180px; {style}"
+            ),
+        )
+        .unwrap();
+        document().body().unwrap().append_child(&host).unwrap();
+        let handle = create_editor();
+        assert!(handle.load_html(&format!("<p>{text}</p>")));
+        let mounted = handle.clone();
+        let root = rinch_web::mount_into(
+            &host,
+            ThemeProviderProps::default(),
+            move |scope: &mut RenderScope| {
+                let c = mounted.mount(scope);
+                *slot.borrow_mut() = Some(c.clone());
+                c
+            },
+        );
+        Self {
+            root,
+            host,
+            handle,
+            text,
+        }
+    }
+
+    /// The rect of char `i` of text node `text`.
+    fn char_rect_in(&self, text: web_sys::Node, i: u32) -> web_sys::DomRect {
+        let range = document().create_range().unwrap();
+        range.set_start(&text, i).unwrap();
+        range.set_end(&text, i + 1).unwrap();
+        range.get_bounding_client_rect()
+    }
+
+    /// Focus the editor by a real press on the first character.
+    fn focus(&self) {
+        let r = self.char_rect(0);
+        let (x, y) = (
+            (r.x() + r.width() / 2.0) as f32,
+            (r.y() + r.height() / 2.0) as f32,
+        );
+        mouse("mousedown", x, y);
+        mouse("mouseup", x, y);
+        assert!(
+            document().active_element().as_deref() == Some(self.capture().as_ref()),
+            "positive control: a left press must focus the capture textarea"
+        );
+    }
+
+    fn para(&self) -> web_sys::Element {
+        document()
+            .query_selector("[data-pm-editor] p")
+            .unwrap()
+            .expect("a paragraph")
+    }
+
+    fn char_rect(&self, i: u32) -> web_sys::DomRect {
+        let text = self.para().first_child().expect("a text node");
+        let range = document().create_range().unwrap();
+        range.set_start(&text, i).unwrap();
+        range.set_end(&text, i + 1).unwrap();
+        range.get_bounding_client_rect()
+    }
+
+    /// The char offset each visual line of the paragraph starts at, measured.
+    fn line_starts(&self) -> Vec<u32> {
+        let n = self.text.chars().count() as u32;
+        let mut starts = vec![0];
+        let mut top = self.char_rect(0).top();
+        for i in 1..n {
+            let t = self.char_rect(i).top();
+            if t > top + 1.0 {
+                starts.push(i);
+                top = t;
+            }
+        }
+        starts
+    }
+
+    /// Chrome's answer: where `Selection.modify("move", dir, "lineboundary")`
+    /// lands from char offset `at` in a contenteditable twin of the paragraph.
+    fn chrome_line_boundary(&self, at: u32, forward: bool) -> u32 {
+        let para = self.para();
+        let cs = web_sys::window()
+            .unwrap()
+            .get_computed_style(&para)
+            .unwrap()
+            .unwrap();
+        let prop = |p: &str| cs.get_property_value(p).unwrap();
+        let pad = |p: &str| prop(p).trim_end_matches("px").parse::<f64>().unwrap_or(0.0);
+        let width = para.client_width() as f64 - pad("padding-left") - pad("padding-right");
+        let twin = document().create_element("div").unwrap();
+        twin.set_attribute(HOST_MARKER, "").unwrap();
+        twin.set_attribute("contenteditable", "true").unwrap();
+        let mut style = format!("width: {width}px; padding: 0; margin: 0; border: 0;");
+        for p in [
+            "font-family",
+            "font-size",
+            "font-weight",
+            "line-height",
+            "letter-spacing",
+            "word-spacing",
+            "white-space",
+            "word-break",
+            "overflow-wrap",
+            "tab-size",
+            "direction",
+            "text-align",
+        ] {
+            style.push_str(&format!("{p}: {};", prop(p)));
+        }
+        twin.set_attribute("style", &style).unwrap();
+        twin.set_text_content(Some(self.text));
+        document().body().unwrap().append_child(&twin).unwrap();
+        let text = twin.first_child().unwrap();
+        let sel = web_sys::window().unwrap().get_selection().unwrap().unwrap();
+        sel.collapse_with_offset(Some(&text), at).unwrap();
+        let modify: js_sys::Function = js_sys::Reflect::get(&sel, &"modify".into())
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let args = js_sys::Array::of3(
+            &"move".into(),
+            &(if forward { "forward" } else { "backward" }).into(),
+            &"lineboundary".into(),
+        );
+        modify.apply(&sel, &args).unwrap();
+        let out = sel.focus_offset();
+        sel.remove_all_ranges().unwrap();
+        twin.remove();
+        out
+    }
+
+    fn text(&self) -> String {
+        self.para().text_content().unwrap_or_default()
+    }
+
+    fn capture(&self) -> web_sys::HtmlTextAreaElement {
+        document()
+            .query_selector("textarea[data-pm-capture]")
+            .unwrap()
+            .expect("the capture textarea exists once an editor was focused")
+            .dyn_into()
+            .unwrap()
+    }
+
+    /// A `beforeinput` of `input_type` on the capture textarea; answers whether
+    /// the editor took it (`preventDefault`ed).
+    fn before_input(&self, input_type: &str) -> bool {
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_input_type(input_type);
+        let ev = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        self.capture().dispatch_event(&ev).unwrap();
+        ev.default_prevented()
+    }
+
+    /// A `beforeinput` `insertText` of `data`, as a keyboard types it.
+    fn before_input_text(&self, data: &str) -> bool {
+        let init = web_sys::InputEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_input_type("insertText");
+        init.set_data(Some(data));
+        let ev = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+        self.capture().dispatch_event(&ev).unwrap();
+        ev.default_prevented()
+    }
+
+    fn key(&self, key: &str, shift: bool) -> bool {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_key(key);
+        init.set_code(key);
+        init.set_shift_key(shift);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        self.capture().dispatch_event(&ev).unwrap();
+        ev.default_prevented()
+    }
+
+    /// Put the caret at char offset `i` of the paragraph (model `Pos(i + 1)`).
+    fn caret_at(&self, i: u32) {
+        self.handle
+            .set_selection(Selection::cursor(Pos(i as usize + 1)));
+    }
+
+    /// The caret's char offset in the paragraph.
+    fn head(&self) -> u32 {
+        (self.handle.selection().head().0 - 1) as u32
+    }
+
+    fn teardown(self) {
+        self.root.unmount();
+        self.host.remove();
+    }
+}
+
+fn mouse(name: &str, x: f32, y: f32) {
+    let target = document()
+        .element_from_point(x, y)
+        .unwrap_or_else(|| panic!("nothing under ({x}, {y})"));
+    let init = web_sys::MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_button(0);
+    init.set_buttons(1);
+    init.set_detail(1);
+    init.set_client_x(x as i32);
+    init.set_client_y(y as i32);
+    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict(name, &init).unwrap();
+    target.dispatch_event(&ev).unwrap();
+}
+
+/// Remove any stylesheet a failed fixture left behind: a panic skips the
+/// fixture's own removal, and the sheet would restyle every later test.
+fn remove_test_sheets() {
+    if let Ok(stale) = document().query_selector_all("[data-test-sheet-soft-line]") {
+        for i in 0..stale.length() {
+            if let Some(node) = stale.item(i)
+                && let Ok(el) = node.dyn_into::<web_sys::Element>()
+            {
+                el.remove();
+            }
+        }
+    }
+}
+
+fn slice(s: &str, from: u32, to: u32) -> String {
+    s.chars()
+        .skip(from as usize)
+        .take((to - from) as usize)
+        .collect()
+}
+
+/// Hebrew, so an RTL paragraph's logical line start is its RIGHT edge.
+const HEBREW: &str = "שלום עולם אחד שניים שלושה ארבעה חמישה שישה שבעה שמונה תשעה עשרה אחת עשרה";
+
+/// A mounted editor over `text`, wrapped over at least four lines, and the
+/// paragraph's measured line starts. The caret goes on the SECOND visual line,
+/// three characters in — neither the first line, whose start is the
+/// textblock's, nor the last, whose end is: `(line start, caret, next start)`.
+fn middle_line(text: &'static str, style: &str) -> (Fixture, u32, u32, u32) {
+    let f = Fixture::mounted(text, style);
+    let starts = f.line_starts();
+    assert!(
+        starts.len() >= 4,
+        "positive control: the paragraph wraps over at least four lines, got {starts:?}"
+    );
+    let (start, next) = (starts[1], starts[2]);
+    let caret = start + 3;
+    assert!(caret < next, "the caret is on line 2: {starts:?}");
+    (f, start, caret, next)
+}
+
+fn count(s: &str) -> u32 {
+    s.chars().count() as u32
+}
+
+/// A soft-line delete backward takes the current visual line's prefix, and
+/// nothing on the line above. It used to delete to the textblock's start.
+#[wasm_bindgen_test]
+fn soft_line_backward_deletes_to_the_visual_line_start() {
+    let (f, start, caret, _) = middle_line(TEXT, "");
+    let chrome = f.chrome_line_boundary(caret, false);
+    assert_eq!(
+        chrome, start,
+        "the oracle agrees with the measured line start"
+    );
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.before_input("deleteSoftLineBackward"));
+    assert_eq!(
+        f.text(),
+        format!(
+            "{}{}",
+            slice(TEXT, 0, start),
+            slice(TEXT, caret, count(TEXT))
+        )
+    );
+    assert_eq!(f.head(), start);
+    f.teardown();
+}
+
+/// A soft-line delete forward takes the rest of the visual line — to where
+/// Chrome's own line boundary is — and nothing on the line below.
+#[wasm_bindgen_test]
+fn soft_line_forward_deletes_to_the_visual_line_end() {
+    let (f, _, caret, next) = middle_line(TEXT, "");
+    let chrome = f.chrome_line_boundary(caret, true);
+    assert!(
+        chrome > caret && chrome <= next,
+        "the oracle ends the line before the next one starts: {chrome} vs {next}"
+    );
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.before_input("deleteSoftLineForward"));
+    assert_eq!(
+        f.text(),
+        format!(
+            "{}{}",
+            slice(TEXT, 0, caret),
+            slice(TEXT, chrome, count(TEXT))
+        )
+    );
+    assert_eq!(f.head(), caret);
+    f.teardown();
+}
+
+/// A hard-line delete still means the textblock's edge.
+#[wasm_bindgen_test]
+fn hard_line_deletes_keep_the_textblock_edge() {
+    let (f, _, caret, _) = middle_line(TEXT, "");
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.before_input("deleteHardLineBackward"));
+    assert_eq!(f.text(), slice(TEXT, caret, count(TEXT)));
+    f.caret_at(3);
+    assert!(f.before_input("deleteHardLineForward"));
+    assert_eq!(f.text(), slice(TEXT, caret, caret + 3));
+    f.teardown();
+}
+
+/// End from `caret` landed at `end`: the wrap point `next`, drawn on the
+/// caret's own line. The model has no caret affinity, so a caret AT the wrap
+/// point draws wherever the browser draws a collapsed range there — at the end
+/// of the line before, after a hanging space and inside a broken word alike.
+fn assert_end_on_the_line(f: &Fixture, caret: u32, end: u32, next: u32) {
+    assert_eq!(end, next, "End lands at the wrap point");
+    let caret_top = f.char_rect(caret).top();
+    let end_rect = f.handle.caret_rect(f.handle.selection().head()).unwrap();
+    assert!(
+        (end_rect.y as f64 - caret_top).abs() < 12.0,
+        "End's caret is drawn on the caret's own line: {} vs {caret_top}",
+        end_rect.y
+    );
+}
+
+/// Home and End go to the visual line's edges, as on desktop; Shift extends.
+#[wasm_bindgen_test]
+fn home_and_end_go_to_the_visual_line_edges() {
+    let (f, start, caret, next) = middle_line(TEXT, "");
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), start);
+    assert!(f.handle.selection().is_empty());
+
+    f.caret_at(caret);
+    assert!(f.key("End", false));
+    let end = f.head();
+    assert_end_on_the_line(&f, caret, end, next);
+
+    f.caret_at(caret);
+    assert!(f.key("Home", true));
+    assert_eq!(
+        f.handle.selection(),
+        Selection::text(Pos(caret as usize + 1), Pos(start as usize + 1)),
+        "Shift+Home extends from the caret"
+    );
+    f.caret_at(caret);
+    assert!(f.key("End", true));
+    assert_eq!(
+        f.handle.selection(),
+        Selection::text(Pos(caret as usize + 1), Pos(end as usize + 1)),
+        "Shift+End extends from the caret"
+    );
+    f.teardown();
+}
+
+/// Right-to-left Hebrew: the line's logical start is its right edge. A
+/// soft-line delete backward still takes the logical prefix of the current
+/// line, and forward its logical rest.
+#[wasm_bindgen_test]
+fn soft_line_deletes_in_an_rtl_paragraph() {
+    let (f, start, caret, next) = middle_line(HEBREW, "direction: rtl;");
+    assert!(
+        f.char_rect(start).right() > f.char_rect(caret).right(),
+        "positive control: the line runs right to left"
+    );
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.before_input("deleteSoftLineBackward"));
+    let n = count(HEBREW);
+    assert_eq!(
+        f.text(),
+        format!("{}{}", slice(HEBREW, 0, start), slice(HEBREW, caret, n))
+    );
+    f.teardown();
+
+    let (f, _, caret, next2) = middle_line(HEBREW, "direction: rtl;");
+    assert_eq!(next, next2);
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.before_input("deleteSoftLineForward"));
+    let got = f.text();
+    assert!(
+        got.starts_with(&slice(HEBREW, 0, caret)) && got.ends_with(&slice(HEBREW, next, n)),
+        "only the rest of line 2 goes: {got:?}"
+    );
+    assert!(
+        count(&got) >= n - (next - caret) && count(&got) < n,
+        "at most the rest of line 2 goes, and something does: {got:?}"
+    );
+    f.teardown();
+}
+
+/// LTR text in an RTL paragraph: the words still run left to right, so the
+/// logical line start is the LEFT edge. A rule keyed on `direction` alone would
+/// take the wrong side here.
+#[wasm_bindgen_test]
+fn soft_line_backward_for_ltr_text_in_an_rtl_paragraph() {
+    let (f, start, caret, _) = middle_line(TEXT, "direction: rtl;");
+    assert!(
+        f.char_rect(start).left() < f.char_rect(caret).left(),
+        "positive control: the words run left to right"
+    );
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.before_input("deleteSoftLineBackward"));
+    assert_eq!(
+        f.text(),
+        format!(
+            "{}{}",
+            slice(TEXT, 0, start),
+            slice(TEXT, caret, count(TEXT))
+        )
+    );
+    f.teardown();
+}
+
+/// One unbroken word, broken by `overflow-wrap`: the wrap point sits between two
+/// letters, with no hanging space to end the line on. End still lands on the
+/// wrap point and still draws on the line it was pressed on — Chrome's own End.
+#[wasm_bindgen_test]
+fn end_inside_a_broken_word_stays_on_its_line() {
+    let (f, _, caret, next) = middle_line(LONG_WORD, "overflow-wrap: anywhere;");
+    let chrome = f.chrome_line_boundary(caret, true);
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.key("End", false));
+    let end = f.head();
+    assert_eq!(end, chrome, "End lands where Chrome's End does");
+    assert_end_on_the_line(&f, caret, end, next);
+    f.teardown();
+}
+
+const LONG_WORD: &str =
+    "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij";
+
+/// A paragraph with padding and a border: the probes go just inside its border
+/// box, into the padding, and still resolve to the line's edges.
+#[wasm_bindgen_test]
+fn a_padded_paragraph_finds_both_edges() {
+    remove_test_sheets();
+    let sheet = document().create_element("style").unwrap();
+    // Not `HOST_MARKER`: mounting sweeps those away.
+    sheet
+        .set_attribute("data-test-sheet-soft-line", "")
+        .unwrap();
+    sheet.set_text_content(Some(
+        "[data-test-host-soft-line] [data-pm-editor] p { padding: 0 60px; border: 0 solid; border-width: 0 7px; }",
+    ));
+    document().head().unwrap().append_child(&sheet).unwrap();
+    let (f, start, caret, next) = middle_line(TEXT, "width: 300px;");
+    let p = f.para();
+    assert!(
+        p.client_left() == 7,
+        "positive control: the padding and border apply"
+    );
+    f.focus();
+    f.caret_at(caret);
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), start);
+    f.caret_at(caret);
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), next);
+    f.teardown();
+    sheet.remove();
+}
+
+/// Which measured line (index into `starts`) the caret's rect falls on, by its
+/// vertical middle.
+fn caret_line(f: &Fixture, starts: &[u32]) -> Option<usize> {
+    let r = f.handle.caret_rect(f.handle.selection().head())?;
+    let y = r.y as f64 + r.height as f64 / 2.0;
+    starts.iter().position(|&s| {
+        let c = f.char_rect(s);
+        y >= c.top() && y <= c.bottom()
+    })
+}
+
+/// A long word broken by `overflow-wrap`: a GLYPH wrap, with no hanging space.
+/// The caret goes on line 2 of at least four. `(f, starts, caret)`.
+fn glyph_wrapped() -> (Fixture, Vec<u32>, u32) {
+    let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
+    let starts = f.line_starts();
+    assert!(
+        starts.len() >= 4,
+        "positive control: the word breaks over 4+ lines, {starts:?}"
+    );
+    f.focus();
+    let caret = starts[1] + 3;
+    f.caret_at(caret);
+    (f, starts, caret)
+}
+
+/// Caret affinity (#301, PR #1019): End on a glyph wrap lands AT the wrap point
+/// — the same model position as the next line's start — and draws at the end of
+/// the line it was pressed on (upstream). Home from there goes back to that
+/// line's start; a second End stays.
+#[wasm_bindgen_test]
+fn end_on_a_glyph_wrap_lands_at_the_wrap_upstream() {
+    let (f, starts, _) = glyph_wrapped();
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), starts[2], "End lands on the wrap point itself");
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(1),
+        "drawn on the line End was pressed on"
+    );
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), starts[2], "a second End stays");
+    assert_eq!(caret_line(&f, &starts), Some(1));
+    assert!(f.key("Home", false));
+    assert_eq!(
+        f.head(),
+        starts[1],
+        "End, Home comes back to the line's start"
+    );
+    assert_eq!(caret_line(&f, &starts), Some(1));
+    f.teardown();
+}
+
+/// Home on a glyph wrap: the line's start is the previous line's wrap point, and
+/// the caret draws at the start of the line Home was pressed on (downstream); a
+/// second Home stays, and End reaches the same line's end.
+#[wasm_bindgen_test]
+fn home_on_a_glyph_wrap_draws_on_its_own_line() {
+    let (f, starts, caret) = glyph_wrapped();
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), starts[1]);
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(1),
+        "drawn on the line Home was pressed on"
+    );
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), starts[1], "a second Home stays");
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), starts[2], "Home, End reaches the same line's end");
+    f.caret_at(caret);
+    assert!(f.key("Home", true));
+    assert!(f.key("End", true));
+    assert_eq!(
+        f.handle.selection(),
+        Selection::text(Pos(caret as usize + 1), Pos(starts[2] as usize + 1)),
+        "Shift+Home, Shift+End selects from the caret to the line's end"
+    );
+    f.teardown();
+}
+
+/// Typing after End on a glyph wrap inserts at the end of the upper line — at
+/// the wrap point, not one character short of it.
+#[wasm_bindgen_test]
+fn typing_after_end_on_a_glyph_wrap_appends_to_the_upper_line() {
+    let (f, starts, _) = glyph_wrapped();
+    assert!(f.key("End", false));
+    assert!(f.before_input_text("X"));
+    let n = count(LONG_WORD);
+    assert_eq!(
+        f.text(),
+        format!(
+            "{}X{}",
+            slice(LONG_WORD, 0, starts[2]),
+            slice(LONG_WORD, starts[2], n)
+        )
+    );
+    f.teardown();
+}
+
+/// The hint belongs to the selection it was set with: any other selection write
+/// clears it — here an app's `set_selection` of the very same caret, which draws
+/// downstream, at the start of the next line.
+#[wasm_bindgen_test]
+fn an_app_set_selection_clears_the_hint() {
+    let (f, starts, _) = glyph_wrapped();
+    assert!(f.key("End", false));
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(1),
+        "control: End draws upstream"
+    );
+    f.handle
+        .set_selection(Selection::cursor(Pos(starts[2] as usize + 1)));
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(2),
+        "the plain caret draws downstream"
+    );
+    f.teardown();
+}
+
+/// A click past the end of a wrapped line lands on its wrap point and draws on
+/// the clicked line (upstream); a click on the next line's first character lands
+/// on the same position and draws there (downstream).
+#[wasm_bindgen_test]
+fn a_click_past_a_wrapped_lines_end_draws_on_the_clicked_line() {
+    let f = Fixture::mounted(TEXT, "");
+    let starts = f.line_starts();
+    assert!(starts.len() >= 4, "{starts:?}");
+    f.focus();
+    // Line 2 (index 1) ends in a hanging space: click right of its last glyph,
+    // inside the paragraph.
+    let last = f.char_rect(starts[2] - 2);
+    let p = f.para().get_bounding_client_rect();
+    let x = ((last.right() + p.right()) / 2.0) as f32;
+    let y = (last.top() + last.height() / 2.0) as f32;
+    assert!(
+        x as f64 > last.right() + 2.0,
+        "positive control: the line is ragged, so there is room past its end"
+    );
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    assert_eq!(f.head(), starts[2], "the click lands on the wrap point");
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(1),
+        "and draws on the clicked line"
+    );
+    let c = f.char_rect(starts[2]);
+    let (x, y) = ((c.left() + 1.0) as f32, (c.top() + c.height() / 2.0) as f32);
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    assert_eq!(f.head(), starts[2]);
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(2),
+        "a click at the next line's start draws there"
+    );
+    f.teardown();
+}
+
+/// A vertical move whose goal column lies past the target line's end lands on
+/// its wrap point and draws on the target line (upstream) — Chrome 153 native:
+/// End then ArrowDown lands on the next wrap point, ArrowUp back on this one.
+/// (From the second review of PR #1019.)
+#[wasm_bindgen_test]
+fn a_vertical_move_onto_a_wrap_point_draws_on_the_target_line() {
+    vertical_move_onto_a_wrap_point(None);
+}
+
+/// The same with a line box 1.75 caret heights tall — measured on this host's
+/// face, so it holds on any — which puts the point a vertical move probes on
+/// the target line (1.5 caret heights below the caret's top) in that line's
+/// leading, ABOVE its glyphs and outside both of the wrap point's caret rects:
+/// which side of the wrap the hit belongs to must be decided by nearness, not
+/// containment. With the editor's own 1.65 line height it depended on the
+/// font: CI's face (a 17px caret in a 26.4px line) put the probe 0.9px above
+/// the caret rect and drew the caret a line low, where this host's did not.
+#[wasm_bindgen_test]
+fn a_vertical_move_onto_a_wrap_point_with_leading_above_the_glyphs() {
+    let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
+    let caret = f.handle.caret_rect(Pos(2)).expect("a caret").height;
+    f.teardown();
+    assert!(caret > 8.0, "positive control: a caret height, {caret}");
+    vertical_move_onto_a_wrap_point(Some(&format!("line-height: {}px", caret * 1.75)));
+}
+
+fn vertical_move_onto_a_wrap_point(p_style: Option<&str>) {
+    remove_test_sheets();
+    let sheet = p_style.map(|decl| {
+        let sheet = document().create_element("style").unwrap();
+        // Not `HOST_MARKER`: mounting sweeps those away.
+        sheet
+            .set_attribute("data-test-sheet-soft-line", "")
+            .unwrap();
+        sheet.set_text_content(Some(&format!(
+            "[data-test-host-soft-line] [data-pm-editor] p {{ {decl} }}"
+        )));
+        document().head().unwrap().append_child(&sheet).unwrap();
+        sheet
+    });
+    let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
+    let starts = f.line_starts();
+    assert!(starts.len() >= 5, "{starts:?}");
+    f.focus();
+    f.caret_at(starts[1] + 3);
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), starts[2]);
+    let before = f.handle.caret_rect(f.handle.selection().head());
+    assert!(f.key("ArrowDown", false));
+    assert_eq!(f.head(), starts[3], "down onto line 3's wrap point");
+    let geometry = || {
+        let s3 = Pos(starts[3] as usize + 1);
+        let r = |a| f.handle.caret_rect_with_affinity(s3, a);
+        format!(
+            "starts {starts:?}; End caret {before:?}; affinity {:?}; at the wrap: up {:?} \
+             down {:?}; char before ({}, {}, {}), char after ({}, {}, {})",
+            f.handle.caret_affinity(),
+            r(rinch_web::CaretAffinity::Upstream),
+            r(rinch_web::CaretAffinity::Downstream),
+            f.char_rect(starts[3] - 1).left(),
+            f.char_rect(starts[3] - 1).top(),
+            f.char_rect(starts[3] - 1).right(),
+            f.char_rect(starts[3]).left(),
+            f.char_rect(starts[3]).top(),
+            f.char_rect(starts[3]).right(),
+        )
+    };
+    assert_eq!(
+        caret_line(&f, &starts),
+        Some(2),
+        "drawn on line 3, not 4: {}",
+        geometry()
+    );
+    assert!(f.key("ArrowUp", false));
+    assert_eq!(f.head(), starts[2]);
+    assert_eq!(caret_line(&f, &starts), Some(1), "back up, drawn on line 2");
+    f.teardown();
+    if let Some(sheet) = sheet {
+        sheet.remove();
+    }
+}
+
+/// A downstream caret at a wrap point in a right-to-left paragraph is drawn at
+/// the start edge of the lower line — its RIGHT edge.
+#[wasm_bindgen_test]
+fn a_downstream_caret_at_an_rtl_wrap_draws_at_the_right_edge() {
+    let f = Fixture::mounted(HEBREW, "direction: rtl;");
+    let starts = f.line_starts();
+    assert!(starts.len() >= 3, "{starts:?}");
+    f.focus();
+    f.caret_at(starts[1]);
+    let r = f
+        .handle
+        .caret_rect(f.handle.selection().head())
+        .expect("a caret");
+    let c = f.char_rect(starts[1]);
+    assert!(
+        (r.x as f64 - c.right()).abs() <= 1.0,
+        "caret x {} at the right edge {} of the line's first char (left {})",
+        r.x,
+        c.right(),
+        c.left()
+    );
+    assert_eq!(caret_line(&f, &starts), Some(1));
+    f.teardown();
+}
+
+/// A press on the right half of the last letter of a glyph-wrapped line lands
+/// after it — on the wrap point, drawn on that line.
+#[wasm_bindgen_test]
+fn a_press_on_the_right_half_of_a_glyph_wraps_last_letter_lands_after_it() {
+    let f = Fixture::mounted(LONG_WORD, "overflow-wrap: anywhere;");
+    let starts = f.line_starts();
+    assert!(starts.len() >= 4, "{starts:?}");
+    f.focus();
+    let last = f.char_rect(starts[2] - 1);
+    let x = (last.left() + last.width() * 0.6) as f32;
+    let y = (last.top() + last.height() / 2.0) as f32;
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    assert_eq!(f.head(), starts[2], "after the last letter, not before it");
+    assert_eq!(caret_line(&f, &starts), Some(1));
+    f.teardown();
+}
+
+/// A caret right before a hard break (`<br>`) is drawn at the end of its own
+/// line — where Chrome draws the DOM point at the end of that text — and the
+/// caret right after it at the start of the next. The view gives a hard break no
+/// bytes, so both positions share one byte offset; the downstream draw used to
+/// step past the `<br>` and put the first on the next line too (PR #1019's third
+/// review).
+#[wasm_bindgen_test]
+fn a_caret_before_a_hard_break_draws_on_its_own_line() {
+    let f = Fixture::mounted("alpha bravo<br>charlie delta", "width: 400px;");
+    f.focus();
+    let text = f.para().first_child().unwrap();
+    assert_eq!(
+        text.text_content().unwrap(),
+        "alpha bravo",
+        "positive control"
+    );
+    let range = document().create_range().unwrap();
+    range.set_start(&text, 11).unwrap();
+    range.set_end(&text, 11).unwrap();
+    let chrome = range.get_bounding_client_rect();
+    // "alpha bravo" is 1..12; the break 12..13; "charlie" from 13.
+    for (what, set) in [("caret_rect", false), ("the caret itself", true)] {
+        if set {
+            f.handle.set_selection(Selection::cursor(Pos(12)));
+        }
+        let r = f.handle.caret_rect(Pos(12)).expect("a rect");
+        assert!(
+            (r.y as f64 - chrome.y()).abs() < 1.0 && (r.x as f64 - chrome.x()).abs() < 1.0,
+            "{what}: before the break at ({}, {}), Chrome ({}, {})",
+            r.x,
+            r.y,
+            chrome.x(),
+            chrome.y()
+        );
+    }
+    let after = f.handle.caret_rect(Pos(13)).expect("a rect");
+    let c = f.char_rect_in(f.para().last_child().unwrap(), 0);
+    assert!(
+        (after.y as f64 - c.top()).abs() < 1.0 && (after.x as f64 - c.left()).abs() < 1.0,
+        "after the break: ({}, {}) vs the next line's first char ({}, {})",
+        after.x,
+        after.y,
+        c.left(),
+        c.top()
+    );
+    f.teardown();
+}
+
+/// The affinity-blind caret query answers DOWNSTREAM at a soft wrap on the web,
+/// as on desktop: the start of the lower line, not the collapsed range Chrome
+/// draws at the upper line's end (`NodeHandle::query_caret_position`, the
+/// public door to `DomDocument::query_caret_position`).
+#[wasm_bindgen_test]
+fn the_blind_caret_query_answers_downstream_at_a_wrap() {
+    let slot: std::rc::Rc<std::cell::RefCell<Option<rinch_core::dom::NodeHandle>>> =
+        Default::default();
+    let f = Fixture::mounted_capturing(LONG_WORD, "overflow-wrap: anywhere;", slot.clone());
+    let starts = f.line_starts();
+    assert!(starts.len() >= 3, "{starts:?}");
+    let block = f.handle.caret_address(Pos(1)).unwrap().0;
+    let container = slot.borrow().clone().expect("the container");
+    let para = container
+        .children()
+        .into_iter()
+        .find(|c| c.node_id().0 == block)
+        .expect("the paragraph's handle");
+    let byte = starts[1] as usize; // ASCII: bytes are chars
+    let next = f.char_rect(starts[1]);
+    let p = f.para().get_bounding_client_rect();
+    let (lx, ly) = para.query_caret_position(byte).expect("a position");
+    assert!(
+        (ly as f64 - (next.top() - p.top())).abs() < 1.0
+            && (lx as f64 - (next.left() - p.left())).abs() < 1.0,
+        "at the wrap ({lx}, {ly}) vs the lower line's start ({}, {})",
+        next.left() - p.left(),
+        next.top() - p.top()
+    );
+    f.teardown();
+}
