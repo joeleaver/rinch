@@ -968,4 +968,133 @@ mod tests {
         assert_eq!(moves.get(), 2);
         Drag::cancel();
     }
+
+    // ── a new drag ends the live one through on_cancel (issue #293) ─────────
+
+    /// Document B arming a drag while document A's is live ends A's drag
+    /// through `on_cancel` — it is not dropped with its teardown unrun.
+    ///
+    /// One pointer, one drag: B's press means A's release was missed (the
+    /// pointer is grabbed to A's window while its button is held), so this is
+    /// the #189 ending — no trustworthy commit position, `on_cancel` with the
+    /// last position A actually delivered.
+    #[test]
+    fn a_drag_armed_in_another_document_cancels_the_live_one() {
+        use crate::context::push_dispatching_doc;
+
+        let a_cancel: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+        let a_end = Rc::new(Cell::new(false));
+        let b_end: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+
+        {
+            let _a = push_dispatching_doc(1);
+            let c = a_cancel.clone();
+            let e = a_end.clone();
+            Drag::absolute()
+                .on_cancel(move |x, y| c.set(Some((x, y))))
+                .on_end(move |_, _| e.set(true))
+                .start();
+            update_drag(13.0, 17.0);
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            let e = b_end.clone();
+            Drag::absolute()
+                .on_end(move |x, y| e.set(Some((x, y))))
+                .start();
+        }
+
+        assert_eq!(
+            a_cancel.get(),
+            Some((13.0, 17.0)),
+            "A's teardown ran, at the last position A delivered"
+        );
+        {
+            let _a = push_dispatching_doc(1);
+            assert!(!Drag::is_active(), "A no longer has a drag");
+            finish_drag(50.0, 50.0);
+        }
+        assert!(!a_end.get(), "and a superseded drag never commits");
+        {
+            let _b = push_dispatching_doc(2);
+            assert!(Drag::is_active(), "B's drag is the live one");
+            finish_drag(7.0, 9.0);
+        }
+        assert_eq!(b_end.get(), Some((7.0, 9.0)));
+    }
+
+    /// The same rule inside one document: a second press arming a drag while
+    /// one is live (its `MouseUp` was swallowed, #189) cancels the first.
+    #[test]
+    fn a_second_drag_in_the_same_document_cancels_the_first() {
+        let cancels = Rc::new(Cell::new(0));
+        let c = cancels.clone();
+        Drag::absolute()
+            .on_cancel(move |_, _| c.set(c.get() + 1))
+            .start();
+        update_drag(3.0, 4.0);
+        Drag::absolute().start();
+        assert_eq!(cancels.get(), 1, "the superseded drag's on_cancel ran once");
+        assert!(Drag::is_active(), "and the new drag is armed");
+        Drag::cancel();
+        assert_eq!(cancels.get(), 1, "the new drag's end is not the old one's");
+    }
+
+    /// A superseded drag whose arming scope is gone is dropped silently, as
+    /// everywhere else: its `on_cancel` would read freed signals.
+    #[test]
+    fn superseding_an_abandoned_drag_does_not_run_its_cancel() {
+        use crate::reactive::{Scope, Signal};
+
+        let cancels = Rc::new(Cell::new(0));
+        let scope = Scope::new();
+        let c = cancels.clone();
+        scope.run(|| {
+            let owned = Signal::new(0);
+            Drag::absolute()
+                .on_cancel(move |_, _| {
+                    let _ = owned.get();
+                    c.set(c.get() + 1);
+                })
+                .start();
+        });
+        scope.dispose();
+
+        Drag::absolute().start();
+        assert_eq!(cancels.get(), 0);
+        Drag::cancel();
+    }
+
+    /// `on_cancel` runs with the slot empty and may arm a drag of its own;
+    /// the start that superseded it still wins, and the drag the callback
+    /// armed is itself ended through its `on_cancel`, not dropped.
+    #[test]
+    fn a_superseded_drags_cancel_may_re_enter_start() {
+        let inner_cancels = Rc::new(Cell::new(0));
+        let saw_inactive = Rc::new(Cell::new(false));
+        let ic = inner_cancels.clone();
+        let saw = saw_inactive.clone();
+        Drag::absolute()
+            .on_cancel(move |_, _| {
+                saw.set(!Drag::is_active());
+                let ic = ic.clone();
+                Drag::absolute()
+                    .on_cancel(move |_, _| ic.set(ic.get() + 1))
+                    .start();
+            })
+            .start();
+
+        let outer_end = Rc::new(Cell::new(false));
+        let oe = outer_end.clone();
+        Drag::absolute().on_end(move |_, _| oe.set(true)).start();
+
+        assert!(saw_inactive.get(), "on_cancel ran with no drag active");
+        assert_eq!(
+            inner_cancels.get(),
+            1,
+            "the re-armed drag was cancelled too"
+        );
+        finish_drag(0.0, 0.0);
+        assert!(outer_end.get(), "the superseding drag is the live one");
+    }
 }
