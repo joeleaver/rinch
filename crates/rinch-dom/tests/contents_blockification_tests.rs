@@ -104,14 +104,28 @@ fn two_contents_wrappers_deep_is_still_blockified() {
 /// `display: contents` either way and inherits nothing that moved), so this is
 /// the case where the wrapper must pass its parent's restyle on to its
 /// children — its own `child_cascade` says none.
+///
+/// The flip is a **class** change against a stylesheet rule. An inline
+/// `set_style` would not test that: a `style` attribute write restyles the
+/// element's whole subtree by itself, wrapper or no wrapper.
 #[test]
 fn the_container_leaving_flex_unblockifies_the_wrapped_child() {
-    let (mut doc, container, _, span) = wrapped_span("display: flex");
+    let mut doc = RinchDocument::new();
+    doc.load_css(".f { display: flex; }");
+    let body = doc.body();
+    let container = el(&mut doc, body, "div", "");
+    doc.set_attribute(container, "class", "f");
+    let wrapper = el(&mut doc, container, "div", "display: contents");
+    let span = el(&mut doc, wrapper, "span", "");
+    let t = doc.create_text("item");
+    doc.append_child(span, t);
+    doc.resolve_layout(VW, VH);
     assert_eq!(display(&doc, span), DisplayValue::Block);
-    doc.set_style(container, "display", "block");
+    doc.set_attribute(container, "class", "");
     doc.resolve_layout(VW + 1.0, VH);
+    assert_eq!(display(&doc, container), DisplayValue::Block);
     assert_eq!(display(&doc, span), DisplayValue::Inline);
-    doc.set_style(container, "display", "flex");
+    doc.set_attribute(container, "class", "f");
     doc.resolve_layout(VW, VH);
     assert_eq!(display(&doc, span), DisplayValue::Block);
 }
@@ -149,6 +163,13 @@ fn a_child_inserted_behind_a_styled_wrapper_is_blockified() {
 /// is a child of that flex container's box, so it is a flex item and is
 /// blockified. Its layout parent is the wrapper's layout parent, not the
 /// wrapper.
+///
+/// **What this pins today is the element-cascade route, not
+/// `resolve_pseudo_element`'s.** The generated `<span>` is walked and
+/// re-cascaded as a plain child of the wrapper right after it is created, which
+/// replaces the style the pseudo cascade gave it (a pre-existing defect, filed
+/// separately — it also drops a `::before`'s own `color`). So the pseudo
+/// cascade's layout parent is not observable here until that is fixed.
 #[test]
 fn a_contents_elements_before_in_a_flex_container_is_blockified() {
     let mut doc = RinchDocument::new();
