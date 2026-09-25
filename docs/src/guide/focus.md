@@ -695,6 +695,31 @@ refused while the lock is held; the Linux in-app menu bar's own dropdown is the
 known instance, tracked in
 [issue #701](https://github.com/joeleaver/rinch/issues/701).
 
+## Undo and redo in a text field
+
+A focused `<input>` or `<textarea>` undoes with **Ctrl+Z** and redoes with
+**Ctrl+Shift+Z** or **Ctrl+Y** (`Cmd` on macOS) on desktop, as a browser field
+does on the web (issue #288).
+
+- **`oninput` fires with the restored text**, exactly as for a keystroke, so a
+  controlled field's signal follows the undo. The eventual `onchange` compares
+  what the field shows at the commit with what it showed when focus arrived, so
+  undoing back to the starting text commits nothing.
+- **A `readonly` field refuses both**, like every other text-changing command,
+  and a field that goes `disabled` while focused releases the keyboard instead.
+- **One key press is one undo step.** Each typed character is its own step —
+  desktop does not merge a run of typing into one the way a browser does.
+  Typing over a selection is one step (the selected text comes back whole), and
+  so is a programmatic write the field adopted (a `value_fn` or any other
+  `value` write, issue #238).
+- **A keystroke and the rewrite its own `oninput` made are one step.** A
+  normalizing field — upper-casing, stripping non-digits — therefore undoes to
+  the text before the keystroke, never to the raw text the handler is about to
+  rewrite again. On the web, undo is the browser's own and follows the
+  browser's rules for a value that script set.
+- The built-in right-click menu (below) has **no Undo row**; the chords are the
+  way in.
+
 ## Right-clicking a text field
 
 A right press on a text target — an `<input>` of a text-like type (`text`,
