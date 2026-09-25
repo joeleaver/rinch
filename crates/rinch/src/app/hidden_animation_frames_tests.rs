@@ -25,29 +25,30 @@
 //! the_app_go_idle` is its pin.
 //!
 //! A **`visibility: hidden`** panel *is* being rendered — it keeps its box, it
-//! transitions, it is merely not painted — so its `Loader` goes on animating and
-//! goes on asking for frames. That is browser-correct (measured in Chrome) and
-//! it is the same answer the transition rule beside it gives, but it is not
-//! free, and since **#751** it is reachable through a shipped component: the
-//! closed `Drawer`'s root is `visibility: hidden` now, precisely so its panel
-//! can transition. Measured here, software backend, 804x600, 20 idle frames:
+//! transitions, it is merely not painted — so its `Loader`'s animation stays
+//! registered, and runs unless something pauses it. That is browser-correct
+//! (measured in Chrome) and it is the same answer the transition rule beside it
+//! gives, but running it is not free, and since **#751** it is reachable through
+//! a shipped component: the closed `Drawer`'s root is `visibility: hidden` now,
+//! precisely so its panel can transition. Measured here before #912, software
+//! backend, 804x600, 20 idle frames:
 //!
 //! | closed-state spelling | `active_animations` | idle frames asking to redraw | ms per tick+paint |
 //! |---|---|---|---|
 //! | `display: none` | 0 | 0 / 20 | 0.001 |
-//! | `visibility: hidden` (the `Drawer` today) | 1 | 20 / 20 | 2.53 |
+//! | `visibility: hidden`, running (the `Drawer` before #912) | 1 | 20 / 20 | 2.53 |
+//! | `visibility: hidden`, paused (the `Drawer` since #912) | 1 | 0 / 20 | — |
 //! | open drawer, either spelling | 1 | 20 / 20 | 8.8 – 9.7 |
 //!
-//! That cost is **accepted, not overlooked**. Refusing an animation to a
-//! `visibility: hidden` box would put desktop at odds with both the browser and
-//! the transition rule next to it, for one component's benefit. The cure belongs
-//! to the component — `animation-play-state: paused` on a closed overlay's
-//! subtree — and since **#763** it works: a paused animation asks for no frames.
-//! `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it`
-//! applies it from the app. `Drawer`'s own closed rule does not declare it yet;
-//! when it does,
-//! `a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered`
-//! becomes the fixture that has to change.
+//! Refusing an animation to a `visibility: hidden` box would put desktop at odds
+//! with both the browser and the transition rule next to it, for one
+//! component's benefit. The cure belongs to the component —
+//! `animation-play-state: paused` on a closed overlay's subtree — which works
+//! since **#763** (a paused animation asks for no frames) and which the
+//! component library declares since **#912**: the closed `Drawer`, a closed
+//! `Popover`'s dropdown and an unhovered `HoverCard`'s dropdown pause every
+//! animation beneath them. The fixtures in the second half of this file pin
+//! each, with the shipped stylesheet and nothing else.
 //!
 //! # Mutants, and what kills each
 //!
@@ -60,7 +61,10 @@
 //! | the gate never refuses (i.e. `main`) | `a_loader_in_a_display_none_panel_lets_the_app_go_idle` and `opening_a_display_none_panel_starts_the_loader_spinning` |
 //! | the gate reads the node's **own** display only | the same two — the `Loader` is not the hidden node, the panel two levels above its oval is |
 //! | the gate checks the **immediate parent** instead of walking | the same two, for the same reason, and they are two of the three fixtures in the whole scope that kill it |
-//! | `visibility: hidden` folded into "not rendered" | `a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered` and `opening_the_drawer_does_not_restart_a_loader_that_never_stopped` |
+//! | `visibility: hidden` folded into "not rendered" | `a_loader_in_a_closed_drawer_is_paused_and_lets_the_app_idle` and the popover / hover-card fixtures (their "registered" preconditions) |
+//! | #912's closed rules removed (`.rinch-drawer__root--hidden *` etc. → a selector that matches nothing) | `a_loader_in_a_closed_drawer_is_paused_and_lets_the_app_idle`, `an_app_declared_animation_in_a_closed_drawer_is_paused_too`, `a_loader_in_a_closed_popover_is_paused_until_it_opens`, `a_loader_in_an_unhovered_hover_card_is_paused_until_hovered` (each its own overlay) |
+//! | a closed rule that pauses **always** (its `--hidden` / `:not(…)` dropped) | `opening_the_drawer_resumes_its_loader`, `a_loader_in_an_open_drawer_keeps_asking_for_frames`, and the popover / hover-card fixtures' reopen halves |
+//! | the drawer rule without `!important` | `an_app_declared_animation_in_a_closed_drawer_is_paused_too`, alone — the shipped `.rinch-loader__oval` ties on specificity and is declared *before* the drawer sheet, so the `Loader` fixtures pass without it |
 //!
 //! `a_loader_in_an_open_drawer_keeps_asking_for_frames` kills none of them, by
 //! design: it is the positive control every zero above rests on, and it passes
@@ -69,7 +73,9 @@
 // `rsx!` writes absolute `rinch::` paths, and this *is* the rinch crate.
 use super::*;
 use crate as rinch;
-use rinch_components::{Drawer, Loader};
+use rinch_components::{
+    Drawer, HoverCard, HoverCardDropdown, HoverCardTarget, Loader, Popover, PopoverDropdown,
+};
 use rinch_core::{Component, Signal};
 use rinch_macros::rsx;
 
@@ -118,17 +124,34 @@ fn animations(app: &RinchApp, node: usize) -> usize {
         .unwrap_or(0)
 }
 
-/// The wall-clock ms the node's one animation was started at.
-fn start_time(app: &RinchApp, node: usize) -> f64 {
+/// Whether the node's one animation is paused.
+fn is_paused(app: &RinchApp, node: usize) -> bool {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let running = d
         .tree
         .active_animations
         .get(&node)
-        .expect("no animation is running on this node");
+        .expect("no animation is registered on this node");
     assert_eq!(running.len(), 1, "this helper assumes exactly one");
-    running[0].start_time_ms
+    running[0].play_state == rinch_dom::animation::AnimationPlayState::Paused
+}
+
+/// A node's box origin in window coordinates: its parent-relative `layout`
+/// summed up the parent chain (nothing in these fixtures is scrolled or
+/// transformed).
+fn window_origin(app: &RinchApp, node: usize) -> (f32, f32) {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let (mut x, mut y) = (0.0, 0.0);
+    let mut at = Some(node);
+    while let Some(id) = at {
+        let n = d.tree.get(id).unwrap();
+        x += n.layout.x;
+        y += n.layout.y;
+        at = n.parent;
+    }
+    (x, y)
 }
 
 /// How many `animation` declarations the cascade found on the node. Zero would
@@ -345,25 +368,20 @@ fn a_loader_in_an_open_drawer_keeps_asking_for_frames() {
     );
 }
 
-/// A `Loader` in a **closed** `Drawer` keeps animating, and keeps the app
-/// awake. **This asserts a cost, deliberately.**
+/// A `Loader` in a **closed** `Drawer` is still registered — the drawer is
+/// rendered — but it is **paused**, so the app idles (#912).
 ///
 /// Since #751 the closed drawer's root is `visibility: hidden` rather than
 /// `display: none`, so that its panel can transition. Such a box is being
 /// rendered — it keeps its box, it is merely not painted — so #747's rule leaves
 /// its animations alone, which is what a browser does and what the transition
-/// rule beside it already said.
-///
-/// The consequence is the module doc's table: a closed drawer holding a
-/// `Loader` asks for a redraw on every idle frame, forever, because an
-/// `animation: … infinite` has no duration to expire. That is accepted rather
-/// than fixed here; the cure is `animation-play-state: paused` on the closed
-/// rule, which works since **#763** (an app can add it today — see
-/// `paused_animation_frames_tests`). **When `Drawer` takes that declaration
-/// itself, this fixture is the one that has to change** — and it should change
-/// to assert the idle, not be deleted.
+/// rule beside it already said. Left there, an `animation: … infinite` has no
+/// duration to expire and the app asked for a redraw on every idle frame,
+/// forever. The drawer's closed rule now declares
+/// `animation-play-state: paused` over its whole subtree, and a paused animation
+/// asks for no frames (#763).
 #[test]
-fn a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered() {
+fn a_loader_in_a_closed_drawer_is_paused_and_lets_the_app_idle() {
     let (mut app, _opened) = mount_loader_in_drawer(false);
     let oval = node_with_class(&app, OVAL);
 
@@ -380,40 +398,204 @@ fn a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered() 
     assert_eq!(
         animations(&app, oval),
         1,
-        "a `visibility: hidden` ancestor does not stop an animation, in rinch \
+        "a `visibility: hidden` ancestor does not drop an animation, in rinch \
          or in a browser"
+    );
+    assert!(
+        is_paused(&app, oval),
+        "but the drawer's closed rule pauses it"
     );
     assert_eq!(
         idle_frames_requesting_redraw(&mut app, 4),
-        4,
-        "so the app does not idle while a closed drawer holds a `Loader` — an \
-         accepted cost, curable by `animation-play-state: paused` since #763"
+        0,
+        "so a closed drawer holding a `Loader` lets the app sleep"
     );
 }
 
-/// Opening the drawer does **not** restart its `Loader`.
+/// Opening the drawer **resumes** its `Loader`: the same animation, running
+/// again, with the frame clock back on.
 ///
-/// The counterpart of the fixture above, and the half that is easy to get wrong
-/// in the other direction: the oval was rendered the whole time, so nothing
-/// dropped its animation and nothing may mint it a new one. A browser does not
-/// restart an animation because an ancestor's `visibility` changed, and neither
-/// does rinch — the start time is the one it has had since the first cascade.
+/// The half that is easy to get wrong in the other direction: the oval was
+/// rendered the whole time, so nothing dropped its animation and nothing may
+/// mint it a new one — it only changes play state.
+/// `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused`
+/// checks, off the fixed point, that the resumed spinner keeps the time it had
+/// already spent rather than restarting from zero.
 #[test]
-fn opening_the_drawer_does_not_restart_a_loader_that_never_stopped() {
+fn opening_the_drawer_resumes_its_loader() {
     let (mut app, opened) = mount_loader_in_drawer(false);
     let oval = node_with_class(&app, OVAL);
-    let before = start_time(&app, oval);
-
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(is_paused(&app, oval), "precondition: closed and paused");
 
     opened.set(true);
     app.resolve_and_repaint(SETTLED.0, SETTLED.1);
 
     assert_eq!(animations(&app, oval), 1, "still exactly one");
+    assert!(!is_paused(&app, oval), "running again");
     assert_eq!(
-        start_time(&app, oval),
-        before,
-        "and it is the same one: the oval never stopped being rendered, so \
-         there was nothing to restart"
+        idle_frames_requesting_redraw(&mut app, 4),
+        4,
+        "and the frame clock is running again"
     );
+}
+
+/// Every registered animation in the document, as `(total, paused)`.
+fn registered(app: &RinchApp) -> (usize, usize) {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let all: Vec<_> = d.tree.active_animations.values().flatten().collect();
+    let paused = all
+        .iter()
+        .filter(|a| a.play_state == rinch_dom::animation::AnimationPlayState::Paused)
+        .count();
+    (all.len(), paused)
+}
+
+/// Content that is not a `Loader`, inside a `Drawer`, with an extra app
+/// stylesheet loaded after the component one.
+fn mount_in_drawer(
+    opened_at_start: bool,
+    app_css: &'static str,
+    content: fn(&mut RenderScope) -> NodeHandle,
+) -> (RinchApp, Signal<bool>) {
+    let opened = Signal::new(opened_at_start);
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let inner = content(scope);
+        let drawer = Drawer {
+            opened_fn: Some(std::rc::Rc::new(move || opened.get())),
+            position: "left".to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[inner]);
+        root.append_child(&drawer);
+        root
+    });
+    app.mount_component(MOUNT.0, MOUNT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(&format!(
+            "{}\n{app_css}",
+            rinch_components::generate_component_css()
+        ));
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(MOUNT.0, MOUNT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        doc.borrow_mut().resolve_layout(SETTLED.0, SETTLED.1);
+    }
+    (app, opened)
+}
+
+/// An animation the **app** declares, in a stylesheet loaded after the
+/// component one. Its `animation` shorthand resets the play state and ties the
+/// closed rule's `*` on specificity, so it is the declaration order that would
+/// decide — and the app's comes last. The closed rule is `!important` so that
+/// it still wins.
+#[test]
+fn an_app_declared_animation_in_a_closed_drawer_is_paused_too() {
+    fn spinner(scope: &mut RenderScope) -> NodeHandle {
+        let el = scope.create_element("div");
+        el.set_attribute("class", "spin-912");
+        el
+    }
+    let (mut app, opened) = mount_in_drawer(
+        false,
+        "@keyframes spin-912 { to { transform: rotate(360deg); } }
+         .spin-912 { width: 20px; height: 20px; animation: spin-912 1s linear infinite; }",
+        spinner,
+    );
+    assert_eq!(
+        registered(&app),
+        (1, 1),
+        "the app's animation is registered, and paused by the closed rule"
+    );
+    assert_eq!(
+        idle_frames_requesting_redraw(&mut app, 4),
+        0,
+        "so the app idles"
+    );
+
+    opened.set(true);
+    app.resolve_and_repaint(SETTLED.0, SETTLED.1);
+    assert_eq!(registered(&app), (1, 0), "opening resumes it");
+}
+
+// ── The other overlays that close with `visibility: hidden` ─────────────────
+
+/// A `Loader` in a **closed** `Popover`'s dropdown: the dropdown is
+/// `visibility: hidden`, rendered, and — since #912 — paused. Opening the
+/// popover resumes it.
+#[test]
+fn a_loader_in_a_closed_popover_is_paused_until_it_opens() {
+    let opened = Signal::new(false);
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let loader = Loader::default().render(scope, &[]);
+        let dropdown = PopoverDropdown.render(scope, &[loader]);
+        let popover = Popover {
+            opened_fn: Some(std::rc::Rc::new(move || opened.get())),
+            ..Default::default()
+        }
+        .render(scope, &[dropdown]);
+        root.append_child(&popover);
+        root
+    });
+    app.mount_component(MOUNT.0, MOUNT.1);
+    settle(&mut app);
+    let oval = node_with_class(&app, OVAL);
+
+    assert_eq!(animations(&app, oval), 1, "precondition: registered");
+    assert!(is_paused(&app, oval), "a closed popover pauses its content");
+    assert_eq!(idle_frames_requesting_redraw(&mut app, 4), 0, "and idles");
+
+    opened.set(true);
+    app.resolve_and_repaint(SETTLED.0, SETTLED.1);
+    assert!(!is_paused(&app, oval), "opening resumes it");
+    // The dropdown's 150ms opacity fade asks for frames of its own; the
+    // spinner goes on asking after it has finished.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    idle_frames_requesting_redraw(&mut app, 2);
+    assert_eq!(
+        idle_frames_requesting_redraw(&mut app, 4),
+        4,
+        "and the clock runs while it is on screen"
+    );
+}
+
+/// A `Loader` in a `HoverCard`'s dropdown: hidden until the card is hovered,
+/// which is the card's resting state — so without the pause an app holding one
+/// never slept. Hovering the card resumes it.
+#[test]
+fn a_loader_in_an_unhovered_hover_card_is_paused_until_hovered() {
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let label = scope.create_text("hover me");
+        let target = HoverCardTarget.render(scope, &[label]);
+        target.set_attribute("style", "width: 100px; height: 40px");
+        let loader = Loader::default().render(scope, &[]);
+        let dropdown = HoverCardDropdown.render(scope, &[loader]);
+        let card = HoverCard::default().render(scope, &[target, dropdown]);
+        root.append_child(&card);
+        root
+    });
+    app.mount_component(MOUNT.0, MOUNT.1);
+    settle(&mut app);
+    let oval = node_with_class(&app, OVAL);
+
+    assert_eq!(animations(&app, oval), 1, "precondition: registered");
+    assert!(
+        is_paused(&app, oval),
+        "an unhovered card pauses its content"
+    );
+    assert_eq!(idle_frames_requesting_redraw(&mut app, 4), 0, "and idles");
+
+    let target = node_with_class(&app, "rinch-hover-card__target");
+    let (x, y) = window_origin(&app, target);
+    let (x, y) = (x + 10.0, y + 10.0);
+    app.handle_event(PlatformEvent::MouseMove { x, y }, PHYSICAL, 1.0);
+    app.resolve_and_repaint(SETTLED.0, SETTLED.1);
+    assert!(!is_paused(&app, oval), "hovering the card resumes it");
 }

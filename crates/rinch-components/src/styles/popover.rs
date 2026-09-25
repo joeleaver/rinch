@@ -34,6 +34,18 @@ pub fn styles() -> String {
     visibility: visible;
 }
 
+/* Paused while closed (#912) — the closed dropdown is `visibility: hidden`,
+   which is rendered, so an animation inside it would run and keep the app
+   awake. The long note on `.rinch-drawer__root--hidden *` in `styles/drawer.rs`
+   has the reasoning, the `!important`, the `*`, and why no pseudo-elements.
+
+   The `:not()` is the exact complement of the rule above, so the pause lands on
+   precisely the dropdowns that rule leaves hidden. Resumes on open; in a
+   browser the dropdown's 150ms fade-out shows the spinner stopped. */
+.rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover__dropdown) * {
+    animation-play-state: paused !important;
+}
+
 /* Backdrop — the invisible overlay that catches outside clicks when
    close_on_click_outside is true (#474). Its level is derived from the same
    --rinch-popover-z-index as the dropdown so it stays exactly one under the

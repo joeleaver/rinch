@@ -47,6 +47,12 @@ list_bench!(resize_1px, setup_resize, op_resize);
 list_bench!(set_text_content, setup_set_text, op_set_text);
 
 #[library_benchmark]
+#[bench::list_500_closed(setup = setup_drawer_toggle)]
+fn drawer_toggle(f: DrawerFixture) -> DrawerFixture {
+    black_box(measure(black_box(f), op_drawer_toggle))
+}
+
+#[library_benchmark]
 #[bench::list_500(setup = setup_inset_move)]
 fn inset_move(f: InsetFixture) -> InsetFixture {
     black_box(measure(black_box(f), op_inset_move))
@@ -97,6 +103,7 @@ library_benchmark_group!(
         remove_row,
         resize_1px,
         set_text_content,
+        drawer_toggle,
         inset_move,
         full_paint
     ]

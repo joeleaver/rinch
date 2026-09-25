@@ -27,11 +27,11 @@
 //!
 //! | mutant | killed here by |
 //! |---|---|
-//! | `main`: a paused entry counts as running in `tick_animations` | `a_paused_animation_lets_the_app_go_idle`, `a_paused_animation_owes_the_android_loop_no_frame`, `resuming_a_paused_animation_restarts_the_frame_clock`, `a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it` |
+//! | `main`: a paused entry counts as running in `tick_animations` | `a_paused_animation_lets_the_app_go_idle`, `a_paused_animation_owes_the_android_loop_no_frame`, `resuming_a_paused_animation_restarts_the_frame_clock`, `a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused` |
 //! | `had_running` still reads `!active_animations.is_empty()` | `a_paused_animation_owes_the_android_loop_no_frame`, **alone in the whole scope** — the desktop redraw request never reads it |
 //! | the tick re-applies a paused sample and marks the node dirty | `a_paused_animation_lets_the_app_go_idle`, `a_paused_animation_owes_the_android_loop_no_frame`, `resuming_a_paused_animation_restarts_the_frame_clock` |
 //! | the text-measure pre-pass re-measures paused animations | `a_paused_animation_owes_the_android_loop_no_frame` |
-//! | resuming restarts the animation from t=0 | `a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it` |
+//! | resuming restarts the animation from t=0 | `a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused` |
 //! | a finished `forwards` animation is counted, dirtied, or counted by `has_running_animations` (#782) | `a_finished_forwards_animation_lets_the_app_go_idle` |
 //! | `has_running_animations` answers `false` for everything | **nothing here** — `android_frame_clock_tests::the_tick_that_finishes_an_animation_asks_to_be_presented` is its only killer, because a running animation's own tick answer asks for the frame on every tick but the one that finishes it |
 //!
@@ -273,17 +273,9 @@ fn resuming_a_paused_animation_restarts_the_frame_clock() {
 const SETTLED: (f32, f32) = (804.0, 600.0);
 const SETTLED_PHYSICAL: (u32, u32) = (804, 600);
 
-/// An app-level rule, not a component change: the closed `Drawer`'s root is
-/// `visibility: hidden` (#751), which is rendered, so a `Loader` inside it keeps
-/// animating. Pausing it is what makes the closed drawer cheap, and it only does
-/// anything now that a paused animation stops asking for frames.
-/// All three `Loader` variants animate their own elements (`__oval`, `__bar`,
-/// `__dot`), so the rule names all three; the fixture mounts the default oval.
-const PAUSE_WHEN_CLOSED: &str = ".rinch-drawer__root--hidden .rinch-loader__oval,
-     .rinch-drawer__root--hidden .rinch-loader__bar,
-     .rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }";
-
-/// A `Loader` inside a `Drawer`, with the app rule above, settled the way
+/// A `Loader` inside a `Drawer`, with the **shipped** component stylesheet and
+/// nothing else (#912: the drawer's closed rule pauses every animation under
+/// it — this file used to install that rule by hand), settled the way
 /// `hidden_animation_frames_tests::settle` settles: the component stylesheet
 /// has to be installed and the document re-cascaded against it. The viewport
 /// bump at the end used to be what *started* the animations (#762, fixed by
@@ -307,10 +299,7 @@ fn mount_loader_in_drawer() -> (RinchApp, Signal<bool>) {
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
-        d.load_css(&format!(
-            "{}\n{PAUSE_WHEN_CLOSED}",
-            rinch_components::generate_component_css()
-        ));
+        d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
@@ -333,24 +322,24 @@ fn drawer_idle_frames(app: &mut RinchApp, n: usize) -> usize {
     asked
 }
 
-/// `hidden_animation_frames_tests::a_loader_in_a_closed_drawer_keeps_animating_
-/// because_the_drawer_is_rendered` asserts the cost of a closed drawer holding
-/// a `Loader`. This is the cure that fixture's doc names, applied by the app:
-/// pause the spinner while the drawer is closed, and the app idles — and opening
-/// the drawer resumes it rather than dropping or restarting it.
+/// A closed drawer is `visibility: hidden` (#751), which is rendered, so a
+/// `Loader` inside it would keep animating — and keep the app awake — unless
+/// something paused it. Since #912 the drawer's own closed rule does: the
+/// spinner is paused while the drawer is closed, the app idles, and opening the
+/// drawer resumes it rather than dropping or restarting it.
 ///
 /// The resume is asserted off its fixed point. A spinner paused at mount has
 /// spent 0ms, where "resumed" and "restarted" start at the same instant; so the
 /// drawer is opened, left running, closed again, and only the *second* opening
 /// is checked against the time the spinner had already spent.
 #[test]
-fn a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it() {
+fn a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused() {
     let (mut app, opened) = mount_loader_in_drawer();
     assert_eq!(
         registered(&app),
         (1, 1),
         "precondition: the closed drawer's `Loader` is registered, and paused \
-         by the app's rule"
+         by the drawer's own closed rule"
     );
     assert_eq!(
         drawer_idle_frames(&mut app, 4),

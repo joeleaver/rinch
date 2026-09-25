@@ -26,6 +26,9 @@ rinch-dom = { workspace = true, features = ["software-renderer"] }
 rinch = { workspace = true, features = ["desktop"] }
 rinch-platform = { workspace = true }
 parley = { workspace = true }
+# The theme's and the component library's stylesheets, for `drawer_toggle`.
+rinch-components = { workspace = true }
+rinch-theme = { workspace = true }
 
 [dev-dependencies]
 # The runner binary must be the SAME version: the `perf` workflow installs
