@@ -350,10 +350,17 @@ fn nested_scrollers_scrolled_one_at_a_time_hit_identically() {
     // It sits in a plain div of its own so that its extent is folded into
     // one that is kept (`<body>` is a stacking root and keeps none).
     let plain = doc.create_element("div");
-    doc.set_attribute(plain, "style", "padding-left: 4px");
+    // Both are shorter than what they hold, so the content overflows their
+    // own boxes: a box's extent always includes its own box, and content
+    // that only ever moved inside it could not tell a stale extent apart.
+    doc.set_attribute(plain, "style", "height: 150px; padding-left: 4px");
     doc.append_child(body, plain);
     let wrapper = doc.create_element("div");
-    doc.set_attribute(wrapper, "style", "padding-top: 6px; margin-left: 9px");
+    doc.set_attribute(
+        wrapper,
+        "style",
+        "height: 130px; padding-top: 6px; margin-left: 9px",
+    );
     doc.append_child(plain, wrapper);
     let mut parent = wrapper;
     // Three levels: body > outer > middle > inner, each a scroller of rows
@@ -434,7 +441,7 @@ fn nested_scrollers_scrolled_one_at_a_time_hit_identically() {
         (3, 17.0, 5.0),
         (0, 91.0, 0.0),
         (2, 140.0, 23.0),
-        (3, 44.0, 0.0),
+        (3, 90.0, 0.0),
         (0, 12.0, 7.0),
         (1, 0.0, 0.0),
         (2, 3.0, 0.0),
@@ -457,6 +464,15 @@ fn nested_scrollers_scrolled_one_at_a_time_hit_identically() {
             .step_by(23)
             .filter(|&v| hit_test(&doc.tree, v as f32 * 1.3, v as f32).is_some())
             .count();
+        if which == 3 {
+            // Rebuild the memo while `wrapper` is scrolled, so `plain`'s
+            // extent is the *scrolled* one — too short at the bottom for the
+            // next scroll back up. Scrolling further down only ever leaves a
+            // stale extent too large, and a too-large extent merely fails to
+            // prune: this is the direction that hides a hit.
+            doc.set_attribute(plain, "data-step", &i.to_string());
+            assert_agree(&doc, &format!("step {i}: rebuilt while scrolled"));
+        }
     }
     assert!(hits_seen > 50, "positive control: hits seen {hits_seen}");
 }
