@@ -29,7 +29,7 @@
 //! |---|---|
 //! | `div(margin: 100px 0 0 50px; 200x100) > contents+relative > abs(inset: 0)` | abs `0,0,vw,vh` |
 //! | `div(margin: 40px 0 0 60px; 100x100; overflow: hidden) > contents+relative > abs(10,20 300x250)` | abs `10,20,300,250`; `elementFromPoint(200,200)` is the abs (outside the clip) |
-//! | `div(margin-left: 500px; 50x50; overflow: hidden) > contents+translateX(5px) > abs(left: 430px; top: 7px)` | abs `430,7,100,100` — the transform does nothing |
+//! | `div(margin-left: 500px; 50x50; overflow: hidden) > contents+translateX(5px) > abs(left: 430px; top: 7px)` | abs `430,7,100,100` — the transform does nothing (rinch matches this in layout; paint still clips it, #1038) |
 //!
 //! No fixture sits on a fixed point: every parent is off the page origin (so a
 //! parent-relative box and an ICB box differ in position as well as size), and
@@ -97,6 +97,11 @@ fn a_positioned_contents_wrapper_is_not_the_containing_block() {
 
 /// `transform` does not apply to a `display: contents` element, so it does not
 /// make one a containing block either.
+///
+/// **Layout only.** Such a wrapper still creates a stacking context in rinch
+/// (#1038), and the collector does not descend into one, so in paint and hit
+/// testing an absolute under it stays clipped by an `overflow` box above the
+/// wrapper — Chrome 153 does not clip it. This pins the box's size and place.
 #[test]
 fn a_transformed_contents_wrapper_is_not_the_containing_block() {
     let (doc, _outer, _wrapper, abs) =
@@ -157,6 +162,29 @@ fn a_display_flip_on_a_positioned_wrapper_moves_the_absolute() {
         "contents -> block: and started again"
     );
     assert_eq!(on_screen(&doc, abs), (50.0, 100.0));
+}
+
+/// `display: none` is deliberately **not** excluded from the predicate (its doc
+/// says why): nothing under it is laid out, so the answer changes no box, and a
+/// `false` there would add a containing-block flip — and an absolute-descendant
+/// re-sync — to every `none` toggle of a positioned element. This pins the
+/// choice; excluding `none` as well is behaviourally invisible elsewhere.
+#[test]
+fn a_hidden_positioned_element_still_answers_as_a_containing_block() {
+    let (doc, _outer, wrapper, _abs) = issue_fixture("display: none; position: relative");
+    let w = doc.tree.get(wrapper.0).unwrap();
+    assert!(
+        w.establishes_abs_containing_block(),
+        "`display: none; position: relative` keeps answering `true`"
+    );
+    let (doc, _outer, wrapper, _abs) = issue_fixture("display: none");
+    assert!(
+        !doc.tree
+            .get(wrapper.0)
+            .unwrap()
+            .establishes_abs_containing_block(),
+        "control: an unpositioned hidden element answers `false`"
+    );
 }
 
 // ── Collector::span: the clip chain ──────────────────────────────────────────

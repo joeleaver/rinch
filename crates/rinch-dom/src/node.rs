@@ -1410,12 +1410,22 @@ impl Node {
     /// under a `display: contents; position: relative` wrapper fills the
     /// initial containing block. Asking here rather than at each caller is what
     /// keeps `out_of_flow_kind`, `contributes_to_scrollable_overflow`,
-    /// `stacking::Collector`'s `cb_depth`, `layer_bounds` and the cascade's
-    /// containing-block re-sync in agreement — each spells its own `match` on
-    /// `position` but all of them ask this for the containing-block half.
-    /// (`display: none` is not excluded: nothing under it is laid out, so the
-    /// answer there changes no box, and excluding it would make every `none`
-    /// toggle of a positioned element re-sync its absolute descendants.)
+    /// `stacking::Collector`'s `cb_depth`, `layer_bounds`' `clipper_below_cb`,
+    /// the damage clip chain (`paint::clip_chain_bounds`, through
+    /// [`PaintedState::contains_abs`]) and the cascade's containing-block
+    /// re-sync in agreement — each spells its own `match` on `position` but all
+    /// of them ask this for the containing-block half. A caller that spells the
+    /// rule itself goes out of step with paint: the damage clip chain did until
+    /// #994's review, and a moved absolute under a positioned contents wrapper
+    /// was damaged to nothing and ghosted. (Whether a contents element makes a
+    /// *stacking context* is a separate question, `creates_stacking_context`,
+    /// and still answers as if it had a box — #1038.)
+    ///
+    /// `display: none` is deliberately **not** excluded, and
+    /// `display_contents_containing_block_tests` pins that: nothing under it is
+    /// laid out, so the answer there changes no box, and excluding it would add
+    /// a containing-block flip — so an absolute-descendant re-sync in the
+    /// cascade — to every `none` toggle of a positioned element.
     ///
     /// This is what stops the walk in `out_of_flow::out_of_flow_kind`, which is
     /// how issue #204's ICB case is told apart from a layout Taffy already gets
