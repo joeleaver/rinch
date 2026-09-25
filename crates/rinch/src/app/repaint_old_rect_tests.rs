@@ -945,9 +945,12 @@ mod editor {
     /// from-scratch frame.
     ///
     /// The editor is a 60px scroller 40px down the window. The caret is put
-    /// on the first line, then the user scrolls by 30px, so the caret's box
-    /// (rows 10..30 of the window, content-relative) lies above the
-    /// scroller's top edge and the next line's caret straddles nothing. A
+    /// on the third line (placing it scrolls the editor to show it), then the
+    /// user scrolls to 110px, so the caret's box (window rows 7..33 as
+    /// measured, about 77px down the content) lies wholly above the
+    /// scroller's top edge. Off the fixed point: the caret's translation is
+    /// not zero, so its untransformed `top: 0` box (window rows -70..-44) and
+    /// its painted one are different rects. A
     /// local oracle over the band above the scroller, where correct output
     /// holds no caret colour; and an ArrowRight (which scrolls the caret back
     /// into view) repaints a frame equal to a full one.
@@ -982,7 +985,7 @@ mod editor {
         app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
         app.focus_target = FocusTarget::Editor(ed.get());
         let mut p = Page { app, handle };
-        p.handle.set_selection(Selection::cursor(Pos(3)));
+        p.handle.set_selection(Selection::cursor(Pos(1 + 31 * 2 + 3)));
         p.app.refresh_editor_overlays();
         about_to_wait(&mut p.app);
         let shown = full_frame(&mut p.app);
@@ -994,7 +997,7 @@ mod editor {
         {
             let doc = p.app.doc.as_ref().unwrap();
             let mut d = doc.borrow_mut();
-            d.tree.nodes[ed.get()].scroll_offset.1 = 30.0;
+            d.tree.nodes[ed.get()].scroll_offset.1 = 110.0;
             d.tree.dirty_nodes.insert(ed.get());
             d.tree.hit_cache.invalidate();
         }
@@ -1002,7 +1005,7 @@ mod editor {
         let full = full_frame(&mut p.app);
         let r = caret_rect(&p.app);
         assert!(
-            r.3 <= 41 && r.1 >= 0,
+            r.3 <= 41 && r.1 >= 5,
             "precondition: the scroll put the caret's box {r:?} above the scroller (y = 40)"
         );
         assert_eq!(
