@@ -1908,7 +1908,10 @@ bar and ignored the wheel. An **IFC root's** own inline content is measured from
 its inline layout (`Node::text_layout`, at the content origin), not from its
 text nodes' boxes: a text node under a contents wrapper or an inline `<span>`
 has no box at all, and a direct one's proxy box is border-box-sized, which
-over-reported a padded text scroller. `DomDocument::scroll_height` /
+over-reported a padded text scroller. That covers text that is the container's
+**only** inline content: text beside a block child is laid out by anonymous
+block boxes, which are in no `children` list, and adds nothing (#995).
+`DomDocument::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
 `content_extents`; they used to be a second copy of the walk, with neither the
 containing-block rule nor the descent.
