@@ -55,16 +55,17 @@
 //! a pixel.
 //!
 //! The fully covered rect's one-pixel margin (#907) is not pinned by pixels
-//! either way. Moving it a pixel *outward* is caught only by the debug
-//! assertions in `push_clip`, which check every skipped clip and every skipped
+//! in this file either way. Moving it a pixel *outward* is caught here only by
+//! the debug assertions in `push_clip` (and by pixels in a release run of
+//! `skia_painter_clip_differential_tests`), which check every skipped clip and every skipped
 //! intersection against the mask itself: a mask's recorded bounds carry the
 //! painter's two-pixel pad, so the pixels the mutant misjudges are ones the
 //! damage clip already zeroes. Dropping the margin is equivalent — the first
 //! whole pixel inside an edge is fully covered — and the margin is insurance
 //! against the rasteriser's fixed-point edges. A cloned mask that forgets its
-//! fully covered rect is equivalent too: a clone is made only in reference
-//! mode, where that rect is always empty, and in a give-up branch no shape in
-//! the workspace reaches.
+//! fully covered rect is equivalent too: the only caller of `clone_mask` is
+//! `push_clip`'s give-up branch for a shape it cannot build, which no shape in
+//! the workspace reaches, in either mode.
 //!
 //! There is no sub-pixel offset in the glyph key and deliberately none to
 //! drop: this painter rasterises every glyph at the origin and places the
