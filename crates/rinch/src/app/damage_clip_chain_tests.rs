@@ -620,3 +620,127 @@ fn a_row_replacing_a_node_inside_a_clipper_is_cleared_where_it_was() {
     resolve(&mut app);
     assert_cleared(&mut app, (0, 100, 40, 140));
 }
+
+/// #994: a `display: contents; position: relative` wrapper is no containing
+/// block, so an absolute under it escapes the static `overflow: hidden` box
+/// above it — in paint (`Collector::span`) **and** in its damage
+/// (`clip_chain_bounds`). The damage walk used to spell its own rule
+/// (`position != Static || transformed`) and read the wrapper as the
+/// containing block, clipping the moved box's damage to nothing
+/// (`repaint_none`): the old box ghosted and the new one was never drawn.
+///
+/// Only the `position` wrapper: a `transform` on a contents element still
+/// makes it a stacking context in rinch, which traps the absolute in paint
+/// (a separate, pre-existing issue).
+#[test]
+fn a_moved_absolute_under_a_positioned_contents_wrapper_is_repainted() {
+    {
+        let wrapper_style = "display: contents; position: relative";
+        type Slot = Option<NodeHandle>;
+        let slot: Rc<RefCell<Slot>> = Rc::new(RefCell::new(None));
+        let slot_in = slot.clone();
+        let ws = wrapper_style.to_string();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let outer = scope.create_element("div");
+            outer.set_attribute("style", "width: 600px; height: 400px");
+            let clipper = scope.create_element("div");
+            clipper.set_attribute(
+                "style",
+                "margin-left: 20px; margin-top: 20px; width: 200px; height: 100px; overflow: hidden",
+            );
+            outer.append_child(&clipper);
+            let w = scope.create_element("div");
+            w.set_attribute("style", &ws);
+            clipper.append_child(&w);
+            let b = scope.create_element("div");
+            b.set_attribute(
+                "style",
+                "width: 40px; height: 40px; background: rgb(0, 0, 200); position: absolute; left: 300px; top: 200px",
+            );
+            w.append_child(&b);
+            *slot_in.borrow_mut() = Some(b);
+            outer
+        });
+        app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        let b = slot.borrow().clone().unwrap();
+        let before = full_frame(&mut app);
+        assert!(
+            ink_in(&before, (300, 200, 340, 240)) > 1000,
+            "{wrapper_style}: positive control — drawn at the ICB, outside the clip"
+        );
+        b.set_style("left", "400px");
+        resolve(&mut app);
+        let (inc, stats) = incremental_frame(&mut app);
+        assert_incremental(&stats);
+        let full = full_frame(&mut app);
+        assert!(
+            ink_in(&full, (400, 200, 440, 240)) > 1000,
+            "positive control"
+        );
+        assert_eq!(
+            diff_in(&inc, &full, WHOLE),
+            0,
+            "{wrapper_style}: incremental frame != full frame (ghost / missing box)"
+        );
+    }
+}
+
+/// #994: a warm hit memo follows a `display` flip of a positioned wrapper
+/// between `block` (the absolute's containing block, below the clipper) and
+/// `contents` (no containing block: the absolute escapes the clipper).
+#[test]
+fn the_hit_test_follows_a_contents_flip_of_a_positioned_wrapper() {
+    type Slot = Option<(NodeHandle, NodeHandle)>;
+    let slot: Rc<RefCell<Slot>> = Rc::new(RefCell::new(None));
+    let slot_in = slot.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let clipper = scope.create_element("div");
+        clipper.set_attribute(
+            "style",
+            "margin-left: 20px; margin-top: 20px; width: 200px; height: 100px; overflow: hidden",
+        );
+        outer.append_child(&clipper);
+        let w = scope.create_element("div");
+        w.set_attribute("style", "position: relative; height: 60px");
+        clipper.append_child(&w);
+        let b = scope.create_element("div");
+        b.set_attribute(
+            "style",
+            "width: 300px; height: 250px; background: rgb(0, 0, 200); position: absolute; left: 10px; top: 20px",
+        );
+        w.append_child(&b);
+        *slot_in.borrow_mut() = Some((w, b));
+        outer
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    resolve(&mut app);
+    let (w, b) = slot.borrow().clone().unwrap();
+    let abs = b.node_id().0;
+    assert_eq!(
+        app.move_hit(50.0, 60.0),
+        Some(abs),
+        "positive control inside the clip"
+    );
+    assert_ne!(
+        app.move_hit(250.0, 200.0),
+        Some(abs),
+        "block wrapper: clipped"
+    );
+    w.set_style("display", "contents");
+    resolve(&mut app);
+    assert_eq!(
+        app.move_hit(250.0, 200.0),
+        Some(abs),
+        "contents wrapper: escapes"
+    );
+    w.set_style("display", "block");
+    resolve(&mut app);
+    assert_ne!(
+        app.move_hit(250.0, 200.0),
+        Some(abs),
+        "block again: clipped"
+    );
+}

@@ -134,6 +134,41 @@ impl RinchApp {
             self.close_text_context_menu();
             actions.push(AppAction::RequestRedraw);
         }
+        // Where the pointer is, before anything can take the move: the desktop
+        // shell reads a press's position back out of `cursor_pos` (the move it
+        // flushed just before is what set it). The text menu below takes every
+        // move while it is open, so recording it only in the `MouseMove` arm
+        // left a real press judged where the menu was opened, inside its
+        // panel: an item never ran and a press elsewhere never closed it.
+        if let PlatformEvent::MouseMove { x, y } = event {
+            self.cursor_pos = Some((x, y));
+        }
+
+        // A primary press while a pointer-capture drag or an editor
+        // drag-select is still live proves its release was missed (issue
+        // #381): a button cannot be pressed twice without being released in
+        // between. Desktop cannot see the button state on a move (see the
+        // `MouseMove` arm), so this is the first event that can tell. Ended
+        // **before** the press is dispatched — its handlers must not see the
+        // stranded drag, and a drag this very press arms is not the one being
+        // ended — and through `on_cancel`: left alone, the next release ran
+        // `finish_drag` and committed the stranded drag at this click's
+        // position. Scoped to this document, like every other ending (#139).
+        // Here rather than in the `MouseDown` arm because the text menu below
+        // swallows a press: the press that closes it would otherwise skip the
+        // heal, and its release, reaching the `MouseUp` arm with the menu gone,
+        // committed the stranded drag after all.
+        if matches!(
+            event,
+            PlatformEvent::MouseDown {
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self.heal_missed_release()
+        {
+            actions.push(AppAction::RequestRedraw);
+        }
+
         // While it is open the pointer belongs to the menu: an item press runs
         // it, any other press closes it unacted and is swallowed.
         if let Some(menu_actions) = self.text_menu_intercept_pointer(&event, vp_w, vp_h) {
@@ -609,20 +644,8 @@ impl RinchApp {
                 y,
                 button: MouseButton::Left,
             } => {
-                // A primary press while a pointer-capture drag or an editor
-                // drag-select is still live proves its release was missed
-                // (issue #381): a button cannot be pressed twice without being
-                // released in between. Desktop cannot see the button state on a
-                // move (see the `MouseMove` arm), so this is the first event
-                // that can tell. Ended **before** the press is dispatched — its
-                // handlers must not see the stranded drag, and a drag this very
-                // press arms is not the one being ended — and through
-                // `on_cancel`: left alone, the next release ran `finish_drag`
-                // and committed the stranded drag at this click's position.
-                // Scoped to this document, like every other ending (#139).
-                if self.heal_missed_release() {
-                    actions.push(AppAction::RequestRedraw);
-                }
+                // A missed release was already healed at the top of
+                // `handle_event`, ahead of the text menu (issue #381).
 
                 // Additive: fire data-onmousedown before the resize/drag/scroll/
                 // click logic below (which can early-return).
