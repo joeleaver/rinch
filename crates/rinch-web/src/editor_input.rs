@@ -107,6 +107,14 @@ thread_local! {
     /// `(pointer_id, client_x, client_y)`. A release near that point is a tap rather
     /// than a scroll, and focuses the capture target (see `handle_touch_tap`).
     static TOUCH_TAP: Cell<Option<(i32, f32, f32)>> = const { Cell::new(None) };
+    /// The last touch tap [`handle_touch_tap`] serviced, waiting for the
+    /// compatibility `mousedown` the browser synthesizes for it (issue #302). See
+    /// [`is_compat_mousedown_of_serviced_tap`].
+    static SERVICED_TAP: Cell<Option<ServicedTap>> = const { Cell::new(None) };
+    /// Set by [`handle_mousedown`] when an app's `on_link_click` claimed the press,
+    /// to the editor it landed in — read by [`handle_touch_tap`], which clears it
+    /// before the call, so it can tell a claimed link tap from a caret tap.
+    static LINK_CLAIMED_IN: Cell<Option<usize>> = const { Cell::new(None) };
     /// The context-menu cycle in flight (issue #814): the capture textarea is, or
     /// was just, parked under the pointer and holds the Select-All sentinels rather
     /// than the mirror. `None` when no cycle is live. See
@@ -1600,6 +1608,11 @@ fn handle_link_click(event: &web_sys::MouseEvent) {
 /// Handle a `mousedown`. Returns whether it landed in an editor (so the listener
 /// consumes it). Mirrors `try_new_editor_click`.
 fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> bool {
+    // A touch tap's compatibility `mousedown`, for a tap its `pointerup` already
+    // serviced: consumed, and nothing redone (issue #302).
+    if is_compat_mousedown_of_serviced_tap(event, doc) {
+        return true;
+    }
     // A press of any button means the browser's menu is closed: the cycle ends,
     // and the textarea is back off-screen before this press is resolved.
     end_context_menu_cycle();
@@ -1668,6 +1681,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         && event.detail() <= 1
         && offer_link_click(event, doc, &target, &editor_el, &handle, container_nid)
     {
+        LINK_CLAIMED_IN.with(|c| c.set(Some(container_nid)));
         registry::end_drag(None);
         refresh_caret();
         return true;
@@ -2225,8 +2239,10 @@ fn note_touch_down(event: &web_sys::PointerEvent) {
 /// will raise the on-screen keyboard for a programmatic `.focus()` — and on a page that
 /// consumes the pointer sequence it may never be synthesized at all, leaving the editor
 /// visibly focused but with no model focus, so every keystroke went nowhere. Running
-/// the same handler here, from the real touch event, makes the tap self-sufficient; the
-/// compatibility `mousedown` that may follow is idempotent (same point, same caret).
+/// the same handler here, from the real touch event, makes the tap self-sufficient. The
+/// compatibility `mousedown` that may follow is then recognised as this tap's and runs
+/// nothing ([`is_compat_mousedown_of_serviced_tap`], issue #302) — except a double
+/// tap's, whose `detail == 2` still selects the word.
 ///
 /// A contact that drifted past the shared touch slop was a scroll, not a tap, and is
 /// dropped — panning a manuscript must not pop the keyboard.
@@ -2249,10 +2265,110 @@ fn handle_touch_tap(event: &web_sys::PointerEvent, doc: &web_sys::Document) {
     // `PointerEvent` *is* a `MouseEvent`, so the click handler takes it as-is. Its
     // `detail` is 0 for touch, which lands on the plain place-the-caret arm; a
     // double-tap's word select still comes from the compatibility `mousedown`.
-    handle_mousedown(event.as_ref(), doc);
+    SERVICED_TAP.with(|c| c.set(None));
+    LINK_CLAIMED_IN.with(|c| c.set(None));
+    let serviced = handle_mousedown(event.as_ref(), doc);
     // Drag-select follows `mousemove` with a button held — unreachable from touch — so
     // never leave a touch tap's anchor armed behind it.
     registry::end_drag(None);
+    // Remember the tap, so the compatibility `mousedown` that follows it does not
+    // run the press a second time (issue #302). Touch only: a pen's compatibility
+    // `mousedown` comes *before* its `pointerup` (measured, Chrome 153), so a pen
+    // tap's record would never be consumed and would swallow the next press there.
+    if !serviced || event.pointer_type() != "touch" {
+        return;
+    }
+    let link_claimed_in = LINK_CLAIMED_IN.with(|c| c.take());
+    let tap = match (link_claimed_in, focused_editor()) {
+        (Some(nid), _) => Some((nid, true)),
+        (None, Some(nid)) => Some((nid, false)),
+        (None, None) => None,
+    };
+    if let Some((container_nid, link_claimed)) = tap {
+        SERVICED_TAP.with(|c| {
+            c.set(Some(ServicedTap {
+                x: event.client_x() as f32,
+                y: event.client_y() as f32,
+                at_ms: event.time_stamp(),
+                container_nid,
+                link_claimed,
+            }))
+        });
+    }
+}
+
+/// A touch tap [`handle_touch_tap`] has already run the press for: where it came up,
+/// when, and which editor it focused.
+#[derive(Clone, Copy)]
+struct ServicedTap {
+    x: f32,
+    y: f32,
+    /// The `pointerup`'s `timeStamp`, in the page's time origin (as every event's).
+    at_ms: f64,
+    container_nid: usize,
+    /// The tap was a press on a link that the app's `on_link_click` claimed. Its
+    /// compatibility `mousedown` is consumed whatever the focus state then: a claim
+    /// commonly moves focus (a link popover's input), and running the press again
+    /// would offer the link a second time.
+    link_claimed: bool,
+}
+
+/// How long after a serviced tap its compatibility `mousedown` is still recognised
+/// as that tap's. Browsers synthesize it right after `pointerup`, or after a
+/// double-tap-to-zoom delay of roughly 300 ms on a page that allows zooming; a
+/// `mousedown` later than this is treated as a press of its own. In Chrome 153 the
+/// compatibility `mousedown` carries the `pointerup`'s own `timeStamp` (elapsed 0).
+const TAP_COMPAT_WINDOW_MS: f64 = 800.0;
+
+/// Whether `event` is the compatibility `mousedown` of a touch tap that
+/// [`handle_touch_tap`] already serviced, and the press it would run has nothing
+/// left to do (issue #302).
+///
+/// The tap's `pointerup` ran [`handle_mousedown`] in full: focus, the capture
+/// field emptied and re-mirrored, the caret placed. Running it again from the
+/// compatibility event redoes all of that — a second empty-and-refill of the field
+/// under an attached soft keyboard, a second selection transaction, a second
+/// `on_link_click` offer. So the first `mousedown` after a serviced tap **consumes**
+/// the record, whatever it is, and answers `true` only when it is a single primary
+/// press (`detail <= 1`, no modifier) at the tap's point, inside the window, with
+/// that tap's editor still focused and the capture textarea still holding the
+/// browser's focus — i.e. when the press would leave everything as it already is.
+/// (For a tap an app's `on_link_click` claimed, the focus is not asked; see
+/// [`ServicedTap::link_claimed`].) The record is also dropped by the tap's `click`,
+/// which fires even when a page's `preventDefault` on `pointerdown` suppressed the
+/// compatibility `mousedown`, so a tap that never gets one cannot swallow a later
+/// press.
+///
+/// A double tap's compatibility `mousedown` carries `detail == 2` (the browser
+/// counts clicks across taps) and is never matched, so its word select still runs.
+fn is_compat_mousedown_of_serviced_tap(
+    event: &web_sys::MouseEvent,
+    doc: &web_sys::Document,
+) -> bool {
+    if event.type_() != "mousedown" {
+        return false;
+    }
+    let Some(tap) = SERVICED_TAP.with(|c| c.take()) else {
+        return false;
+    };
+    let elapsed = event.time_stamp() - tap.at_ms;
+    event.button() == 0
+        && event.detail() <= 1
+        && !event.shift_key()
+        && !event.alt_key()
+        && !is_context_press(event)
+        && (0.0..=TAP_COMPAT_WINDOW_MS).contains(&elapsed)
+        && is_tap(
+            (tap.x, tap.y),
+            (event.client_x() as f32, event.client_y() as f32),
+        )
+        && (tap.link_claimed
+            || (focused_editor() == Some(tap.container_nid)
+                // Not implied by the line above: `on_capture_blur` keeps the
+                // focused editor across a *window* blur (#226), which leaves the
+                // capture textarea inactive with the claim still standing — and
+                // then the press has focus to restore.
+                && editor_owns_keyboard(doc)))
 }
 
 /// Add a capture-phase `document` listener leaked for the page lifetime.
@@ -2428,6 +2544,8 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // Whether an editor link navigates, and keyboard activation of one (see
     // `handle_link_click`).
     add_capture(browser_doc, "click", |e: web_sys::MouseEvent| {
+        // A tap's `click` ends it: any compatibility `mousedown` came before it.
+        SERVICED_TAP.with(|c| c.set(None));
         handle_link_click(&e);
     });
     add_capture(browser_doc, "auxclick", |e: web_sys::MouseEvent| {

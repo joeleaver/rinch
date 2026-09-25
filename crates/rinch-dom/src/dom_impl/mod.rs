@@ -665,7 +665,28 @@ impl RinchDocument {
                 }
                 None => None,
             };
-            if let Some(r) = r {
+            // Only the part its clipping ancestors let through was ever on
+            // screen (#909): a row a scroller had clipped away leaves nothing
+            // to clear. Asked of the chain as it was painted, which is still
+            // in place — the children below are recorded before this node's
+            // painted state is forgotten, for the same reason.
+            let r = r.map(|r| {
+                let mut steps = 1;
+                let clip = crate::paint::clip_chain_bounds_counted(
+                    &self.tree, node_id, 1.0, true, &mut steps,
+                );
+                self.tree
+                    .perf
+                    .add(crate::perf::Counter::RemovalDamageSteps, steps);
+                match clip {
+                    Some(clip) => r.intersect(clip),
+                    None => r,
+                }
+            });
+            if let Some(r) = r
+                && r.width() > 0.0
+                && r.height() > 0.0
+            {
                 self.tree
                     .paint_dirty_removed_rects
                     .push((r.x0, r.y0, r.width(), r.height()));
@@ -683,6 +704,36 @@ impl RinchDocument {
             node.painted = None;
             node.prev_layout = node.layout;
         }
+    }
+
+    /// A node about to move from one parent to another leaves its pixels
+    /// where it was painted, under the **old** parent's chain — which is the
+    /// last moment that chain can be asked about. Recorded exactly as a
+    /// removal records them (`mark_subtree_paint_dirty`), and the subtree's
+    /// painted state is forgotten, so nothing later places its old rect along
+    /// the new parents (review of #958: a row moved into a clipper had its
+    /// old rect cut away by the new parent's clip and ghosted). Returns
+    /// whether it did.
+    ///
+    /// A reorder within one parent pays nothing: the chain is the same. Nor
+    /// does a node with no parent, or one that was never painted, which keeps
+    /// building a tree (`rsx!` adopting a component site's children out of its
+    /// scratch template) free. That is exact for the removal and move verbs,
+    /// which forget the painted state of everything they take out, so an
+    /// unpainted root has nothing painted below it. It is not exact for the
+    /// three detaches that do not forget — `set_text_content`'s orphans,
+    /// `replace_node`'s displaced node, `set_inner_html`'s freed children —
+    /// whose old pixels this does not reach when they come back (#966,
+    /// pre-existing).
+    pub(crate) fn record_pixels_left_by_move(&mut self, child: usize, new_parent: usize) -> bool {
+        let Some(node) = self.tree.nodes.get(child) else {
+            return false;
+        };
+        let moves = node.parent.is_some_and(|old| old != new_parent) && node.painted.is_some();
+        if moves {
+            self.mark_subtree_paint_dirty(child);
+        }
+        moves
     }
 
     /// Mark a node and its entire subtree as paint-dirty for insertion.

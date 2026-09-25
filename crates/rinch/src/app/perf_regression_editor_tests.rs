@@ -381,6 +381,7 @@ fn backspace_joins_two_paragraphs() {
             (RepaintFullRegionTooLarge, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
+            (RemovalDamageSteps, 4),
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 3),
             (GlyphCacheHits, 324),

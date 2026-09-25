@@ -239,6 +239,13 @@ define_counters! {
     SurfacePx = "surface_px",
     /// Nodes `paint_node` visited.
     PaintNodesVisited = "paint_nodes_visited",
+    /// Work a removal (or a move to another parent) did to record the old
+    /// pixels of what it took out (#909): one per node recorded, plus one per
+    /// ancestor the clip-chain walk stepped through for it. Linear in what
+    /// was removed times its depth, never in what else is pending: clearing
+    /// a list row by row went quadratic in #958's first round with no counter
+    /// to show it. Work added to that path belongs in this counter.
+    RemovalDamageSteps = "removal_damage_steps",
     /// Stacking-order sequences built (`stacking_paint_order`), by paint and
     /// hit testing alike.
     StackingOrderBuilds = "stacking_order_builds",
