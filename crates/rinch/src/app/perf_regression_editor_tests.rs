@@ -142,15 +142,22 @@ fn a_focused_editor_idles_for_free_between_blinks() {
 /// repainted (`repainted_px` 320). This is the cost a focused editor pays
 /// twice a second.
 ///
-/// **Findings, pinned as they are — #907; a fix must LOWER this number, and its PR updates the pin.** The toggle is a style write, so the blink
-/// is a cascade (with a `::before`/`::after` pass: the editor's sheet has such
-/// rules) and a Taffy sync, though it takes the paint-only path. Paint builds
-/// three stacking sequences and visits 37 nodes for those 320 pixels. And the
-/// software painter fills **607 320** clip-mask pixels to repaint 320: one of
-/// the two clips is the editor's own `overflow-y: auto` clip, filled over
-/// bounds larger than the editor's visible 600x500 box rather than over the
-/// damage (every editor scenario below shows the same ~607k, a single
-/// keystroke included).
+/// The toggle is a style write, so the blink is a cascade (with a
+/// `::before`/`::after` pass: the editor's sheet has such rules) and a Taffy
+/// sync, though it takes the paint-only path. Paint builds three stacking
+/// sequences — the body's, the editor container's (`position: relative;
+/// z-index: 0` in the editor's sheet) and the caret's own (`z-index` and a
+/// `transform`) — and visits 37 nodes for those 320 pixels.
+///
+/// **`clip_mask_px` 504, was 607 320 (#907).** Two clips are pushed: the
+/// frame's damage clip (the caret's rect plus the painter's two-pixel pad,
+/// 504 px) and the editor's own rounded `overflow-y: auto` clip. The second
+/// used to be filled and then intersected over its whole padded box, twice
+/// about 303k px, to clip a region lying well inside it. The software
+/// painter now skips a clip whose shape fully covers the enclosing clip's
+/// non-zero rect — the intersection would be that mask byte for byte — so it
+/// costs nothing, and takes no second pooled mask (`paint_surface_allocs`
+/// 1 → 0). Every editor scenario below moved the same way.
 #[test]
 fn one_caret_blink_repaints_the_caret() {
     let mut page = page();
@@ -178,8 +185,7 @@ fn one_caret_blink_repaints_the_caret() {
             (StackingOrderBuilds, 3),
             (GlyphCacheHits, 19),
             (ClipMasks, 2),
-            (ClipMaskPx, 607320),
-            (PaintSurfaceAllocs, 1),
+            (ClipMaskPx, 504),
         ],
     );
 }
@@ -229,8 +235,7 @@ fn typing_one_character() {
             (GlyphCacheHits, 19),
             (GlyphCacheMisses, 1),
             (ClipMasks, 2),
-            (ClipMaskPx, 627906),
-            (PaintSurfaceAllocs, 1),
+            (ClipMaskPx, 21090),
         ],
     );
 }
@@ -270,8 +275,7 @@ fn arrow_right() {
             (StackingOrderBuilds, 3),
             (GlyphCacheHits, 19),
             (ClipMasks, 2),
-            (ClipMaskPx, 607644),
-            (PaintSurfaceAllocs, 1),
+            (ClipMaskPx, 828),
         ],
     );
 }
