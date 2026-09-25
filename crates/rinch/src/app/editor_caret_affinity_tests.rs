@@ -370,7 +370,8 @@ fn a_click_past_a_wrapped_lines_end_draws_on_the_clicked_line() {
 #[test]
 fn the_selection_callback_sees_the_hint() {
     let (mut p, starts, _) = glyph_wrapped();
-    let seen: Rc<RefCell<Vec<(CaretAffinity, Option<f32>)>>> = Rc::default();
+    type Seen = Vec<(CaretAffinity, Option<f32>)>;
+    let seen: Rc<RefCell<Seen>> = Rc::default();
     p.handle.on_selection_change({
         let (h, seen) = (p.handle.clone(), seen.clone());
         move |sel| {
