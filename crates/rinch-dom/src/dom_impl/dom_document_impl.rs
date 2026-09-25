@@ -119,6 +119,7 @@ impl DomDocument for RinchDocument {
         // must remove the node's *contribution*, not just its own id — a
         // spliced `display: contents` node's slots are its children's (#517).
         let restyle = !self.keeps_style_across_move(c, p);
+        self.record_pixels_left_by_move(c, p);
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
@@ -220,6 +221,7 @@ impl DomDocument for RinchDocument {
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
         let restyle = !self.keeps_style_across_move(c, p);
+        self.record_pixels_left_by_move(c, p);
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
@@ -307,6 +309,7 @@ impl DomDocument for RinchDocument {
         self.invalidate_ifc_for_node(new.0);
         self.clear_ifc_root_recursive(new.0);
         if let Some(parent_id) = self.tree.nodes[old.0].parent {
+            let new_moved = self.record_pixels_left_by_move(new.0, parent_id);
             // Remove new from its old parent if any — the node's
             // contribution, not just its own id (#517)
             if let Some(old_parent) = self.tree.nodes[new.0].parent {
@@ -358,6 +361,9 @@ impl DomDocument for RinchDocument {
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
             self.note_child_inserted(parent_id, new.0, !keeps_nonempty);
+            if new_moved {
+                self.mark_subtree_paint_dirty_ids(new.0);
+            }
 
             // Recompute styles for the new subtree to pick up ancestor-based selectors
             self.recompute_node_styles_recursive(new.0);
@@ -830,6 +836,7 @@ impl DomDocument for RinchDocument {
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
         let restyle = !self.keeps_style_across_move(c, p);
+        let moved_between_parents = self.record_pixels_left_by_move(c, p);
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
@@ -867,6 +874,12 @@ impl DomDocument for RinchDocument {
         self.tree.seed_ifc(p, IfcSeed::Children);
         self.tree.seed_ifc(c, IfcSeed::Subtree);
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+        // A subtree moved here from another parent was forgotten as painted
+        // (`record_pixels_left_by_move`) and has to be named where it lands,
+        // as `append_child` and `insert_before` name every insertion.
+        if moved_between_parents {
+            self.mark_subtree_paint_dirty_ids(c);
+        }
 
         self.note_child_inserted(p, c, true);
 

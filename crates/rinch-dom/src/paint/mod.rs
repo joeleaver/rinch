@@ -141,9 +141,8 @@ pub fn compute_damage(
         };
         region.add(r)
     };
-    let dirty: HashSet<RawNodeId> = tree.paint_dirty_nodes.iter().copied().collect();
-    let clip_now = |id: RawNodeId| clip_chain_bounds(tree, id, scale, None);
-    let clip_then = |id: RawNodeId| clip_chain_bounds(tree, id, scale, Some(&dirty));
+    let clip_now = |id: RawNodeId| clip_chain_bounds(tree, id, scale, false);
+    let clip_then = |id: RawNodeId| clip_chain_bounds(tree, id, scale, true);
 
     // Deduplicate — paint_dirty_nodes may have duplicates
     let mut seen = HashSet::new();
@@ -332,8 +331,8 @@ pub fn compute_damage(
 ///
 /// Damage is intersected with it: a change a scroller clips away cannot reach
 /// a pixel, so a row moved below the scroller's viewport names nothing. The
-/// walk follows what clips a box in paint, and errs **wide** wherever it is
-/// unsure, since a rect too large costs a repaint and a rect too small leaves
+/// walk follows what clips a box in paint, and errs **wide** in the cases
+/// below, since a rect too large costs a repaint and a rect too small leaves
 /// stale pixels:
 ///
 /// - a `position: fixed` box, or anything inside one, is clipped by nothing
@@ -345,30 +344,39 @@ pub fn compute_damage(
 ///   taken; nothing above the body is asked (paint starts there).
 ///
 /// `painted` asks about the pixels on screen: each node's clipping, position
-/// and box **as it was painted** ([`painted_style_of`]), placed by
-/// [`Frame::Painted`]. It answers `None` — no clip, the conservative answer —
-/// the moment any node on the walk cannot say what it was painted with.
-/// Without it the question is the next paint's, and the current state is
-/// exactly what that paint clips with.
+/// and box **as it was painted** (`PaintedState`, `prev_layout`), placed by
+/// [`Frame::Painted`], and it answers `None` — no clip — the moment a node on
+/// the walk was never painted. It walks the **current** parents, which is
+/// sound only because a node never sits under parents it was not painted
+/// under while it still carries a painted state: a move to another parent
+/// records its old rects under the old chain and forgets its painted state
+/// first (`record_pixels_left_by_move`), as a removal does. Two gaps remain,
+/// both pre-existing: `Frame::Painted` places a box by its *current*
+/// `position` (a same-frame static↔fixed change, #961), and a replaced node's
+/// own pixels are not recorded by `replace_node`.
+///
+/// Without `painted` the question is the next paint's, and the current state
+/// is exactly what that paint clips with.
 pub(crate) fn clip_chain_bounds(
     tree: &NodeTree,
     node_id: RawNodeId,
     scale: f64,
-    painted: Option<&HashSet<RawNodeId>>,
+    painted: bool,
 ) -> Option<Rect> {
-    let frame = if painted.is_some() {
+    let frame = if painted {
         Frame::Painted
     } else {
         Frame::Current
     };
-    let style = |id: RawNodeId, node: &Node| -> Option<PaintedStyle> {
-        match painted {
-            Some(dirty) => painted_style_of(tree, id, node, dirty),
-            None => Some(PaintedStyle::now(node)),
+    let style = |node: &Node| -> Option<PaintedStyle> {
+        if painted {
+            node.painted.as_ref().map(PaintedStyle::then)
+        } else {
+            Some(PaintedStyle::now(node))
         }
     };
     let node = tree.get(node_id)?;
-    let mut position = style(node_id, node)?.position;
+    let mut position = style(node)?.position;
     // Skipping clippers until the containing block of an absolute box.
     let mut escaping = false;
     let mut clip: Option<Rect> = None;
@@ -381,7 +389,7 @@ pub(crate) fn clip_chain_bounds(
         }
         let Some(id) = current else { break };
         let ancestor = tree.get(id)?;
-        let a = style(id, ancestor)?;
+        let a = style(ancestor)?;
         // The containing block ends the escape, and its own clip applies: a
         // `position: relative; overflow: hidden` box clips its absolute
         // children (`Collector::span` counts the chain after its clip, too).
@@ -420,6 +428,19 @@ struct PaintedStyle {
 }
 
 impl PaintedStyle {
+    /// What a node was painted with. A [`PaintedState`](crate::node::PaintedState)
+    /// is written for a node by every paint that consumes it and, after a
+    /// whole-document restyle, for every painted node
+    /// ([`NodeTree::consume_paint_dirty`]) — and any other style change
+    /// pushes the node, so between two consumptions nothing it records moves.
+    fn then(painted: &crate::node::PaintedState) -> Self {
+        Self {
+            clips: painted.clips,
+            position: painted.position,
+            transformed: painted.transform.is_some(),
+        }
+    }
+
     fn now(node: &Node) -> Self {
         Self {
             clips: node.clips_overflow() && node.computed_style.display != DisplayValue::Contents,
@@ -427,34 +448,6 @@ impl PaintedStyle {
             transformed: !node.computed_style.transform.is_identity,
         }
     }
-}
-
-/// What `node` was last painted with, or `None` when that cannot be known.
-///
-/// A node that is not paint-dirty (`dirty`) has not changed since the last
-/// paint drew it — every style change that reaches paint pushes it — so its
-/// current style *is* what it was painted with, even across a whole-document
-/// restyle (that paint drew it with the restyled values). A dirty node has
-/// changed since, and its [`PaintedState`](crate::node::PaintedState) says
-/// what it was — provided it was written after the last whole-document
-/// restyle ([`NodeTree::painted_style_epoch`]); before it, it describes a
-/// style the pixels on screen were never drawn with. A node never painted has
-/// no answer.
-fn painted_style_of(
-    tree: &NodeTree,
-    id: RawNodeId,
-    node: &Node,
-    dirty: &HashSet<RawNodeId>,
-) -> Option<PaintedStyle> {
-    let painted = node.painted.as_ref()?;
-    if !dirty.contains(&id) {
-        return Some(PaintedStyle::now(node));
-    }
-    (painted.style_epoch == tree.painted_style_epoch).then_some(PaintedStyle {
-        clips: painted.clips,
-        position: painted.position,
-        transformed: painted.transform.is_some(),
-    })
 }
 
 /// The ancestor whose paint covers `node_id` when `node_id` names no rect of

@@ -306,15 +306,17 @@ fn a_clipper_that_starts_clipping_still_clears_what_it_did_not_clip() {
     );
 }
 
-/// **A whole-document restyle leaves painted states stale.** A stylesheet
+/// **A whole-document restyle would leave painted states stale.** A stylesheet
 /// appended after the first paint takes the clipper's `overflow: hidden` away;
-/// that restyle pushes no node, so the clipper's painted state still says it
-/// clipped when the full repaint drew the box unclipped below it. Later the
-/// clipper changes (so it is paint-dirty) and the box moves: the old pixels
-/// must be cleared where the full repaint put them.
+/// that restyle pushes no node, so unless the paint consuming it re-reads
+/// every painted state, the clipper's would still say it clipped when the
+/// full repaint drew the box unclipped below it. Later the clipper changes
+/// and the box moves: the old pixels must be cleared where the full repaint
+/// put them.
 ///
-/// Kills: the painted state read without its `style_epoch` check (the stale
-/// `clips` clips the old rect away: the box ghosts below the clipper).
+/// Kills: `consume_paint_dirty` not refreshing every painted state on a
+/// whole-document restyle (the stale `clips` clips the old rect away: the box
+/// ghosts below the clipper).
 #[test]
 fn a_painted_state_older_than_a_whole_document_restyle_is_not_trusted() {
     let (mut app, clipper, b) = mount(
@@ -326,7 +328,6 @@ fn a_painted_state_older_than_a_whole_document_restyle_is_not_trusted() {
     let first = full_frame(&mut app);
     assert_eq!(ink_in(&first, (20, 170, 60, 210)), 0, "clipped at first");
 
-    let epoch = app.doc.as_ref().unwrap().borrow().tree.painted_style_epoch;
     let doc = app.doc.as_ref().unwrap().clone();
     {
         use rinch_core::dom::DomDocument;
@@ -338,16 +339,20 @@ fn a_painted_state_older_than_a_whole_document_restyle_is_not_trusted() {
         d.append_child(body, s);
     }
     resolve(&mut app);
+    assert!(
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .whole_document_damaged,
+        "positive control: that was a whole-document restyle"
+    );
     let restyled = full_frame(&mut app);
     let old = (20, 170, 60, 210);
     assert!(
         ink_in(&restyled, old) > 1000,
         "positive control: unclipped now"
-    );
-    assert_ne!(
-        app.doc.as_ref().unwrap().borrow().tree.painted_style_epoch,
-        epoch,
-        "positive control: that was a whole-document restyle"
     );
 
     clipper.set_style("background", "rgb(250, 250, 250)");

@@ -1708,13 +1708,6 @@ pub struct NodeTree {
     /// that consumes it repaints in full. Cleared by
     /// [`NodeTree::consume_paint_dirty`].
     pub whole_document_damaged: bool,
-    /// Bumped by every paint that consumes a whole-document restyle
-    /// ([`Self::whole_document_damaged`]). A node's [`PaintedState`] carries
-    /// the epoch it was written in: such a restyle changes styles without
-    /// pushing the nodes it changed, so a node consumed before it holds the
-    /// style it had *then*, not the one the full repaint drew it with. The
-    /// damage's clip chain (#909) refuses to read a stale one.
-    pub painted_style_epoch: u32,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
@@ -2177,7 +2170,6 @@ impl NodeTree {
             paint_dirty_nodes: Vec::new(),
             paint_dirty_removed_rects: Vec::new(),
             whole_document_damaged: false,
-            painted_style_epoch: 0,
             style_dirty_nodes: Vec::new(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
@@ -2354,17 +2346,25 @@ impl NodeTree {
     /// [`Node::painted`] — own ink reach and own transform — which is O(1) per
     /// node: nothing here walks a subtree.
     pub fn consume_paint_dirty(&mut self) {
-        if self.whole_document_damaged {
-            self.painted_style_epoch = self.painted_style_epoch.wrapping_add(1);
-        }
-        let epoch = self.painted_style_epoch;
         let nodes = &mut self.nodes;
+        // A whole-document restyle changes styles without pushing the nodes
+        // it changed, and the paint consuming it drew *every* node with the
+        // restyled values. So every painted node's state is re-read here, or
+        // a node not pushed since would keep describing a style the pixels on
+        // screen were never drawn with — its ink and transform, and the
+        // clipping and position the damage's clip chain reads (#909). O(n),
+        // on a frame that has just restyled and repainted all n.
+        if self.whole_document_damaged {
+            for (_, node) in nodes.iter_mut() {
+                if node.painted.is_some() {
+                    node.painted = Some(PaintedState::of(node));
+                }
+            }
+        }
         for id in self.paint_dirty_nodes.drain(..) {
             if let Some(node) = nodes.get_mut(id) {
                 node.prev_layout = node.layout;
-                let mut painted = PaintedState::of(node);
-                painted.style_epoch = epoch;
-                node.painted = Some(painted);
+                node.painted = Some(PaintedState::of(node));
             }
         }
         self.paint_dirty_removed_rects.clear();
@@ -2567,8 +2567,6 @@ pub struct PaintedState {
     pub clips: bool,
     /// Its `position`, which decides which clippers above it it escapes.
     pub position: crate::computed_style::PositionValue,
-    /// [`NodeTree::painted_style_epoch`] when this was written.
-    pub style_epoch: u32,
 }
 
 /// A painted transform: the value and its resolved origin, in CSS px.
@@ -2597,7 +2595,6 @@ impl PaintedState {
             clips: node.clips_overflow()
                 && cs.display != crate::computed_style::DisplayValue::Contents,
             position: cs.position,
-            style_epoch: 0,
         }
     }
 }
