@@ -3292,6 +3292,24 @@ impl RinchApp {
     }
 }
 
+// Not under `#[cfg(feature = "desktop")]`: `handle_event` runs in every
+// build (embed, Android, `components,theme`).
+impl RinchApp {
+    /// End this document's live pointer-capture drag and editor drag-select
+    /// on independent proof that their release was missed — a primary press,
+    /// or the window losing focus (issue #381). The drag ends through
+    /// `on_cancel`, never `on_end` ([`rinch_core::heal_missed_release`]); the
+    /// drag-select is simply released, as a release would have. Both are
+    /// scoped to this document (#139). Returns whether a drag was cancelled.
+    fn heal_missed_release(&mut self) -> bool {
+        #[cfg(feature = "desktop")]
+        crate::editor::end_drag(self.input_doc());
+        // Every build: `handle_event` calls this with or without `desktop`
+        // (embed, Android), and the pointer-capture drag lives in rinch-core.
+        rinch_core::heal_missed_release()
+    }
+}
+
 #[cfg(feature = "desktop")]
 impl RinchApp {
     /// This app's document identity for scoping shared input state, or `None`
@@ -3304,18 +3322,6 @@ impl RinchApp {
     /// it: `push_dispatching_doc` applies the very same one to the very same key.
     fn input_doc(&self) -> Option<u64> {
         rinch_core::doc_identity(self.doc_key())
-    }
-
-    /// End this document's live pointer-capture drag and editor drag-select
-    /// on independent proof that their release was missed — a primary press,
-    /// or the window losing focus (issue #381). The drag ends through
-    /// `on_cancel`, never `on_end` ([`rinch_core::heal_missed_release`]); the
-    /// drag-select is simply released, as a release would have. Both are
-    /// scoped to this document (#139). Returns whether a drag was cancelled.
-    fn heal_missed_release(&mut self) -> bool {
-        #[cfg(feature = "desktop")]
-        crate::editor::end_drag(self.input_doc());
-        rinch_core::heal_missed_release()
     }
 
     /// Copy the focused editor's selection to the clipboard as both `text/html`

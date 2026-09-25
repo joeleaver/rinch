@@ -334,3 +334,130 @@ mod editor_drag_select {
         crate::editor::end_drag(doc(&app));
     }
 }
+
+/// Behaviours the heal decides that are not the bug itself, pinned so a change
+/// to any of them is a decision rather than an accident (review of #1021).
+mod pinned_consequences {
+    use super::*;
+
+    #[derive(Default)]
+    struct Ends {
+        ends: RefCell<Vec<(f32, f32)>>,
+        cancels: RefCell<Vec<(f32, f32)>>,
+    }
+
+    fn arm(log: &Rc<Ends>) {
+        let (e, c) = (log.clone(), log.clone());
+        rinch_core::Drag::absolute()
+            .on_end(move |x, y| e.ends.borrow_mut().push((x, y)))
+            .on_cancel(move |x, y| c.cancels.borrow_mut().push((x, y)))
+            .start();
+    }
+
+    /// A page whose root `data-onmousedown` arms a drag on a press of `button`.
+    fn onmousedown_app(button: events::MouseButton) -> (RinchApp, Rc<Ends>) {
+        let log = Rc::new(Ends::default());
+        let l = log.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 800px; height: 600px");
+            let l = l.clone();
+            let rid = scope.register_handler(move || {
+                if events::get_click_context().button == button {
+                    arm(&l);
+                }
+            });
+            root.set_attribute("data-onmousedown", &rid.0.to_string());
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        (app, log)
+    }
+
+    /// A drag armed from the **same** press's `data-onmousedown` survives that
+    /// press and commits on its release. The heal must run above the
+    /// `data-onmousedown` dispatch, not merely above the click: every other
+    /// fixture here arms from `onclick`, which runs later, so a heal placed
+    /// between the two would cancel every `onmousedown`-armed drag on its own
+    /// press and pass them all.
+    #[test]
+    fn a_drag_armed_by_the_same_presss_onmousedown_is_kept() {
+        let (mut app, log) = onmousedown_app(events::MouseButton::Left);
+        for round in 1..=2usize {
+            press(&mut app, (211.0, 133.0), MouseButton::Left);
+            move_to(&mut app, (317.0, 177.0));
+            release(&mut app, (401.0, 222.0), MouseButton::Left);
+            assert_eq!(log.ends.borrow().len(), round, "round {round} commits");
+            assert!(
+                log.cancels.borrow().is_empty(),
+                "{:?}",
+                log.cancels.borrow()
+            );
+        }
+        // A stranded one is healed by the next press, whose own onmousedown
+        // then arms a fresh drag that commits.
+        press(&mut app, (211.0, 133.0), MouseButton::Left);
+        move_to(&mut app, (317.0, 177.0));
+        press(&mut app, (223.0, 139.0), MouseButton::Left);
+        assert_eq!(*log.cancels.borrow(), vec![(317.0, 177.0)]);
+        assert!(
+            rinch_core::Drag::is_active(),
+            "the new press's drag is live"
+        );
+        release(&mut app, (229.0, 141.0), MouseButton::Left);
+        assert_eq!(log.ends.borrow().last(), Some(&(229.0, 141.0)));
+    }
+
+    /// A blur can come from a transient keyboard grab (a global hotkey, a WM
+    /// holding Alt+Tab) while the button is really held. On X11/Wayland the
+    /// implicit pointer grab would still deliver the release, so this drag
+    /// was healthy — and is cancelled anyway. Accepted: it fails safe (a
+    /// cancel, never a wrong commit), and the release that follows commits
+    /// nothing.
+    #[test]
+    fn a_blur_mid_drag_cancels_even_a_drag_whose_release_would_arrive() {
+        let (mut app, log) = onmousedown_app(events::MouseButton::Left);
+        press(&mut app, (211.0, 133.0), MouseButton::Left);
+        move_to(&mut app, (317.0, 177.0));
+        send(&mut app, PlatformEvent::WindowFocus(false));
+        send(&mut app, PlatformEvent::WindowFocus(true));
+        move_to(&mut app, (350.0, 190.0));
+        release(&mut app, (351.0, 191.0), MouseButton::Left);
+        assert_eq!(*log.cancels.borrow(), vec![(317.0, 177.0)]);
+        assert!(log.ends.borrow().is_empty());
+    }
+
+    /// `Drag` does not record which button armed it, so the "pressed twice"
+    /// proof is taken for any drag: a middle-button pan is cancelled by a
+    /// left chord press. (Before #381 the left *release* committed it.)
+    #[test]
+    fn a_left_chord_press_cancels_a_middle_button_drag() {
+        let (mut app, log) = onmousedown_app(events::MouseButton::Middle);
+        press(&mut app, (211.0, 133.0), MouseButton::Middle);
+        assert!(
+            rinch_core::Drag::is_active(),
+            "precondition: the pan is armed"
+        );
+        move_to(&mut app, (317.0, 177.0));
+        press(&mut app, (317.0, 177.0), MouseButton::Left);
+        assert_eq!(*log.cancels.borrow(), vec![(317.0, 177.0)]);
+        release(&mut app, (318.0, 178.0), MouseButton::Left);
+        release(&mut app, (401.0, 222.0), MouseButton::Middle);
+        assert!(log.ends.borrow().is_empty());
+    }
+
+    /// A "grab mode" drag armed with no button held (a shortcut, a timer, a
+    /// menu) and placed with a click cannot be told apart from #381's bug, so
+    /// the click cancels it — as rinch-web ends it on its first move.
+    #[test]
+    fn a_drag_armed_outside_any_press_is_cancelled_by_the_placing_click() {
+        let (mut app, log) = onmousedown_app(events::MouseButton::Middle);
+        arm(&log);
+        move_to(&mut app, (317.0, 177.0));
+        press(&mut app, (333.0, 181.0), MouseButton::Left);
+        release(&mut app, (333.0, 181.0), MouseButton::Left);
+        assert_eq!(*log.cancels.borrow(), vec![(317.0, 177.0)]);
+        assert!(log.ends.borrow().is_empty());
+    }
+}
