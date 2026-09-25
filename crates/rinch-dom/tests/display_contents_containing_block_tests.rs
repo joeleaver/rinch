@@ -276,7 +276,8 @@ mod painted {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         doc.set_attribute(body, "style", "margin: 0");
-        let sc = div(&mut doc, body, "padding-top: 700px; opacity: 0.5");
+        div(&mut doc, body, "height: 700px");
+        let sc = div(&mut doc, body, "opacity: 0.5");
         let clip = div(
             &mut doc,
             sc,
@@ -292,8 +293,9 @@ mod painted {
         doc.resolve_layout(800.0, 600.0);
         assert_eq!(on_screen(&doc, abs), (10.0, 20.0), "premise: on screen");
         assert!(
-            on_screen(&doc, clip).1 >= 600.0,
-            "premise: the clipper is below the window"
+            on_screen(&doc, sc).1 >= 600.0 && on_screen(&doc, clip).1 >= 600.0,
+            "premise: the stacking context's own box and the clipper are below \
+             the window, so only its hoisted absolute can reach the screen"
         );
         let painter = paint(&mut doc);
         let px = pixel_at(&painter, 100, 100);
