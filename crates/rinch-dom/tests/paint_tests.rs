@@ -2648,6 +2648,91 @@ mod software_video_inline {
              is painted into it, exactly as on the GPU backend"
         );
     }
+
+    // ── #361: the same inline path for a `GameViewport` ─────────────────────
+    //
+    // A `GameViewport` differs from video in one way that paint can see: it
+    // *is* a hole. It stamps no `data-viewport-ready`, and on the software
+    // shell its name is in the active set whenever it has a frame, so its
+    // ancestors' backgrounds are cut away under it. Its letterbox is therefore
+    // that hole — what the old post-paint blit left there, and see-through on a
+    // transparent window — not video's black bars.
+
+    /// The same card as [`paint_video`], but the viewport is a `GameViewport`:
+    /// no readiness attribute, and its name active, so it punches.
+    fn paint_game(overlay: bool) -> TinySkiaPainter {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let card = doc.create_element("div");
+        doc.set_attribute(
+            card,
+            "style",
+            "width: 200px; height: 100px; background-color: white; overflow: hidden;",
+        );
+        doc.append_child(body, card);
+
+        let viewport = doc.create_element("div");
+        doc.set_attribute(viewport, "style", "width: 100%; height: 100%;");
+        doc.set_attribute(viewport, "data-viewport", "g");
+        doc.append_child(card, viewport);
+
+        if overlay {
+            // A HUD panel over the left half of the game, painted after it.
+            let hud = doc.create_element("div");
+            doc.set_attribute(
+                hud,
+                "style",
+                "position: absolute; left: 0; top: 0; width: 60px; height: 100px; \
+                 background-color: rgb(0, 0, 255);",
+            );
+            doc.append_child(body, hud);
+        }
+
+        doc.resolve_layout(800.0, 600.0);
+
+        set_active_viewports(Some(HashSet::from(["g".to_string()])));
+        set_viewport_pixels(Some(HashMap::from([("g".to_string(), magenta_frame())])));
+        let mut painter = TinySkiaPainter::new(800, 600);
+        paint_skia(&mut doc, &mut painter);
+        set_viewport_pixels(None);
+        set_active_viewports(None);
+        painter
+    }
+
+    /// The game frame lands inline, and a HUD painted after it keeps its
+    /// pixels — the frame shows only where the HUD does not cover it.
+    #[test]
+    fn a_hud_painted_after_a_game_viewport_covers_it() {
+        let p = paint_game(true);
+        assert!(
+            is_opaque_blue(pixel_at(&p, 30, 50)),
+            "the HUD over the game keeps its pixels (#361), got {:?}",
+            pixel_at(&p, 30, 50)
+        );
+        assert!(
+            is_magenta(pixel_at(&p, 140, 50)),
+            "the game frame shows where the HUD does not cover it, got {:?}",
+            pixel_at(&p, 140, 50)
+        );
+    }
+
+    /// A punched viewport's letterbox is its hole, not a black bar: the
+    /// ancestors' backgrounds are cut away there and nothing else is drawn, so
+    /// on a transparent window it stays see-through, as it did under the blit.
+    #[test]
+    fn a_punched_viewport_letterbox_is_the_hole_not_black() {
+        let p = paint_game(false);
+        assert!(is_magenta(pixel_at(&p, 100, 50)), "the frame is painted");
+        for (x, y) in [(100u32, 10u32), (100, 90), (5, 5), (195, 95)] {
+            assert_eq!(
+                pixel_at(&p, x, y)[3],
+                0,
+                "the letterbox of a GameViewport at ({x}, {y}) is its hole — \
+                 no black backdrop, no card background — got {:?}",
+                pixel_at(&p, x, y)
+            );
+        }
+    }
 }
 
 // ── The two painters and the bounds of an `opacity` layer (K24, K35, K36) ───

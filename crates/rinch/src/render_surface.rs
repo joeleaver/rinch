@@ -1737,7 +1737,7 @@ mod compositor_routing_tests {
             ("RenderSurface / gpu", RENDER_SURFACE, GPU, false),
             ("video / software", VIDEO, SOFTWARE, false),
             ("video / gpu", VIDEO, GPU, true),
-            ("GameViewport / software", GAME_VIEWPORT, SOFTWARE, true),
+            ("GameViewport / software", GAME_VIEWPORT, SOFTWARE, false),
             ("GameViewport / gpu", GAME_VIEWPORT, GPU, true),
         ] {
             assert_eq!(
@@ -1788,23 +1788,28 @@ mod compositor_routing_tests {
         unregister_render_surface(video.id());
     }
 
-    /// The regression guard the design calls for: `GameViewport` shares
-    /// `create_render_surface_with_name`, so it must keep the compositor blit it
-    /// has always had on **both** backends.
+    /// #361: a `GameViewport` follows video. On software its frame is
+    /// collected by name for inline painting and never reaches the post-paint
+    /// blit, which wrote it over every HUD, modal and dropdown above it; on GPU
+    /// it keeps the compositor layer it has always had.
     #[test]
-    fn a_game_viewport_surface_still_reaches_the_compositor() {
+    fn a_game_viewport_frame_paints_inline_on_software() {
         let game = create_render_surface_with_name("game");
         game.writer().submit_frame(&[1, 2, 3, 255], 1, 1);
 
-        assert!(
-            !collect_video_frames_by_name().contains_key("game"),
-            "a GameViewport is not video and must not be painted inline"
+        let software = !has_gpu_compositor();
+        assert_eq!(
+            collect_video_frames_by_name().contains_key("game"),
+            software,
+            "a GameViewport's frame is painted inline on software only"
         );
-        assert!(
+        game.writer().submit_frame(&[1, 2, 3, 255], 1, 1);
+        assert_eq!(
             collect_surface_frames()
                 .iter()
                 .any(|(name, ..)| name == "game"),
-            "a GameViewport surface still takes the compositor path"
+            !software,
+            "a GameViewport reaches the compositor path on GPU only"
         );
 
         unregister_render_surface(game.id());
