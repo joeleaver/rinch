@@ -3205,6 +3205,29 @@ mod tests {
         assert_eq!(all_text(&gap.doc), "foo");
     }
 
+    /// An atom further away than the word boundary does not move the delete:
+    /// only one *between* the caret and the boundary clamps it. Off the fixed
+    /// point where the atom sits exactly at the boundary (review of #930).
+    #[test]
+    fn word_delete_ignores_an_atom_beyond_the_word() {
+        // "a<img>b c": "a" 1, the image 2, "b" 3, " " 4, "c" 5, end 6.
+        let back = html_editor(r#"<p>a<img src="x.png">b c</p>"#, 6)
+            .run("deleteWordBackward")
+            .unwrap();
+        assert_eq!(
+            html_of(&back),
+            html_of(&html_editor(r#"<p>a<img src="x.png">b </p>"#, 1))
+        );
+        // "foo bar baz<img>": caret after "foo" (4); forward takes " bar" only.
+        let fwd = html_editor(r#"<p>foo bar baz<img src="x.png"></p>"#, 4)
+            .run("deleteWordForward")
+            .unwrap();
+        assert_eq!(
+            html_of(&fwd),
+            html_of(&html_editor(r#"<p>foo baz<img src="x.png"></p>"#, 1))
+        );
+    }
+
     /// The default keymap binds the word deletes to the platform's chord:
     /// Ctrl on Windows / Linux, Alt (Option) on macOS; plain Backspace /
     /// Delete stay the char deletes.

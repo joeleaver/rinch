@@ -695,7 +695,7 @@ tools; Ctrl+Shift+R is the browser's hard reload; some Linux input methods
 (IBus's emoji picker) bind Ctrl+Shift+E. The commands themselves
 (`setTextAlignLeft` / `Center` / `Right` / `Justify`) always work from a toolbar.
 
-The word-delete chord is the one binding that is not `Mod`: on macOS Cmd+Backspace
+The word-delete chord is the one binding whose modifier differs by platform: on macOS Cmd+Backspace
 is the line delete, so the word deletes are Alt(Option)+Backspace / Alt+Delete
 there. The desktop binding is chosen at compile time. **On the web the keymap binds
 no word-delete chord**: the browser already turns the platform's chord into a
