@@ -114,6 +114,8 @@ mod text_context_menu;
 mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
+mod textarea_home_end_tests;
+#[cfg(test)]
 mod textarea_newline_tests;
 #[cfg(test)]
 mod textarea_vertical_arrow_tests;
