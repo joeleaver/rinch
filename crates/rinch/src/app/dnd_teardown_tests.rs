@@ -32,6 +32,9 @@ struct Fixture {
     /// `data-ondragend` fired, and the cursor its `ClickContext` carried.
     dragend: Rc<RefCell<Vec<(f32, f32)>>>,
     dragleave: Rc<Cell<u32>>,
+    /// The target's `data-ondragleave` and the source's `data-ondragend`, in
+    /// the order they fired.
+    order: Rc<RefCell<Vec<&'static str>>>,
 }
 
 /// A draggable source at (40,40)-(140,80) whose `data-ondragstart` hides the
@@ -44,7 +47,9 @@ fn fixture() -> Fixture {
 fn fixture_with(suppress_on_start: bool) -> Fixture {
     let dragend: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
     let dragleave = Rc::new(Cell::new(0u32));
+    let order: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
     let (end_sink, leave_sink) = (dragend.clone(), dragleave.clone());
+    let order_sink = order.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", "position: relative; width: 800px; height: 600px");
@@ -60,7 +65,9 @@ fn fixture_with(suppress_on_start: bool) -> Fixture {
             source.set_attribute("data-ondragstart", &start.0.to_string());
         }
         let sink = end_sink.clone();
+        let log = order_sink.clone();
         let end = events::register_handler(Rc::new(move || {
+            log.borrow_mut().push("dragend");
             let ctx = events::get_click_context();
             sink.borrow_mut().push((ctx.mouse_x, ctx.mouse_y));
         }));
@@ -75,7 +82,11 @@ fn fixture_with(suppress_on_start: bool) -> Fixture {
         let drop = events::register_handler(Rc::new(|| {}));
         target.set_attribute("data-ondrop", &drop.0.to_string());
         let sink = leave_sink.clone();
-        let leave = events::register_handler(Rc::new(move || sink.set(sink.get() + 1)));
+        let log = order_sink.clone();
+        let leave = events::register_handler(Rc::new(move || {
+            log.borrow_mut().push("dragleave");
+            sink.set(sink.get() + 1);
+        }));
         target.set_attribute("data-ondragleave", &leave.0.to_string());
         root.append_child(&target);
         root
@@ -86,6 +97,7 @@ fn fixture_with(suppress_on_start: bool) -> Fixture {
         app,
         dragend,
         dragleave,
+        order,
     }
 }
 
@@ -306,4 +318,48 @@ fn escape_over_a_surface_tells_the_surface_the_drag_left() {
         app.drag_over_surface.is_none(),
         "no surface is under a drag"
     );
+}
+
+/// Escape during a drag inside an overlay that closes on Escape cancels the
+/// drag and nothing else: the press is the drag's, as in a browser, and the
+/// overlay is dismissed only by the next Escape, when no drag is live.
+#[test]
+fn escape_during_a_drag_cancels_the_drag_not_the_overlay() {
+    let mut f = fixture();
+    let dismissed = Rc::new(Cell::new(0u32));
+    let d = dismissed.clone();
+    let _h = rinch_core::push_dismiss_handler(f.app.doc_key(), move || {
+        d.set(d.get() + 1);
+        true
+    });
+    start_drag_over_target(&mut f);
+    escape(&mut f.app);
+    assert_torn_down(&f, "Escape in an overlay");
+    assert_eq!(dismissed.get(), 0, "the first Escape is the drag's alone");
+    escape(&mut f.app);
+    assert_eq!(
+        dismissed.get(),
+        1,
+        "the next Escape reaches the dismiss stack"
+    );
+}
+
+/// On a cancel the target hears the drag leave before the source hears it
+/// end, on both cancel routes — the order a drop has always used.
+#[test]
+fn a_cancel_tells_the_target_before_the_source() {
+    for route in ["Escape", "PointerCancel"] {
+        let mut f = fixture();
+        start_drag_over_target(&mut f);
+        if route == "Escape" {
+            escape(&mut f.app);
+        } else {
+            send(&mut f.app, PlatformEvent::PointerCancel);
+        }
+        assert_eq!(
+            *f.order.borrow(),
+            vec!["dragleave", "dragend"],
+            "{route}: ondragleave on the target, then ondragend on the source"
+        );
+    }
 }
