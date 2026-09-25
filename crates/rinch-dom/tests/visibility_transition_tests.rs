@@ -353,7 +353,7 @@ fn a_transition_whose_property_stops_matching_is_cancelled() {
 /// vanished half way through the drawer's slide.
 #[test]
 fn a_transitioning_descendant_hides_after_its_root_not_during() {
-    let (mut doc, root, child, ..) = mounted("root delayed");
+    let (mut doc, root, child, grandchild, _) = mounted("root delayed");
     doc.set_attribute(child, "class", "kid cb");
     doc.resolve_layout(801.0, 600.0);
 
@@ -393,8 +393,20 @@ fn a_transitioning_descendant_hides_after_its_root_not_during() {
         VisibilityValue::Visible,
         "visible through it"
     );
+    tick(&mut doc, start + 301.0 + 50.0);
+    assert_eq!(
+        vis(&doc, grandchild),
+        VisibilityValue::Visible,
+        "the child's children inherit the child's animated value, not the \
+         root's flipped one"
+    );
     tick(&mut doc, start + 301.0 + 160.0);
     assert_eq!(vis(&doc, child), VisibilityValue::Hidden, "then hidden");
+    assert_eq!(
+        vis(&doc, grandchild),
+        VisibilityValue::Hidden,
+        "and its children"
+    );
 }
 
 /// `visibility_is_inherited` reads each rule at its own importance. Rule A
