@@ -2295,6 +2295,20 @@ was already vacuous. What it breaks is the **reverse inference**, which is why
 (`clip_elided`) rather than deducing it. Anything new that needs to know must be
 told too, not infer it from the predicate.
 
+**The clips the painter has open are a cull** (#910). `paint_document` and
+`paint_subtree` wrap the painter in `ClipTrackingPainter`, which mirrors every
+`push_clip` / `push_layer` / `pop_layer` onto a stack of cull rects (each
+clip's transformed bounding box grown by `INK_MARGIN_CSS_PX`), and
+`intersects_dirty_region` tests against its top as well as the damage and the
+window. Mirroring the painter rather than the call sites is what keeps it
+exact: a hoisted entry's clip chain, the #545 lift around a `position: fixed`
+entry and an elided bracket are whatever the painter was told. A box the cull
+would draw nothing for is dismissed by its parent's loop
+(`paints_nothing_without_visit`) without entering `paint_node`, so a 500-row
+scroller costs its ~20 visible rows. The ink margin is the window cull's
+policy, with its known loss: ink cast more than 64 CSS px from a box that sits
+outside a clip is not drawn back into it.
+
 `clip` is the only value that ever reached that gap, and that is measured rather
 than reasoned: css-overflow-3 §3 makes a `visible` compute to `auto` when the
 other axis is neither `visible` nor `clip`, Stylo's style adjuster implements

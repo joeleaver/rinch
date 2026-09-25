@@ -141,7 +141,7 @@ fn a_select_label_is_shaped_by_paint() {
             (ShapePaint, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
-            (PaintNodesVisited, 4),
+            (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
         ],
     );

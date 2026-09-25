@@ -30,6 +30,20 @@ pub enum PaintShape {
     Line(Line),
 }
 
+impl PaintShape {
+    /// The smallest axis-aligned rect containing the shape, in its own space.
+    pub fn bounding_box(&self) -> Rect {
+        use peniko::kurbo::Shape;
+        match self {
+            PaintShape::Rect(r) => r.bounding_box(),
+            PaintShape::RoundedRect(r) => r.bounding_box(),
+            PaintShape::BezPath(p) => p.bounding_box(),
+            PaintShape::Circle(c) => c.bounding_box(),
+            PaintShape::Line(l) => l.bounding_box(),
+        }
+    }
+}
+
 impl From<Rect> for PaintShape {
     fn from(r: Rect) -> Self {
         Self::Rect(r)

@@ -157,7 +157,7 @@ fn an_idle_app_redraws_nothing() {
             (DamageRects, 1),
             (RepaintedPx, 22400),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 15),
+            (PaintNodesVisited, 5),
             (StackingOrderBuilds, 2),
             (GlyphCacheHits, 15),
             (ClipMasks, 1),
@@ -202,7 +202,7 @@ fn a_focused_input_idles_for_free() {
             (DamageRects, 1),
             (RepaintedPx, 6656),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 15),
+            (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 5),
             (GlyphCacheMisses, 1),
@@ -343,7 +343,7 @@ fn a_running_loader_costs_the_same_bounded_frame_every_turn() {
                 (RepaintPartial, 1),
                 (DamageRects, 1),
                 (SurfacePx, 480000),
-                (PaintNodesVisited, 5),
+                (PaintNodesVisited, 4),
                 (StackingOrderBuilds, 2),
                 (ClipMasks, 1),
             ],
@@ -455,9 +455,13 @@ fn row_count(app: &RinchApp) -> usize {
 ///
 /// **Findings shared by all four `for` scenarios, pinned as they are; a fix must LOWER this number, and its PR updates the pin:**
 ///
-/// - **#910: paint visits every row** (`paint_nodes_visited` ~205), though the
-///   300x400 scroller shows 20 of them: the rows its clip cuts away are still
-///   walked. The wheel scenario shows the same with 500 rows (504 visits).
+/// - **#910, fixed: paint visits the rows the scroller shows** (28: html,
+///   body, the chain down to the scroller, and the ~23 rows its clip and ink
+///   margin let through), where it visited all 205. The clip the painter has
+///   open is a cull, and a row it cuts away is dismissed by the scroller's
+///   loop without a visit. The rows between the clip and the bottom of the
+///   damage are no longer drawn only to be clipped: `glyph_cache_hits` fell
+///   with them (201 → 159).
 /// - **#909: the damage is not clipped by the scroller.** `repainted_px` is
 ///   182 400 = 304 x 600: the scroller's column from the top of the window to
 ///   its **bottom** edge, where the scroller's own box ends at y=408. Rows the
@@ -499,9 +503,9 @@ fn a_keyed_for_moves_one_row() {
             (DamageRects, 1),
             (RepaintedPx, 182400),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 205),
+            (PaintNodesVisited, 28),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 201),
+            (GlyphCacheHits, 159),
             (ClipMasks, 2),
             (ClipMaskPx, 305004),
             (PaintSurfaceAllocs, 1),
@@ -552,9 +556,9 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
             (DamageRects, 1),
             (RepaintedPx, 182400),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 206),
+            (PaintNodesVisited, 28),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 200),
+            (GlyphCacheHits, 158),
             (ClipMasks, 2),
             (ClipMaskPx, 305004),
             (PaintSurfaceAllocs, 1),
@@ -590,9 +594,9 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (DamageRects, 1),
             (RepaintedPx, 182400),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 204),
+            (PaintNodesVisited, 28),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 200),
+            (GlyphCacheHits, 158),
             (ClipMasks, 2),
             (ClipMaskPx, 305004),
             (PaintSurfaceAllocs, 1),
@@ -633,9 +637,9 @@ fn a_keyed_for_replaces_every_row() {
             (DamageRects, 1),
             (RepaintedPx, 182400),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 205),
+            (PaintNodesVisited, 28),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 240),
+            (GlyphCacheHits, 192),
             (ClipMasks, 2),
             (ClipMaskPx, 305004),
             (PaintSurfaceAllocs, 1),
@@ -679,12 +683,12 @@ fn mount_scroller() -> (RinchApp, NodeHandle) {
 /// One wheel notch over a 500-row scroller: the scroller's box repaints, no
 /// element is restyled, nothing is laid out, nothing is shaped.
 ///
-/// **Findings, pinned as they are — #911 (hit tests) and #910 (paint
-/// visits); a fix must LOWER this number, and its PR updates the pin:** the notch runs **two** hit tests and
+/// **Finding, pinned as it is — #911 (hit tests); a fix must LOWER this
+/// number, and its PR updates the pin:** the notch runs **two** hit tests and
 /// recomputes **498** subtree extents — the scroll invalidates the hit cache
 /// (it has to: the rows moved), and the next test rebuilds every row's extent
-/// rather than the handful under the pointer. And paint visits **504** nodes for the ~20 rows on screen (see
-/// `a_keyed_for_moves_one_row`).
+/// rather than the handful under the pointer. Paint visits **24** nodes for the
+/// ~20 rows on screen; it visited all 504 until #910.
 #[test]
 fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
     let (mut app, scroller) = mount_scroller();
@@ -712,7 +716,7 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (DamageRects, 1),
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 504),
+            (PaintNodesVisited, 24),
             (StackingOrderBuilds, 2),
             (GlyphCacheHits, 121),
             (ClipMasks, 2),
@@ -844,9 +848,9 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (RepaintFullTheme, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 215),
+            (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 143),
+            (GlyphCacheHits, 136),
             (ClipMasks, 1),
             (ClipMaskPx, 33856),
         ],
@@ -883,9 +887,9 @@ fn a_scale_factor_change_restyles_and_repaints_in_full() {
             (RepaintFullResize, 1),
             (RepaintedPx, 1920000),
             (SurfacePx, 1920000),
-            (PaintNodesVisited, 215),
+            (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 122),
+            (GlyphCacheHits, 115),
             (GlyphCacheMisses, 21),
             (ClipMasks, 1),
             (ClipMaskPx, 132496),
@@ -958,9 +962,9 @@ fn full_repaint_resize() {
             (RepaintFullResize, 1),
             (RepaintedPx, 480600),
             (SurfacePx, 480600),
-            (PaintNodesVisited, 215),
+            (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 143),
+            (GlyphCacheHits, 136),
             (ClipMasks, 1),
             (ClipMaskPx, 33856),
             (PaintSurfaceAllocs, 1),
@@ -985,9 +989,9 @@ fn full_repaint_unattributed() {
             (RepaintFullUnattributed, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 215),
+            (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 143),
+            (GlyphCacheHits, 136),
             (ClipMasks, 1),
             (ClipMaskPx, 33856),
         ],
@@ -1029,7 +1033,7 @@ fn full_repaint_region_too_large() {
             (RepaintFullRegionTooLarge, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 4),
+            (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1075,9 +1079,9 @@ fn full_repaint_restyle() {
             (RepaintFullRestyle, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 216),
+            (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 143),
+            (GlyphCacheHits, 136),
             (ClipMasks, 1),
             (ClipMaskPx, 33856),
         ],
@@ -1101,9 +1105,9 @@ fn full_repaint_invalidated() {
             (RepaintFullInvalidated, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 215),
+            (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 143),
+            (GlyphCacheHits, 136),
             (ClipMasks, 1),
             (ClipMaskPx, 33856),
         ],
@@ -1137,7 +1141,7 @@ fn full_repaint_gpu() {
             (RepaintFullGpu, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 215),
+            (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
         ],
     );
