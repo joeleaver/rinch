@@ -670,15 +670,51 @@ pub fn create_video_surface(viewport_name: &str) -> RenderSurfaceHandle {
 /// surface named `viewport_id` plus a closure that submits into it.
 ///
 /// This is what the desktop shell hands `rinch_video::set_frame_sink_factory`.
+///
+/// **The sink owns the surface's registration** (issue #363): the surface stays
+/// in the registry while any clone of the sink is alive and is unregistered
+/// when the last one drops — which a player does on `cleanup()` (what
+/// `use_video_player` runs when its component unmounts) and when it is itself
+/// dropped. The factory runs before any DOM exists, with no render scope to tie
+/// the surface to, which is why the handle used to be `mem::forget`-leaked:
+/// every video ever played kept a registered surface, holding its last decoded
+/// frame, for the rest of the process.
 pub fn create_video_frame_sink(viewport_id: &str) -> Arc<dyn Fn(&[u8], u32, u32) + Send + Sync> {
     let handle = create_video_surface(viewport_id);
     let writer = handle.writer();
-    // Keep the handle alive by leaking it — the surface lives for
-    // the lifetime of the video player.
-    std::mem::forget(handle);
+    let lease = SurfaceLease {
+        id: handle.id,
+        thread: std::thread::current().id(),
+    };
     Arc::new(move |pixels: &[u8], w: u32, h: u32| {
+        let _ = &lease; // owned by the closure: released with its last clone
         writer.submit_frame(pixels, w, h);
     })
+}
+
+/// Unregisters a surface when dropped.
+///
+/// The registry is thread-local, so a drop on another thread cannot reach it:
+/// that release is queued for the main thread instead (the sink is `Send`, even
+/// though every player in the workspace drops it on the main thread), and runs
+/// at the next drain of the main-thread queue.
+struct SurfaceLease {
+    id: usize,
+    thread: std::thread::ThreadId,
+}
+
+impl Drop for SurfaceLease {
+    fn drop(&mut self) {
+        let id = self.id;
+        // A drop from inside a registry walk (a render callback letting go of a
+        // player) cannot take the registry mutably either; defer it the same way.
+        let registry_free = SURFACE_REGISTRY.with(|reg| reg.try_borrow_mut().is_ok());
+        if std::thread::current().id() == self.thread && registry_free {
+            unregister_render_surface(id);
+        } else {
+            rinch_core::queue_main_callback(Box::new(move || unregister_render_surface(id)));
+        }
+    }
 }
 
 fn create_named_surface(viewport_name: &str, is_video: bool) -> RenderSurfaceHandle {

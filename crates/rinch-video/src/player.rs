@@ -3,7 +3,7 @@
 //! [`VideoPlayer`] wraps a platform-specific backend (libmpv on desktop,
 //! HTMLVideoElement on WASM) and exposes reactive [`Signal`]s for UI binding.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -44,6 +44,14 @@ pub trait VideoPlayerBackend {
     fn set_volume(&self, vol: f32);
     fn set_muted(&self, muted: bool);
     fn set_source(&self, src: &str);
+    /// Release the backend's resources.
+    ///
+    /// A backend holding a frame sink (see [`set_frame_sink`]) must drop it
+    /// here: the sink owns the player's render surface, and the surface — with
+    /// the last frame it holds — stays registered until the sink is dropped
+    /// (issue #363). Dropping the backend releases it too.
+    ///
+    /// [`set_frame_sink`]: VideoPlayerBackend::set_frame_sink
     fn cleanup(&self);
 
     /// Poll for updates from the backend (e.g., mpv event thread).
@@ -95,6 +103,12 @@ pub struct VideoPlayer {
     /// window (issue #186). Monotonic within a source; reset by
     /// [`VideoPlayer::set_source`].
     pub has_frame: Signal<bool>,
+    /// Whether the frame-sink factory has already given this player its sink.
+    ///
+    /// The sink owns the player's render surface (issue #363), so it is made
+    /// once, on the first `play()`, and kept across pause and resume; `cleanup`
+    /// clears it, so a player played again after cleanup gets a fresh one.
+    pub(crate) frame_sink_installed: Rc<Cell<bool>>,
 }
 
 impl VideoPlayer {
@@ -112,6 +126,7 @@ impl VideoPlayer {
             buffered: Signal::new(0.0),
             state: Signal::new(PlaybackState::Idle),
             has_frame: Signal::new(false),
+            frame_sink_installed: Rc::new(Cell::new(false)),
         }
     }
 
@@ -200,7 +215,10 @@ impl VideoPlayer {
     /// player stops being polled when the component showing it is unmounted
     /// (issue #141). Call it directly only for a player built outside a render.
     pub fn cleanup(&self) {
+        // The backend drops its frame sink here, which unregisters the
+        // player's render surface (issue #363).
         self.inner.borrow().cleanup();
+        self.frame_sink_installed.set(false);
         crate::unregister_active_player(self);
         crate::decrement_video_loaded();
     }

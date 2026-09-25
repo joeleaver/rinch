@@ -77,6 +77,15 @@ fn cleanup_releases_the_players_surface() {
         "a cleaned-up player's surface is still registered: {:?}",
         registered_viewport_names()
     );
+
+    // Played again after cleanup, it gets a sink — and a surface — again.
+    player.play();
+    assert_eq!(
+        surfaces_named(&name),
+        1,
+        "a player replayed after cleanup has no surface to draw into"
+    );
+    player.cleanup();
 }
 
 /// Pausing and resuming is one surface, not one per `play()`.
