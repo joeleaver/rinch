@@ -114,6 +114,7 @@ pub(super) fn paint_select_value(
         transform,
         1.0,
         None,
+        None,
     );
 
     painter.pop_layer();

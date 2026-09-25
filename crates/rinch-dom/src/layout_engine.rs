@@ -453,7 +453,12 @@ impl RinchDocument {
         self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
         self.tree.dirty_ifc_text_roots.clear();
 
-        // Copy cached text layouts to nodes (use the exact layouts from measurement)
+        // Copy cached text layouts to nodes (use the exact layouts from
+        // measurement) — the root compute's text leaves and, since #904, the
+        // ones the detached atomic-inline computes measured this pass (an
+        // `inline-flex` label), which the root compute never reaches.
+        let mut text_layout_cache = text_layout_cache;
+        text_layout_cache.extend(std::mem::take(&mut self.tree.atomic_leaf_layouts));
         self.copy_cached_text_layouts(text_layout_cache);
 
         // Arm transitions now that the first layout has completed, so nothing

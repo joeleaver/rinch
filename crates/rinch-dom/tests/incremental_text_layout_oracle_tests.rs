@@ -133,6 +133,49 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
             }
         }
     }
+    // A text leaf that is no IFC member — a flex or grid item's text, in a
+    // block-level container or inside an `inline-flex` / `inline-grid` (#904)
+    // — is painted from the layout its measure built, cached on the node.
+    // Compared here, run by run, like an IFC root's — except the brush: paint
+    // draws a leaf in its parent's *current* colour, not the one it was shaped
+    // with (#904), so that colour is what is compared. An IFC member's is not:
+    // its root paints it, and a layout left from when it was a leaf is read by
+    // nothing that paints.
+    if let Some(cl) = node
+        .cached_text_parley
+        .as_ref()
+        .filter(|_| node.ifc_root.is_none())
+    {
+        out.push(format!(
+            "{:indent$}  leaf {}x{} lines={}",
+            "",
+            r(cl.width()),
+            r(cl.height()),
+            cl.len(),
+            indent = depth * 2
+        ));
+        let leaf_paint = node
+            .parent
+            .and_then(|p| doc.tree.get(p))
+            .and_then(|p| p.computed_style.color);
+        for (li, line) in cl.lines().enumerate() {
+            for item in line.items() {
+                if let parley::layout::PositionedLayoutItem::GlyphRun(gr) = item {
+                    out.push(format!(
+                        "{:indent$}  leaf line{li} run x={} base={} adv={} glyphs={} size={} paint={:?}",
+                        "",
+                        r(gr.offset()),
+                        r(gr.baseline()),
+                        r(gr.advance()),
+                        gr.glyphs().count(),
+                        r(gr.run().font_size()),
+                        leaf_paint,
+                        indent = depth * 2
+                    ));
+                }
+            }
+        }
+    }
     for &c in &node.children {
         walk(doc, c, depth + 1, out);
     }
@@ -1632,5 +1675,408 @@ fn a_theme_colour_change_reaches_the_pixels() {
     assert!(
         incremental == fresh_px,
         "incremental pixels differ from fresh"
+    );
+}
+
+// ── A text leaf: a flex item's text (#904) ───────────────────────────────────
+//
+// Text that is a direct child of a flex container is a Taffy leaf of its own
+// (`NodeContext::Text`), not an IFC member, and is painted from the layout its
+// measure built (`cached_text_parley`). In a block-level flex container that
+// measure is the root compute's; inside an `inline-flex` it is the detached
+// atomic-inline compute's (`measure_inline_blocks`), which kept nothing until
+// #904, so paint shaped the label again on every frame. Every text input has
+// to reach that cached layout on both routes.
+
+const LEAF_CSS: &str = "
+    .ichip { display: inline-flex; padding: 2px; }
+    .frow { display: flex; width: 200px; }
+    .ichip.hot, .frow.hot { color: rgb(200, 10, 10); }
+    .ichip.big, .frow.big { font-size: 23px; line-height: 29px; }
+    .ichip.spaced, .frow.spaced { letter-spacing: 3px; }
+    .ichip.narrow { max-width: 60px; }
+    .frow.narrow { width: 60px; }
+";
+
+/// `p > ["before ", span.ichip > "chip label text"]`, the `inline-flex` shape
+/// `Button` / `Badge` render. Returns the chip and its text.
+fn inline_flex_doc(doc: &mut RinchDocument, class: &str, label: &str) -> (NodeId, NodeId) {
+    let body = doc.body();
+    let p = doc.create_element("p");
+    let t1 = doc.create_text("before ");
+    doc.append_child(p, t1);
+    let c = doc.create_element("span");
+    doc.set_attribute(c, "class", class);
+    let ct = doc.create_text(label);
+    doc.append_child(c, ct);
+    doc.append_child(p, c);
+    doc.append_child(body, p);
+    (c, ct)
+}
+
+/// `div.frow > "chip label text"`: the block-level control.
+fn flex_row_doc(doc: &mut RinchDocument, class: &str, label: &str) -> (NodeId, NodeId) {
+    let body = doc.body();
+    let d = doc.create_element("div");
+    doc.set_attribute(d, "class", class);
+    let t = doc.create_text(label);
+    doc.append_child(d, t);
+    doc.append_child(body, d);
+    (d, t)
+}
+
+macro_rules! leaf_class_case {
+    ($name:ident, $builder:ident, $base:expr, $on:expr) => {
+        #[test]
+        fn $name() {
+            twin(
+                stringify!($name),
+                LEAF_CSS,
+                |doc, on| $builder(doc, if on { $on } else { $base }, "chip label text").0,
+                |doc, c| doc.set_attribute(*c, "class", $on),
+            );
+        }
+    };
+}
+
+leaf_class_case!(
+    an_inline_flex_label_takes_a_class_colour,
+    inline_flex_doc,
+    "ichip",
+    "ichip hot"
+);
+leaf_class_case!(
+    an_inline_flex_label_takes_a_class_font_size,
+    inline_flex_doc,
+    "ichip",
+    "ichip big"
+);
+leaf_class_case!(
+    an_inline_flex_label_takes_a_class_letter_spacing,
+    inline_flex_doc,
+    "ichip",
+    "ichip spaced"
+);
+leaf_class_case!(
+    an_inline_flex_label_rewraps_when_the_chip_narrows,
+    inline_flex_doc,
+    "ichip",
+    "ichip narrow"
+);
+leaf_class_case!(
+    a_flex_row_label_takes_a_class_colour,
+    flex_row_doc,
+    "frow",
+    "frow hot"
+);
+leaf_class_case!(
+    a_flex_row_label_takes_a_class_font_size,
+    flex_row_doc,
+    "frow",
+    "frow big"
+);
+leaf_class_case!(
+    a_flex_row_label_takes_a_class_letter_spacing,
+    flex_row_doc,
+    "frow",
+    "frow spaced"
+);
+leaf_class_case!(
+    a_flex_row_label_rewraps_when_the_row_narrows,
+    flex_row_doc,
+    "frow",
+    "frow narrow"
+);
+
+/// The colour reaching an `inline-flex` label through inheritance from an
+/// ancestor rather than a class on the chip.
+#[test]
+fn an_inline_flex_label_takes_an_ancestor_colour() {
+    twin(
+        "an_inline_flex_label_takes_an_ancestor_colour",
+        ".on .ichip { color: rgb(0, 150, 60); }",
+        |doc, on| {
+            let (c, _) = inline_flex_doc(doc, "ichip", "chip label text");
+            let p = doc.tree.get(c.0).unwrap().parent.unwrap();
+            let p = NodeId(p);
+            if on {
+                doc.set_attribute(p, "class", "on");
+            }
+            p
+        },
+        |doc, p| doc.set_attribute(*p, "class", "on"),
+    );
+}
+
+macro_rules! leaf_text_case {
+    ($name:ident, $builder:ident, $class:expr) => {
+        #[test]
+        fn $name() {
+            twin(
+                stringify!($name),
+                LEAF_CSS,
+                |doc, on| {
+                    $builder(
+                        doc,
+                        $class,
+                        if on {
+                            "a much longer chip label"
+                        } else {
+                            "chip label text"
+                        },
+                    )
+                    .1
+                },
+                |doc, t| doc.set_text_content(*t, "a much longer chip label"),
+            );
+        }
+    };
+}
+
+leaf_text_case!(
+    an_inline_flex_label_takes_new_text,
+    inline_flex_doc,
+    "ichip"
+);
+leaf_text_case!(a_flex_row_label_takes_new_text, flex_row_doc, "frow");
+
+/// The same `inline-flex` label painted from its cached layout and from
+/// paint's on-demand fallback (the cache taken away): the pixels must match.
+/// The cache is a cost saving, never a change in what is drawn. The positive
+/// control — the leaf does hold a cached layout — is what fails before #904,
+/// when paint only ever took the fallback.
+#[test]
+fn an_inline_flex_label_paints_the_same_from_its_cached_layout() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(BASE_CSS);
+    doc.load_css(LEAF_CSS);
+    let (_, t) = inline_flex_doc(&mut doc, "ichip hot", "chip label text");
+    settle(&mut doc);
+    assert!(
+        doc.tree.get(t.0).unwrap().cached_text_parley.is_some(),
+        "the inline-flex label keeps the layout its measure built"
+    );
+    let cached = paint_pixels(&mut doc);
+    let red = cached
+        .iter()
+        .filter(|p| p[3] > 0 && p[0] as i32 > p[1] as i32 + 80)
+        .count();
+    assert!(red > 0, "counter-oracle: the label draws red ink");
+    doc.tree.nodes[t.0].cached_text_parley = None;
+    let fallback = paint_pixels(&mut doc);
+    assert!(
+        cached == fallback,
+        "cached-layout pixels differ from the fallback's"
+    );
+}
+
+/// A finished `transition: color` on the element holding a text leaf, read off
+/// the pixels against a document built red. A transition tick writes
+/// `computed_style` without a cascade, so it reaches none of the cascade's
+/// text invalidation, and a leaf's cached layout still holds the brush it was
+/// measured with. Paint colours the leaf from the live style instead (#904).
+/// Before #904 an `inline-flex` label had no cached layout — paint shaped it
+/// every frame from the live style — so caching it must not freeze its colour
+/// (the flex-row twin was frozen already, #679).
+fn a_finished_colour_transition_reaches_the_label(kind: &str) {
+    let css = ".x { transition: color 150ms linear; } .x.hot { color: rgb(220, 0, 0); }
+        .flex { display: flex; } .iflex { display: inline-flex; }";
+    let make = |hot: bool| {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(css);
+        let body = d.body();
+        let e = d.create_element("div");
+        d.set_attribute(
+            e,
+            "class",
+            &format!("x {kind}{}", if hot { " hot" } else { "" }),
+        );
+        let t = d.create_text("some label text");
+        d.append_child(e, t);
+        d.append_child(body, e);
+        settle(&mut d);
+        (d, e)
+    };
+    let red = |px: &[[u8; 4]]| {
+        px.iter()
+            .filter(|p| p[3] > 0 && p[0] as i32 > p[1] as i32 + 80)
+            .count()
+    };
+    let (mut d, e) = make(false);
+    assert_eq!(
+        red(&paint_pixels(&mut d)),
+        0,
+        "counter-oracle: no red ink yet"
+    );
+    d.set_attribute(e, "class", &format!("x {kind} hot"));
+    d.resolve_layout(VP.0, VP.1);
+    let _ = paint_pixels(&mut d);
+    // Back-date the transition past its duration so the next tick completes
+    // it — `tick_transitions` reads the wall clock itself.
+    for t in d
+        .tree
+        .active_transitions
+        .get_mut(&e.0)
+        .expect("the class change starts a colour transition")
+        .values_mut()
+    {
+        t.start_time_ms -= 10_000.0;
+    }
+    d.tick_transitions();
+    d.resolve_layout(VP.0, VP.1);
+    let incremental = red(&paint_pixels(&mut d));
+    let (mut f, _) = make(true);
+    let fresh = red(&paint_pixels(&mut f));
+    assert!(fresh > 0, "counter-oracle: the fresh label draws red ink");
+    assert_eq!(
+        incremental, fresh,
+        "red ink after the transition, incremental vs fresh"
+    );
+}
+
+#[test]
+fn a_finished_colour_transition_reaches_an_inline_flex_label() {
+    a_finished_colour_transition_reaches_the_label("iflex");
+}
+
+#[test]
+fn a_finished_colour_transition_reaches_a_flex_row_label() {
+    a_finished_colour_transition_reaches_the_label("flex");
+}
+
+/// The animation twin: a `forwards` colour animation run to its end on an
+/// `inline-flex`, against a label built red. An animation tick writes
+/// `computed_style` without a cascade too (#904).
+#[test]
+fn a_finished_colour_animation_reaches_an_inline_flex_label() {
+    let css =
+        "@keyframes recolour { from { color: rgb(10, 20, 30); } to { color: rgb(220, 0, 0); } }
+        .iflex { display: inline-flex; } .iflex.anim { animation: recolour 150ms linear forwards; }
+        .iflex.hot { color: rgb(220, 0, 0); }";
+    let make = |class: &str| {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(css);
+        let body = d.body();
+        let e = d.create_element("div");
+        d.set_attribute(e, "class", class);
+        let t = d.create_text("some label text");
+        d.append_child(e, t);
+        d.append_child(body, e);
+        settle(&mut d);
+        (d, e)
+    };
+    let red = |px: &[[u8; 4]]| {
+        px.iter()
+            .filter(|p| p[3] > 0 && p[0] as i32 > p[1] as i32 + 80)
+            .count()
+    };
+    let (mut d, e) = make("iflex");
+    assert_eq!(
+        red(&paint_pixels(&mut d)),
+        0,
+        "counter-oracle: no red ink yet"
+    );
+    d.set_attribute(e, "class", "iflex anim");
+    d.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        red(&paint_pixels(&mut d)),
+        0,
+        "the animation starts from its first keyframe"
+    );
+    for a in d
+        .tree
+        .active_animations
+        .get_mut(&e.0)
+        .expect("the class change starts the animation")
+    {
+        a.start_time_ms -= 10_000.0;
+    }
+    d.tick_animations();
+    d.resolve_layout(VP.0, VP.1);
+    let incremental = red(&paint_pixels(&mut d));
+    let (mut f, _) = make("iflex hot");
+    let fresh = red(&paint_pixels(&mut f));
+    assert!(fresh > 0, "counter-oracle: the fresh label draws red ink");
+    assert_eq!(
+        incremental, fresh,
+        "red ink after the animation, incremental vs fresh"
+    );
+}
+
+/// A class colour on a text leaf's container, read off the pixels against a
+/// document built in that colour: paint draws the leaf in its parent's current
+/// colour (#904), with no compute and no re-shape.
+fn a_class_colour_reaches_the_leaf_pixels(
+    builder: fn(&mut RinchDocument, &str, &str) -> (NodeId, NodeId),
+    base: &str,
+    hot: &str,
+) {
+    let make = |class: &str| {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(LEAF_CSS);
+        let (c, _) = builder(&mut d, class, "chip label text");
+        settle(&mut d);
+        (d, c)
+    };
+    let red = |px: &[[u8; 4]]| {
+        px.iter()
+            .filter(|p| p[3] > 0 && p[0] as i32 > p[1] as i32 + 80)
+            .count()
+    };
+    let (mut d, c) = make(base);
+    assert_eq!(
+        red(&paint_pixels(&mut d)),
+        0,
+        "counter-oracle: no red ink yet"
+    );
+    d.set_attribute(c, "class", hot);
+    d.resolve_layout(VP.0, VP.1);
+    let incremental = paint_pixels(&mut d);
+    let (mut f, _) = make(hot);
+    let fresh = paint_pixels(&mut f);
+    assert!(
+        red(&fresh) > 0,
+        "counter-oracle: the fresh label draws red ink"
+    );
+    assert!(
+        incremental == fresh,
+        "incremental pixels differ from a fresh document"
+    );
+}
+
+#[test]
+fn a_class_colour_reaches_an_inline_flex_labels_pixels() {
+    a_class_colour_reaches_the_leaf_pixels(inline_flex_doc, "ichip", "ichip hot");
+}
+
+#[test]
+fn a_class_colour_reaches_a_flex_row_labels_pixels() {
+    a_class_colour_reaches_the_leaf_pixels(flex_row_doc, "frow", "frow hot");
+}
+
+/// `text-align` on a flex row whose text leaf wraps: applied when the
+/// compute's layouts are copied, not at paint, so unlike a colour it does need
+/// a compute (#904).
+#[test]
+fn a_flex_row_label_takes_a_class_text_align() {
+    twin(
+        "a_flex_row_label_takes_a_class_text_align",
+        ".frow.narrow { width: 60px; } .frow.right { text-align: right; }",
+        |doc, on| {
+            flex_row_doc(
+                doc,
+                if on {
+                    "frow narrow right"
+                } else {
+                    "frow narrow"
+                },
+                "chip label text",
+            )
+            .0
+        },
+        |doc, c| doc.set_attribute(*c, "class", "frow narrow right"),
     );
 }

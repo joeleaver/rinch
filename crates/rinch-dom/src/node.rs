@@ -2024,6 +2024,16 @@ pub struct NodeTree {
     /// ([`NodeTree::remove_subtree`]), so a recycled slab id never inherits a
     /// previous node's sizes.
     pub ifc_measure_cache: HashMap<RawNodeId, IfcRootMeasures>,
+    /// The Parley layouts the detached atomic-inline compute
+    /// (`RinchDocument::measure_inline_blocks`) built for the text leaves it
+    /// measured — the text of an `inline-flex` / `inline-grid`, which is a flex
+    /// or grid item and no IFC member — keyed like the root compute's own
+    /// text-layout cache, `(node, wrap width bits)`. Held only until this
+    /// layout pass hands them to `copy_cached_text_layouts` with the root
+    /// compute's, which is what makes them each leaf's `cached_text_parley`.
+    /// Before #904 they were dropped where they were built, so paint shaped
+    /// every such label again on every frame.
+    pub(crate) atomic_leaf_layouts: HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>,
     /// Nodes that have requested scroll-into-view (deferred until after layout).
     pub scroll_into_view_requests: Vec<RawNodeId>,
     /// Nodes that have requested a scroll to a fraction of their scroll
@@ -2210,6 +2220,7 @@ impl NodeTree {
             dirty_atomic_inlines: BTreeSet::new(),
             styled_unrendered: Vec::new(),
             ifc_measure_cache: HashMap::new(),
+            atomic_leaf_layouts: HashMap::new(),
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
