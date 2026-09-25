@@ -710,11 +710,14 @@ mod tests {
         }
         {
             let _deliverer = push_dispatching_doc(2);
-            dispatch(424_250, WsEvent::Open);
-            dispatch(424_251, WsEvent::Open);
+            // Twice each: the slot is taken out for the call and put back
+            // after it, and the second delivery must still carry the document.
+            for id in [424_250, 424_250, 424_251, 424_251] {
+                dispatch(id, WsEvent::Open);
+            }
             assert_eq!(current_dispatching_doc(), Some(2));
         }
-        assert_eq!(*seen.borrow(), [Some(1), None]);
+        assert_eq!(*seen.borrow(), [Some(1), Some(1), None, None]);
 
         HANDLERS.with(|h| {
             h.borrow_mut().remove(&424_250);
