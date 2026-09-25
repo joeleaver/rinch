@@ -220,7 +220,10 @@ fn home_goes_to_the_start_of_a_soft_wrapped_line() {
     type_str(&mut app, "abcd abcd abcd");
     let (_, first_y, _, _) = caret_rect(&mut app, id, 0);
     let (_, second_y, _, _) = caret_rect(&mut app, id, 5);
-    assert!(second_y > first_y, "the fixture wraps: {first_y} -> {second_y}");
+    assert!(
+        second_y > first_y,
+        "the fixture wraps: {first_y} -> {second_y}"
+    );
     caret_to(&mut app, 7);
     key(&mut app, KeyCode::Home, false);
     assert_eq!(caret(&app, id), 5, "the visual line's start");
@@ -228,7 +231,11 @@ fn home_goes_to_the_start_of_a_soft_wrapped_line() {
     key(&mut app, KeyCode::Home, false);
     assert_eq!(caret(&app, id), 10, "the last visual line's start");
     key(&mut app, KeyCode::End, false);
-    assert_eq!(caret(&app, id), 14, "the last visual line's end is the text's");
+    assert_eq!(
+        caret(&app, id),
+        14,
+        "the last visual line's end is the text's"
+    );
 }
 
 /// End on a soft-wrapped line. Chrome puts the caret at the wrap offset (10)
@@ -244,7 +251,11 @@ fn end_on_a_soft_wrapped_line_stays_on_it() {
     type_str(&mut app, "abcd abcd abcd");
     caret_to(&mut app, 7);
     key(&mut app, KeyCode::End, false);
-    assert_eq!(caret(&app, id), 9, "before the wrap's space (Chrome: 10, #941)");
+    assert_eq!(
+        caret(&app, id),
+        9,
+        "before the wrap's space (Chrome: 10, #941)"
+    );
     let (_, end_y, _, h) = caret_rect(&mut app, id, 9);
     let (_, line2_y, _, _) = caret_rect(&mut app, id, 5);
     assert!(

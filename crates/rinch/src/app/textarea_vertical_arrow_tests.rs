@@ -297,8 +297,6 @@ fn a_selection_moves_from_its_start_up_and_its_end_down() {
     let (mut app, id) = mount("textarea", None, 200);
     type_str(&mut app, "abc\nabc\nabc");
     // Line 2: anchor at column 0, head at column 2.
-    // (Left rather than Home: Home in a `<textarea>` goes to the start of the
-    // whole value on desktop, #933.)
     key(&mut app, KeyCode::ArrowUp, false);
     for _ in 0..3 {
         key(&mut app, KeyCode::ArrowLeft, false);
@@ -455,7 +453,17 @@ fn a_click_on_the_same_caret_drops_the_goal() {
 fn up_from_a_soft_wrap_point_moves_from_the_lower_line() {
     let (mut app, id) = mount("textarea", None, 70);
     type_str(&mut app, "abcd abcd abcd");
-    key(&mut app, KeyCode::Home, false);
+    // Ctrl+Home: plain Home goes to the start of the *visual* line (#933).
+    key_mods(
+        &mut app,
+        KeyCode::Home,
+        None,
+        Modifiers {
+            ctrl: true,
+            meta: cfg!(target_os = "macos"),
+            ..Modifiers::default()
+        },
+    );
     assert_eq!(caret(&app, id), 0);
     key(&mut app, KeyCode::ArrowDown, false);
     key(&mut app, KeyCode::ArrowDown, false);
