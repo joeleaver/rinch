@@ -19,7 +19,7 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
-use rinch_core::reactive::{Owner, current_owner, unowned};
+use rinch_core::reactive::{Owner, current_owner, unowned, untracked_handler};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
@@ -165,11 +165,17 @@ impl<F: ?Sized> Hook<F> {
 
     /// Run `call` on the callback inside its owner — or not at all, answering
     /// `None`, once the owner is disposed.
+    ///
+    /// **Untracked** (#931): an app effect that moves the selection, runs a
+    /// command or offers a key calls these hooks synchronously, and what a hook
+    /// reads (a popup's own `open` signal) must not become that effect's
+    /// dependency. The whole observer stack is suspended, not only its top —
+    /// see [`untracked_handler`].
     fn invoke<R>(&self, call: impl FnOnce(&F) -> R) -> Option<R> {
         match &self.owner {
             Some(owner) if !owner.is_alive() => None,
-            Some(owner) => Some(owner.run(|| call(&self.cb))),
-            None => Some(unowned(|| call(&self.cb))),
+            Some(owner) => Some(untracked_handler(|| owner.run(|| call(&self.cb)))),
+            None => Some(untracked_handler(|| unowned(|| call(&self.cb)))),
         }
     }
 }
@@ -460,7 +466,10 @@ impl EditorCore {
             // An empty delta means the projection produced no CRDT change at all, so
             // there is nothing for peers to apply.
             Ok(()) => match bridge.session.save_incremental() {
-                Ok(delta) if !delta.is_empty() => (bridge.outbound)(delta),
+                // App code, run inside whatever effect made the edit: untracked
+                // (#948). The core guard suspends tracking already; this keeps
+                // the sink untracked should it ever be reached from elsewhere.
+                Ok(delta) if !delta.is_empty() => untracked_handler(|| (bridge.outbound)(delta)),
                 Ok(_) => {}
                 Err(e) => bridge.last_error = Some(e),
             },
@@ -606,9 +615,25 @@ impl WeakEditorHandle {
 /// a caller holding a `RefCell` of its own that one of those effects borrows
 /// would panic inside a plain read (PR #882 review, E3). The one immutable
 /// borrow that does DOM work, [`EditorHandle::set_dark_mode`], flushes itself.
+///
+/// **Dependency tracking is suspended for as long as the borrow lives**
+/// (issue #943). What runs under a borrow of the core is the editor's code, a
+/// plugin's — `Plugin::apply`, `decorations` (the view's decoration diff),
+/// `handle_paste`, `init_state`, a plugin's command, an input rule — and the
+/// app's collaboration `outbound` sink (#948, which also wraps itself in
+/// `untracked_handler`), all synchronously inside whatever app effect called
+/// the handle. A plugin that reads an app signal would otherwise make that
+/// signal a dependency of every effect that moves the selection. Holding the
+/// suspension here rather than at each call site covers every site the handle
+/// reaches internally, including ones added later. The exception is the
+/// caller's own [`EditorHandle::update`] `build` closure, which
+/// [`EditorHandle::dispatch_inner`] runs with the suspension lifted — so plugin
+/// code *that closure* calls (`state.apply(..)` inside it) is tracked, as the
+/// caller's own code.
 struct CoreGuard<B> {
     borrow: B,
     _no_flush: rinch_core::reactive::EffectFlushSuppressed,
+    _untracked: rinch_core::reactive::TrackingSuspended,
 }
 
 impl<B: std::ops::Deref<Target = EditorCore>> std::ops::Deref for CoreGuard<B> {
@@ -641,6 +666,9 @@ impl<B: std::ops::Deref<Target = EditorCore>> std::ops::Deref for CoreGuard<B> {
 struct CoreMutGuard<'a> {
     borrow: Option<std::cell::RefMut<'a, EditorCore>>,
     no_flush: Option<rinch_core::reactive::EffectFlushSuppressed>,
+    /// See [`CoreGuard`]: tracking is suspended while the borrow is held.
+    /// `None` only while [`EditorHandle::dispatch`] runs a caller's `build`.
+    untracked: Option<rinch_core::reactive::TrackingSuspended>,
     /// `std::thread::panicking()` when the borrow was taken.
     panicking: bool,
 }
@@ -663,10 +691,11 @@ impl Drop for CoreMutGuard<'_> {
         let Some(owed) = self.borrow.as_deref_mut().map(EditorCore::take_owed) else {
             return;
         };
-        // Release in field order — the borrow, then the suppression — before
-        // any user code runs.
+        // Release in field order — the borrow, then the suppressions — before
+        // any user code runs. (The hooks are untracked on their own, #931.)
         self.borrow = None;
         self.no_flush = None;
+        self.untracked = None;
         if std::thread::panicking() && !self.panicking {
             return;
         }
@@ -686,6 +715,7 @@ impl EditorHandle {
         CoreGuard {
             borrow: self.inner.borrow(),
             _no_flush: no_flush,
+            _untracked: rinch_core::reactive::suspend_tracking(),
         }
     }
 
@@ -696,6 +726,7 @@ impl EditorHandle {
         CoreMutGuard {
             borrow: Some(self.inner.borrow_mut()),
             no_flush: Some(no_flush),
+            untracked: Some(rinch_core::reactive::suspend_tracking()),
             panicking: std::thread::panicking(),
         }
     }
@@ -709,6 +740,7 @@ impl EditorHandle {
         Ok(CoreMutGuard {
             borrow: Some(self.inner.try_borrow_mut()?),
             no_flush: Some(no_flush),
+            untracked: Some(rinch_core::reactive::suspend_tracking()),
             panicking: std::thread::panicking(),
         })
     }
@@ -734,7 +766,8 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
-        let state = EditorState::create(schema.clone(), doc, plugins.clone());
+        // Plugins' `init_state` runs here; untracked, as under the core (#943).
+        let state = untracked_handler(|| EditorState::create(schema.clone(), doc, plugins.clone()));
         EditorHandle {
             inner: Rc::new(RefCell::new(EditorCore {
                 state,
@@ -771,8 +804,13 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
-        let state = EditorState::create(schema.clone(), doc, plugins.clone());
-        let view = RinchDomEditorView::new(container, doc_ref, &state);
+        // Plugins' `init_state` and `decorations` run here; untracked, as under
+        // the core (#943).
+        let (state, view) = untracked_handler(|| {
+            let state = EditorState::create(schema.clone(), doc, plugins.clone());
+            let view = RinchDomEditorView::new(container, doc_ref, &state);
+            (state, view)
+        });
         EditorHandle {
             inner: Rc::new(RefCell::new(EditorCore {
                 state,
@@ -854,8 +892,13 @@ impl EditorHandle {
     /// collaborator's edit takes — does not: a browser does not scroll a
     /// contenteditable to its caret because the DOM changed elsewhere, and a user
     /// who scrolled away would be pulled back.
+    ///
+    /// **Tracking.** `build` is the caller's own code and runs tracked: an app
+    /// effect that reads a signal in it depends on that signal. The plugin code
+    /// the dispatch then runs (`Plugin::apply`, `decorations`, …) does not
+    /// subscribe the caller (#943).
     pub fn update(&self, build: impl FnOnce(&EditorState) -> Option<Transaction>) -> bool {
-        self.dispatch(build, false)
+        self.dispatch_inner(build, false, true)
     }
 
     /// [`Self::update`], with the scroll decision made by the caller: `input`
@@ -863,13 +906,35 @@ impl EditorHandle {
     /// a paste, an IME edit), which brings the caret into view whether or not the
     /// transaction set the selection explicitly — an input rule's rewrite or an
     /// IME's surrounding-text delete maps it instead.
+    ///
+    /// `build` here is the handle's own (input rules, a plugin's paste claim)
+    /// and runs untracked; see [`CoreGuard`].
     fn dispatch(
         &self,
         build: impl FnOnce(&EditorState) -> Option<Transaction>,
         input: bool,
     ) -> bool {
+        self.dispatch_inner(build, input, false)
+    }
+
+    /// [`Self::dispatch`]; `caller_build` runs `build` with tracking resumed,
+    /// for [`Self::update`], whose `build` is the caller's code.
+    fn dispatch_inner(
+        &self,
+        build: impl FnOnce(&EditorState) -> Option<Transaction>,
+        input: bool,
+        caller_build: bool,
+    ) -> bool {
         let mut core = self.core_mut();
-        let Some(tr) = build(&core.state) else {
+        if caller_build {
+            // Resume tracking for the caller's closure, and only for it.
+            core.untracked = None;
+        }
+        let built = build(&core.state);
+        if caller_build {
+            core.untracked = Some(rinch_core::reactive::suspend_tracking());
+        }
+        let Some(tr) = built else {
             return false;
         };
         let prev = core.state.clone();
@@ -1092,7 +1157,8 @@ impl EditorHandle {
     /// with no internal borrow held.
     pub fn dispatch_link_click(&self, click: &LinkClick) -> bool {
         let cb = self.core().on_link_click.clone();
-        cb.is_some_and(|cb| cb(click))
+        // Untracked, like the hooks (#931).
+        cb.is_some_and(|cb| untracked_handler(|| cb(click)))
     }
 
     /// Whether an [`on_link_click`](Self::on_link_click) callback is
@@ -1140,7 +1206,8 @@ impl EditorHandle {
     pub(crate) fn notify_link_hover(&self, hover: Option<&LinkHover>) {
         let cb = self.core().on_link_hover.clone();
         if let Some(cb) = cb {
-            cb(hover);
+            // Untracked, like the hooks (#931).
+            untracked_handler(|| cb(hover));
         }
     }
 
@@ -6230,6 +6297,194 @@ mod tests {
             assert_eq!(late.get(), 1, "an ownerless callback keeps firing");
         }
 
+        /// Issue #931: every hook runs untracked. `register` installs the hook
+        /// under test with a body that calls the `reads` it is handed (which
+        /// counts a firing and reads a signal nothing else reads); `drive`
+        /// makes the hook fire, and is called from an app effect created
+        /// inside another effect's run — two frames deep on the observer
+        /// stack, which is what tells whole-stack suspension apart from plain
+        /// `untracked` (#932). Writing the hook's signal must re-run neither
+        /// effect.
+        fn assert_hook_untracked(register: impl FnOnce(Rc<dyn Fn()>), drive: impl Fn() + 'static) {
+            use rinch_core::reactive::{Effect, Signal};
+            let (own, store) = (Signal::new(0u32), Signal::new(0u32));
+            let fired = Rc::new(Cell::new(0u32));
+            register({
+                let fired = fired.clone();
+                Rc::new(move || {
+                    fired.set(fired.get() + 1);
+                    let _ = store.get();
+                })
+            });
+            let drive = Rc::new(drive);
+            let (outer, inner) = (Rc::new(Cell::new(0u32)), Rc::new(Cell::new(0u32)));
+            let slot: Rc<RefCell<Option<Effect>>> = Rc::default();
+            let _outer = Effect::new({
+                let (outer, inner, slot) = (outer.clone(), inner.clone(), slot.clone());
+                move || {
+                    outer.set(outer.get() + 1);
+                    let (inner, drive) = (inner.clone(), drive.clone());
+                    slot.replace(Some(Effect::new(move || {
+                        let _ = own.get();
+                        inner.set(inner.get() + 1);
+                        drive();
+                    })));
+                }
+            });
+            assert_eq!(fired.get(), 1, "control: the hook fired inside the effect");
+            store.set(1);
+            assert_eq!(
+                (outer.get(), inner.get()),
+                (1, 1),
+                "a signal only the hook read re-ran the app effect that drove it"
+            );
+            own.set(1);
+            assert_eq!(inner.get(), 2, "positive control: the app effect is live");
+            assert_eq!(fired.get(), 2, "and its re-run fired the hook again");
+        }
+
+        /// A caret that moves on every call: `a`, `b`, `a`, `b`, …
+        fn alternating(a: usize, b: usize) -> impl Fn() -> Selection {
+            let flip = Cell::new(false);
+            move || {
+                flip.set(!flip.get());
+                Selection::cursor(Pos(if flip.get() { a } else { b }))
+            }
+        }
+
+        #[test]
+        fn the_selection_hook_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs().handle;
+            let next = alternating(3, 4);
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| h.on_selection_change(move |_| reads()),
+                move || driven.set_selection(next()),
+            );
+        }
+
+        /// The same, for a hook a component registered: it runs inside its
+        /// owner, which is a different branch of `Hook::invoke`.
+        #[test]
+        fn an_owned_hook_run_from_an_effect_subscribes_nobody() {
+            use rinch_core::reactive::Scope;
+            let h = two_paragraphs().handle;
+            let scope = Scope::new();
+            let next = alternating(3, 4);
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| scope.run(|| h.on_selection_change(move |_| reads())),
+                move || driven.set_selection(next()),
+            );
+        }
+
+        #[test]
+        fn the_change_hook_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs().handle;
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| h.on_change(move || reads()),
+                move || {
+                    driven.insert_text("x");
+                },
+            );
+        }
+
+        #[test]
+        fn the_key_hook_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs().handle;
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| {
+                    h.on_key(move |_| {
+                        reads();
+                        false
+                    })
+                },
+                move || {
+                    driven.offer_key(&key("Escape"));
+                },
+            );
+        }
+
+        #[test]
+        fn the_caret_moved_hook_run_from_an_effect_subscribes_nobody() {
+            // Empty paragraphs, laid out by hand: the mock measures no text,
+            // and a caret needs somewhere to land (0[p 1]2[p 3]4).
+            let s = schema();
+            let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+            let h = mount(doc_node(&s, vec![empty(), empty()]));
+            let blocks = children(&h, h.container_id);
+            {
+                let mut m = h.mock.borrow_mut();
+                for (i, b) in blocks.iter().enumerate() {
+                    m.__set_node_layout(*b, 0.0, i as f32 * 20.0, 200.0, 20.0);
+                }
+            }
+            let next = alternating(3, 1);
+            let driven = h.handle.clone();
+            assert_hook_untracked(
+                |reads| h.handle.on_caret_moved(move || reads()),
+                move || {
+                    driven.set_selection(next());
+                    driven.update_caret();
+                },
+            );
+        }
+
+        /// `go <a>here</a> and <a>there</a>`: "here" is 4..8, "there" 13..18.
+        fn linked() -> EditorHandle {
+            let h = crate::create_editor();
+            assert!(h.load_html(r#"<p>go <a href="a:1">here</a> and <a href="b:2">there</a></p>"#));
+            h
+        }
+
+        #[test]
+        fn the_link_click_hook_run_from_an_effect_subscribes_nobody() {
+            let h = linked();
+            let click = crate::LinkClick {
+                link: h.link_at(Pos(4)).expect("on a link"),
+                primary: true,
+                ctrl: true,
+                meta: false,
+                shift: false,
+                alt: false,
+            };
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| {
+                    h.on_link_click(move |_| {
+                        reads();
+                        true
+                    })
+                },
+                move || {
+                    driven.dispatch_link_click(&click);
+                },
+            );
+        }
+
+        #[test]
+        fn the_link_hover_hook_run_from_an_effect_subscribes_nobody() {
+            let h = linked();
+            let hovers = [4, 13].map(|p| crate::LinkHover {
+                link: h.link_at(Pos(p)).expect("on a link"),
+                rect: rinch_core::reactive::ElementBounds::default(),
+            });
+            let flip = Cell::new(0usize);
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| h.on_link_hover(move |_| reads()),
+                move || {
+                    // A different link each run, so each one is a change.
+                    flip.set(flip.get() + 1);
+                    let hover = hovers[flip.get() % 2].clone();
+                    crate::registry::set_link_hover(Some(931), Some((driven.clone(), hover)));
+                },
+            );
+            crate::registry::set_link_hover(Some(931), None);
+        }
+
         /// `<p>hello</p><p>world</p>`: "hello" is 1..6, "world" is 8..13.
         fn two_paragraphs() -> Harness {
             let s = schema();
@@ -6488,6 +6743,428 @@ mod tests {
             deliver();
             assert_eq!(block_text(&guest, 0), ">hello!");
             assert_eq!(*seen.borrow(), vec![Selection::cursor(Pos(4))]);
+        }
+    }
+
+    /// Issue #943: plugin code the handle runs — `init_state`, `apply`,
+    /// `decorations`, `handle_paste`, a plugin's command, an input rule —
+    /// runs untracked, so a plugin that reads an app signal does not subscribe
+    /// the app effect that happened to drive the editor. The caller's own
+    /// `update(|state| …)` build closure is the caller's code and stays
+    /// tracked (the positive control below).
+    mod plugin_tracking {
+        use super::*;
+        use rinch_core::reactive::{Effect, Signal};
+        use rinch_editor_core::PluginKey;
+        use rinch_editor_core::decoration::DecorationSet;
+        use std::any::Any;
+        use std::cell::Cell;
+
+        /// Where the test plugin reads its signal.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Site {
+            Init,
+            Apply,
+            Decorations,
+            Paste,
+            Command,
+        }
+
+        /// A plugin that calls `reads` from exactly one [`Site`].
+        struct Reads {
+            site: Site,
+            reads: Rc<dyn Fn()>,
+        }
+
+        impl Reads {
+            fn at(&self, site: Site) {
+                if self.site == site {
+                    (self.reads)();
+                }
+            }
+        }
+
+        impl Plugin for Reads {
+            fn key(&self) -> PluginKey {
+                PluginKey("test.reads-943")
+            }
+            fn commands(&self) -> Vec<(&'static str, rinch_editor_core::Command)> {
+                let reads = self.reads.clone();
+                let on = self.site == Site::Command;
+                vec![(
+                    "test.reads943",
+                    Rc::new(move |_state: &EditorState, _dispatch| {
+                        if on {
+                            reads();
+                        }
+                        true
+                    }),
+                )]
+            }
+            fn init_state(&self, _doc: &Node) -> Option<Rc<dyn Any>> {
+                self.at(Site::Init);
+                None
+            }
+            fn apply(
+                &self,
+                _tr: &Transaction,
+                _old: &EditorState,
+                _new_doc: &Node,
+                _prev: Option<&dyn Any>,
+            ) -> Option<Rc<dyn Any>> {
+                self.at(Site::Apply);
+                None
+            }
+            fn decorations(&self, _state: &EditorState) -> DecorationSet {
+                self.at(Site::Decorations);
+                DecorationSet::empty()
+            }
+            fn handle_paste(
+                &self,
+                _state: &EditorState,
+                _paste: &PasteContent,
+            ) -> Option<Transaction> {
+                self.at(Site::Paste);
+                None
+            }
+        }
+
+        fn two_paragraphs() -> EditorHandle {
+            let s = schema();
+            mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle
+        }
+
+        /// A caret that moves on every call.
+        fn alternating(a: usize, b: usize) -> impl Fn() -> Selection {
+            let flip = Cell::new(false);
+            move || {
+                flip.set(!flip.get());
+                Selection::cursor(Pos(if flip.get() { a } else { b }))
+            }
+        }
+
+        /// Install a [`Reads`] plugin reading `store` at `site` on `h`, then
+        /// `drive` the editor from an app effect created inside another
+        /// effect's run (two frames deep on the observer stack, as #931's
+        /// hook fixtures are). Writing `store` must re-run neither effect.
+        fn assert_plugin_untracked(h: &EditorHandle, site: Site, drive: impl Fn() + 'static) {
+            let (own, store) = (Signal::new(0u32), Signal::new(0u32));
+            let fired = Rc::new(Cell::new(0u32));
+            let reads: Rc<dyn Fn()> = Rc::new({
+                let fired = fired.clone();
+                move || {
+                    fired.set(fired.get() + 1);
+                    let _ = store.get();
+                }
+            });
+            assert!(h.add_plugin(Rc::new(Reads { site, reads })));
+            let drive = Rc::new(drive);
+            let (outer, inner) = (Rc::new(Cell::new(0u32)), Rc::new(Cell::new(0u32)));
+            let slot: Rc<RefCell<Option<Effect>>> = Rc::default();
+            let before = fired.get();
+            let _outer = Effect::new({
+                let (outer, inner, slot) = (outer.clone(), inner.clone(), slot.clone());
+                move || {
+                    outer.set(outer.get() + 1);
+                    let (inner, drive) = (inner.clone(), drive.clone());
+                    slot.replace(Some(Effect::new(move || {
+                        let _ = own.get();
+                        inner.set(inner.get() + 1);
+                        drive();
+                    })));
+                }
+            });
+            let after_first = fired.get();
+            assert!(
+                after_first > before,
+                "control: the plugin ran inside the effect"
+            );
+            store.set(1);
+            assert_eq!(
+                (outer.get(), inner.get()),
+                (1, 1),
+                "a signal only the plugin read re-ran the app effect that drove the editor"
+            );
+            own.set(1);
+            assert_eq!(inner.get(), 2, "positive control: the app effect is live");
+            assert!(
+                fired.get() > after_first,
+                "and its re-run ran the plugin again"
+            );
+        }
+
+        /// The issue's repro: a mounted editor asks `decorations()` on every
+        /// transaction (the view's decoration diff).
+        #[test]
+        fn decorations_asked_from_an_effect_subscribe_nobody() {
+            let h = two_paragraphs();
+            let next = alternating(3, 4);
+            let driven = h.clone();
+            assert_plugin_untracked(&h, Site::Decorations, move || driven.set_selection(next()));
+        }
+
+        #[test]
+        fn apply_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs();
+            let next = alternating(3, 4);
+            let driven = h.clone();
+            assert_plugin_untracked(&h, Site::Apply, move || driven.set_selection(next()));
+        }
+
+        /// `insert_text` runs the handle's own transaction builder (input
+        /// rules included), which is internal and untracked too.
+        #[test]
+        fn apply_run_by_insert_text_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs();
+            let driven = h.clone();
+            assert_plugin_untracked(&h, Site::Apply, move || {
+                driven.insert_text("x");
+            });
+        }
+
+        #[test]
+        fn handle_paste_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs();
+            let driven = h.clone();
+            assert_plugin_untracked(&h, Site::Paste, move || {
+                driven.paste(&PasteContent::text("y"));
+            });
+        }
+
+        #[test]
+        fn a_plugin_command_run_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs();
+            let driven = h.clone();
+            assert_plugin_untracked(&h, Site::Command, move || {
+                driven.command("test.reads943");
+            });
+        }
+
+        /// `can_run` is a query (the immutable borrow), and still runs the
+        /// command: a toolbar's `{|| h.can_run(..)}` must not subscribe to what
+        /// the command reads.
+        #[test]
+        fn a_plugin_command_queried_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs();
+            let driven = h.clone();
+            assert_plugin_untracked(&h, Site::Command, move || {
+                driven.can_run("test.reads943");
+            });
+        }
+
+        /// `load_html` rebuilds the state, running `init_state`.
+        #[test]
+        fn init_state_run_by_a_load_from_an_effect_subscribes_nobody() {
+            let h = two_paragraphs();
+            let driven = h.clone();
+            assert_plugin_untracked(&h, Site::Init, move || {
+                driven.load_html("<p>again</p>");
+            });
+        }
+
+        /// `add_plugin` rebuilds the state too, and a handle built inside an
+        /// effect (a component re-rendered by one) initialises its plugins and
+        /// projects its decorations there.
+        #[test]
+        fn add_plugin_and_construction_from_an_effect_subscribe_nobody() {
+            for site in [Site::Init, Site::Decorations] {
+                let store = Signal::new(0u32);
+                let reads: Rc<dyn Fn()> = Rc::new(move || {
+                    let _ = store.get();
+                });
+                let runs = Rc::new(Cell::new(0u32));
+                let _added = Effect::new({
+                    let (runs, reads) = (runs.clone(), reads.clone());
+                    move || {
+                        runs.set(runs.get() + 1);
+                        let h = two_paragraphs();
+                        h.add_plugin(Rc::new(Reads {
+                            site,
+                            reads: reads.clone(),
+                        }));
+                    }
+                });
+                let built = Rc::new(Cell::new(0u32));
+                let _built = Effect::new({
+                    let (built, reads) = (built.clone(), reads.clone());
+                    move || {
+                        built.set(built.get() + 1);
+                        let s = schema();
+                        let mut plugins = default_plugins();
+                        plugins.push(Rc::new(Reads {
+                            site,
+                            reads: reads.clone(),
+                        }));
+                        let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+                        let doc: Rc<RefCell<dyn DomDocument>> = mock;
+                        let id = doc.borrow_mut().create_element("div");
+                        let container = NodeHandle::new(id, Rc::downgrade(&doc));
+                        let _h = EditorHandle::new(
+                            container,
+                            Rc::downgrade(&doc),
+                            Rc::new(s.clone()),
+                            doc_node(&s, vec![para(&s, "x")]),
+                            plugins,
+                        );
+                    }
+                });
+                // `create_editor`'s deferred-mount path.
+                let unmounted = Rc::new(Cell::new(0u32));
+                let _unmounted = Effect::new({
+                    let (unmounted, reads) = (unmounted.clone(), reads.clone());
+                    move || {
+                        unmounted.set(unmounted.get() + 1);
+                        let s = schema();
+                        let mut plugins = default_plugins();
+                        plugins.push(Rc::new(Reads {
+                            site,
+                            reads: reads.clone(),
+                        }));
+                        let _h = EditorHandle::unmounted(
+                            Rc::new(s.clone()),
+                            doc_node(&s, vec![para(&s, "x")]),
+                            plugins,
+                        );
+                    }
+                });
+                store.set(1);
+                assert_eq!(runs.get(), 1, "add_plugin subscribed its effect");
+                assert_eq!(built.get(), 1, "EditorHandle::new subscribed its effect");
+                assert_eq!(
+                    unmounted.get(),
+                    1,
+                    "EditorHandle::unmounted subscribed its effect"
+                );
+            }
+        }
+
+        /// A peer's delta rebuilds the state and re-projects the view, running
+        /// the plugins, under `collab_receive`.
+        #[cfg(feature = "collaboration")]
+        #[test]
+        fn collab_receive_from_an_effect_subscribes_nobody() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            let wire: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
+            let snapshot = host
+                .start_collaboration_host({
+                    let wire = wire.clone();
+                    move |d| wire.borrow_mut().push(d)
+                })
+                .unwrap();
+            guest.start_collaboration_guest(&snapshot, |_| {}).unwrap();
+            let store = Signal::new(0u32);
+            let fired = Rc::new(Cell::new(0u32));
+            let reads: Rc<dyn Fn()> = Rc::new({
+                let fired = fired.clone();
+                move || {
+                    fired.set(fired.get() + 1);
+                    let _ = store.get();
+                }
+            });
+            // `Apply` covers the rebuild's transaction; decorations are asked
+            // by the view's diff in the same call.
+            assert!(guest.add_plugin(Rc::new(Reads {
+                site: Site::Apply,
+                reads,
+            })));
+            assert!(host.insert_text("!"));
+            let deltas: Vec<Vec<u8>> = wire.borrow_mut().drain(..).collect();
+            assert!(!deltas.is_empty(), "control: the host broadcast");
+            let runs = Rc::new(Cell::new(0u32));
+            let _receives = Effect::new({
+                let (runs, guest) = (runs.clone(), guest.clone());
+                move || {
+                    runs.set(runs.get() + 1);
+                    for d in &deltas {
+                        guest.collab_receive(d);
+                    }
+                }
+            });
+            assert!(fired.get() > 0, "control: the rebuild ran the plugin");
+            store.set(1);
+            assert_eq!(runs.get(), 1, "collab_receive subscribed its effect");
+        }
+
+        /// Issue #948: the collaboration `outbound` sink is app code (a
+        /// transport that may read a `connected` signal) called from
+        /// `commit`, inside whatever effect made the local edit.
+        #[cfg(feature = "collaboration")]
+        #[test]
+        fn the_outbound_sink_run_from_an_effect_subscribes_nobody() {
+            let (own, connected) = (Signal::new(0u32), Signal::new(true));
+            let sent = Rc::new(Cell::new(0u32));
+            let host = two_paragraphs();
+            host.start_collaboration_host({
+                let sent = sent.clone();
+                move |_delta| {
+                    if connected.get() {
+                        sent.set(sent.get() + 1);
+                    }
+                }
+            })
+            .unwrap();
+            let (outer, inner) = (Rc::new(Cell::new(0u32)), Rc::new(Cell::new(0u32)));
+            let slot: Rc<RefCell<Option<Effect>>> = Rc::default();
+            let _outer = Effect::new({
+                let (outer, inner, slot, host) =
+                    (outer.clone(), inner.clone(), slot.clone(), host.clone());
+                move || {
+                    outer.set(outer.get() + 1);
+                    let (inner, host) = (inner.clone(), host.clone());
+                    slot.replace(Some(Effect::new(move || {
+                        let _ = own.get();
+                        inner.set(inner.get() + 1);
+                        host.insert_text("x");
+                    })));
+                }
+            });
+            assert_eq!(sent.get(), 1, "control: the edit reached the sink");
+            connected.set(false);
+            assert_eq!(
+                (outer.get(), inner.get()),
+                (1, 1),
+                "the sink's read subscribed the effect that made the edit"
+            );
+            connected.set(true);
+            own.set(1);
+            assert_eq!(inner.get(), 2, "positive control: the app effect is live");
+            assert_eq!(sent.get(), 2, "and its edit was sent");
+        }
+
+        /// Positive control: the caller's own `update` build closure is the
+        /// caller's code, and what it reads **does** subscribe the effect —
+        /// while a plugin read in the same dispatch still does not.
+        #[test]
+        fn the_update_build_closure_stays_tracked() {
+            let h = two_paragraphs();
+            let (mine, store) = (Signal::new(0u32), Signal::new(0u32));
+            assert!(h.add_plugin(Rc::new(Reads {
+                site: Site::Apply,
+                reads: Rc::new(move || {
+                    let _ = store.get();
+                }),
+            })));
+            let runs = Rc::new(Cell::new(0u32));
+            let next = alternating(3, 4);
+            let _e = Effect::new({
+                let (runs, h) = (runs.clone(), h.clone());
+                move || {
+                    runs.set(runs.get() + 1);
+                    let sel = next();
+                    h.update(|state| {
+                        let _ = mine.get();
+                        let mut tr = state.tr();
+                        tr.set_selection(sel);
+                        Some(tr)
+                    });
+                }
+            });
+            store.set(1);
+            assert_eq!(runs.get(), 1, "the plugin's read subscribed the effect");
+            mine.set(1);
+            assert_eq!(runs.get(), 2, "the build closure's own read must track");
         }
     }
 

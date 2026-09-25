@@ -200,7 +200,9 @@ pub fn dispatch_keyboard_event(data: &KeyEventData) -> bool {
 
 fn dispatch_keyboard_event_unbatched(data: &KeyEventData) -> bool {
     let intercepted = match crate::reactive::read_doc_scoped_slot(&KEYBOARD_INTERCEPTOR) {
-        Some(cb) => cb(data),
+        // Untracked (#931): `dispatch_keyboard_event` is public, so it can be
+        // called from inside an effect.
+        Some(cb) => crate::reactive::untracked_handler(|| cb(data)),
         None => false,
     };
     if intercepted {

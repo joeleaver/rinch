@@ -78,12 +78,13 @@ pub use timer::{TimeoutHandle, clear_timeout, fire_timeout, set_timeout, set_tim
 // Re-export reactive types for convenience
 pub use reactive::{
     Effect, ElementBounds, Memo, OwnedCounts, Owner, PollRate, Scope, Signal,
-    SignalChangeSubscription, batch, clear_main_callbacks, clear_on_signal_change,
-    clear_signals_changed, current_owner, derived, drain_main_callbacks, drain_polls,
-    flush_pending_effects, poll_signal, queue_main_callback, register_bounds_signal,
+    SignalChangeSubscription, TrackingSuspended, batch, clear_main_callbacks,
+    clear_on_signal_change, clear_signals_changed, current_owner, derived, drain_main_callbacks,
+    drain_polls, flush_pending_effects, poll_signal, queue_main_callback, register_bounds_signal,
     register_main_thread, run_on_main_thread, set_cross_thread_dispatcher,
     set_cross_thread_dispatcher_if_unset, set_on_signal_change, signals_changed,
-    subscribe_signal_change, suppress_effect_flush, unowned, untracked, update_bounds_signals,
+    subscribe_signal_change, suppress_effect_flush, suspend_tracking, unowned, untracked,
+    untracked_handler, update_bounds_signals,
 };
 
 // Re-export context for sharing state across components

@@ -45,6 +45,38 @@ pub fn styles() -> String {
     visibility: hidden !important;
 }
 
+/* Paused while closed (#912).
+
+   Being rendered has a cost the note above does not: an animation under a
+   `visibility: hidden` box runs — in rinch and in a browser alike — and an
+   `animation: … infinite` (a `Loader`, a loading `Button`, a `Skeleton`) has no
+   duration to expire, so a closed drawer holding one kept the app asking for a
+   frame on every turn, forever, for pixels nobody could see. A paused animation
+   asks for none (#763), and resumes where it stopped when the drawer opens, as
+   a browser keeps its `currentTime`.
+
+   Every descendant, not a list of known spinners: any component or app rule
+   can declare an animation. `!important` because the `animation` shorthand
+   resets `animation-play-state` to `running`, so without it the pause would
+   lose to any shorthand of equal or higher specificity declared after it —
+   `.rinch-loader__oval` ties with this selector and `.rinch-button--loading
+   .rinch-button__loader` beats it. `animation-play-state` does not inherit,
+   hence the `*`.
+
+   Not `*::before` / `*::after`, deliberately, although `animation-play-state`
+   does not inherit into a pseudo-element either: on rinch-web a spinner drawn
+   by an `::after` under a closed overlay is therefore **not** paused. Desktop
+   animates no pseudo-element at all (#925), so the selectors would pause
+   nothing there — and they are not free there: rinch-dom matches `::before` /
+   `::after` for every element with no ancestor bloom filter (#935), so two
+   rules with a universal rightmost compound cost +10% of style instructions
+   on a page with no overlay in it, and +71% under a closed drawer (measured by
+   PR #929's review). The `drawer_toggle` bench in `rinch-bench` pins this
+   stylesheet's cost. */
+.rinch-drawer__root--hidden * {
+    animation-play-state: paused !important;
+}
+
 /* Drawer overlay — absolute within the fixed root */
 .rinch-drawer__overlay {
     position: absolute;

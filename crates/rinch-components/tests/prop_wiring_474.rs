@@ -37,6 +37,9 @@ use rinch_core::Component;
 use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 
+mod common;
+use common::{find_by_class, sheet};
+
 /// A rendered component, with its document and scope kept alive around it.
 struct Mounted {
     _doc: Rc<RefCell<MockDomDocument>>,
@@ -86,21 +89,6 @@ impl Mounted {
     fn find(&self, class: &str) -> Option<NodeHandle> {
         find_by_class(&self.root, class)
     }
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    let matches = node
-        .get_attribute("class")
-        .is_some_and(|attr| attr.split_whitespace().any(|c| c == class));
-    if matches {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
-}
-
-/// Every component's CSS, as the runtime loads it.
-fn sheet() -> String {
-    rinch_components::styles::generate_all_component_styles()
 }
 
 // ------------------------------------------------------------------ radius

@@ -18,12 +18,15 @@ use rinch_components::color_picker::ColorPicker;
 use rinch_components::color_utils::parse_color;
 use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
-use rinch_core::events::{
-    ClickContext, EventHandlerId, dispatch_event, dispatch_input_event, set_click_context,
-    update_drag,
-};
+use rinch_core::events::{EventHandlerId, dispatch_event, update_drag};
 use rinch_core::reactive::Effect;
 use rinch_core::{Component, InputCallback, Signal};
+
+mod common;
+use common::{
+    Echo, click_at, find_by_class, handler, hue_of, percent_of, record_store, sat_of, thumb_style,
+    type_desktop,
+};
 
 /// Red at full saturation and value — the picker's own fallback, and a colour
 /// no component of the target shares.
@@ -32,24 +35,6 @@ const START: &str = "#ff0000";
 /// Arriving from [`START`], its mid-sequence mixtures are `#7100ff` (the new
 /// hue against the old saturation and value) then `#9d4eff`.
 const REMOTE: &str = "#8844dd";
-
-/// Whether the consumer writes each emission back to the bound store.
-///
-/// `Echo::Back` is the production shape this defect was measured in: a
-/// collaborative store that `value_fn` reads and `onchange` writes.
-#[derive(Clone, Copy)]
-enum Echo {
-    Back,
-    /// A *normalizing* store (#262): every emission is written back
-    /// re-spelled by a converter that is not rinch's — the same colour in
-    /// another notation, rounded by another rule.
-    Normalizing(fn(&str) -> String),
-    /// A *transforming* controlled handler (#283): every emission is written
-    /// back as this fixed colour — `|v| store.set(snap_to_palette(v))` with a
-    /// one-colour palette.
-    Snap(&'static str),
-    Never,
-}
 
 struct Picker {
     // These three are kept alive for the test's duration: the document owns the
@@ -107,12 +92,7 @@ impl Picker {
             value_fn: Some(Rc::new(move || store.get())),
             onchange: Some(InputCallback::new(move |value: String| {
                 seen.borrow_mut().push(value.clone());
-                match echo {
-                    Echo::Back => store.set(value),
-                    Echo::Snap(colour) => store.set(colour.to_string()),
-                    Echo::Normalizing(respell) => store.set(respell(&value)),
-                    Echo::Never => {}
-                }
+                echo.write_back(store, value);
             })),
             alpha: true,
             with_input: true,
@@ -149,13 +129,7 @@ impl Picker {
     }
 
     fn handler(&self, class: &str, attr: &str) -> EventHandlerId {
-        let node = find_by_class(&self.root, class).expect("element exists");
-        EventHandlerId(
-            node.get_attribute(attr)
-                .expect("element carries a handler id")
-                .parse()
-                .expect("handler id is numeric"),
-        )
+        handler(&self.root, class, attr)
     }
 
     /// The style attribute of a thumb element — where the picker says a
@@ -163,10 +137,7 @@ impl Picker {
     /// emissions), never on the hex field: the field shows the round trip,
     /// which hides hue/sat loss at any s > 0.
     fn thumb_style(&self, class: &str) -> String {
-        find_by_class(&self.root, class)
-            .expect("thumb exists")
-            .get_attribute("style")
-            .expect("thumb is positioned")
+        thumb_style(&self.root, class)
     }
 
     /// Type `text` into the hex field the way the runtime delivers it: the
@@ -174,27 +145,12 @@ impl Picker {
     /// dispatches. The #231 write-back guard reads that attribute — the field
     /// is the author's while its text denotes the colour the picker holds.
     fn type_hex(&self, text: &str) {
-        find_by_class(&self.root, "rinch-color-picker__hex-input")
-            .expect("hex input")
-            .set_attribute("value", text);
-        dispatch_input_event(
+        type_desktop(
+            &find_by_class(&self.root, "rinch-color-picker__hex-input").expect("hex input"),
             self.handler("rinch-color-picker__hex-input", "data-oninput"),
-            text.to_string(),
+            text,
         );
     }
-}
-
-/// Record every value `store` ever holds — what a peer on the other end of a
-/// collaborative document would receive — returning the log and the effect
-/// that keeps it.
-fn record_store(store: Signal<String>) -> (Rc<RefCell<Vec<String>>>, Effect) {
-    let published: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let recorded = published.clone();
-    let recorder = Effect::new(move || {
-        let value = store.get();
-        recorded.borrow_mut().push(value);
-    });
-    (published, recorder)
 }
 
 /// Two pickers synced through one store — the shape #242 was reported in:
@@ -213,47 +169,6 @@ impl Peers {
         let b = Picker::mount_on(stored, a.store, format, Echo::Back);
         Self { a, b }
     }
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    let matches = node
-        .get_attribute("class")
-        .is_some_and(|attr| attr.split_whitespace().any(|c| c == class));
-    if matches {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
-}
-
-/// A click at (`px`, `py`) of a 200×200 element at the origin.
-fn click_at(px: f32, py: f32) {
-    set_click_context(ClickContext {
-        mouse_x: px * 200.0,
-        mouse_y: py * 200.0,
-        element_x: 0.0,
-        element_y: 0.0,
-        element_width: 200.0,
-        element_height: 200.0,
-        ..Default::default()
-    });
-}
-
-fn hue_of(color: &str) -> f64 {
-    parse_color(color).expect("a formatted colour parses").h
-}
-
-fn sat_of(color: &str) -> f64 {
-    parse_color(color).expect("a formatted colour parses").s
-}
-
-/// The `key`-prefixed percentage in a thumb's style string, e.g.
-/// `percent_of(&style, "left: ")`. Click-derived positions carry f32→f64
-/// noise ("left: 40.000000596%"), so callers compare within a tolerance.
-fn percent_of(style: &str, key: &str) -> f64 {
-    let start = style.find(key).expect("style carries the key") + key.len();
-    let rest = &style[start..];
-    let end = rest.find('%').expect("a % terminates the value");
-    rest[..end].trim().parse().expect("the value is numeric")
 }
 
 /// An external value change is not a user act, so it emits nothing.

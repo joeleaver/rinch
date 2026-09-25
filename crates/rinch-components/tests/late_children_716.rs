@@ -28,7 +28,10 @@ use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::{Component, Signal};
 use rinch_macros::rsx;
-use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use rinch_tabler_icons::TablerIcon;
+
+mod common;
+use common::{collect_by_class, find_by_class, glyph, glyph_of, has_class};
 
 // ------------------------------------------------------------------ helpers
 
@@ -57,52 +60,6 @@ impl Tree {
         collect_by_class(&self.root, class, &mut out);
         out
     }
-}
-
-fn has_class(node: &NodeHandle, class: &str) -> bool {
-    node.get_attribute("class")
-        .unwrap_or_default()
-        .split_whitespace()
-        .any(|c| c == class)
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    if has_class(node, class) {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
-}
-
-fn collect_by_class(node: &NodeHandle, class: &str, out: &mut Vec<NodeHandle>) {
-    if has_class(node, class) {
-        out.push(node.clone());
-    }
-    for child in node.children() {
-        collect_by_class(&child, class, out);
-    }
-}
-
-/// Every `d` attribute in `node`'s subtree, in document order — what tells one
-/// rendered Tabler glyph from another.
-fn glyph(node: &NodeHandle) -> Vec<String> {
-    fn walk(node: &NodeHandle, out: &mut Vec<String>) {
-        if let Some(d) = node.get_attribute("d") {
-            out.push(d);
-        }
-        for child in node.children() {
-            walk(&child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
-}
-
-fn glyph_of(icon: TablerIcon) -> Vec<String> {
-    let tree = Tree::build(move |scope| render_tabler_icon(scope, icon, TablerIconStyle::Outline));
-    let paths = glyph(&tree.root);
-    assert!(!paths.is_empty(), "{icon:?} renders no path data");
-    paths
 }
 
 // ------------------------------------------------------- C: List::icon, `for`
@@ -1144,4 +1101,50 @@ fn a_step_moved_out_of_a_stepper_renumbers_the_ones_it_left_behind() {
          in it — and \"a\", now last in document order, is position 0 of the \
          second stepper, whose `active: 0` makes it the in-progress one there"
     );
+}
+
+#[test]
+fn a_reactive_active_survives_late_steps_arriving_and_leaving() {
+    let active = Signal::new(0u32);
+    let items = Signal::new(vec!["a", "b"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: {move || active.get()},
+                    for it in items.get() { StepperStep { key: it, label: it } }
+                }
+            }
+        }
+    });
+    let st = |tree: &Tree| -> Vec<String> {
+        tree.find_all("rinch-stepper__step")
+            .iter()
+            .map(|s| {
+                let c = s.get_attribute("class").unwrap_or_default();
+                ["completed", "progress", "inactive"]
+                    .iter()
+                    .find(|k| c.contains(&format!("--{k}")))
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    assert_eq!(st(&tree), vec!["progress", "inactive"]);
+    active.set(1);
+    assert_eq!(st(&tree), vec!["completed", "progress"]);
+    items.update(|v| v.push("c"));
+    assert_eq!(st(&tree), vec!["completed", "progress", "inactive"]);
+    active.set(2);
+    assert_eq!(st(&tree), vec!["completed", "completed", "progress"]);
+    items.update(|v| v.insert(0, "z"));
+    assert_eq!(
+        st(&tree),
+        vec!["completed", "completed", "progress", "inactive"]
+    );
+    items.update(|v| {
+        v.remove(0);
+    });
+    assert_eq!(st(&tree), vec!["completed", "completed", "progress"]);
+    active.set(0);
+    assert_eq!(st(&tree), vec!["progress", "inactive", "inactive"]);
 }

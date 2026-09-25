@@ -19,6 +19,9 @@ use rinch_core::events::{
 };
 use rinch_core::{Component, InputCallback, Signal};
 
+mod common;
+use common::find_by_class;
+
 struct Mounted {
     _doc: Rc<RefCell<MockDomDocument>>,
     _scope: RenderScope,
@@ -93,16 +96,6 @@ impl Mounted {
             .clone();
         dispatch_event(Self::id(&swatch));
     }
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    let matches = node
-        .get_attribute("class")
-        .is_some_and(|attr| attr.split_whitespace().any(|c| c == class));
-    if matches {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
 }
 
 /// The apply that lands inside the emitting window is NOT the

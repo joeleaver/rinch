@@ -90,9 +90,13 @@ pub fn clear_selection_callback() {
 ///
 /// The `Rc` is cloned out before the call so the callback may re-enter (install
 /// a different callback, query the selection again) without a double borrow.
+///
+/// The callback runs untracked (#931): [`query_selection_ranges`] is a query an
+/// app may make from inside an effect, and what the callback reads is not that
+/// effect's dependency.
 pub fn dispatch_selection(action: SelectionAction) -> Vec<(usize, usize, usize)> {
     match crate::reactive::read_doc_scoped_slot(&SELECTION_CALLBACK) {
-        Some(cb) => cb(action),
+        Some(cb) => crate::reactive::untracked_handler(|| cb(action)),
         None => Vec::new(),
     }
 }
@@ -188,11 +192,12 @@ pub fn clear_selection_sync_callback() {
 /// query_selection_ranges() to avoid the saved-snapshot fallback (which is
 /// only for toolbar commands).
 ///
-/// The `Rc` is cloned out before the call so the callback may re-enter.
+/// The `Rc` is cloned out before the call so the callback may re-enter. It runs
+/// untracked, like [`dispatch_selection`]'s (#931).
 pub fn fire_selection_sync() {
     let ranges = dispatch_selection(SelectionAction::QueryRanges);
     if let Some(cb) = crate::reactive::read_doc_scoped_slot(&SELECTION_SYNC_CALLBACK) {
-        cb(ranges);
+        crate::reactive::untracked_handler(|| cb(ranges));
     }
 }
 

@@ -217,6 +217,27 @@ to style. Decorations are recomputed from every new state, and the editor does
 **not** move a range for you when text is inserted before it — a plugin that
 caches ranges maps them through `tr.mapping()` in its `apply`.
 
+Plugin code runs **untracked** (issue #943). `decorations`, `apply`,
+`init_state`, `handle_paste` and a plugin's commands run synchronously inside
+whatever app effect called the handle (a `set_selection`, a `command`, an
+`insert_text`), and a signal they read does not become that effect's
+dependency. The flip side: a plugin is not re-asked when a signal it reads
+changes. A spellchecker with an on/off switch re-runs its decorations by
+dispatching something when the switch moves, from an effect of its own:
+
+```rust
+let ed = editor.clone();
+Effect::new(move || {
+    let _ = spellcheck_on.get();
+    // Any transaction re-asks every plugin's decorations; this one changes nothing.
+    ed.update(|state| Some(state.tr()));
+});
+```
+
+The `build` closure you pass to `update` is the exception: it is your own code,
+and what it reads tracks as usual — including what plugin code *it* calls reads
+(`update(|s| { s.apply(..); … })` runs the plugins' `apply` as your code).
+
 A right press over the editor places the caret before an app's
 `data-oncontextmenu` handler runs, on both backends, so a handler that draws its
 own suggestions menu reads the pressed word from `selection()`.
@@ -526,7 +547,9 @@ Not reported: a double or triple press (they select a word or a block), the
 secondary button (the context menu keeps its own link handling), a press on an image
 inside a link (it selects the image), and hover during a drag-select or a
 drag-and-drop. A callback runs with no internal borrow held, so it may re-enter the
-handle — load another document, read the selection. A pointer move pays nothing for
+handle — load another document, read the selection. It also runs untracked: a
+signal it reads never becomes a dependency of an effect that happened to call
+`dispatch_link_click` (issue #931). A pointer move pays nothing for
 hover while no editor on the thread has an `on_link_hover` callback; with one it
 reuses the move's own hit test on desktop.
 
@@ -623,7 +646,10 @@ editor.on_key(move |key| {
 Every callback runs with no internal borrow held, so each may call back into the
 handle: read the document, run `update(..)` or `toggle_link(..)`, move the
 selection. A selection move made from `on_selection_change` calls it again, from
-inside itself. Each is one callback per handle (a second registration replaces the
+inside itself. Every callback also runs **untracked** (issue #931): an app effect
+that calls `set_selection`, runs a `command` or offers a key calls these
+synchronously, and the popup's own signals a callback reads do not become that
+effect's dependencies. Each is one callback per handle (a second registration replaces the
 first), like `on_change`, and costs nothing while none is registered.
 
 **Why `on_caret_moved` and not `on_selection_change` for geometry.** On the web the

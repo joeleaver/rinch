@@ -45,7 +45,10 @@ use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event};
 use rinch_core::{Component, Signal};
-use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use rinch_tabler_icons::TablerIcon;
+
+mod common;
+use common::{collect_by_class, find_by_class, glyph, glyph_of, has_class, sheet};
 
 /// A rendered tree, with the document and scope that own it kept alive.
 struct Tree {
@@ -77,65 +80,6 @@ impl Tree {
         collect_by_class(&self.root, class, &mut out);
         out
     }
-}
-
-fn has_class(node: &NodeHandle, class: &str) -> bool {
-    node.get_attribute("class")
-        .unwrap_or_default()
-        .split_whitespace()
-        .any(|c| c == class)
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    if has_class(node, class) {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
-}
-
-fn collect_by_class(node: &NodeHandle, class: &str, out: &mut Vec<NodeHandle>) {
-    if has_class(node, class) {
-        out.push(node.clone());
-    }
-    for child in node.children() {
-        collect_by_class(&child, class, out);
-    }
-}
-
-/// Every `d` attribute in `node`'s subtree, in document order.
-///
-/// This is what tells one rendered Tabler glyph from another: the two icons in
-/// a parent-default/child-wins pair are the same `<svg>` box with different
-/// path data, so nothing shallower discriminates them.
-fn glyph(node: &NodeHandle) -> Vec<String> {
-    fn walk(node: &NodeHandle, out: &mut Vec<String>) {
-        if let Some(d) = node.get_attribute("d") {
-            out.push(d);
-        }
-        for child in node.children() {
-            walk(&child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
-}
-
-/// The glyph a given icon renders to, rendered on its own for comparison.
-fn glyph_of(icon: TablerIcon) -> Vec<String> {
-    let tree = Tree::build(move |scope| render_tabler_icon(scope, icon, TablerIconStyle::Outline));
-    let paths = glyph(&tree.root);
-    assert!(
-        !paths.is_empty(),
-        "{icon:?} renders no path data, so it cannot stand for itself in a \
-         comparison — pick another icon"
-    );
-    paths
-}
-
-/// Every component's CSS, as the runtime loads it.
-fn sheet() -> String {
-    rinch_components::styles::generate_all_component_styles()
 }
 
 // ============================================================ C: List::icon

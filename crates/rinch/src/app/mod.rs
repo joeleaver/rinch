@@ -114,7 +114,11 @@ mod text_context_menu;
 mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
+mod textarea_home_end_tests;
+#[cfg(test)]
 mod textarea_newline_tests;
+#[cfg(test)]
+mod textarea_vertical_arrow_tests;
 #[cfg(test)]
 mod trap_focus_tests;
 #[cfg(test)]
@@ -516,6 +520,22 @@ pub struct RinchApp {
     /// Rendered inline at the input caret as an underlined overlay (via the
     /// `data-preedit` attribute) and never part of the input's committed value.
     pub(crate) focused_input_preedit: Option<(String, Option<(usize, usize)>)>,
+    /// The horizontal goal of the last ArrowUp/ArrowDown in a `<textarea>`
+    /// (issue #307): `(node, caret generation after the move, x)`. A run of
+    /// vertical moves keeps aiming at the column it started from, as a
+    /// browser does, so a short line in between does not pull the caret left
+    /// for good. Blink's rule: the goal holds only while the last change to
+    /// the field's caret or text was a vertical move. That is decided by
+    /// [`Self::input_caret_generation`], not by comparing the selection: a
+    /// Left then Right, or a typed character then Backspace, puts the field
+    /// back exactly as the vertical move left it and must still drop the goal.
+    pub(crate) input_vertical_goal: Option<(usize, u64, f32)>,
+    /// Bumped by every [`Self::sync_input_cursor_to_dom`] — the one place a
+    /// focused field's caret, selection or text reaches the DOM from an edit
+    /// command, a click, a focus change, an IME commit or an adopted
+    /// programmatic `value` write. A vertical move records the generation its
+    /// own sync produced; any later sync invalidates its goal.
+    pub(crate) input_caret_generation: std::cell::Cell<u64>,
     /// A programmatic `value` write to the focused `<input>` that arrived while
     /// an IME composition was in flight (issue #238). Adopting it then would
     /// move the caret under the composition, so it is held here and applied
@@ -686,6 +706,8 @@ impl RinchApp {
             focused_input_state: None,
             focused_input_node_id: None,
             focused_input_preedit: None,
+            input_vertical_goal: None,
+            input_caret_generation: std::cell::Cell::new(0),
             focused_input_deferred_value: None,
             focus_target: FocusTarget::None,
             window_focused: true,
@@ -1160,8 +1182,12 @@ impl RinchApp {
 
         // New-editor phase 2 (design A3): render each mounted editor's caret from
         // its selection now that layout geometry is fresh. If an overlay (caret /
-        // selection / node-outline) actually moved, re-resolve so its new absolute
-        // position is current. The dirty region then covers the overlay's old
+        // selection / node-outline) actually moved, re-resolve so its new
+        // transform is in its computed style. The overlays are placed by a
+        // `transform` (#906), so for a pure move this resolve cascades them and
+        // skips Taffy (`layout_skipped_paint_only`); only a changed overlay
+        // *size* (a selection rect's width, a caret on a taller line) reaches
+        // layout. The dirty region then covers the overlay's old
         // rect as well as its new one: this second resolve does not overwrite
         // `prev_layout`, which only the consuming paint advances
         // (`NodeTree::consume_paint_dirty`). It used to, and every keystroke
@@ -2436,23 +2462,314 @@ impl RinchApp {
             self.focused_input_baseline = self.focused_input_value.clone();
         }
     }
-    fn handle_arrow_up(&mut self, _shift: bool) {}
-    fn handle_arrow_down(&mut self, _shift: bool) {}
-    fn handle_home(&mut self, shift: bool) {
-        let cmd = if shift {
-            EditCommand::SelectToLineStart
-        } else {
-            EditCommand::MoveToLineStart
-        };
-        self.handle_input_edit_command(cmd);
+    fn handle_arrow_up(&mut self, shift: bool) {
+        self.handle_vertical_arrow(false, shift);
     }
-    fn handle_end(&mut self, shift: bool) {
-        let cmd = if shift {
-            EditCommand::SelectToLineEnd
-        } else {
-            EditCommand::MoveToLineEnd
+    fn handle_arrow_down(&mut self, shift: bool) {
+        self.handle_vertical_arrow(true, shift);
+    }
+
+    /// ArrowUp / ArrowDown in the focused text field (issue #307).
+    ///
+    /// A `<textarea>` moves one **visual** line — a soft-wrapped line counts,
+    /// as in a browser — over the Parley layout the field is hit-tested and
+    /// painted with ([`Self::input_text_layout`], the one builder a click and
+    /// the caret rect share; a third would be free to disagree with them, which
+    /// is #320). The caret aims at a horizontal goal kept across consecutive
+    /// vertical moves ([`Self::input_vertical_goal`]). Off the first line
+    /// ArrowUp goes to the start of the text and off the last line ArrowDown to
+    /// its end, which is also all a single-line `<input>` does — Chrome on Linux
+    /// and Windows. Shift moves the head and keeps the anchor; without it a
+    /// selection collapses and moves from its start (up) or its end (down), as
+    /// Blink's `SelectionModifier` does.
+    ///
+    /// `type="number"` is left alone: a browser steps the value there, and a
+    /// caret jump would be a third meaning rather than either one.
+    ///
+    /// Not an [`EditCommand`]: `EditableState`'s `MoveUp`/`MoveDown` count
+    /// logical (`\n`) lines in columns, and the question here is geometric.
+    /// The outcome goes through the same adopt → move → sync sequence
+    /// [`Self::handle_input_edit_command`] runs for a caret move.
+    fn handle_vertical_arrow(&mut self, down: bool, shift: bool) {
+        if self.live_focused_input_handler().is_none() {
+            return;
+        }
+        let Some(node_id) = self.focused_input_node_id else {
+            return;
         };
-        self.handle_input_edit_command(cmd);
+        let Some(doc) = self.doc.clone() else { return };
+        let (is_textarea, is_number) = {
+            let d = doc.borrow();
+            let node = d.tree.get(node_id);
+            (
+                node.and_then(|n| n.tag()) == Some("textarea"),
+                node.and_then(|n| n.attributes.get("type"))
+                    .is_some_and(|t| t.eq_ignore_ascii_case("number")),
+            )
+        };
+        if is_number {
+            return;
+        }
+        // Move within what the field displays (issue #238).
+        self.adopt_focused_input_value_from_dom();
+        let Some(state) = self.focused_input_state.as_ref() else {
+            return;
+        };
+        let selection = state.selection.clone();
+        let len = state.document.text_length();
+        let origin = if shift || selection.is_cursor() {
+            selection.head.0
+        } else if down {
+            selection.end().0
+        } else {
+            selection.start().0
+        };
+        let past_the_edge = if down { len } else { 0 };
+
+        let mut goal_x = None;
+        let target = if is_textarea {
+            // The goal carries over only when nothing has touched the field's
+            // caret or text since the last vertical move (read after the
+            // adopt above, which bumps the generation if it took a write).
+            let generation = self.input_caret_generation.get();
+            let carried = self
+                .input_vertical_goal
+                .filter(|&(n, g, _)| n == node_id && g == generation)
+                .map(|(.., x)| x);
+            let d = doc.borrow();
+            match Self::input_text_layout(
+                &d.tree,
+                &mut self.hit_test_font_cx,
+                &mut self.hit_test_layout_cx,
+                node_id,
+            ) {
+                Some(it) => {
+                    let (target, x) =
+                        Self::vertical_move_target(&it.layout, &it.value, origin, down, carried);
+                    goal_x = Some(x);
+                    target.unwrap_or(past_the_edge)
+                }
+                // An empty value: nothing to lay out, and both ends are 0.
+                None => past_the_edge,
+            }
+        } else {
+            past_the_edge
+        };
+
+        let Some(state) = self.focused_input_state.as_mut() else {
+            return;
+        };
+        let target = target.min(len);
+        state.selection = if shift {
+            Selection::new(selection.anchor, target)
+        } else {
+            Selection::cursor(target)
+        };
+        self.sync_input_cursor_to_dom();
+        let generation = self.input_caret_generation.get();
+        self.input_vertical_goal = goal_x.map(|x| (node_id, generation, x));
+    }
+
+    /// The visual lines of `layout`: each line's block-axis extent and the
+    /// byte range of text it holds. Shared by the vertical moves (#307) and
+    /// Home/End (#933), so the two agree on what a line is.
+    fn input_visual_lines(
+        layout: &parley::layout::Layout<peniko::Brush>,
+    ) -> Vec<(f32, f32, std::ops::Range<usize>)> {
+        layout
+            .lines()
+            .map(|l| {
+                let m = l.metrics();
+                (m.block_min_coord, m.block_max_coord, l.text_range())
+            })
+            .collect()
+    }
+
+    /// The index into `lines` of the visual line a caret at byte `origin`
+    /// paints on, and the caret's x. Downstream, as paint draws the caret: at
+    /// a soft-wrap point the caret is at the start of the lower line, so that
+    /// is its line. `None` for a layout with no lines.
+    fn input_caret_line(
+        layout: &parley::layout::Layout<peniko::Brush>,
+        lines: &[(f32, f32, std::ops::Range<usize>)],
+        origin: usize,
+    ) -> (Option<usize>, f32) {
+        use parley::layout::{Affinity, Cursor};
+        let geometry =
+            Cursor::from_byte_index(layout, origin, Affinity::Downstream).geometry(layout, 0.0);
+        let mid_y = ((geometry.y0 + geometry.y1) / 2.0) as f32;
+        let line = lines
+            .iter()
+            .position(|(top, bottom, _)| mid_y >= *top && mid_y < *bottom)
+            .or_else(|| lines.len().checked_sub(1));
+        (line, geometry.x0 as f32)
+    }
+
+    /// The last caret offset that paints on a soft-wrapped line whose text is
+    /// `range` and whose successor starts at `next_start`: the start of its
+    /// last character. The line's true end is `next_start` — one byte offset
+    /// for two caret positions — and a caret there paints at the start of the
+    /// next line, since the caret carries no affinity (#941). Stopping one
+    /// character short keeps the caret on the line it was sent to.
+    /// The same offset ends a line broken by a hard break, whose last
+    /// character is its `\n`.
+    fn soft_wrapped_line_end(
+        text: &str,
+        range: &std::ops::Range<usize>,
+        next_start: usize,
+    ) -> usize {
+        text.get(range.start..next_start)
+            .and_then(|line| line.char_indices().last())
+            .map_or(range.start, |(i, _)| range.start + i)
+    }
+
+    /// Where a vertical move from byte `origin` lands in `layout` (laid out
+    /// over `text`): the byte
+    /// offset nearest `goal_x` (or `origin`'s own x) on the visual line above
+    /// or below, or `None` when there is no such line. Also returns the x it
+    /// aimed at, which is the goal the next move keeps.
+    fn vertical_move_target(
+        layout: &parley::layout::Layout<peniko::Brush>,
+        text: &str,
+        origin: usize,
+        down: bool,
+        goal_x: Option<f32>,
+    ) -> (Option<usize>, f32) {
+        use parley::layout::Cursor;
+        let lines = Self::input_visual_lines(layout);
+        let (current, origin_x) = Self::input_caret_line(layout, &lines, origin);
+        let x = goal_x.unwrap_or(origin_x);
+        let Some(current) = current else {
+            return (None, x);
+        };
+        let target_line = if down {
+            current + 1
+        } else {
+            match current.checked_sub(1) {
+                Some(line) => line,
+                None => return (None, x),
+            }
+        };
+        let Some((top, bottom, range)) = lines.get(target_line) else {
+            return (None, x);
+        };
+        let mut offset = Cursor::from_point(layout, x, (top + bottom) / 2.0).index();
+        // Landing on a soft-wrapped line's end would paint the caret on the
+        // next line. (A hard break's `\n` sits between the two, so its line
+        // never meets this.)
+        if let Some((_, _, next)) = lines.get(target_line + 1)
+            && offset >= next.start
+            && next.start > range.start
+        {
+            offset = Self::soft_wrapped_line_end(text, range, next.start);
+        }
+        (Some(offset), x)
+    }
+
+    /// The start (`end = false`) or end (`end = true`) of the visual line a
+    /// caret at byte `origin` paints on, in `layout` laid out over `text`
+    /// (issue #933). A line that ends in a hard break ends before its `\n`; a
+    /// soft-wrapped one ends one character short of the wrap
+    /// ([`Self::soft_wrapped_line_end`], #941); the last line ends with the
+    /// text. `None` for a layout with no lines.
+    fn visual_line_edge(
+        layout: &parley::layout::Layout<peniko::Brush>,
+        text: &str,
+        origin: usize,
+        end: bool,
+    ) -> Option<usize> {
+        let lines = Self::input_visual_lines(layout);
+        let current = Self::input_caret_line(layout, &lines, origin).0?;
+        let (_, _, range) = lines.get(current)?;
+        if !end {
+            return Some(range.start);
+        }
+        // A line that another follows ends before its last character. For a
+        // hard break that is the `\n` (Parley's line range includes it); for
+        // a soft wrap it is the character the wrap point follows, one short of
+        // the line's true end ([`Self::soft_wrapped_line_end`], #941).
+        match lines.get(current + 1) {
+            Some((_, _, next)) if next.start > range.start => {
+                Some(Self::soft_wrapped_line_end(text, range, next.start))
+            }
+            _ => Some(range.end),
+        }
+    }
+
+    /// Home / End in the focused text field (issue #933).
+    ///
+    /// A `<textarea>` goes to the start or end of the caret's **visual** line
+    /// — a soft-wrapped line counts, as in a browser — over the same layout
+    /// ArrowUp/ArrowDown use ([`Self::input_text_layout`]); with Ctrl (Cmd on
+    /// macOS) to the start or end of the whole value. Shift moves the head and
+    /// keeps the anchor. Without it a selection collapses and moves from its
+    /// **head** — not its start or end, as the vertical arrows do: that is what
+    /// Chrome 153 does, measured.
+    ///
+    /// Moving the caret drops the vertical goal (#307): the sync bumps
+    /// [`Self::input_caret_generation`]. A Home or End that moves nothing does
+    /// not sync, and so keeps the goal — Chrome's behaviour too, measured.
+    ///
+    /// A single-line `<input>` keeps the [`EditCommand`] path, whose
+    /// `StringDocument` has one line: Home/End go to the ends of the value.
+    fn handle_line_edge(&mut self, end: bool, shift: bool, ctrl: bool) {
+        if self.live_focused_input_handler().is_none() {
+            return;
+        }
+        let Some(node_id) = self.focused_input_node_id else {
+            return;
+        };
+        let Some(doc) = self.doc.clone() else { return };
+        let is_textarea = doc.borrow().tree.get(node_id).and_then(|n| n.tag()) == Some("textarea");
+        if !is_textarea {
+            self.handle_input_edit_command(match (end, shift, ctrl) {
+                (false, false, false) => EditCommand::MoveToLineStart,
+                (false, true, false) => EditCommand::SelectToLineStart,
+                (true, false, false) => EditCommand::MoveToLineEnd,
+                (true, true, false) => EditCommand::SelectToLineEnd,
+                (false, false, true) => EditCommand::MoveToDocStart,
+                (false, true, true) => EditCommand::SelectToDocStart,
+                (true, false, true) => EditCommand::MoveToDocEnd,
+                (true, true, true) => EditCommand::SelectToDocEnd,
+            });
+            return;
+        }
+        // Move within what the field displays (issue #238).
+        self.adopt_focused_input_value_from_dom();
+        let Some(state) = self.focused_input_state.as_ref() else {
+            return;
+        };
+        let selection = state.selection.clone();
+        let len = state.document.text_length();
+        let text_edge = if end { len } else { 0 };
+        let target = if ctrl {
+            text_edge
+        } else {
+            let d = doc.borrow();
+            Self::input_text_layout(
+                &d.tree,
+                &mut self.hit_test_font_cx,
+                &mut self.hit_test_layout_cx,
+                node_id,
+            )
+            .and_then(|it| Self::visual_line_edge(&it.layout, &it.value, selection.head.0, end))
+            // An empty value: nothing to lay out, and both ends are 0.
+            .unwrap_or(text_edge)
+        };
+        let target = target.min(len);
+        let moved = if shift {
+            Selection::new(selection.anchor, target)
+        } else {
+            Selection::cursor(target)
+        };
+        if moved == selection {
+            return;
+        }
+        let Some(state) = self.focused_input_state.as_mut() else {
+            return;
+        };
+        state.selection = moved;
+        self.sync_input_cursor_to_dom();
     }
     fn handle_select_all(&mut self) {
         self.handle_input_edit_command(EditCommand::SelectAll);
@@ -2541,6 +2858,9 @@ impl RinchApp {
 
     /// Write cursor/selection attributes to the focused input's DOM node.
     fn sync_input_cursor_to_dom(&self) {
+        // Any caret/text change invalidates a vertical move's goal x (#307).
+        self.input_caret_generation
+            .set(self.input_caret_generation.get().wrapping_add(1));
         let Some(node_id) = self.focused_input_node_id else {
             return;
         };

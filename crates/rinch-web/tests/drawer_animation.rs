@@ -12,7 +12,7 @@
 //! Measured in Chrome 150, opening a `--md` (380px) left drawer, reading the
 //! panel's computed `transform` and its own `getAnimations()`:
 //!
-//! | `.rinch-drawer__root--hidden` | closed root `display` | closed panel `transform` | `getAnimations()` | frame 1 | +120ms |
+//! | `.rinch-drawer__root--hidden` | closed root `display` | closed panel `transform` | `getAnimations()` | frame 1 | +120ms (wall clock, once started) |
 //! |---|---|---|---|---|---|
 //! | `display: none !important` | `none` | `none` | **0** | `matrix(1, 0, 0, 1, 0, 0)` | `matrix(1, 0, 0, 1, 0, 0)` |
 //! | `visibility: hidden !important` | `block` | `matrix(1, 0, 0, 1, -380, 0)` | **1** | `matrix(1, 0, 0, 1, -380, 0)` | `matrix(1, 0, 0, 1, -126.775, 0)` |
@@ -156,16 +156,35 @@ async fn next_frame() {
     wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
 }
 
-/// Resolve after `ms` milliseconds.
-async fn after_ms(ms: i32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
-            .unwrap();
-    });
-    wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+/// The element's first running animation — the panel's slide.
+fn first_animation(el: &web_sys::Element) -> JsValue {
+    let f = js_sys::Reflect::get(el, &JsValue::from_str("getAnimations")).unwrap();
+    let f: js_sys::Function = f.dyn_into().unwrap();
+    let arr: js_sys::Array = f.call0(el).unwrap().dyn_into().unwrap();
+    arr.get(0)
 }
+
+/// `v[key]`, or `undefined` when `v` is not an object — so a failure message
+/// about a missing animation reports it rather than throwing.
+fn prop(v: &JsValue, key: &str) -> JsValue {
+    if !v.is_object() {
+        return JsValue::UNDEFINED;
+    }
+    js_sys::Reflect::get(v, &JsValue::from_str(key)).unwrap()
+}
+
+/// Call the zero-argument method `name` on `v`.
+fn call(v: &JsValue, name: &str) -> JsValue {
+    let f: js_sys::Function = prop(v, name).dyn_into().unwrap();
+    f.call0(v).unwrap()
+}
+
+/// How long to wait for the slide to start moving on the browser's own clock.
+///
+/// Generous on purpose (issue #945): a loaded CI runner can take longer than
+/// the whole 300ms slide to commit the frame that starts it, and nothing below
+/// depends on how long that takes. A healthy run moves within a frame or two.
+const START_DEADLINE_MS: f64 = 2_000.0;
 
 /// Opening the drawer runs the 300ms slide in Chrome.
 #[wasm_bindgen_test]
@@ -212,15 +231,55 @@ async fn the_drawer_slides_in() {
          A refused transition reads 0 here"
     );
 
-    after_ms(120).await;
-    let later = translate_x(&panel);
+    // The slide advances on the browser's own clock — waited for, not slept for
+    // (issue #945). A `transform` transition is composited, so Chrome holds it
+    // *pending* — `currentTime` 0, the panel at its start value — until the
+    // compositor commits the frame that starts it. Measured in Chrome 153: after
+    // 150ms of busy wall clock plus one task with no frame committed between
+    // them, the animation was still `pending` at `currentTime` 0 and the panel
+    // still read -380, which is CI's `-380 -> -380` exactly; it moved one frame
+    // later. So poll frame by frame up to a deadline no healthy run comes near.
+    // On the `display: none` spelling there is no animation and the panel sits
+    // at its open position from frame 1, so this never moves and fails at the
+    // deadline, as well as at the two assertions above.
+    let anim = first_animation(&panel);
+    let start = js_sys::Date::now();
+    let mut later = translate_x(&panel);
+    while later <= first && js_sys::Date::now() - start < START_DEADLINE_MS {
+        next_frame().await;
+        later = translate_x(&panel);
+    }
     assert!(
         later > first,
-        "the slide advances: {first} -> {later} (moving right, towards 0)"
+        "the slide advances: {first} -> {later} (moving right, towards 0) within \
+         {START_DEADLINE_MS}ms; the animation is pending={:?} at currentTime={:?}",
+        prop(&anim, "pending"),
+        prop(&anim, "currentTime"),
     );
+
+    // And it is the 300ms slide, sampled mid-way on the animation's own
+    // timeline rather than the wall clock, which a stalled runner can overshoot
+    // in either direction: paused and sought to 120ms, the panel is strictly
+    // between where it started and where it lands. An instant transition reads
+    // 0 here and an unstarted one -380.
+    let timing = call(&prop(&anim, "effect"), "getComputedTiming");
+    assert_eq!(
+        prop(&timing, "duration").as_f64(),
+        Some(300.0),
+        "the slide is the sheet's 300ms transition"
+    );
+    call(&anim, "pause");
+    js_sys::Reflect::set(
+        &anim,
+        &JsValue::from_str("currentTime"),
+        &JsValue::from_f64(120.0),
+    )
+    .unwrap();
+    let mid = translate_x(&panel);
     assert!(
-        later < 0.0,
-        "and it has not finished yet 120ms into a 300ms slide: got {later}"
+        closed_tx < mid && mid < 0.0,
+        "120ms into the 300ms slide the panel is on its way: got {mid}, strictly \
+         between {closed_tx} and 0"
     );
 }
 

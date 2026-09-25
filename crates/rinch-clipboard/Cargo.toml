@@ -39,3 +39,12 @@ js-sys = "0.3"
 # clobbering the developer's own clipboard. Native only; no effect on wasm or
 # Android, whose clipboards have no worker.
 test-backend = []
+
+# tests/wayland_feature.rs drives arboard directly and listens to its `log`
+# output to see whether the Wayland backend is compiled in (#148, #275). No
+# features here on purpose: a dev-dependency's features are unified with the
+# normal dependency's, so asking for `wayland-data-control` here would keep the
+# test green after the line above lost it.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+arboard = { workspace = true }
+log = "0.4"

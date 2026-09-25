@@ -25,6 +25,9 @@ use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event};
 
+mod common;
+use common::{declarations_for, find_by_class, strip_comments};
+
 struct Mounted {
     _doc: Rc<RefCell<MockDomDocument>>,
     _scope: RenderScope,
@@ -85,16 +88,6 @@ impl Mounted {
             .get_attribute("style")
             .expect("the swatch is sized")
     }
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    let matches = node
-        .get_attribute("class")
-        .is_some_and(|attr| attr.split_whitespace().any(|c| c == class));
-    if matches {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
 }
 
 // ---------------------------------------------------------------- size
@@ -368,54 +361,4 @@ fn every_emitted_size_and_radius_class_is_backed_by_a_real_rule() {
              shipped stylesheet. Declarations found: {decls:?}"
         );
     }
-}
-
-/// Every declaration in every rule whose selector list contains exactly
-/// `selector`, whitespace-normalized and lowercased.
-fn declarations_for(css: &str, selector: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut rest = css;
-    while let Some(open) = rest.find('{') {
-        let prelude = rest[..open].rsplit('}').next().unwrap_or("").trim();
-        let Some(close) = rest[open..].find('}') else {
-            break;
-        };
-        let body = &rest[open + 1..open + close];
-        let matches = prelude
-            .split(',')
-            .any(|s| s.split_whitespace().collect::<Vec<_>>().join(" ") == selector);
-        if matches {
-            found.extend(
-                body.split(';')
-                    .map(|d| {
-                        d.split_whitespace()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .to_lowercase()
-                    })
-                    .filter(|d| !d.is_empty()),
-            );
-        }
-        rest = &rest[open + close + 1..];
-    }
-    found
-}
-
-/// Strip `/* ... */` comments before parsing.
-///
-/// Load-bearing, and verified so: with this reduced to the identity the test
-/// fails, because the comment introducing the size rules is swept into the
-/// prelude of the rule beneath it and stops the selector matching.
-fn strip_comments(css: &str) -> String {
-    let mut out = String::with_capacity(css.len());
-    let mut rest = css;
-    while let Some(start) = rest.find("/*") {
-        out.push_str(&rest[..start]);
-        match rest[start + 2..].find("*/") {
-            Some(end) => rest = &rest[start + 2 + end + 2..],
-            None => return out,
-        }
-    }
-    out.push_str(rest);
-    out
 }

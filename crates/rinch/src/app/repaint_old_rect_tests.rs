@@ -938,6 +938,189 @@ mod editor {
         assert_moved_cleanly(&mut p, old);
     }
 
+    /// The overlays are placed by a `transform` since #906, and a transformed
+    /// box is a stacking context that paint enters through its clip chain —
+    /// so a caret scrolled under its editor's `overflow` edge must still be
+    /// cut there, and moving it must still repaint a region equal to a
+    /// from-scratch frame.
+    ///
+    /// The editor is a 60px scroller 40px down the window. The caret is put
+    /// on the third line (placing it scrolls the editor to show it), then the
+    /// user scrolls to 110px, so the caret's box (window rows 7..33 as
+    /// measured, about 77px down the content) lies wholly above the
+    /// scroller's top edge. Off the fixed point: the caret's translation is
+    /// not zero, so its untransformed `top: 0` box (window rows -70..-44) and
+    /// its painted one are different rects. A
+    /// local oracle over the band above the scroller, where correct output
+    /// holds no caret colour; and an ArrowRight (which scrolls the caret back
+    /// into view) repaints a frame equal to a full one.
+    #[test]
+    fn a_caret_scrolled_past_the_editor_edge_is_clipped_and_moves_cleanly() {
+        let handle = crate::editor::create_editor();
+        let mut html = String::new();
+        for i in 0..8 {
+            html.push_str(&format!("<p>line {i} of the scrolled editor</p>"));
+        }
+        assert!(handle.load_html(&html));
+        let h = handle.clone();
+        let ed = Rc::new(std::cell::Cell::new(0usize));
+        let ed_in = ed.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "padding-top: 40px; width: 400px; font-size: 16px; line-height: 20px; \
+                 font-family: sans-serif",
+            );
+            let e = h.mount(scope);
+            e.set_attribute(
+                "style",
+                "height: 60px; overflow-y: auto; padding: 0; border: 0; border-radius: 0",
+            );
+            ed_in.set(e.node_id().0);
+            root.append_child(&e);
+            root
+        });
+        app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        app.focus_target = FocusTarget::Editor(ed.get());
+        let mut p = Page { app, handle };
+        p.handle
+            .set_selection(Selection::cursor(Pos(1 + 31 * 2 + 3)));
+        p.app.refresh_editor_overlays();
+        about_to_wait(&mut p.app);
+        let shown = full_frame(&mut p.app);
+        let r0 = caret_rect(&p.app);
+        assert!(
+            caret_px(&shown, r0) > 5,
+            "positive control: the caret is painted at {r0:?} before the scroll"
+        );
+        {
+            let doc = p.app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.tree.nodes[ed.get()].scroll_offset.1 = 110.0;
+            d.tree.dirty_nodes.insert(ed.get());
+            d.tree.hit_cache.invalidate();
+        }
+        about_to_wait(&mut p.app);
+        let full = full_frame(&mut p.app);
+        let r = caret_rect(&p.app);
+        assert!(
+            r.3 <= 41 && r.1 >= 5,
+            "precondition: the scroll put the caret's box {r:?} above the scroller (y = 40)"
+        );
+        assert_eq!(
+            caret_px(&full, (0, 0, 600, 40)),
+            0,
+            "the transformed caret escaped its editor's clip"
+        );
+        key(&mut p.app, KeyCode::ArrowRight, None);
+        about_to_wait(&mut p.app);
+        let (inc, stats) = incremental_frame(&mut p.app);
+        assert_eq!(stats.get(Counter::PaintFrames), 1, "{stats:?}");
+        let moved = caret_rect(&p.app);
+        assert!(
+            caret_px(&inc, moved) > 5,
+            "positive control: the caret was scrolled back into view at {moved:?}"
+        );
+        assert_eq!(caret_px(&inc, (0, 0, 600, 40)), 0, "and nothing above it");
+        let full = full_frame(&mut p.app);
+        assert_eq!(
+            diff_in(&inc, &full, (0, 0, 600, 400)),
+            0,
+            "incremental frame != full frame"
+        );
+    }
+
+    /// The node outline lands on the node it selects. Since #906 every
+    /// overlay sits at `left: 0; top: 0` and is placed by its `transform`, so
+    /// the anchor is load-bearing: without it the outline falls to its static
+    /// position after the last block (measured by the review of #953: 200px
+    /// low) and nothing else noticed. A selected `<hr>`'s outline must cover
+    /// the `<hr>`'s own painted box, within one pixel. (Measured: 1px right
+    /// of and below it, the container's border width — the offset the caret
+    /// overlay has too, which CLAUDE.md records against `caret_rect`.) The page sits at a fractional
+    /// offset (`padding: 20.3px 13.7px`) so the pin is not on the whole-px
+    /// fixed point, and the `<hr>` is below a paragraph so the translation is
+    /// not zero; a pixel check that the outline's colour is drawn there
+    /// guards the geometry read.
+    #[test]
+    fn a_selected_rule_is_outlined_where_the_rule_is_painted() {
+        let handle = crate::editor::create_editor();
+        assert!(handle.load_html("<p>above the rule</p><hr><p>below the rule</p><p>tail</p>"));
+        let h = handle.clone();
+        let ed = Rc::new(std::cell::Cell::new(0usize));
+        let ed_in = ed.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "padding: 20.3px 13.7px; width: 400px; font-size: 16px; line-height: 20px; \
+                 font-family: sans-serif",
+            );
+            let e = h.mount(scope);
+            ed_in.set(e.node_id().0);
+            root.append_child(&e);
+            root
+        });
+        app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        app.focus_target = FocusTarget::Editor(ed.get());
+        let mut p = Page { app, handle };
+        // "above the rule" is 14 chars: the paragraph spans 0..16, the rule
+        // starts at 16.
+        let doc = p.handle.doc();
+        let sel = Selection::node_at(&doc, Pos(16)).expect("a node selection at the rule");
+        assert_eq!(
+            sel.node(&doc).map(|n| n.type_name().to_string()).as_deref(),
+            Some("horizontal_rule"),
+            "precondition: the selection is the rule"
+        );
+        p.handle.set_selection(sel);
+        p.app.refresh_editor_overlays();
+        about_to_wait(&mut p.app);
+        let frame = full_frame(&mut p.app);
+        let d = p.app.doc.as_ref().unwrap().borrow();
+        let find = |pred: &dyn Fn(&rinch_dom::node::Node) -> bool| {
+            d.tree
+                .nodes
+                .iter()
+                .find(|(_, n)| pred(n))
+                .map(|(id, _)| rinch_dom::paint::painted_border_box(&d.tree, id, 1.0))
+                .expect("found")
+        };
+        let rule = find(&|n| n.tag() == Some("hr"));
+        let outline = find(&|n| n.attributes.contains_key("data-pm-selected"));
+        assert!(
+            rule.y0 > 40.0 && rule.height() > 0.0,
+            "precondition: the rule is laid out below the first paragraph: {rule:?}"
+        );
+        // Not the bottom edge: the outline is `box-sizing: border-box` with a
+        // 2px border, so over a 2px rule it is 4px tall whatever its height.
+        assert!(
+            outline.y1 >= rule.y1,
+            "the outline covers the rule's bottom"
+        );
+        for (a, b, edge) in [
+            (outline.x0, rule.x0, "left"),
+            (outline.y0, rule.y0, "top"),
+            (outline.x1, rule.x1, "right"),
+        ] {
+            assert!(
+                (a - b).abs() <= 1.0,
+                "the outline's {edge} edge {a} is off the rule's {b}: outline {outline:?}, rule {rule:?}"
+            );
+        }
+        // The outline's 2px `#1a73e8` border, drawn at its left edge.
+        let (x, y) = (outline.x0 as i32, ((outline.y0 + outline.y1) / 2.0) as i32);
+        let i = ((y * SIZE.0 as i32 + x) * 4) as usize;
+        assert!(
+            frame[i + 2] > 200 && frame[i] < 100,
+            "positive control: the outline's border is painted at ({x}, {y}): {:?}",
+            &frame[i..i + 4]
+        );
+    }
+
     /// A drag-select: the selection rects are created, grow and shrink frame
     /// by frame, and the caret goes away and comes back. Every frame is a
     /// region, and every one matches a from-scratch frame.

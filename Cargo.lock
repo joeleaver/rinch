@@ -4958,9 +4958,11 @@ dependencies = [
  "gungraun",
  "parley",
  "rinch",
+ "rinch-components",
  "rinch-core",
  "rinch-dom",
  "rinch-platform",
+ "rinch-theme",
 ]
 
 [[package]]
@@ -4969,6 +4971,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "js-sys",
+ "log",
  "rinch-android",
  "wasm-bindgen",
  "wasm-bindgen-futures",

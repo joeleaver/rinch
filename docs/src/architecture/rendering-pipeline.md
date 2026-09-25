@@ -712,13 +712,14 @@ would be. An `animation: … infinite` has no duration to expire, so a rendered-
 but-invisible spinner asks for a frame forever. That is now reachable through a
 shipped component: #751 made the closed `Drawer`'s root `visibility: hidden`
 precisely so its panel could transition, so a `Loader` placed inside a **closed**
-drawer keeps the app rendering. Measured, software backend, 804x600, closed
-drawer, 20 idle frames:
+drawer kept the app rendering until #912 paused it (below). Measured before
+that, software backend, 804x600, closed drawer, 20 idle frames:
 
 | closed-state spelling | `active_animations` | idle frames asking to redraw | ms per tick+paint |
 |---|---|---|---|
 | `display: none` | 0 | 0 / 20 | 0.001 |
-| `visibility: hidden` (today) | 1 | 20 / 20 | 2.53 |
+| `visibility: hidden`, running (the `Drawer` before #912) | 1 | 20 / 20 | 2.53 |
+| `visibility: hidden`, paused (the `Drawer` since #912) | 1 | 0 / 20 | — |
 | open drawer, either spelling | 1 | 20 / 20 | 8.8 – 9.7 |
 
 This is accepted rather than overlooked. Refusing an animation to a
@@ -765,16 +766,33 @@ and records it in `ActiveAnimation::fill_settled`; later ticks re-apply it
 without dirtying anything, and neither `tick_animations` nor
 `has_running_animations()` counts it.
 
-`Drawer`'s closed rule does not declare the pause itself yet. An app that wants a
-closed drawer holding a `Loader` to idle can add the rule below; the three
-`Loader` variants animate `__oval`, `__bar` and `__dot` respectively, so it names
-all three:
+The component library declares the pause itself (issue **#912**). `Drawer`'s
+closed rule, and the closed states of `Popover`'s and `HoverCard`'s dropdowns —
+the three overlays that close with `visibility: hidden` and take content —
+pause every animation beneath them:
 
 ```css
-.rinch-drawer__root--hidden .rinch-loader__oval,
-.rinch-drawer__root--hidden .rinch-loader__bar,
-.rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }
+.rinch-drawer__root--hidden * { animation-play-state: paused !important; }
+.rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover__dropdown) * {
+    animation-play-state: paused !important;
+}
 ```
+
+Every descendant, not a list of known spinners, because any component or app
+rule can declare an animation. Not the pseudo-elements, although
+`animation-play-state` does not inherit into them, so on rinch-web an `::after`
+spinner under a closed overlay still runs: desktop animates no pseudo-element
+(#925), and rinch-dom matches `::before`/`::after` rules with no ancestor bloom
+filter (#935), so `*::before`/`*::after` rules cost +10% of style instructions
+on every page that loads the component CSS and +71% under a closed drawer.
+`!important` because the `animation` shorthand
+resets `animation-play-state` to `running`: without it the pause loses to any
+shorthand of equal specificity declared later (`.rinch-loader__oval`) or higher
+(`.rinch-button--loading .rinch-button__loader`). An app that really wants an
+animation to run inside a closed overlay needs an `!important` of its own. The
+`:not()` is the exact complement of the rule that makes the dropdown visible.
+A closed drawer holding a `Loader` therefore idles, and opening it resumes the
+spinner where it stopped, as a browser keeps `currentTime`.
 
 None of the three sites reads `transitions_enabled` (see "The page-load guard
 arms transitions, and only transitions" above), and for the restart walk that is

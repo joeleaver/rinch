@@ -246,19 +246,13 @@ fn a_paused_animation_idles_for_free() {
     expect_frame("idle, paused animation", &total, &[]);
 }
 
-/// A `Loader` with the component stylesheet installed. `paused` adds the rule
-/// that pauses it (the cure `paused_animation_frames_tests` documents for a
-/// closed `Drawer`).
-fn mount_loader(in_closed_drawer: bool, paused: bool) -> RinchApp {
+/// A `Loader` with the shipped component stylesheet installed, and nothing
+/// else — bare, or inside a closed `Drawer`.
+fn mount_loader(in_closed_drawer: bool) -> RinchApp {
     let mut app = new_app(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         let style = scope.create_element("style");
-        let mut css = rinch_components::generate_component_css();
-        if paused {
-            css.push_str(
-                ".rinch-drawer__root--hidden .rinch-loader__oval { animation-play-state: paused; }",
-            );
-        }
+        let css = rinch_components::generate_component_css();
         let text = scope.create_text(&css);
         style.append_child(&text);
         root.append_child(&style);
@@ -317,7 +311,7 @@ fn ticking_turns(app: &mut RinchApp, n: usize) -> Vec<(bool, FrameStats)> {
 /// more than the oval's neighbourhood still fails. Everything else is exact.
 #[test]
 fn a_running_loader_costs_the_same_bounded_frame_every_turn() {
-    let mut app = mount_loader(false, false);
+    let mut app = mount_loader(false);
     let turns = ticking_turns(&mut app, 5);
     assert!(
         turns.iter().all(|(asked, _)| *asked),
@@ -357,42 +351,44 @@ fn a_running_loader_costs_the_same_bounded_frame_every_turn() {
     }
 }
 
-/// **A finding, pinned as it is — #912; a fix must LOWER this number, and its PR updates the pin (to zero redraws).** A `Loader`
-/// inside a **closed** `Drawer` keeps the app redrawing every frame, because a
-/// closed drawer is `visibility: hidden` (#751), which is rendered, and an
-/// animation on a rendered box runs. The component library's closed rule does
-/// not pause it. Those frames **paint nothing**
-/// (`repaint_none` 1: the hidden oval names no damage), so the cost is the
-/// wake itself — an `AboutToWait`, an animation tick and a redraw request per
-/// frame, forever, for pixels nobody can see.
-/// [`a_paused_loader_in_a_closed_drawer_idles_for_free`] is the app-side cure;
-/// a component-side fix moves this scenario to zero redraws.
+/// A `Loader` inside a **closed** `Drawer` lets the app sleep: no turn asks for
+/// a frame, and the turns that ask for none do no work at all.
+///
+/// A closed drawer is `visibility: hidden` (#751), which is *rendered*, so an
+/// animation under it runs unless something pauses it — a browser agrees. Until
+/// #912 nothing did, and this scenario was pinned as a finding: every turn asked
+/// for a redraw that painted nothing (`repaint_none` 1), forever. The drawer's
+/// closed rule now declares `animation-play-state: paused` over its subtree, and
+/// a paused animation asks for no frame (#763). The stylesheet here is the
+/// shipped component CSS and nothing else.
 #[test]
-fn a_loader_in_a_closed_drawer_still_redraws_every_frame() {
-    let mut app = mount_loader(true, false);
-    let turns = ticking_turns(&mut app, 5);
-    assert!(
-        turns.iter().all(|(asked, _)| *asked),
-        "every turn asks for a frame"
-    );
-    expect_frame(
-        "Loader in a closed Drawer, one frame",
-        &turns[1].1,
-        &[(RepaintNone, 1)],
-    );
-}
-
-/// The same drawer with the app pausing its `Loader`: no frame at all.
-#[test]
-fn a_paused_loader_in_a_closed_drawer_idles_for_free() {
-    let mut app = mount_loader(true, true);
+fn a_loader_in_a_closed_drawer_idles() {
+    let mut app = mount_loader(true);
+    {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let all: Vec<_> = d.tree.active_animations.values().flatten().collect();
+        assert_eq!(
+            all.len(),
+            1,
+            "positive control: the oval's animation is registered, so the zero \
+             below is a pause and not an animation that never started"
+        );
+        assert_eq!(
+            all[0].play_state,
+            rinch_dom::animation::AnimationPlayState::Paused,
+            "and it is paused by the drawer's own closed rule"
+        );
+    }
     let turns = ticking_turns(&mut app, IDLE_TURNS);
-    assert!(turns.iter().all(|(asked, _)| !*asked));
+    assert!(
+        turns.iter().all(|(asked, _)| !*asked),
+        "no turn asks for a frame"
+    );
     let mut total = FrameStats::default();
     for (_, s) in &turns {
         total.accumulate(s);
     }
-    expect_frame("paused Loader in a closed Drawer, idle", &total, &[]);
+    expect_frame("Loader in a closed Drawer, idle", &total, &[]);
 }
 
 // ── Keyed `for`, 200 rows ──────────────────────────────────────────────────

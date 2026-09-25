@@ -182,10 +182,14 @@ pub fn dispatch_dismiss() -> bool {
         // A transaction for the handler (`crate::reactive::batch`). From the
         // Escape path this joins the one `dispatch_keyboard_event` opened; it
         // is a transaction of its own only for a direct `dispatch_dismiss`
-        // (Android Back).
-        let took = crate::reactive::batch(|| match &owner {
-            Some(o) => o.run(|| handler()),
-            None => handler(),
+        // (Android Back). Untracked (#931): `dispatch_dismiss` is public, so it
+        // can be called from inside an effect, and a handler's reads (an
+        // overlay's `opened_fn`) must not subscribe that effect.
+        let took = crate::reactive::batch(|| {
+            crate::reactive::untracked_handler(|| match &owner {
+                Some(o) => o.run(|| handler()),
+                None => handler(),
+            })
         });
         if took {
             consumed = true;

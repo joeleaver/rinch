@@ -622,7 +622,33 @@ at any nesting depth — it suspends the whole observer stack
 (which leaks to an outer effect only during a run nested inside that outer
 effect's run — #932).
 Batching and flushing are unchanged. So `onchange.invoke(v)` in a coordinating
-effect needs no hand-written `untracked`.
+effect needs no hand-written `untracked`. **The other synchronously-run app
+callbacks go through the same function** (issue #931): the editor's `Hook::invoke`
+(`on_change`/`on_selection_change`/`on_caret_moved`/`on_key`) and its
+`on_link_click`/`on_link_hover`; the child observers (`dom::late_child::notify`,
+reached from inside every `for`/`if`/component-re-render effect); the selection
+and selection-sync callbacks; `dispatch_dismiss`; `Drag::cancel`'s `on_cancel`
+(which #942's superseding `Drag::start` also reaches); and the keyboard and paste
+interceptors (`dispatch_keyboard_event` / `dispatch_paste_event` are public).
+`rinch_core::untracked_handler` is public for any new slot that stores an app's
+callback — use it there, not `untracked`. Not wrapped, because nothing reaches
+them from inside an effect: the focus-registry callbacks and menu callbacks
+(both `pub(crate)`, run by the runtime from events or the deferred focus work),
+and Drag's `on_move`/`on_end` (pointer events). **Editor plugin code runs
+untracked too** (issue #943), by a different route: `EditorHandle`'s core guards
+(`CoreGuard`, `CoreMutGuard`) hold a `rinch_core::reactive::suspend_tracking()`
+guard — `untracked_handler` as a value — for as long as the core is borrowed, so
+`Plugin::apply`, `init_state`, `decorations` (the view's diff), `handle_paste`, a
+plugin's command (`command` and `can_run` alike) and an input rule are untracked
+wherever the handle itself runs them, including through `add_plugin`, a load and
+`collab_receive`; the two constructors wrap `EditorState::create` and the first
+projection in `untracked_handler`. A new internal site under the guard needs
+nothing. The collaboration `outbound` sink runs under the same guard and wraps
+itself in `untracked_handler` as well (#948). Deliberately **not** untracked: the
+`EditorHandle::update` `build` closure, the caller's own code — `dispatch_inner`
+lifts the suspension for that closure alone, so plugin code *it* calls
+(`update(|s| { s.apply(..); … })`) is tracked as the caller's. The guard type
+`TrackingSuspended` is `!Send`/`!Sync`: the stack it restores is thread-local.
 
 ## Component Props
 
@@ -1124,7 +1150,7 @@ anchor.
 
 **Links are the app's; the pointer asks about the character under it** (`on_link_click` / `on_link_hover`). The editor never follows a link. `rinch_editor_core::link_at(doc, pos)` answers the link carrying the character **starting** at `pos` (content covering `pos..pos+1`) as a `LinkSpan { href, title, from, to }` over the whole run of adjacent content with the same `href`, across other marks. That is deliberately **not** `ResolvedPos::marks`, which answers what a *caret* would inherit: a link is non-inclusive, so a caret at either edge of it inherits no link, while the pointer over the link's first or last letter is on it. Desktop finds the character with `rinch_dom::text_query::cluster_range_at_point` (Parley's `Cluster::from_point_exact`, `None` beside a line's end) — never `byte_offset_from_position`, which answers the nearest caret boundary; the web takes "is there a link" from the browser's own hit test (`closest("a[data-pm-mark='link']")`) and "which character" from `caretRangeFromPoint`'s boundary plus that element's `href`. A press is offered in `try_new_editor_click` / `handle_mousedown` before the caret moves, only for `click_count == 1` / `detail <= 1`, never for the context press or a leaf; a claimed one returns after focus with nothing else touched. Hover: `registry::set_link_hover(doc, Some((handle, hover)) | None)` keeps the one hovered link per document and fires callbacks only on a change, with no borrow held; `registry::link_hover_wanted()` (a thread-local count of editors with a hover callback, decremented in `EditorCore`'s `Drop`) gates all of it, so a pointer move pays one `Cell` read when no app asked, and desktop reuses the move's shared hit (`move_hit`, #881), called last in the hover arm because the callbacks are app code. The web decides a click's default action on an `a[href]` inside `[data-pm-editor]` in `handle_link_click` (a cancelled `mousedown` does not cancel the click's navigation): prevented when the editor is **editable** or has an `on_link_click` callback, native in a **read-only** editor without one; a `click` with `detail == 0` (Enter on the focused link, which is a Tab stop) is first offered to `on_link_click`, found from the anchor element (`link_of_anchor`), and a non-link-mark anchor is never offered. **Unmount is silent** (#147/#183): `EditorHandle::mount` releases its registration in `scope.on_cleanup`, and `unregister_editor` drops any `LINK_HOVER` entry the editor held without calling back, which also releases its `link_hover_wanted` count at the unmount. Neither callback runs inside a `batch()` (like `on_change`). Pins: `rinch-editor-core/src/links.rs`, `rinch-editor-view/src/links.rs`, `rinch/src/app/editor_link_tests.rs`, `rinch-web/tests/editor_links.rs`.
 
-**Popup hooks: `on_key`, `on_selection_change`, `on_caret_moved`, `caret_rect`** (what a `[[` link picker or `@` mention list needs; guide: `contenteditable.md#autocomplete-popups-keys-selection-and-caret-geometry`). All single-slot like `on_change`, free when unregistered, and called with **no internal borrow held**. `on_selection_change` and `on_caret_moved` are owed, not called, where the state changes: `EditorCore::note_selection` (from `commit` and the remote integrate) and `update_caret` (only when the overlay moved) set a flag, and `CoreMutGuard`'s `Drop` — the mutable borrow every change is made under — releases the borrow and the flush suppression and **then** calls; so a new mutation path through `commit` reports by default. The guard skips its calls only for a panic raised while it was held (compared with `panicking` at the borrow: on wasm a caught panic leaves `thread::panicking()` true for the page's lifetime). `on_key` is offered by the platforms before any editor handling **and before the interceptor and the dismiss stack** — only a menu chord wins over it, on both backends: web at the top of `handle_keydown` (a `document` **capture** listener, ahead of the bubble delegate that runs `dispatch_keyboard_event`) after the composing check (not for `Unidentified`/`Process`), desktop ahead of step 1 of the `KeyDown` dispatch whenever `FocusTarget::Editor` holds and the text context menu is shut (with `"Space"` respelled `" "`; the arbiter's editor arm offers only a key not offered there). So an autocomplete popup that claims Escape inside a `Modal` closes and the modal stays; an unclaimed Escape still closes the modal. It was interceptor-and-dismiss-stack-first on desktop until #916's review (D2), which made Escape reach the modal on desktop and the popup on web. `offer_key` itself declines while a preedit is shown. **The four callbacks carry their owner** (`Hook`, #147/#183 — `on_change` too): the ambient owner at registration is stored beside the closure, a callback whose owner is disposed is not called (`offer_key` answers `false`), a live one runs inside `owner.run`, and one registered outside any render keeps app lifetime and runs `unowned`. Without it a component that registered popup hooks on an app-level handle and unmounted panicked on the app's next `set_selection`/`load_html` (freed signal). With an input method on (Linux IBus / Wayland `text-input`), plain characters may arrive as IME commits and never reach `on_key`; a `[[` trigger belongs in `on_selection_change`. `caret_rect` asks `DomDocument::query_caret_rect(node, byte)` (default `None`): rinch-dom answers Parley's caret pushed through the painted transform (`RinchDocument::text_caret_window_rect`, which `editor_caret_point` also uses), the web a collapsed `Range` (which `head_screen_rect` now delegates to); an element with no text answers its box origin, text not yet laid out answers `None`. **Desktop answers `None` for a block edited since the last layout** — which is every callback but `on_caret_moved`, fired from the post-layout caret pass. The desktop caret overlay sits one container border width right of and below `caret_rect` (the overlay anchors to the padding box and desktop's `content_origin_inset` is zero). Pins: `handle.rs` `tests::popup_hooks`, `rinch/src/app/editor_popup_hooks_tests.rs`, `rinch-web/tests/editor_popup_hooks.rs`.
+**Popup hooks: `on_key`, `on_selection_change`, `on_caret_moved`, `caret_rect`** (what a `[[` link picker or `@` mention list needs; guide: `contenteditable.md#autocomplete-popups-keys-selection-and-caret-geometry`). All single-slot like `on_change`, free when unregistered, and called with **no internal borrow held**. `on_selection_change` and `on_caret_moved` are owed, not called, where the state changes: `EditorCore::note_selection` (from `commit` and the remote integrate) and `update_caret` (only when the overlay moved) set a flag, and `CoreMutGuard`'s `Drop` — the mutable borrow every change is made under — releases the borrow and the flush suppression and **then** calls; so a new mutation path through `commit` reports by default. The guard skips its calls only for a panic raised while it was held (compared with `panicking` at the borrow: on wasm a caught panic leaves `thread::panicking()` true for the page's lifetime). `on_key` is offered by the platforms before any editor handling **and before the interceptor and the dismiss stack** — only a menu chord wins over it, on both backends: web at the top of `handle_keydown` (a `document` **capture** listener, ahead of the bubble delegate that runs `dispatch_keyboard_event`) after the composing check (not for `Unidentified`/`Process`), desktop ahead of step 1 of the `KeyDown` dispatch whenever `FocusTarget::Editor` holds and the text context menu is shut (with `"Space"` respelled `" "`; the arbiter's editor arm offers only a key not offered there). So an autocomplete popup that claims Escape inside a `Modal` closes and the modal stays; an unclaimed Escape still closes the modal. It was interceptor-and-dismiss-stack-first on desktop until #916's review (D2), which made Escape reach the modal on desktop and the popup on web. `offer_key` itself declines while a preedit is shown. **The four callbacks carry their owner** (`Hook`, #147/#183 — `on_change` too): the ambient owner at registration is stored beside the closure, a callback whose owner is disposed is not called (`offer_key` answers `false`), a live one runs inside `owner.run`, and one registered outside any render keeps app lifetime and runs `unowned`. Without it a component that registered popup hooks on an app-level handle and unmounted panicked on the app's next `set_selection`/`load_html` (freed signal). With an input method on (Linux IBus / Wayland `text-input`), plain characters may arrive as IME commits and never reach `on_key`; a `[[` trigger belongs in `on_selection_change`. `caret_rect` asks `DomDocument::query_caret_rect(node, byte)` (default `None`): rinch-dom answers Parley's caret pushed through the painted transform (`RinchDocument::text_caret_window_rect`, which `editor_caret_point` also uses), the web a collapsed `Range` (which `head_screen_rect` now delegates to); an element with no text answers its box origin, text not yet laid out answers `None`. **Desktop answers `None` for a block edited since the last layout** — which is every callback but `on_caret_moved`, fired from the post-layout caret pass. The desktop caret overlay sits one container border width right of and below `caret_rect` (the overlay anchors to the padding box and desktop's `content_origin_inset` is zero). The overlays themselves (caret, selection rects, node outline) sit at `left: 0; top: 0` and are placed by `transform: translate(x, y)`, rounded to whole px in container space — within a pixel of the old absolute-rounded insets, not identical (`view.rs`, `overlay_translate`; #906): paint-only, so a caret move runs no Taffy compute on desktop, and a test that wants an overlay's position reads the painted box (`painted_border_box`, `getBoundingClientRect`) or the `transform`, never `left`/`top`. Pins: `handle.rs` `tests::popup_hooks`, `rinch/src/app/editor_popup_hooks_tests.rs`, `rinch-web/tests/editor_popup_hooks.rs`.
 
 **Read-only refuses edits in `EditorCore::commit`, and nowhere else.** `set_read_only(true)` makes the editor what `readonly` makes an `<input>`: caret, selection, `selectAll`, copy and every query work; every local change to the document does not — typing, IME commit, paste, cut, every document-changing `command` (so every key bound to one, and `undo`/`redo`), `toggle_link`, `insert_image`, a task-checkbox click, any `update` transaction that changes the document or sets stored marks. Each answers `false`; `can_run` answers `false` for a refused command. The rule (`EditorCore::refuses`) reads the `prev`/`next` states rather than the caller, and `commit` is the single landing spot for a local change **that arrives as a transaction**, so **a new input path is read-only by default — do not add an `is_read_only()` check to an input handler to refuse an edit it already refuses.** (The one thing `commit` cannot judge from the states is a whole-document `load_doc`, which it is told about by `mapping: None`; a future mapping-less local change that is *not* a load would need an explicit origin instead.)
 
@@ -1368,6 +1394,25 @@ app. (Two desktop *windows* do not cross-feed a plain mouse drag on their own �
 the pointer is grabbed to the pressing window while a button is held — so this
 matters for an embed host pumping several contexts from one event stream, and
 for a drag left live past a missed `MouseUp`.)
+
+**Arming a drag ends the live one through its `on_cancel` (issue #293)** —
+whichever document armed it, the same one or another. There is one slot, and a
+press that arms a drag while another is live usually means the old drag's
+release was never delivered: swallowed in its own document (#189), or in
+another document on the thread, since the pointer is grabbed to the pressing
+window while a button is held. So `Drag::start()` ends it the #189 way —
+`on_cancel` with the last coordinates it delivered, never `on_end` — before
+arming the new one. It used to drop the old drag with neither callback run,
+which #139 made reachable: a second document's `is_active()` answers `false`,
+so it no longer held off arming. A superseded drag whose arming scope was
+disposed is dropped silently (#141), and a drag armed from inside the
+superseded one's `on_cancel` is superseded in turn (at most 8 cancels per
+`start()`, then the leftover is dropped with a warning). Every `on_cancel` —
+this one, a heal, a pointer-cancel — runs under its own drag's owner and
+arming document, not the caller's. A second finger's press on rinch-web is a
+press like any other, so its drag cancels the first finger's. Two *simultaneous*
+pointer-capture drags — one per finger, or one per context — are not possible:
+the slot holds one.
 
 **A drag whose release was swallowed heals itself (issue #189).** A native
 context menu, a modal dialog, a window-manager grab, or the pointer leaving a
@@ -3523,8 +3568,9 @@ Three things it deliberately does not do.
   is the same answer the transition rule gives — such a box is rendered — and it
   is what a browser does, measured in Chrome. But an animation has no duration to
   expire, so the cost is not a one-off: after #751 made the closed `Drawer`
-  `visibility: hidden`, a `Loader` inside a **closed** drawer keeps animating and
-  keeps the app rendering. Measured on the software backend at 804x600, closed
+  `visibility: hidden`, a `Loader` inside a **closed** drawer kept animating and
+  kept the app rendering until #912 paused it (below). Measured before that, on
+  the software backend at 804x600, closed
   drawer, 20 idle frames: **20/20 asked for a redraw at 2.53ms per tick+paint**,
   where the `display: none` spelling asked for 0. That is accepted, not
   overlooked — the two rules cannot disagree without desktop diverging from the
@@ -3550,13 +3596,30 @@ Three things it deliberately does not do.
   `forwards`/`both` animation is the same shape (**#782**): the tick that
   finishes it writes the fill and dirties the node once
   (`ActiveAnimation::fill_settled`), and after that it is kept, re-applied and
-  not counted. `Drawer`'s own closed rule does **not** declare the pause yet, so
-  a `Loader` in a closed `Drawer` still keeps the app rendering unless the app
-  pauses it. The three `Loader` variants animate three different elements, so
-  the rule has to name all of them —
-  `.rinch-drawer__root--hidden .rinch-loader__oval, .rinch-drawer__root--hidden .rinch-loader__bar, .rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }`
-  (`app/paused_animation_frames_tests.rs` installs exactly that list and
-  mounts the default oval).
+  not counted. **The component library declares the pause itself** (#912):
+  `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
+  subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
+  `animation-play-state: paused !important` — every descendant rather than a
+  list of known spinners, and `!important` because the `animation` shorthand
+  resets the play state and `.rinch-loader__oval` ties with the `*` rule on
+  specificity. The popover and hover-card selectors use a complex `:not()` that
+  is the exact complement of the rule making the dropdown visible (Stylo and
+  Chrome both match it). A closed drawer holding a `Loader` now asks for no
+  frames and resumes where it paused on open — pinned by
+  `perf_regression_tests::a_loader_in_a_closed_drawer_idles` and
+  `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused`.
+  A browser stops the spinner during a popover's or hover card's 150ms
+  fade-out, since the pause lands when the dropdown starts to close. **No
+  `*::before` / `*::after`**, so on rinch-web a pseudo-element spinner under a
+  closed overlay still runs: desktop animates no pseudo-element (#925), and
+  rinch-dom matches pseudo-element rules with no bloom filter (#935), so those
+  selectors cost +10% of style instructions on every page loading the
+  component CSS (+71% under a closed drawer). `rinch-bench`'s `drawer_toggle`
+  bench, which loads the theme and component CSS, is there to catch that
+  class of cost.
+  `LoadingOverlay` is the other `visibility: hidden` overlay and declares no
+  pause: it takes no children and its own loader has no animated child (#924);
+  fixing that needs the pause too.
 - **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
   unlink a node from its old parent with the same lines `remove_child` uses, but
   it is back in the document before the call returns — so a row that was

@@ -26,19 +26,8 @@ use rinch_core::dom::{NodeHandle, NodeId, RenderScope, mock::MockDomDocument};
 use rinch_core::element::Component;
 use rinch_tabler_icons::TablerIcon;
 
-fn has_class(node: &NodeHandle, class: &str) -> bool {
-    node.get_attribute("class")
-        .unwrap_or_default()
-        .split_whitespace()
-        .any(|c| c == class)
-}
-
-fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    if has_class(node, class) {
-        return Some(node.clone());
-    }
-    node.children().iter().find_map(|c| find_by_class(c, class))
-}
+mod common;
+use common::find_by_class;
 
 /// Every node in a subtree, so the assertion covers the whole discarded glyph
 /// and not just its root.

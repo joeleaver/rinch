@@ -217,6 +217,20 @@ see one move per batch, at the latest position. This is the browser's model:
 it dispatches `pointermove` at most once per frame. A component drag's layout
 runs once per frame too, not once per move.
 
+### One pointer-capture drag at a time
+
+`Drag::start()` ends any drag that is already live before arming its own, and
+it ends it through that drag's `on_cancel` — never its `on_end`. Usually a
+press arming a drag while another is live means the earlier drag's release was
+lost (a context menu or a window-manager grab swallowed it, or it went to
+another rinch document on the same thread — a DevTools window, a second
+embedded `RinchContext`), so there is no trustworthy position to commit. On a
+touch screen it can also be a second finger: rinch-web dispatches a second
+finger's press, and a drag it arms cancels the first finger's while that finger
+is still down — there is one drag at a time, not one per finger. Keep teardown
+in `on_cancel` and it runs on every ending but a commit — and an unmount of
+the component that armed the drag, which drops it without calling back.
+
 `onscroll` fires once per container that moved, whichever axis moved it, and
 its [`ScrollEvent`] payload carries **both** offsets — so a horizontal-only
 scroller reports its position rather than an unchanging `scroll_top`
@@ -361,6 +375,44 @@ value (`\n` included) and is one Backspace away from gone. On Android the soft
 keyboard is told per focused field which kind it is serving, so a `<textarea>`
 gets a keyboard whose Enter types a newline instead of an action key that ends
 the input session.
+
+### Moving between lines
+
+ArrowUp and ArrowDown move the caret one **visual** line in a `<textarea>` — a
+line the text soft-wrapped onto counts, as in a browser — aiming at the column
+the first of a run of vertical moves started from, so a short line in between
+does not pull the caret left for good. On desktop this reads the same text
+layout a click is hit-tested against, so the caret lands where a click at that
+height would put it (except at a soft-wrap point, below). ArrowUp on the first line goes to the start of the text and
+ArrowDown on the last line to its end; in a single-line `<input>` that is all
+they do (Chrome's behaviour on Linux and Windows). Shift extends the selection.
+Without Shift a selection collapses, moving from its start (up) or its end
+(down). An `<input type="number">` is not moved: a browser steps its value
+there, which desktop does not do.
+
+Where a soft-wrapped line is shorter than the column aimed at, desktop stops
+one character before the wrap point, since a caret at the wrap point itself
+would be drawn at the start of the next line. A browser keeps a caret affinity
+for that and places it after the last character instead. Where the wrap is
+at a space the space hangs and nothing looks different; in text with no
+spaces (CJK) the caret is visibly one column short.
+
+Home and End in a `<textarea>` go to the start and end of the caret's
+**visual** line, soft-wrapped lines included; Ctrl+Home and Ctrl+End (Cmd on
+macOS) go to the start and end of the whole text. Shift extends the selection.
+Without Shift a selection collapses and moves from its head — the end the
+caret is at — rather than from its start or end as ArrowUp and ArrowDown do,
+which is what Chrome does. In a single-line `<input>` Home and End go to the
+ends of the value. A Home or End moves the caret off the column a run of
+vertical moves was aiming at, so the next ArrowUp or ArrowDown aims from where
+the caret now is; one that leaves the caret where it was keeps that column, as
+in Chrome.
+
+End on a soft-wrapped line follows the rule above: desktop stops one character
+before the wrap point, a browser at the wrap point with the caret drawn at the
+end of the line. When the wrap is at a space, the caret sits before that space,
+so a character typed there goes before it — `abcd abcdX abcd` where Chrome
+types `abcd abcd Xabcd`.
 
 ### Sizing a `<textarea>`
 
