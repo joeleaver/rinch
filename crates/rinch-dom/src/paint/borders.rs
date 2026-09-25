@@ -1118,7 +1118,7 @@ fn blurred_inset_images(
         let mut data = vec![0u8; w * h * 4];
         for (j, row) in data.chunks_exact_mut(w * 4).enumerate() {
             let src = &covered[(y0 + j) * iw + x0..(y0 + j) * iw + x1];
-            for (px, &m) in row.chunks_exact_mut(4).zip(src) {
+            for (px, &m) in row.as_chunks_mut::<4>().0.iter_mut().zip(src) {
                 px[0] = rgba.r;
                 px[1] = rgba.g;
                 px[2] = rgba.b;
