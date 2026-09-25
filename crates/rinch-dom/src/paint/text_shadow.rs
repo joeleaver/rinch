@@ -16,8 +16,9 @@
 //! The Vello-only build (`embed` without `software-renderer`) has no CPU
 //! rasteriser, and falls back to a small **kernel of copies**
 //! ([`draw_tapped`]): at most 13 copies, each in a [`BlendMode::Plus`] layer at
-//! its weight inside one isolated layer, and at most [`TAP_GLYPH_BUDGET`] glyph
-//! copies per paint — past the budget a shadow is drawn unblurred. The first
+//! its weight inside one isolated layer; a shadow whose glyphs × taps would
+//! pass [`TAP_GLYPHS_PER_SHADOW`] gets a 5-tap cross or no blur, decided by
+//! the shadow alone, and [`TAP_GLYPH_BUDGET`] guards a whole paint. The first
 //! cut of #980 drew every blurred shadow that way with up to 113 copies; a page
 //! of text then cost 50–170 times as much per software frame and overflowed
 //! wgpu's buffer-binding limit on the GPU (review of PR #1020).
@@ -42,10 +43,20 @@ use super::text::{TextMask, draw_shadow_copy};
 /// standard deviation is half the radius.
 pub(crate) const REACH_PER_BLUR: f64 = 1.5;
 
-/// The most glyph copies the kernel-of-copies fallback draws in one paint
-/// (glyphs × taps, summed over every blurred shadow). Past it a shadow is
-/// drawn once, unblurred, which bounds what a page of text can hand Vello.
-pub const TAP_GLYPH_BUDGET: usize = 20_000;
+/// The most glyph copies the kernel-of-copies fallback draws for **one**
+/// shadow (its glyphs × taps). A shadow of up to 153 glyphs gets the 13-tap
+/// kernel, one of up to 400 a 5-tap cross, a longer one is drawn unblurred —
+/// a decision about the element alone, so its blur does not change as other
+/// text scrolls on or off screen (review of #1020, round 2, F3).
+pub const TAP_GLYPHS_PER_SHADOW: usize = 2_000;
+
+/// The most glyph copies the kernel-of-copies fallback draws in one paint,
+/// summed over every blurred shadow; past it a shadow is drawn unblurred. A
+/// crash guard, not a style decision — it depends on paint order — and far
+/// past what a screen of text reaches under [`TAP_GLYPHS_PER_SHADOW`]: the
+/// uncapped kernel overflowed wgpu's buffer-binding limit at 687 000 glyph
+/// copies (review of #1020).
+pub const TAP_GLYPH_BUDGET: usize = 150_000;
 
 /// The largest mask, in pixels, the software rasteriser blurs; a bigger one
 /// (a huge transformed text block — a translate-only one is cropped to what
@@ -64,15 +75,29 @@ thread_local! {
     static FORCE_TAPS: Cell<bool> = const { Cell::new(false) };
     /// Glyph copies the kernel-of-copies fallback has drawn this paint.
     static TAP_GLYPHS: Cell<usize> = const { Cell::new(0) };
-    /// The pixmap blurred shadows are rasterised into, kept across paints so
-    /// its glyph cache stays warm; it only ever grows, to the largest mask
-    /// drawn, which is bounded by what can be seen.
+    /// How many paints are running on this thread (a paint may nest another);
+    /// the per-paint state resets only at the outermost.
+    static PAINT_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// Blurred masks rasterised this paint, for `text_shadow_masks_rasterised`.
+    static RASTERISED: Cell<u64> = const { Cell::new(0) };
     #[cfg(feature = "software-renderer")]
     static MASK_CACHE: std::cell::RefCell<MaskCache> = std::cell::RefCell::new(MaskCache::default());
+    /// The pixmap blurred shadows are rasterised into, kept across paints so
+    /// its glyph cache stays warm, and trimmed to the largest mask the last
+    /// [`SCRATCH_WINDOW`] paints needed ([`end_paint`]).
     #[cfg(feature = "software-renderer")]
     static SCRATCH: std::cell::RefCell<Option<super::skia_painter::TinySkiaPainter>> =
         const { std::cell::RefCell::new(None) };
+    /// The largest mask side each of the last [`SCRATCH_WINDOW`] paints
+    /// rasterised, newest last; and this paint's so far.
+    #[cfg(feature = "software-renderer")]
+    static SCRATCH_USE: std::cell::RefCell<(Vec<(u32, u32)>, (u32, u32))> =
+        const { std::cell::RefCell::new((Vec::new(), (0, 0))) };
 }
+
+/// How many paints the scratch pixmap's size answers to.
+#[cfg(feature = "software-renderer")]
+const SCRATCH_WINDOW: usize = 8;
 
 /// Draw blurred `text-shadow`s as a kernel of copies (the Vello-only build's
 /// way) even where the software rasteriser is compiled in, on this thread,
@@ -90,9 +115,64 @@ pub fn clear_text_shadow_cache() {
     MASK_CACHE.with(|c| *c.borrow_mut() = MaskCache::default());
 }
 
-/// Start a paint: the kernel-of-copies budget is per paint.
+/// Start a paint: the kernel-of-copies crash guard and the rasterised count
+/// are per paint, and a paint nested in another continues the outer one's.
 pub(super) fn begin_paint() {
-    TAP_GLYPHS.with(|t| t.set(0));
+    let depth = PAINT_DEPTH.with(|d| d.replace(d.get() + 1));
+    if depth == 0 {
+        TAP_GLYPHS.with(|t| t.set(0));
+        RASTERISED.with(|r| r.set(0));
+    }
+}
+
+/// End a paint begun by [`begin_paint`]. At the outermost, returns how many
+/// blurred masks it rasterised (the rest were served from the cache), and
+/// trims the scratch pixmap to what the last [`SCRATCH_WINDOW`] paints needed
+/// — dropping it when none of them needed one.
+pub(super) fn end_paint() -> u64 {
+    let depth = PAINT_DEPTH.with(|d| {
+        let v = d.get().saturating_sub(1);
+        d.set(v);
+        v
+    });
+    if depth != 0 {
+        return 0;
+    }
+    #[cfg(feature = "software-renderer")]
+    {
+        let need = SCRATCH_USE.with(|u| {
+            let mut u = u.borrow_mut();
+            let this = std::mem::take(&mut u.1);
+            u.0.push(this);
+            if u.0.len() > SCRATCH_WINDOW {
+                u.0.remove(0);
+            }
+            u.0.iter()
+                .fold((0, 0), |a, &(w, h)| (a.0.max(w), a.1.max(h)))
+        });
+        SCRATCH.with(|s| {
+            let mut s = s.borrow_mut();
+            if need == (0, 0) {
+                *s = None;
+            } else if let Some(sp) = s.as_mut()
+                && (sp.width() > need.0 || sp.height() > need.1)
+            {
+                sp.resize(need.0, need.1);
+            }
+        });
+    }
+    RASTERISED.with(|r| r.replace(0))
+}
+
+/// The scratch pixmap's size, if there is one. For tests.
+#[doc(hidden)]
+pub fn text_shadow_scratch_size() -> Option<(u32, u32)> {
+    #[cfg(feature = "software-renderer")]
+    {
+        SCRATCH.with(|s| s.borrow().as_ref().map(|p| (p.width(), p.height())))
+    }
+    #[cfg(not(feature = "software-renderer"))]
+    None
 }
 
 /// Draw one shadow pass of `layout`: glyphs, straight decorations and — given
@@ -226,6 +306,14 @@ fn draw_masked(
     } else {
         (x, y, css_transform)
     };
+    // The text's sub-pixel phase, snapped to a quarter pixel: a scroll by a
+    // fraction of a physical pixel (a fling, `scroll_to_fraction`, a CSS
+    // pixel at 1.25x) then lands on one of 16 phases, each rasterised once,
+    // instead of missing the cache for every shadow on screen every frame
+    // (review of #1020, round 2, F2). The shift is at most 1/8 px, under a
+    // blur of at least 1/4 px.
+    let snap = |v: f64| (v * 4.0).round() / 4.0;
+    let (ox, oy) = (snap(ox), snap(oy));
     let ext = text_extent(layout, scale);
     let mut area = Rect::new(
         ox + ext.x0 - pad,
@@ -275,7 +363,7 @@ fn draw_masked(
     let draw_at = image_transform * Affine::translate((area.x0, area.y0));
     let hit = MASK_CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        let Some(entry) = c.get(key) else {
+        let Some(entry) = c.get(key, (w, h, sigma.to_bits())) else {
             return false;
         };
         if let Some(m) = entry {
@@ -288,6 +376,11 @@ fn draw_masked(
     }
 
     // Rasterise: coverage is the alpha of an opaque copy.
+    RASTERISED.with(|r| r.set(r.get() + 1));
+    SCRATCH_USE.with(|u| {
+        let mut u = u.borrow_mut();
+        u.1 = (u.1.0.max(w as u32), u.1.1.max(h as u32));
+    });
     let mut coverage = vec![0.0_f32; w * h];
     let mut any = false;
     SCRATCH.with(|s| {
@@ -326,7 +419,7 @@ fn draw_masked(
         }
     });
     if !any {
-        MASK_CACHE.with(|c| c.borrow_mut().insert(key, None));
+        MASK_CACHE.with(|c| c.borrow_mut().insert(key, (w, h, sigma.to_bits()), None));
         return true;
     }
     blur_2d(&blur, &mut coverage, w, h);
@@ -336,7 +429,10 @@ fn draw_masked(
         .map(|&c| (c * 255.0).round().clamp(0.0, 255.0) as u8)
         .collect();
     painter.draw_alpha_mask(&mask8, w as u32, h as u32, color, draw_at);
-    MASK_CACHE.with(|c| c.borrow_mut().insert(key, Some(mask8)));
+    MASK_CACHE.with(|c| {
+        c.borrow_mut()
+            .insert(key, (w, h, sigma.to_bits()), Some(mask8))
+    });
     true
 }
 
@@ -350,43 +446,113 @@ const MASK_CACHE_BYTES: usize = 32 << 20;
 /// came out empty. A page of shadowed text is rasterised and blurred once, not
 /// every frame — which matters most on the GPU path, where every frame paints
 /// everything.
+///
+/// Each entry also carries the width, height and blur it was made for, and a
+/// hit is served only when they match: a 64-bit hash collision then costs a
+/// miss rather than a wrong mask of another size.
 #[cfg(feature = "software-renderer")]
 #[derive(Default)]
 struct MaskCache {
-    entries: rustc_hash::FxHashMap<u64, (Option<Vec<u8>>, u64)>,
+    entries: rustc_hash::FxHashMap<u64, MaskEntry>,
     bytes: usize,
     clock: u64,
 }
 
+/// `(width, height, sigma bits)` a mask was made for.
+#[cfg(feature = "software-renderer")]
+type MaskShape = (usize, usize, u64);
+
+#[cfg(feature = "software-renderer")]
+struct MaskEntry {
+    shape: MaskShape,
+    mask: Option<Vec<u8>>,
+    used: u64,
+}
+
+#[cfg(feature = "software-renderer")]
+impl MaskEntry {
+    fn bytes(&self) -> usize {
+        self.mask.as_ref().map_or(0, Vec::len) + 64
+    }
+}
+
 #[cfg(feature = "software-renderer")]
 impl MaskCache {
-    fn get(&mut self, key: u64) -> Option<Option<&Vec<u8>>> {
+    fn get(&mut self, key: u64, shape: MaskShape) -> Option<Option<&Vec<u8>>> {
         self.clock += 1;
         let clock = self.clock;
-        self.entries.get_mut(&key).map(|e| {
-            e.1 = clock;
-            e.0.as_ref()
-        })
+        let e = self.entries.get_mut(&key)?;
+        if e.shape != shape {
+            return None;
+        }
+        e.used = clock;
+        Some(e.mask.as_ref())
     }
 
-    fn insert(&mut self, key: u64, mask: Option<Vec<u8>>) {
-        let size = mask.as_ref().map_or(0, Vec::len) + 64;
+    fn insert(&mut self, key: u64, shape: MaskShape, mask: Option<Vec<u8>>) {
+        self.clock += 1;
+        let entry = MaskEntry {
+            shape,
+            mask,
+            used: self.clock,
+        };
+        let size = entry.bytes();
         if size > MASK_CACHE_BYTES {
             return;
         }
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes -= old.bytes();
+        }
         while self.bytes + size > MASK_CACHE_BYTES {
-            let Some((&old, _)) = self.entries.iter().min_by_key(|(_, e)| e.1) else {
+            let Some((&oldest, _)) = self.entries.iter().min_by_key(|(_, e)| e.used) else {
                 break;
             };
-            if let Some((m, _)) = self.entries.remove(&old) {
-                self.bytes -= m.map_or(0, |m| m.len()) + 64;
+            if let Some(old) = self.entries.remove(&oldest) {
+                self.bytes -= old.bytes();
             }
         }
-        self.clock += 1;
-        if let Some((m, _)) = self.entries.insert(key, (mask, self.clock)) {
-            self.bytes -= m.map_or(0, |m| m.len()) + 64;
-        }
+        self.entries.insert(key, entry);
         self.bytes += size;
+    }
+}
+
+#[cfg(all(test, feature = "software-renderer"))]
+mod cache_tests {
+    use super::{MASK_CACHE_BYTES, MaskCache};
+
+    /// The cache holds at most [`MASK_CACHE_BYTES`], and what leaves first
+    /// is what was used longest ago — a hit renews an entry.
+    ///
+    /// Kills: no eviction; evicting the newest; a hit that does not renew.
+    #[test]
+    fn it_is_bounded_and_evicts_the_least_recently_used() {
+        let mut c = MaskCache::default();
+        let mb = 1 << 20;
+        for k in 0..40u64 {
+            c.insert(k, (mb, 1, 0), Some(vec![0; mb]));
+            assert!(c.bytes <= MASK_CACHE_BYTES, "{} bytes after {k}", c.bytes);
+            // Keep key 0 in use throughout.
+            assert!(
+                c.get(0, (mb, 1, 0)).is_some(),
+                "the entry in use left at {k}"
+            );
+        }
+        assert!(
+            c.get(1, (mb, 1, 0)).is_none(),
+            "the oldest unused entry is gone"
+        );
+        assert!(c.get(39, (mb, 1, 0)).is_some(), "the newest is kept");
+        assert!(c.bytes <= MASK_CACHE_BYTES);
+    }
+
+    /// A hit is served only for the size and blur the mask was made for.
+    #[test]
+    fn a_hit_needs_the_same_shape() {
+        let mut c = MaskCache::default();
+        c.insert(7, (4, 4, 1), Some(vec![1; 16]));
+        assert!(c.get(7, (4, 4, 1)).is_some());
+        assert!(c.get(7, (4, 5, 1)).is_none());
+        assert!(c.get(7, (4, 4, 2)).is_none());
     }
 }
 
@@ -525,8 +691,10 @@ fn blur_2d(blur: &Blur1d, mask: &mut [f32], w: usize, h: usize) {
 
 /// Draw the shadow as a small Gaussian kernel of copies — each in a
 /// [`BlendMode::Plus`] layer at its weight, inside one isolated layer at the
-/// shadow colour's alpha — or, once this paint has drawn
-/// [`TAP_GLYPH_BUDGET`] glyph copies, as one unblurred copy.
+/// shadow colour's alpha. The kernel is the full one, a 5-tap cross or none,
+/// by the shadow's own glyph count against [`TAP_GLYPHS_PER_SHADOW`]; past
+/// the per-paint crash guard [`TAP_GLYPH_BUDGET`] a shadow is drawn once,
+/// unblurred.
 #[allow(clippy::too_many_arguments)]
 fn draw_tapped(
     painter: &mut dyn Painter,
@@ -540,8 +708,21 @@ fn draw_tapped(
     mask: Option<&TextMask>,
     wavy: Option<&crate::node::InlineLayout>,
 ) {
-    let kernel = shadow_kernel(sigma);
-    let copies = glyph_count(layout).max(1) * kernel.len();
+    // The kernel is a function of this shadow alone: the full kernel, a
+    // cross, or none, by how many glyph copies each would draw.
+    let glyphs = glyph_count(layout).max(1);
+    let full = shadow_kernel(sigma, false);
+    let kernel = if glyphs * full.len() <= TAP_GLYPHS_PER_SHADOW {
+        full
+    } else {
+        let cross = shadow_kernel(sigma, true);
+        if glyphs * cross.len() <= TAP_GLYPHS_PER_SHADOW {
+            cross
+        } else {
+            vec![(0.0, 0.0, 1.0)]
+        }
+    };
+    let copies = glyphs * kernel.len();
     let within_budget = TAP_GLYPHS.with(|t| {
         let used = t.get() + copies;
         (used <= TAP_GLYPH_BUDGET).then(|| t.set(used)).is_some()
@@ -613,17 +794,23 @@ fn glyph_count(layout: &parley::layout::Layout<Brush>) -> usize {
 /// exactly 1, so a solid interior stays solid; a tap whose weight rounds to
 /// nothing is dropped, and what rounding leaves over goes to the centre.
 ///
+/// `cross` keeps only the centre and the four taps one step out along the
+/// axes (5 taps), for a shadow too long for the full kernel.
+///
 /// A `sigma` below a quarter pixel gives the single tap `(0, 0, 1.0)`.
-pub(super) fn shadow_kernel(sigma: f64) -> Vec<(f64, f64, f32)> {
+pub(super) fn shadow_kernel(sigma: f64, cross: bool) -> Vec<(f64, f64, f32)> {
     if sigma.is_nan() || sigma < 0.25 || !sigma.is_finite() {
         return vec![(0.0, 0.0, 1.0)];
     }
     let radius = 3.0 * sigma;
     let step = (radius / 2.0).max(1.0);
-    let n = ((radius / step).floor() as i32).min(2);
+    let n = ((radius / step).floor() as i32).min(if cross { 1 } else { 2 });
     let mut taps: Vec<(f64, f64, f64)> = Vec::new();
     for j in -n..=n {
         for i in -n..=n {
+            if cross && i != 0 && j != 0 {
+                continue;
+            }
             let (dx, dy) = (i as f64 * step, j as f64 * step);
             let d2 = dx * dx + dy * dy;
             if d2 <= radius * radius + 1e-9 {

@@ -31,7 +31,10 @@ use layer_bounds::{
 };
 use svg::*;
 use text::*;
-pub use text_shadow::{TAP_GLYPH_BUDGET, clear_text_shadow_cache, force_tapped_text_shadows};
+pub use text_shadow::{
+    TAP_GLYPH_BUDGET, TAP_GLYPHS_PER_SHADOW, clear_text_shadow_cache, force_tapped_text_shadows,
+    text_shadow_scratch_size,
+};
 
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};
@@ -522,6 +525,24 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     None
 }
 
+/// The box at `(x, y)`, `w` x `h` physical px, grown by the node's own ink
+/// ([`own_ink_outsets`], scaled): what the paint prune tests. Free for a node
+/// with no shadow and no outline.
+fn ink_rect(
+    cs: &crate::computed_style::ComputedStyle,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    scale: f64,
+) -> Rect {
+    let r = Rect::new(x, y, x + w, y + h);
+    if cs.box_shadow.is_empty() && cs.text_shadow.is_empty() && cs.outline_width <= 0.0 {
+        return r;
+    }
+    Outsets::from_css(own_ink_outsets(cs), scale).grow(r)
+}
+
 /// How far a node's **own** ink reaches past its border box, in CSS px:
 /// `[left, top, right, bottom]`. Outset `box-shadow` (the whole blur radius
 /// plus spread, around its offset — the same slack `layer_bounds` allows),
@@ -760,7 +781,16 @@ struct ClipTrackingPainter<'a> {
 impl ClipTrackingPainter<'_> {
     /// Run `f` with `painter` wrapped, on a clip-cull stack of its own. The
     /// stack of an enclosing paint, if any, is set aside and put back.
-    fn run<R>(painter: &mut dyn Painter, scale: f64, f: impl FnOnce(&mut dyn Painter) -> R) -> R {
+    ///
+    /// The paint's blurred `text-shadow` bookkeeping runs with it
+    /// ([`text_shadow::begin_paint`]), and the masks it rasterised are counted
+    /// on `perf` (`text_shadow_masks_rasterised`).
+    fn run<R>(
+        painter: &mut dyn Painter,
+        scale: f64,
+        perf: &crate::perf::PerfCounters,
+        f: impl FnOnce(&mut dyn Painter) -> R,
+    ) -> R {
         text_shadow::begin_paint();
         let saved = CLIP_CULL.with(|c| std::mem::take(&mut *c.borrow_mut()));
         let mut tracking = ClipTrackingPainter {
@@ -769,6 +799,10 @@ impl ClipTrackingPainter<'_> {
         };
         let out = f(&mut tracking);
         CLIP_CULL.with(|c| *c.borrow_mut() = saved);
+        perf.add(
+            crate::perf::Counter::TextShadowMasksRasterised,
+            text_shadow::end_paint(),
+        );
         out
     }
 }
@@ -1761,7 +1795,7 @@ pub fn paint_subtree(
     };
     let offset_x = -(node.layout.x as f64 * scale);
     let offset_y = -(node.layout.y as f64 * scale);
-    ClipTrackingPainter::run(painter, scale, |painter| {
+    ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
             root_node_id,
@@ -1821,7 +1855,7 @@ pub fn paint_document(
             None
         })
     });
-    ClipTrackingPainter::run(painter, scale, |painter| {
+    ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
             tree.body_id,
@@ -2133,10 +2167,11 @@ fn paints_nothing_without_visit(
     let w = layout.width as f64 * scale;
     let h = layout.height as f64 * scale;
     let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
+    let ink = ink_rect(cs, x, y, w, h, scale);
     let inside = if node_transform == Affine::IDENTITY {
-        intersects_dirty_region(x, y, w, h)
+        intersects_dirty_region(ink.x0, ink.y0, ink.width(), ink.height())
     } else {
-        let bbox = node_transform.transform_rect_bbox(Rect::new(x, y, x + w, y + h));
+        let bbox = node_transform.transform_rect_bbox(ink);
         intersects_dirty_region(bbox.x0, bbox.y0, bbox.width(), bbox.height())
     };
     if inside {
@@ -2457,10 +2492,16 @@ fn paint_node(
     //
     // Cull against the transformed bounding box; untransformed nodes keep
     // the plain AABB test (#143).
+    //
+    // The rect is the box grown by the node's own ink — `box-shadow`,
+    // `outline`, `text-shadow` — so damage over a shadow's bleed and not its
+    // box repaints the shadow there, where it used to be cleared and left
+    // blank (#889 item 1).
+    let ink = ink_rect(&node.computed_style, x, y, w, h, scale);
     let node_outside_dirty = if node_transform == Affine::IDENTITY {
-        !intersects_dirty_region(x, y, w, h)
+        !intersects_dirty_region(ink.x0, ink.y0, ink.width(), ink.height())
     } else {
-        let bbox = node_transform.transform_rect_bbox(Rect::new(x, y, x + w, y + h));
+        let bbox = node_transform.transform_rect_bbox(ink);
         !intersects_dirty_region(bbox.x0, bbox.y0, bbox.width(), bbox.height())
     };
     // **A box outside says nothing about a box that is not in its coordinate

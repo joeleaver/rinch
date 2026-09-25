@@ -315,51 +315,94 @@ fn the_fallback_is_a_small_normalised_kernel_out_to_three_sigma() {
     }
 }
 
-/// The fallback stops blurring past its per-paint budget: a page whose
-/// shadows would need more glyph copies than [`TAP_GLYPH_BUDGET`] draws the
-/// rest unblurred, one copy each — so ordinary CSS cannot hand Vello the
-/// hundreds of thousands of glyph copies that overflowed wgpu's buffer
-/// binding limit (review of #1020, F1).
+/// The fallback's kernel is a function of the shadow alone: a short shadow
+/// gets the full kernel, a longer one a 5-tap cross, a longer one still no
+/// blur — never more than [`TAP_GLYPHS_PER_SHADOW`] glyph copies — and which
+/// one a paragraph gets does not change as the page scrolls and other text
+/// comes on or off screen (review of #1020, round 2, F3: the budget used to
+/// be spent in paint order, so paragraphs flipped between hard and blurred).
 ///
-/// Kills: the budget not enforced.
+/// Kills: the per-shadow cap removed (a long shadow draws 13 copies); the
+/// decision spent from a per-paint budget (paragraphs flip on scroll).
 #[test]
-fn the_fallback_keeps_to_its_budget() {
-    let para = "The quick brown fox jumps over the lazy dog, twice over and again. ";
-    // Forty one-line paragraphs, small enough that all of them are on the
-    // 300x200 viewport (nothing culled): each is a shadow of its own.
-    let children: Vec<(&str, Option<&str>)> = (0..40)
-        .map(|_| (para, Some("display: block; white-space: nowrap")))
-        .collect();
-    let mut doc = document(
-        "width: 290px; font-size: 4px; line-height: 4px; font-family: ProbeFace; \
-         text-shadow: 0 1px 4px rgb(255, 0, 0)",
-        &children,
-    );
-    let ops = tapped(|| record(&mut doc, 2.0));
-    let copies: usize = ops
-        .iter()
-        .map(|op| match op {
-            Op::Glyphs { color, glyphs } if is_red(*color) => glyphs.len(),
-            _ => 0,
-        })
-        .sum();
-    let main: usize = ops
-        .iter()
-        .map(|op| match op {
-            Op::Glyphs { color, glyphs } if !is_red(*color) => glyphs.len(),
-            _ => 0,
-        })
-        .sum();
+fn the_fallback_blurs_by_the_shadow_alone() {
+    let para = "The quick brown fox jumps over the lazy dog while a sphinx of black quartz \
+                judges my vow; pack my box with five";
+    // First one paragraph for each kernel — 100, 300 and 600 glyphs — then
+    // sixty ordinary ones.
+    let mut html = String::new();
+    for n in [100usize, 300, 600] {
+        html.push_str(&format!("<p id=len{n}>{}</p>", "x".repeat(n)));
+    }
+    for i in 0..60 {
+        html.push_str(&format!("<p>{i:02} {para}</p>"));
+    }
+    let taps_by_row = |top: f32| -> std::collections::BTreeMap<i64, usize> {
+        let mut doc = RinchDocument::new();
+        use parley::fontique::{Blob, FontInfoOverride};
+        doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeFace"),
+                ..Default::default()
+            }),
+        );
+        doc.load_css(&format!(
+            "body {{ margin: {top}px 0 0 0; font-family: ProbeFace; font-size: 4px; }} \
+             p {{ margin: 0; line-height: 20px; white-space: nowrap; \
+             text-shadow: 0 2px 4px rgb(255, 0, 0); }}"
+        ));
+        let body = doc.body();
+        doc.set_inner_html(body, &html);
+        doc.resolve_layout(3000.0, 600.0);
+        doc.resolve_layout(3000.0, 600.0);
+        let mut painter = Recorder::default();
+        let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        tapped(|| {
+            rinch_dom::paint::paint_document(
+                &doc.tree,
+                &mut painter,
+                1.0,
+                (3000.0, 600.0),
+                &mut doc.font_cx,
+                &mut cx,
+            )
+        });
+        // Red runs per line of the page (20px rows), counted as copies.
+        let mut rows = std::collections::BTreeMap::new();
+        for op in &painter.ops {
+            if let Op::Glyphs { color, glyphs } = op
+                && is_red(*color)
+            {
+                let row = ((glyphs[0].y - top as f64 - 2.0) / 20.0).floor() as i64;
+                *rows.entry(row).or_insert(0) += 1;
+            }
+        }
+        rows
+    };
+    let at0 = taps_by_row(0.0);
+    let scrolled = taps_by_row(-200.0);
+    // Every row visible in both paints drew the same number of copies.
+    for (row, n) in &scrolled {
+        if let Some(m) = at0.get(row) {
+            assert_eq!(
+                n, m,
+                "paragraph {row} drew {m} shadow copies unscrolled and {n} scrolled: its blur \
+                 depends on what else is on screen"
+            );
+        }
+    }
     assert!(
-        main * 13 > rinch_dom::paint::TAP_GLYPH_BUDGET + 2 * main,
-        "positive control: the page would need far more than the budget ({main} glyphs)"
+        at0.keys().filter(|r| scrolled.contains_key(r)).count() > 15,
+        "positive control: many paragraphs are on screen in both paints"
     );
-    assert!(
-        copies <= rinch_dom::paint::TAP_GLYPH_BUDGET + main,
-        "{copies} shadow glyph copies for {main} glyphs: the fallback must stop blurring at \
-         its budget ({})",
-        rinch_dom::paint::TAP_GLYPH_BUDGET
-    );
+    // The three long paragraphs, rows 0, 1, 2: 13 taps, a cross, none —
+    // never more copies than the per-shadow cap allows.
+    let taps = |row: i64| at0.get(&row).copied().unwrap_or(0);
+    assert_eq!(taps(0), 13, "a 100-glyph shadow gets the full kernel");
+    assert_eq!(taps(1), 5, "a 300-glyph shadow gets the 5-tap cross");
+    assert_eq!(taps(2), 1, "a 600-glyph shadow is drawn unblurred");
+    assert!(rinch_dom::paint::TAP_GLYPHS_PER_SHADOW < 600 * 5);
 }
 
 /// Where the software rasteriser is compiled in, a blurred shadow reaches the
@@ -699,7 +742,7 @@ fn a_blurred_shadows_interior_is_its_colour() {
 ///
 /// Kills: a cache key that leaves out the glyph ids (the old text's shadow is
 /// served for the new text); the colour baked into the cached mask (the old
-/// colour is served).
+/// colour is served); the colour in the key (it is rasterised again).
 #[test]
 fn a_cached_shadow_mask_is_never_stale() {
     let style = |c: &str| format!("{BASE}; text-shadow: 0 40px 6px {c}");
@@ -710,6 +753,7 @@ fn a_cached_shadow_mask_is_never_stale() {
         rinch_dom::paint::clear_text_shadow_cache();
         paint(&mut d, 1.5).0
     };
+    let want = fresh("Hx 9", "rgb(255, 0, 0)");
     // Same thread, so the cache is shared across all of these.
     let mut doc = document(&style("rgb(255, 0, 0)"), &[("Hx 6", None)]);
     let first = paint(&mut doc, 1.5).0;
@@ -733,18 +777,30 @@ fn a_cached_shadow_mask_is_never_stale() {
     let changed = paint(&mut doc, 1.5).0;
     assert!(changed != first, "positive control: new text, new pixels");
     assert!(
-        changed == fresh("Hx 9", "rgb(255, 0, 0)"),
+        changed == want,
         "the new text's shadow is not what a fresh document paints: a stale mask"
     );
 
-    let mut blue = document(&style("rgb(0, 0, 255)"), &[("HxH", None)]);
-    let blue_px = paint(&mut blue, 1.5).0;
-    assert!(
-        blue_px != first,
-        "positive control: a blue shadow differs from a red one"
+    // The colour changes, in the same document: every document registers
+    // its own copy of the face, whose blob id is in the key, so two
+    // documents never share a mask. The blue shadow is drawn from the red
+    // one's mask — nothing is rasterised — and in blue.
+    doc.set_attribute(
+        rinch_core::dom::NodeId(div),
+        "style",
+        &style("rgb(0, 0, 255)"),
     );
-    // The blue shadow is drawn from the red one's cached mask: its pixels are
-    // blue-tinted and none of them red.
+    doc.resolve_layout(VW, VH + 1.0);
+    doc.resolve_layout(VW, VH);
+    doc.tree.perf.reset();
+    let blue_px = paint(&mut doc, 1.5).0;
+    assert_eq!(
+        doc.tree
+            .perf
+            .get(rinch_dom::perf::Counter::TextShadowMasksRasterised),
+        0,
+        "a colour change is served from the cache: the colour is applied at draw time"
+    );
     let reddish = blue_px
         .iter()
         .filter(|&&[r, g, b, _]| r >= 254 && g <= 248 && b <= 248)

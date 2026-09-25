@@ -257,6 +257,12 @@ define_counters! {
     /// damage. Rebuilt on every paint of the box (no cache), so a small
     /// repaint inside a large shadowed panel should cost a small number here.
     InsetShadowMaskPx = "inset_shadow_mask_px",
+    /// Blurred `text-shadow` masks rasterised and blurred by paint (#980).
+    /// A mask is kept between paints, keyed by what it was rasterised from
+    /// (its sub-pixel phase snapped to a quarter pixel), so a repaint of
+    /// unchanged text — a scroll by whole or by fractional pixels included,
+    /// once each phase has been seen — rasterises none.
+    TextShadowMasksRasterised = "text_shadow_masks_rasterised",
     /// Software painter: glyphs drawn from its rasterised-glyph cache.
     GlyphCacheHits = "glyph_cache_hits",
     /// Software painter: glyphs it had to rasterise (and then cached).
