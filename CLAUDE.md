@@ -1456,7 +1456,9 @@ ever ended on a guess: `Unknown` behaves exactly like `Down`.
 at the last move. Two events count: a **left `MouseDown`** while the drag is
 live (a button cannot be pressed twice without a release in between), handled
 *before* the press is dispatched so its handlers never see the stranded drag
-and a drag the press arms is not the one ended; and **`WindowFocus(false)`**.
+and a drag the press arms is not the one ended — and before the built-in text
+context menu can swallow it, so the press that closes that menu heals too (its
+release used to commit the drag through `on_end`); and **`WindowFocus(false)`**.
 The blur rule is a trade-off, not a proof: on Windows deactivation takes the
 pointer capture and the release does go to another window, but on X11/Wayland
 the press's implicit pointer grab still delivers it, and a blur mid-drag can
@@ -2065,12 +2067,13 @@ box:
   Parley producer but `build_parley_layout`, whose only callers are two MCP
   debug tools — so they invalidated correctly and then re-shaped the text
   without themselves. They now reach the IFC root, the per-span properties, the
-  `TextMeasure` context and both of its consumers, both `text-overflow:
-  ellipsis` rebuilds and paint's on-demand fallback. The **form-control** text
-  path (`<input>`, `<textarea>`, `<select>`) is deliberately not among them:
-  paint and the two hit-test builders there have to move as one piece, which is
-  #320. A percentage spacing is still dropped where Chrome resolves it against
-  the font-size (#743).
+  `TextMeasure` context and both of its consumers, the `text-overflow:
+  ellipsis` rebuild (an IFC root's; a text leaf's was deleted in #982) and
+  paint's on-demand fallback. The **form-control** text path (`<input>`,
+  `<textarea>`, `<select>`) is deliberately not among them: paint and the two
+  hit-test builders there have to move as one piece, which is #320. A
+  percentage spacing is still dropped where Chrome resolves it against the
+  font-size (#743).
 - **An atomic inline is sized by three passes and no compute (#661).**
   `inline-block`, `inline-flex` and `inline-grid` boxes are detached from their
   parent's Taffy child list so the enclosing IFC can measure them as Parley
