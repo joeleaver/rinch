@@ -447,43 +447,78 @@ impl ViewDesc {
         true
     }
 
-    /// Reconcile this descriptor's children against `new`'s children: a positional
-    /// diff that recurses (with the `same_ref` fast skip), replaces a child whose
-    /// kind changed, appends new trailing children, and removes surplus ones.
+    /// Reconcile this descriptor's children against `new`'s children.
     ///
-    /// Positional (not keyed) is correct and minimal for text editing, where edits
-    /// are local; a keyed/LIS pass can replace this if reorder churn ever matters.
+    /// The children `new` shares with the old node by reference (`same_ref`) at
+    /// the **start** and at the **end** are matched first and left alone; only
+    /// the stretch between them is diffed, positionally: a child patched in
+    /// place where it can be, replaced where its kind changed, new children
+    /// inserted before the unchanged suffix, surplus ones discarded.
+    ///
+    /// Matching the suffix is what keeps a structural edit local (issue #905).
+    /// A purely positional diff re-pointed every block after a split or join
+    /// at its neighbour's host, rewriting each one's text — so one Enter in a
+    /// long document re-shaped every paragraph below the caret on the desktop.
+    /// A keyed/LIS pass is still not needed: an edit changes one contiguous
+    /// stretch of siblings, which is exactly what prefix + suffix isolate.
     fn diff_children(&mut self, new: &Node, doc: &DocRef) {
         let new_count = new.child_count();
-        for i in 0..new_count {
+        let old_count = self.children.len();
+        let mut start = 0;
+        while start < old_count
+            && start < new_count
+            && self.children[start].node.same_ref(new.child(start))
+        {
+            start += 1;
+        }
+        let (mut old_end, mut new_end) = (old_count, new_count);
+        while old_end > start
+            && new_end > start
+            && self.children[old_end - 1]
+                .node
+                .same_ref(new.child(new_end - 1))
+        {
+            old_end -= 1;
+            new_end -= 1;
+        }
+        // The changed stretch: `old[start..old_end]` becomes `new[start..new_end]`.
+        let common = (old_end - start).min(new_end - start);
+        for i in start..start + common {
             let new_child = new.child(i);
-            if i < self.children.len() {
-                if self.children[i].update(new_child, doc) {
-                    continue;
-                }
-                // Kind changed — build a replacement and swap it into the host
-                // (by the placed `outer` node, which differs from `dom` for a
-                // mark-wrapped run).
-                if let Some(replacement) = ViewDesc::build(new_child, doc) {
-                    self.children[i].outer.replace_with(&replacement.outer);
-                    // `replace_with` *detaches* the node it displaces (issue
-                    // #719); the `ViewDesc` holding it is overwritten on the
-                    // next line, so nothing can show it again. Say so, or the
-                    // browser backend pins it for the life of the page — this
-                    // is a per-keystroke path.
-                    self.children[i].outer.discard();
-                    self.children[i] = replacement;
-                }
-            } else if let Some(new_desc) = ViewDesc::build(new_child, doc) {
-                self.dom.append_child(&new_desc.outer);
-                self.children.push(new_desc);
+            if self.children[i].update(new_child, doc) {
+                continue;
+            }
+            // Kind changed — build a replacement and swap it into the host
+            // (by the placed `outer` node, which differs from `dom` for a
+            // mark-wrapped run).
+            if let Some(replacement) = ViewDesc::build(new_child, doc) {
+                self.children[i].outer.replace_with(&replacement.outer);
+                // `replace_with` *detaches* the node it displaces (issue
+                // #719); the `ViewDesc` holding it is overwritten on the
+                // next line, so nothing can show it again. Say so, or the
+                // browser backend pins it for the life of the page — this
+                // is a per-keystroke path.
+                self.children[i].outer.discard();
+                self.children[i] = replacement;
             }
         }
-        while self.children.len() > new_count {
-            // `pop` keeps removal O(1) and order-independent (host removal is by id).
-            if let Some(extra) = self.children.pop() {
-                // Popped off the end and dropped — `discard`, not `remove`
-                // (issue #719).
+        let at = start + common;
+        if new_end - start > common {
+            // New children go in before the unchanged suffix (or at the end).
+            let mut built = Vec::with_capacity(new_end - at);
+            for i in at..new_end {
+                if let Some(new_desc) = ViewDesc::build(new.child(i), doc) {
+                    match self.children.get(old_end) {
+                        Some(next) => self.dom.insert_before(&new_desc.outer, &next.outer),
+                        None => self.dom.append_child(&new_desc.outer),
+                    }
+                    built.push(new_desc);
+                }
+            }
+            self.children.splice(at..at, built);
+        } else if old_end > at {
+            // Dropped for good — `discard`, not `remove` (issue #719).
+            for extra in self.children.drain(at..old_end) {
                 extra.outer.discard();
             }
         }
