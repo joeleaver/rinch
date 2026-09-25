@@ -90,7 +90,7 @@ pub fn apply_value_to_style(
             style.font_size = *v;
         }
         (TransitionProperty::Transform, AnimatableValue::Transform(tf)) => {
-            style.transform = tf.to_style();
+            style.transform = tf.to_style(style.transform_origin_z as f64);
         }
         (TransitionProperty::Visibility, AnimatableValue::Visibility(v)) => {
             style.visibility = *v;

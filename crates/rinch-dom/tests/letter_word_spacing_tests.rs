@@ -430,7 +430,7 @@ fn an_inline_flex_boxs_text_is_measured_with_the_spacing() {
     }
 }
 
-// ── the two `text-overflow: ellipsis` rebuild paths ────────────────────────
+// ── the `text-overflow: ellipsis` rebuild (there were two paths) ──────────
 
 /// The number of glyphs a `parley::Layout` holds, across every line and run.
 fn glyph_count(layout: &parley::layout::Layout<peniko::Brush>) -> usize {
@@ -520,11 +520,12 @@ fn an_ifc_roots_ellipsis_truncation_is_measured_with_the_spacing() {
 }
 
 /// The other `text-overflow: ellipsis` path — a text node measured through
-/// its `TextMeasure` context (a flex item) — is no longer taken (#904's second
-/// review): that text is an anonymous flex item, which does not clip, and
-/// Chrome 153 draws it clipped with no "…". This fixture used to pin that
-/// path's spacing (#698); it now pins that the flex item's text is kept whole,
-/// spaced or not, so the rebuild (and its spacing) cannot come back unnoticed.
+/// its `TextMeasure` context (a flex item) — stopped being taken in #904's
+/// second review and was deleted in #982: that text is an anonymous flex item,
+/// which does not clip, and Chrome 153 draws it clipped with no "…". This
+/// fixture used to pin that path's spacing (#698); it now pins that the flex
+/// item's text is kept whole, spaced or not, so a rebuild there cannot come
+/// back unnoticed.
 #[test]
 fn a_flex_items_text_is_not_ellipsized() {
     fn glyphs(extra: &str, text: &str) -> usize {

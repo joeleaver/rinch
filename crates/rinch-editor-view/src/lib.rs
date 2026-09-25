@@ -35,6 +35,9 @@ pub use registry::{
     link_hover_wanted, overlay_pass_owed, reveal_owed, set_focus_handler, set_link_hover,
     set_overlay_pass_scheduler, set_overlay_refresher, unregister_editor, update_all_carets,
 };
+/// Which side of a soft wrap a caret is drawn on — see
+/// [`EditorHandle::set_selection_with_affinity`].
+pub use rinch_core::dom::CaretAffinity;
 /// The collaboration error type (re-exported from `rinch-editor-collab`) returned by
 /// the [`EditorHandle`] collaboration methods.
 #[cfg(feature = "collaboration")]

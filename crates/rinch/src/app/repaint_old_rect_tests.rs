@@ -1254,3 +1254,99 @@ fn a_text_shadow_added_in_place_is_painted_whole() {
         "incremental frame != full frame"
     );
 }
+
+// ── #997: backface-visibility and transform-origin z ─────────────────────────
+/// A change that hides or shows a box through its backface, or moves it by its
+/// origin's z, repaints incrementally and matches a full frame. The first pins
+/// `PaintedTransform::backface_hidden`: a painted frame that claimed "hidden"
+/// for a box it drew would name no old rect, and the box would ghost.
+mod backface_997 {
+    use super::*;
+
+    fn check_flip(start: &'static str, prop: &str, val: &str, want_ink_after: bool) {
+        let (mut app, b) = panel(start);
+        let before = full_frame(&mut app);
+        let rect = (20, 150, 60, 190);
+        let had = ink_in(&before, rect);
+        b.set_style(prop, val);
+        resolve(&mut app);
+        let (inc, stats) = incremental_frame(&mut app);
+        let full = full_frame(&mut app);
+        assert_ne!(
+            had > 0,
+            want_ink_after,
+            "[{start}]: the change must change the rect"
+        );
+        assert_eq!(
+            stats.get(Counter::RepaintFull),
+            0,
+            "[{start}] repainted in full"
+        );
+        assert_eq!(ink_in(&full, rect) > 0, want_ink_after, "full frame");
+        assert_eq!(diff_in(&inc, &full, (0, 0, 600, 400)), 0, "inc != full");
+    }
+
+    #[test]
+    fn backface_toggle_to_hidden_clears() {
+        check_flip(
+            "transform: rotateY(180deg)",
+            "backface-visibility",
+            "hidden",
+            false,
+        );
+    }
+    #[test]
+    fn backface_toggle_to_visible_draws() {
+        check_flip(
+            "transform: rotateY(180deg); backface-visibility: hidden",
+            "backface-visibility",
+            "visible",
+            true,
+        );
+    }
+    #[test]
+    fn transform_turns_past_90_clears() {
+        check_flip(
+            "transform: rotateY(60deg); backface-visibility: hidden",
+            "transform",
+            "rotateY(120deg)",
+            false,
+        );
+    }
+    #[test]
+    fn transform_turns_back_draws() {
+        check_flip(
+            "transform: rotateY(120deg); backface-visibility: hidden",
+            "transform",
+            "rotateY(60deg)",
+            true,
+        );
+    }
+    #[test]
+    fn origin_z_change_repaints() {
+        check_flip(
+            "transform: rotateY(45deg); transform-origin: 50% 50% 0px",
+            "transform-origin",
+            "50% 50% 200px",
+            false,
+        );
+    }
+
+    /// **Not Chrome's (#386, #415).** Chrome 153 does not draw a
+    /// `position: fixed` child of a turned hidden-backface box: the transformed
+    /// box is its containing block. rinch models no such containment and hands
+    /// a fixed entry the body's transform, so the zero matrix never reaches it
+    /// and it is drawn. This pins the divergence; containment flips it.
+    #[test]
+    fn a_fixed_child_of_a_hidden_backface_is_still_drawn() {
+        let (mut app, _b, _c) = panel_with(
+            "transform: rotateY(180deg); backface-visibility: hidden",
+            Some(
+                "position: fixed; left: 300px; top: 300px; width: 40px; height: 40px; background: rgb(0, 200, 0)",
+            ),
+        );
+        let full = full_frame(&mut app);
+        let ink = ink_in(&full, (300, 300, 340, 340));
+        assert!(ink > 0, "the fixed child is drawn until #415 contains it");
+    }
+}

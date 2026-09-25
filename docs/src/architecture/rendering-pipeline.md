@@ -424,10 +424,19 @@ implemented at all, so a parent's `perspective` does nothing; a transform whose
 `w` depends on x or y (`perspective(200px) rotateY(30deg)`, a trapezoid in
 Chrome) is drawn with those terms dropped, since no affine draws a trapezoid;
 a mismatched remainder holding a 3D function is decomposed as a flattened
-2D matrix, where Chrome decomposes the 4×4 (#989); and `transform-origin`'s z
-component and `backface-visibility: hidden` are ignored — `ComputedStyle`
-carries only an x/y origin, so `rotateY(45deg)` about `50% 50% 100px` lands
-where Chrome's does not (#997).
+2D matrix, where Chrome decomposes the 4×4 (#989).
+
+`transform-origin`'s z component is applied before the flattening — a list is
+composed as `M · T(0, 0, -z)` and flattened, and paint applies the x and y about
+the flattened matrix as before — so `rotateY(45deg)` about `50% 50% 100px`
+lands where Chrome's does. `backface-visibility: hidden` hides a box whose
+**own** transform turns its back to the viewer (the `(3, 3)` entry of the
+inverse 4×4 is negative, Chrome's test): it composes to the zero matrix, so it
+and its whole subtree are neither drawn nor hit — except a `position: fixed`
+descendant, which rinch does not contain in a transformed ancestor (#386, #415),
+so it keeps the body's transform and is still drawn. A mirror (`scaleX(-1)`) is not
+a turn, and a child under a turned parent is judged by its own transform alone,
+as in Chrome without `transform-style: preserve-3d` (#997).
 
 One thing rinch does **not** implement from §3: the **transitionability**
 precondition, which appears in item 1 and again in item 4.2: a pair of values

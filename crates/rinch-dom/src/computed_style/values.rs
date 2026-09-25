@@ -995,6 +995,11 @@ pub struct TransformValue {
     /// matrices cannot express.
     #[serde(skip)]
     pub functions: Vec<crate::transition::TransformOp>,
+    /// Whether the transform — about the element's `transform-origin`, z
+    /// included — turns the element's back to the viewer
+    /// ([`compose_about_origin_z`](crate::transition::compose_about_origin_z)).
+    /// Only `backface-visibility: hidden` reads it (#997).
+    pub back_facing: bool,
 }
 
 impl Default for TransformValue {
@@ -1005,6 +1010,7 @@ impl Default for TransformValue {
             pct_translate_w: [0.0, 0.0],
             pct_translate_h: [0.0, 0.0],
             functions: Vec::new(),
+            back_facing: false,
         }
     }
 }

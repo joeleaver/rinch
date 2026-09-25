@@ -117,9 +117,43 @@ Command names are case-sensitive. The full catalogue:
 > stands, and at a textblock's start / end they join (or lift), as Backspace and
 > Delete do there. An inline atom — an image, a hard break — is a boundary of its
 > own: one right beside the caret goes alone, and a word beyond one is not taken
-> with it. There are no *line* delete commands (issue #301 is whether a "line" is
-> the visual line or the textblock); on the web the browser's
-> `deleteSoftLine*` / `deleteHardLine*` still delete to the textblock's edge.
+> with it. There are no *line* delete commands. On the web the browser's
+> `deleteSoftLine*` (a soft keyboard's line delete, Cmd+Backspace / Cmd+Delete)
+> deletes to the edge of the **visual** line the caret is drawn on — on a wrapped
+> paragraph, normally only the current line's prefix or rest — and
+> `deleteHardLine*` to the textblock's edge (issue #301). Home / End go to the
+> visual line's edges on both backends. The web finds the edge by hit-testing the
+> textblock just inside both sides of the caret's line and taking the smaller
+> position as the start, so a right-to-left line starts at its right edge.
+>
+> **Caret affinity at a soft wrap.** The end of one visual line and the start of
+> the next are one model position, so a caret there could be drawn in either
+> place. The editor keeps a hint beside the selection, as CodeMirror and a
+> browser do: End (landing on the wrap point itself, after any hanging space), a
+> press past a wrapped line's end, and an Up / Down move whose column lies past
+> the target line's end draw it at the end of the upper line; Home and anything
+> else draw it at the start of the lower one. So Home twice stays on its line,
+> Home then End reaches that line's end, End on a word broken by `overflow-wrap`
+> lands after the line's last letter (typing appends to the upper line), and a
+> soft-line delete backward right after Home deletes one character, as Chrome
+> does. The hint is view state, not part of the `Selection`: it applies only
+> while the selection is the one it came with, so typing, an edit before the caret
+> in its own paragraph, undo, a load or a plain `set_selection` returns the caret
+> to the lower line's start. An edit that leaves the caret's paragraph unchanged
+> up to the caret — in an earlier paragraph, a collaborator typing above or after
+> the caret — carries the hint along, so the caret stays at the end of its line.
+> A caret right before a hard break (Shift+Enter) is always drawn at the end of
+> its own line. Set it yourself with `EditorHandle::set_selection_with_affinity`;
+> read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
+>
+> Where this still differs from a browser field:
+> - **After a hard break** (Shift+Enter) a position at the next line's start maps
+>   before the break, so a soft-line delete backward on that line takes the break
+>   with it (#1025).
+> - **A caret line scrolled out of view** has nothing to hit-test, so Home, End
+>   and the soft-line deletes fall back to the textblock's edge there (#1026).
+> - On a line that *mixes* directions the answer can fall short of the logical
+>   edge.
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.
