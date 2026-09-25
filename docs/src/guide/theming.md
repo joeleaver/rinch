@@ -483,7 +483,9 @@ has none. The children of a `display: contents` element count as the
 container's own, since the wrapper has no box — so a region whose rows come
 from a `for`, an `if` branch or an embedded `Vec<NodeHandle>`, each of which
 `rsx!` may put in such a wrapper, scrolls as it would on the web, and so does
-one whose only inline content is a reactive `{|| text}`.
+one holding text — a reactive `{|| text}` included — whether it is the
+container's only content or sits beside block children, as a log panel's
+footer line sits after its rows.
 
 Where desktop still differs from a browser:
 
@@ -502,11 +504,14 @@ Where desktop still differs from a browser:
   A `relative` child with no offset is measured like any other.
 - **An absolute whose containing block is further up than its parent** is
   counted by no scroll container at all; a browser counts it in that ancestor.
+  The exception is a parent that is a non-positioned inline element such as a
+  plain `<span>` (at any depth of them) sitting directly in the containing
+  block: the box then counts there, as a browser counts it. Under a
+  `position: relative` span — which is then the box's containing block — it
+  is counted only when the scroll container is itself positioned, and at the
+  wrong offset (#1049).
 - **A child's `transform` and its end margins** do not extend the scroll range;
   a browser's scroll range includes both.
-- **Text beside a block child** — a log panel of rows with a reactive footer
-  line, say — sits in anonymous boxes the scroll range does not see, so the
-  lines after the block add nothing to it (#995).
 
 ### Why not `scrollbar-color` / `scrollbar-width`?
 

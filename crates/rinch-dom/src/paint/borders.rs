@@ -611,7 +611,10 @@ pub(super) fn paint_box_shadow(
         bottom_left: 0.0,
     };
 
-    for shadow in shadows {
+    // css-backgrounds-3 §7.1: the first shadow is on top, so the list is
+    // painted back to front (#1009) — as `paint_inset_box_shadow` paints its
+    // own.
+    for shadow in shadows.iter().rev() {
         // Inset shadows are painted above the background, by
         // `paint_inset_box_shadow`.
         if shadow.inset {
