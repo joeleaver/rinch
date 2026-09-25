@@ -126,13 +126,23 @@ Command names are case-sensitive. The full catalogue:
 > textblock just inside both sides of the caret's line and taking the smaller
 > position as the start, so a right-to-left line starts at its right edge.
 >
+> **Caret affinity at a soft wrap.** The end of one visual line and the start of
+> the next are one model position, so a caret there could be drawn in either
+> place. The editor keeps a hint beside the selection, as CodeMirror and a
+> browser do: End (landing on the wrap point itself, after any hanging space), a
+> press past a wrapped line's end, and an Up / Down move whose column lies past
+> the target line's end draw it at the end of the upper line; Home and anything
+> else draw it at the start of the lower one. So Home twice stays on its line,
+> Home then End reaches that line's end, End on a word broken by `overflow-wrap`
+> lands after the line's last letter (typing appends to the upper line), and a
+> soft-line delete backward right after Home deletes one character, as Chrome
+> does. The hint is view state, not part of the `Selection`: it applies only
+> while the selection is the one it came with, so typing, any edit that moves the
+> caret, undo, a load or a plain `set_selection` returns the caret to the lower
+> line's start. Set it yourself with `EditorHandle::set_selection_with_affinity`;
+> read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
+>
 > Where this still differs from a browser field:
-> - **A caret at a soft wrap has no affinity.** The end of one visual line and the
->   start of the next are one model position, and the web draws a caret there at
->   the end of the line *above*. Home lands on exactly that position, so after
->   Home the caret is drawn on the line above, a second Home climbs a line, and a
->   `deleteSoftLineBackward` then takes the whole line above where Chrome deletes
->   one character. A click at a line's start lands there too.
 > - **After a hard break** (Shift+Enter) a position at the next line's start maps
 >   before the break, so a soft-line delete backward on that line takes the break
 >   with it (#1025).
