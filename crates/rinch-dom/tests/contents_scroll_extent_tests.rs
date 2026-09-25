@@ -238,3 +238,146 @@ fn the_wheels_range_skips_a_fixed_child_as_the_bars_do() {
         "Chrome: scrollHeight == clientHeight"
     );
 }
+
+// ── Inline content: text a wrapper or an inline element holds ──────────────
+//
+// Text is the other half of #396. Every reactive `{|| text}` is a
+// `display: contents` `<span>` around a text node, and a text node under a
+// wrapper — or under a plain inline `<span>` — is given no box at all: only a
+// text node that is the IFC root's *direct* child gets a proxy box from
+// `write_inline_positions`. So `div { overflow-y: auto, {|| log.get()} }` had
+// no scroll range. `content_extents` now reads an IFC root's inline layout
+// itself.
+//
+// The text is fifteen `wwwwwwwwww` words at `font-size: 16px; line-height:
+// 20px` in a 200px box: one word is 116-131px in every sans face in reach
+// (Inter, DejaVu, Arial), so exactly one fits per line whatever the host's
+// fonts, and the content is fifteen declared 20px lines, 300px. Chrome 153 on
+// the same markup:
+//
+// | markup (200x40 `overflow: auto` container) | `scrollWidth`x`scrollHeight` |
+// |---|---|
+// | text | 200x300 |
+// | `contents` span > text | 200x300 |
+// | inline `span` > text | 200x300 |
+// | `padding: 10px`, text | 200x320 |
+// | `padding: 10px`, `contents` span > text | 200x320 |
+
+const TEXT_SCROLLER: &str =
+    "width: 200px; height: 40px; overflow: auto; font-size: 16px; line-height: 20px";
+
+/// A text scroller: `wrapper` (a `span` style, or `None` for bare text).
+fn text_scroller(container_style: &str, wrapper: Option<&str>) -> (RinchDocument, usize) {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", container_style);
+    doc.append_child(body, container);
+    let parent = match wrapper {
+        Some(style) => {
+            let span = doc.create_element("span");
+            doc.set_attribute(span, "style", style);
+            doc.append_child(container, span);
+            span
+        }
+        None => container,
+    };
+    let text = doc.create_text(&"wwwwwwwwww ".repeat(15));
+    doc.append_child(parent, text);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    (doc, container.0)
+}
+
+/// `(max_scroll_x, max_scroll_y, scroll_height)`: the bars and the wheel's
+/// range. The width is not asserted beyond "no horizontal bar" — it is the
+/// longest line's advance, which is the host font's.
+fn text_ranges(doc: &RinchDocument, id: usize) -> (Option<f64>, Option<f64>, f64) {
+    let (x, y) = max_scroll(&scrollbars(&doc.tree, id, 1.0));
+    (x, y, doc.scroll_height(NodeId(id)))
+}
+
+/// Bare text directly in the scroller: the positive control, and green before
+/// #396 — the one shape `write_inline_positions`' proxy box covered.
+#[test]
+fn text_directly_in_a_scroller_scrolls_its_lines() {
+    let (doc, id) = text_scroller(TEXT_SCROLLER, None);
+    assert_eq!(
+        text_ranges(&doc, id),
+        (None, Some(260.0), 300.0),
+        "Chrome: 300 - 40"
+    );
+}
+
+/// Reactive text's own shape: a `display: contents` span around the text.
+/// Unfixed: no range at all.
+#[test]
+fn text_in_a_contents_span_scrolls_its_lines() {
+    let (doc, id) = text_scroller(TEXT_SCROLLER, Some("display: contents"));
+    assert_eq!(
+        text_ranges(&doc, id),
+        (None, Some(260.0), 300.0),
+        "Chrome: 300 - 40"
+    );
+}
+
+/// An ordinary inline `<span>`: a flowed inline element owns no box either, so
+/// this was no range too, with no `display: contents` anywhere.
+#[test]
+fn text_in_an_inline_span_scrolls_its_lines() {
+    let (doc, id) = text_scroller(TEXT_SCROLLER, Some(""));
+    assert_eq!(
+        text_ranges(&doc, id),
+        (None, Some(260.0), 300.0),
+        "Chrome: 300 - 40"
+    );
+}
+
+/// A padded text scroller, bare and wrapped. Chrome: 320 - 40 = 280px of
+/// travel and no horizontal bar. The proxy box sat at the *border*-box origin
+/// with the border-box width, so the bare case used to report 290px of content
+/// (270px of travel) and a 190px-wide line in a 180px content box — a
+/// horizontal bar over text that wraps.
+#[test]
+fn a_padded_text_scroller_measures_its_lines_from_the_content_box() {
+    let padded = format!("{TEXT_SCROLLER}; padding: 10px");
+    for wrapper in [None, Some("display: contents")] {
+        let (doc, id) = text_scroller(&padded, wrapper);
+        assert_eq!(
+            text_ranges(&doc, id),
+            (None, Some(280.0), 300.0),
+            "Chrome: 320 - 40, no horizontal bar ({wrapper:?})"
+        );
+    }
+}
+
+/// Issue #873's scroll half: a layout pass that re-runs Taffy but skips this
+/// IFC root (its text is clean, its width unchanged) resets the direct text
+/// child's proxy box to Taffy's 0x0 and never writes it back. The range no
+/// longer depends on that box, so an unrelated sibling's resize leaves it
+/// alone.
+#[test]
+fn an_unrelated_layout_pass_keeps_a_text_scrollers_range() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", TEXT_SCROLLER);
+    doc.append_child(body, container);
+    let text = doc.create_text(&"wwwwwwwwww ".repeat(15));
+    doc.append_child(container, text);
+    let sibling = doc.create_element("div");
+    doc.set_attribute(sibling, "style", "width: 100px; height: 10px");
+    doc.append_child(body, sibling);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(
+        text_ranges(&doc, container.0),
+        (None, Some(260.0), 300.0),
+        "first layout"
+    );
+    doc.set_attribute(sibling, "style", "width: 150px; height: 10px");
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(
+        text_ranges(&doc, container.0),
+        (None, Some(260.0), 300.0),
+        "after a layout pass that did not rebuild the scroller's text"
+    );
+}
