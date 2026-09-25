@@ -236,3 +236,19 @@ fn a_blurred_spread_shadow_layers_take_the_spread_radius() {
     assert_eq!(alpha(&p, corner as i64, corner as i64), 0.0);
     assert_inside_empty(&p);
 }
+
+/// Review of #973: the "corner the hole never reaches" shortcut in
+/// `hole_fits` is an *either-axis* test. An offset on one axis only puts a
+/// small corner's arc centre past the box on one axis and short of it on the
+/// other; the box still fits inside the shadow, so nothing may be painted
+/// inside it. All four one-axis offsets, so every corner's direction is
+/// exercised (a flipped sign on one corner is unsound, not just slow).
+#[test]
+fn a_one_axis_offset_spread_shadow_still_punches_the_box() {
+    for offset in ["0 10px", "0 -10px", "10px 0", "-10px 0"] {
+        let p = painted(&format!(
+            "border-radius: 4px; box-shadow: {offset} 0 20px rgb(0,0,0)"
+        ));
+        assert_inside_empty(&p);
+    }
+}
