@@ -253,6 +253,7 @@ pub(crate) fn break_lines_hanging_spaces(
         // overflows too, and parley hangs NBSP itself — so until it does not.
         let mut data = data;
         let mut line_max = max;
+        let mut widened_from = f32::NEG_INFINITY;
         loop {
             let Some(end) = line_end(&units, cursor, data.advance) else {
                 in_step = false;
@@ -268,6 +269,14 @@ pub(crate) fn break_lines_hanging_spaces(
                 line_start = breaker.state().clone();
                 break;
             };
+            // Each round takes in more of the paragraph, which is what ends
+            // the loop. One that hangs again having taken in nothing would
+            // repeat forever: stop fixing instead (the table would be wrong).
+            if data.advance <= widened_from {
+                in_step = false;
+                break;
+            }
+            widened_from = data.advance;
             breaker.revert_to(line_start.clone());
             line_max = data.advance + hanging + 0.01;
             let state = breaker.state_mut();
@@ -279,13 +288,6 @@ pub(crate) fn break_lines_hanging_spaces(
             };
             breaker.set_prior_line_width(max);
             stats.lines += 1;
-            // Each round takes in more of the paragraph, which is what ends
-            // the loop. A round that took in nothing would repeat forever:
-            // stop fixing instead (never seen; the table would be wrong).
-            if again.advance <= data.advance {
-                in_step = false;
-                break;
-            }
             data = again;
         }
     }
