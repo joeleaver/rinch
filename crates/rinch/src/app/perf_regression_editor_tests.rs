@@ -441,8 +441,8 @@ fn a_toolbar_bold_over_a_word() {
             (GlyphCacheHits, 305),
             (ClipMasks, 1),
             (ClipMaskPx, 303408),
-            (HitTests, 10),
-            (HitTestNodesVisited, 50),
+            (HitTests, 2),
+            (HitTestNodesVisited, 10),
             (HitExtentsComputed, 39),
         ],
     );
