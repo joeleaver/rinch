@@ -1354,6 +1354,49 @@ fn a_static_row_shifted_by_reflow_clears_its_spans_old_text_shadow() {
     });
 }
 
+/// The same paragraph pushed **down** by reflow: its column's box ends above
+/// the new shadow, so only the paragraph's current ink — its span's shadow
+/// reach — names where the shadow is drawn now (#1048).
+///
+/// Kills: a paint-dirty IFC root's damage grown by its own ink only (the moved
+/// shadow is never drawn in the incremental frame).
+#[test]
+fn a_static_row_pushed_down_by_reflow_draws_its_spans_shadow_where_it_is_now() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let col = el(scope, &outer, "width: 300px");
+        let spacer = el(scope, &col, "height: 100px");
+        let row = el(
+            scope,
+            &col,
+            "height: 20px; font-size: 16px; line-height: 20px; color: rgb(0, 0, 0)",
+        );
+        let span = scope.create_element("span");
+        span.set_attribute("style", "text-shadow: 0 60px 6px rgb(255, 0, 0)");
+        row.append_child(&span);
+        let t = scope.create_text("HHHH HHHH");
+        span.append_child(&t);
+        (outer, vec![spacer])
+    });
+    let _ = full_frame(&mut app);
+    // The row moves from 100..120 to 160..180; its shadow to 220..240.
+    hs[0].set_style("height", "160px");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert!(
+        ink_in(&full, (0, 214, 90, 246)) > 100,
+        "positive control: the shadow is drawn at its new place"
+    );
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
 /// A span's shadow given in place, then dropped in the frame reflow moves its
 /// paragraph: the paragraph was not itself dirty for the restyle (only its
 /// span was), so its painted ink must have been brought up to the span's new
