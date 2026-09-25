@@ -9,20 +9,29 @@
 //! the answers to both, keyed by nothing but a **generation**:
 //! [`HitCache::invalidate`] bumps it, and the next lookup finds everything
 //! stale and starts over. The hit tester fills it lazily; this module knows
-//! nothing about what an extent means.
+//! nothing about what an extent means beyond the one fact a scroll needs (an
+//! extent is relative to its own node — [`HitCache::invalidate_scroll`]).
 //!
 //! **What bumps the generation** is everything that can move a box, change the
 //! tree's shape, or change a style a hit test reads: every mutating
 //! `DomDocument` method on `RinchDocument` that changes something (an
 //! identical attribute or text write returns first), `resolve_styles`,
-//! `resolve_layout`, a transition or animation tick that changes a node's
-//! [`HitStyleKey`], every
-//! `NodeTree::push_dirty` (which every scroll write in the shell makes), and
-//! the shell's scroll writes explicitly. A write that reaches into
-//! `tree.nodes[..]` and changes `layout`, `scroll_offset` or `computed_style`
-//! **without** going through one of those must call
-//! [`HitCache::invalidate`] itself, or the next hit test answers from the old
-//! geometry.
+//! `resolve_layout` — unless it took the paint-only path, which moves no box
+//! (a restyle on that path invalidates in `resolve_styles`) — a transition or
+//! animation tick that changes a node's [`HitStyleKey`], and every
+//! `NodeTree::push_dirty`.
+//!
+//! **A scroll is the one partial invalidation** (#911).
+//! `NodeTree::mark_scrolled`, which every scroll-offset write in the shell and
+//! `set_scroll_top`/`set_scroll_left` go through, calls
+//! [`HitCache::invalidate_scroll`]: the generation moves, but every extent the
+//! scroll cannot reach is kept, so the next notch of a long list does not
+//! rebuild every row's.
+//!
+//! A write that reaches into `tree.nodes[..]` and changes `layout`,
+//! `scroll_offset` or `computed_style` **without** going through one of those
+//! must call [`HitCache::invalidate`] itself, or the next hit test answers from
+//! the old geometry.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -124,11 +133,24 @@ pub type Extent = [f32; 4];
 /// base offsets it was built at.
 type OrderKey = (usize, u64, u64);
 
+/// `extent_parents` slot of a node no stored extent was computed through.
+const NO_PARENT: usize = usize::MAX;
+
 #[derive(Default)]
 struct State {
     /// The generation `extents` and `orders` were filled at.
     filled_at: u64,
     extents: Vec<Option<Extent>>,
+    /// For each node, the node whose extent was computed *through* it — the
+    /// one extent that folded this node's in, and so the one a change to this
+    /// node's extent makes stale. [`NO_PARENT`] where none did. Filled by
+    /// [`HitCache::note_extent_parent`]; read by
+    /// [`HitCache::invalidate_scroll`].
+    extent_parents: Vec<usize>,
+    /// A node was folded into two different nodes' extents. The hit tester's
+    /// box-tree walk never does that, but if it ever did, one parent slot
+    /// could not name both, so a scroll falls back to dropping everything.
+    extent_parents_ambiguous: bool,
     orders: HashMap<OrderKey, Rc<PaintOrder>>,
 }
 
@@ -174,9 +196,66 @@ impl HitCache {
         if s.filled_at != self.generation.get() {
             s.filled_at = self.generation.get();
             s.extents.clear();
+            s.extent_parents.clear();
+            s.extent_parents_ambiguous = false;
             s.orders.clear();
         }
         s
+    }
+
+    /// `id`'s scroll offset changed, and nothing else did.
+    ///
+    /// Bumps the generation, like [`Self::invalidate`] — so a hit-test result
+    /// held across it (the shell's `move_hit`) is not reused — but keeps
+    /// every extent the scroll cannot reach (#911). An extent is relative to
+    /// its own node's origin, and a node's scroll offset is applied by that
+    /// node when it places its children; so a scroll changes `id`'s own extent
+    /// and every extent that was folded out of it — the chain
+    /// [`Self::note_extent_parent`] recorded — and no other. Every extent in
+    /// `id`'s subtree, which is where the rows of a long list are, survives.
+    ///
+    /// Stacking sequences are all dropped: an entry's offset is accumulated
+    /// through every scroller between it and its root, and the cheap question
+    /// is not "which roots is `id` under" but "was anything built".
+    ///
+    /// `extent_reads_scroll` is whether `id`'s own extent reads its scroll
+    /// offset at all: a box that clips confines its extent to its own box and
+    /// never folds its children in, so scrolling one — which is every scroll
+    /// container but a non-atomic inline one — changes no extent anywhere,
+    /// and nothing is dropped but the sequences. The hit tester's `flow_extent` is the authority on
+    /// that rule; `NodeTree::mark_scrolled` passes `!clips_overflow()`, the
+    /// same predicate it reads.
+    ///
+    /// A caller that changed anything else as well — a layout, a style, the
+    /// tree's shape — calls [`Self::invalidate`] instead.
+    pub fn invalidate_scroll(&self, id: usize, extent_reads_scroll: bool) {
+        let mut s = self.state.borrow_mut();
+        let was_current = s.filled_at == self.generation.get();
+        self.invalidate();
+        if !was_current || s.extent_parents_ambiguous {
+            // Already stale, or not safely patchable: the next lookup clears.
+            return;
+        }
+        s.filled_at = self.generation.get();
+        s.orders.clear();
+        if !extent_reads_scroll {
+            return;
+        }
+        let mut cur = id;
+        // Bounded by the node count: a parent chain is a path up the box tree.
+        for _ in 0..=s.extent_parents.len() {
+            if let Some(e) = s.extents.get_mut(cur) {
+                *e = None;
+            }
+            match s.extent_parents.get(cur) {
+                Some(&p) if p != NO_PARENT => cur = p,
+                _ => return,
+            }
+        }
+        // A cycle cannot come out of a tree walk; if one ever did, stop
+        // trusting the memo rather than loop.
+        s.extents.clear();
+        s.extent_parents.clear();
     }
 
     /// The extent stored for `id` in the current generation.
@@ -192,6 +271,23 @@ impl HitCache {
             s.extents.resize(id + 1, None);
         }
         s.extents[id] = Some(extent);
+    }
+
+    /// Record that `parent`'s extent is being computed through `child`'s:
+    /// a later change to `child`'s extent makes `parent`'s stale too. Called
+    /// once per child each time a parent's extent is computed, whether or not
+    /// the child's own extent was already stored.
+    pub fn note_extent_parent(&self, child: usize, parent: usize) {
+        let mut s = self.state();
+        if s.extent_parents.len() <= child {
+            s.extent_parents.resize(child + 1, NO_PARENT);
+        }
+        let slot = &mut s.extent_parents[child];
+        if *slot == NO_PARENT {
+            *slot = parent;
+        } else if *slot != parent {
+            s.extent_parents_ambiguous = true;
+        }
     }
 
     /// The stacking sequence cached for `root` at base `(ox, oy)`.

@@ -1476,8 +1476,8 @@ impl RinchApp {
                 node.scroll_offset.1 = clamped;
             }
             // A scroll moves every box inside the container: repaint the
-            // container, as the wheel does (which also drops the hit cache).
-            d.tree.mark_paint_dirty(container_id);
+            // container, as the wheel does (which also tells the hit cache).
+            d.tree.mark_scrolled(container_id);
             self.scene_dirty = true;
         }
     }

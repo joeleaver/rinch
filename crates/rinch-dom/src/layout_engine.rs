@@ -146,7 +146,6 @@ impl RinchDocument {
     /// then reads layout results back into each node's `layout` field.
     /// Text nodes are measured using Parley for accurate text layout.
     pub fn resolve_layout(&mut self, width: f32, height: f32) {
-        self.tree.hit_cache.invalidate();
         use crate::perf::Counter;
         // Layout time is this call's wall clock minus the style time spent
         // inside it (`resolve_styles` / `apply_stylo_styles_to_taffy` time
@@ -172,10 +171,20 @@ impl RinchDocument {
         let old_viewport = self.tree.viewport;
         self.tree.viewport = crate::layout::Viewport { width, height };
 
+        // The hit tester's memo describes the boxes as they are, so every path
+        // below that can move one drops it. The one that cannot — the
+        // paint-only skip, which runs no Taffy compute and rebuilds no text
+        // layout — keeps it (#911): a scroll notch's frame takes that path, and
+        // dropping the memo there made every notch rebuild every row's extent.
+        // A restyle on that path invalidates in `resolve_styles`, and a
+        // background image landing in `push_dirty`.
+        let viewport_changed =
+            (old_viewport.width - width).abs() > 0.5 || (old_viewport.height - height).abs() > 0.5;
+
         // A viewport change restyles only what the new size reaches — a
         // flipped media query restyles everything, a viewport unit its users —
         // and always re-runs layout. See `restyle_for_viewport_change`.
-        if (old_viewport.width - width).abs() > 0.5 || (old_viewport.height - height).abs() > 0.5 {
+        if viewport_changed {
             self.restyle_for_viewport_change(width, height);
         }
 
@@ -222,6 +231,7 @@ impl RinchDocument {
         // For these, skip Taffy but still rebuild the affected IFC text layouts.
         if !self.tree.layout_dirty {
             if !self.tree.dirty_ifc_text_roots.is_empty() {
+                self.tree.hit_cache.invalidate();
                 self.tree.perf.bump(Counter::LayoutSkippedTextOnly);
                 self.sync_dirty_text_contexts();
                 let t = web_time::Instant::now();
@@ -231,10 +241,14 @@ impl RinchDocument {
                 self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
                 self.tree.dirty_ifc_text_roots.clear();
             } else {
+                if viewport_changed {
+                    self.tree.hit_cache.invalidate();
+                }
                 self.tree.perf.bump(Counter::LayoutSkippedPaintOnly);
             }
             return;
         }
+        self.tree.hit_cache.invalidate();
         self.tree.layout_dirty = false;
 
         let root_taffy = match self.tree.nodes[self.tree.root_id].taffy_id {

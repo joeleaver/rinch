@@ -450,11 +450,10 @@ impl RinchApp {
                                 ScrollAxis::Vertical => node.scroll_offset.1 = new_scroll,
                                 ScrollAxis::Horizontal => node.scroll_offset.0 = new_scroll,
                             }
-                            node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                             // Whole-container repaint: covers the thumb's old
                             // rect as well as its new one (see the mousedown
                             // arm).
-                            d.tree.push_dirty(node_id);
+                            d.tree.mark_scrolled(node_id);
                         }
                         d.tree.dirty_nodes.insert(node_id);
                         if let Some(hid) = handler_id {
@@ -820,13 +819,12 @@ impl RinchApp {
                                 ScrollAxis::Vertical => node.scroll_offset.1 = new_scroll,
                                 ScrollAxis::Horizontal => node.scroll_offset.0 = new_scroll,
                             }
-                            node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                             // The thumb lives inside the container's own layout
                             // rect, which `compute_dirty_region` unions whole —
                             // so marking the container paint-dirty covers where
                             // the thumb was as well as where it now is, and the
                             // software renderer leaves no #173-style trail.
-                            d.tree.push_dirty(node_id);
+                            d.tree.mark_scrolled(node_id);
                         }
                         d.tree.dirty_nodes.insert(node_id);
                         if let Some(hid) = handler_id {
@@ -1057,11 +1055,19 @@ impl RinchApp {
             } => {
                 self.cursor_pos = Some((x, y));
 
+                // One hit test serves both questions below — is the wheel
+                // over a render surface, and which container does it scroll —
+                // since nothing between them touches the document (#911).
+                let hit = self
+                    .doc
+                    .as_ref()
+                    .and_then(|doc| hit_test(&doc.borrow().tree, x, y));
+
                 // Check if scrolling over a render surface — dispatch and skip normal scroll
                 let surface_consumed = if let Some(doc) = &self.doc {
                     let surface_hit = {
                         let d = doc.borrow();
-                        if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                        if let Some(hit_id) = hit {
                             Self::find_render_surface_at(&d.tree, hit_id, x, y)
                         } else {
                             None
@@ -1086,8 +1092,7 @@ impl RinchApp {
                 };
 
                 if !surface_consumed && let Some(doc) = &self.doc {
-                    let hit_node = hit_test(&doc.borrow().tree, x, y);
-                    if let Some(hit_node) = hit_node {
+                    if let Some(hit_node) = hit {
                         let mut doc_mut = doc.borrow_mut();
                         // (container, handler) per container that actually moved.
                         // A list because the two axes can resolve to different
@@ -1136,8 +1141,7 @@ impl RinchApp {
                             if new_y != old_y {
                                 if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
                                     node.scroll_offset.1 = new_y;
-                                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc_mut.tree.push_dirty(scroll_node_id);
+                                    doc_mut.tree.mark_scrolled(scroll_node_id);
                                     self.scene_dirty = true;
                                 }
                                 doc_mut.tree.dirty_nodes.insert(scroll_node_id);
@@ -1176,8 +1180,7 @@ impl RinchApp {
                                 let new_x = (node.scroll_offset.0 - delta_x).clamp(0.0, max_scroll);
                                 if new_x != node.scroll_offset.0 {
                                     node.scroll_offset.0 = new_x;
-                                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc_mut.tree.push_dirty(scroll_node_id);
+                                    doc_mut.tree.mark_scrolled(scroll_node_id);
                                     self.scene_dirty = true;
                                     moved = true;
                                 }

@@ -683,12 +683,12 @@ fn mount_scroller() -> (RinchApp, NodeHandle) {
 /// One wheel notch over a 500-row scroller: the scroller's box repaints, no
 /// element is restyled, nothing is laid out, nothing is shaped.
 ///
-/// **Finding, pinned as it is — #911 (hit tests); a fix must LOWER this
-/// number, and its PR updates the pin:** the notch runs **two** hit tests and
-/// recomputes **498** subtree extents — the scroll invalidates the hit cache
-/// (it has to: the rows moved), and the next test rebuilds every row's extent
-/// rather than the handful under the pointer. Paint visits **24** nodes for the
-/// ~20 rows on screen; it visited all 504 until #910.
+/// **One hit test** routes the notch (#911 — the render-surface check and the
+/// scroll routing used to run one each). It finds the hit cache **cold** — the
+/// mount's layout dropped it and nothing has probed since — so it computes
+/// **498** extents, once: the next notch keeps them (see
+/// `a_second_wheel_notch_recomputes_no_extent`). Paint visits **24** nodes for
+/// the ~20 rows on screen; it visited all 504 until #910.
 #[test]
 fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
     let (mut app, scroller) = mount_scroller();
@@ -722,9 +722,66 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
-            (HitTests, 2),
-            (HitTestNodesVisited, 8),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
             (HitExtentsComputed, 498),
+        ],
+    );
+}
+
+fn wheel_notch(app: &mut RinchApp) {
+    app.handle_event(
+        PlatformEvent::MouseWheel {
+            x: 50.0,
+            y: 100.0,
+            delta_x: 0.0,
+            delta_y: -100.0,
+        },
+        SIZE,
+        1.0,
+    );
+}
+
+/// The **second** notch of a scroll: the one every notch after the first is.
+/// The first notch found the hit cache cold (the mount's layout dropped it)
+/// and filled it; this one must not rebuild it.
+///
+/// #911: a scroll moves the scroller's rows, but no row's *own* extent — an
+/// extent is relative to its node's origin, and the scroll offset is applied
+/// by the scroller when it places its children — and not the scroller's
+/// either, since a box that clips keeps its extent to its own box. So the
+/// scroll drops only the stacking sequences, the frame's paint-only layout
+/// pass drops nothing, and the notch computes **no** extent at all. It was 2
+/// hit tests and 493 extents.
+#[test]
+fn a_second_wheel_notch_recomputes_no_extent() {
+    let (mut app, scroller) = mount_scroller();
+    interaction(&mut app, wheel_notch);
+    let first = scroller.scroll_top();
+    assert!(first > 0.0, "positive control: the first notch scrolled");
+    let s = interaction(&mut app, wheel_notch);
+    assert!(
+        scroller.scroll_top() > first,
+        "positive control: the second notch scrolled further"
+    );
+    expect_frame(
+        "second wheel notch, 500 rows",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 122816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 24),
+            (StackingOrderBuilds, 2),
+            (GlyphCacheHits, 126),
+            (ClipMasks, 2),
+            (ClipMaskPx, 245640),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
         ],
     );
 }
