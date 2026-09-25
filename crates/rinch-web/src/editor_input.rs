@@ -107,6 +107,10 @@ thread_local! {
     /// `(pointer_id, client_x, client_y)`. A release near that point is a tap rather
     /// than a scroll, and focuses the capture target (see `handle_touch_tap`).
     static TOUCH_TAP: Cell<Option<(i32, f32, f32)>> = const { Cell::new(None) };
+    /// The last touch tap [`handle_touch_tap`] serviced, waiting for the
+    /// compatibility `mousedown` the browser synthesizes for it (issue #302). See
+    /// [`is_compat_mousedown_of_serviced_tap`].
+    static SERVICED_TAP: Cell<Option<ServicedTap>> = const { Cell::new(None) };
     /// The context-menu cycle in flight (issue #814): the capture textarea is, or
     /// was just, parked under the pointer and holds the Select-All sentinels rather
     /// than the mirror. `None` when no cycle is live. See
@@ -1600,6 +1604,11 @@ fn handle_link_click(event: &web_sys::MouseEvent) {
 /// Handle a `mousedown`. Returns whether it landed in an editor (so the listener
 /// consumes it). Mirrors `try_new_editor_click`.
 fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> bool {
+    // A touch tap's compatibility `mousedown`, for a tap its `pointerup` already
+    // serviced: consumed, and nothing redone (issue #302).
+    if is_compat_mousedown_of_serviced_tap(event, doc) {
+        return true;
+    }
     // A press of any button means the browser's menu is closed: the cycle ends,
     // and the textarea is back off-screen before this press is resolved.
     end_context_menu_cycle();
@@ -2225,8 +2234,10 @@ fn note_touch_down(event: &web_sys::PointerEvent) {
 /// will raise the on-screen keyboard for a programmatic `.focus()` — and on a page that
 /// consumes the pointer sequence it may never be synthesized at all, leaving the editor
 /// visibly focused but with no model focus, so every keystroke went nowhere. Running
-/// the same handler here, from the real touch event, makes the tap self-sufficient; the
-/// compatibility `mousedown` that may follow is idempotent (same point, same caret).
+/// the same handler here, from the real touch event, makes the tap self-sufficient. The
+/// compatibility `mousedown` that may follow is then recognised as this tap's and runs
+/// nothing ([`is_compat_mousedown_of_serviced_tap`], issue #302) — except a double
+/// tap's, whose `detail == 2` still selects the word.
 ///
 /// A contact that drifted past the shared touch slop was a scroll, not a tap, and is
 /// dropped — panning a manuscript must not pop the keyboard.
@@ -2249,10 +2260,84 @@ fn handle_touch_tap(event: &web_sys::PointerEvent, doc: &web_sys::Document) {
     // `PointerEvent` *is* a `MouseEvent`, so the click handler takes it as-is. Its
     // `detail` is 0 for touch, which lands on the plain place-the-caret arm; a
     // double-tap's word select still comes from the compatibility `mousedown`.
-    handle_mousedown(event.as_ref(), doc);
+    SERVICED_TAP.with(|c| c.set(None));
+    let serviced = handle_mousedown(event.as_ref(), doc);
     // Drag-select follows `mousemove` with a button held — unreachable from touch — so
     // never leave a touch tap's anchor armed behind it.
     registry::end_drag(None);
+    // Remember the tap, so the compatibility `mousedown` that follows it does not
+    // run the press a second time (issue #302).
+    if serviced && let Some(container_nid) = focused_editor() {
+        SERVICED_TAP.with(|c| {
+            c.set(Some(ServicedTap {
+                x: event.client_x() as f32,
+                y: event.client_y() as f32,
+                at_ms: event.time_stamp(),
+                container_nid,
+            }))
+        });
+    }
+}
+
+/// A touch tap [`handle_touch_tap`] has already run the press for: where it came up,
+/// when, and which editor it focused.
+#[derive(Clone, Copy)]
+struct ServicedTap {
+    x: f32,
+    y: f32,
+    /// The `pointerup`'s `timeStamp`, in the page's time origin (as every event's).
+    at_ms: f64,
+    container_nid: usize,
+}
+
+/// How long after a serviced tap its compatibility `mousedown` is still recognised
+/// as that tap's. Browsers synthesize it right after `pointerup`, or after a
+/// double-tap-to-zoom delay of roughly 300 ms on a page that allows zooming; a
+/// `mousedown` later than this is treated as a press of its own.
+const TAP_COMPAT_WINDOW_MS: f64 = 800.0;
+
+/// Whether `event` is the compatibility `mousedown` of a touch tap that
+/// [`handle_touch_tap`] already serviced, and the press it would run has nothing
+/// left to do (issue #302).
+///
+/// The tap's `pointerup` ran [`handle_mousedown`] in full: focus, the capture
+/// field emptied and re-mirrored, the caret placed. Running it again from the
+/// compatibility event redoes all of that — a second empty-and-refill of the field
+/// under an attached soft keyboard, a second selection transaction, a second
+/// `on_link_click` offer. So the first `mousedown` after a serviced tap **consumes**
+/// the record, whatever it is, and answers `true` only when it is a single primary
+/// press (`detail <= 1`, no modifier) at the tap's point, inside the window, with
+/// that tap's editor still focused and the capture textarea still holding the
+/// browser's focus — i.e. when the press would leave everything as it already is.
+///
+/// A double tap's compatibility `mousedown` carries `detail == 2` (the browser
+/// counts clicks across taps) and is never matched, so its word select still runs.
+fn is_compat_mousedown_of_serviced_tap(
+    event: &web_sys::MouseEvent,
+    doc: &web_sys::Document,
+) -> bool {
+    if event.type_() != "mousedown" {
+        return false;
+    }
+    let Some(tap) = SERVICED_TAP.with(|c| c.take()) else {
+        return false;
+    };
+    let elapsed = event.time_stamp() - tap.at_ms;
+    event.button() == 0
+        && event.detail() <= 1
+        && !event.shift_key()
+        && !event.alt_key()
+        && !is_context_press(event)
+        && (0.0..=TAP_COMPAT_WINDOW_MS).contains(&elapsed)
+        && is_tap(
+            (tap.x, tap.y),
+            (event.client_x() as f32, event.client_y() as f32),
+        )
+        && focused_editor() == Some(tap.container_nid)
+        && capture_target().is_some_and(|ta| {
+            doc.active_element()
+                .is_some_and(|el| el == *ta.unchecked_ref::<web_sys::Element>())
+        })
 }
 
 /// Add a capture-phase `document` listener leaked for the page lifetime.

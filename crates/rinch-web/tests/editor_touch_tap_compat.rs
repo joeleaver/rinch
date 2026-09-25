@@ -440,3 +440,31 @@ fn a_tap_on_a_link_is_offered_once() {
     );
     f.teardown();
 }
+
+/// The compatibility `mousedown` is skipped only while the tap's state stands.
+/// If the capture textarea lost focus between the `pointerup` and it, the press
+/// runs in full and focuses the editor again.
+///
+/// Kills: skipping without checking that the tap's editor still holds focus.
+#[wasm_bindgen_test]
+fn a_compat_mousedown_after_focus_left_runs_the_press() {
+    let f = Fixture::mount(CONTENT);
+    let (x, y) = f.point(0, 8);
+    touch_pointer(x, y);
+    assert!(
+        f.capture_focused(),
+        "positive control: the tap focused the editor"
+    );
+    f.capture().blur().unwrap();
+    assert!(!f.capture_focused(), "the blur took focus away");
+
+    let tx = f.tx.get();
+    mousedown(x, y, 1);
+    mouseup(x, y, 1);
+    assert!(
+        f.capture_focused(),
+        "the compatibility mousedown focuses the editor again"
+    );
+    assert_eq!(f.tx.get(), tx + 1, "and places the caret");
+    f.teardown();
+}
