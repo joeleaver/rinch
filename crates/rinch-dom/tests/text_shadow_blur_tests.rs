@@ -347,7 +347,10 @@ fn a_wavy_underline_casts_the_shadow() {
         &format!("{BASE}; text-shadow: 3px 5px 0 rgb(255, 0, 0)"),
         &[
             ("Hx ", None),
-            ("wavy", Some("text-decoration: underline wavy rgb(0, 0, 255)")),
+            (
+                "wavy",
+                Some("text-decoration: underline wavy rgb(0, 0, 255)"),
+            ),
         ],
     );
     let ops = record(&mut doc, scale);
@@ -393,7 +396,10 @@ fn red_tint(px: &[[u8; 4]], w: u32, h: u32) -> (Rect, u8) {
             }
         }
     }
-    (bbox.expect("no shadow ink; the fixture measures nothing"), peak)
+    (
+        bbox.expect("no shadow ink; the fixture measures nothing"),
+        peak,
+    )
 }
 
 /// The software painter draws a blurred shadow soft: its faint edge reaches
@@ -485,4 +491,32 @@ fn the_software_painter_draws_the_underline_shadow() {
         "only {red} of the {wide} pixels under the underline's shadow row {shadow_row} are \
          red: the underline casts no shadow (#981)"
     );
+}
+
+/// Where a blurred shadow's copies all cover a pixel — the middle of a stem
+/// much wider than the blur — the shadow is solid, as a Gaussian of a solid
+/// region is: the copies **add** (`Plus`) and their weights sum to 1.
+///
+/// Kills: the software painter compositing a `Plus` layer source-over (the
+/// copies then cover each other: `1 - Π(1 - w)`, about 63%, never solid);
+/// a kernel whose weights fall short of 1; the isolated layer skipped at
+/// opacity 1 (the copies add onto the white page and leave it white).
+#[test]
+fn a_blurred_shadows_solid_interior_stays_solid() {
+    for scale in [1.0, 1.5] {
+        let style = "margin: 0 0 0 20px; font-size: 150px; line-height: 170px; \
+                     color: rgb(0, 0, 0); font-family: ProbeFace; \
+                     text-shadow: 150px 0 4px rgb(255, 0, 0)";
+        let (px, w, h) = paint(&mut document(style, &[("I", None)]), scale);
+        let (bbox, peak) = red_tint(&px, w, h);
+        assert!(
+            bbox.width() > 14.0 * scale,
+            "positive control: the stem's shadow is wide ({bbox:?})"
+        );
+        assert!(
+            peak >= 250,
+            "at scale {scale} the middle of a wide stem's blurred shadow peaks at {peak}/255 \
+             red: every copy covers it, so it must be solid (#980)"
+        );
+    }
 }
