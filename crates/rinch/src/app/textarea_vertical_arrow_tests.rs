@@ -84,7 +84,12 @@ fn type_str(app: &mut RinchApp, text: &str) {
         if ch == '\n' {
             key(app, KeyCode::Enter, false);
         } else {
-            key_mods(app, KeyCode::KeyA, Some(&ch.to_string()), Modifiers::default());
+            key_mods(
+                app,
+                KeyCode::KeyA,
+                Some(&ch.to_string()),
+                Modifiers::default(),
+            );
         }
     }
 }
@@ -170,7 +175,11 @@ fn arrow_down_moves_to_the_next_line() {
     assert_eq!(caret(&app, id), 2, "up: end of `ab`");
     key(&mut app, KeyCode::ArrowLeft, false);
     key(&mut app, KeyCode::ArrowDown, false);
-    assert_eq!(caret(&app, id), 4, "down keeps column 1: between `c` and `d`");
+    assert_eq!(
+        caret(&app, id),
+        4,
+        "down keeps column 1: between `c` and `d`"
+    );
 }
 
 /// Off the first line ArrowUp goes to the start of the text, off the last line
@@ -185,9 +194,10 @@ fn past_the_first_or_last_line_goes_to_the_ends_of_the_text() {
     assert_eq!(caret(&app, id), 6);
     key(&mut app, KeyCode::ArrowDown, false);
     assert_eq!(caret(&app, id), 8, "down on the last line: end of text");
+    // The jump to the end is still a vertical move, so the goal from column 2
+    // survives it (Blink keeps its x across the edge too).
     key(&mut app, KeyCode::ArrowUp, false);
-    key(&mut app, KeyCode::ArrowLeft, false);
-    assert_eq!(caret(&app, id), 2, "back on line 1, mid-line");
+    assert_eq!(caret(&app, id), 2, "back on line 1 at the goal, mid-line");
     key(&mut app, KeyCode::ArrowUp, false);
     assert_eq!(caret(&app, id), 0, "up on the first line: start of text");
 }
@@ -203,7 +213,11 @@ fn consecutive_vertical_moves_keep_the_goal_x() {
     key(&mut app, KeyCode::ArrowUp, false);
     assert_eq!(caret(&app, id), 5, "clamped to the end of `d`");
     key(&mut app, KeyCode::ArrowUp, false);
-    assert_eq!(caret(&app, id), 3, "the goal x is column 3, not `d`'s column 1");
+    assert_eq!(
+        caret(&app, id),
+        3,
+        "the goal x is column 3, not `d`'s column 1"
+    );
     key(&mut app, KeyCode::ArrowDown, false);
     key(&mut app, KeyCode::ArrowDown, false);
     assert_eq!(caret(&app, id), 9, "and back down to column 3 of line 3");
@@ -241,9 +255,10 @@ fn a_soft_wrapped_line_is_a_line() {
         "one visual line up, not the start of the text: {up}"
     );
     let (_, up_y, _, line_h) = caret_rect(&mut app, id, up);
+    let rise = end_y - up_y;
     assert!(
-        (end_y - up_y - line_h).abs() < 0.5,
-        "exactly one line up: {end_y} -> {up_y} (line {line_h})"
+        rise > line_h * 0.5 && rise < line_h * 1.5,
+        "one line up, not zero or two: {end_y} -> {up_y} (line {line_h})"
     );
 
     key(&mut app, KeyCode::ArrowDown, false);
@@ -267,7 +282,11 @@ fn shift_extends_the_selection() {
     key(&mut app, KeyCode::ArrowDown, true);
     assert_eq!(sel(&app, id), (4, 4), "and back");
     key(&mut app, KeyCode::ArrowDown, true);
-    assert_eq!(sel(&app, id), (4, 5), "shift+down off the last line: to the end");
+    assert_eq!(
+        sel(&app, id),
+        (4, 5),
+        "shift+down off the last line: to the end"
+    );
 }
 
 /// Without Shift a selection collapses and moves from its start (up) or its end
@@ -278,13 +297,21 @@ fn a_selection_moves_from_its_start_up_and_its_end_down() {
     let (mut app, id) = mount("textarea", None, 200);
     type_str(&mut app, "abc\nabc\nabc");
     // Line 2: anchor at column 0, head at column 2.
+    // (Left rather than Home: Home in a `<textarea>` goes to the start of the
+    // whole value on desktop, #933.)
     key(&mut app, KeyCode::ArrowUp, false);
-    key(&mut app, KeyCode::Home, false);
+    for _ in 0..3 {
+        key(&mut app, KeyCode::ArrowLeft, false);
+    }
     key(&mut app, KeyCode::ArrowRight, true);
     key(&mut app, KeyCode::ArrowRight, true);
     assert_eq!(sel(&app, id), (4, 6));
     key(&mut app, KeyCode::ArrowUp, false);
-    assert_eq!(sel(&app, id), (0, 0), "up from the start: column 0 of line 1");
+    assert_eq!(
+        sel(&app, id),
+        (0, 0),
+        "up from the start: column 0 of line 1"
+    );
 
     // Line 2 again, a *backwards* selection: anchor column 2, head column 0.
     key(&mut app, KeyCode::ArrowDown, false);
@@ -294,7 +321,11 @@ fn a_selection_moves_from_its_start_up_and_its_end_down() {
     key(&mut app, KeyCode::ArrowLeft, true);
     assert_eq!(sel(&app, id), (6, 4));
     key(&mut app, KeyCode::ArrowDown, false);
-    assert_eq!(sel(&app, id), (10, 10), "down from the end: column 2 of line 3");
+    assert_eq!(
+        sel(&app, id),
+        (10, 10),
+        "down from the end: column 2 of line 3"
+    );
 }
 
 /// A single-line `<input>`: ArrowUp to the start, ArrowDown to the end, Shift
@@ -327,4 +358,30 @@ fn a_number_input_is_left_alone() {
     assert_eq!(sel(&app, id), (2, 2));
     key(&mut app, KeyCode::ArrowDown, false);
     assert_eq!(sel(&app, id), (2, 2));
+}
+
+/// Up onto a soft-wrapped line whose end is left of the goal: the nearest
+/// offset is that line's end, which is also the next line's start — and a
+/// caret there paints on the *next* line. The move stops one character short,
+/// so the caret is seen to go up. `iiii ` wraps before the wide `WWWWWWWW`.
+#[test]
+fn up_onto_a_shorter_soft_wrapped_line_stays_on_it() {
+    let (mut app, id) = mount("textarea", None, 130);
+    let text = "iiii WWWWWWWW";
+    type_str(&mut app, text);
+    let (_, end_y, _, line_h) = caret_rect(&mut app, id, text.len());
+    let (_, first_y, _, _) = caret_rect(&mut app, id, 0);
+    assert!(end_y > first_y, "the fixture wraps: {first_y} -> {end_y}");
+
+    key(&mut app, KeyCode::ArrowUp, false);
+    let up = caret(&app, id);
+    assert_eq!(up, 4, "before the space the line broke at, not after it");
+    let (_, up_y, _, _) = caret_rect(&mut app, id, up);
+    assert!(
+        (up_y - first_y).abs() < line_h * 0.5,
+        "the caret paints on the first line: {up_y} vs {first_y}"
+    );
+
+    key(&mut app, KeyCode::ArrowDown, false);
+    assert_eq!(caret(&app, id), text.len(), "and the goal brings it back");
 }
