@@ -6341,6 +6341,67 @@ mod tests {
 
     /// `on_key`, `on_selection_change` and `caret_rect`: what an app needs to
     /// drive an autocomplete popup from the editor.
+    /// The caret-affinity hint (#301) lives beside the selection it was set
+    /// with and applies only while the selection is still that one.
+    mod caret_affinity {
+        use super::*;
+
+        fn hinted() -> EditorHandle {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")])).handle;
+            h.set_selection_with_affinity(Selection::cursor(Pos(4)), CaretAffinity::Upstream);
+            assert_eq!(
+                h.caret_affinity(),
+                CaretAffinity::Upstream,
+                "control: the hint holds"
+            );
+            assert_eq!(h.caret_affinity_at(Pos(4)), CaretAffinity::Upstream);
+            assert_eq!(
+                h.caret_affinity_at(Pos(3)),
+                CaretAffinity::Downstream,
+                "only at the head"
+            );
+            h
+        }
+
+        #[test]
+        fn a_plain_set_selection_clears_it_even_to_the_same_caret() {
+            let h = hinted();
+            h.set_selection(Selection::cursor(Pos(4)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        #[test]
+        fn a_typed_character_clears_it() {
+            let h = hinted();
+            assert!(h.insert_text("x"));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+
+        #[test]
+        fn an_edit_that_leaves_the_selection_keeps_it() {
+            let h = hinted();
+            // An edit in the second paragraph maps the caret onto itself.
+            assert!(h.update(|state| {
+                let mut tr = state.tr();
+                tr.delete(9, 10).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(h.selection(), Selection::cursor(Pos(4)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Upstream);
+        }
+
+        #[test]
+        fn a_selection_moved_by_undo_clears_it() {
+            let h = hinted();
+            assert!(h.insert_text("x"));
+            h.set_selection_with_affinity(Selection::cursor(Pos(5)), CaretAffinity::Upstream);
+            assert!(h.command("undo"));
+            assert_ne!(h.selection(), Selection::cursor(Pos(5)));
+            assert_eq!(h.caret_affinity(), CaretAffinity::Downstream);
+        }
+    }
+
     mod popup_hooks {
         use super::*;
         use std::cell::Cell;
