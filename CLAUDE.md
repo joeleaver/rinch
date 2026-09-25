@@ -2534,9 +2534,11 @@ only its **own** scroll offset, never an ancestor's, and a box that clips — ev
 scroll container but an inline span — does not fold its children in at all, so scrolling one
 changes no extent anywhere. A box that does not clip and has a scroll offset
 anyway (`set_scroll_top` can give one that, and so can the wheel, which finds a
-non-atomic inline `overflow: auto` span as a scroll container) drops its own
-extent and the chain
-folded out of it, which `flow_extent` records with `note_extent_parent`. A new
+non-atomic inline `overflow: auto` span as a scroll container) drops every
+extent, as a full invalidation does: keeping the rest would mean recording each
+extent's parent as it is computed, and that bookkeeping cost the first pointer
+move after every layout 5% of its instructions (`shell::pointer_move_cold`,
+measured after #962 merged with it). A new
 input to `flow_extent` that is not relative to its node breaks this. (Layout's
 own clamp and the `display: none` reset are inside passes that invalidate in
 full.) A new scroll-offset writer that changes nothing else should use
