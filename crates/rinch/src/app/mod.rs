@@ -117,6 +117,8 @@ mod repaint_old_rect_tests;
 mod screenshot_capture_tests;
 mod select_widget;
 #[cfg(test)]
+mod shared_hit_tests;
+#[cfg(test)]
 mod stepper_state_709_tests;
 #[cfg(test)]
 mod text_action_word_tests;
