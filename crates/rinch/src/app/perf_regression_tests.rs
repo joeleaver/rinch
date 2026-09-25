@@ -722,6 +722,47 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
     );
 }
 
+fn wheel_notch(app: &mut RinchApp) {
+    app.handle_event(
+        PlatformEvent::MouseWheel {
+            x: 50.0,
+            y: 100.0,
+            delta_x: 0.0,
+            delta_y: -100.0,
+        },
+        SIZE,
+        1.0,
+    );
+}
+
+/// The **second** notch of a scroll: the one every notch after the first is.
+/// The first notch found the hit cache cold (the mount's layout dropped it)
+/// and filled it; this one must not rebuild it.
+///
+/// #911: a scroll moves the scroller's rows, but no row's *own* extent — an
+/// extent is relative to its node's origin, and the scroll offset is applied
+/// by the ancestor that places the scroller's children. So the scroll drops
+/// only the scroller's extent and its ancestors', and the frame's paint-only
+/// layout pass drops nothing. One hit test, three extents (the scroller, the
+/// root `div`, `<body>`).
+#[test]
+fn a_second_wheel_notch_recomputes_only_the_scrollers_ancestor_extents() {
+    let (mut app, scroller) = mount_scroller();
+    interaction(&mut app, wheel_notch);
+    let first = scroller.scroll_top();
+    assert!(first > 0.0, "positive control: the first notch scrolled");
+    let s = interaction(&mut app, wheel_notch);
+    assert!(
+        scroller.scroll_top() > first,
+        "positive control: the second notch scrolled further"
+    );
+    expect_frame(
+        "second wheel notch, 500 rows",
+        &s,
+        &[(HitTests, 1), (HitExtentsComputed, 3)],
+    );
+}
+
 // ── Drag ───────────────────────────────────────────────────────────────────
 
 /// A panel dragged by `Drag::absolute` over ten moves queued before one frame:
