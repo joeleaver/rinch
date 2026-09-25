@@ -2198,7 +2198,7 @@ fn move_to_line_edge(
 ) -> bool {
     let sel = handle.selection();
     let head = sel.head();
-    let Some(mut edge) = visual_line_bound(handle, container_nid, doc, head, end) else {
+    let Some(edge) = visual_line_bound(handle, container_nid, doc, head, end) else {
         return handle.move_cursor(
             if end {
                 CursorMotion::LineEnd
@@ -2209,18 +2209,11 @@ fn move_to_line_edge(
         );
     };
     // At a soft wrap the end of a line and the start of the next are one model
-    // position, and a caret there draws on the next line (there is no caret
-    // affinity). Stop one short, so End stays on the line it was pressed on —
-    // desktop's rule. A delete does not step back: it takes the wrap point's
-    // trailing space, as Chrome's own line boundary does.
-    if end
-        && edge.0 > head.0
-        && let (Some((_, hy, hh)), Some((_, ey, _))) =
-            (head_screen_rect(handle, head), head_screen_rect(handle, edge))
-        && ey > hy + hh * 0.5
-    {
-        edge = Pos(edge.0 - 1);
-    }
+    // position (there is no caret affinity). Desktop's End steps back one when
+    // the caret there would draw on the next line; the browser draws a collapsed
+    // range at a wrap point at the end of the line before — after a hanging space
+    // and inside a word broken by `overflow-wrap` alike (measured, Chrome 153) —
+    // so End keeps the wrap point, which is also where Chrome's own End goes.
     handle.set_selection(if extend {
         Selection::text(sel.anchor(), edge)
     } else {

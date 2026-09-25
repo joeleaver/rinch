@@ -340,15 +340,12 @@ fn hard_line_deletes_keep_the_textblock_edge() {
     f.teardown();
 }
 
-/// End from `caret` landed at `end`: the wrap point `next` or the character
-/// before it, whichever the browser draws on the caret's own line — the model has
-/// no caret affinity, so where a caret AT the wrap point draws is the browser's
-/// call (after a hanging space: this line; inside a broken word: the next).
+/// End from `caret` landed at `end`: the wrap point `next`, drawn on the
+/// caret's own line. The model has no caret affinity, so a caret AT the wrap
+/// point draws wherever the browser draws a collapsed range there — at the end
+/// of the line before, after a hanging space and inside a broken word alike.
 fn assert_end_on_the_line(f: &Fixture, caret: u32, end: u32, next: u32) {
-    assert!(
-        end == next || end == next - 1,
-        "End lands at the wrap point {next} or just before it: {end}"
-    );
+    assert_eq!(end, next, "End lands at the wrap point");
     let caret_top = f.char_rect(caret).top();
     let end_rect = f.handle.caret_rect(f.handle.selection().head()).unwrap();
     assert!(
@@ -448,15 +445,17 @@ fn soft_line_backward_for_ltr_text_in_an_rtl_paragraph() {
 }
 
 /// One unbroken word, broken by `overflow-wrap`: the wrap point sits between two
-/// letters, where the browser draws a caret at the start of the NEXT line. End
-/// must stop one character short of it to stay on the line it was pressed on.
+/// letters, with no hanging space to end the line on. End still lands on the
+/// wrap point and still draws on the line it was pressed on — Chrome's own End.
 #[wasm_bindgen_test]
 fn end_inside_a_broken_word_stays_on_its_line() {
     let (f, _, caret, next) = middle_line(LONG_WORD, "overflow-wrap: anywhere;");
+    let chrome = f.chrome_line_boundary(caret, true);
     f.focus();
     f.caret_at(caret);
     assert!(f.key("End", false));
     let end = f.head();
+    assert_eq!(end, chrome, "End lands where Chrome's End does");
     assert_end_on_the_line(&f, caret, end, next);
     f.teardown();
 }
