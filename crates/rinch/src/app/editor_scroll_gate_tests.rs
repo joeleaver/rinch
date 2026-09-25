@@ -336,7 +336,25 @@ fn typing_that_wraps_below_the_fold_follows_the_caret_onto_the_new_line() {
             })
             .expect(k)
     };
-    let (top, height) = (num("top"), num("height"));
+    // The caret sits at `top: 0` and is placed by a `translate(x, y)` (#906).
+    let top = style
+        .split(';')
+        .find_map(|d| {
+            let (n, v) = d.split_once(':')?;
+            let args = v.trim().strip_prefix("translate(")?.strip_suffix(')')?;
+            (n.trim() == "transform")
+                .then(|| {
+                    args.split(',')
+                        .nth(1)?
+                        .trim()
+                        .trim_end_matches("px")
+                        .parse::<f64>()
+                        .ok()
+                })
+                .flatten()
+        })
+        .expect("transform");
+    let height = num("height");
     assert!(
         top >= scroll - 0.5 && top + height <= scroll + 100.5,
         "the caret [{top}, {}] is inside the scrolled band [{scroll}, {}]",
