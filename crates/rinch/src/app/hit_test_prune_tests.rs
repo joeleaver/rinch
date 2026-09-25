@@ -228,6 +228,25 @@ fn random_documents_hit_identically() {
         scroll_everything(&mut doc, &mut r, &all);
         assert_agree(&doc, &format!("seed {seed}, scrolled"));
 
+        // One node at a time, warm between: a scroll keeps every extent but
+        // the scrolled node's chain (#911), so a chain that stops one link
+        // short answers from before the scroll. A paint-only layout pass in
+        // between keeps the memo too, and must still agree.
+        for round in 0..4 {
+            if all.is_empty() {
+                break;
+            }
+            let n = all[r.below(all.len() as u64) as usize];
+            doc.set_scroll_top(n, r.below(150) as f64);
+            if r.chance(50) {
+                doc.set_scroll_left(n, r.below(80) as f64);
+            }
+            if round % 2 == 1 {
+                doc.resolve_layout(800.0, 600.0);
+            }
+            assert_agree(&doc, &format!("seed {seed}, scrolled one, round {round}"));
+        }
+
         // Restyle some boxes and move one subtree, then lay out again.
         for &n in &all {
             if r.chance(20) {
@@ -303,6 +322,122 @@ fn a_scrolled_list_hits_identically() {
         doc.set_scroll_top(scroller, top);
         assert_agree(&doc, &format!("scrolled to {top}"));
     }
+}
+
+/// Scrollers inside scrollers, each holding `sticky`, `fixed`, `absolute`
+/// and `relative` children, scrolled one at a time with the cache warm
+/// between — the shape #911's partial invalidation has to get right. A scroll
+/// keeps every extent below the scrolled node and drops its chain up to the
+/// root; dropping one link too few answers from before the scroll.
+///
+/// Every probe grid runs on a warm cache: the previous grid filled it, and
+/// the `resolve_layout` between some rounds takes the paint-only path, which
+/// keeps it.
+#[test]
+fn nested_scrollers_scrolled_one_at_a_time_hit_identically() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let mut scrollers = Vec::new();
+    let mut parent = body;
+    // Three levels: body > outer > middle > inner, each a scroller of rows
+    // and positioned children, the next level nested in its third row.
+    for level in 0..3 {
+        let sc = doc.create_element("div");
+        let (top, h) = (10 + level * 7, 420 - level * 90);
+        doc.set_attribute(
+            sc,
+            "style",
+            &format!(
+                "height: {h}px; width: {}px; overflow-y: auto; overflow-x: auto; \
+                 margin-top: {top}px; margin-left: {}px",
+                700 - level * 120,
+                level * 13
+            ),
+        );
+        doc.append_child(parent, sc);
+        scrollers.push(sc);
+        let mut next_parent = sc;
+        for i in 0..40 {
+            let row = doc.create_element("div");
+            let style = match i % 9 {
+                0 => "position: relative; height: 18px; width: 900px".to_string(),
+                3 => "position: sticky; top: 0px; height: 16px; background: red".to_string(),
+                5 => "height: 22px; margin-left: -15px".to_string(),
+                _ => format!("height: {}px; margin-left: {}px", 14 + i % 4, i % 6),
+            };
+            doc.set_attribute(row, "style", &style);
+            doc.append_child(sc, row);
+            if i % 7 == 2 {
+                let abs = doc.create_element("div");
+                doc.set_attribute(
+                    abs,
+                    "style",
+                    "position: absolute; left: 40px; top: 30px; width: 60px; height: 25px",
+                );
+                doc.append_child(row, abs);
+            }
+            if i % 13 == 4 {
+                let fixed = doc.create_element("div");
+                doc.set_attribute(
+                    fixed,
+                    "style",
+                    &format!(
+                        "position: fixed; left: {}px; top: {}px; width: 30px; height: 30px",
+                        500 + level * 40,
+                        20 + i * 7
+                    ),
+                );
+                doc.append_child(row, fixed);
+            }
+            if i % 5 == 1 {
+                // An in-flow child that overflows its row to the left and
+                // down, so the row's extent is not its own box.
+                let over = doc.create_element("div");
+                doc.set_attribute(
+                    over,
+                    "style",
+                    "margin-left: -25px; margin-top: 4px; width: 45px; height: 40px",
+                );
+                doc.append_child(row, over);
+            }
+            if i == 2 {
+                next_parent = row;
+            }
+        }
+        parent = next_parent;
+    }
+    doc.resolve_layout(800.0, 600.0);
+    assert_agree(&doc, "as laid out");
+
+    // Deepest first, then outwards and back in, off every fixed point.
+    let steps: [(usize, f64, f64); 9] = [
+        (2, 37.0, 0.0),
+        (1, 55.5, 11.0),
+        (0, 91.0, 0.0),
+        (2, 140.0, 23.0),
+        (0, 12.0, 7.0),
+        (1, 0.0, 0.0),
+        (2, 3.0, 0.0),
+        (1, 210.0, 40.0),
+        (0, 260.0, 0.0),
+    ];
+    let mut hits_seen = 0;
+    for (i, &(which, top, left)) in steps.iter().enumerate() {
+        doc.set_scroll_top(scrollers[which], top);
+        doc.set_scroll_left(scrollers[which], left);
+        if i % 3 == 2 {
+            doc.resolve_layout(800.0, 600.0);
+        }
+        assert_agree(
+            &doc,
+            &format!("step {i}: scroller {which} to ({left}, {top})"),
+        );
+        hits_seen += (0..600)
+            .step_by(23)
+            .filter(|&v| hit_test(&doc.tree, v as f32 * 1.3, v as f32).is_some())
+            .count();
+    }
+    assert!(hits_seen > 50, "positive control: hits seen {hits_seen}");
 }
 
 // ── Ticks: the `HitStyleKey` fields a tick can write ────────────────────────

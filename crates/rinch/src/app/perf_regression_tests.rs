@@ -676,12 +676,15 @@ fn mount_scroller() -> (RinchApp, NodeHandle) {
 /// One wheel notch over a 500-row scroller: the scroller's box repaints, no
 /// element is restyled, nothing is laid out, nothing is shaped.
 ///
-/// **Findings, pinned as they are — #911 (hit tests) and #910 (paint
-/// visits); a fix must LOWER this number, and its PR updates the pin:** the notch runs **two** hit tests and
-/// recomputes **498** subtree extents — the scroll invalidates the hit cache
-/// (it has to: the rows moved), and the next test rebuilds every row's extent
-/// rather than the handful under the pointer. And paint visits **504** nodes for the ~20 rows on screen (see
-/// `a_keyed_for_moves_one_row`).
+/// **One hit test** routes the notch (#911 — the render-surface check and the
+/// scroll routing used to run one each). It finds the hit cache **cold** — the
+/// mount's layout dropped it and nothing has probed since — so it computes
+/// **498** extents, once: the next notch keeps them (see
+/// `a_second_wheel_notch_recomputes_only_the_scrollers_ancestor_extents`).
+///
+/// **Finding, pinned as it is — #910 (paint visits); a fix must LOWER this
+/// number, and its PR updates the pin:** paint visits **504** nodes for the
+/// ~20 rows on screen (see `a_keyed_for_moves_one_row`).
 #[test]
 fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
     let (mut app, scroller) = mount_scroller();
@@ -715,8 +718,8 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (ClipMasks, 2),
             (ClipMaskPx, 367044),
             (PaintSurfaceAllocs, 1),
-            (HitTests, 2),
-            (HitTestNodesVisited, 8),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
             (HitExtentsComputed, 498),
         ],
     );
@@ -743,8 +746,9 @@ fn wheel_notch(app: &mut RinchApp) {
 /// extent is relative to its node's origin, and the scroll offset is applied
 /// by the ancestor that places the scroller's children. So the scroll drops
 /// only the scroller's extent and its ancestors', and the frame's paint-only
-/// layout pass drops nothing. One hit test, three extents (the scroller, the
-/// root `div`, `<body>`).
+/// layout pass drops nothing. One hit test, two extents: the scroller's and
+/// the root `div`'s. (`<body>` is a stacking root, which probes its sequence
+/// rather than keeping an extent of its own.) It was 2 hit tests and 493.
 #[test]
 fn a_second_wheel_notch_recomputes_only_the_scrollers_ancestor_extents() {
     let (mut app, scroller) = mount_scroller();
@@ -759,7 +763,23 @@ fn a_second_wheel_notch_recomputes_only_the_scrollers_ancestor_extents() {
     expect_frame(
         "second wheel notch, 500 rows",
         &s,
-        &[(HitTests, 1), (HitExtentsComputed, 3)],
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 122816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 504),
+            (StackingOrderBuilds, 2),
+            (GlyphCacheHits, 126),
+            (ClipMasks, 2),
+            (ClipMaskPx, 367044),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
+            (HitExtentsComputed, 2),
+        ],
     );
 }
 

@@ -2328,6 +2328,25 @@ impl NodeTree {
         self.paint_dirty_nodes.push(id);
     }
 
+    /// `id`'s `scroll_offset` has just been written, and nothing else about
+    /// it: mark it paint-dirty (the whole container repaints, as its content
+    /// and its scrollbar thumb both moved) and tell the hit cache.
+    ///
+    /// This is [`Self::mark_paint_dirty`] with the hit cache's *scroll*
+    /// invalidation in place of the blanket one — the generation still moves,
+    /// but the extents inside the scroller survive (#911). Every
+    /// scroll-offset write that changes nothing else should come through
+    /// here; one that changes more (a layout, a style) must invalidate in
+    /// full as well.
+    pub fn mark_scrolled(&mut self, id: RawNodeId) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.dirty.insert(DirtyFlags::PAINT);
+            self.hit_cache.invalidate_scroll(id);
+            self.dirty_nodes.insert(id);
+            self.paint_dirty_nodes.push(id);
+        }
+    }
+
     /// The paint that consumed `paint_dirty_nodes` has run: forget them, and
     /// record that each one's pixels are now at its current box
     /// (`prev_layout = layout`, see [`Node::prev_layout`]).
