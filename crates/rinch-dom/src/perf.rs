@@ -249,7 +249,9 @@ define_counters! {
     /// Software painter: clip masks pushed.
     ClipMasks = "clip_masks",
     /// Software painter: mask pixels those clips were filled and intersected
-    /// over — each clip's own bounds, not the surface.
+    /// over — each clip's own bounds, not the surface; none for a clip that
+    /// fully covers the clip enclosing it, and no intersection for one inside
+    /// the enclosing clip's fully covered area (#907).
     ClipMaskPx = "clip_mask_px",
     /// Software painter: opacity layers opened.
     PaintLayers = "paint_layers",
