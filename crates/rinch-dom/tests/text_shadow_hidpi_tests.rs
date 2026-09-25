@@ -378,8 +378,9 @@ fn opacity_layer_bounds_reach_the_scaled_shadow() {
 
 /// `TEXT` has no mark-positioned glyph: every `glyph.y` is 0 and `glyph.x`
 /// is 0 for plain Latin shaping, so the fixtures above cannot see the scale on
-/// either (the fixed-point trap `glyph_y_ydown_tests` documents). `a` + U+0301
-/// + U+0308 shapes the diaeresis as a separate glyph at a non-zero GPOS offset.
+/// either (the fixed-point trap `glyph_y_ydown_tests` documents). `a` followed
+/// by U+0301 and U+0308 shapes the diaeresis as a separate glyph at a non-zero
+/// GPOS offset.
 /// Scale 0.75 is included: the shadow pass has no `max` to hide behind below 1.
 ///
 /// Kills: `glyph.y` unscaled in the shadow pass, `glyph.x` unscaled, and the
