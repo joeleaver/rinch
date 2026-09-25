@@ -918,7 +918,6 @@ mod tests {
 
         let lines = Arc::new(Mutex::new(Vec::new()));
         tracing::subscriber::with_default(Capture(lines.clone()), f);
-        let out = lines.lock().unwrap().clone();
-        out
+        lines.lock().unwrap().clone()
     }
 }

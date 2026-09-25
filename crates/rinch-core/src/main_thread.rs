@@ -300,9 +300,8 @@ mod tests {
         // Parked during a render: owned by `component`. Its body synchronously
         // drives the ownerless resume, so that resume is nested in `owner.run`.
         let component = Scope::new();
-        let owned = component.run(|| {
-            park_main_callback::<()>(move |()| resume_main_callback(ownerless, ()))
-        });
+        let owned = component
+            .run(|| park_main_callback::<()>(move |()| resume_main_callback(ownerless, ())));
 
         let before = component.owned_counts().signals;
         resume_main_callback(owned, ());
