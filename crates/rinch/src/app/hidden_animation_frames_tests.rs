@@ -25,29 +25,30 @@
 //! the_app_go_idle` is its pin.
 //!
 //! A **`visibility: hidden`** panel *is* being rendered — it keeps its box, it
-//! transitions, it is merely not painted — so its `Loader` goes on animating and
-//! goes on asking for frames. That is browser-correct (measured in Chrome) and
-//! it is the same answer the transition rule beside it gives, but it is not
-//! free, and since **#751** it is reachable through a shipped component: the
-//! closed `Drawer`'s root is `visibility: hidden` now, precisely so its panel
-//! can transition. Measured here, software backend, 804x600, 20 idle frames:
+//! transitions, it is merely not painted — so its `Loader`'s animation stays
+//! registered, and runs unless something pauses it. That is browser-correct
+//! (measured in Chrome) and it is the same answer the transition rule beside it
+//! gives, but running it is not free, and since **#751** it is reachable through
+//! a shipped component: the closed `Drawer`'s root is `visibility: hidden` now,
+//! precisely so its panel can transition. Measured here before #912, software
+//! backend, 804x600, 20 idle frames:
 //!
 //! | closed-state spelling | `active_animations` | idle frames asking to redraw | ms per tick+paint |
 //! |---|---|---|---|
 //! | `display: none` | 0 | 0 / 20 | 0.001 |
-//! | `visibility: hidden` (the `Drawer` today) | 1 | 20 / 20 | 2.53 |
+//! | `visibility: hidden`, running (the `Drawer` before #912) | 1 | 20 / 20 | 2.53 |
+//! | `visibility: hidden`, paused (the `Drawer` since #912) | 1 | 0 / 20 | — |
 //! | open drawer, either spelling | 1 | 20 / 20 | 8.8 – 9.7 |
 //!
-//! That cost is **accepted, not overlooked**. Refusing an animation to a
-//! `visibility: hidden` box would put desktop at odds with both the browser and
-//! the transition rule next to it, for one component's benefit. The cure belongs
-//! to the component — `animation-play-state: paused` on a closed overlay's
-//! subtree — and since **#763** it works: a paused animation asks for no frames.
-//! `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it`
-//! applies it from the app. `Drawer`'s own closed rule does not declare it yet;
-//! when it does,
-//! `a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered`
-//! becomes the fixture that has to change.
+//! Refusing an animation to a `visibility: hidden` box would put desktop at odds
+//! with both the browser and the transition rule next to it, for one
+//! component's benefit. The cure belongs to the component —
+//! `animation-play-state: paused` on a closed overlay's subtree — which works
+//! since **#763** (a paused animation asks for no frames) and which the
+//! component library declares since **#912**: the closed `Drawer`, a closed
+//! `Popover`'s dropdown and an unhovered `HoverCard`'s dropdown pause every
+//! animation beneath them. The fixtures in the second half of this file pin
+//! each, with the shipped stylesheet and nothing else.
 //!
 //! # Mutants, and what kills each
 //!
@@ -60,7 +61,10 @@
 //! | the gate never refuses (i.e. `main`) | `a_loader_in_a_display_none_panel_lets_the_app_go_idle` and `opening_a_display_none_panel_starts_the_loader_spinning` |
 //! | the gate reads the node's **own** display only | the same two — the `Loader` is not the hidden node, the panel two levels above its oval is |
 //! | the gate checks the **immediate parent** instead of walking | the same two, for the same reason, and they are two of the three fixtures in the whole scope that kill it |
-//! | `visibility: hidden` folded into "not rendered" | `a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered` and `opening_the_drawer_does_not_restart_a_loader_that_never_stopped` |
+//! | `visibility: hidden` folded into "not rendered" | `a_loader_in_a_closed_drawer_is_paused_and_lets_the_app_idle` and the popover / hover-card fixtures (their "registered" preconditions) |
+//! | #912's closed rules removed (`.rinch-drawer__root--hidden *` etc. → a selector that matches nothing) | `a_loader_in_a_closed_drawer_is_paused_and_lets_the_app_idle`, `an_app_declared_animation_in_a_closed_drawer_is_paused_too`, `a_loader_in_a_closed_popover_is_paused_until_it_opens`, `a_loader_in_an_unhovered_hover_card_is_paused_until_hovered` (each its own overlay) |
+//! | a closed rule that pauses **always** (its `--hidden` / `:not(…)` dropped) | `opening_the_drawer_resumes_its_loader`, `a_loader_in_an_open_drawer_keeps_asking_for_frames`, and the popover / hover-card fixtures' reopen halves |
+//! | the drawer rule without `!important` | `an_app_declared_animation_in_a_closed_drawer_is_paused_too`, alone — the shipped `.rinch-loader__oval` ties on specificity and is declared *before* the drawer sheet, so the `Loader` fixtures pass without it |
 //!
 //! `a_loader_in_an_open_drawer_keeps_asking_for_frames` kills none of them, by
 //! design: it is the positive control every zero above rests on, and it passes

@@ -230,8 +230,8 @@ PRs do not collide in one file.
 - `crates/rinch/src/app/perf_regression_tests.rs` drives a real `RinchApp` the
   way the desktop loop does (`AboutToWait`, then the paint the loop asked for):
   - idle: a plain page, a focused `<input>`, a paused animation, a running
-    `Loader`, and a `Loader` in a closed `Drawer`, with and without the pause
-    rule;
+    `Loader`, and a `Loader` in a closed `Drawer` (which idles: the drawer's
+    closed rule pauses it, #912);
   - keyed `for` over 200 rows: move one row, insert one, remove one, and
     replace them all;
   - a wheel scroll over 500 rows;

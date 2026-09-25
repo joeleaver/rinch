@@ -57,7 +57,7 @@
 //! | a node's entries are judged by its **first** animation only | round 1: 2 — `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_finished_transition_does_not_displace_a_paused_sample` |
 //! | the tick **skips** a paused animation instead of re-applying its sample | round 1: `a_finished_transition_does_not_displace_a_paused_sample`, **alone** |
 //! | resuming does not move the start time (the clock jumps the pause) | round 1: `a_resumed_animation_continues_from_where_it_was_paused`, **alone** |
-//! | resuming restarts the animation from t=0 | 3: `a_resumed_animation_continues_from_where_it_was_paused`, `an_animation_paused_inside_its_delay_keeps_its_place`, shell `a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it` |
+//! | resuming restarts the animation from t=0 | 3: `a_resumed_animation_continues_from_where_it_was_paused`, `an_animation_paused_inside_its_delay_keeps_its_place`, shell `a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused` |
 
 #![cfg(feature = "software-renderer")]
 

@@ -3527,13 +3527,24 @@ Three things it deliberately does not do.
   `forwards`/`both` animation is the same shape (**#782**): the tick that
   finishes it writes the fill and dirties the node once
   (`ActiveAnimation::fill_settled`), and after that it is kept, re-applied and
-  not counted. `Drawer`'s own closed rule does **not** declare the pause yet, so
-  a `Loader` in a closed `Drawer` still keeps the app rendering unless the app
-  pauses it. The three `Loader` variants animate three different elements, so
-  the rule has to name all of them —
-  `.rinch-drawer__root--hidden .rinch-loader__oval, .rinch-drawer__root--hidden .rinch-loader__bar, .rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }`
-  (`app/paused_animation_frames_tests.rs` installs exactly that list and
-  mounts the default oval).
+  not counted. **The component library declares the pause itself** (#912):
+  `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
+  subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
+  `animation-play-state: paused !important` — every descendant (and its
+  `::before`/`::after`, which only the web animates today: #925) rather than a
+  list of known spinners, and `!important` because the `animation` shorthand
+  resets the play state and `.rinch-loader__oval` ties with the `*` rule on
+  specificity. The popover and hover-card selectors use a complex `:not()` that
+  is the exact complement of the rule making the dropdown visible (Stylo and
+  Chrome both match it). A closed drawer holding a `Loader` now asks for no
+  frames and resumes where it paused on open — pinned by
+  `perf_regression_tests::a_loader_in_a_closed_drawer_idles` and
+  `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused`.
+  A browser stops the spinner during a popover's or hover card's 150ms
+  fade-out, since the pause lands when the dropdown starts to close.
+  `LoadingOverlay` is the other `visibility: hidden` overlay and declares no
+  pause: it takes no children and its own loader has no animated child (#924);
+  fixing that needs the pause too.
 - **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
   unlink a node from its old parent with the same lines `remove_child` uses, but
   it is back in the document before the call returns — so a row that was
