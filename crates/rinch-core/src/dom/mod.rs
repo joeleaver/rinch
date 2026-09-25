@@ -604,7 +604,17 @@ impl NodeHandle {
         if let Some(doc) = self.accessed_doc() {
             let parent_id = doc.borrow().parent_node(self.node_id);
             if let Some(parent_id) = parent_id {
-                let next = doc.borrow().next_sibling(self.node_id);
+                let mut next = doc.borrow().next_sibling(self.node_id);
+                // Already right after `self`: the anchor is then `new_node`'s
+                // own next sibling — the DOM's `insertBefore` rule ("if child
+                // is node, set child to node's next sibling"). Handed to a
+                // backend as `insert_before(n, n)`, the mock dropped the node
+                // from its parent's child list and rinch-dom appended it at the
+                // end; the browser alone got it right (issue #356, where a
+                // parked row made the shape reachable from a `for` reconcile).
+                if next == Some(new_node.node_id) {
+                    next = doc.borrow().next_sibling(new_node.node_id);
+                }
                 if let Some(next_id) = next {
                     doc.borrow_mut()
                         .insert_before(parent_id, new_node.node_id, next_id);
@@ -1145,6 +1155,42 @@ where
 mod tests {
     use super::*;
     use mock::MockDomDocument;
+
+    /// `a.insert_after(b)` with `b` already `a`'s next sibling leaves `b` where
+    /// it is (issue #356) — the DOM's `insertBefore` rule. Handed to the mock as
+    /// `insert_before(parent, b, b)` it unlinked `b` and then could not find the
+    /// reference, dropping `b` from the child list while keeping its parent
+    /// pointer. `rinch-dom`'s twin is `insert_after_in_place_tests`.
+    #[test]
+    fn inserting_a_node_after_the_node_it_already_follows_leaves_it_there() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let weak = Rc::downgrade(&doc);
+        let (a, b) = {
+            let mut d = doc.borrow_mut();
+            let body = d.body();
+            let mut ids = Vec::new();
+            for name in ["a", "b", "c"] {
+                let id = d.create_element("div");
+                d.set_attribute(id, "data-name", name);
+                d.append_child(body, id);
+                ids.push(id);
+            }
+            (ids[0], ids[1])
+        };
+        let a = NodeHandle::new(a, weak.clone());
+        let b = NodeHandle::new(b, weak);
+
+        a.insert_after(&b);
+
+        let names: Vec<String> = a
+            .parent_node()
+            .expect("a is mounted")
+            .children()
+            .iter()
+            .filter_map(|n| n.get_attribute("data-name"))
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+    }
 
     /// A falsey write of `checked` / `selected` reaches the backend even when
     /// the content attribute is already absent (issue #687).

@@ -46,6 +46,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::dom::{NodeHandle, RenderScope};
+use crate::for_loop::{ParkedRow, release_parked};
 use crate::reactive::{Effect, Signal};
 
 /// State for a single rendered item in the virtual list.
@@ -236,30 +237,24 @@ where
 
         // Remove out-of-range items.
         //
-        // Their scopes are parked and disposed at the very end of this closure,
-        // once `state` and `old_keys` are no longer borrowed. Disposal runs user
-        // code — cleanups, handler-closure drops, signal value drops (issue
-        // #141) — and any of it that writes a signal flushes effects
-        // synchronously, re-entering this closure and panicking on the
-        // outstanding `RefMut`s.
-        let mut doomed: Vec<RenderScope> = Vec::new();
+        // Each row — node and scope together — is parked and torn down at the
+        // very end of this closure, once `state` and `old_keys` are no longer
+        // borrowed. Disposal runs user code — cleanups, handler-closure drops,
+        // signal value drops (issue #141) — and any of it that writes a signal
+        // flushes effects synchronously, re-entering this closure and panicking
+        // on the outstanding `RefMut`s. The node goes *after* its scope is
+        // disposed, so a row's cleanups still see a live row (issue #356).
+        // Until then it stays in the window; the re-append below moves every
+        // live row behind it, so it changes none of their placements.
+        let mut doomed: Vec<ParkedRow> = Vec::new();
         for k in &to_remove {
             if let Some(item_state) = state.remove(k) {
                 // Ownership decides the verb (issue #719): a row the `view`
                 // closure built is gone for good — scrolling back to this key
                 // renders it afresh — so the backend lets go of it; a row a
-                // *memoising* `view` handed back is only detached. Read before
-                // the scope is parked.
-                if item_state
-                    .scope
-                    .as_ref()
-                    .is_some_and(|s| s.created(item_state.node.node_id()))
-                {
-                    item_state.node.discard();
-                } else {
-                    item_state.node.remove();
-                }
-                doomed.extend(item_state.scope);
+                // *memoising* `view` handed back is only detached. Decided now,
+                // before the scope is disposed.
+                doomed.push(ParkedRow::new(item_state.node, item_state.scope));
             }
         }
 
@@ -380,12 +375,15 @@ where
         // Update keys order
         *old_keys = new_keys;
 
-        // Borrows released before the parked scopes are torn down.
+        // Borrows released before the parked rows are torn down.
         drop(state);
         drop(old_keys);
-        for scope in doomed {
-            scope.dispose();
-        }
+        release_parked(doomed, |node| {
+            rendered
+                .borrow()
+                .values()
+                .any(|row| row.node.node_id() == node)
+        });
 
         // The item collection is dropped last, and untracked, matching
         // `for_each_dom`'s reconcile tail: dropping it drops the user's data,
