@@ -3415,7 +3415,15 @@ level down.
 
 Two ordering facts that fall out and are easy to get wrong: the verb is chosen
 **before** the branch scope is disposed, so a cleanup that re-parents a
-scope-built node during disposal cannot rescue it; and the scratch container is
+scope-built node during disposal cannot rescue it — and it is *applied*
+**after**, so a cleanup still reads its own node live and mounted. That holds for
+all four helpers; a `for` or `virtual_list` row got it with #356, whose rows used
+to be discarded mid-pass with the scope disposed at the end, which on web left
+the row's cleanup reading `None` off a retired node. A row cannot be disposed
+where the reconcile takes it out (disposal runs user code under the list's
+`RefMut`s, #141), so it is **parked** — node, verb, scope — and torn down after
+the borrows are released (`for_loop::release_parked`), skipping a node a live row
+holds again. And the scratch container is
 released **after** `Component::render`, so the children it adopted have been
 re-parented out by then.
 
