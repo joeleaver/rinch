@@ -1527,6 +1527,39 @@ mod tests {
         );
     }
 
+    /// `backface-visibility: hidden` on a box whose own transform turns its
+    /// back to the viewer (#997): Chrome 153's `elementFromPoint` finds neither
+    /// it nor anything in it. The same box turned only 80° is hit.
+    #[test]
+    fn a_hidden_backface_subtree_is_unhittable() {
+        let (mut doc, container) = container_doc();
+        let turned = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 100px; width: 100px; height: 40px; \
+             transform: rotateY(180deg); backface-visibility: hidden",
+        );
+        let inside = child_of(
+            &mut doc,
+            turned,
+            "width: 100px; height: 40px; transform: rotateY(180deg)",
+        );
+        let edge_on = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 300px; top: 100px; width: 100px; height: 40px; \
+             transform: rotateY(80deg); backface-visibility: hidden",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        for (x, y) in [(150.0, 120.0), (110.0, 105.0), (190.0, 135.0)] {
+            let hit = hit_test(&doc.tree, x, y);
+            assert_eq!(hit, Some(container.0), "({x}, {y}) falls through");
+            assert_ne!(hit, Some(inside.0));
+        }
+        assert_eq!(hit_test(&doc.tree, 350.0, 120.0), Some(edge_on.0));
+    }
+
     /// `position: fixed` inside a transformed ancestor. Per CSS a transform
     /// makes a containing block for fixed descendants, but rinch models no
     /// containment: `out_of_flow` answers "the viewport" for every fixed box and

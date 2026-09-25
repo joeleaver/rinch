@@ -10,7 +10,9 @@ pub mod types;
 
 pub use apply::apply_value_to_style;
 pub use diff::diff_animatable;
-pub use transform::{Affine, TransformOp, compose, compose_matrices, interpolate_lists};
+pub use transform::{
+    Affine, TransformOp, compose, compose_about_origin_z, compose_matrices, interpolate_lists,
+};
 pub use types::*;
 
 use std::collections::HashMap;

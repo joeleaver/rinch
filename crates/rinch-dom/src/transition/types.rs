@@ -456,14 +456,19 @@ impl AnimatableTransform {
     /// a transform even on the frame where it happens to compose to the
     /// identity, and the flag also decides whether the element establishes a
     /// stacking context — which must not flicker across the animation.
-    pub fn to_style(&self) -> TransformValue {
-        let c = self.composed();
+    ///
+    /// `origin_z` is the element's `transform-origin` z in CSS px, which the
+    /// composed matrix has to be taken about (see
+    /// [`compose_about_origin_z`](super::compose_about_origin_z)).
+    pub fn to_style(&self, origin_z: f64) -> TransformValue {
+        let (c, back_facing) = super::compose_about_origin_z(&self.functions, origin_z);
         TransformValue {
             matrix: c.matrix,
             is_identity: false,
             pct_translate_w: c.pct_w,
             pct_translate_h: c.pct_h,
             functions: self.functions.clone(),
+            back_facing,
         }
     }
 

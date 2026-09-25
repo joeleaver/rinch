@@ -3997,8 +3997,16 @@ like Chrome's, takes the shorter arc), `perspective(d)` as `1/d`, and
 `matrix3d()` pairs with `matrix3d()` only. Not Chrome's: the `perspective` and
 `transform-style` properties do nothing; a projective result (`perspective(200px)
 rotateY(30deg)`, a trapezoid) loses its `m14`/`m24`; a mismatched remainder
-with a 3D function in it is decomposed flat (#989); and `transform-origin`'s z
-and `backface-visibility: hidden` are ignored (#997).
+with a 3D function in it is decomposed flat (#989). `transform-origin`'s z is
+applied before the flattening (`transition::compose_about_origin_z`: the list is
+composed as `M · T(0, 0, -z)`, the x and y still at paint), so `rotateY(45deg)`
+about `50% 50% 100px` swings 56px left as in Chrome; and `backface-visibility:
+hidden` on a box whose **own** transform turns its back to the viewer (Chrome's
+`IsBackFaceVisible` on the 4×4 — `scaleX(-1)` is a mirror, not a turn;
+`TransformValue::back_facing`) composes it to the zero matrix, so it and its
+subtree are neither drawn nor hit — except a `position: fixed` descendant,
+which rinch does not contain in a transformed ancestor and still draws (#386,
+#415) (#997).
 `crates/rinch-dom/tests/transform_3d_tests.rs` pins Chrome 153.
 
 ### Native Control Flow (if / for / match)

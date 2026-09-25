@@ -182,7 +182,13 @@ impl ComputedStyle {
             visibility: visibility_from_stylo(&inherited_box.visibility),
 
             // Transforms
-            transform: transform_from_stylo(&box_style.transform),
+            transform: transform_from_stylo(
+                &box_style.transform,
+                box_style.transform_origin.depth.px() as f64,
+            ),
+            transform_origin_z: box_style.transform_origin.depth.px(),
+            backface_visibility_hidden: box_style.backface_visibility
+                == style::properties::longhands::backface_visibility::computed_value::T::Hidden,
             transform_origin_x: transform_origin_component_from_stylo(
                 &box_style.transform_origin.horizontal,
             ),
