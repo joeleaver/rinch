@@ -736,3 +736,62 @@ fn a_hoisted_absolute_in_a_text_scroller_is_its_content() {
         );
     }
 }
+
+/// Layout's own clamp (`clamp_scroll_offsets`) keeps an offset the range
+/// allows. It used to measure a third copy of the walk — the direct
+/// `children` only, no box tree, no `display: contents` descent, no inline
+/// layout — so any layout pass took back a range `content_extents` granted:
+/// scrolled to the bottom of #995's log-panel shape and then relaid out by an
+/// unrelated sibling's resize, the offset snapped from 150 to 50, and a text
+/// scroller's (#396, #873) from 100 to 0. Each shape: scroll to the bottom,
+/// resize a sibling, relayout; the offset must be where it was.
+#[test]
+fn an_unrelated_layout_pass_keeps_an_offset_at_the_bottom_of_the_range() {
+    let shapes: [(&str, Vec<Mixed>, f64); 3] = [
+        (
+            "#995 mixed",
+            vec![Mixed::Text(WORD5), Mixed::Block, Mixed::Text(WORD5)],
+            150.0,
+        ),
+        (
+            "text in a contents span",
+            vec![Mixed::Span(
+                "display: contents",
+                vec![Mixed::Text(WORD5), Mixed::Text(WORD5)],
+            )],
+            100.0,
+        ),
+        (
+            "direct text",
+            vec![Mixed::Text(WORD5), Mixed::Text(WORD5)],
+            100.0,
+        ),
+    ];
+    for (name, pieces, max) in shapes {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 200px; height: 100px; overflow: auto; font-size: 16px; line-height: 20px",
+        );
+        doc.append_child(body, container);
+        for p in &pieces {
+            build_mixed(&mut doc, container, p);
+        }
+        let sibling = doc.create_element("div");
+        doc.set_attribute(sibling, "style", "width: 100px; height: 10px");
+        doc.append_child(body, sibling);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        assert_eq!(doc.scroll_height(container) - 100.0, max, "{name}: range");
+        doc.set_scroll_top(container, max);
+        doc.set_attribute(sibling, "style", "width: 150px; height: 10px");
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        assert_eq!(
+            doc.scroll_top(container),
+            max,
+            "{name}: an unrelated layout pass kept the offset"
+        );
+    }
+}
