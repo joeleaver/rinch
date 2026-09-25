@@ -2167,3 +2167,48 @@ fn a_combined_duration_of_zero_or_less_starts_no_transition() {
     );
     assert!(transitioning.is_empty());
 }
+
+// ── visibility: the discrete-with-a-twist rule (#759) ─────────────────
+
+/// css-values-4: with a `visible` end, every progress strictly between 0 and 1
+/// is `visible`, and 0 and 1 are the endpoints. Sampled at 0.1 and 0.9, where
+/// the plain discrete rule (flip at 50%) gives the other answer.
+#[test]
+fn visibility_with_a_visible_end_is_visible_strictly_inside() {
+    use VisibilityValue::{Hidden, Visible};
+    assert_eq!(interpolate_visibility(Visible, Hidden, 0.0), Visible);
+    assert_eq!(interpolate_visibility(Visible, Hidden, 0.9), Visible);
+    assert_eq!(interpolate_visibility(Visible, Hidden, 1.0), Hidden);
+    assert_eq!(interpolate_visibility(Hidden, Visible, 0.0), Hidden);
+    assert_eq!(interpolate_visibility(Hidden, Visible, 0.1), Visible);
+    assert_eq!(interpolate_visibility(Hidden, Visible, 1.0), Visible);
+}
+
+/// An overshooting curve maps outside `0..=1` to the closer endpoint.
+#[test]
+fn visibility_outside_the_unit_interval_is_the_closer_endpoint() {
+    use VisibilityValue::{Hidden, Visible};
+    assert_eq!(interpolate_visibility(Visible, Hidden, 1.2), Hidden);
+    assert_eq!(interpolate_visibility(Hidden, Visible, -0.2), Hidden);
+}
+
+/// Without a `visible` end it is the ordinary discrete rule: flip at 50%.
+#[test]
+fn visibility_without_a_visible_end_flips_half_way() {
+    use VisibilityValue::{Collapse, Hidden};
+    assert_eq!(interpolate_visibility(Hidden, Collapse, 0.4), Hidden);
+    assert_eq!(interpolate_visibility(Hidden, Collapse, 0.6), Collapse);
+}
+
+/// And through `AnimatableValue`, which is what a running transition calls.
+#[test]
+fn visibility_interpolates_through_animatable_value() {
+    let from = AnimatableValue::Visibility(VisibilityValue::Visible);
+    let to = AnimatableValue::Visibility(VisibilityValue::Hidden);
+    match from.interpolate(&to, 0.9) {
+        Some(AnimatableValue::Visibility(v)) => assert_eq!(v, VisibilityValue::Visible),
+        other => panic!("expected a visibility value, got {other:?}"),
+    }
+    assert!(to.same_computed_value(&AnimatableValue::Visibility(VisibilityValue::Hidden)));
+    assert!(!to.same_computed_value(&from));
+}
