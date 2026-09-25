@@ -1873,11 +1873,11 @@ fn an_inline_flex_label_paints_the_same_from_its_cached_layout() {
 /// A finished `transition: color` on the element holding a text leaf, read off
 /// the pixels against a document built red. A transition tick writes
 /// `computed_style` without a cascade, so it reaches none of the cascade's
-/// text invalidation; a leaf painted from a cached layout keeps the brush it
-/// was measured with unless the tick drops it. Before #904 an `inline-flex`
-/// label had no cached layout — paint shaped it every frame from the live
-/// style — so caching it must not freeze its colour (the flex-row twin was
-/// frozen already, #679).
+/// text invalidation, and a leaf's cached layout still holds the brush it was
+/// measured with. Paint colours the leaf from the live style instead (#904).
+/// Before #904 an `inline-flex` label had no cached layout — paint shaped it
+/// every frame from the live style — so caching it must not freeze its colour
+/// (the flex-row twin was frozen already, #679).
 fn a_finished_colour_transition_reaches_the_label(kind: &str) {
     let css = ".x { transition: color 150ms linear; } .x.hot { color: rgb(220, 0, 0); }
         .flex { display: flex; } .iflex { display: inline-flex; }";
