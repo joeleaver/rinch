@@ -406,8 +406,8 @@ fn flow_subtree_may_contain(
 ///
 /// Memoised in the tree's hit cache until something invalidates it. The one
 /// input that is not relative to `id`'s own origin is its **own** scroll offset
-/// — a descendant's extent never reads an ancestor's — which is what lets a
-/// scroll keep every extent below the scroller and drop only the chain above it
+/// — a descendant's extent never reads an ancestor's — and only when `id` does
+/// not clip, which is what lets a scroll of a box that clips keep every extent
 /// (`HitCache::invalidate_scroll`, #911).
 fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::Extent {
     if let Some(e) = tree.hit_cache.extent(id) {
@@ -431,9 +431,6 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::E
             let (dx, dy) = rinch_dom::paint::ifc_content_box_offset(tree, child);
             let cx = child.layout.x + dx - sx;
             let cy = child.layout.y + dy - sy;
-            // `id`'s extent now depends on `child_id`'s: a scroll inside the
-            // child drops this one too (`HitCache::invalidate_scroll`, #911).
-            tree.hit_cache.note_extent_parent(child_id, id);
             let [c0, c1, c2, c3] = flow_extent(tree, child_id);
             e[0] = e[0].min(cx + c0);
             e[1] = e[1].min(cy + c1);
