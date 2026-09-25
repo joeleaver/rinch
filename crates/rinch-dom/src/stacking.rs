@@ -304,9 +304,7 @@ impl Deref for PaintOrder {
 /// so its in-flow children painted over later siblings they sit under in
 /// Chrome 153.
 fn is_positioned_z_auto(node: &Node) -> bool {
-    node.computed_style.display != crate::computed_style::DisplayValue::Contents
-        && node.computed_style.position != PositionValue::Static
-        && node.computed_style.z_index.is_none()
+    node.box_position() != PositionValue::Static && node.computed_style.z_index.is_none()
 }
 
 /// Whether `node` paints at the nearest stacking-context ancestor's ordered

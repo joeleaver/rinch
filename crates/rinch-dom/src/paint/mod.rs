@@ -466,7 +466,7 @@ impl PaintedStyle {
     fn now(node: &Node) -> Self {
         Self {
             clips: node.clips_overflow(),
-            position: node.computed_style.position,
+            position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }
     }
@@ -1531,7 +1531,7 @@ fn position_and_transform_in(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         any_transform |= !frame.is_identity(node);
-        if node.computed_style.position == PositionValue::Fixed {
+        if node.box_position() == PositionValue::Fixed {
             hoisted_fixed = true;
             break;
         }
@@ -1555,7 +1555,7 @@ fn position_and_transform_in(
             let (nx, ny) = painted_origin_step(tree, node, x, y, scale, frame);
             x = nx;
             y = ny;
-            if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
+            if node.box_position() == PositionValue::Fixed || id == tree.body_id {
                 break;
             }
             // The **box** tree (#566): a run's member is positioned by the
@@ -1580,7 +1580,7 @@ fn position_and_transform_in(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         chain.push(id);
-        if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
+        if node.box_position() == PositionValue::Fixed || id == tree.body_id {
             break;
         }
         current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);

@@ -1339,6 +1339,26 @@ impl Node {
         false
     }
 
+    /// The `position` this element's **box** is placed, anchored and stacked
+    /// with: its computed `position`, except `static` for a `display:
+    /// contents` element, which generates no box (css-display-3 §2.5) and so
+    /// has nothing for `position` to apply to (#1038).
+    ///
+    /// Ask this, not `computed_style.position`, wherever the answer decides
+    /// where a box — or anything under it — is anchored: a coordinate walk that
+    /// stops at a `fixed` ancestor read a contents wrapper's `0,0` layout as a
+    /// viewport position and put its whole subtree at the window's origin,
+    /// where Chrome 153 lays it out in its parent. The computed value itself is
+    /// untouched (`get_computed_styles` reports `fixed`, as Chrome's
+    /// `getComputedStyle` does).
+    pub fn box_position(&self) -> crate::computed_style::PositionValue {
+        if self.computed_style.display == crate::computed_style::DisplayValue::Contents {
+            crate::computed_style::PositionValue::Static
+        } else {
+            self.computed_style.position
+        }
+    }
+
     /// Whether this box clips content that overflows it.
     ///
     /// **The** clip predicate: see [`crate::paint::clip`] for why it reads both
@@ -2678,7 +2698,7 @@ impl PaintedState {
             ink: crate::paint::own_ink_outsets(cs),
             transform,
             clips: node.clips_overflow(),
-            position: cs.position,
+            position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }
     }

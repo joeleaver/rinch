@@ -116,7 +116,7 @@ fn descend(
     vx: f32,
     vy: f32,
 ) -> Option<Frame> {
-    let is_fixed = node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed;
+    let is_fixed = node.box_position() == rinch_dom::computed_style::PositionValue::Fixed;
     let (x, y) = if is_fixed { (vx, vy) } else { (x, y) };
     let (nx, ny) = if is_fixed {
         (node.layout.x, node.layout.y)
