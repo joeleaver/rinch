@@ -2740,16 +2740,7 @@ where
     // through the RenderSurface compositing pipeline.
     #[cfg(feature = "video")]
     {
-        rinch_video::set_frame_sink_factory(|viewport_id: &str| {
-            let handle = crate::render_surface::create_video_surface(viewport_id);
-            let writer = handle.writer();
-            // Keep the handle alive by leaking it — the surface lives for
-            // the lifetime of the video player.
-            std::mem::forget(handle);
-            std::sync::Arc::new(move |pixels: &[u8], w: u32, h: u32| {
-                writer.submit_frame(pixels, w, h);
-            })
-        });
+        rinch_video::set_frame_sink_factory(crate::render_surface::create_video_frame_sink);
     }
 
     // Start debug IPC server if feature is enabled (disable with RINCH_DEBUG=0)
@@ -2867,14 +2858,7 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     // through the RenderSurface compositing pipeline.
     #[cfg(feature = "video")]
     {
-        rinch_video::set_frame_sink_factory(|viewport_id: &str| {
-            let handle = crate::render_surface::create_video_surface(viewport_id);
-            let writer = handle.writer();
-            std::mem::forget(handle);
-            std::sync::Arc::new(move |pixels: &[u8], w: u32, h: u32| {
-                writer.submit_frame(pixels, w, h);
-            })
-        });
+        rinch_video::set_frame_sink_factory(crate::render_surface::create_video_frame_sink);
     }
 
     #[cfg(feature = "debug")]

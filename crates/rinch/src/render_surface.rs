@@ -666,6 +666,21 @@ pub fn create_video_surface(viewport_name: &str) -> RenderSurfaceHandle {
     create_named_surface(viewport_name, true)
 }
 
+/// The frame sink a **video player** delivers decoded frames through: a video
+/// surface named `viewport_id` plus a closure that submits into it.
+///
+/// This is what the desktop shell hands `rinch_video::set_frame_sink_factory`.
+pub fn create_video_frame_sink(viewport_id: &str) -> Arc<dyn Fn(&[u8], u32, u32) + Send + Sync> {
+    let handle = create_video_surface(viewport_id);
+    let writer = handle.writer();
+    // Keep the handle alive by leaking it — the surface lives for
+    // the lifetime of the video player.
+    std::mem::forget(handle);
+    Arc::new(move |pixels: &[u8], w: u32, h: u32| {
+        writer.submit_frame(pixels, w, h);
+    })
+}
+
 fn create_named_surface(viewport_name: &str, is_video: bool) -> RenderSurfaceHandle {
     let id = next_surface_id();
     let handle = new_surface_handle(id, viewport_name.to_string(), is_video);
@@ -1927,3 +1942,7 @@ mod compositor_routing_tests {
         unregister_render_surface(surface.id());
     }
 }
+
+#[cfg(all(test, feature = "video"))]
+#[path = "video_surface_lifetime_tests.rs"]
+mod video_surface_lifetime_tests;
