@@ -26,7 +26,13 @@ fn reference(layout: &mut parley::Layout<Brush>, text: &str, max: f32) {
     // the one change: a widened line can end at a hang again (an NBSP after
     // its spaces, which parley hangs itself), and is then widened further.
     while let Some(fix) = first_unhung(layout, text, widened.last().map_or(0, |&(i, _)| i)) {
-        if widened.last().is_some_and(|&(i, _)| i == fix.0) {
+        if let Some(&(i, m)) = widened.last()
+            && i == fix.0
+        {
+            // Widening it again took nothing more in: it would forever.
+            if fix.1 <= m {
+                break;
+            }
             widened.pop();
         }
         widened.push(fix);
