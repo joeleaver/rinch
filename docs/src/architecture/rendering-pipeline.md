@@ -183,11 +183,18 @@ deviation `blur / 2` out to three of them, and handed to the painter as
 `Painter::draw_alpha_mask`: the same mask to Vello (as an image) and to
 tiny-skia (a solid fill through a pooled surface mask). Blurred masks are kept
 between paints (32 MB, least recently used out), keyed by a hash of every call
-that rasterised them, so a repaint of an unchanged page rasterises and blurs
-nothing. The Vello-only build (`embed` without `software-renderer`) has no
-rasteriser and draws a kernel of at most 13 copies in `BlendMode::Plus` layers
-inside one `push_isolated_layer`, at most `TAP_GLYPH_BUDGET` glyph copies per
-paint; past it a shadow is drawn unblurred. Cost, 40 paragraphs of 14px text at
+that rasterised them, with the text's sub-pixel phase snapped to a quarter
+pixel. A repaint of a shadow that is wholly on screen and unchanged, or has
+moved by whole pixels, or to a quarter-pixel phase it has already been drawn
+at, rasterises nothing; a shadow the surface, a clip or the damage crops is
+rasterised again whenever the crop moves relative to it (a line scrolling
+across a scroller's edge), and so is any shadow whose text or style changed.
+`text_shadow_masks_rasterised` counts what a paint rasterised. The Vello-only
+build (`embed` without `software-renderer`) has no rasteriser and draws a
+kernel of copies in `BlendMode::Plus` layers inside one
+`push_isolated_layer`: 13 taps, a 5-tap cross or none, chosen by the shadow's
+own glyph count against `TAP_GLYPHS_PER_SHADOW`, with `TAP_GLYPH_BUDGET` as a
+per-paint crash guard. Cost, 40 paragraphs of 14px text at
 1200x800 with `0 1px 4px`: 175M instructions for a first paint and 61M for a
 repaint, against 81M for the same page with an unblurred shadow
 (`dom::text_shadow_paint`).

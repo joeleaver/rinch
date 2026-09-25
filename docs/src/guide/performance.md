@@ -355,13 +355,18 @@ before you read the reactive counters (see the limits above).
 
 A `text-shadow` with a blur radius is rasterised into a coverage mask, blurred
 and filled once per shadowed block of text (#980). The masks are kept between
-paints, so a repaint of text that has not changed pays only the fill. The first
+paints, so a repaint of shadowed text that has not changed, and is not cut by
+the edge of the window, a clip or the damage, pays only the fill — a scroll
+included, once each of the four quarter-pixel phases a scroll can put the
+text at has been drawn. A shadow the window, a clip or the damage cuts is
+rasterised again whenever that cut moves across it. The
+`text_shadow_masks_rasterised` counter says how many a frame rasterised. The first
 paint of a page of blurred shadows costs about twice what the same page with an
 unblurred shadow does, and more the larger the blur and the display scale: the
 mask is the text grown by one and a half blur radii on every side, in physical
 pixels. On a build with no software rasteriser (`embed` without
-`software-renderer`) a blurred shadow is drawn as up to 13 copies, and past a
-per-paint budget of glyph copies it is drawn unblurred.
+`software-renderer`) a blurred shadow is drawn as up to 13 copies — fewer, or
+none, for a shadow of more than 153 glyphs, decided by that shadow alone.
 
 ## CI regression job
 
