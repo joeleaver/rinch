@@ -790,6 +790,54 @@ mod tests {
         });
     }
 
+    /// The twin of `main_thread`'s pin (issue #374): an ownerless socket
+    /// callback dispatched from inside a live one runs under `unowned`, so what
+    /// it allocates is not attributed to the live one's component. #373 made
+    /// the change; nothing pinned it.
+    #[test]
+    fn an_ownerless_callback_dispatched_inside_a_live_one_does_not_allocate_under_it() {
+        let (outer, inner) = (424_250, 424_251);
+        HANDLERS.with(|h| {
+            let mut h = h.borrow_mut();
+            h.insert(outer, Handlers::default());
+            h.insert(inner, Handlers::default());
+        });
+
+        install(
+            inner,
+            |h| &mut h.on_message,
+            Box::new(|_| {
+                let _app_lifetime = Signal::new(0u32);
+            }),
+        );
+        let component = Scope::new();
+        component.run(|| {
+            install(
+                outer,
+                |h| &mut h.on_message,
+                Box::new(move |_| {
+                    dispatch(inner, WsEvent::Message(WsMessage::Text("in".to_string())))
+                }),
+            );
+        });
+
+        let before = component.owned_counts().signals;
+        dispatch(outer, WsEvent::Message(WsMessage::Text("out".to_string())));
+        assert_eq!(
+            component.owned_counts().signals,
+            before,
+            "the ownerless callback's signal must not be attributed to the \
+             component whose callback happened to dispatch it"
+        );
+
+        component.dispose();
+        HANDLERS.with(|h| {
+            let mut h = h.borrow_mut();
+            h.remove(&outer);
+            h.remove(&inner);
+        });
+    }
+
     /// A dead callback is pruned *audibly* (issue #374): an app whose socket
     /// messages stop arriving after a route change — the handler's component
     /// unmounted, the `WsHandle` stayed parked in a store — has one `debug!`
