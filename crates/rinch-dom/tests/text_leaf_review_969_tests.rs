@@ -4,10 +4,8 @@
 //! theme change, a move and a display flip, plus `#[ignore]`d release-mode
 //! benches of a colour hover / colour transition over 500 rows.
 //!
-//! One case is deliberately absent: `text-overflow: ellipsis` on an
-//! `inline-flex`'s own text. The cached layout carries the "…" that
-//! `copy_cached_text_layouts` inserts — what a block-level `flex` already did —
-//! where the old fallback clipped, so the two paths differ by design there.
+//! `text-overflow: ellipsis` on a flex or grid container's own text is not a
+//! cached-vs-fallback case: no ellipsis is drawn there, as in Chrome (`p11`).
 
 #![cfg(feature = "software-renderer")]
 use rinch_core::dom::{DomDocument, NodeId};
@@ -235,47 +233,93 @@ fn p6_display_flip() {
     assert!(inc == fr);
 }
 
-// P10: mid-transition frames reach the label (not only the finished one).
+// P10: mid-transition frames reach the label, not only the finished one. The
+// painted full-coverage red at t = 0.25 / 0.5 / 0.75 is the interpolated
+// style's red (60, 120, 180), and rises frame by frame.
 #[test]
 fn p10_mid_transition_frame() {
-    let css = ".ic { display: inline-flex; transition: color 1000ms linear; color: rgb(0,0,0); } .ic.hot { color: rgb(240,0,0); }";
-    let mut d = RinchDocument::new();
-    let (c, t) = chip(&mut d, css, "ic", "mid label text");
-    settle(&mut d);
-    let _ = paint_at(&mut d, 1.0);
-    d.set_attribute(c, "class", "ic hot");
-    d.resolve_layout(VP.0, VP.1);
-    let _ = paint_at(&mut d, 1.0);
-    for tr in d
-        .tree
-        .active_transitions
-        .get_mut(&c.0)
-        .unwrap()
-        .values_mut()
-    {
-        tr.start_time_ms -= 500.0;
+    for disp in ["flex", "inline-flex"] {
+        let css = format!(
+            ".ic {{ display: {disp}; transition: color 1000ms linear; color: rgb(0,0,0); }} \
+             .ic.hot {{ color: rgb(240,0,0); }}"
+        );
+        let mut d = RinchDocument::new();
+        let (c, _) = chip(&mut d, &css, "ic", "mid label text");
+        settle(&mut d);
+        let _ = paint_at(&mut d, 1.0);
+        d.set_attribute(c, "class", "ic hot");
+        d.resolve_layout(VP.0, VP.1);
+        let _ = paint_at(&mut d, 1.0);
+        let start = d
+            .tree
+            .active_transitions
+            .get(&c.0)
+            .expect("the class change starts a colour transition")
+            .values()
+            .next()
+            .unwrap()
+            .start_time_ms;
+        let mut seen = vec![];
+        for frac in [0.25f64, 0.5, 0.75] {
+            rinch_dom::transition::tick_transitions(&mut d.tree, start + 1000.0 * frac);
+            d.resolve_layout(VP.0, VP.1);
+            let px = paint_at(&mut d, 1.0);
+            let c = d.tree.get(c.0).unwrap().computed_style.color.unwrap();
+            let want = (c.components[0] * 255.0).round() as i32;
+            let painted = px
+                .iter()
+                .filter(|p| p[3] == 255 && p[1] == 0 && p[2] == 0)
+                .map(|p| p[0] as i32)
+                .max()
+                .unwrap_or(-1);
+            assert!(
+                (painted - want).abs() <= 1,
+                "{disp} at {frac}: painted red {painted}, the style says {want}"
+            );
+            seen.push(painted);
+        }
+        assert!(
+            seen[0] < seen[1] && seen[1] < seen[2],
+            "{disp}: the colour moves frame by frame ({seen:?})"
+        );
     }
-    d.tick_transitions();
-    d.resolve_layout(VP.0, VP.1);
-    let brush = d
-        .tree
-        .get(t.0)
-        .unwrap()
-        .cached_text_parley
-        .as_ref()
-        .map(|l| {
-            let mut v = vec![];
-            for line in l.lines() {
-                for it in line.items() {
-                    if let parley::layout::PositionedLayoutItem::GlyphRun(g) = it {
-                        v.push(format!("{:?}", g.style().brush));
-                    }
-                }
-            }
-            v
-        });
-    let col = d.tree.get(c.0).unwrap().computed_style.color;
-    eprintln!("[mid] style={col:?} leaf brush={brush:?}");
+}
+
+// P11: `text-overflow: ellipsis` on a 40px `nowrap` / `overflow: hidden` box's
+// **direct** text. Chrome 153 draws a "…" only for `block`: in a flex or grid
+// container that text sits in an anonymous item, which does not clip, so it
+// never ellipsizes (measured with element screenshots, ellipsis vs clip;
+// #904's second review). rinch used to ellipsize all four.
+#[test]
+fn p11_ellipsis_only_on_a_block_containers_own_text() {
+    for disp in ["block", "flex", "inline-flex", "grid", "inline-grid"] {
+        let mut px = vec![];
+        for to in ["ellipsis", "clip"] {
+            let mut d = RinchDocument::new();
+            d.load_css(BASE_CSS);
+            d.load_css(&format!(
+                ".x {{ display: {disp}; overflow: hidden; text-overflow: {to}; \
+                 white-space: nowrap; width: 40px; }}"
+            ));
+            let body = d.body();
+            let w = d.create_element("div");
+            let s = d.create_element("span");
+            d.set_attribute(s, "class", "x");
+            let t = d.create_text("Hello wonderful world");
+            d.append_child(s, t);
+            d.append_child(w, s);
+            d.append_child(body, w);
+            settle(&mut d);
+            px.push(paint_at(&mut d, 1.0));
+        }
+        let differs = px[0] != px[1];
+        assert!(ink(&px[1]) > 0, "{disp}: counter-oracle, the text draws");
+        assert_eq!(
+            differs,
+            disp == "block",
+            "{disp}: an ellipsis is drawn only on a block container's own text"
+        );
+    }
 }
 
 fn bench_doc(disp: &str, n: usize, trans: bool) -> (RinchDocument, Vec<NodeId>) {
