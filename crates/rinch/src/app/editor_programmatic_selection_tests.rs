@@ -152,17 +152,14 @@ fn a_range_set_from_app_code_draws_its_highlight() {
     let (px, py, _, ph) = para_box(&page.app, 2);
     let (bl, bt) = editor_border(&page.app);
     assert_eq!(x, px + bl, "the highlight starts at the line's start");
-    // `selection_rects_for_layout` puts the rect's top at `baseline - ascent`
-    // and gives it the line's height, so it starts one half-leading below the
-    // line box — `(24 - (ascent + descent)) / 2`, a font metric (3px in the
-    // bundled Inter; host faces gave 1px, 2px on CI's DejaVu, 4px on another) — and overhangs the
-    // line's bottom by as much. What is font-independent: the full line height,
-    // and a top in the upper half of the third line's box (a stale highlight,
-    // or one on another line, is 36px away).
-    assert_eq!(h, ph, "the highlight is one line tall");
-    assert!(
-        y >= py + bt && y < py + bt + ph / 2.0,
-        "the highlight sits on the third line: {:?} vs line box y {py} h {ph}",
+    // The highlight covers the third line's box exactly (#1008): its top is
+    // the line box's top, not `baseline - ascent` — one half-leading lower, a
+    // font metric that differed between this host and CI — and it is one line
+    // tall. A stale highlight, or one on another line, is 36px away.
+    assert_eq!(
+        (y, h),
+        (py + bt, ph),
+        "the highlight sits on the third line's box: {:?}",
         rects[0]
     );
     assert!(w > 20.0, "and spans its text: {w}");

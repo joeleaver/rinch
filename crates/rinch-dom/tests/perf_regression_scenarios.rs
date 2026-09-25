@@ -570,7 +570,8 @@ fn a_colour_hover_on_an_inline_flex_label_skips_layout() {
 // ── pseudo_element_passes ──────────────────────────────────────────────────
 
 /// A sheet with a `::before` rule and no `::after` rule: one pass per cascaded
-/// element, all of them from the `::before` site.
+/// element, all of them from the `::before` site. The generated box is not
+/// itself cascaded (#1004): it carries its pseudo cascade's style.
 #[test]
 fn only_before_rules() {
     let mut doc = doc_with(".gen::before { content: \"*\"; }");
@@ -584,11 +585,11 @@ fn only_before_rules() {
         &s,
         &[
             (StyleResolves, 2),
-            (ElementsCascaded, 4),
-            (StyleNodesVisited, 11),
-            (PseudoElementPasses, 4),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 9),
+            (PseudoElementPasses, 3),
             (FullStyleWalks, 2),
-            (TaffyStyleSyncs, 6),
+            (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
@@ -622,11 +623,11 @@ fn only_after_rules() {
         &s,
         &[
             (StyleResolves, 2),
-            (ElementsCascaded, 4),
-            (StyleNodesVisited, 11),
-            (PseudoElementPasses, 4),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 9),
+            (PseudoElementPasses, 3),
             (FullStyleWalks, 2),
-            (TaffyStyleSyncs, 6),
+            (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),

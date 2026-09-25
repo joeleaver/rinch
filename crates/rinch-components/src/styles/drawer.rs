@@ -80,9 +80,9 @@ pub fn styles() -> String {
 
    Not `*::before` / `*::after`, deliberately, although `animation-play-state`
    does not inherit into a pseudo-element either: on rinch-web a spinner drawn
-   by an `::after` under a closed overlay is therefore **not** paused. Desktop
-   animates no pseudo-element at all (#925), so the selectors would pause
-   nothing there — and they are not free there: rinch-dom matches `::before` /
+   by an `::after` under a closed overlay is therefore **not** paused, and
+   since #1004 neither is one on desktop, which now runs a pseudo-element's
+   animation (#925, #1023). The selectors are not free there: rinch-dom matches `::before` /
    `::after` for every element with no ancestor bloom filter (#935), so two
    rules with a universal rightmost compound cost +10% of style instructions
    on a page with no overlay in it, and +71% under a closed drawer (measured by

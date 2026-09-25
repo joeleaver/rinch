@@ -293,6 +293,9 @@ impl VideoPlayerBackend for MpvPlayer {
         if let Ok(mpv) = self.mpv.lock() {
             let _ = mpv.command("stop", &[]);
         }
+        // The sink owns this player's render surface; dropping it unregisters
+        // the surface and the last frame it holds (issue #363).
+        self.frame_sink.borrow_mut().take();
         // Note: render context is freed in Drop
     }
 
@@ -631,6 +634,7 @@ fn create_mpv_player_impl(
         buffered: signals.buffered,
         state: signals.state,
         has_frame: signals.has_frame,
+        frame_sink_installed: Default::default(),
     };
 
     if start_paused {
