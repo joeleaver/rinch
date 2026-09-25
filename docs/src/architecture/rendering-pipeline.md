@@ -353,6 +353,27 @@ close direction carries `transition-delay: 150ms` as a grace period for moving
 the pointer onto the card, and scaling that with the factor would halve the
 grace period for anyone who leaves part way through the fade-in.
 
+**A `transform` is interpolated as a function list, not matrix entry by entry**
+(#414). A computed transform keeps the list it was composed from
+(`TransformValue::functions`), and `transition::transform::interpolate_lists`
+interpolates it the way Chrome does: functions that pair by type interpolate
+their arguments (`rotate(0deg)` → `rotate(90deg)` is `rotate(45deg)` half way,
+full size), a shorter list — `none` included — is padded with identity
+functions, and from the first pair that does not match, the rest of both lists
+is composed and interpolated by Chromium's 2D decomposition (translation,
+scale, shear and the shorter way round for the angle; a singular matrix flips
+half way). Lerping the six matrix entries, which is what rinch did before,
+gives the right angle with a uniform scale of `cos(Δθ/2)`: a 90° turn shrank to
+71% at its midpoint and a 180° one to a point. Two consequences: the
+interpolated value is itself a function list, so a reversal or a retarget goes
+on pairing by function; and "did the transform change" compares the lists, so
+`rotate(0deg)` → `rotate(360deg)` is a change and spins, while `none` →
+`rotate(0deg)` is not (Chrome starts an invisible transition there, and in
+rinch a running transform transition is a stacking context that `rotate(0deg)`
+at rest is not — #415). `@keyframes` stops go through the same code.
+`tests/transform_interpolation_tests.rs` pins it against Chrome 153's
+`getComputedStyle` numbers.
+
 Two things rinch does **not** implement from §3. The **transitionability**
 precondition, which appears in item 1 and again in item 4.2: a pair of values
 that cannot be interpolated — a length against a percentage, which needs a
