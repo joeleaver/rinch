@@ -103,11 +103,9 @@ fn a_before_regenerated_by_an_inherited_change_keeps_its_style() {
     assert_before_style(&doc, w);
 }
 
-/// A class change the invalidator answers with a hint on the **descendants**
-/// only (`.w.on span`): the originator is not re-cascaded, so its `::before`
-/// is not regenerated, and the walk reaches the generated box with a hint.
-/// A `span` rule must not reach a `::before` — it did, because the box was
-/// re-cascaded as a plain `<span>`.
+/// A class change on the originator that brings a `span` rule into play under
+/// it: a real `<span>` child takes the rule (the positive control), the
+/// generated box does not — in a browser a `::before` is not a `span`.
 #[test]
 fn a_span_rule_hinted_by_a_class_change_does_not_restyle_a_before() {
     let (mut doc, w) = doc_with(".w.on span { color: rgb(0, 0, 255) }");
