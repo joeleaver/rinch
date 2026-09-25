@@ -1158,7 +1158,11 @@ fn text_panel(shadow: &str) -> (RinchApp, NodeHandle) {
     let (app, hs) = mount_with(move |scope| {
         let outer = scope.create_element("div");
         outer.set_attribute("style", "width: 600px; height: 400px");
-        let root = el(scope, &outer, "position: relative; width: 10px; height: 10px");
+        let root = el(
+            scope,
+            &outer,
+            "position: relative; width: 10px; height: 10px",
+        );
         let b = el(
             scope,
             &root,
