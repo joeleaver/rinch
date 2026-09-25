@@ -951,3 +951,54 @@ fn an_effect_woken_from_another_contexts_handler_runs_under_its_own_document() {
         drop(b);
     });
 }
+
+// ── REVIEW-960 probes ──
+fn rv960_key() -> rinch_platform::PlatformEvent {
+    use rinch_platform::{KeyCode, KeyRepeat, Modifiers, PlatformEvent};
+    PlatformEvent::KeyDown {
+        key: KeyCode::KeyQ,
+        logical_key: Some("q".into()),
+        text: Some("q".into()),
+        modifiers: Modifiers::default(),
+        repeat: KeyRepeat::Fresh,
+    }
+}
+
+/// Single document: a mount-time interceptor, then a re-registration from
+/// outside any dispatch (a timer / menu / run_on_main_thread callback).
+#[test]
+fn rv960_outside_reregistration_replaces_mount_interceptor() {
+    on_ui_thread(|| {
+        use std::cell::RefCell;
+        let hits: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+        let h = hits.clone();
+        let mut a = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            let h = h.clone();
+            rinch_core::events::set_keyboard_interceptor(move |_| {
+                h.borrow_mut().push("mount");
+                false
+            });
+            rsx! { div { style: "width: 300px; height: 300px;" } }
+        });
+        a.update(&[]);
+        a.update(&[rv960_key()]);
+        let h2 = hits.clone();
+        // Outside any dispatch, e.g. a set_timeout callback.
+        rinch_core::events::set_keyboard_interceptor(move |_| {
+            h2.borrow_mut().push("outside");
+            false
+        });
+        a.update(&[rv960_key()]);
+        rinch_core::events::clear_keyboard_interceptor();
+        a.update(&[rv960_key()]);
+        let got = hits.borrow().clone();
+        rinch_core::events::clear_keyboard_interceptor();
+        rinch_core::events::clear_keyboard_interceptor();
+        drop(a);
+        assert_eq!(
+            got,
+            vec!["mount", "outside"],
+            "last registration wins; clear clears"
+        );
+    });
+}

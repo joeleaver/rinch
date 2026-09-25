@@ -1016,4 +1016,39 @@ mod tests {
         }
         assert_eq!(*seen.borrow(), vec![Some(4), Some(4)]);
     }
+
+    #[test]
+    fn rv960_nested_and_panic_restore() {
+        use crate::reactive::{Effect, Signal};
+        let go = Signal::new(0u32);
+        let seen: Rc<RefCell<Vec<Option<u64>>>> = Rc::default();
+        let effect = {
+            let _creator = push_dispatching_doc(11);
+            let seen = seen.clone();
+            Effect::new(move || {
+                let v = go.get();
+                if v == 1 {
+                    // nested dispatch into another doc inside B's effect
+                    let _n = push_dispatching_doc(12);
+                    seen.borrow_mut().push(current_dispatching_doc());
+                }
+                seen.borrow_mut().push(current_dispatching_doc());
+                if v == 2 {
+                    panic!("boom");
+                }
+            })
+        };
+        {
+            let _a = push_dispatching_doc(10);
+            go.set(1);
+            assert_eq!(current_dispatching_doc(), Some(10));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| go.set(2)));
+            assert!(r.is_err());
+            assert_eq!(current_dispatching_doc(), Some(10), "restored after panic");
+            assert_eq!(current_context_root(), 0);
+        }
+        assert_eq!(current_dispatching_doc(), None);
+        assert_eq!(*seen.borrow(), vec![Some(11), Some(12), Some(11), Some(11)]);
+        effect.dispose();
+    }
 }

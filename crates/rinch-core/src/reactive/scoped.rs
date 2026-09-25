@@ -627,4 +627,198 @@ mod tests {
         clear_scoped_slot(&SLOT);
         assert!(read_scoped_slot(&SLOT).is_none());
     }
+
+    // ── newest registration wins; a clear clears (review of PR #960) ─────────
+
+    /// Since #295 a `RinchApp` mount is marked, so a component body's
+    /// registration lands under its document — and a later one from a timer,
+    /// `run_on_main_thread`, an http completion or a `main()` effect, which are
+    /// all unmarked, lands on the fallback. The newer of the two must win, or a
+    /// single-document app can never replace its mount-time interceptor.
+    #[test]
+    fn the_newer_of_the_documents_entry_and_the_fallback_wins() {
+        use crate::context::push_dispatching_doc;
+
+        thread_local! {
+            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
+                const { RefCell::new(DocScopedSlotMap::new()) };
+        }
+        let read_as = |doc: u64| {
+            let _d = push_dispatching_doc(doc);
+            read_doc_scoped_slot(&SLOT).map(|f| f())
+        };
+
+        {
+            let _a = push_dispatching_doc(1);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 10u32) as Probe); // mount
+        }
+        install_doc_scoped_slot(&SLOT, Rc::new(|| 20u32) as Probe); // a timer
+        assert_eq!(
+            read_as(1),
+            Some(20),
+            "the later, unmarked registration wins"
+        );
+        {
+            let _a = push_dispatching_doc(1);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 30u32) as Probe); // a handler
+        }
+        assert_eq!(read_as(1), Some(30), "…and a later marked one wins back");
+        assert_eq!(
+            read_as(2),
+            Some(20),
+            "another document still sees the fallback"
+        );
+
+        // An unmarked clear speaks for every document, as its install serves
+        // every document.
+        clear_doc_scoped_slot(&SLOT);
+        assert_eq!(read_as(1), None, "the clear cleared document 1's entry too");
+        assert_eq!(read_as(2), None);
+        assert_eq!(read_doc_scoped_slot(&SLOT).map(|f| f()), None);
+    }
+
+    /// A clear made **inside** a document leaves that document with nothing,
+    /// whichever entry was in effect for it — "clear clears", as the single
+    /// slot this replaced did — and leaves every other document's view alone.
+    #[test]
+    fn a_documents_clear_leaves_it_nothing_and_others_untouched() {
+        use crate::context::push_dispatching_doc;
+
+        thread_local! {
+            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
+                const { RefCell::new(DocScopedSlotMap::new()) };
+        }
+        let read_as = |doc: u64| {
+            let _d = push_dispatching_doc(doc);
+            read_doc_scoped_slot(&SLOT).map(|f| f())
+        };
+        let clear_as = |doc: u64| {
+            let _d = push_dispatching_doc(doc);
+            clear_doc_scoped_slot(&SLOT);
+        };
+
+        // Fallback older than the document's entry: the clear must not
+        // resurrect the fallback for document 1.
+        install_doc_scoped_slot(&SLOT, Rc::new(|| 1u32) as Probe); // main()
+        {
+            let _a = push_dispatching_doc(1);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 2u32) as Probe);
+        }
+        clear_as(1);
+        assert_eq!(
+            read_as(1),
+            None,
+            "document 1 cleared: nothing, not main()'s"
+        );
+        assert_eq!(read_as(2), Some(1), "document 2 keeps the fallback");
+
+        // A registration after the clear, from anywhere, is the newest again.
+        install_doc_scoped_slot(&SLOT, Rc::new(|| 3u32) as Probe);
+        assert_eq!(
+            read_as(1),
+            Some(3),
+            "a later unmarked registration reaches doc 1"
+        );
+
+        // Fallback newer than the document's entry: the clear removes both
+        // for document 1 (the mount entry must not come back).
+        {
+            let _a = push_dispatching_doc(1);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 4u32) as Probe);
+        }
+        install_doc_scoped_slot(&SLOT, Rc::new(|| 5u32) as Probe);
+        clear_as(1);
+        assert_eq!(
+            read_as(1),
+            None,
+            "neither the fallback nor the older mount entry"
+        );
+        assert_eq!(read_as(2), Some(5), "document 2 keeps the fallback");
+
+        // Two documents' own entries stay isolated through all of it.
+        {
+            let _b = push_dispatching_doc(2);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 6u32) as Probe);
+        }
+        clear_as(1);
+        assert_eq!(read_as(2), Some(6));
+        clear_doc_scoped_slot(&SLOT);
+        assert_eq!(read_as(2), None);
+    }
+
+    /// The same rules, through the public API of each of the four slots that
+    /// share this discipline: a mount-time registration (document 1), then one
+    /// made outside any document, then an unmarked clear.
+    #[test]
+    fn each_doc_keyed_slot_honours_last_registration_wins_and_clear_clears() {
+        use crate::context::push_dispatching_doc;
+        use crate::events::{
+            KeyEventData, PasteEventData, SelectionAction, clear_keyboard_interceptor,
+            clear_paste_interceptor, clear_selection_callback, clear_selection_sync_callback,
+            dispatch_keyboard_event, dispatch_paste_event, dispatch_selection, fire_selection_sync,
+            set_keyboard_interceptor, set_paste_interceptor, set_selection_callback,
+            set_selection_sync_callback,
+        };
+
+        let hits: Rc<RefCell<Vec<String>>> = Rc::default();
+        let tag = |slot: &'static str, who: &'static str| {
+            let h = hits.clone();
+            move || h.borrow_mut().push(format!("{slot}:{who}"))
+        };
+
+        for who in ["mount", "outside"] {
+            let _mount = (who == "mount").then(|| push_dispatching_doc(1));
+            let k = tag("key", who);
+            set_keyboard_interceptor(move |_| {
+                k();
+                false
+            });
+            let p = tag("paste", who);
+            set_paste_interceptor(move |_| {
+                p();
+                false
+            });
+            let s = tag("sel", who);
+            set_selection_callback(move |_| {
+                s();
+                Vec::new()
+            });
+            let y = tag("sync", who);
+            set_selection_sync_callback(move |_| y());
+        }
+        let fire_all = || {
+            let _a = push_dispatching_doc(1);
+            dispatch_keyboard_event(&KeyEventData::new("q", "KeyQ"));
+            dispatch_paste_event(&PasteEventData {
+                text: Some("x".into()),
+                html: None,
+            });
+            dispatch_selection(SelectionAction::QueryRanges);
+            fire_selection_sync(); // also dispatches a selection query first
+        };
+        fire_all();
+        assert_eq!(
+            *hits.borrow(),
+            [
+                "key:outside",
+                "paste:outside",
+                "sel:outside",
+                "sel:outside",
+                "sync:outside"
+            ],
+            "the newest registration of each slot is the one reached"
+        );
+        hits.borrow_mut().clear();
+
+        clear_keyboard_interceptor();
+        clear_paste_interceptor();
+        clear_selection_callback();
+        clear_selection_sync_callback();
+        fire_all();
+        assert!(
+            hits.borrow().is_empty(),
+            "each clear cleared: {:?}",
+            hits.borrow()
+        );
+    }
 }
