@@ -487,6 +487,11 @@ struct ClipMask {
     /// non-zero area lies inside it needs no intersection: `m * 255` rounds
     /// back to `m`.
     full: DeviceRect,
+    /// This mask is a partial repaint's damage clip and nothing else: no clip
+    /// is open above it, not even one [`TinySkiaPainter::push_clip`] skipped
+    /// (#1007). Only [`TinySkiaPainter::push_damage_clip`] sets it; see
+    /// [`TinySkiaPainter::draw_is_masked`] for what it buys.
+    damage_only: bool,
 }
 
 // ── Layer state ───────────────────────────────────────────────────────────
@@ -503,6 +508,10 @@ enum LayerState {
     /// [`TinySkiaPainter::push_layer`]'s near-opaque branch (#560) and the
     /// rule stated in [`TinySkiaPainter::push_clip`].
     Noop,
+    /// A clip [`TinySkiaPainter::push_clip`] skipped (#907) directly over the
+    /// damage clip: it changed no mask byte, but it is a clip, so the damage
+    /// mask stops being `damage_only` until the pop gives that back (#1007).
+    DamageShadowed,
     /// A clip layer — just a saved mask to restore on pop.
     Clip { previous_mask: Option<ClipMask> },
     /// An opacity/blend layer — content drawn to a temporary pixmap.
@@ -808,6 +817,10 @@ pub struct TinySkiaPainter {
     /// Paint the way this painter did before its caches and pools existed.
     /// For the pixel-diff oracle only.
     reference_mode: bool,
+    /// The whole-pixel rects of the last [`Self::push_damage_clip`]: inside
+    /// each, the damage mask is 255. Read only while the mask in force is
+    /// that clip's (`ClipMask::damage_only`).
+    damage_rects: Vec<DeviceRect>,
 }
 
 impl TinySkiaPainter {
@@ -829,6 +842,7 @@ impl TinySkiaPainter {
             layer_use: PoolUse::default(),
             stats: SkiaPainterStats::default(),
             reference_mode: false,
+            damage_rects: Vec::new(),
         }
     }
 
@@ -1278,6 +1292,84 @@ impl TinySkiaPainter {
         self.mask_pool.push(m.mask);
     }
 
+    /// Open a partial repaint's damage clip: [`Painter::push_clip`] of the
+    /// region's rects, closed by [`Painter::pop_layer`] like any clip, and
+    /// pushed with no clip already open (a damage clip pushed inside another
+    /// clip is an ordinary clip).
+    ///
+    /// What it adds is that the frame it clips paints the same bytes as the
+    /// full repaint of that frame (#1007). tiny-skia draws an opaque solid or
+    /// gradient `SourceOver` fill through two different pipelines depending
+    /// on whether a mask is passed: with none it reduces `SourceOver` to
+    /// `Source` and lerps each anti-aliased edge pixel toward the colour,
+    /// with one it scales the colour by the coverage and blends it over, and
+    /// the two round differently — one LSB on about half of a rounded box's
+    /// edge pixels over a non-transparent backdrop. A full repaint draws a
+    /// box outside every clip unmasked, and the partial repaint used to draw
+    /// it through the damage mask, so a rounded card inside the damage kept
+    /// corners that no full repaint of the same scene would draw.
+    ///
+    /// So while the damage clip is the only clip open, a fill or stroke whose
+    /// device bounds lie inside one damage rect — where the mask is 255 — is
+    /// drawn with no mask ([`Self::draw_is_masked`]). Any clip pushed
+    /// above it, including one [`Painter::push_clip`] skips as covering the
+    /// damage (#907), ends that: the full repaint masks those draws by that
+    /// clip, and a mask whose bytes are 255 goes through the masked pipeline
+    /// either way. An opacity layer does not end it — the full repaint draws
+    /// the layer's content unmasked too.
+    ///
+    /// Not covered: a draw that straddles a damage rect's edge still needs
+    /// the mask, so an opaque anti-aliased edge of it inside the damage can
+    /// still land one LSB away from the full repaint's.
+    pub fn push_damage_clip(&mut self, damage: &super::DamageRegion) {
+        let rects = damage.rects();
+        let shape = match rects {
+            [one] => PaintShape::Rect(*one),
+            _ => PaintShape::BezPath(damage.clip_path()),
+        };
+        let fresh = self.clip_mask.is_none();
+        Painter::push_clip(self, Fill::NonZero, Affine::IDENTITY, &shape);
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        self.damage_rects.clear();
+        self.damage_rects.extend(rects.iter().filter_map(|r| {
+            // The pixels a rect covers whole: its rects are whole-pixel, so
+            // this is the rect itself, clamped to the surface.
+            let c = |v: f64, limit: u32| v.clamp(0.0, limit as f64);
+            let d = DeviceRect {
+                x0: c(r.x0.ceil(), w) as u32,
+                y0: c(r.y0.ceil(), h) as u32,
+                x1: c(r.x1.floor(), w) as u32,
+                y1: c(r.y1.floor(), h) as u32,
+            };
+            (!d.is_empty()).then_some(d)
+        }));
+        if fresh && let Some(m) = self.clip_mask.as_mut() {
+            m.damage_only = true;
+        }
+    }
+
+    /// Whether a fill or stroke whose local bounds are `x0..x1` x `y0..y1`
+    /// under `ts`, padded by `pad` device pixels, is drawn through the clip in
+    /// force. Not where that clip is the damage clip alone and the draw lies
+    /// inside one of its rects: there it takes the full repaint's unmasked
+    /// pipeline (#1007, see [`Self::push_damage_clip`]). `pad` has to cover
+    /// every pixel the draw can write, since an unmasked draw is clipped by
+    /// nothing but the surface.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_is_masked(&self, x0: f32, y0: f32, x1: f32, y1: f32, ts: Transform, pad: f32) -> bool {
+        let Some(m) = self.clip_mask.as_ref() else {
+            return false;
+        };
+        if m.damage_only {
+            let (w, h) = (self.pixmap.width(), self.pixmap.height());
+            let r = DeviceRect::from_local(x0, y0, x1, y1, ts, pad, w, h);
+            if !r.is_empty() && self.damage_rects.iter().any(|d| device_rect_within(r, *d)) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// A copy of `m`: its bounds copied into a pooled mask.
     fn clone_mask(&mut self, m: &ClipMask) -> ClipMask {
         if self.reference_mode {
@@ -1286,6 +1378,7 @@ impl TinySkiaPainter {
                 mask: m.mask.clone(),
                 bounds: m.bounds,
                 full: m.full,
+                damage_only: false,
             };
         }
         let mut mask = self.acquire_mask();
@@ -1304,6 +1397,7 @@ impl TinySkiaPainter {
             mask,
             bounds: b,
             full: m.full,
+            damage_only: false,
         }
     }
 
@@ -1389,7 +1483,25 @@ impl Painter for TinySkiaPainter {
             bounds.bottom(),
             ts,
         );
-        let mask = self.clip_mask.as_ref().map(|m| &m.mask);
+        // tiny-skia writes no pixel outside the floor/ceil of the path's
+        // device bounds, and maps an axis-aligned path's points with the same
+        // `x * sx + tx` `from_local` maps its corners with, so no pad is
+        // needed there; under rotation or skew the corners' box is only an
+        // over-estimate up to rounding, so it is padded.
+        let pad = if ts.kx == 0.0 && ts.ky == 0.0 {
+            0.0
+        } else {
+            DEVICE_PAD
+        };
+        let masked = self.draw_is_masked(
+            bounds.left(),
+            bounds.top(),
+            bounds.right(),
+            bounds.bottom(),
+            ts,
+            pad,
+        );
+        let mask = self.clip_mask.as_ref().filter(|_| masked).map(|m| &m.mask);
         self.pixmap.fill_path(&path, &paint, fill_rule, ts, mask);
     }
 
@@ -1413,21 +1525,18 @@ impl Painter for TinySkiaPainter {
         }
         let ts = affine_to_transform(transform);
         let sk_stroke = to_skia_stroke(stroke);
+        // How far a stroke can reach past its path, in path space: half the
+        // width, times the miter limit where a miter join can spike (a square
+        // cap reaches `sqrt 2` half-widths, which `1.5` covers).
+        let reach = sk_stroke.width * 0.5 * sk_stroke.miter_limit.max(1.5);
+        let b = path.bounds();
+        let (x0, y0) = (b.left() - reach, b.top() - reach);
+        let (x1, y1) = (b.right() + reach, b.bottom() + reach);
         if self.touched.is_some() {
-            // How far a stroke can reach past its path, in path space: half
-            // the width, times the miter limit where a miter join can spike
-            // (a square cap reaches `sqrt 2` half-widths, which `1.5` covers).
-            let reach = sk_stroke.width * 0.5 * sk_stroke.miter_limit.max(1.5);
-            let b = path.bounds();
-            self.touch_local(
-                b.left() - reach,
-                b.top() - reach,
-                b.right() + reach,
-                b.bottom() + reach,
-                ts,
-            );
+            self.touch_local(x0, y0, x1, y1, ts);
         }
-        let mask = self.clip_mask.as_ref().map(|m| &m.mask);
+        let masked = self.draw_is_masked(x0, y0, x1, y1, ts, DEVICE_PAD);
+        let mask = self.clip_mask.as_ref().filter(|_| masked).map(|m| &m.mask);
         self.pixmap.stroke_path(&path, &paint, &sk_stroke, ts, mask);
     }
 
@@ -1727,6 +1836,7 @@ impl Painter for TinySkiaPainter {
                 mask,
                 bounds: DeviceRect::EMPTY,
                 full: DeviceRect::EMPTY,
+                damage_only: false,
             });
             self.layer_stack.push(LayerState::Clip { previous_mask });
             return;
@@ -1769,8 +1879,18 @@ impl Painter for TinySkiaPainter {
                 scratch.fill_path(&path, fill_rule, true, ts);
                 debug_assert_full(&scratch, prev.bounds, "a skipped clip's own shape");
             }
-            self.clip_mask = previous_mask;
-            self.layer_stack.push(LayerState::Noop);
+            let mut prev = previous_mask;
+            // A clip the full repaint opens here is a real mask there, so a
+            // draw under it must stay masked here too (#1007).
+            let shadowed = prev
+                .as_mut()
+                .is_some_and(|m| std::mem::replace(&mut m.damage_only, false));
+            self.clip_mask = prev;
+            self.layer_stack.push(if shadowed {
+                LayerState::DamageShadowed
+            } else {
+                LayerState::Noop
+            });
             return;
         }
 
@@ -1861,6 +1981,7 @@ impl Painter for TinySkiaPainter {
             mask,
             bounds: new_bounds,
             full: new_full,
+            damage_only: false,
         });
         self.layer_stack.push(LayerState::Clip { previous_mask });
     }
@@ -1939,6 +2060,11 @@ impl Painter for TinySkiaPainter {
             // near-opaque branch). Writing anything to `clip_mask` here — a
             // `None` above all — would be inventing state this push never took.
             LayerState::Noop => {}
+            LayerState::DamageShadowed => {
+                if let Some(m) = self.clip_mask.as_mut() {
+                    m.damage_only = true;
+                }
+            }
             LayerState::Clip { previous_mask } => {
                 if let Some(m) = std::mem::replace(&mut self.clip_mask, previous_mask) {
                     self.release_mask(m);
