@@ -693,6 +693,29 @@ fn open_clip_cull() -> Option<Rect> {
     CLIP_CULL.with(|c| c.borrow().last().copied().flatten())
 }
 
+/// The rect, in the paint's device pixels, that anything drawn right now can
+/// be seen in: the render target (grown by the ink margin) intersected with
+/// every open clip and with the bounds of a partial repaint's damage. `None`
+/// when none is known (`paint_subtree`, no clip, no damage).
+pub(super) fn visible_paint_rect() -> Option<Rect> {
+    let target = VIEWPORT.with(|v| v.get().map(|vp| vp.cull));
+    let visible = match (target, open_clip_cull()) {
+        (Some(a), Some(b)) => Some(a.intersect(b)),
+        (a, b) => a.or(b),
+    };
+    // A partial repaint's damage clip is pushed outside `paint_document`'s
+    // `ClipTrackingPainter`, so `CLIP_CULL` never sees it; its rects are here.
+    let damage = DIRTY_REGION.with(|v| {
+        v.borrow()
+            .as_ref()
+            .and_then(|rects| rects.iter().copied().reduce(|a, b| a.union(b)))
+    });
+    match (visible, damage) {
+        (Some(a), Some(b)) => Some(a.intersect(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// A [`Painter`] that forwards everything and keeps [`CLIP_CULL`] in step with
 /// the clips it forwards (#910).
 ///
@@ -2921,10 +2944,13 @@ fn paint_node(
             // the background fill so the compositor layer shows through.
             //
             // Only worth walking the subtree for when there *is* a background
-            // fill to cut them out of: the holes have no other consumer, and
-            // `clips` is true of every `overflow: hidden` box on the page.
+            // fill or an inset shadow to cut them out of (#974): the holes
+            // have no other consumer, and `clips` is true of every
+            // `overflow: hidden` box on the page.
             let mut viewport_holes = Vec::new();
-            if clips && paints_a_background {
+            let has_inset_shadow =
+                visible && node.computed_style.box_shadow.iter().any(|s| s.inset);
+            if clips && (paints_a_background || has_inset_shadow) {
                 find_viewport_rects(
                     tree,
                     node_id,
@@ -2956,10 +2982,10 @@ fn paint_node(
                 // Get background from computed style (solid color or gradient).
                 // When viewport_holes is non-empty, we paint the background with
                 // holes cut out (EvenOdd fill) so compositor layers show through.
-                // `viewport_holes` is only ever collected for a background
-                // that will be painted, so testing it first also covers the
-                // "nothing to fill" case.
-                if !viewport_holes.is_empty() {
+                // `viewport_holes` is collected for a background that will be
+                // painted or an inset shadow (#974), so the background arm
+                // asks `paints_a_background` too.
+                if paints_a_background && !viewport_holes.is_empty() {
                     // Build a compound path: outer shape + inner holes (wound opposite)
                     let bg_path = build_background_with_holes(rect, radii, radius, &viewport_holes);
                     match &node.computed_style.background {
@@ -3051,6 +3077,25 @@ fn paint_node(
                         }
                         BackgroundValue::None => {}
                     }
+                }
+
+                // Inset shadows: above the background, below the border
+                // (css-backgrounds-3 §7.1; #974).
+                if !node.computed_style.box_shadow.is_empty() {
+                    borders::paint_inset_box_shadow(
+                        painter,
+                        &node.computed_style.box_shadow,
+                        x,
+                        y,
+                        w,
+                        h,
+                        scale,
+                        radii,
+                        node,
+                        node_transform,
+                        &viewport_holes,
+                        &tree.perf,
+                    );
                 }
 
                 // Render borders per-side with style support
