@@ -633,3 +633,52 @@ fn nowrap_text_after_a_block_scrolls_horizontally_by_its_line() {
         "the wheel's range too"
     );
 }
+
+/// An `absolute` box inside a flowed inline `span` beside a block child: the
+/// box is hoisted out of the span into the container's box list (#591), so the
+/// box-tree walk reaches it where the element walk stopped at the span's `0x0`
+/// box. The containing-block rule still decides. Chrome 153, `B` then
+/// `span > ("x", absolute 10x10 at top: 300px)`:
+///
+/// | container | `scrollWidth`x`scrollHeight` |
+/// |---|---|
+/// | `position: relative` | 200x310 |
+/// | static | 200x100 (no overflow: 50 + one 20px line = 70) |
+///
+/// Unfixed, the relative container reported 50px (the block's bottom).
+#[test]
+fn a_hoisted_absolute_beside_a_block_counts_only_where_the_container_holds_it() {
+    for (position, expected) in [("relative", (Some(210.0), 310.0)), ("static", (None, 70.0))] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            &format!(
+                "width: 200px; height: 100px; overflow: auto; position: {position}; \
+                 font-size: 16px; line-height: 20px"
+            ),
+        );
+        doc.append_child(body, container);
+        build_mixed(&mut doc, container, &Mixed::Block);
+        let span = doc.create_element("span");
+        doc.append_child(container, span);
+        let x = doc.create_text("x");
+        doc.append_child(span, x);
+        let abs = doc.create_element("span");
+        doc.set_attribute(
+            abs,
+            "style",
+            "position: absolute; left: 0; top: 300px; width: 10px; height: 10px",
+        );
+        doc.append_child(span, abs);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        let (_, y) = max_scroll(&scrollbars(&doc.tree, container.0, 1.0));
+        assert_eq!(
+            (y, doc.scroll_height(container)),
+            expected,
+            "{position} container: Chrome 310, or no overflow at all"
+        );
+    }
+}
