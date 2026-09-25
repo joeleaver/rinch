@@ -335,7 +335,7 @@ fn a_scrolled_list_hits_identically() {
 /// moves when it scrolls. The chain half is reached only by a box that does
 /// **not** clip and still has a scroll offset — which only a programmatic
 /// `set_scroll_top` gives one — so `wrapper` is that box, and a chain that
-/// stops one link short leaves `<body>`'s children answering from before its
+/// stops one link short leaves `plain`, its parent, answering from before its
 /// scroll.
 ///
 /// Every probe grid runs on a warm cache: the previous grid filled it, and
@@ -347,9 +347,14 @@ fn nested_scrollers_scrolled_one_at_a_time_hit_identically() {
     let body = doc.body();
     let mut scrollers = Vec::new();
     // Index 3: not a scroll container — no `overflow` — but scrolled anyway.
+    // It sits in a plain div of its own so that its extent is folded into
+    // one that is kept (`<body>` is a stacking root and keeps none).
+    let plain = doc.create_element("div");
+    doc.set_attribute(plain, "style", "padding-left: 4px");
+    doc.append_child(body, plain);
     let wrapper = doc.create_element("div");
     doc.set_attribute(wrapper, "style", "padding-top: 6px; margin-left: 9px");
-    doc.append_child(body, wrapper);
+    doc.append_child(plain, wrapper);
     let mut parent = wrapper;
     // Three levels: body > outer > middle > inner, each a scroller of rows
     // and positioned children, the next level nested in its third row.
@@ -483,13 +488,16 @@ fn a_resize_that_moves_percentage_boxes_drops_the_memo() {
         doc.set_attribute(over, "style", "width: 150%; height: 12px");
         doc.append_child(row, over);
     }
-    doc.resolve_layout(800.0, 600.0);
-    assert_agree(&doc, "at 800");
+    // Narrow first, then grow: the extents cached at the narrow width are
+    // too *small* for the wide layout, which is the direction a stale memo
+    // prunes a real hit away in. (Shrinking leaves them too large — merely
+    // conservative — and passes with the invalidation removed.)
     doc.resolve_layout(530.0, 600.0);
     let before = reference_hit_test(&doc.tree, 700.0, 20.0);
     assert_agree(&doc, "at 530");
-    // Positive control: the resize did move a box across a probed point.
     doc.resolve_layout(800.0, 600.0);
+    assert_agree(&doc, "at 800");
+    // Positive control: the resize did move a box across a probed point.
     assert_ne!(
         reference_hit_test(&doc.tree, 700.0, 20.0),
         before,
