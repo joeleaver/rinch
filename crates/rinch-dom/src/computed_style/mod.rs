@@ -20,6 +20,9 @@ use serde::Serialize;
 pub struct ComputedStyle {
     // Display/position
     pub display: DisplayValue,
+    /// Which part of a CSS table this box is (#1083): `display` maps every
+    /// table part to a flex or block container and cannot say.
+    pub table_part: TablePart,
     pub position: PositionValue,
     pub overflow_x: OverflowValue,
     pub overflow_y: OverflowValue,
@@ -222,6 +225,7 @@ impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
             display: DisplayValue::default(),
+            table_part: TablePart::None,
             position: PositionValue::default(),
             overflow_x: OverflowValue::default(),
             overflow_y: OverflowValue::default(),

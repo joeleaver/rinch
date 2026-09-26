@@ -359,6 +359,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         ShapeIfcBuild,
         ShapeAtomicInline,
         EllipsisBuilds,
+        EllipsisShapes,
         ShapePaint,
         IfcMeasureCacheHits,
         IfcMeasureInvalidations,
@@ -731,6 +732,123 @@ fn remove_one_row() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 39),
             (PaintNodesVisited, 50),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A CSS table (#1083): `body > div.t (display: table) > [contents wrapper] >
+/// n × (row | cell)`, every cell holding one fixed-size block, so nothing is
+/// shaped and no number depends on a font. Rows go behind a `display:
+/// contents` wrapper, which is what a keyed `for` in `rsx!` emits.
+fn build_table(n: usize, rows: bool) -> Fixture {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    doc.load_css(
+        ".t { display: table; } .tr { display: table-row; } .td { display: table-cell; }
+         .blk { width: 30px; height: 20px; }",
+    );
+    let body = doc.body();
+    let t = doc.create_element("div");
+    doc.set_attribute(t, "class", "t");
+    let holder = if rows {
+        let w = doc.create_element("div");
+        doc.set_attribute(w, "style", "display: contents");
+        doc.append_child(t, w);
+        w
+    } else {
+        t
+    };
+    let mut items = Vec::new();
+    for _ in 0..n {
+        let cell = doc.create_element("div");
+        doc.set_attribute(cell, "class", "td");
+        let blk = doc.create_element("div");
+        doc.set_attribute(blk, "class", "blk");
+        doc.append_child(cell, blk);
+        let item = if rows {
+            let r = doc.create_element("div");
+            doc.set_attribute(r, "class", "tr");
+            doc.append_child(r, cell);
+            r
+        } else {
+            cell
+        };
+        doc.append_child(holder, item);
+        items.push(item);
+    }
+    doc.append_child(body, t);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = Fixture {
+        doc,
+        list: holder,
+        rows: items,
+        texts: Vec::new(),
+        chips: Vec::new(),
+        painter: TinySkiaPainter::new(VP.0 as u32, VP.1 as u32),
+    };
+    paint(&mut f);
+    f.doc.tree.perf.reset();
+    f
+}
+
+/// Reverse 200 table rows, moving each with `append_child` as a keyed `for`
+/// reorder does. The table's direction cannot change, and it costs **no**
+/// Taffy style sync (`taffy_style_syncs` 0): each move owes the table one
+/// direction check, deduplicated and answered once for the frame. The review
+/// of #1097 measured 200 syncs here — one per move — before the owed set.
+#[test]
+fn table_reverse_200_rows() {
+    let mut f = build_table(200, true);
+    let s = frame(&mut f, |f| {
+        let w = f.list;
+        for &r in f.rows.clone().iter().rev() {
+            f.doc.append_child(w, r);
+        }
+    });
+    expect(
+        "table: reverse 200 rows",
+        &s,
+        &[
+            (IfcMeasureInvalidations, 200),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 601),
+            (IfcScopeNodes, 602),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 200),
+            (PaintNodesVisited, 105),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// Remove 499 of a table's 500 bare cells. As above: no Taffy style sync for
+/// the table, however many removals — one direction check for the frame.
+/// The review of #1097 measured one sync per removal before the owed set.
+#[test]
+fn table_remove_499_of_500_cells() {
+    let mut f = build_table(500, false);
+    let s = frame(&mut f, |f| {
+        for &c in f.rows.clone().iter().skip(1) {
+            f.doc.remove_node(c);
+        }
+    });
+    expect(
+        "table: remove 499 of 500 cells",
+        &s,
+        &[
+            (IfcMeasureInvalidations, 499),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 1),
+            (IfcScopeNodes, 2),
+            (TaffyRootComputes, 1),
+            (PaintNodesVisited, 4),
+            (RemovalDamageSteps, 998),
             (StackingOrderBuilds, 1),
         ],
     );

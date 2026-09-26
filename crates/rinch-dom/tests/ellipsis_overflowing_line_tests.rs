@@ -265,3 +265,159 @@ fn text_align_still_lines_up_against_the_box_after_the_cut() {
         "`ab` ends at {right}, want the box edge 90"
     );
 }
+
+// ── #1103's review: content the flat rebuild cannot represent ──────────────
+//
+// A paragraph whose one overflowing word would otherwise be rebuilt as flat
+// text in the root's style keeps its layout as on main (clipped, no "…"): a
+// kept line's colour, an inline-block chip, a `visibility: hidden` span and a
+// smaller span must all survive. Chrome 153 keeps all four *and* draws the
+// "…"; that needs the cut made at paint time (#1100).
+
+/// `<div class=c>{build(div)}</div>` with a 120px box; returns the div.
+fn rich(build: impl FnOnce(&mut RinchDocument, NodeId)) -> (RinchDocument, NodeId) {
+    let mut d = doc();
+    d.load_css(
+        ".w { width: 120px; } .red { color: rgb(255, 0, 0); } \
+                .chip { display: inline-block; width: 14px; height: 10px; } \
+                .hid { visibility: hidden; } .small { font-size: 8px; }",
+    );
+    let body = d.body();
+    let div = d.create_element("div");
+    d.set_attribute(div, "class", "c w");
+    d.append_child(body, div);
+    build(&mut d, div);
+    d.resolve_layout(400.0, 300.0);
+    (d, div)
+}
+
+fn span(d: &mut RinchDocument, parent: NodeId, class: &str, text: &str) -> NodeId {
+    let s = d.create_element("span");
+    d.set_attribute(s, "class", class);
+    d.append_child(parent, s);
+    let t = d.create_text(text);
+    d.append_child(s, t);
+    s
+}
+
+fn add_text(d: &mut RinchDocument, parent: NodeId, text: &str) {
+    let t = d.create_text(text);
+    d.append_child(parent, t);
+}
+
+/// The root's layout kept whole: text ranges present, no "…" anywhere.
+fn assert_kept(d: &RinchDocument, div: NodeId, what: &str) -> usize {
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    assert!(
+        !il.text_content.contains('\u{2026}'),
+        "{what}: rebuilt flat"
+    );
+    assert!(!il.text_ranges.is_empty(), "{what}: text ranges lost");
+    assert!(
+        il.layout.len() >= 2,
+        "{what}: the overflow is on a later line"
+    );
+    il.text_ranges.len()
+}
+
+/// Each glyph run's (brush, font size) on the root's layout.
+fn runs(d: &RinchDocument, div: NodeId) -> Vec<(String, f32)> {
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    let mut out = Vec::new();
+    for line in il.layout.lines() {
+        for item in line.items() {
+            if let parley::layout::PositionedLayoutItem::GlyphRun(g) = item {
+                out.push((format!("{:?}", g.style().brush), g.run().font_size()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_coloured_span_on_a_kept_line_stays_coloured() {
+    let (d, div) = rich(|d, div| {
+        span(d, div, "red", "ab cd");
+        add_text(d, div, &format!(" ef {WORD} gh"));
+    });
+    assert_kept(&d, div, "colour");
+    let brushes: Vec<String> = runs(&d, div).into_iter().map(|r| r.0).collect();
+    let distinct: std::collections::HashSet<_> = brushes.iter().collect();
+    assert!(
+        distinct.len() >= 2,
+        "the red run kept its own brush: {brushes:?}"
+    );
+}
+
+#[test]
+fn an_inline_block_chip_on_a_kept_line_stays_in_place() {
+    let mut chip = None;
+    let (d, div) = rich(|d, div| {
+        add_text(d, div, "ab ");
+        let c = d.create_element("span");
+        d.set_attribute(c, "class", "chip");
+        d.append_child(div, c);
+        chip = Some(c);
+        add_text(d, div, &format!(" cd {WORD}"));
+    });
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    assert!(!il.text_content.contains('\u{2026}'), "rebuilt flat");
+    assert_eq!(
+        il.layout.inline_boxes().len(),
+        1,
+        "the chip is still on its line"
+    );
+    let x = d.tree.get(chip.unwrap().0).unwrap().layout.x;
+    assert!(
+        x > 10.0,
+        "the chip sits after `ab`, not at the origin: x = {x}"
+    );
+}
+
+#[test]
+fn a_hidden_span_on_a_kept_line_stays_hidden() {
+    let (d, div) = rich(|d, div| {
+        span(d, div, "hid", "secret");
+        add_text(d, div, &format!(" {WORD}"));
+    });
+    // The text ranges are what `TextMask` hides the span's glyphs by; a flat
+    // rebuild carries none, and paints "secret".
+    assert!(assert_kept(&d, div, "hidden") >= 2);
+}
+
+#[test]
+fn a_smaller_span_on_a_kept_line_keeps_its_size() {
+    let (d, div) = rich(|d, div| {
+        span(d, div, "small", "tiny tiny tiny tiny tiny tiny");
+        add_text(d, div, &format!(" {WORD}"));
+    });
+    assert_kept(&d, div, "small");
+    assert!(
+        runs(&d, div).iter().any(|r| r.1 == 8.0),
+        "an 8px run survives: {:?}",
+        runs(&d, div)
+    );
+}
+
+#[test]
+fn a_rich_nowrap_root_is_cut_whole_as_before() {
+    // `nowrap` on the root with a coloured span: the rebuild cannot keep the
+    // colour, and the root's single line is cut as it always was (flat, "…").
+    let (d, div) = rich(|d, div| {
+        d.set_attribute(div, "class", "c w nw");
+        span(d, div, "red", "ab cd");
+        add_text(d, div, &format!(" {WORD}"));
+    });
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    assert_eq!(il.layout.len(), 1);
+    assert!(
+        il.text_content.starts_with("ab cd "),
+        "{:?}",
+        il.text_content
+    );
+    assert!(
+        il.text_content.ends_with('\u{2026}'),
+        "{:?}",
+        il.text_content
+    );
+}
