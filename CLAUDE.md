@@ -1547,11 +1547,13 @@ editor drag-selects, `:active` — on a **left** release only; a right or middle
 release while the left button is held is a chord, and it used to drop a live
 element drag wherever the pointer was. `data-onmouseup` and a focused render
 surface still get every release with its button. A pointer-capture `Drag` ends
-through `rinch_core::finish_drag_for_button`, on the release of the button in
-the `ClickContext` it was started under, so a drag armed by a right press still
-ends on the right release (a right press's `data-rid` click context carries
-`Right` now; it said `Left`). A timer-armed drag takes whatever click context
-was last set. rinch-web keeps `finish_drag`: a browser's `pointerup` fires only
+through `rinch_core::finish_drag_for_button`, on the release of the button it
+belongs to: the button of the last press when `Drag::start` ran, which desktop
+reports for **every** press, handler or not, through
+`rinch_core::note_pointer_press` before dispatching it. So a drag armed by a
+right press ends on the right release, and one armed outside any press (a
+timer) belongs to the most recently pressed button. (A right press's `data-rid`
+click context also carries `Right` now; it said `Left`.) rinch-web keeps `finish_drag`: a browser's `pointerup` fires only
 once every button is up. A right or middle press also no longer starts,
 restarts or clears a read-only text selection. Pins:
 `app/mouse_up_button_1087_tests.rs`.

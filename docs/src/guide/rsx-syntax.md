@@ -255,7 +255,8 @@ or middle release while the left button still holds a drag is a chord, not the
 end of it: a left-armed `Drag` keeps following the pointer and commits on the
 left release, and the same holds for an element drag (it is not dropped), a
 scrollbar-thumb drag and a text-selection drag. A drag armed by a right press
-ends on the right release. The web gets this from the browser, whose
+ends on the right release, and a drag armed outside any press (a timer) belongs
+to whichever button was pressed last. The web gets this from the browser, whose
 `pointerup` fires only once every button is up.
 
 `onscroll` fires once per container that moved, whichever axis moved it, and
