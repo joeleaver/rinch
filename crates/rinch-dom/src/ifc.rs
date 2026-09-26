@@ -5773,17 +5773,41 @@ impl RinchDocument {
     /// by the change, keeps its signature and so keeps both.
     pub(crate) fn refresh_ifc_signatures(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
         let sigs = self.ifc_signatures(scope);
+        // Roots signed at an earlier pass that are roots no longer. Their
+        // `text_layout` alone cannot say so: a move verb has usually dropped
+        // it already (`invalidate_ifc_left_by`, on the IFC its node left), so
+        // a block whose only span moved to another parent held no layout by
+        // now, and its glyphs stayed on screen (#1064). The signature is what
+        // survives every invalidation until this pass.
+        let mut unrooted: Vec<usize> = Vec::new();
         match scope {
-            None => self
-                .tree
-                .ifc_measure_cache
-                .retain(|root, _| sigs.contains_key(root)),
+            None => self.tree.ifc_measure_cache.retain(|root, entry| {
+                let keep = sigs.contains_key(root);
+                if !keep && entry.signature.is_some() {
+                    unrooted.push(*root);
+                }
+                keep
+            }),
             Some(scope) => {
                 for &id in &scope.rootable {
-                    if !sigs.contains_key(&id) {
-                        self.tree.ifc_measure_cache.remove(&id);
+                    if !sigs.contains_key(&id)
+                        && let Some(entry) = self.tree.ifc_measure_cache.remove(&id)
+                        && entry.signature.is_some()
+                    {
+                        unrooted.push(id);
                     }
                 }
+            }
+        }
+        // One still holding a layout is pushed below, with the layout.
+        for id in unrooted {
+            if self
+                .tree
+                .nodes
+                .get(id)
+                .is_some_and(|n| n.text_layout.is_none())
+            {
+                self.tree.paint_dirty_nodes.push(id);
             }
         }
         // A node that is no longer an IFC root keeps no layout from when it
