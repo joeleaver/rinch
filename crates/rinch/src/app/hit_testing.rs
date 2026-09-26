@@ -36,7 +36,9 @@ pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usi
 fn local_point(node: &rinch_dom::Node, nx: f32, ny: f32, px: f32, py: f32) -> Option<(f32, f32)> {
     use peniko::kurbo::{Affine, Point};
 
-    if node.computed_style.transform.is_identity {
+    // A plain inline span's transform does not apply (#1080), and paint's
+    // composition skips it, so the inverse must too.
+    if !node.has_applied_transform() {
         return Some((px, py));
     }
     // A display:contents node has no box, so paint gives it no transform box
