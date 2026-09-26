@@ -300,3 +300,186 @@ fn a_click_on_the_empty_line_between_two_breaks_lands_between_them() {
     assert_eq!(f.head(), 6);
     f.done();
 }
+
+// ── The capture-textarea mirror: IME commits and autocorrect ─────────────────
+//
+// Every keyboard edit the web lets the browser make lands in the hidden capture
+// textarea and is recovered by diffing it against the mirror of the caret's
+// block. The mirror used to be `text_content()`, which has no character for a
+// leaf, so a char offset right after a `<br>` named both sides of it, as the
+// byte offset did (#1025). On Android every keyboard word is a composition.
+
+impl F {
+    fn capture(&self) -> web_sys::HtmlTextAreaElement {
+        document()
+            .query_selector("textarea[data-pm-capture]")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap()
+    }
+    /// The paragraph's content with a hard break as `|` and an image as `#`.
+    fn para(&self) -> String {
+        let doc = self.handle.doc();
+        let p = doc.child(0);
+        (0..p.child_count())
+            .map(|i| {
+                let c = p.child(i);
+                match c.text() {
+                    Some(t) => t.to_string(),
+                    None if c.type_name() == "hard_break" => "|".into(),
+                    None => "#".into(),
+                }
+            })
+            .collect()
+    }
+    /// An IME composes `data` at the textarea's caret and commits it: the
+    /// field's value is what the browser leaves there.
+    fn compose(&self, data: &str) {
+        let ta = self.capture();
+        let v = ta.value();
+        let at = ta.selection_start().unwrap().unwrap() as usize;
+        let units: Vec<u16> = v.encode_utf16().collect();
+        let now = String::from_utf16(&units[..at]).unwrap()
+            + data
+            + &String::from_utf16(&units[at..]).unwrap();
+        composition(&ta, "compositionstart", "");
+        composition(&ta, "compositionupdate", data);
+        ta.set_value(&now);
+        let end = (at + data.encode_utf16().count()) as u32;
+        ta.set_selection_range(end, end).unwrap();
+        composition(&ta, "compositionend", data);
+    }
+}
+
+fn composition(ta: &web_sys::HtmlTextAreaElement, name: &str, data: &str) {
+    let init = web_sys::CompositionEventInit::new();
+    init.set_bubbles(true);
+    init.set_data(data);
+    let ev = web_sys::CompositionEvent::new_with_event_init_dict(name, &init).unwrap();
+    ta.dispatch_event(&ev).unwrap();
+}
+
+/// A composition committed at the start of the line after a break lands after
+/// it: `alpha<br>Xbravo`. At #1101's first head: `alphaX<br>bravo`. The mirror
+/// gives the break a character of its own, so the IME sees the line break too.
+#[wasm_bindgen_test]
+fn a_composition_after_a_break_lands_after_it() {
+    let f = F::new("<p>alpha<br>bravo</p>");
+    let b = f.char_rect(1, 0);
+    f.click(b.x() + 1.0, b.y() + b.height() / 2.0);
+    assert_eq!(f.head(), 6, "precondition: the caret is after the break");
+    let ta = f.capture();
+    assert_eq!(ta.value(), "alpha\nbravo", "the mirror holds the break");
+    assert_eq!(ta.selection_start().unwrap(), Some(6));
+    f.compose("X");
+    assert_eq!(f.para(), "alpha|Xbravo");
+    assert_eq!(f.head(), 7, "the caret follows the commit");
+    f.done();
+}
+
+/// The other side: a composition committed at the end of the line before the
+/// break stays before it (`alphaX<br>bravo`).
+#[wasm_bindgen_test]
+fn a_composition_before_a_break_stays_before_it() {
+    let f = F::new("<p>alpha<br>bravo</p>");
+    let a = f.char_rect(0, 4);
+    f.click(a.right() - 1.0, a.y() + a.height() / 2.0);
+    assert_eq!(f.head(), 5);
+    f.compose("X");
+    assert_eq!(f.para(), "alphaX|bravo");
+    assert_eq!(f.head(), 6);
+    f.done();
+}
+
+/// An image: a composition right after it lands after it. Two leaves ahead of
+/// the point (an image and a break) so a mirror that counted only one of them
+/// would land between.
+#[wasm_bindgen_test]
+fn a_composition_after_an_image_lands_after_it() {
+    let f = F::new(&format!(
+        "<p>ab<br>alpha<img src=\"{GIF}\" alt=\"\">bravo</p>"
+    ));
+    f.block()
+        .query_selector("img")
+        .unwrap()
+        .unwrap()
+        .set_attribute("style", "width: 24px; height: 16px")
+        .unwrap();
+    let b = f.char_rect(2, 0);
+    f.click(b.x() + 1.0, b.y() + b.height() / 2.0);
+    assert_eq!(f.head(), 9, "precondition: after the image");
+    assert_eq!(f.capture().value(), "ab\nalpha\u{FFFC}bravo");
+    f.compose("X");
+    assert_eq!(f.para(), "ab|alpha#Xbravo");
+    f.done();
+}
+
+/// Autocorrect replaces the word after a break (`insertReplacementText`,
+/// reconciled from the field on `input`): the break survives.
+#[wasm_bindgen_test]
+fn an_autocorrect_of_the_word_after_a_break_keeps_the_break() {
+    let f = F::new("<p>alpha<br>bravo</p>");
+    let b = f.char_rect(1, 4);
+    f.click(b.right() - 1.0, b.y() + b.height() / 2.0);
+    assert_eq!(f.head(), 11);
+    let ta = f.capture();
+    ta.set_value("alpha\nBravo");
+    ta.set_selection_range(11, 11).unwrap();
+    let init = web_sys::InputEventInit::new();
+    init.set_bubbles(true);
+    init.set_input_type("insertReplacementText");
+    let ev = web_sys::InputEvent::new_with_event_init_dict("input", &init).unwrap();
+    ta.dispatch_event(&ev).unwrap();
+    assert_eq!(f.para(), "alpha|Bravo");
+    assert_eq!(f.head(), 11);
+    f.done();
+}
+
+/// An astral character (a surrogate pair: two UTF-16 units, one model
+/// position) before a break: the DOM point's UTF-16 offset is counted as
+/// characters. From the review of #1101 (p1).
+#[wasm_bindgen_test]
+fn an_astral_character_before_a_break_counts_as_one() {
+    // a=0 😀=1 b=2 <br>=3 c=4
+    let f = F::new("<p>a\u{1F600}b<br>cd</p>");
+    let c = f.char_rect(1, 0);
+    f.click(c.x() + 1.0, c.y() + c.height() / 2.0);
+    assert_eq!(f.head(), 4, "after the break");
+    let b = f.char_rect(0, 3);
+    let (x, y) = (b.x() + 1.0, b.y() + b.height() / 2.0);
+    let (node, off) = dom_point(x, y);
+    assert!(
+        node == f.text_node(0) && off == 3,
+        "oracle: before `b`, UTF-16 unit 3"
+    );
+    f.click(x, y);
+    assert_eq!(f.head(), 2, "before `b`: the emoji is one position");
+    f.done();
+}
+
+/// Enter on a link after a break (a `click` with `detail == 0`, no pointer):
+/// the link is found from its anchor's first character, which is after the
+/// break. Before #1101 that character mapped before the break and the link was
+/// never offered. From the review of #1101 (p5).
+#[wasm_bindgen_test]
+fn enter_on_a_link_after_a_break_offers_it() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let f = F::new("<p>ab<br><a href=\"https://example.com/x\">link</a></p>");
+    let got: Rc<RefCell<Option<(usize, usize)>>> = Rc::default();
+    let g = got.clone();
+    f.handle.on_link_click(move |c| {
+        *g.borrow_mut() = Some((c.link.from.0, c.link.to.0));
+        true
+    });
+    let a = f.block().query_selector("a").unwrap().expect("anchor");
+    let init = web_sys::MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_detail(0);
+    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict("click", &init).unwrap();
+    a.dispatch_event(&ev).unwrap();
+    assert_eq!(*got.borrow(), Some((4, 8)));
+    f.done();
+}
