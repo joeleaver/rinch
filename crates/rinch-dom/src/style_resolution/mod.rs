@@ -752,10 +752,6 @@ impl RinchDocument {
         // pass: each hands its value down to the descendants that inherit it
         // once the loop is done (#759). Empty unless one is involved.
         let mut visibility_roots: Vec<usize> = Vec::new();
-        // Tables and row groups whose flex direction may have moved with
-        // their children (#1083); re-derived once the loop is done, when
-        // every child restyled on this pass carries its new style.
-        let mut table_containers: Vec<usize> = Vec::new();
 
         for node_id in dirty_node_ids {
             // Skip root and html nodes - their Taffy styles are manually set
@@ -1299,7 +1295,7 @@ impl RinchDocument {
                     && let Some(p) = self.tree.nodes[node_id].parent
                     && let Some(table) = Self::table_container_of(&self.tree, p)
                 {
-                    table_containers.push(table);
+                    self.tree.table_direction_owed.push(table);
                 }
             }
 
@@ -1462,11 +1458,7 @@ impl RinchDocument {
             }
 
             // Convert to Taffy style (from current computed_style which may have transition values)
-            let dd = self.default_display_for_node(node_id);
-            let mut taffy_style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
-            if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
-                taffy_style.flex_direction = dir;
-            }
+            let mut taffy_style = self.taffy_style_from_computed(node_id);
 
             // HTML element must fill the viewport and clip horizontal overflow
             // (mirrors browser behavior where the viewport constrains content width).
@@ -1575,29 +1567,9 @@ impl RinchDocument {
                 taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
             }
         }
-        if !table_containers.is_empty() {
-            table_containers.sort_unstable();
-            table_containers.dedup();
-            for id in table_containers {
-                let Some(dir) = Self::table_flex_direction(&self.tree, id) else {
-                    continue;
-                };
-                let Some(t) = self.tree.nodes[id].taffy_id else {
-                    continue;
-                };
-                if let Ok(old) = self.tree.taffy.style(t)
-                    && old.flex_direction != dir
-                    && !self.tree.nodes[id].taffy_style_owned_by_contents_splice()
-                {
-                    let mut st = old.clone();
-                    st.flex_direction = dir;
-                    let _ = self.tree.taffy.set_style(t, st);
-                    self.tree.layout_dirty = true;
-                    self.mark_atomic_inline_dirty(id);
-                    taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
-                }
-            }
-        }
+        // Children restyled on this pass carry their new table part now.
+        self.resolve_table_directions();
+
         let perf = &self.tree.perf;
         perf.add(
             crate::perf::Counter::TaffyStyleSyncs,
@@ -1717,14 +1689,68 @@ impl RinchDocument {
         }
     }
 
-    /// Queue `parent`'s table container for a Taffy re-sync after its child
-    /// list changed (#1083): which way it lays out depends on whether its
-    /// children are rows, and a removal restyles nothing that would say so.
+    /// Owe `parent`'s table container a direction check after its child list
+    /// changed (#1083): which way it lays out depends on whether its children
+    /// are rows, and neither a removal nor a move of an already-styled row
+    /// restyles anything that would say so. Consecutive changes under one
+    /// container are pushed once.
     pub(crate) fn note_table_children_changed(&mut self, parent: usize) {
-        if let Some(table) = Self::table_container_of(&self.tree, parent) {
-            self.tree.style_dirty_nodes.push(table);
-            self.tree.styles_dirty = true;
+        if let Some(table) = Self::table_container_of(&self.tree, parent)
+            && self.tree.table_direction_owed.last() != Some(&table)
+        {
+            self.tree.table_direction_owed.push(table);
+            self.tree.layout_dirty = true;
         }
+    }
+
+    /// Re-derive the flex direction of every table and row group owed one
+    /// ([`NodeTree::table_direction_owed`]) and write it to the Taffy style
+    /// where it moved — nothing else of the style, so this is no Taffy
+    /// re-sync. Run after the style sync and before every layout compute.
+    pub(crate) fn resolve_table_directions(&mut self) {
+        if self.tree.table_direction_owed.is_empty() {
+            return;
+        }
+        let mut owed = std::mem::take(&mut self.tree.table_direction_owed);
+        owed.sort_unstable();
+        owed.dedup();
+        for id in owed {
+            if !self.tree.contains(id) {
+                continue;
+            }
+            let Some(dir) = Self::table_flex_direction(&self.tree, id) else {
+                continue;
+            };
+            let Some(t) = self.tree.nodes[id].taffy_id else {
+                continue;
+            };
+            if let Ok(old) = self.tree.taffy.style(t)
+                && old.flex_direction != dir
+            {
+                let mut st = old.clone();
+                st.flex_direction = dir;
+                let _ = self.tree.taffy.set_style(t, st);
+                self.tree.layout_dirty = true;
+                self.mark_atomic_inline_dirty(id);
+                self.tree
+                    .perf
+                    .bump(crate::perf::Counter::TaffyStyleChanges);
+            }
+        }
+    }
+
+    /// The Taffy style `node_id`'s computed values produce — the one
+    /// rebuild every site that re-syncs a node's Taffy style from
+    /// `computed_style` starts from (the cascade's sync and both tick
+    /// re-syncs). It carries what the computed values alone cannot: a table's
+    /// or row group's direction, read from its children (#1083).
+    pub(crate) fn taffy_style_from_computed(&self, node_id: usize) -> taffy::Style {
+        let dd = self.default_display_for_node(node_id);
+        let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
+        if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
+            style.flex_direction = dir;
+        }
+        style
     }
 
     /// Set [`NodeTree::inline_text_shadows`] if `node_id` — just cascaded — is
