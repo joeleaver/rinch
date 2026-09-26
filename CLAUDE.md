@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, Taffy, Parley, and dual rendering backends (Vello for GPU, tiny-skia for software). The goal is to provide a reactive GUI framework using HTML/CSS for layout.
 
 **Key dependencies:**
-- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.12** in two places — `crates/rinch-dom/Cargo.toml` and the vendored `crates/stylo-taffy/Cargo.toml` — which must move together. 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height.
+- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.12** in two places — `crates/rinch-dom/Cargo.toml` and the vendored `crates/stylo-taffy/Cargo.toml` — which must move together. 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12's measure function returns a size only and its leaves and blocks report no baseline, so flex/grid `align-items: baseline` aligns every item by its bottom edge (#1013; 0.14's measure returns a `LayoutOutput` with baselines).
 - **parley** - Text shaping and line breaking, at the **published `0.11.1`**. It was a git `rev`
   on an unmerged 22-commit "Floats WIP" branch off `v0.7.0` until #659; upstream landed that work
   in 0.9.0, so nothing was lost by moving to the release line. Two things about the dependency line
@@ -30,6 +30,21 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     right in English: `y` is 0 for ordinary Latin shaping and non-zero only for mark positioning.
     `crates/rinch-dom/src/paint/text.rs` **adds** it, in the main pass and the shadow pass alike;
     `crates/rinch-dom/tests/glyph_y_ydown_tests.rs` is the pin, one fixture per site.
+  - **Preserved spaces do not hang in 0.11.1.** At a width a `pre-wrap` space overflows, parley
+    hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
+    is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC
+    breaks its lines, and puts the spaces back on the line they hang from; upstream's rework
+    (#790, #785) is unreleased. Spaces and tabs hang, NBSP does not (it glues, and after a hung run starts the next line). It is **one**
+    extra break of the paragraph, line by line, however many lines it fixes: the first version
+    restarted from line 0 per fixed line, which is quadratic (0.7–1.0 s for 1,600 double-spaced
+    lines). `ifc_hang_passes` counts those breaks, at most one per layout, and
+    `perf_regression_scenarios::a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass` pins it;
+    `ifc::hang_differential_tests` holds the old loop as the oracle. Likewise an IFC's measure is `InlineLayout::measured_width`, not
+    `Layout::width`: the latter drops a preserved trailing space that Chrome counts, and a box
+    sized without it wraps the space onto a line of its own (the editor's list bullet dropping a
+    line after "text "). Not for `pre-line`, which removes spaces at a line's end (though rinch
+    still keeps them in its text, #1043).
+    `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)
@@ -961,6 +976,15 @@ is coalesced (one pending `ReRender` at a time), so a callback queued between a
 wake's callback drain and its native-event drain would fold into the wake being
 served; the wake therefore asks `rinch_core::main_callbacks_pending()` after the
 native drain and owes itself another (`drain_wake_queues`, issue #988).
+Because the wake is coalesced on the queue, **library code must not push onto
+it with a bare `queue_main_callback`** where a host may be waking: that closure
+gets no wake, and the next sender from any thread finds the queue non-empty and
+asks for none either (issue #1035 — a video sink dropped off-thread did this).
+Use `rinch_core::dispatch_main_callback`, which goes through the registered
+dispatcher (or queues plainly when there is none) and, unlike
+`run_on_main_thread`, does not panic for a missing dispatcher and never runs
+inline — the shape a `Drop` needs. (The queue and the desktop dispatcher it
+reaches still `unwrap` their own locks.) A host's own dispatcher is the one place a bare push belongs.
 
 ## Native Menus
 
@@ -4510,11 +4534,15 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for sixteen benchmarks, on the
+It records Callgrind instruction counts (Gungraun) for every benchmark in the crate, on the
 PR's merge commit and on its first parent (the current `main` tip). The report
 is a table in the job summary and one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks
-cannot run them. The `perf-regression-accepted` label turns either failure into
+cannot run them. The base runs the head's benchmark sources, and its own when
+those do not build there — a new bench calling a new API (#1036) — so the rest
+are still compared and the new one shows as `new`; the report names what was
+not compared, and fails unlabelled if the head's copy also edits an existing
+scenario rather than only adding. The `perf-regression-accepted` label turns either failure into
 a warning, and the PR then explains the cost the same way a baseline change
 does. Inside the measured operation the bench binary bump-allocates
 (`rinch_bench::alloc`): glibc's malloc cost depends on heap history and moved

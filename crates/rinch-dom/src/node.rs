@@ -483,6 +483,51 @@ pub struct InlineLayout {
     pub decoration_spans: Vec<InlineDecorationSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
+    /// Whether spaces at the end of a line are content, not collapsed away:
+    /// `pre`, `pre-wrap` and every contenteditable root. Not `pre-line`, which
+    /// collapses spaces and removes them at the end of a line (CSS Text 3
+    /// §4.1.3). Read by [`Self::measured_width`].
+    pub preserves_spaces: bool,
+    /// What hanging the preserved spaces at a soft wrap cost this layout
+    /// (the `ifc_hang_*` perf counters).
+    pub hang: crate::ifc::HangStats,
+}
+
+impl InlineLayout {
+    /// The width this inline content asks for: what the IFC root's measure
+    /// reports to Taffy.
+    ///
+    /// Parley's [`Layout::width`](parley::Layout::width) leaves out every
+    /// line's trailing white space. That is right for collapsible spaces and
+    /// for spaces hanging at a soft wrap, but a preserved space at the end of
+    /// the text (or before a forced break) is content: Chrome's max-content
+    /// width of a `pre-wrap` `"bullet text "` is the text *and* its space
+    /// (78.91px on the bundled Inter at 16px, against 74.41px without). A box
+    /// sized to the narrower width then had to fit the space too, and it
+    /// wrapped onto a line of its own. So here a line that ends at a soft wrap
+    /// drops its trailing spaces (they hang) and any other line keeps them,
+    /// but only as far as the available width reaches: past it they hang
+    /// (CSS Text 4 §4.3, "conditionally hang"), so a width the text fits in is
+    /// never exceeded because of its spaces.
+    pub fn measured_width(&self) -> f32 {
+        let width = self.layout.width();
+        if !self.preserves_spaces {
+            return width;
+        }
+        use parley::layout::BreakReason;
+        let mut extent = width;
+        for line in self.layout.lines() {
+            if matches!(
+                line.break_reason(),
+                BreakReason::Regular | BreakReason::Emergency
+            ) {
+                continue;
+            }
+            let m = line.metrics();
+            extent = extent.max(m.inline_min_coord + m.advance);
+        }
+        extent.min(self.max_width.max(width))
+    }
 }
 
 impl std::fmt::Debug for InlineLayout {

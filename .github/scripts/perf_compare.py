@@ -17,8 +17,11 @@ read as a regression the label would excuse.
 
 A missing or empty base reports the head alone. That passes when the base has
 no benchmarks yet; with `--base-failed` (the base has `crates/rinch-bench` and
-its run still failed) it is a failure like a regression, and `--accepted`
-downgrades it the same way.
+neither the head's copy nor its own ran) it is a failure like a regression, and
+`--accepted` downgrades it the same way. `--base-own-sources` says the base ran
+its own copy (`perf_bench_base.sh`, #1036), which the report explains. Whenever
+there is a base, the report says how many benchmarks were compared and names
+the ones only one side has.
 """
 
 import argparse
@@ -71,6 +74,12 @@ def main():
     ap.add_argument("--head-label", default="head")
     ap.add_argument("--base-failed", action="store_true",
                     help="the base has the benchmarks and they did not run: fail")
+    ap.add_argument("--base-own-sources", action="store_true",
+                    help="the base ran its own copy of crates/rinch-bench, because "
+                         "the head's did not build or run on it (#1036)")
+    ap.add_argument("--base-sources-diff",
+                    help="with --base-own-sources: the lines the head's copy of "
+                         "crates/rinch-bench changes or removes; any makes this fail")
     ap.add_argument("--note", default="", help="an extra line under the table")
     ap.add_argument("--out")
     args = ap.parse_args()
@@ -79,7 +88,13 @@ def main():
     if head is None:
         print(f"{args.head}: no benchmark results", file=sys.stderr)
         sys.exit(2)
-    base = load(args.base)
+    # A base that did not complete is no baseline, whatever lines it left: a
+    # copy that panicked midway must not be compared as if it had run.
+    base = None if args.base_failed else load(args.base)
+    changed = []
+    if base is not None and args.base_own_sources and args.base_sources_diff:
+        with open(args.base_sources_diff, encoding="utf-8") as f:
+            changed = [l.rstrip("\n") for l in f if l.strip()]
 
     regressed, improved = [], []
     rows = []
@@ -111,15 +126,28 @@ def main():
                 else "**fails this check**")
         lines.append(
             f"The benchmarks did not build or run on `{args.base_label}`, which has "
-            f"them, so nothing could be compared — {verb}. Usually the PR changed an "
-            "API the benchmarks call without updating `crates/rinch-bench`, or a "
-            "benchmark panics on the base."
+            f"them, with either the head's copy of `crates/rinch-bench` or its own, so "
+            f"nothing could be compared — {verb}. Usually one of the base's own "
+            "benchmarks panics there."
         )
     elif base is None:
         lines.append(
             f"No baseline: the benchmarks did not run on `{args.base_label}` "
             "(it has no `crates/rinch-bench` yet). Head only; nothing is compared."
         )
+    elif changed:
+        verb = ("accepted by the `perf-regression-accepted` label" if args.accepted
+                else "**fails this check**")
+        lines.append(
+            f"**The head's copy of `crates/rinch-bench` did not build or run on "
+            f"`{args.base_label}`, and this PR changes existing benchmark sources, so the "
+            f"Δs below may compare different scenarios** — {verb}. A scenario made "
+            "cheaper would hide a real regression. Say in the PR what changed and why."
+        )
+        if regressed:
+            lines.append("")
+            lines.append(f"{len(regressed)} benchmark(s) also grew by more than "
+                         f"{args.threshold:g}%.")
     elif regressed:
         verb = "accepted by the `perf-regression-accepted` label" if args.accepted else "**fails this check**"
         lines.append(
@@ -130,6 +158,36 @@ def main():
         lines.append(
             f"No benchmark grew by more than {args.threshold:g}% against `{args.base_label}`."
         )
+    if base is not None:
+        both = sorted(set(head) & set(base))
+        head_only = sorted(set(head) - set(base))
+        base_only = sorted(set(base) - set(head))
+        coverage = f"Compared {len(both)} of {len(set(head) | set(base))} benchmarks."
+        if head_only:
+            coverage += " Not compared, head only (new): " + ", ".join(f"`{n}`" for n in head_only) + "."
+        if base_only:
+            coverage += " Not compared, base only (removed): " + ", ".join(f"`{n}`" for n in base_only) + "."
+        lines += ["", coverage]
+    if base is not None and args.base_own_sources and changed:
+        shown = changed[:60]
+        lines += [
+            "",
+            "The base ran its own copy. Lines the head's copy changes or removes "
+            "(each hunk's header names the function it is in):",
+            "",
+            "```diff",
+            *shown,
+            *([f"… {len(changed) - len(shown)} more"] if len(changed) > len(shown) else []),
+            "```",
+        ]
+    elif base is not None and args.base_own_sources:
+        lines += [
+            "",
+            f"The head's copy of `crates/rinch-bench` did not build or run on "
+            f"`{args.base_label}`, so the base ran its own copy. The head's copy only "
+            "adds to it, so every benchmark compared here runs the same scenario on "
+            "both sides.",
+        ]
     lines += [
         "",
         f"| Benchmark | {args.base_label} | {args.head_label} | Δ | |",
@@ -157,7 +215,10 @@ def main():
     base_failed = base is None and args.base_failed
     if base_failed:
         print(f"::{kind} title=perf baseline::the benchmarks did not run on the base")
-    failed = bool(regressed) or base_failed
+    if changed:
+        print(f"::{kind} title=perf baseline::the base ran its own benchmark sources and "
+              "this PR changes existing ones; the Δs may compare different scenarios")
+    failed = bool(regressed) or base_failed or bool(changed)
     return 1 if failed and not args.accepted else 0
 
 
