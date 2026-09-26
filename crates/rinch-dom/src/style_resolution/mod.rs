@@ -1123,6 +1123,13 @@ impl RinchDocument {
                 self.tree.nodes[node_id].computed_style = new_style.clone();
             }
 
+            // An inline element that casts a `text-shadow` other than its
+            // parent's makes its IFC's runs cast more than one list (#1048);
+            // until one does, paint skips looking for them.
+            if !self.tree.inline_text_shadows {
+                self.note_inline_text_shadow(node_id);
+            }
+
             // --- Animation logic ---
             //
             // Whether a sample this cascade writes can change how the node's
@@ -1592,6 +1599,34 @@ impl RinchDocument {
                 out.push(c);
             }
             self.collect_absolute_descendants(c, out);
+        }
+    }
+
+    /// Set [`NodeTree::inline_text_shadows`] if `node_id` — just cascaded — is
+    /// an element whose text an IFC root draws (a non-atomic inline, or a
+    /// `display: contents` wrapper) and it casts a `text-shadow` other than
+    /// its parent's (#1048). A block, and every atomic inline, is an IFC root
+    /// itself, or lends its list to the anonymous box that is one; its runs
+    /// cast that root's list.
+    pub(crate) fn note_inline_text_shadow(&mut self, node_id: usize) {
+        let tree = &mut self.tree;
+        let Some(node) = tree.nodes.get(node_id) else {
+            return;
+        };
+        let style = &node.computed_style;
+        if !matches!(
+            style.display,
+            crate::computed_style::DisplayValue::Inline
+                | crate::computed_style::DisplayValue::Contents
+        ) {
+            return;
+        }
+        let parent = node
+            .parent
+            .and_then(|p| tree.nodes.get(p))
+            .map_or(&[][..], |p| p.computed_style.text_shadow.as_slice());
+        if style.text_shadow.as_slice() != parent {
+            tree.inline_text_shadows = true;
         }
     }
 

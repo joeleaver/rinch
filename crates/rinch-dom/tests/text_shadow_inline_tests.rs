@@ -514,3 +514,81 @@ fn a_span_shadow_mask_covers_only_the_spans_lines() {
         images[0]
     );
 }
+
+// ── What pays for the per-run walk ───────────────────────────────────────────
+
+/// A page where no inline element casts a list of its own never turns the
+/// per-run walk on: a paragraph's own shadow, a block's, an inline that
+/// inherits. One that does turns it on.
+///
+/// Kills: the flag set by any non-empty `text-shadow` (every page with a
+/// shadowed heading pays the walk: the Perf job's `hover_frame` measured
+/// +4.1% for the walk on a page with no shadow at all).
+#[test]
+fn only_an_inline_casting_its_own_list_turns_the_walk_on() {
+    for html in [
+        r#"<p class="t">Ham<span>burg</span></p>"#,
+        r#"<p class="t red">Ham<span>burg</span></p>"#,
+        r#"<div class="red"><p class="t">Ham<span>burg</span></p></div>"#,
+        r#"<p class="t"><span style="display: inline-block" class="red">Ham</span></p>"#,
+    ] {
+        assert!(!doc_with(html).tree.inline_text_shadows, "{html}");
+    }
+    for html in [
+        r#"<p class="t">Ham<span class="red">burg</span></p>"#,
+        r#"<p class="t red">Ham<span class="none">burg</span></p>"#,
+    ] {
+        assert!(doc_with(html).tree.inline_text_shadows, "{html}");
+    }
+}
+
+/// A `display: contents` wrapper's own list reaches its text.
+///
+/// Kills: the flag ignoring `display: contents` (the wrapper's text casts
+/// nothing).
+#[test]
+fn a_contents_wrapper_casts_its_own_shadow() {
+    let ops = record(
+        &mut doc_with(
+            r#"<p class="t">Ham<b style="display: contents; font-weight: normal" class="red">burg</b></p>"#,
+        ),
+        1.0,
+    );
+    let main = main_glyphs(&ops, 7);
+    assert_points(
+        &glyphs_in(&ops, RED),
+        &moved(&main, 3..7, 0.0, 40.0, 1.0),
+        "the wrapper's text",
+    );
+}
+
+/// Generated content casts its pseudo-element's own list.
+///
+/// Kills: the pseudo-element cascade not turning the walk on (a page whose
+/// only span shadow is on a `::before` draws none).
+#[test]
+fn a_before_pseudo_element_casts_its_own_shadow() {
+    let mut doc = RinchDocument::new();
+    {
+        use parley::fontique::{Blob, FontInfoOverride};
+        doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeFace"),
+                ..Default::default()
+            }),
+        );
+    }
+    doc.load_css(CSS);
+    doc.load_css(".g::before { content: \"Ham\"; text-shadow: 0 40px 0 rgb(255, 0, 0); }");
+    let body = doc.body();
+    doc.set_inner_html(body, r#"<p class="t g">burg</p>"#);
+    doc.resolve_layout(VW, VH);
+    let ops = record(&mut doc, 1.0);
+    let main = main_glyphs(&ops, 7);
+    assert_points(
+        &glyphs_in(&ops, RED),
+        &moved(&main, 0..3, 0.0, 40.0, 1.0),
+        "the generated text",
+    );
+}

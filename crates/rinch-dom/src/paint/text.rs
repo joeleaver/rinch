@@ -355,15 +355,17 @@ impl<'a> ShadowGroup<'a> {
         root_hidden: bool,
     ) -> Option<Vec<Self>> {
         // Asked of every IFC on every paint: answer the common case without
-        // allocating.
-        if inline_layout
-            .text_ranges
-            .iter()
-            .filter(|r| !r.is_br)
-            .all(|r| {
-                range_element(tree, r)
-                    .is_none_or(|e| e.computed_style.text_shadow.as_slice() == root_shadows)
-            })
+        // allocating, and without walking the runs at all while no inline
+        // element has ever cast a list of its own.
+        if !tree.inline_text_shadows
+            || inline_layout
+                .text_ranges
+                .iter()
+                .filter(|r| !r.is_br)
+                .all(|r| {
+                    range_element(tree, r)
+                        .is_none_or(|e| e.computed_style.text_shadow.as_slice() == root_shadows)
+                })
         {
             return None;
         }

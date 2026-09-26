@@ -168,7 +168,10 @@ pub fn compute_damage(
         let w = node.layout.width as f64 * scale;
         let h = node.layout.height as f64 * scale;
 
-        let mut ink = Outsets::from_css(ink_outsets_in(node, |id| tree.get(id)), scale);
+        let mut ink = Outsets::from_css(
+            ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get(id)),
+            scale,
+        );
         // A positioned box that moved carries its whole painted subtree with
         // it (see the doc above). A subtree the walk cannot bound answers
         // `UNBOUNDED` and the frame repaints in full.
@@ -229,7 +232,10 @@ pub fn compute_damage(
             // Grown by the shadows the root's text casts, the node's own
             // among them (#1048): where they are now, and — from the ink the
             // root was last painted with — where they were.
-            let root_ink = Outsets::from_css(ink_outsets_in(root, |id| tree.get(id)), scale);
+            let root_ink = Outsets::from_css(
+                ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get(id)),
+                scale,
+            );
             if rw > 0.0
                 && rh > 0.0
                 && add(
@@ -306,7 +312,10 @@ pub fn compute_damage(
                 let (ox, oy, ot) = compute_absolute_position_and_transform(tree, owner, scale);
                 let ow = owner_node.layout.width as f64 * scale;
                 let oh = owner_node.layout.height as f64 * scale;
-                let ink = Outsets::from_css(ink_outsets_in(owner_node, |id| tree.get(id)), scale);
+                let ink = Outsets::from_css(
+                    ink_outsets_in(owner_node, tree.inline_text_shadows, |id| tree.get(id)),
+                    scale,
+                );
                 if add(
                     ot.transform_rect_bbox(ink.grow(Rect::new(ox, oy, ox + ow, oy + oh))),
                     clip_now(owner),
@@ -543,24 +552,32 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
     if cs.box_shadow.is_empty()
         && cs.text_shadow.is_empty()
         && cs.outline_width <= 0.0
-        && node.text_layout.is_none()
+        && (node.text_layout.is_none() || !tree.inline_text_shadows)
     {
         return r;
     }
-    Outsets::from_css(ink_outsets_in(node, |id| tree.get(id)), scale).grow(r)
+    Outsets::from_css(
+        ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get(id)),
+        scale,
+    )
+    .grow(r)
 }
 
 /// The `text-shadow` lists the text of IFC root `node` casts other than
 /// `node`'s own: those an inline element on the way down to a text run
 /// declared (#1048). Empty for anything that is not an IFC root, and for a
-/// root whose every run inherits its list. `get` looks a node up.
+/// root whose every run inherits its list. `get` looks a node up; `enabled` is
+/// [`NodeTree::inline_text_shadows`] — while no inline element has ever cast
+/// a list of its own, nothing is walked.
 pub(crate) fn member_text_shadows<'a>(
     node: &'a Node,
+    enabled: bool,
     get: impl Fn(RawNodeId) -> Option<&'a Node> + 'a,
 ) -> impl Iterator<Item = &'a [crate::computed_style::TextShadowValue]> + 'a {
     let own = node.computed_style.text_shadow.as_slice();
     node.text_layout
         .iter()
+        .filter(move |_| enabled)
         .flat_map(|l| l.text_ranges.iter())
         .filter(|r| !r.is_br)
         .filter_map(move |r| get(r.node_id)?.parent.and_then(&get))
@@ -574,10 +591,11 @@ pub(crate) fn member_text_shadows<'a>(
 /// shadow is ink of the root that draws it.
 pub(crate) fn ink_outsets_in<'a>(
     node: &'a Node,
+    enabled: bool,
     get: impl Fn(RawNodeId) -> Option<&'a Node> + 'a,
 ) -> [f32; 4] {
     let mut o = own_ink_outsets(&node.computed_style);
-    for list in member_text_shadows(node, get) {
+    for list in member_text_shadows(node, enabled, get) {
         let m = text_shadow_outsets(list);
         for (side, reach) in o.iter_mut().zip(m) {
             *side = side.max(reach);
