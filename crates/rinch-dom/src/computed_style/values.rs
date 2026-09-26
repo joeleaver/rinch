@@ -110,8 +110,8 @@ pub enum TablePart {
 }
 
 impl TablePart {
-    /// Whether this box's children lay out as a flex container whose direction
-    /// depends on them (see `ifc`'s table direction pass).
+    /// Whether this box is a flex container whose direction depends on its
+    /// children (`RinchDocument::table_flex_direction`).
     pub fn holds_rows(self) -> bool {
         matches!(self, Self::Table | Self::RowGroup)
     }
