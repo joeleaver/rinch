@@ -124,7 +124,11 @@ A focused `<select>` is **closed**, like a browser's: Enter, Space or Alt+Down
 opens its popup, and the popup then owns the keyboard until it commits or is
 dismissed — at which point focus returns to the closed control, so Tab carries
 on from there rather than restarting. (A click *outside* the popup is the
-exception: it belongs to whatever it landed on.) Everything else focusable activates the nearest ancestor-or-self
+exception: it belongs to whatever it landed on.) The pointer opens and picks
+with the **primary button only**, as in a browser: a right or middle press on the
+closed control does not open it, and one on an option picks nothing and leaves
+the list open — but a press of any button *outside* the list dismisses it.
+Everything else focusable activates the nearest ancestor-or-self
 `data-rid` on Enter/Space, which is what makes `div { tabindex: "0", onclick: … }`
 behave like a button — and what makes Space on a `Checkbox`'s visually hidden
 `<input>` toggle the `<label>` that wraps it.
