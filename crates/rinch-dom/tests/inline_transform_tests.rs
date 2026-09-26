@@ -298,3 +298,117 @@ fn the_painted_state_records_no_transform_for_an_inline_span() {
     assert!(x > 0.0, "positive control: the child sits after text");
     assert_eq!((r.x0, r.y0, r.width(), r.height()), (x, y, 20.0, 10.0));
 }
+
+// ── paint, in pixels ─────────────────────────────────────────────────────────
+
+/// Paint composes each node's transform itself (`paint_node` →
+/// `compose_node_transform`), not through the position helper above, whose
+/// untransformed fast path would hide a composition that still applied the
+/// span's transform. So the pixels: the red inline-block is drawn at its
+/// laid-out box, and nothing is drawn where the span's `translateX(30px)`
+/// would have put it. Twin: an `inline-block` span does move it.
+#[cfg(feature = "software-renderer")]
+#[test]
+fn a_transformed_span_paints_its_inline_block_child_in_place() {
+    use peniko::Brush;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    let paint = |span_style: &str| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let d = el(
+            &mut doc,
+            "div",
+            body,
+            "height: 60px; font-size: 16px; line-height: 20px",
+        );
+        let span = el(&mut doc, "span", d, span_style);
+        let ib = el(
+            &mut doc,
+            "span",
+            span,
+            "display: inline-block; width: 20px; height: 10px; background: #ff0000",
+        );
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, ib.0, 1.0);
+        let mut painter = TinySkiaPainter::new(200, 100);
+        let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            (200.0, 100.0),
+            &mut doc.font_cx,
+            &mut layout_cx,
+        );
+        let px = |px: f64, py: f64| {
+            let idx = ((py as u32 * painter.width() + px as u32) * 4) as usize;
+            let d = painter.pixels();
+            [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
+        };
+        // The box's centre, and the same point 30px right (outside the box).
+        (px(x + 10.0, y + 5.0), px(x + 40.0, y + 5.0))
+    };
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    let (at, moved) = paint("transform: translateX(30px)");
+    assert_eq!(at, RED, "the child is painted at its laid-out box");
+    assert_ne!(moved, RED, "and not where the transform would put it");
+    let (at, moved) = paint("display: inline-block; transform: translateX(30px)");
+    assert_ne!(at, RED, "twin: an atomic span's transform moves it away…");
+    assert_eq!(moved, RED, "…by 30px");
+}
+
+/// A **split** inline (#513: a block inside an inline) keeps a box of its own,
+/// so paint does compose through it — the case the flowed span above cannot
+/// reach. Chrome 153: `div(80px tall) > "ab" + span(translateX(30px)) >
+/// ("xy", div 20x10, "zz")` puts the block at `0,20,20,10`, untransformed. So
+/// the block is painted at its laid-out box and not 30px right of it.
+#[cfg(feature = "software-renderer")]
+#[test]
+fn a_split_inlines_transform_does_not_move_its_block_child() {
+    use peniko::Brush;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let d = el(
+        &mut doc,
+        "div",
+        body,
+        "height: 80px; font-size: 16px; line-height: 20px",
+    );
+    text(&mut doc, d, "ab");
+    let span = el(&mut doc, "span", d, "transform: translateX(30px)");
+    text(&mut doc, span, "xy");
+    let b = el(
+        &mut doc,
+        "div",
+        span,
+        "width: 20px; height: 10px; background: #ff0000",
+    );
+    text(&mut doc, span, "zz");
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    let (x, y, t) = rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, b.0, 1.0);
+    let p = t * peniko::kurbo::Point::new(x, y);
+    assert_eq!((p.x, p.y), (0.0, 20.0), "Chrome: 0,20");
+
+    let mut painter = TinySkiaPainter::new(200, 100);
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        (200.0, 100.0),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    let px = |x: u32, y: u32| {
+        let idx = ((y * painter.width() + x) * 4) as usize;
+        let d = painter.pixels();
+        [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
+    };
+    assert_eq!(px(10, 25), [255, 0, 0, 255], "painted at its laid-out box");
+    assert_ne!(px(40, 25), [255, 0, 0, 255], "not where the transform puts it");
+}
