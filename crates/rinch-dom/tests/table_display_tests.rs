@@ -44,7 +44,11 @@ fn ellipsis_for(display: &str) -> Option<bool> {
     let wrap = el(&mut doc, body, "");
     let x = el(&mut doc, wrap, &format!("display: {display}"));
     doc.set_attribute(x, "class", "clip");
-    text(&mut doc, x, "Hello wonderful world of text, far too long for ninety px");
+    text(
+        &mut doc,
+        x,
+        "Hello wonderful world of text, far too long for ninety px",
+    );
     doc.resolve_layout(400.0, 300.0);
     doc.tree
         .get(x.0)
@@ -108,7 +112,10 @@ fn a_cells_blocks_stack_while_the_cells_stay_side_by_side() {
 
     assert_eq!((c1x, c1y), (0.0, 0.0), "c1");
     assert_eq!(c2y, 0.0, "c2 shares c1's row");
-    assert!(c2x >= c1w && c2x > 0.0, "c2 sits right of c1: c2.x {c2x}, c1.w {c1w}");
+    assert!(
+        c2x >= c1w && c2x > 0.0,
+        "c2 sits right of c1: c2.x {c2x}, c1.w {c1w}"
+    );
     assert_eq!((a1x, a1y), (0.0, 0.0), "a1");
     assert_eq!((b1x, b1y), (0.0, 20.0), "b1 stacks under a1");
     assert_eq!(c1h, 40.0, "c1 holds two 20px lines");
