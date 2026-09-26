@@ -3164,8 +3164,12 @@ let tray = TrayIconBuilder::new()
   and gives up after `BUILD_WAIT` (5 s) with `TrayError::CreateFailed` (no new
   variant: `TrayError` is exhaustive, so one would break downstream matches).
   A setup that finishes after the give-up goes to `on_late`, which shuts the
-  late service down, because the callbacks were released with the error.
-  Pinned by `a_bounded_run_*` and the `#[ignore]`d
+  late service down, because the callbacks were released with the error
+  (`spawn_bounded`). Each timed-out build leaves its setup thread and D-Bus
+  connection waiting on the hung watcher (the setup cannot be cancelled), so an
+  app must not retry `build()` in a tight loop.
+  Pinned by `a_bounded_run_*`,
+  `a_tray_service_that_arrives_after_the_build_gave_up_is_shut_down`, and the `#[ignore]`d
   `live_building_a_tray_under_a_hung_watcher_is_bounded` (fixture run with
   `--hang-first`).
 - **`TrayIcon` is `!Send`/`!Sync`** on every platform, deliberately: its
