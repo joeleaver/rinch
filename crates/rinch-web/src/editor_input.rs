@@ -2377,7 +2377,10 @@ fn is_wrap_below(handle: &EditorHandle, head: Pos, edge: Pos) -> bool {
 /// logical positions, so the positions whose caret is drawn above, on and below
 /// the caret's line are three consecutive runs, and a binary search over the
 /// caret's hard line (the textblock, cut at its hard breaks — [`hard_line`])
-/// finds the edge in a handful of `Range` rects. End takes the last position
+/// finds the edge in a handful of `Range` rects. That holds for the rects only
+/// as long as each says where its position is drawn: beside an image it reads
+/// the image's own box ([`leaf_rect`]), and the downstream rect after a
+/// soft-hyphen break is the glyph's, not the range's (#1115). End takes the last position
 /// whose **upstream** caret is not below the line, so the end of a wrapped
 /// line is the wrap point (the next line's start, drawn upstream); Home the
 /// first whose **downstream** caret is not above it. Because nothing is hit
@@ -2399,8 +2402,12 @@ fn visual_line_bound(handle: &EditorHandle, head: Pos, end: bool) -> Option<Pos>
     // the two rects share more than half the shorter one's height (adjacent
     // lines at `line-height: 1` overlap by a sliver, a taller span on the same
     // line contains the caret), else above or below by their middles.
+    let doc = handle.doc();
     let side = |p: usize, affinity: CaretAffinity| -> Option<Ordering> {
-        let r = handle.caret_rect_with_affinity(Pos(p), affinity)?;
+        let r = match leaf_rect(handle, &doc, Pos(p), affinity) {
+            Some(r) => r,
+            None => handle.caret_rect_with_affinity(Pos(p), affinity)?,
+        };
         let overlap = (r.y + r.height).min(hy + hh) - r.y.max(hy);
         Some(if overlap > 0.5 * r.height.min(hh) {
             Ordering::Equal
@@ -2433,6 +2440,60 @@ fn visual_line_bound(handle: &EditorHandle, head: Pos, end: bool) -> Option<Pos>
         }
         Some(Pos(ok as usize))
     }
+}
+
+/// The box of the inline leaf — an image — on `affinity`'s side of `p`: the
+/// one just before `p` upstream, just after it downstream. `None` when that
+/// side holds text, a hard break (which [`hard_line`] already cuts at) or
+/// nothing.
+///
+/// The view gives an inline leaf no bytes, so the caret rects of the positions
+/// on its two sides are one rect — the text before it upstream, the character
+/// after it downstream — and neither says which line the leaf itself is on.
+/// Read from them, [`visual_line_bound`]'s End stepped past an image that
+/// starts the next line and Home stopped before one that ends the previous
+/// line. The leaf's own box answers that. Found as the nth `[data-pm-type]`
+/// element under the textblock, which is the nth leaf child in the model:
+/// marks wrap leaves without carrying the attribute.
+fn leaf_rect(
+    handle: &EditorHandle,
+    doc: &rinch_editor_core::Node,
+    p: Pos,
+    affinity: CaretAffinity,
+) -> Option<rinch_core::reactive::ElementBounds> {
+    let r = doc.resolve(p).ok()?;
+    if r.text_offset() > 0 {
+        return None;
+    }
+    let parent = r.parent();
+    let after = r.index(r.depth());
+    let i = match affinity {
+        CaretAffinity::Upstream => after.checked_sub(1)?,
+        CaretAffinity::Downstream => after,
+    };
+    if i >= parent.child_count() {
+        return None;
+    }
+    let leaf = parent.child(i);
+    if leaf.is_text() || leaf.type_name() == "hard_break" {
+        return None;
+    }
+    let nth = (0..i).filter(|&j| !parent.child(j).is_text()).count();
+    let (tb, _) = handle.caret_address(p)?;
+    let el = node_by_nid(tb)?.dyn_into::<web_sys::Element>().ok()?;
+    let b = el
+        .query_selector_all("[data-pm-type]")
+        .ok()?
+        .item(nth as u32)?
+        .dyn_into::<web_sys::Element>()
+        .ok()?
+        .get_bounding_client_rect();
+    Some(rinch_core::reactive::ElementBounds {
+        x: b.x() as f32,
+        y: b.y() as f32,
+        width: b.width() as f32,
+        height: b.height() as f32,
+    })
 }
 
 /// The model range `(start, end)` of the hard line `head` is on: its
