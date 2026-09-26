@@ -2522,7 +2522,11 @@ A third one is gone: **clipping no longer forms a stacking context** — see
 **A non-atomic `display: inline` element never clips** (#591 PR 1), whatever its
 `overflow` computes to — `overflow` applies to block, flex and grid containers
 (css-overflow-3 §3), and an inline *box* is none of those; an `inline-block` is a
-block container and still clips. The predicate says so, not `clip_shape`, so the
+block container and still clips. So does a **replaced element or form control at
+`display: inline`** (`<img>`, `<svg>`, `<input>`, `<button>`, …): it is an atomic
+inline whatever its `display` says, as in Chrome, and its `display_mode` is
+`InlineBlock` (`node::is_atomic_at_display_inline`, #1089 — it used to be a flowed
+inline with a `0x0` box). The predicate says so, not `clip_shape`, so the
 bracket, the chain, hit testing's gate and the dirty-region prune all agree. The
 rinch-specific reason it had to be said: a *flowed* inline element owns no box
 (`Node::is_flowed_inline_element` — its `layout` is zeroed and `E ghost box`

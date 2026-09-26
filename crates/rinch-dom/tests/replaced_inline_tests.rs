@@ -16,15 +16,21 @@
 //! container's height). So the font-independent statement of the rule is
 //! "`display: inline` lays out exactly as `display: inline-block`", which is
 //! what each fixture asserts — plus the 20x20 size, which is what the broken
-//! code got wrong (it reported `0x0`).
+//! code got wrong (it reported `0x0`). `min-width: 0` is there because
+//! rinch's UA sheet gives `<select>` a 60px `min-width` Chrome does not.
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 use rinch_dom::node::DisplayMode;
 
-const TAGS: [&str; 6] = ["img", "input", "button", "svg", "select", "textarea"];
+/// The six the UA sheet makes `inline-block`, and five more Chrome 153 also
+/// renders as a 20x20 atomic box at `display: inline`.
+const TAGS: [&str; 11] = [
+    "img", "input", "button", "svg", "select", "textarea", "video", "canvas", "iframe", "meter",
+    "progress",
+];
 
-const BOX: &str = "width: 20px; height: 20px; padding: 0; border: 0; margin: 0; \
+const BOX: &str = "width: 20px; height: 20px; min-width: 0; padding: 0; border: 0; margin: 0; \
                    box-sizing: border-box; transform: translateX(30px); background: red";
 
 /// Build `div > "ab" + <tag style="display: {display}; …">` and return the

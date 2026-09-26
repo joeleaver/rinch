@@ -1359,6 +1359,16 @@ impl RinchDocument {
 
             // Sync display_mode from computed style (always from new_style target)
             let display_mode = match new_style.display {
+                // A replaced element or form control is an atomic inline even
+                // at `display: inline` (#1089) — see
+                // `node::is_atomic_at_display_inline`.
+                crate::computed_style::DisplayValue::Inline
+                    if self.tree.nodes[node_id]
+                        .tag()
+                        .is_some_and(crate::node::is_atomic_at_display_inline) =>
+                {
+                    DisplayMode::InlineBlock
+                }
                 crate::computed_style::DisplayValue::Inline => DisplayMode::Inline,
                 crate::computed_style::DisplayValue::InlineBlock => DisplayMode::InlineBlock,
                 crate::computed_style::DisplayValue::InlineFlex => DisplayMode::InlineFlex,
