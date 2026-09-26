@@ -351,6 +351,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         IfcSignatureChanges,
         IfcHangPasses,
         IfcHangLines,
+        IfcPhantomRebreaks,
         LayoutResolves,
         LayoutSkippedPaintOnly,
         LayoutSkippedTextOnly,

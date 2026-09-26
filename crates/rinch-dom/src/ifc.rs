@@ -151,6 +151,9 @@ pub struct HangStats {
     pub passes: u32,
     /// Lines broken a second time at a widened width to keep their spaces.
     pub lines: u32,
+    /// Extra breaks of the whole paragraph to drop parley's empty line after
+    /// an overflowing last inline box (#1050): 0 or 1.
+    pub phantom_rebreaks: u32,
 }
 
 impl HangStats {
@@ -158,6 +161,10 @@ impl HangStats {
     pub(crate) fn record(&self, perf: &crate::perf::PerfCounters) {
         perf.add(crate::perf::Counter::IfcHangPasses, u64::from(self.passes));
         perf.add(crate::perf::Counter::IfcHangLines, u64::from(self.lines));
+        perf.add(
+            crate::perf::Counter::IfcPhantomRebreaks,
+            u64::from(self.phantom_rebreaks),
+        );
     }
 }
 
@@ -239,6 +246,7 @@ pub(crate) fn break_lines_hanging_spaces(
             Some(max) => stats = hang_pass(layout, text, max, Some(keep)),
             None => break_lines_up_to(layout, max_width, keep),
         }
+        stats.phantom_rebreaks = 1;
     }
     stats
 }

@@ -877,6 +877,42 @@ fn an_inline_block_hangs_its_spaces_in_one_pass() {
     );
 }
 
+/// #1050: a paragraph whose last item is an inline box too wide for its
+/// line. Parley commits an empty line after it, which `ifc_phantom_rebreaks`
+/// counts breaking the paragraph once more without.
+#[test]
+fn an_overflowing_last_chip_is_rebroken_without_parleys_empty_line() {
+    let mut doc = doc_with(
+        ".p { width: 200px; } .chip { display: inline-block; width: 300px; height: 80px; }",
+    );
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "x ");
+    el(&mut doc, p, "span", "chip");
+    let s = cold_frame(&mut doc);
+    expect("overflowing last chip", &s, &[]);
+}
+
+/// #1050's cost on the common shape: a flex item's paragraph that *ends* in a
+/// small chip. Its min-content measure breaks at width 0, where every box
+/// takes parley's emergency branch, so the chip is an overflowing last item
+/// there and that measure is broken once more.
+#[test]
+fn a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure() {
+    let mut doc = doc_with(
+        ".row { display: flex; width: 300px; } .chip { display: inline-block; width: 16px; height: 16px; }",
+    );
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let row = el(&mut doc, body, "div", "row");
+    let p = el(&mut doc, row, "div", "");
+    text(&mut doc, p, &"lorem ipsum ".repeat(30));
+    el(&mut doc, p, "span", "chip");
+    let s = cold_frame(&mut doc);
+    expect("flex item ending in a chip", &s, &[]);
+}
+
 // ── a detached subtree is not measured (#1040) ─────────────────────────────
 //
 // `set_text_content` orphans an element's children without freeing them, so
