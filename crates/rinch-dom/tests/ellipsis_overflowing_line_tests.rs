@@ -120,19 +120,25 @@ fn each_overflowing_line_of_pre_text_gets_its_own_ellipsis() {
 
 #[test]
 fn nowrap_on_an_inline_span_overflows_the_line_and_gets_the_ellipsis() {
+    span_on_one_line("nw");
+    // `pre` forbids wrapping too.
+    span_on_one_line("pre");
+}
+
+fn span_on_one_line(class: &str) {
     let mut d = doc();
     let body = d.body();
     let div = d.create_element("div");
     d.set_attribute(div, "class", "c");
     d.append_child(body, div);
     let span = d.create_element("span");
-    d.set_attribute(span, "class", "nw");
+    d.set_attribute(span, "class", class);
     d.append_child(div, span);
     let t = d.create_text("long run much too long");
     d.append_child(span, t);
     d.resolve_layout(400.0, 300.0);
     let got = lines(&d, t);
-    assert_eq!(got.len(), 1, "Chrome 153: the span does not wrap; got {got:?}");
+    assert_eq!(got.len(), 1, "{class}: Chrome 153: the span does not wrap; got {got:?}");
     let prefix = got[0]
         .strip_suffix('\u{2026}')
         .unwrap_or_else(|| panic!("Chrome 153: `long run …`; got {got:?}"));
