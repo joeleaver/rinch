@@ -36,7 +36,9 @@ pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usi
 fn local_point(node: &rinch_dom::Node, nx: f32, ny: f32, px: f32, py: f32) -> Option<(f32, f32)> {
     use peniko::kurbo::{Affine, Point};
 
-    if node.computed_style.transform.is_identity {
+    // A plain inline span's transform does not apply (#1080), and paint's
+    // composition skips it, so the inverse must too.
+    if !node.has_applied_transform() {
         return Some((px, py));
     }
     // A display:contents node has no box, so paint gives it no transform box
@@ -376,7 +378,7 @@ fn flow_subtree_may_contain(
     // context can be either, and callers never hand one in — but a box that
     // is one anyway is simply walked.
     if child.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed
-        || !child.computed_style.transform.is_identity
+        || child.has_applied_transform()
     {
         return true;
     }
@@ -1694,6 +1696,86 @@ mod tests {
             Some(container.0),
             "where that transform would have put the child must miss"
         );
+    }
+
+    /// A `transform` on a plain inline span does not apply (#1080, CSS
+    /// Transforms 1 §1): Chrome 153 puts an `inline-block` inside
+    /// `span { transform: translateX(30px) }` exactly where it is with no
+    /// transform, so paint draws it there and hit testing must find it there.
+    /// Fails before #1080: the probe at the untranslated box missed and the
+    /// one 30px right of it hit.
+    #[test]
+    fn an_inline_spans_transform_does_not_move_its_inline_block_child() {
+        let (mut doc, container) = container_doc();
+        doc.set_attribute(
+            container,
+            "style",
+            "position: relative; width: 400px; height: 300px; font-size: 16px; line-height: 20px",
+        );
+        let span = doc.create_element("span");
+        doc.set_attribute(span, "style", "transform: translateX(30px)");
+        doc.append_child(container, span);
+        let ib = doc.create_element("span");
+        doc.set_attribute(
+            ib,
+            "style",
+            "display: inline-block; width: 20px; height: 10px",
+        );
+        doc.append_child(span, ib);
+        doc.resolve_layout(800.0, 600.0);
+        let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, ib.0, 1.0);
+        let (x, y) = (x as f32, y as f32);
+        assert!(
+            !doc.tree
+                .get(span.0)
+                .unwrap()
+                .computed_style
+                .transform
+                .is_identity,
+            "the test needs a real transform declared on the span"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, x + 10.0, y + 5.0),
+            Some(ib.0),
+            "the inline-block is hit at its laid-out box"
+        );
+        assert_ne!(
+            hit_test(&doc.tree, x + 40.0, y + 5.0),
+            Some(ib.0),
+            "where the span's transform would have put it must miss"
+        );
+    }
+
+    /// The split-inline twin (#513: a block inside the transformed span, which
+    /// keeps a box of its own). Chrome 153: `elementFromPoint(10, 25)` is the
+    /// block and `(40, 25)` is the span — the transform moves nothing.
+    #[test]
+    fn a_split_inlines_transform_does_not_move_its_block_child() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let d = child_of(
+            &mut doc,
+            body,
+            "height: 80px; font-size: 16px; line-height: 20px",
+        );
+        let ab = doc.create_text("ab");
+        doc.append_child(d, ab);
+        let span = doc.create_element("span");
+        doc.set_attribute(span, "style", "transform: translateX(30px)");
+        doc.append_child(d, span);
+        let xy = doc.create_text("xy");
+        doc.append_child(span, xy);
+        let b = child_of(&mut doc, span, "width: 20px; height: 10px");
+        let zz = doc.create_text("zz");
+        doc.append_child(span, zz);
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(
+            hit_test(&doc.tree, 10.0, 25.0),
+            Some(b.0),
+            "the block, in place"
+        );
+        assert_ne!(hit_test(&doc.tree, 40.0, 25.0), Some(b.0), "not 30px right");
     }
     // ── CSS 2.1 Appendix E step 8: positioned descendants with `z-index: auto`
     //

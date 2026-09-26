@@ -1301,7 +1301,9 @@ impl Node {
     /// - `position` is not `static` AND `z-index` is explicitly set (not `auto`)
     /// - `position` is `fixed` or `sticky`, whatever the `z-index`
     /// - `opacity < 1.0`
-    /// - `transform` is non-identity
+    /// - `transform` is non-identity **and applies** — not on a non-atomic
+    ///   `display: inline` element, which is not transformable (#1080; see
+    ///   [`Self::transform_applies`])
     ///
     /// **Not the whole CSS list, and the shortfall is not only an
     /// expressibility one.** `clip-path`, `mask`, `isolation`,
@@ -1378,10 +1380,48 @@ impl Node {
         if self.computed_style.opacity < 1.0 {
             return true;
         }
-        if !self.computed_style.transform.is_identity {
+        if self.has_applied_transform() {
             return true;
         }
         false
+    }
+
+    /// Whether `transform` **applies** to this node: it is not a non-atomic
+    /// `display: inline` element (issue #1080).
+    ///
+    /// CSS Transforms 1 §1 applies `transform` to *transformable elements* —
+    /// block-level, atomic inline-level and replaced ones. A plain `<span>` is
+    /// none of those, so its `transform` moves nothing, establishes no
+    /// containing block and creates no stacking context. Measured in Chrome
+    /// 153: an `inline-block` inside `span { transform: translateX(30px) }`
+    /// sits exactly where it does with no transform, and an absolute under
+    /// that span resolves against the initial containing block
+    /// (`offsetParent` is `BODY`). The **computed** value is kept —
+    /// `getComputedStyle(span).transform` reports the matrix — so this is asked
+    /// wherever the transform's *effect* is read, never by rewriting the
+    /// style.
+    ///
+    /// The set is the one [`Self::clips_overflow`] excludes, for the same
+    /// reason: an element whose [`DisplayMode`] is `Inline`, flowed, split or
+    /// unmarked alike. rinch has no `display: inline` replaced element to carve
+    /// out of it: `img`, `svg` and the form controls are `inline-block` in the
+    /// UA sheet, and a `display: inline` one is flowed content that owns no box
+    /// (#635), so there is nothing a transform could move.
+    ///
+    /// `display: contents` is **not** decided here: the two predicates below
+    /// exclude it themselves, and paint's transform composition treats it by
+    /// its own (zero-size) rule.
+    pub fn transform_applies(&self) -> bool {
+        !(self.is_element() && self.display_mode == DisplayMode::Inline)
+    }
+
+    /// Whether this node carries a non-identity `transform` that
+    /// [applies](Self::transform_applies) — the question every consumer of the
+    /// transform's effect asks: stacking, the containing block, paint's
+    /// composition ([`crate::paint::compose_node_transform`]), the painted
+    /// state the damage walk replays, and hit testing's inverse.
+    pub fn has_applied_transform(&self) -> bool {
+        !self.computed_style.transform.is_identity && self.transform_applies()
     }
 
     /// The `position` this element's **box** is placed, anchored and stacked
@@ -1507,7 +1547,12 @@ impl Node {
     ///
     /// Per CSS that is any *positioned* element — `position` other than
     /// `static` — plus, since a transform makes an element the containing block
-    /// for all its descendants, any element with a non-identity `transform`.
+    /// for all its descendants, any element with a non-identity `transform`
+    /// that **applies** ([`Self::has_applied_transform`]): a plain
+    /// `display: inline` span is not transformable, so `span { transform: … }`
+    /// contains nothing while `span { position: relative }` does (issue #1080,
+    /// measured in Chrome 153 — the absolute's `offsetParent` is `BODY` in the
+    /// first case and the span in the second).
     /// Overflow deliberately does not count. It never established a containing
     /// block; it used to form a *stacking context*, and this line used to cite
     /// that as the reason the two questions are separate. Since #324 stage B it
@@ -1551,7 +1596,7 @@ impl Node {
         !matches!(
             self.computed_style.position,
             crate::computed_style::PositionValue::Static
-        ) || !self.computed_style.transform.is_identity
+        ) || self.has_applied_transform()
     }
 
     /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.
@@ -2854,7 +2899,7 @@ impl PaintedState {
         get: impl Fn(RawNodeId) -> Option<&'a Node> + 'a,
     ) -> Self {
         let cs = &node.computed_style;
-        let transform = (!cs.transform.is_identity).then(|| {
+        let transform = node.has_applied_transform().then(|| {
             Box::new(PaintedTransform {
                 value: cs.transform.clone(),
                 origin: (

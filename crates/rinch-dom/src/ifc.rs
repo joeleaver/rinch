@@ -720,7 +720,8 @@ impl RinchDocument {
             // text-overflow: ellipsis — if text overflows the container, truncate and add "…"
             {
                 use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
-                let cs = &self.tree.nodes[root_id].computed_style;
+                let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
+                    .computed_style;
                 let container_width = max_width.unwrap_or(f32::INFINITY);
                 // A grid (or flex) container holding only text is laid out
                 // here as an IFC root, but that text is an anonymous item of
@@ -764,6 +765,32 @@ impl RinchDocument {
             // its text reaches the screen only through this root. Paint-only:
             // the layout that asked for this rebuild has already run.
             self.tree.paint_dirty_nodes.push(root_id);
+        }
+    }
+
+    /// The node whose style decides an IFC root's `text-overflow: ellipsis`
+    /// (#1071): the root itself, unless it is an anonymous block box, when it
+    /// is the box's `parent` — its block container.
+    ///
+    /// An anonymous box carries only the inherited properties
+    /// ([`crate::computed_style::ComputedStyle::for_anonymous_box`]), and
+    /// `text-overflow` and `overflow` are not inherited — yet its lines are its
+    /// block container's lines, clipped by that container's `overflow`, and
+    /// Chrome 153 draws the container's "…" on them. The boxes of a `<span>`
+    /// split around a block child (#513) are minted with the span's block
+    /// container as their `parent` too, which is the box Chrome asks.
+    /// `white-space` is read there as well; the box inherits it, so the answer
+    /// is the same.
+    ///
+    /// The anonymous box holds none of what this reads, so a restyle of the
+    /// container must re-shape it: `invalidate_text_measure_for_node` drops
+    /// every box in the container's `run_boxes`
+    /// (`ellipsis_anonymous_box_tests.rs`).
+    fn ellipsis_style_owner(nodes: &slab::Slab<Node>, root_id: usize) -> usize {
+        let root = &nodes[root_id];
+        match root.parent {
+            Some(parent) if root.is_anonymous_block_box => parent,
+            _ => root_id,
         }
     }
 
@@ -5773,17 +5800,41 @@ impl RinchDocument {
     /// by the change, keeps its signature and so keeps both.
     pub(crate) fn refresh_ifc_signatures(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
         let sigs = self.ifc_signatures(scope);
+        // Roots signed at an earlier pass that are roots no longer. Their
+        // `text_layout` alone cannot say so: a move verb has usually dropped
+        // it already (`invalidate_ifc_left_by`, on the IFC its node left), so
+        // a block whose only span moved to another parent held no layout by
+        // now, and its glyphs stayed on screen (#1064). The signature is what
+        // survives every invalidation until this pass.
+        let mut unrooted: Vec<usize> = Vec::new();
         match scope {
-            None => self
-                .tree
-                .ifc_measure_cache
-                .retain(|root, _| sigs.contains_key(root)),
+            None => self.tree.ifc_measure_cache.retain(|root, entry| {
+                let keep = sigs.contains_key(root);
+                if !keep && entry.signature.is_some() {
+                    unrooted.push(*root);
+                }
+                keep
+            }),
             Some(scope) => {
                 for &id in &scope.rootable {
-                    if !sigs.contains_key(&id) {
-                        self.tree.ifc_measure_cache.remove(&id);
+                    if !sigs.contains_key(&id)
+                        && let Some(entry) = self.tree.ifc_measure_cache.remove(&id)
+                        && entry.signature.is_some()
+                    {
+                        unrooted.push(id);
                     }
                 }
+            }
+        }
+        // One still holding a layout is pushed below, with the layout.
+        for id in unrooted {
+            if self
+                .tree
+                .nodes
+                .get(id)
+                .is_some_and(|n| n.text_layout.is_none())
+            {
+                self.tree.paint_dirty_nodes.push(id);
             }
         }
         // A node that is no longer an IFC root keeps no layout from when it

@@ -215,11 +215,17 @@ jobs:
       # `clippy-wasm` below lints rinch-web itself, but warnings from a
       # *dependency* are not denied there, so a broken `rinch` would surface as a
       # confusing rinch-web failure rather than here.
+      # #1088: the three `embed` combinations above ran `--lib` only, so a
+      # `#[cfg(test)]` module that assumed a desktop-only item (`crate::shell`,
+      # `crate::editor`) went unchecked — `--features embed --all-targets`
+      # failed to compile with three E0432/E0433 errors, unnoticed because
+      # nothing in CI built the `embed` test target. Cheap to widen (this only
+      # builds `rinch`, ~15s each here), so all three now run `--all-targets`.
       - name: Check rinch feature combinations
         run: |
-          cargo clippy -p rinch --features embed -- -D warnings
-          cargo clippy -p rinch --no-default-features --features embed -- -D warnings
-          cargo clippy -p rinch --features gpu,embed -- -D warnings
+          cargo clippy -p rinch --features embed --all-targets -- -D warnings
+          cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
+          cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native
