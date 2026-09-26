@@ -187,3 +187,64 @@ fn a_press_of_any_button_outside_an_open_overlay_asks_it_to_close() {
         assert_eq!(closes.get(), 3, "{kind}: a middle press outside");
     }
 }
+
+/// A live `data-oncontextmenu` above a backdrop takes the right press first
+/// (the contextmenu claim is offered before the click path); a stale one (its
+/// handler freed, #141) is no handler and leaves the press to the backdrop.
+/// The web twin is `rinch-web/tests/right_press_click_1093.rs`.
+#[test]
+fn a_contextmenu_handler_above_a_backdrop_takes_the_right_press() {
+    for live in [true, false] {
+        let (closes, cb) = recorder();
+        let menus: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let m = menus.clone();
+        let mut app = mount(move |s| {
+            let wrap = s.create_element("div");
+            let ctx = s.register_handler(move || m.set(m.get() + 1));
+            if !live {
+                events::unregister_handler(ctx);
+            }
+            wrap.set_attribute("data-oncontextmenu", &ctx.0.to_string());
+            let pop = Popover {
+                opened_fn: Some(Rc::new(|| true)),
+                onclose: Some(cb.clone()),
+                ..Default::default()
+            }
+            .render(s, &[]);
+            wrap.append_child(&pop);
+            wrap
+        });
+        press(&mut app, OUTSIDE, MouseButton::Right);
+        if live {
+            assert_eq!(
+                (closes.get(), menus.get()),
+                (0, 1),
+                "a live handler takes it"
+            );
+            press(&mut app, OUTSIDE, MouseButton::Left);
+            assert_eq!(closes.get(), 1, "positive control: a left press dismisses");
+        } else {
+            assert_eq!((closes.get(), menus.get()), (1, 0), "a stale one does not");
+        }
+    }
+}
+
+/// `data-backdrop` follows rinch's `data-` boolean convention: `"false"` (any
+/// case) is off, and `"0"` is on — `data_attr_is_on`, like `data-nofocus`.
+#[test]
+fn data_backdrop_false_is_not_a_backdrop() {
+    for (value, expected) in [("", 1usize), ("false", 0), ("FALSE", 0), ("0", 1)] {
+        let hits: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let h = hits.clone();
+        let mut app = mount(move |s| {
+            let b = s.create_element("div");
+            b.set_attribute("style", "width: 800px; height: 600px");
+            b.set_attribute(events::BACKDROP_ATTRIBUTE, value);
+            let id = s.register_handler(move || h.set(h.get() + 1));
+            b.set_attribute("data-rid", &id.0.to_string());
+            b
+        });
+        press(&mut app, OUTSIDE, MouseButton::Right);
+        assert_eq!(hits.get(), expected, "data-backdrop={value:?}");
+    }
+}

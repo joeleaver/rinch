@@ -258,11 +258,17 @@ mod tests {
         }
     }
 
-    /// The four deliberate additions, so removing one is a test failure rather
+    /// The five deliberate additions, so removing one is a test failure rather
     /// than a silent narrowing.
     #[test]
-    fn the_non_spec_additions_are_the_documented_four() {
-        for name in ["hidden", "data-disabled", "data-nofocus", "data-trap-focus"] {
+    fn the_non_spec_additions_are_the_documented_five() {
+        for name in [
+            "hidden",
+            "data-disabled",
+            "data-nofocus",
+            "data-trap-focus",
+            "data-backdrop",
+        ] {
             assert!(
                 is_boolean_attribute(name),
                 "{name} must be written by presence"

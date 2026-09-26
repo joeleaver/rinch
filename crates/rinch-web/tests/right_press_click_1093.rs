@@ -107,3 +107,156 @@ fn a_backdrop_runs_for_every_button() {
     host.remove();
     assert_eq!(n, 3, "left, right and middle each dismiss");
 }
+
+fn contextmenu(el: &web_sys::Element) {
+    let init = web_sys::MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_button(2);
+    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+}
+
+/// A `Popover` open inside an element whose `data-oncontextmenu` is `ctx`:
+/// `(host, root, closes, contextmenus)`.
+fn popover_in_context_target(
+    live_ctx: bool,
+) -> (
+    web_sys::Element,
+    rinch_web::RootHandle,
+    Rc<Cell<u32>>,
+    Rc<Cell<u32>>,
+) {
+    use rinch::components::Popover;
+    use rinch_core::Component;
+    let closes = Rc::new(Cell::new(0u32));
+    let menus = Rc::new(Cell::new(0u32));
+    let (cl, mn) = (closes.clone(), menus.clone());
+    let host = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| {
+            let wrap = scope.create_element("div");
+            let ctx = scope.register_handler(move || mn.set(mn.get() + 1));
+            if !live_ctx {
+                rinch_core::events::unregister_handler(ctx);
+            }
+            wrap.set_attribute("data-oncontextmenu", &ctx.0.to_string());
+            let pop = Popover {
+                opened_fn: Some(Rc::new(|| true)),
+                onclose: Some(rinch_core::Callback::new(move || cl.set(cl.get() + 1))),
+                ..Default::default()
+            }
+            .render(scope, &[]);
+            wrap.append_child(&pop);
+            wrap
+        },
+    );
+    (host, root, closes, menus)
+}
+
+fn popover_backdrop() -> web_sys::Element {
+    document()
+        .query_selector(".rinch-popover__backdrop")
+        .unwrap()
+        .expect("the popover mounted its backdrop")
+}
+
+/// A live `data-oncontextmenu` above a backdrop takes the right press: the
+/// contextmenu handler runs and the backdrop does not dismiss (as on desktop,
+/// where the contextmenu claim is offered first). A left press there dismisses.
+#[wasm_bindgen_test]
+fn a_contextmenu_handler_above_a_backdrop_takes_the_right_press() {
+    let (host, root, closes, menus) = popover_in_context_target(true);
+    let backdrop = popover_backdrop();
+    press(&backdrop, 2, 2);
+    contextmenu(&backdrop);
+    let after_right = (closes.get(), menus.get());
+    press(&backdrop, 0, 1);
+    let after_left = closes.get();
+    root.unmount();
+    host.remove();
+    assert_eq!(
+        after_right,
+        (0, 1),
+        "(closes, contextmenus) after the right press"
+    );
+    assert_eq!(after_left, 1, "positive control: a left press dismisses");
+}
+
+/// A **stale** `data-oncontextmenu` (its handler freed, #141) is no handler, so
+/// it does not hold a right press back from the backdrop — desktop's rule.
+#[wasm_bindgen_test]
+fn a_stale_contextmenu_attribute_does_not_block_a_backdrop() {
+    let (host, root, closes, _) = popover_in_context_target(false);
+    press(&popover_backdrop(), 2, 2);
+    let n = closes.get();
+    root.unmount();
+    host.remove();
+    assert_eq!(n, 1, "the right press on the backdrop dismissed");
+}
+
+/// `data-backdrop="false"` is rinch's `data-` escape: not a backdrop. `"0"` is.
+#[wasm_bindgen_test]
+fn data_backdrop_false_is_not_a_backdrop() {
+    for (value, expected) in [("false", 0u32), ("FALSE", 0), ("0", 1)] {
+        let count = Rc::new(Cell::new(0u32));
+        let c = count.clone();
+        let host = document().create_element("div").unwrap();
+        document().body().unwrap().append_child(&host).unwrap();
+        let root = rinch_web::mount_into(
+            &host,
+            ThemeProviderProps::default(),
+            move |scope: &mut RenderScope| {
+                let b = scope.create_element("div");
+                b.set_attribute("id", "f1093");
+                b.set_attribute("style", "width: 100px; height: 30px");
+                b.set_attribute(rinch_core::events::BACKDROP_ATTRIBUTE, value);
+                let c = c.clone();
+                let id = scope.register_handler(move || c.set(c.get() + 1));
+                b.set_attribute("data-rid", &id.0.to_string());
+                b
+            },
+        );
+        let el = document().get_element_by_id("f1093").unwrap();
+        press(&el, 2, 2);
+        let n = count.get();
+        root.unmount();
+        host.remove();
+        assert_eq!(n, expected, "data-backdrop={value:?}");
+    }
+}
+
+/// A draggable's click is deferred to the release; a right press and release
+/// that never became a drag is not a click either. Left is the control.
+#[wasm_bindgen_test]
+fn a_right_press_on_a_draggable_does_not_click_on_release() {
+    let count = Rc::new(Cell::new(0u32));
+    let c = count.clone();
+    let host = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| {
+            let b = scope.create_element("div");
+            b.set_attribute("id", "d1093");
+            b.set_attribute("draggable", "true");
+            b.set_attribute("style", "width: 100px; height: 30px");
+            let c = c.clone();
+            let id = scope.register_handler(move || c.set(c.get() + 1));
+            b.set_attribute("data-rid", &id.0.to_string());
+            b
+        },
+    );
+    let el = document().get_element_by_id("d1093").unwrap();
+    press(&el, 2, 2);
+    let right = count.get();
+    press(&el, 0, 1);
+    let left = count.get() - right;
+    root.unmount();
+    host.remove();
+    assert_eq!((right, left), (0, 1), "(right, left) clicks on a draggable");
+}
