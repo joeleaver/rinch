@@ -147,11 +147,10 @@ Command names are case-sensitive. The full catalogue:
 > read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
 >
 > Where this still differs from a browser field:
-> - **Desktop, beside a hard break or an image**: a paragraph holding one takes no
->   clicks, and a caret after a hard break (Shift+Enter) is drawn one character
->   early (#1099). The web resolves both sides of a break or an image as a
->   browser field does — a click, Home, a soft-line delete, and an IME commit or
->   autocorrect right after one (#1025).
+> - **Desktop, right after an image**: the caret is drawn before the image
+>   (#1104). A hard break is resolved on both sides on both platforms (#1099,
+>   #1025), and the web resolves both sides of an image too — a click, Home, a
+>   soft-line delete, and an IME commit or autocorrect right after one.
 > - **A caret line scrolled out of view** has nothing to hit-test, so Home, End
 >   and the soft-line deletes fall back to the textblock's edge there (#1026).
 > - On a line that *mixes* directions the answer can fall short of the logical

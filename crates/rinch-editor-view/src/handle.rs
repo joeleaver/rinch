@@ -1716,9 +1716,9 @@ impl EditorHandle {
     /// [`Pos`] — a text character and an inline leaf (image, hard break) each
     /// count one, and an offset past the block's end is clamped to it. For a
     /// host that can count leaves where it found the point, as the web does
-    /// from the DOM: a flat byte offset ([`Self::pos_at`]) gives a leaf no width,
-    /// so it cannot tell the position before a hard break from the one after it
-    /// (#1025).
+    /// from the DOM: in the browser's flat byte offsets ([`Self::pos_at`]) a leaf
+    /// has no width, so they cannot tell the position before a hard break from
+    /// the one after it (#1025).
     pub fn pos_in_textblock(&self, textblock_dom_id: usize, offset: usize) -> Option<Pos> {
         self.core()
             .view
