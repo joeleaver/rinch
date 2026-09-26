@@ -250,6 +250,14 @@ with a click — is cancelled by that click, as the web cancels it on its first
 move. Arm a `Drag` from a press (`onclick` or `onmousedown`) and none of this
 reaches a normal gesture.
 
+A drag ends on the release of the button that started it. On desktop a right
+or middle release while the left button still holds a drag is a chord, not the
+end of it: a left-armed `Drag` keeps following the pointer and commits on the
+left release, and the same holds for an element drag (it is not dropped), a
+scrollbar-thumb drag and a text-selection drag. A drag armed by a right press
+ends on the right release. The web gets this from the browser, whose
+`pointerup` fires only once every button is up.
+
 `onscroll` fires once per container that moved, whichever axis moved it, and
 its [`ScrollEvent`] payload carries **both** offsets — so a horizontal-only
 scroller reports its position rather than an unchanging `scroll_top`
