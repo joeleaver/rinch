@@ -32,6 +32,7 @@ const CSS: &str = "
     .vis { overflow: visible; }
     .pre { white-space: pre; }
     .nw { white-space: nowrap; }
+    .r { text-align: right; }
 ";
 
 fn doc() -> RinchDocument {
@@ -194,4 +195,42 @@ fn a_restyle_to_nowrap_and_back_re_decides_the_ellipsis() {
     d.resolve_layout(402.0, 300.0);
     let fresh = build("c", text);
     assert_eq!(lines(&d, t), lines(&fresh.0, fresh.2));
+}
+
+#[test]
+fn nowrap_on_a_display_contents_wrapper_reaches_its_text() {
+    // rsx emits a `display: contents` wrapper per `if`/`for`/component site;
+    // one that declares only `white-space: nowrap` must still push it, or its
+    // text wraps (the wrapper's span is skipped when it changes no text style).
+    let mut d = doc();
+    let body = d.body();
+    let div = d.create_element("div");
+    d.set_attribute(div, "class", "c");
+    d.append_child(body, div);
+    let w = d.create_element("div");
+    d.set_attribute(w, "style", "display: contents; white-space: nowrap");
+    d.append_child(div, w);
+    let t = d.create_text("long run much too long");
+    d.append_child(w, t);
+    d.resolve_layout(400.0, 300.0);
+    let got = lines(&d, t);
+    assert!(
+        got.len() == 1 && got[0].ends_with('\u{2026}'),
+        "Chrome 153: `long run …`; got {got:?}"
+    );
+}
+
+#[test]
+fn text_align_still_lines_up_against_the_box_after_the_cut() {
+    // The rebuilt layout is broken at the container's width, so a
+    // right-aligned line ends at the box's right edge (90px), not at the
+    // widest rebuilt line's (the cut line, ~85px in Inter).
+    let (d, _, t) = build("c r", &format!("ab {WORD}"));
+    let got = lines(&d, t);
+    assert!(got.len() == 2 && got[0] == "ab" && is_cut_word(&got[1]), "{got:?}");
+    let root = d.tree.get(t.0).unwrap().ifc_root.unwrap();
+    let il = d.tree.get(root).unwrap().text_layout.as_ref().unwrap();
+    let m = il.layout.lines().next().unwrap().metrics().clone();
+    let right = m.offset + m.advance - m.trailing_whitespace;
+    assert!((right - 90.0).abs() < 0.5, "`ab` ends at {right}, want the box edge 90");
 }
