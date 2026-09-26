@@ -251,19 +251,21 @@ fn rows_behind_a_contents_wrapper_stack_including_rows_added_later() {
     assert_eq!(xy(&doc, r2), (0.0, 20.0), "r2 stacks under r1");
 }
 
-/// Chrome 153 `mixed`: a bare cell before a row sits in an anonymous row of
-/// its own, above it — `a` 0,0 · `r` 0,20. Removing the row leaves a table of
-/// bare cells, whose cells share a row again.
+/// Chrome 153: a table's bare cells share an anonymous row, and a row after
+/// them stacks below it (`a` 0,0 · `b` 30,0 · `r` 0,20; rinch stacks all
+/// three, see `table_flex_direction`). Removing the row — and nothing else —
+/// leaves a table of bare cells, whose cells share a row again.
 #[test]
 fn removing_the_last_row_puts_the_bare_cells_back_side_by_side() {
     let (mut doc, t) = fresh();
     let a = cell(&mut doc, t, 30, 20);
+    let b = cell(&mut doc, t, 40, 20);
     let r = el(&mut doc, t, "display: table-row");
     cell(&mut doc, r, 50, 20);
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(xy(&doc, r), (0.0, 20.0), "r stacks under a");
+    let (_, ry) = xy(&doc, r);
+    assert!(ry >= 20.0, "r stacks under the cells: y {ry}");
 
-    let b = cell(&mut doc, t, 40, 20);
     doc.remove_node(r);
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(xy(&doc, a), (0.0, 0.0), "a");
