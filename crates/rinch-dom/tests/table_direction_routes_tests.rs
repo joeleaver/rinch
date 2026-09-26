@@ -306,7 +306,12 @@ fn p3_nested_group() {
     let c2 = cell(&mut doc, g);
     doc.remove_node(r2);
     relayout(&mut doc, 801.0);
-    assert_eq!(pos(&doc, c2).1, 0.0, "group of cells side by side {:?}", pos(&doc, c2));
+    assert_eq!(
+        pos(&doc, c2).1,
+        0.0,
+        "group of cells side by side {:?}",
+        pos(&doc, c2)
+    );
     let _ = c1;
 }
 
@@ -345,7 +350,11 @@ fn k_table_in_inline_block_redirects() {
     doc.set_attribute(x, "class", "r");
     doc.set_attribute(y, "class", "r");
     relayout(&mut doc, 800.0);
-    assert_eq!(pos(&doc, y), (0.0, 20.0), "rows stack inside the inline-block");
+    assert_eq!(
+        pos(&doc, y),
+        (0.0, 20.0),
+        "rows stack inside the inline-block"
+    );
     let _ = x;
 }
 

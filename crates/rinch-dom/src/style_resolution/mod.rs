@@ -1732,9 +1732,7 @@ impl RinchDocument {
                 let _ = self.tree.taffy.set_style(t, st);
                 self.tree.layout_dirty = true;
                 self.mark_atomic_inline_dirty(id);
-                self.tree
-                    .perf
-                    .bump(crate::perf::Counter::TaffyStyleChanges);
+                self.tree.perf.bump(crate::perf::Counter::TaffyStyleChanges);
             }
         }
     }
