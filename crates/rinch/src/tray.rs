@@ -846,6 +846,41 @@ mod tests {
         }
     }
 
+    /// Issue #1057, live on a private bus: building a tray while the watcher
+    /// holds its name but never answers `RegisterStatusNotifierItem` returns
+    /// an error within the bound, and keeps none of the menu's callbacks. At
+    /// 2fa50a2f `build()` never returned (the watchdog below fired).
+    ///
+    /// Recipe as for the drop test above, with the watcher started as
+    /// `hung_sni_watcher.py --hang-first`. On a healthy session bus it fails
+    /// (the build succeeds), which is its positive control.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a private bus running tests/fixtures/hung_sni_watcher.py --hang-first"]
+    fn live_building_a_tray_under_a_hung_watcher_is_bounded() {
+        use std::time::{Duration, Instant};
+
+        let before = crate::menu::callback_count();
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(12));
+            eprintln!("HUNG: build() is still blocked after 12 s");
+            std::process::exit(3);
+        });
+        let t0 = Instant::now();
+        let built = TrayIconBuilder::new()
+            .with_menu(Menu::new().item(MenuItem::new("p").on_click(|| {})))
+            .build();
+        let took = t0.elapsed();
+        eprintln!("build returned after {took:?}: {:?}", built.as_ref().err());
+        assert!(built.is_err(), "the build cannot succeed under a hung watcher");
+        assert!(took < Duration::from_secs(6), "{took:?}");
+        assert_eq!(
+            crate::menu::callback_count(),
+            before,
+            "a failed build keeps no callbacks"
+        );
+    }
+
     /// Issue #377 (1), live: a dropped `TrayIcon` must take its icon with it.
     ///
     /// Needs a session bus with a StatusNotifierWatcher and a registered host

@@ -4,6 +4,10 @@
 # no timeout, where it cannot see a shutdown request (#377, review of #1054).
 # Used by tray::tests::live_dropping_a_tray_under_a_hung_watcher_is_bounded;
 # needs python3-gi. See that test for the recipe.
+#
+# With --hang-first it answers no RegisterStatusNotifierItem at all, so the
+# very first registration ksni makes, inside TrayIconBuilder::build(), hangs
+# (#1057). Used by tray::tests::live_building_a_tray_under_a_hung_watcher_is_bounded.
 import sys
 from gi.repository import Gio, GLib
 XML = """<node><interface name="org.kde.StatusNotifierWatcher">
@@ -16,6 +20,7 @@ XML = """<node><interface name="org.kde.StatusNotifierWatcher">
 <signal name="StatusNotifierItemUnregistered"><arg type="s"/></signal>
 <signal name="StatusNotifierHostRegistered"/>
 </interface></node>"""
+HANG_FIRST = "--hang-first" in sys.argv[1:]
 node = Gio.DBusNodeInfo.new_for_xml(XML)
 conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
 state = {"calls": 0, "owner": None}
@@ -24,7 +29,7 @@ def method(c, sender, path, iface, name, params, inv):
     if name == "RegisterStatusNotifierItem":
         state["calls"] += 1
         print("register call", state["calls"], flush=True)
-        if state["calls"] == 1:
+        if state["calls"] == 1 and not HANG_FIRST:
             inv.return_value(None)
             GLib.timeout_add(300, cycle)
         else:
