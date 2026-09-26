@@ -443,8 +443,29 @@ pub fn main_callbacks_pending() -> bool {
 ///
 /// For host shutdown only: a queued closure typically captures app state that is
 /// about to be torn down, so running it there would be worse than losing it.
+///
+/// The closures are dropped **after** the queue's lock is released (issue
+/// #1061): a closure's captures may queue main-thread work from their own
+/// `Drop` — a render surface's lease releasing itself, a user type calling
+/// `Signal::send` — and the lock is not re-entrant, so dropping under it
+/// deadlocked shutdown. What such a drop queues is pending work like any other,
+/// so the queue is emptied again until it stays empty, up to
+/// `MAX_CLEAR_ROUNDS` rounds (a `Drop` that queues a closure whose `Drop`
+/// queues another, without end, would otherwise never let shutdown finish).
 pub fn clear_main_callbacks() {
-    MAIN_QUEUE.lock().unwrap().clear();
+    const MAX_CLEAR_ROUNDS: usize = 16;
+    for _ in 0..MAX_CLEAR_ROUNDS {
+        // The guard is a temporary of this statement, released before the drop.
+        let dropped = std::mem::take(&mut *MAIN_QUEUE.lock().unwrap_or_else(|e| e.into_inner()));
+        if dropped.is_empty() {
+            return;
+        }
+        drop(dropped);
+    }
+    tracing::warn!(
+        "clear_main_callbacks: queued closures kept queueing more from their Drop \
+         after {MAX_CLEAR_ROUNDS} rounds; leaving the rest queued"
+    );
 }
 
 /// Check if the current thread is the main (UI) thread.
@@ -468,8 +489,11 @@ pub(crate) fn is_main_thread() -> bool {
 /// direct `set()`. Registering both is the contract; the panic is what catches a
 /// host that forgot (issue #172).
 pub(crate) fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
-    let dispatcher = CROSS_THREAD_DISPATCHER.lock().unwrap();
-    if let Some(dispatch) = *dispatcher {
+    // Copied out so the dispatcher runs with the lock released: a dispatcher
+    // may drop `f`, and a `Drop` in `f`'s captures may dispatch again from this
+    // same thread (issue #1061), as in `dispatch_main_callback`.
+    let dispatcher = *CROSS_THREAD_DISPATCHER.lock().unwrap();
+    if let Some(dispatch) = dispatcher {
         dispatch(f);
     } else {
         panic!(
