@@ -111,6 +111,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `ifc_measure_cache_hits` | IFC measures answered from the per-root measure cache without shaping |
 | | `ifc_measure_invalidations` | Roots whose cached measures a restyle or content change dropped (O(1) each) |
 | | `ifc_signature_changes` | Roots a structural pass found new or changed, and so re-measures; every other root keeps its cached measures and paint layout |
+| | `ifc_hang_passes` / `ifc_hang_lines` | Parley layouts broken a second time to hang preserved (`pre-wrap`, editable) trailing spaces at a soft wrap — at most one per layout, however many lines it fixes — and the lines those passes re-broke |
 | Layout | `layout_resolves`, `layout_skipped_paint_only`, `layout_skipped_text_only` | `resolve_layout` calls, and how many of them took each early return |
 | | `ifc_setup_passes` | IFC structural setup passes, scoped or whole-document |
 | | `ifc_scoped_passes`, `ifc_scope_containers`, `ifc_scope_nodes` | Passes scoped to the formatting containers a structural change reached, and how many containers and nodes they set up again. Everything else keeps its splices, boxes, marks and Taffy cache |
