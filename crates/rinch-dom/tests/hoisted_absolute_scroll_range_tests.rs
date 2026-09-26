@@ -82,7 +82,9 @@ fn build(
 
 fn vertical_range(doc: &RinchDocument, scroller: NodeId) -> (f64, Option<f64>) {
     let (_, h) = content_extents(&doc.tree, scroller.0);
-    let bar = scrollbars(&doc.tree, scroller.0, 1.0).vertical.map(|t| t.max_scroll);
+    let bar = scrollbars(&doc.tree, scroller.0, 1.0)
+        .vertical
+        .map(|t| t.max_scroll);
     (h, bar)
 }
 
