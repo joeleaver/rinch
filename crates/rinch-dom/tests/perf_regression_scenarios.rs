@@ -977,8 +977,9 @@ fn a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_meas
 // inline used to measure such a box on the next layout — a Taffy compute and a
 // Parley shape for a box nothing paints. One scenario per function, each the
 // only route to its site in its frame, plus one that attaches the orphan again
-// and compares it with a fresh layout. (`build_ifc_layouts` still shapes an
-// orphaned IFC root: #1069.)
+// and compares it with a fresh layout. `build_ifc_layouts` shaped an orphaned
+// IFC root too (#1069); since #1073 the orphans carry no IFC marks, and a root
+// out of the document is not shaped even when a whole-document pass marks it.
 
 const DETACH_CSS: &str = ".ib { display: inline-block; padding: 2px; }
     .ifx { display: inline-flex; padding: 3px; }
@@ -1014,10 +1015,10 @@ fn detach_doc(flex_class: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
 /// `remeasure_dirty_atomic_inlines` measured it though it had left the
 /// document: `inline_block_computes` 2 → 1 (the `em`, whose text changed, is
 /// the one left) and `shape_atomic_inline` 7 → 1 (the orphan's text leaves are
-/// no longer shaped). **A pinned finding, #1069:** `shape_ifc_build` is 3 where
-/// the document holds two roots — the third is the orphaned `div`, dirtied by
-/// the append and shaped by `build_ifc_layouts` while it is out. A fix lowers
-/// it to 2.
+/// no longer shaped). `shape_ifc_build` is 2, one per root the document holds:
+/// it was 3 until #1073, the third the orphaned `div`, dirtied by the append
+/// and shaped by `build_ifc_layouts` while it was out (#1069). The orphans now
+/// lose their `ifc_root` marks at the detach, so the `div` is no IFC root.
 #[test]
 fn a_detached_atomic_inline_is_not_remeasured() {
     let (mut doc, _p, em, flex) = detach_doc("");
@@ -1035,7 +1036,7 @@ fn a_detached_atomic_inline_is_not_remeasured() {
             (TaffyStyleSyncs, 2),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
-            (ShapeIfcBuild, 3),
+            (ShapeIfcBuild, 2),
             (ShapeAtomicInline, 1),
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 1),
@@ -1049,6 +1050,86 @@ fn a_detached_atomic_inline_is_not_remeasured() {
             (TaffyMeasureCalls, 2),
             (InlineBlockComputes, 1),
         ],
+    );
+}
+
+/// `build_ifc_layouts` after a whole-document pass that reached a **removed**
+/// IFC root (#1069). The whole-document structural pass still marks every slab
+/// node, detached subtrees included, so the removed `div` is an IFC root again,
+/// and the text appended into it while it was out left it with no paint
+/// layout: it was shaped though nothing paints it, `shape_ifc_build` 1 → 0
+/// (the `p`, unchanged, keeps its layout).
+#[test]
+fn a_removed_ifc_root_is_not_shaped_by_the_whole_document_pass() {
+    let mut doc = doc_with("");
+    let body = doc.body();
+    let p = el(&mut doc, body, "p", "");
+    text(&mut doc, p, "attached");
+    let gone = el(&mut doc, body, "div", "");
+    text(&mut doc, gone, "removed");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.remove_child(body, gone);
+    text(&mut doc, gone, " and grown while out");
+    doc.recompute_all_styles_full();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "removed IFC root: whole-document pass",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullTheme, 1),
+            (TaffyRootComputes, 1),
+        ],
+    );
+    // Turned away for good, not once: its stale layout is dropped and so is
+    // its registration, so the next layout does not ask about it again.
+    let n = doc.tree.get(gone.0).unwrap();
+    assert!(n.text_layout.is_none(), "the removed root keeps no layout");
+    assert!(
+        !doc.tree.ifc_root_registry.contains(&gone.0),
+        "the removed root is no longer registered"
+    );
+    assert!(
+        doc.tree.ifc_root_registry.contains(&p.0),
+        "control: the attached root is"
+    );
+}
+
+/// `remeasure_dirty_atomic_inlines` after a whole-document pass re-marked an
+/// orphaned subtree. The orphans lose their marks at the detach (#1073), which
+/// is what now keeps [`a_detached_atomic_inline_is_not_remeasured`]'s box from
+/// being measured. But a whole-document pass (a theme change) marks detached
+/// subtrees again, and a later edit inside the orphaned `inline-flex` queues
+/// it in the dirty set with its mark in place: the connectivity filter there
+/// (#1040) is what turns it away.
+#[test]
+fn a_remarked_detached_atomic_inline_is_not_remeasured() {
+    let (mut doc, _p, em, flex) = detach_doc("");
+    let chip = doc.tree.get(flex.0).unwrap().children[0];
+    doc.set_text_content(em, "word");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.recompute_all_styles_full();
+    doc.resolve_layout(VP.0, VP.1);
+    assert!(
+        doc.tree.get(flex.0).unwrap().ifc_root.is_some(),
+        "precondition: the whole-document pass marked the orphaned box again"
+    );
+    doc.set_text_content(NodeId(chip), "a chip edited while it is out");
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "re-marked detached atomic inline: remeasure",
+        &s,
+        &[(LayoutResolves, 1), (TaffyRootComputes, 1)],
     );
 }
 
