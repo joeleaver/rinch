@@ -75,8 +75,7 @@ use rinch_editor_core::{CursorMotion, PasteContent, Pos, Selection};
 use rinch_editor_view::{CaretAffinity, EditorHandle, LinkClick, LinkHover, LinkSpan, registry};
 
 use crate::event_delegation::{
-    compute_byte_offset_in_block, drag_machine, modifiers_from_key_event, nearest_handler,
-    set_click_context_for, utf16_offset_to_utf8_bytes,
+    drag_machine, modifiers_from_key_event, nearest_handler, set_click_context_for,
 };
 use crate::web_document::{find_text_node_at_byte_offset, get_nid, node_by_nid};
 
@@ -143,11 +142,76 @@ fn set_goal_x(x: Option<f32>) {
 }
 
 /// A resolved pointer hit inside an editor: the container + textblock host ids and the
-/// flat UTF-8 byte offset within the textblock's concatenated inline text.
+/// model offset within the textblock's content ([`model_offset_in_block`]).
 struct EditorHit {
     container_nid: usize,
     textblock_nid: usize,
-    byte: usize,
+    offset: usize,
+}
+
+impl EditorHit {
+    /// The model position the hit names.
+    fn pos(&self, handle: &EditorHandle) -> Option<Pos> {
+        handle.pos_in_textblock(self.textblock_nid, self.offset)
+    }
+}
+
+/// The model offset, within `textblock`'s content, of the DOM point
+/// `(container, offset)` — a text character and an inline leaf (an element
+/// carrying `data-pm-type`: an image, a hard break) each count one, as in the
+/// model; mark and decoration wrappers count nothing of their own.
+///
+/// Counted from the DOM rather than as a flat byte offset because a leaf has no
+/// text bytes: the byte offset just before a `<br>` and the one just after it
+/// are the same number, which resolved a click at the start of the line after
+/// a Shift+Enter to the position BEFORE the break (#1025). The DOM point knows
+/// the side, whether it is `(text after the <br>, 0)` or an element point
+/// `(<p>, index after the <br>)`.
+fn model_offset_in_block(
+    textblock: &web_sys::Element,
+    container: &web_sys::Node,
+    offset: u32,
+) -> usize {
+    /// Adds what `node` holds up to the point to `n`; `true` once the point is found.
+    fn walk(node: &web_sys::Node, container: &web_sys::Node, offset: u32, n: &mut usize) -> bool {
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            let text = node.text_content().unwrap_or_default();
+            if node == container {
+                let mut units = 0u32;
+                for c in text.chars() {
+                    if units >= offset {
+                        break;
+                    }
+                    units += c.len_utf16() as u32;
+                    *n += 1;
+                }
+                return true;
+            }
+            *n += text.chars().count();
+            return false;
+        }
+        let kids = node.child_nodes();
+        let stop = if node == container {
+            offset.min(kids.length())
+        } else {
+            kids.length()
+        };
+        for i in 0..stop {
+            let Some(child) = kids.item(i) else { continue };
+            let is_leaf = child
+                .dyn_ref::<web_sys::Element>()
+                .is_some_and(|el| el.has_attribute("data-pm-type"));
+            if is_leaf && !child.contains(Some(container)) {
+                *n += 1;
+            } else if walk(&child, container, offset, n) {
+                return true;
+            }
+        }
+        node == container
+    }
+    let mut n = 0;
+    walk(textblock, container, offset, &mut n);
+    n
 }
 
 /// `document.caretRangeFromPoint(x, y)` — non-standard but available in Chromium/WebKit
@@ -189,11 +253,11 @@ fn resolve_editor_point(doc: &web_sys::Document, x: f32, y: f32) -> Option<Edito
     let container_nid = get_nid(&container?.into())?.0;
     let textblock = textblock?;
     let textblock_nid = get_nid(&textblock.clone().into())?.0;
-    let byte = compute_byte_offset_in_block(&textblock, &start, offset);
+    let offset = model_offset_in_block(&textblock, &start, offset);
     Some(EditorHit {
         container_nid,
         textblock_nid,
-        byte,
+        offset,
     })
 }
 
@@ -280,6 +344,12 @@ fn sync_capture_read_only(handle: &EditorHandle) {
 
 /// The capture textarea's contents as we last wrote them: one textblock's text and the
 /// DOM id of the block it came from.
+///
+/// The text holds one character per model position of the block ([`mirror_text`]): a
+/// hard break is a `\n` and any other inline leaf (an image) a U+FFFC. So a char offset
+/// into it IS the model offset into the block, and an edit a keyboard makes right after
+/// a leaf maps to the position after it (#1025) — a leaf with no character of its own
+/// would make the offset before it and the one after it the same number.
 #[derive(Clone)]
 struct Mirror {
     textblock_nid: usize,
@@ -289,24 +359,54 @@ struct Mirror {
     sel: (u32, u32),
 }
 
-/// The byte offset of char index `i` (its length in bytes for `i` past the end).
-fn byte_of_char(text: &str, i: usize) -> usize {
-    text.char_indices().nth(i).map_or(text.len(), |(b, _)| b)
+/// The mirror's text for `textblock`: its text, with one character for each inline
+/// leaf (a `[data-pm-type]` element) — `\n` for a hard break, U+FFFC otherwise — so it
+/// has exactly one character per model position (see [`Mirror`]).
+fn mirror_text(textblock: &web_sys::Element) -> String {
+    fn walk(node: &web_sys::Node, out: &mut String) {
+        let kids = node.child_nodes();
+        for i in 0..kids.length() {
+            let Some(child) = kids.item(i) else { continue };
+            if child.node_type() == web_sys::Node::TEXT_NODE {
+                out.push_str(&child.text_content().unwrap_or_default());
+            } else if let Some(el) = child.dyn_ref::<web_sys::Element>()
+                && el.has_attribute("data-pm-type")
+            {
+                out.push(if el.tag_name().eq_ignore_ascii_case("br") {
+                    '\n'
+                } else {
+                    '\u{FFFC}'
+                });
+            } else {
+                walk(&child, out);
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(textblock, &mut out);
+    out
 }
 
 /// The number of UTF-16 code units — the unit `selectionStart`/`selectionEnd` count in
-/// — in `text` up to UTF-8 byte offset `byte`.
-///
-/// Deliberately walks rather than slicing `&text[..byte]`: `byte` comes from the *model*
-/// (`EditorHandle::caret_address`) while `text` comes from the *DOM*, and the two are
-/// only equal as long as nothing renders extra text inside a textblock. A slice at a
-/// non-boundary offset panics, which in wasm takes the whole page down; counting whole
-/// characters instead degrades to a caret at the nearest boundary.
-fn utf16_len_upto(text: &str, byte: usize) -> u32 {
-    text.char_indices()
-        .take_while(|(b, _)| *b < byte)
-        .map(|(_, c)| c.len_utf16() as u32)
-        .sum()
+/// — in the first `chars` characters of `text` (all of it for `chars` past the end).
+fn utf16_of_chars(text: &str, chars: usize) -> u32 {
+    text.chars().take(chars).map(|c| c.len_utf16() as u32).sum()
+}
+
+/// The number of characters of `text` in its first `units` UTF-16 code units — the
+/// inverse of [`utf16_of_chars`]. A unit count inside a surrogate pair counts the
+/// whole character, so a stale selection never splits one.
+fn chars_of_utf16(text: &str, units: u32) -> usize {
+    let mut seen = 0u32;
+    let mut n = 0;
+    for c in text.chars() {
+        if seen >= units {
+            break;
+        }
+        seen += c.len_utf16() as u32;
+        n += 1;
+    }
+    n
 }
 
 /// The minimal replacement turning `base` into `now`: `(from, to, inserted)` where
@@ -362,24 +462,26 @@ fn sync_mirror(handle: &EditorHandle) {
         return;
     };
     let selection = handle.selection();
-    let Some((textblock_nid, head_byte)) = handle.caret_address(selection.head()) else {
+    let Some((textblock_nid, head_off)) = handle.textblock_offset(selection.head()) else {
         // No text caret (a node selection, or an unmounted editor): nothing to mirror.
         clear_mirror(&ta);
         return;
     };
-    let Some(block) = node_by_nid(textblock_nid) else {
+    let Some(block) =
+        node_by_nid(textblock_nid).and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+    else {
         // The caret's block isn't in the host node map (mid-unmount). Leaving the old
         // mirror standing would let the next `input` diff live text against a field
         // that no longer holds it, so drop both rather than half of the pair.
         clear_mirror(&ta);
         return;
     };
-    let text = block.text_content().unwrap_or_default();
-    let head = utf16_len_upto(&text, head_byte);
+    let text = mirror_text(&block);
+    let head = utf16_of_chars(&text, head_off);
     // Mirror the selection too, but only when it lies in this same block — a
     // cross-block selection has no honest representation in one block's text.
-    let anchor = match handle.caret_address(selection.anchor()) {
-        Some((nid, byte)) if nid == textblock_nid => utf16_len_upto(&text, byte),
+    let anchor = match handle.textblock_offset(selection.anchor()) {
+        Some((nid, off)) if nid == textblock_nid => utf16_of_chars(&text, off),
         _ => head,
     };
     let sel = (anchor.min(head), anchor.max(head));
@@ -422,7 +524,8 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
     // Splicing a diff at those offsets would corrupt the document, so fail closed and
     // rebuild the mirror from the live block instead.
     if node_by_nid(mirror.textblock_nid)
-        .and_then(|n| n.text_content())
+        .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+        .map(|el| mirror_text(&el))
         .as_deref()
         != Some(mirror.text.as_str())
     {
@@ -432,11 +535,11 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
     let Some((from_char, to_char, inserted)) = text_diff(&mirror.text, &ta.value()) else {
         return false;
     };
-    let from_byte = byte_of_char(&mirror.text, from_char);
-    let to_byte = byte_of_char(&mirror.text, to_char);
+    // The mirror has one char per model position, so a char offset is the model
+    // offset into the block.
     let (Some(from), Some(to)) = (
-        handle.pos_at(mirror.textblock_nid, from_byte),
-        handle.pos_at(mirror.textblock_nid, to_byte),
+        handle.pos_in_textblock(mirror.textblock_nid, from_char),
+        handle.pos_in_textblock(mirror.textblock_nid, to_char),
     ) else {
         return false;
     };
@@ -476,8 +579,8 @@ fn adopt_field_caret(
     let start = ta.selection_start().ok().flatten().unwrap_or(0);
     let end = ta.selection_end().ok().flatten().unwrap_or(start);
     let (Some(from), Some(to)) = (
-        handle.pos_at(textblock_nid, utf16_offset_to_utf8_bytes(&text, start)),
-        handle.pos_at(textblock_nid, utf16_offset_to_utf8_bytes(&text, end)),
+        handle.pos_in_textblock(textblock_nid, chars_of_utf16(&text, start)),
+        handle.pos_in_textblock(textblock_nid, chars_of_utf16(&text, end)),
     ) else {
         return;
     };
@@ -1330,16 +1433,11 @@ fn delete_to(handle: &EditorHandle, motion: CursorMotion) -> bool {
 /// Delete from the caret to the edge of its visual line ([`visual_line_bound`]),
 /// or to the textblock's edge when there is no geometry to ask. An already
 /// non-empty selection is deleted as it stands.
-fn delete_to_visual_line(
-    handle: &EditorHandle,
-    container_nid: usize,
-    doc: &web_sys::Document,
-    forward: bool,
-) -> bool {
+fn delete_to_visual_line(handle: &EditorHandle, forward: bool) -> bool {
     let sel = handle.selection();
     if sel.is_empty() {
         let head = sel.head();
-        match visual_line_bound(handle, container_nid, doc, head, forward) {
+        match visual_line_bound(handle, head, forward) {
             Some(edge) if edge != head => handle.set_selection(Selection::text(head, edge)),
             Some(_) => {}
             None => {
@@ -1390,7 +1488,7 @@ fn on_before_input(event: &web_sys::InputEvent) {
     // not, since it fires only `paste` (measured). The cycle ends first so the field
     // the browser is about to edit is the mirror, not the sentinels.
     end_context_menu_cycle();
-    let Some((container_nid, handle)) = focused_handle() else {
+    let Some((_, handle)) = focused_handle() else {
         return;
     };
     let handled = match edit_intent(&event.input_type()) {
@@ -1419,17 +1517,7 @@ fn on_before_input(event: &web_sys::InputEvent) {
         }
         EditIntent::DeleteToVisualLine { forward } => {
             event.prevent_default();
-            match web_sys::window().and_then(|w| w.document()) {
-                Some(doc) => delete_to_visual_line(&handle, container_nid, &doc, forward),
-                None => delete_to(
-                    &handle,
-                    if forward {
-                        CursorMotion::LineEnd
-                    } else {
-                        CursorMotion::LineStart
-                    },
-                ),
-            }
+            delete_to_visual_line(&handle, forward)
         }
     };
     // Typing is a caret move as much as an edit: drop any vertical-motion goal column
@@ -1493,7 +1581,7 @@ fn link_under_pointer(
         .filter(|a| editor_el.contains(Some(a)))?;
     let href = anchor.get_attribute("href").unwrap_or_default();
     let hit = resolve_editor_point(doc, x, y).filter(|hit| hit.container_nid == container_nid)?;
-    let pos = handle.pos_at(hit.textblock_nid, hit.byte)?;
+    let pos = hit.pos(handle)?;
     handle
         .link_at(pos)
         .filter(|link| link.href == href)
@@ -1613,8 +1701,8 @@ fn link_of_anchor(anchor: &web_sys::Element, handle: &EditorHandle) -> Option<Li
     };
     let textblock_nid = get_nid(&textblock.clone().into())?.0;
     let text = first_text_node(anchor)?;
-    let byte = compute_byte_offset_in_block(&textblock, &text, 0);
-    let pos = handle.pos_at(textblock_nid, byte)?;
+    let offset = model_offset_in_block(&textblock, &text, 0);
+    let pos = handle.pos_in_textblock(textblock_nid, offset)?;
     handle.link_at(pos).filter(|link| link.href == href)
 }
 
@@ -1768,7 +1856,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
             Some(_) => None,
             None => resolve_editor_point(doc, x, y)
                 .filter(|hit| hit.container_nid == container_nid)
-                .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte)),
+                .and_then(|hit| hit.pos(&handle)),
         };
         let sel = handle.selection();
         let inside = !sel.is_empty()
@@ -1834,7 +1922,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         && (x as f64) < content.get_bounding_client_rect().left()
         && let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(clicked) = hit.pos(&handle)
         && handle.toggle_task_checked_at(clicked.0)
     {
         registry::end_drag(None);
@@ -1844,7 +1932,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 
     if let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(clicked) = hit.pos(&handle)
     {
         match event.detail() {
             2 => {
@@ -1891,7 +1979,7 @@ fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     let y = event.client_y() as f32;
     if let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(head) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(head) = hit.pos(&handle)
     {
         handle.set_selection(Selection::text(Pos(anchor), head));
         refresh_caret();
@@ -2099,8 +2187,8 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         "Home" if ctrl => handle.move_cursor(CursorMotion::DocStart, shift),
         "End" if ctrl => handle.move_cursor(CursorMotion::DocEnd, shift),
         // The visual line's edges, as on desktop (#301).
-        "Home" => move_to_line_edge(&handle, container_nid, doc, false, shift),
-        "End" => move_to_line_edge(&handle, container_nid, doc, true, shift),
+        "Home" => move_to_line_edge(&handle, false, shift),
+        "End" => move_to_line_edge(&handle, true, shift),
         // 2. Tab: table cell-nav (shared) first; else the keymap resolves
         //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below. Consumed either way.
         "Tab" if handle.tab_cell(shift) => true,
@@ -2163,7 +2251,7 @@ fn vertical_step(
     // that line only upstream.
     let geo_head = resolve_editor_point(doc, gx, ty)
         .filter(|hit| hit.container_nid == container_nid)
-        .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+        .and_then(|hit| hit.pos(handle))
         .map(|p| (p, hit_affinity(handle, p, ty)))
         .filter(|&(p, (_, rect))| {
             if handle.caret_address(p).map(|(t, _)| t) != head_tb {
@@ -2237,16 +2325,10 @@ fn hit_affinity(
 /// Home / End: move the head to the edge of its visual line, collapsing or
 /// (`extend`, Shift) extending. The textblock's edge without geometry — an empty
 /// block, or a caret with no rect.
-fn move_to_line_edge(
-    handle: &EditorHandle,
-    container_nid: usize,
-    doc: &web_sys::Document,
-    end: bool,
-    extend: bool,
-) -> bool {
+fn move_to_line_edge(handle: &EditorHandle, end: bool, extend: bool) -> bool {
     let sel = handle.selection();
     let head = sel.head();
-    let Some(edge) = visual_line_bound(handle, container_nid, doc, head, end) else {
+    let Some(edge) = visual_line_bound(handle, head, end) else {
         return handle.move_cursor(
             if end {
                 CursorMotion::LineEnd
@@ -2291,55 +2373,160 @@ fn is_wrap_below(handle: &EditorHandle, head: Pos, edge: Pos) -> bool {
 /// the caret at `head` is drawn on — the web twin of desktop's
 /// `RinchApp::visual_line_bound`.
 ///
-/// Hit-tests the textblock just inside **both** edges of its box at the
-/// vertical middle of the caret's line, and takes the smaller position as the
-/// start and the larger as the end. Probing both sides, rather than choosing one
-/// by `direction`, is what makes a right-to-left line right: its logical start
-/// is at its right edge — unless the line's text is itself left-to-right, when
-/// it is at the left again whatever the paragraph's `direction` says. A line
-/// that *mixes* directions has logical edges that need not sit at either visual
-/// edge; there this answers the extremes of the two probes, which is inside the
-/// line but may fall short of its logical edge (not handled, as on desktop).
+/// Found from caret geometry alone: a visual line holds a contiguous run of
+/// logical positions, so the positions whose caret is drawn above, on and below
+/// the caret's line are three consecutive runs, and a binary search over the
+/// caret's hard line (the textblock, cut at its hard breaks — [`hard_line`])
+/// finds the edge in a handful of `Range` rects. That holds for the rects only
+/// as long as each says where its position is drawn: beside an image it reads
+/// the image's own box ([`leaf_rect`]), and the downstream rect after a
+/// soft-hyphen break is the glyph's, not the range's (#1115). End takes the last position
+/// whose **upstream** caret is not below the line, so the end of a wrapped
+/// line is the wrap point (the next line's start, drawn upstream); Home the
+/// first whose **downstream** caret is not above it. Because nothing is hit
+/// tested, a caret line scrolled out of the viewport or its scroller, or
+/// covered by another box, answers the same as a visible one (#1026 — the
+/// previous `caretRangeFromPoint` probes answered nothing off screen, and the
+/// callers fell back to the textblock's edge; desktop's twin still hit-tests,
+/// #1107). What it answers are the line's *logical* edges: a right-to-left
+/// line's start is at its right edge, and a line that mixes directions answers
+/// its first and last logical positions wherever they are drawn.
 ///
-/// The end of a wrapped line is the wrap point — the same model position as the
-/// next line's start. `None` without geometry (no caret rect, a probe landing
-/// outside the caret's textblock, or an answer on the wrong side of `head`) —
-/// which includes a caret line scrolled out of the viewport, where
-/// `caretRangeFromPoint` answers nothing (#1026); the callers then fall back to
-/// the textblock's edge.
-fn visual_line_bound(
-    handle: &EditorHandle,
-    container_nid: usize,
-    doc: &web_sys::Document,
-    head: Pos,
-    end: bool,
-) -> Option<Pos> {
+/// `None` without geometry: no caret rect for `head` or for a position the
+/// search asks about. The callers then fall back to the textblock's edge.
+fn visual_line_bound(handle: &EditorHandle, head: Pos, end: bool) -> Option<Pos> {
+    use std::cmp::Ordering;
     let (_, hy, hh) = head_screen_rect(handle, head)?;
-    let (tb, _) = handle.caret_address(head)?;
-    let el = node_by_nid(tb)?.dyn_into::<web_sys::Element>().ok()?;
-    // Just inside the BORDER box, in the same viewport space the caret rect and
-    // `caretRangeFromPoint` use. `getBoundingClientRect` is scaled by a
-    // `transform` or CSS `zoom` on the way to the viewport, while `clientLeft`,
-    // `clientWidth` and the computed padding are not, so a content box built from
-    // them lands off the line under either (desktop pushes its edges through the
-    // painted transform for the same reason, #203). A point in the padding or
-    // border still resolves to the nearest position on the line (measured,
-    // Chrome 153, a 60px-padded, 7px-bordered paragraph).
-    let rect = el.get_bounding_client_rect();
-    let (left, right) = (rect.left() as f32, rect.right() as f32);
-    let y = hy + hh * 0.5;
-    let probe = |x: f32| {
-        resolve_editor_point(doc, x, y)
-            .filter(|hit| hit.container_nid == container_nid && hit.textblock_nid == tb)
-            .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+    let (lo, hi) = hard_line(handle, head)?;
+    // Where the caret at `p` is drawn against the caret's own line: on it when
+    // the two rects share more than half the shorter one's height (adjacent
+    // lines at `line-height: 1` overlap by a sliver, a taller span on the same
+    // line contains the caret), else above or below by their middles.
+    let doc = handle.doc();
+    let side = |p: usize, affinity: CaretAffinity| -> Option<Ordering> {
+        let r = match leaf_rect(handle, &doc, Pos(p), affinity) {
+            Some(r) => r,
+            None => handle.caret_rect_with_affinity(Pos(p), affinity)?,
+        };
+        let overlap = (r.y + r.height).min(hy + hh) - r.y.max(hy);
+        Some(if overlap > 0.5 * r.height.min(hh) {
+            Ordering::Equal
+        } else {
+            (r.y + r.height * 0.5).total_cmp(&(hy + hh * 0.5))
+        })
     };
-    let hits = [probe(left + 1.0), probe(right - 1.0)];
-    let found = hits.iter().flatten().copied();
     if end {
-        found.max_by_key(|p| p.0).filter(|p| p.0 >= head.0)
+        // The last p in [head, hi] not drawn below the line; `head` itself is not.
+        let (mut ok, mut bad) = (head.0, hi + 1);
+        while bad - ok > 1 {
+            let mid = ok + (bad - ok) / 2;
+            if side(mid, CaretAffinity::Upstream)? == Ordering::Greater {
+                bad = mid;
+            } else {
+                ok = mid;
+            }
+        }
+        Some(Pos(ok))
     } else {
-        found.min_by_key(|p| p.0).filter(|p| p.0 <= head.0)
+        // The first p in [lo, head] not drawn above the line; `head` itself is not.
+        let (mut bad, mut ok) = (lo as isize - 1, head.0 as isize);
+        while ok - bad > 1 {
+            let mid = bad + (ok - bad) / 2;
+            if side(mid as usize, CaretAffinity::Downstream)? == Ordering::Less {
+                bad = mid;
+            } else {
+                ok = mid;
+            }
+        }
+        Some(Pos(ok as usize))
     }
+}
+
+/// The box of the inline leaf — an image — on `affinity`'s side of `p`: the
+/// one just before `p` upstream, just after it downstream. `None` when that
+/// side holds text, a hard break (which [`hard_line`] already cuts at) or
+/// nothing.
+///
+/// The view gives an inline leaf no bytes, so the caret rects of the positions
+/// on its two sides are one rect — the text before it upstream, the character
+/// after it downstream — and neither says which line the leaf itself is on.
+/// Read from them, [`visual_line_bound`]'s End stepped past an image that
+/// starts the next line and Home stopped before one that ends the previous
+/// line. The leaf's own box answers that. Found as the nth `[data-pm-type]`
+/// element under the textblock, which is the nth leaf child in the model:
+/// marks wrap leaves without carrying the attribute.
+fn leaf_rect(
+    handle: &EditorHandle,
+    doc: &rinch_editor_core::Node,
+    p: Pos,
+    affinity: CaretAffinity,
+) -> Option<rinch_core::reactive::ElementBounds> {
+    let r = doc.resolve(p).ok()?;
+    if r.text_offset() > 0 {
+        return None;
+    }
+    let parent = r.parent();
+    let after = r.index(r.depth());
+    let i = match affinity {
+        CaretAffinity::Upstream => after.checked_sub(1)?,
+        CaretAffinity::Downstream => after,
+    };
+    if i >= parent.child_count() {
+        return None;
+    }
+    let leaf = parent.child(i);
+    if leaf.is_text() || leaf.type_name() == "hard_break" {
+        return None;
+    }
+    let nth = (0..i).filter(|&j| !parent.child(j).is_text()).count();
+    let (tb, _) = handle.caret_address(p)?;
+    let el = node_by_nid(tb)?.dyn_into::<web_sys::Element>().ok()?;
+    let b = el
+        .query_selector_all("[data-pm-type]")
+        .ok()?
+        .item(nth as u32)?
+        .dyn_into::<web_sys::Element>()
+        .ok()?
+        .get_bounding_client_rect();
+    Some(rinch_core::reactive::ElementBounds {
+        x: b.x() as f32,
+        y: b.y() as f32,
+        width: b.width() as f32,
+        height: b.height() as f32,
+    })
+}
+
+/// The model range `(start, end)` of the hard line `head` is on: its
+/// textblock's content, cut at the hard breaks on either side of it. A hard
+/// break ends a visual line, and the view gives it no bytes, so the positions
+/// on its two sides share one byte offset and one upstream caret rect —
+/// [`visual_line_bound`]'s search must not be offered the far side. `None`
+/// outside a textblock.
+fn hard_line(handle: &EditorHandle, head: Pos) -> Option<(usize, usize)> {
+    let doc = handle.doc();
+    let r = doc.resolve(head).ok()?;
+    let parent = r.parent();
+    if !parent.is_textblock() {
+        return None;
+    }
+    let start = r.start(r.depth());
+    let off = r.parent_offset();
+    let (mut lo, mut hi) = (0, parent.content_size());
+    let mut at = 0;
+    for i in 0..parent.child_count() {
+        let child = parent.child(i);
+        let size = child.node_size();
+        if child.type_name() == "hard_break" {
+            if at + size <= off {
+                lo = at + size;
+            } else if at >= off {
+                hi = at;
+                break;
+            }
+        }
+        at += size;
+    }
+    Some((start + lo, start + hi))
 }
 
 /// The viewport `(x, y, height)` of the caret at model `pos`:
@@ -3058,42 +3245,35 @@ mod tests {
     }
 
     #[test]
-    fn char_offsets_convert_back_to_byte_offsets() {
-        let s = "café!";
-        assert_eq!(byte_of_char(s, 0), 0);
-        assert_eq!(byte_of_char(s, 3), 3);
-        // `é` is two bytes, so everything after it shifts.
-        assert_eq!(byte_of_char(s, 4), 5);
-        assert_eq!(byte_of_char(s, 5), 6);
-        // Past the end clamps to the length, so a stale mirror cannot panic.
-        assert_eq!(byte_of_char(s, 99), s.len());
-    }
-
-    #[test]
     fn utf16_lengths_are_what_the_textarea_counts_in() {
-        assert_eq!(utf16_len_upto("abc", 3), 3);
-        assert_eq!(utf16_len_upto("café", "café".len()), 4);
+        assert_eq!(utf16_of_chars("abc", 3), 3);
+        assert_eq!(utf16_of_chars("café", 4), 4);
         // Astral characters are surrogate pairs — two units, one char.
-        assert_eq!(utf16_len_upto("👋", 4), 2);
-        // Partial counts: `é` starts at byte 3 and is two bytes wide.
-        assert_eq!(utf16_len_upto("café!", 3), 3);
-        assert_eq!(utf16_len_upto("café!", 5), 4);
+        assert_eq!(utf16_of_chars("👋", 1), 2);
+        assert_eq!(utf16_of_chars("hi 👋!", 4), 5);
+        // Past the end counts the whole text, so a stale mirror cannot panic.
+        assert_eq!(utf16_of_chars("hi 👋!", 99), 6);
+        assert_eq!(utf16_of_chars("hi 👋!", 0), 0);
     }
 
     #[test]
-    fn a_byte_offset_off_a_char_boundary_never_panics() {
-        // The model supplies the byte offset and the DOM supplies the text; if they
-        // ever disagree, counting must degrade, not blow the page up on a bad slice.
-        // Byte 4 is inside the emoji: it counts as the whole character, not a panic.
-        assert_eq!(utf16_len_upto("hi 👋!", 4), 5);
-        assert_eq!(utf16_len_upto("hi 👋!", 99), 6); // past the end
-        assert_eq!(utf16_len_upto("hi 👋!", 0), 0);
+    fn textarea_offsets_convert_back_to_chars() {
+        assert_eq!(chars_of_utf16("hi 👋!", 3), 3);
+        assert_eq!(chars_of_utf16("hi 👋!", 5), 4);
+        // Inside the surrogate pair: the whole character, never half of it.
+        assert_eq!(chars_of_utf16("hi 👋!", 4), 4);
+        assert_eq!(chars_of_utf16("hi 👋!", 99), 5);
+        for text in ["", "plain", "café", "hi 👋 there", "a\nb\u{FFFC}c"] {
+            let n = text.chars().count();
+            assert_eq!(chars_of_utf16(text, utf16_of_chars(text, n)), n, "{text:?}");
+        }
     }
 
     #[test]
     fn a_textarea_caret_offset_converts_back_to_a_byte_offset() {
         // The shared converter from `event_delegation` — the same one the pointer
         // hit-test uses to read a browser selection offset.
+        use crate::event_delegation::utf16_offset_to_utf8_bytes;
         assert_eq!(utf16_offset_to_utf8_bytes("abc", 0), 0);
         assert_eq!(utf16_offset_to_utf8_bytes("abc", 3), 3);
         // `é` is one UTF-16 unit but two bytes.
@@ -3108,8 +3288,9 @@ mod tests {
 
     #[test]
     fn utf16_offsets_round_trip_through_bytes() {
+        use crate::event_delegation::utf16_offset_to_utf8_bytes;
         for text in ["", "plain", "café", "hi 👋 there", "aaa"] {
-            let units = utf16_len_upto(text, text.len());
+            let units = utf16_of_chars(text, text.chars().count());
             assert_eq!(
                 utf16_offset_to_utf8_bytes(text, units),
                 text.len(),
