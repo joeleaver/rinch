@@ -1299,6 +1299,28 @@ fn a_span_text_shadow_dropped_in_place_is_cleared() {
     });
 }
 
+/// A whole-document restyle's paint re-reads every painted node's state; the
+/// paragraph's must keep its span's shadow reach, or the span's shadow dropped
+/// after it is never cleared (#1048; review of #1063, F3).
+///
+/// Kills: the `whole_document_damaged` refresh in `consume_paint_dirty`
+/// recording the root's own ink only.
+#[test]
+fn a_span_text_shadow_dropped_after_a_full_restyle_is_cleared() {
+    let (mut app, span) = span_text_panel("0 60px 6px rgb(255, 0, 0)");
+    let _ = full_frame(&mut app);
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .tree
+        .note_full_restyle(rinch_dom::perf::FullRestyleReason::Theme);
+    assert_clean_after(&mut app, TEXT_SHADOW_BAND, |app| {
+        span.set_style("text-shadow", "none");
+        resolve(app);
+    });
+}
+
 /// A span's text-shadow added in place is painted whole (#1048).
 ///
 /// Kills: the span's new reach missing from the damage, or the paint prune
