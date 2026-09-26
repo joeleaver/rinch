@@ -1030,52 +1030,66 @@ fn a_detached_percentage_atomic_inline_is_not_remeasured() {
 }
 
 /// Not measuring the orphan must not leave it stale: attached again, it is
-/// sized as a fresh document of the same final state sizes it — both after
-/// content changed inside it while it was out, and at a new width basis.
+/// sized as a fresh document of the same final state sizes it. Content is
+/// appended inside it while it is in the document and then it is orphaned
+/// before a layout measures it, so its cached measure is stale when it
+/// leaves; optionally it changes again while out, and it is attached again
+/// under a scoped pass or a whole-document one.
 #[test]
 fn a_detached_atomic_inline_is_sized_again_when_reattached() {
     for class in ["", "pct"] {
-        let (mut doc, p, em, flex) = detach_doc(class);
-        let x = el(&mut doc, flex, "div", "x");
-        text(&mut doc, x, "grown while attached");
-        doc.set_text_content(em, "word");
-        doc.resolve_layout(VP.0, VP.1);
-        // Changed while out of the document.
-        let y = el(&mut doc, flex, "div", "y");
-        text(&mut doc, y, "and grown again while detached");
-        doc.append_child(p, flex);
-        doc.resolve_layout(VP.0, VP.1);
-        let got = {
-            let n = &doc.tree.nodes[flex.0];
-            (n.layout.width, n.layout.height)
-        };
+        for change_while_out in [false, true] {
+            for whole_document in [false, true] {
+                let case = format!(
+                    "class {class:?}, changed while out {change_while_out}, \
+                     whole-document pass {whole_document}"
+                );
+                let (mut doc, p, em, flex) = detach_doc(class);
+                let x = el(&mut doc, flex, "div", "x");
+                text(&mut doc, x, "grown while attached");
+                doc.set_text_content(em, "word");
+                doc.resolve_layout(VP.0, VP.1);
+                if change_while_out {
+                    let y = el(&mut doc, flex, "div", "y");
+                    text(&mut doc, y, "and grown again while detached");
+                }
+                doc.append_child(p, flex);
+                if whole_document {
+                    doc.recompute_all_styles_full();
+                }
+                doc.resolve_layout(VP.0, VP.1);
+                let got = {
+                    let n = &doc.tree.nodes[flex.0];
+                    (n.layout.width, n.layout.height)
+                };
 
-        let mut fresh = doc_with(DETACH_CSS);
-        let body = fresh.body();
-        let p2 = el(&mut fresh, body, "p", "");
-        text(&mut fresh, p2, "before ");
-        let em2 = el(&mut fresh, p2, "em", "ib");
-        text(&mut fresh, em2, "word");
-        let flex2 = el(&mut fresh, p2, "span", &format!("ifx {class}"));
-        text(&mut fresh, flex2, "chip");
-        let x2 = el(&mut fresh, flex2, "div", "x");
-        text(&mut fresh, x2, "grown while attached");
-        let y2 = el(&mut fresh, flex2, "div", "y");
-        text(&mut fresh, y2, "and grown again while detached");
-        fresh.resolve_layout(VP.0, VP.1);
-        fresh.resolve_layout(VP.0, VP.1);
-        let want = {
-            let n = &fresh.tree.nodes[flex2.0];
-            (n.layout.width, n.layout.height)
-        };
-        assert!(
-            want.0 > 100.0,
-            "positive control: the fresh box holds the text ({want:?})"
-        );
-        assert_eq!(
-            got, want,
-            "class {class:?}: re-attached box vs a fresh layout"
-        );
+                let mut fresh = doc_with(DETACH_CSS);
+                let body = fresh.body();
+                let p2 = el(&mut fresh, body, "p", "");
+                text(&mut fresh, p2, "before ");
+                let em2 = el(&mut fresh, p2, "em", "ib");
+                text(&mut fresh, em2, "word");
+                let flex2 = el(&mut fresh, p2, "span", &format!("ifx {class}"));
+                text(&mut fresh, flex2, "chip");
+                let x2 = el(&mut fresh, flex2, "div", "x");
+                text(&mut fresh, x2, "grown while attached");
+                if change_while_out {
+                    let y2 = el(&mut fresh, flex2, "div", "y");
+                    text(&mut fresh, y2, "and grown again while detached");
+                }
+                fresh.resolve_layout(VP.0, VP.1);
+                fresh.resolve_layout(VP.0, VP.1);
+                let want = {
+                    let n = &fresh.tree.nodes[flex2.0];
+                    (n.layout.width, n.layout.height)
+                };
+                assert!(
+                    want.0 > 100.0,
+                    "{case}: positive control, the fresh box holds the text ({want:?})"
+                );
+                assert_eq!(got, want, "{case}: re-attached box vs a fresh layout");
+            }
+        }
     }
 }
 
