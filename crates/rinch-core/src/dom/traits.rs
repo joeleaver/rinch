@@ -628,8 +628,10 @@ pub trait DomDocument {
     /// ([`Self::query_caret_position`], [`Self::query_caret_rect`],
     /// [`Self::query_selection_rects`], and the byte a pointer hit resolves to).
     ///
-    /// A flat byte offset counts the text of every text node under the element,
-    /// in document order. A `<br>` has no text node, so a backend that counts only
+    /// A flat byte offset counts the text of the text nodes under the element, in
+    /// document order, as the backend lays that text out — rinch-dom expands a tab
+    /// to four spaces, which the editor's caret map does not yet count (#1109). A
+    /// `<br>` has no text node, so a backend that counts only
     /// text gives it none — the browser's DOM ranges, and this default — while one
     /// that lays inline content out as a single string may give it the line break
     /// it lays out: rinch-dom's inline formatting context pushes `"\n"`, one byte.

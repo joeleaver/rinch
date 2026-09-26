@@ -90,6 +90,22 @@ impl Page {
     }
 }
 
+impl Page {
+    /// The painted boxes of the visible selection-highlight rects.
+    fn highlights(&self) -> Vec<(f32, f32, f32, f32)> {
+        let doc = self.app.doc.as_ref().unwrap().borrow();
+        doc.query_selector_all("[data-pm-selection]")
+            .into_iter()
+            .filter(|id| {
+                doc.tree.nodes[id.0].computed_style.display
+                    != rinch_dom::computed_style::DisplayValue::None
+            })
+            .map(|id| painted_element_box(&doc.tree, id.0))
+            .filter(|b| b.2 > 0.0 && b.3 > 0.0)
+            .collect()
+    }
+}
+
 /// A press in a paragraph holding a hard break or an image lands in it. It
 /// lands nowhere: `editor_point_address` answers `None`.
 #[test]
@@ -170,4 +186,53 @@ fn the_caret_beside_an_image_is_drawn_on_its_side() {
         after >= before + 39.0,
         "after the 40px image: {before} -> {after}"
     );
+}
+
+/// A selection spanning a break highlights the tail of line 1 and the head of
+/// line 2, and the line-2 rect ends where the caret after `ch` is drawn. The
+/// highlight maps its range through the same byte map as the caret; counting
+/// the break as no byte there would end the rect one glyph early. (From the
+/// review of PR #1105.)
+#[test]
+fn a_selection_across_a_hard_break_highlights_both_lines() {
+    let mut p = page("<p>alpha bravo<br>charlie delta</p>");
+    let (bx, by, _, _) = p.block_box();
+    let (x14, y14) = p.local(14); // after `ch`
+    assert_eq!(y14, LINE, "positive control: after `ch` is on line 2");
+    p.handle.set_selection(Selection::text(Pos(10), Pos(15)));
+    idle(&mut p.app);
+    let hl = p.highlights();
+    assert_eq!(hl.len(), 2, "one rect per line: {hl:?}");
+    let l2 = hl.iter().find(|r| r.1 > by + LINE / 2.0).unwrap();
+    assert!(
+        ((l2.0 + l2.2) - (bx + x14)).abs() < 2.5,
+        "line-2 rect ends after `ch`: {l2:?} vs {}",
+        bx + x14
+    );
+}
+
+/// Two breaks in a row: a caret on each line's start, and a press on the empty
+/// middle line lands between them. The middle line's only byte is the second
+/// break's own `"\n"`, which no text run answers first — the map's leaf branch
+/// has to read it as the position before that break. (From the review of PR
+/// #1105.)
+#[test]
+fn consecutive_hard_breaks_each_start_a_line() {
+    const HTML: &str = "<p>ab<br><br>cd</p>";
+    let p = page(HTML);
+    assert_eq!(p.local(2).1, 0.0, "before the first break: line 1");
+    assert_eq!(p.local(3), (0.0, LINE), "between the breaks: line 2");
+    assert_eq!(p.local(4), (0.0, 2.0 * LINE), "after both: line 3");
+    let (x, y) = p.local(5);
+    assert_eq!(y, 2.0 * LINE);
+    assert!(x > 4.0, "after `c`: one glyph in, got {x}");
+    let press = |line: f32| {
+        let mut p = page(HTML);
+        let (bx, by, _, _) = p.block_box();
+        p.click(bx + 100.0, by + line * LINE);
+        p.head()
+    };
+    assert_eq!(press(0.5), 2, "past line 1's end: before the first break");
+    assert_eq!(press(1.5), 3, "the empty line 2: between the breaks");
+    assert_eq!(press(2.5), 6, "past line 3's end: the paragraph end");
 }
