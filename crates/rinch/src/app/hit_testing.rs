@@ -1695,6 +1695,54 @@ mod tests {
             "where that transform would have put the child must miss"
         );
     }
+
+    /// A `transform` on a plain inline span does not apply (#1080, CSS
+    /// Transforms 1 §1): Chrome 153 puts an `inline-block` inside
+    /// `span { transform: translateX(30px) }` exactly where it is with no
+    /// transform, so paint draws it there and hit testing must find it there.
+    /// Fails before #1080: the probe at the untranslated box missed and the
+    /// one 30px right of it hit.
+    #[test]
+    fn an_inline_spans_transform_does_not_move_its_inline_block_child() {
+        let (mut doc, container) = container_doc();
+        doc.set_attribute(
+            container,
+            "style",
+            "position: relative; width: 400px; height: 300px; font-size: 16px; line-height: 20px",
+        );
+        let span = doc.create_element("span");
+        doc.set_attribute(span, "style", "transform: translateX(30px)");
+        doc.append_child(container, span);
+        let ib = doc.create_element("span");
+        doc.set_attribute(
+            ib,
+            "style",
+            "display: inline-block; width: 20px; height: 10px",
+        );
+        doc.append_child(span, ib);
+        doc.resolve_layout(800.0, 600.0);
+        let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, ib.0, 1.0);
+        let (x, y) = (x as f32, y as f32);
+        assert!(
+            !doc.tree
+                .get(span.0)
+                .unwrap()
+                .computed_style
+                .transform
+                .is_identity,
+            "the test needs a real transform declared on the span"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, x + 10.0, y + 5.0),
+            Some(ib.0),
+            "the inline-block is hit at its laid-out box"
+        );
+        assert_ne!(
+            hit_test(&doc.tree, x + 40.0, y + 5.0),
+            Some(ib.0),
+            "where the span's transform would have put it must miss"
+        );
+    }
     // ── CSS 2.1 Appendix E step 8: positioned descendants with `z-index: auto`
     //
     // These drive the real `hit_test`, which reads
