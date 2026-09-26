@@ -1613,9 +1613,11 @@ mod unadopted_write {
         );
     }
 
-    /// A focused field inside a `data-rid` container whose click handler writes
-    /// the field's `value` — during the press itself.
-    fn rid_writing_page(new_value: &'static str) -> (RinchApp, usize, Rc<Cell<u32>>) {
+    /// A focused field inside a container whose `data-onmousedown` handler
+    /// writes the field's `value` — during the press itself. (It was a
+    /// `data-rid` until #1093: a right press no longer clicks, and a press's
+    /// own `data-onmousedown` is what still runs user code on every button.)
+    fn mousedown_writing_page(new_value: &'static str) -> (RinchApp, usize, Rc<Cell<u32>>) {
         let node: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
         let fired = Rc::new(Cell::new(0u32));
         let h = register_input_handler(InputCallback::new(|_| {}));
@@ -1630,7 +1632,7 @@ mod unadopted_write {
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
             let wrap = scope.create_element("div");
-            wrap.set_attribute("data-rid", &rid.0.to_string());
+            wrap.set_attribute("data-onmousedown", &rid.0.to_string());
             wrap.set_attribute("style", "padding: 10px");
             let f = scope.create_element("input");
             f.set_attribute("style", FIELD_STYLE);
@@ -1647,16 +1649,16 @@ mod unadopted_write {
         (app, id, fired)
     }
 
-    /// A right press inside the selection keeps a write its `data-rid`
-    /// ancestor made during the press, as a left press and a right press
+    /// A right press inside the selection keeps a write its
+    /// `data-onmousedown` ancestor made during the press, as a left press and a right press
     /// outside the selection do. The caret rule used to put the saved
     /// selection back and sync the state's old text over the write. (The
     /// review's round-3 fixture.)
     #[test]
-    fn rid_write_survives_a_right_press_inside_the_selection() {
+    fn a_mousedown_write_survives_a_right_press_inside_the_selection() {
         for v in ["HELLO WORLD", "\u{20ac}\u{20ac}\u{20ac}\u{20ac}"] {
             let press = |button: MouseButton| {
-                let (mut app, id, fired) = rid_writing_page(v);
+                let (mut app, id, fired) = mousedown_writing_page(v);
                 let (bx, by, _, bh) = abs_box(&app, id);
                 left_press(&mut app, bx + 1.0, by + bh / 2.0);
                 // Undo the focusing press's own write.
@@ -1674,7 +1676,7 @@ mod unadopted_write {
                 let f0 = fired.get();
                 let x = x_for_offset(&mut app, id, 3);
                 press_with(&mut app, x, by + bh / 2.0, button);
-                assert_eq!(fired.get(), f0 + 1, "positive control: the rid ran");
+                assert_eq!(fired.get(), f0 + 1, "positive control: the handler ran");
                 let menu = app.is_text_context_menu_open();
                 let _ = app.text_edit_state();
                 app.resolve_and_repaint(800.0, 600.0);
@@ -1683,11 +1685,19 @@ mod unadopted_write {
             let (right, menu) = press(MouseButton::Right);
             assert!(menu, "the right press opened the menu");
             assert_eq!(right.0, v, "the app's write survives the gesture");
-            // The write replaced the text the saved selection indexed, so the
-            // caret is where the write left it — as after a left press — and
-            // not the old 2..5, which on `€€€€` is inside a character.
-            let (left, _) = press(MouseButton::Left);
-            assert_eq!(right, left, "a right press ends as a left press does");
+            // The write landed before the gesture saved the selection, so the
+            // saved selection indexes the written text: never the old 2..5
+            // restored onto `€€€€`, where bytes 2 and 5 are inside a
+            // character. (Until #1093 the write came from a `data-rid` the
+            // right press clicked *after* the save, and this compared the
+            // right press with a left one.)
+            for offset in [&right.1, &right.2] {
+                let offset: usize = offset.parse().unwrap();
+                assert!(
+                    v.is_char_boundary(offset),
+                    "{v:?}: offset {offset} is inside a character"
+                );
+            }
         }
     }
 

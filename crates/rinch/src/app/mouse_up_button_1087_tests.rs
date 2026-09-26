@@ -178,12 +178,12 @@ mod pointer_capture {
     }
 
     /// A drag armed by a right press is the right button's gesture: its own
-    /// release ends it — armed from `data-onmousedown` or from the `data-rid`
-    /// a right press also dispatches, whose click context used to say `Left`
-    /// whatever the button.
+    /// release ends it. It is armed from `data-onmousedown`; a right press
+    /// used to click the `data-rid` too, with a click context that said `Left`
+    /// whatever the button, and since #1093 it clicks nothing.
     #[test]
     fn a_drag_armed_by_a_right_press_ends_on_the_right_release() {
-        for attribute in ["data-onmousedown", "data-rid"] {
+        for attribute in ["data-onmousedown"] {
             let ends = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
             let e = ends.clone();
             let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -238,11 +238,12 @@ mod pointer_capture {
         }
     }
 
-    /// A right chord on a `data-rid` rewrites the click context to `Right`; the
+    /// A right chord on the probe's `data-onmousedown` rewrites the click
+    /// context to `Right`; the
     /// drag is still judged by the button that armed it, not by the context
     /// current at the release.
     #[test]
-    fn a_right_chord_on_a_data_rid_does_not_commit_a_left_drag() {
+    fn a_right_chord_on_a_handler_does_not_commit_a_left_drag() {
         let (mut app, log) = mount();
         arm_and_lose_the_release(&mut app, &log);
         chord(&mut app, PROBE, MouseButton::Right);
@@ -264,7 +265,8 @@ mod pointer_capture {
 
     /// A drag armed outside any press (a timer) belongs to the button most
     /// recently pressed — every press counts, not only one that reached a
-    /// handler. Here a right press on a `data-rid` is followed by two left
+    /// handler. Here a right press on the probe's `data-onmousedown` is
+    /// followed by two left
     /// presses on empty page, which set no click context: the drag is the left
     /// button's, and a left release ends it.
     #[test]
