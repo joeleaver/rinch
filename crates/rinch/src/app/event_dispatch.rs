@@ -3375,8 +3375,9 @@ impl RinchApp {
     /// a pending or active element drag, a scrollbar-thumb drag, a text
     /// selection drag — go through [`Self::release_press_gestures`], so a
     /// stranded element drag is cancelled (`data-ondragend`, no `data-ondrop`)
-    /// rather than dropped by the next unrelated release. `:active` is left
-    /// alone: the press about to be dispatched sets its own. Returns whether
+    /// rather than dropped by the next unrelated release. `:active` is not
+    /// cleared: a press sets its own, but after a blur it stays where the
+    /// stranded press put it until the next release (pre-existing). Returns whether
     /// anything was ended.
     fn heal_missed_release(&mut self, vp_w: f32, vp_h: f32) -> bool {
         #[cfg(feature = "desktop")]

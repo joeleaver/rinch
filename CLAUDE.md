@@ -1535,7 +1535,10 @@ target it was last over, and a stranded thumb or selection went on scrolling or
 extending until some release arrived. The press heal and a `PointerCancel` share
 `release_press_gestures`; they differ in the pointer-capture drag (the heal is
 document-scoped, `PointerCancel` calls the unscoped `Drag::cancel`) and in
-`:active` (the heal leaves it to the press). The blur trade-off above applies to
+`:active` (the heal does not clear it: after a press the new press sets its
+own, but after a blur nothing does, so `:active` stays on the element the
+stranded press was on until the next release — pre-existing, as before #1028).
+The blur trade-off above applies to
 all of them. Pins: `app/missed_release_1028_tests.rs`.
 
 ### File Drop (OS → App)

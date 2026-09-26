@@ -203,7 +203,7 @@ Supported HTML-element event attributes:
 | `oninput` | `<input>`/`<textarea>` value change, per keystroke | `Fn(String)` |
 | `onchange` | Commit boundary: the gesture ends (blur after a modification, Enter, a `<select>` pick) — fires with the final value | `Fn(String)` |
 | `onscroll` | Scroll container scrolls, on either axis | `Fn(ScrollEvent)` — `ev.scroll_top` and `ev.scroll_left` |
-| `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop. A cancelled drag (Escape; on desktop also a left press or a window blur while it is live, which prove its release went missing) fires `ondragleave` and `ondragend`, never `ondrop` | `Fn()` |
+| `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop. A cancelled drag (Escape; on desktop also a left press or a window blur while it is live, which prove its release went missing) fires `ondragend` (and `ondragleave` on the target, if it is over one), never `ondrop` | `Fn()` |
 | `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop | `Fn(Vec<PathBuf>)` / `Fn()` |
 
 ### Pointer moves are coalesced
