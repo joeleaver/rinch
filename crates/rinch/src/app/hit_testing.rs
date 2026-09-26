@@ -116,7 +116,7 @@ fn descend(
     vx: f32,
     vy: f32,
 ) -> Option<Frame> {
-    let is_fixed = node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed;
+    let is_fixed = node.box_position() == rinch_dom::computed_style::PositionValue::Fixed;
     let (x, y) = if is_fixed { (vx, vy) } else { (x, y) };
     let (nx, ny) = if is_fixed {
         (node.layout.x, node.layout.y)
@@ -666,20 +666,14 @@ pub(super) fn cursor_value_to_style(
 /// `overflow: hidden` clips content but should NOT consume mousewheel events —
 /// the wheel should bubble up to the nearest actual scroll container.
 pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) -> Option<usize> {
-    use rinch_dom::computed_style::OverflowValue;
-
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
-        let overflow_y = &node.computed_style.overflow_y;
-        match overflow_y {
-            OverflowValue::Scroll | OverflowValue::Auto => {
-                let content_h = compute_content_height(tree, node_id);
-                if content_h > node.layout.height as f64 {
-                    return Some(node_id);
-                }
+        if node.scrolls_y() {
+            let content_h = compute_content_height(tree, node_id);
+            if content_h > node.layout.height as f64 {
+                return Some(node_id);
             }
-            _ => {}
         }
         current = node.parent;
     }
@@ -705,20 +699,14 @@ pub(crate) fn find_horizontal_scroll_container(
     tree: &rinch_dom::NodeTree,
     start: usize,
 ) -> Option<usize> {
-    use rinch_dom::computed_style::OverflowValue;
-
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
-        let overflow_x = &node.computed_style.overflow_x;
-        match overflow_x {
-            OverflowValue::Scroll | OverflowValue::Auto => {
-                let content_w = compute_content_width(tree, node_id);
-                if content_w > node.layout.width as f64 {
-                    return Some(node_id);
-                }
+        if node.scrolls_x() {
+            let content_w = compute_content_width(tree, node_id);
+            if content_w > node.layout.width as f64 {
+                return Some(node_id);
             }
-            _ => {}
         }
         current = node.parent;
     }
@@ -760,8 +748,6 @@ fn find_scroll_container_at_point_recursive(
     vx: f32,
     vy: f32,
 ) -> Option<usize> {
-    use rinch_dom::computed_style::OverflowValue;
-
     let node = tree.get(node_id)?;
     let Frame {
         nx,
@@ -795,8 +781,7 @@ fn find_scroll_container_at_point_recursive(
     }
 
     // Check this node
-    let overflow_y = &node.computed_style.overflow_y;
-    if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto) {
+    if node.scrolls_y() {
         let content_h = compute_content_height(tree, node_id);
         if content_h > node.layout.height as f64 {
             return Some(node_id);
@@ -829,8 +814,6 @@ fn find_hscroll_container_at_point_recursive(
     vx: f32,
     vy: f32,
 ) -> Option<usize> {
-    use rinch_dom::computed_style::OverflowValue;
-
     let node = tree.get(node_id)?;
     let Frame {
         nx,
@@ -869,8 +852,7 @@ fn find_hscroll_container_at_point_recursive(
         }
     }
 
-    let overflow_x = &node.computed_style.overflow_x;
-    if matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto) {
+    if node.scrolls_x() {
         let content_w = compute_content_width(tree, node_id);
         if content_w > node.layout.width as f64 {
             return Some(node_id);

@@ -16,7 +16,6 @@ use std::cell::RefCell;
 
 use rinch_core::dom::DomDocument; // take_dirty_nodes / resolve_layout trait methods
 use rinch_dom::RinchDocument;
-use rinch_dom::computed_style::OverflowValue;
 
 use rinch_editor_view::EditorHandle;
 use rinch_editor_view::registry;
@@ -200,10 +199,5 @@ fn block_count(doc: &RinchDocument, container: usize) -> usize {
 
 /// Whether `container`'s computed `overflow-y` makes it a scrollable viewport.
 fn is_scroll_container(doc: &RinchDocument, id: usize) -> bool {
-    doc.tree.nodes.get(id).is_some_and(|n| {
-        matches!(
-            n.computed_style.overflow_y,
-            OverflowValue::Auto | OverflowValue::Scroll
-        )
-    })
+    doc.tree.nodes.get(id).is_some_and(|n| n.scrolls_y())
 }

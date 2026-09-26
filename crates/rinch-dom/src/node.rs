@@ -1349,8 +1349,18 @@ impl Node {
     /// is [`Node::clips_overflow`] and stacking is this, and nothing needs them
     /// to be the same question.
     pub fn creates_stacking_context(&self) -> bool {
-        use crate::computed_style::PositionValue;
+        use crate::computed_style::{DisplayValue, PositionValue};
 
+        // A `display: contents` element generates no box (css-display-3 §2.5),
+        // so nothing on the list above can make it a stacking context — nor
+        // does `opacity` or `transform` apply to it at all (#1038, measured in
+        // Chrome 153: its children paint at full strength and untranslated,
+        // and a `z-index` on it scopes nothing). Answering `true` made the
+        // collector stop at it, so everything under it was drawn inside the
+        // clip chain of the wrapper's own entry, escaping boxes included.
+        if self.computed_style.display == DisplayValue::Contents {
+            return false;
+        }
         match self.computed_style.position {
             // A fixed box is viewport-level content and a sticky box is
             // repositioned during scroll; both create a stacking context
@@ -1372,6 +1382,54 @@ impl Node {
             return true;
         }
         false
+    }
+
+    /// The `position` this element's **box** is placed, anchored and stacked
+    /// with: its computed `position`, except `static` for a `display:
+    /// contents` element, which generates no box (css-display-3 §2.5) and so
+    /// has nothing for `position` to apply to (#1038).
+    ///
+    /// Ask this, not `computed_style.position`, wherever the answer decides
+    /// where a box — or anything under it — is anchored: a coordinate walk that
+    /// stops at a `fixed` ancestor read a contents wrapper's `0,0` layout as a
+    /// viewport position and put its whole subtree at the window's origin,
+    /// where Chrome 153 lays it out in its parent. The computed value itself is
+    /// untouched (`get_computed_styles` reports `fixed`, as Chrome's
+    /// `getComputedStyle` does).
+    pub fn box_position(&self) -> crate::computed_style::PositionValue {
+        if self.computed_style.display == crate::computed_style::DisplayValue::Contents {
+            crate::computed_style::PositionValue::Static
+        } else {
+            self.computed_style.position
+        }
+    }
+
+    /// Whether this element is a **scroll container** on the vertical axis:
+    /// `overflow-y` is `auto` or `scroll`, and it generates a box. A
+    /// `display: contents` element answers `false` (#1038): it has no box to
+    /// scroll, and Chrome 153 scrolls the scroller above it. Every scroll finder
+    /// asks this rather than matching `overflow_y` — the wheel's
+    /// `find_scroll_container`, the scrollbar geometry, scroll-into-view,
+    /// `clamp_scroll_offsets` — because a finder that picked a contents element
+    /// wrote a `scroll_offset` onto a box-less node: nothing painted moved, but
+    /// `compute_absolute_position` moved its children by the scroll.
+    pub fn scrolls_y(&self) -> bool {
+        use crate::computed_style::{DisplayValue, OverflowValue};
+        self.computed_style.display != DisplayValue::Contents
+            && matches!(
+                self.computed_style.overflow_y,
+                OverflowValue::Auto | OverflowValue::Scroll
+            )
+    }
+
+    /// [`Self::scrolls_y`] on the horizontal axis.
+    pub fn scrolls_x(&self) -> bool {
+        use crate::computed_style::{DisplayValue, OverflowValue};
+        self.computed_style.display != DisplayValue::Contents
+            && matches!(
+                self.computed_style.overflow_x,
+                OverflowValue::Auto | OverflowValue::Scroll
+            )
     }
 
     /// Whether this box clips content that overflows it.
@@ -1432,6 +1490,14 @@ impl Node {
         if self.is_element() && self.display_mode == DisplayMode::Inline {
             return false;
         }
+        // A `display: contents` element generates no box, so there is nothing
+        // for `overflow` to clip to (#1038; Chrome 153 clips nothing). Its
+        // `layout` is `0x0`, so a clip derived from it hid everything a
+        // descendant carried it to — hit testing's `check_children` gate, and
+        // the chain of a positioned descendant hoisted past it.
+        if self.computed_style.display == crate::computed_style::DisplayValue::Contents {
+            return false;
+        }
         !matches!(self.computed_style.overflow_x, OverflowValue::Visible)
             || !matches!(self.computed_style.overflow_y, OverflowValue::Visible)
     }
@@ -1464,7 +1530,7 @@ impl Node {
     /// #994's review, and a moved absolute under a positioned contents wrapper
     /// was damaged to nothing and ghosted. (Whether a contents element makes a
     /// *stacking context* is a separate question, `creates_stacking_context`,
-    /// and still answers as if it had a box — #1038.)
+    /// which also answers `false` for one — #1038.)
     ///
     /// `display: none` is deliberately **not** excluded, and
     /// `display_contents_containing_block_tests` pins that: nothing under it is
@@ -2704,9 +2770,8 @@ impl PaintedState {
         Self {
             ink: crate::paint::own_ink_outsets(cs),
             transform,
-            clips: node.clips_overflow()
-                && cs.display != crate::computed_style::DisplayValue::Contents,
-            position: cs.position,
+            clips: node.clips_overflow(),
+            position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }
     }

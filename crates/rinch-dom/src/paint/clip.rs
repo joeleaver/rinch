@@ -70,6 +70,11 @@
 //!
 //! ## What never clips at all
 //!
+//! A `display: contents` element answers `false` (#1038): it generates no box,
+//! so there is nothing to clip to, and Chrome 153 clips nothing. Its `layout` is
+//! `0x0`, so the rect the shape derived from it hid every descendant a chain or
+//! hit testing's gate carried it to.
+//!
 //! A non-atomic `display: inline` element answers `false` to the predicate
 //! whatever its `overflow` computes to (#591 PR 1). `overflow` applies to block,
 //! flex and grid containers (css-overflow-3 §3); an inline *box* is none of

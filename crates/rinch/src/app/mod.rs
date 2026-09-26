@@ -25,8 +25,12 @@ mod component_class_717_tests;
 mod component_prop_707_tests;
 #[cfg(test)]
 mod component_radius_tests;
+#[cfg(all(test, software_shell))]
+mod contents_1038_damage_scroll_tests;
 #[cfg(test)]
 mod contents_scroll_396_tests;
+#[cfg(test)]
+mod contents_stacking_1038_tests;
 #[cfg(test)]
 mod css_hook_760_tests;
 #[cfg(all(test, software_shell))]
@@ -1425,11 +1429,9 @@ impl RinchApp {
                 let mut found = None;
                 while let Some(ancestor_id) = current {
                     if let Some(ancestor) = d.tree.nodes.get(ancestor_id) {
-                        use rinch_dom::computed_style::OverflowValue;
-                        if matches!(
-                            ancestor.computed_style.overflow_y,
-                            OverflowValue::Auto | OverflowValue::Scroll
-                        ) {
+                        // `scrolls_y`, not `overflow_y`: a `display: contents`
+                        // ancestor has no box to scroll (#1038).
+                        if ancestor.scrolls_y() {
                             found = Some(ancestor_id);
                             break;
                         }

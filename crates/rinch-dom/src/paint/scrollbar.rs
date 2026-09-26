@@ -34,7 +34,7 @@
 //! what paint's `x`/`y` and Taffy's layout rect both use.
 
 use crate::NodeTree;
-use crate::computed_style::{OverflowValue, ScrollbarWidthValue};
+use crate::computed_style::ScrollbarWidthValue;
 use peniko::color::{AlphaColor, Srgb};
 
 /// How thick a thumb is drawn, in logical pixels.
@@ -493,8 +493,9 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
         track_color: cs.scrollbar_color.track,
     };
 
-    let scrollable_y = matches!(cs.overflow_y, OverflowValue::Scroll | OverflowValue::Auto);
-    let scrollable_x = matches!(cs.overflow_x, OverflowValue::Scroll | OverflowValue::Auto);
+    // A `display: contents` element answers `false` on both axes (#1038).
+    let scrollable_y = node.scrolls_y();
+    let scrollable_x = node.scrolls_x();
     if (!scrollable_y && !scrollable_x) || cs.scrollbar_width == ScrollbarWidthValue::None {
         return empty;
     }

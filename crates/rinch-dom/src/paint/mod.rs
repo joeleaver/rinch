@@ -465,8 +465,8 @@ impl PaintedStyle {
 
     fn now(node: &Node) -> Self {
         Self {
-            clips: node.clips_overflow() && node.computed_style.display != DisplayValue::Contents,
-            position: node.computed_style.position,
+            clips: node.clips_overflow(),
+            position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }
     }
@@ -1531,7 +1531,7 @@ fn position_and_transform_in(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         any_transform |= !frame.is_identity(node);
-        if node.computed_style.position == PositionValue::Fixed {
+        if node.box_position() == PositionValue::Fixed {
             hoisted_fixed = true;
             break;
         }
@@ -1555,7 +1555,7 @@ fn position_and_transform_in(
             let (nx, ny) = painted_origin_step(tree, node, x, y, scale, frame);
             x = nx;
             y = ny;
-            if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
+            if node.box_position() == PositionValue::Fixed || id == tree.body_id {
                 break;
             }
             // The **box** tree (#566): a run's member is positioned by the
@@ -1580,7 +1580,7 @@ fn position_and_transform_in(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         chain.push(id);
-        if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
+        if node.box_position() == PositionValue::Fixed || id == tree.body_id {
             break;
         }
         current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
@@ -2471,10 +2471,13 @@ fn paint_node(
         while let Some(aid) = ancestor_id {
             if let Some(ancestor) = tree.get(aid) {
                 let ov = ancestor.computed_style.overflow_y;
-                if matches!(
-                    ov,
-                    OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden
-                ) {
+                // A `display: contents` ancestor is no scroll container (#1038).
+                if ancestor.computed_style.display != DisplayValue::Contents
+                    && matches!(
+                        ov,
+                        OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden
+                    )
+                {
                     scroll_y = ancestor.scroll_offset.1 * scale;
                     break;
                 }
@@ -2928,12 +2931,10 @@ fn paint_node(
             }
 
             // Handle overflow clipping — detect early so we can cut holes
-            // in the background for viewport descendants. The two enums are
-            // captured here for the scrollbar overlays at the bottom, which ask
-            // a different question (is this a *scroll* container) than the clip
-            // bracket does.
-            let overflow_y = node.computed_style.overflow_y;
-            let overflow_x = node.computed_style.overflow_x;
+            // in the background for viewport descendants. (The scrollbar
+            // overlays at the bottom ask a different question — is this a
+            // *scroll* container, `Node::scrolls_y`/`scrolls_x` — than the clip
+            // bracket does.)
             // The clip shape comes from `clip::clip_shape` so that everything
             // that needs to know where this box clips asks one function:
             // `layer_bounds` and the dirty-region prune today, a hoisted
@@ -3394,16 +3395,13 @@ fn paint_node(
             // distance the pointer moved. Anything about *where* a bar is
             // belongs there; what is left here is how it is drawn.
             //
-            // Gated up front on the two overflow enums captured before the
-            // children were painted, so a node that scrolls on neither axis —
-            // almost every node — pays two enum checks and nothing else.
+            // Gated up front on `scrolls_y`/`scrolls_x`, so a node that scrolls
+            // on neither axis — almost every node — pays a few enum checks and
+            // nothing else.
             //
             // A scrollbar is the container's own visual, so a hidden container
             // draws none (#829) — hit testing already offers none to press.
-            if visible
-                && (matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
-                    || matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto))
-            {
+            if visible && (node.scrolls_y() || node.scrolls_x()) {
                 let node = tree.get(node_id).unwrap(); // re-borrow after children done
                 let bars = scrollbar::scrollbars(tree, node_id, scale);
                 let thickness = bars.thickness;
