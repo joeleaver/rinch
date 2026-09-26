@@ -608,6 +608,18 @@ impl RinchDocument {
                 }
             }
 
+            // A root outside the document is not shaped (#1040): nothing
+            // paints it, and `set_text_content` orphans a subtree without
+            // freeing it, so the registry still names its roots. Asked here,
+            // after the skip above, so a root with a valid layout pays no
+            // ancestor walk. Its layout is dropped rather than kept: the dirty
+            // mark that brought it here is cleared with the rest at the end of
+            // the pass, and a root with no layout is shaped the next time it
+            // is laid out in the document.
+            if self.depth_if_connected(root_id).is_none() {
+                self.tree.nodes[root_id].text_layout = None;
+                continue;
+            }
             self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
             let mut inline_layout = Self::build_inline_layout(
                 &self.tree.nodes,
@@ -3832,16 +3844,15 @@ impl RinchDocument {
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
             };
+            // A box outside the document is not measured (#1040): nothing
+            // paints it, and attaching it again seeds a structural pass that
+            // sizes it then. `set_text_content` orphans a subtree without
+            // freeing it, so the registry still names its atomic inlines.
             if node.ifc_root.is_some()
                 && node.display_mode.is_atomic_inline()
                 && let Some(taffy_id) = node.taffy_id
+                && let Some(depth) = self.depth_if_connected(id)
             {
-                let mut depth = 0usize;
-                let mut cur = node.parent;
-                while let Some(p) = cur {
-                    depth += 1;
-                    cur = self.tree.nodes.get(p).and_then(|n| n.parent);
-                }
                 out.push((depth, taffy_id));
             }
         }
@@ -4054,19 +4065,28 @@ impl RinchDocument {
         // this line killed a sort-deleted mutant only **8** times in 25 runs —
         // it missed it the other 17. It now kills it 25 times in 25. See that
         // field's doc.
-        let depth_of = |nodes: &slab::Slab<Node>, id: usize| {
-            let mut depth = 0usize;
-            let mut cur = nodes.get(id).and_then(|n| n.parent);
-            while let Some(p) = cur {
-                depth += 1;
-                cur = nodes.get(p).and_then(|n| n.parent);
+        //
+        // A box no longer in the document is not measured (#1040) — a
+        // `set_text_content` orphans a subtree without freeing it, and nothing
+        // paints what it holds. Its Taffy node is marked instead, which costs no
+        // compute (a detached atomic inline has no Taffy parent to propagate
+        // to) and keeps the one fact the dirty set carried: the measure Taffy
+        // cached for it is stale. Attaching it again seeds a structural pass
+        // that sizes it then.
+        let mut pending: std::collections::BTreeSet<(usize, usize)> =
+            std::collections::BTreeSet::new();
+        for id in dirty {
+            match self.depth_if_connected(id) {
+                Some(depth) => {
+                    pending.insert((depth, id));
+                }
+                None => {
+                    if let Some(taffy_id) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) {
+                        let _ = self.tree.taffy.mark_dirty(taffy_id);
+                    }
+                }
             }
-            depth
-        };
-        let mut pending: std::collections::BTreeSet<(usize, usize)> = dirty
-            .into_iter()
-            .map(|id| (depth_of(&self.tree.nodes, id), id))
-            .collect();
+        }
 
         // One box at a time, and each box's IFC invalidated — and every atomic
         // inline around that IFC queued — **before** the next box is measured.
@@ -4130,8 +4150,11 @@ impl RinchDocument {
                 let Some(an) = self.tree.nodes.get(a) else {
                     break;
                 };
-                if an.display_mode.is_atomic_inline() {
-                    pending.insert((depth_of(&self.tree.nodes, a), a));
+                // `a` is an ancestor of a connected box, so it is connected.
+                if an.display_mode.is_atomic_inline()
+                    && let Some(depth) = self.depth_if_connected(a)
+                {
+                    pending.insert((depth, a));
                 }
                 cur = an.parent;
             }
@@ -4469,6 +4492,12 @@ impl RinchDocument {
             if !node.display_mode.is_atomic_inline()
                 || !Self::has_percentage_inline_size(&node.computed_style)
             {
+                continue;
+            }
+            // Asked last: it walks the ancestors, and only a percentage-sized
+            // box gets this far. A box outside the document is not measured
+            // (#1040).
+            if self.depth_if_connected(id).is_none() {
                 continue;
             }
             // The IFC root is this box's containing block by construction:
