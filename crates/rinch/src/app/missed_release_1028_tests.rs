@@ -27,11 +27,11 @@ use std::cell::Cell;
 
 const WINDOW: (u32, u32) = (800, 600);
 
-fn send(app: &mut RinchApp, event: PlatformEvent) {
+pub(super) fn send(app: &mut RinchApp, event: PlatformEvent) {
     app.handle_event(event, WINDOW, 1.0);
 }
 
-fn press(app: &mut RinchApp, (x, y): (f32, f32)) {
+pub(super) fn press(app: &mut RinchApp, (x, y): (f32, f32)) {
     send(
         app,
         PlatformEvent::MouseDown {
@@ -42,7 +42,7 @@ fn press(app: &mut RinchApp, (x, y): (f32, f32)) {
     );
 }
 
-fn release(app: &mut RinchApp, (x, y): (f32, f32)) {
+pub(super) fn release(app: &mut RinchApp, (x, y): (f32, f32)) {
     send(
         app,
         PlatformEvent::MouseUp {
@@ -53,11 +53,11 @@ fn release(app: &mut RinchApp, (x, y): (f32, f32)) {
     );
 }
 
-fn move_to(app: &mut RinchApp, (x, y): (f32, f32)) {
+pub(super) fn move_to(app: &mut RinchApp, (x, y): (f32, f32)) {
     send(app, PlatformEvent::MouseMove { x, y });
 }
 
-fn counter(scope: &mut RenderScope, count: &Rc<Cell<u32>>) -> String {
+pub(super) fn counter(scope: &mut RenderScope, count: &Rc<Cell<u32>>) -> String {
     let c = count.clone();
     scope
         .register_handler(move || c.set(c.get() + 1))
@@ -72,23 +72,23 @@ fn counter(scope: &mut RenderScope, count: &Rc<Cell<u32>>) -> String {
 /// `data-onmousedown` records how many `data-ondragend`s had fired when the
 /// press reached it.
 #[derive(Default)]
-struct Dnd {
-    drops: Rc<Cell<u32>>,
-    leaves: Rc<Cell<u32>>,
-    ends: Rc<Cell<u32>>,
-    source_clicks: Rc<Cell<u32>>,
-    other_clicks: Rc<Cell<u32>>,
-    ends_seen_by_probe: Rc<RefCell<Vec<u32>>>,
+pub(super) struct Dnd {
+    pub(super) drops: Rc<Cell<u32>>,
+    pub(super) leaves: Rc<Cell<u32>>,
+    pub(super) ends: Rc<Cell<u32>>,
+    pub(super) source_clicks: Rc<Cell<u32>>,
+    pub(super) other_clicks: Rc<Cell<u32>>,
+    pub(super) ends_seen_by_probe: Rc<RefCell<Vec<u32>>>,
 }
 
-const SOURCE: (f32, f32) = (61.0, 57.0);
-const OTHER_SOURCE: (f32, f32) = (73.0, 481.0);
-const OVER_TARGET: (f32, f32) = (437.0, 243.0);
-const ON_TARGET_LIST: (f32, f32) = (441.0, 251.0);
-const PROBE: (f32, f32) = (653.0, 61.0);
-const EMPTY: (f32, f32) = (611.0, 457.0);
+pub(super) const SOURCE: (f32, f32) = (61.0, 57.0);
+pub(super) const OTHER_SOURCE: (f32, f32) = (73.0, 481.0);
+pub(super) const OVER_TARGET: (f32, f32) = (437.0, 243.0);
+pub(super) const ON_TARGET_LIST: (f32, f32) = (441.0, 251.0);
+pub(super) const PROBE: (f32, f32) = (653.0, 61.0);
+pub(super) const EMPTY: (f32, f32) = (611.0, 457.0);
 
-fn mount_dnd() -> (RinchApp, Rc<Dnd>) {
+pub(super) fn mount_dnd() -> (RinchApp, Rc<Dnd>) {
     let log = Rc::new(Dnd::default());
     let l = log.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -135,7 +135,7 @@ fn mount_dnd() -> (RinchApp, Rc<Dnd>) {
 }
 
 /// Press the source, carry it over the target, and lose the release.
-fn strand_a_dom_drag(app: &mut RinchApp) {
+pub(super) fn strand_a_dom_drag(app: &mut RinchApp) {
     press(app, SOURCE);
     move_to(app, (93.0, 71.0));
     move_to(app, OVER_TARGET);
@@ -262,7 +262,7 @@ fn a_right_press_leaves_a_live_dom_drag_alone() {
 
 /// A 200x200 `overflow-y: auto` box at (0,200) holding 1000px of content, and
 /// a plain button beside it.
-fn mount_scroller() -> (RinchApp, usize) {
+pub(super) fn mount_scroller() -> (RinchApp, usize) {
     let mut app = RinchApp::new(|scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", "position: relative; width: 800px; height: 600px");
@@ -293,14 +293,14 @@ fn mount_scroller() -> (RinchApp, usize) {
     (app, id)
 }
 
-fn scroll_top(app: &RinchApp, id: usize) -> f64 {
+pub(super) fn scroll_top(app: &RinchApp, id: usize) -> f64 {
     app.doc.as_ref().unwrap().borrow().tree.nodes[id]
         .scroll_offset
         .1
 }
 
 /// Press the thumb, drag it, lose the release.
-fn strand_a_scrollbar_drag(app: &mut RinchApp, id: usize) -> f64 {
+pub(super) fn strand_a_scrollbar_drag(app: &mut RinchApp, id: usize) -> f64 {
     press(app, (195.0, 213.0));
     assert!(app.scrollbar_drag.is_some(), "precondition: thumb pressed");
     let before = scroll_top(app, id);
@@ -348,7 +348,7 @@ fn a_window_blur_ends_a_live_scrollbar_drag() {
 
 // ── Read-only text selection ───────────────────────────────────────────────
 
-fn mount_text() -> RinchApp {
+pub(super) fn mount_text() -> RinchApp {
     let mut app = RinchApp::new(|scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", "width: 800px; height: 600px");
@@ -375,7 +375,7 @@ fn mount_text() -> RinchApp {
     app
 }
 
-fn focus_offset(app: &RinchApp) -> usize {
+pub(super) fn focus_offset(app: &RinchApp) -> usize {
     app.text_selection
         .as_ref()
         .expect("a selection")
@@ -383,7 +383,7 @@ fn focus_offset(app: &RinchApp) -> usize {
 }
 
 /// Press in the text, drag across some of it, lose the release.
-fn strand_a_text_selection(app: &mut RinchApp) -> usize {
+pub(super) fn strand_a_text_selection(app: &mut RinchApp) -> usize {
     press(app, (23.0, 9.0));
     assert!(app.text_selecting, "precondition: selecting");
     let anchor = focus_offset(app);

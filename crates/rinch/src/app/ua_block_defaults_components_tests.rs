@@ -249,6 +249,9 @@ fn the_other_five_list_and_figure_components_are_unmoved() {
 }
 
 /// The computed `font-size` of the one element with `tag` in the tree.
+///
+/// Only used by the desktop-only editor test below.
+#[cfg(feature = "desktop")]
 fn font_size_of_tag(app: &RinchApp, tag: &str) -> f32 {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
@@ -291,6 +294,9 @@ fn font_size_of_tag(app: &RinchApp, tag: &str) -> f32 {
 /// The editor container is 16px, so `smaller` is 13.3333px. The tolerance is
 /// 0.005px, which is what separates the `smaller` keyword from a `0.83em`
 /// approximation (13.28px).
+///
+/// Desktop-only: `crate::editor::Editor` is gated on `feature = "desktop"`.
+#[cfg(feature = "desktop")]
 #[test]
 fn the_editors_sub_and_sup_do_take_the_new_smaller_rule() {
     let app = mount(|scope: &mut RenderScope| {

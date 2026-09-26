@@ -2135,9 +2135,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     let browser_doc_for_up = browser_doc.clone();
     let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
         // Finish (not cancel) any pointer-capture Drag so its `on_end` fires with
-        // the release position — matching the desktop backend
-        // (`app::event_dispatch` calls `finish_drag` on mouseup). A no-op when no
-        // drag is active. pointercancel still uses `Drag::cancel()` (no commit).
+        // the release position. Desktop ends it on the release of the button
+        // that armed it (`finish_drag_for_button`, issue #1087); a browser's
+        // `pointerup` fires only once every button is up, so `finish_drag` is
+        // the same rule here. A no-op when no drag is active. pointercancel
+        // still uses `Drag::cancel()` (no commit).
         rinch_core::finish_drag(event.client_x() as f32, event.client_y() as f32);
         release_drag_pointer_capture();
         if let Some(el) = pointer_hit_element(&event) {

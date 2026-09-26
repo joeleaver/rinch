@@ -75,6 +75,7 @@ fn key(app: &mut RinchApp, key: KeyCode) {
 }
 
 /// The primary chord modifier on the host the test runs on.
+#[cfg(any(feature = "clipboard", feature = "desktop"))]
 fn primary() -> Modifiers {
     Modifiers {
         ctrl: !cfg!(target_os = "macos"),

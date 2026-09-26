@@ -99,6 +99,8 @@ mod late_children_716_tests;
 mod missed_release_1028_tests;
 #[cfg(test)]
 mod missed_release_381_tests;
+#[cfg(test)]
+mod mouse_up_button_1087_tests;
 #[cfg(all(test, software_shell))]
 mod named_damage_tests;
 #[cfg(test)]
@@ -117,7 +119,7 @@ mod overlay_opacity_tests;
 mod overlay_scroll_lock_tests;
 #[cfg(test)]
 mod overlay_z_index_tests;
-#[cfg(test)]
+#[cfg(all(test, any(feature = "desktop", feature = "android")))]
 mod paused_animation_frames_tests;
 #[cfg(all(test, software_shell))]
 mod perf_expect;
@@ -183,7 +185,7 @@ pub(crate) static RERENDER_EVENTS_QUEUED: std::sync::atomic::AtomicU64 =
 /// Held by every test that writes [`RERENDER_EVENTS_QUEUED`] and asserts an
 /// exact delta on it, so two such tests on different threads of one test
 /// binary cannot land inside each other's window.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "desktop", feature = "android")))]
 pub(crate) static RERENDER_EVENTS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use rinch_core::events;
 use rinch_dom::RinchDocument;
@@ -7821,7 +7823,7 @@ mod input_caret_hit_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "desktop", feature = "android")))]
 mod android_frame_clock_tests {
     //! A bottom sheet opens on Android.
     //!
