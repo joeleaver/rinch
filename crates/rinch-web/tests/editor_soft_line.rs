@@ -1086,6 +1086,13 @@ fn home_and_end_stop_at_a_hard_break() {
             Pos(12),
             "End before the break, {style}"
         );
+        f.handle.set_selection(Selection::cursor(Pos(13)));
+        assert!(f.key("Home", false));
+        assert_eq!(
+            f.handle.selection().head(),
+            Pos(13),
+            "Home right after the break stays, {style}"
+        );
         f.handle.set_selection(Selection::cursor(Pos(17)));
         assert!(f.key("Home", false));
         assert_eq!(
