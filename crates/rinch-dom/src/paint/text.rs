@@ -348,6 +348,19 @@ impl<'a> ShadowGroup<'a> {
         root_shadows: &'a [TextShadowValue],
         root_hidden: bool,
     ) -> Option<Vec<Self>> {
+        // Asked of every IFC on every paint: answer the common case without
+        // allocating.
+        if inline_layout
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .all(|r| {
+                range_element(tree, r)
+                    .is_none_or(|e| e.computed_style.text_shadow.as_slice() == root_shadows)
+            })
+        {
+            return None;
+        }
         let ranges: Vec<(usize, usize, bool, &'a [TextShadowValue])> = inline_layout
             .text_ranges
             .iter()
@@ -362,9 +375,6 @@ impl<'a> ShadowGroup<'a> {
                 )
             })
             .collect();
-        if ranges.iter().all(|&(_, _, _, s)| s == root_shadows) {
-            return None;
-        }
         let mut lists: Vec<&'a [TextShadowValue]> = Vec::new();
         for list in ranges
             .iter()
