@@ -1558,20 +1558,35 @@ restarts or clears a read-only text selection. Pins:
 `app/mouse_up_button_1087_tests.rs`.
 
 **A right or middle press does not click** (#1093, a behaviour change on
-desktop). A `data-rid` (`onclick`) runs for a **left** press only, as a
-browser's `click` does and as rinch-web always has: a right press is a
-`contextmenu` (a live `data-oncontextmenu`, else the #813 text menu on a text
-target, else nothing) and a middle press an `auxclick`, which rinch has no
-attribute for. Desktop used to click the `data-rid` under either — a
-right-click on a `Button` ran its `onclick`, and so did an Android long press,
-which the touch translation delivers as a right press. The press still does
-everything a browser's `mousedown` does: `data-onmousedown` / `data-onmouseup`
-fire for every button with it in `get_click_context().button`, focus moves as
-before, and the `data-rid` still stops `handle_click_with_button`'s claim walk,
-so a right press on a titlebar button does not drag the window. **An app that
-handled a right-click in `onclick` must move it to `oncontextmenu`, or to
-`onmousedown` reading `get_click_context().button`.** Pins:
-`app/right_press_click_1093_tests.rs`.
+**both** backends). A `data-rid` (`onclick`) runs for a **left** press only, as
+a browser's `click` does: a right press is a `contextmenu` (a live
+`data-oncontextmenu`, else the #813 text menu on a text target, else nothing —
+except on a `data-drag-window` region, which a right press still drags, since
+the window drag is not a click and was left out of scope) and a middle press an
+`auxclick`, which rinch has no attribute for. Desktop used to click the
+`data-rid` under either — a right-click on a `Button` ran its `onclick`, and so
+did an Android long press, which the touch translation delivers as a right
+press — and so did rinch-web whenever no `data-oncontextmenu` was in the
+ancestry (measured in Chrome 153). The press still does everything a browser's
+`mousedown` does: `data-onmousedown` / `data-onmouseup` fire for every button
+with it in `get_click_context().button`, focus moves as before, and the
+`data-rid` still stops `handle_click_with_button`'s claim walk, so a right press
+on a titlebar button does not drag the window. **An app that handled a
+right-click in `onclick` must move it to `oncontextmenu`, or to `onmousedown`
+reading `get_click_context().button`.**
+
+**The one exception is a backdrop.** Dismissing an overlay on a press outside
+it is a `mousedown` of any button (native menus; Mantine's `useClickOutside`),
+and every dismiss backdrop is a `data-rid`, so a `data-rid` element that also
+carries `rinch_core::events::BACKDROP_ATTRIBUTE` (`data-backdrop`, any value)
+runs for every button on both backends. `ContextMenu`, `DropdownMenu`,
+`Select`, `Popover`, `ColorInput`, `Modal`, `Drawer` and the DOM menu bar's
+overlay carry it; **a custom overlay's backdrop needs it too**, or a right
+press outside it is swallowed by the backdrop and does nothing. Pins:
+`app/right_press_click_1093_tests.rs`, `app/backdrop_any_button_1093_tests.rs`
+(an Android long press outside a `ContextMenu` included),
+`rinch-components/tests/backdrop_any_button_1093.rs`,
+`rinch-web/tests/right_press_click_1093.rs`.
 
 ### File Drop (OS → App)
 

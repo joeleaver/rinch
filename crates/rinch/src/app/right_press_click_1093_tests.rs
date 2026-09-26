@@ -2,10 +2,12 @@
 //!
 //! A browser fires `click` for the primary button only: a right press is a
 //! `contextmenu`, a middle press an `auxclick`, and neither runs `onclick`.
-//! rinch-web follows the browser. Desktop used to dispatch the `data-rid`
-//! under a right or middle press as well — so a right-click on a `Button` ran
-//! its `onclick`, and so did an Android long press, which the touch
-//! translation delivers as a right press.
+//! Desktop used to dispatch the `data-rid` under a right or middle press as
+//! well — so a right-click on a `Button` ran its `onclick`, and so did an
+//! Android long press, which the touch translation delivers as a right press.
+//! rinch-web did too, unless a `data-oncontextmenu` was in the ancestry; its
+//! twin is `rinch-web/tests/right_press_click_1093.rs`. A backdrop
+//! (`data-backdrop`) is the exception: `backdrop_any_button_1093_tests`.
 //!
 //! `data-onmousedown` / `data-onmouseup` are per-button events and still fire
 //! for every button, with that button in the click context; the fixtures use

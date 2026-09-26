@@ -195,7 +195,7 @@ Supported HTML-element event attributes:
 
 | Attribute | Fires | Closure |
 |---|---|---|
-| `onclick` | Primary press (dispatched on pointerdown), or Enter/Space on the focused element — see [Keyboard activation](#keyboard-activation). A right or middle press never runs it, on either backend (desktop did until issue #1093); use `oncontextmenu`, or `onmousedown` with `get_click_context().button` | `Fn()` |
+| `onclick` | Primary press (dispatched on pointerdown), or Enter/Space on the focused element — see [Keyboard activation](#keyboard-activation). A right or middle press does not run it, on either backend (both did until issue #1093); use `oncontextmenu`, or `onmousedown` with `get_click_context().button`. An overlay backdrop marked `data-backdrop` (`rinch_core::events::BACKDROP_ATTRIBUTE`) is the exception and runs for every button, so a press of any button outside an overlay dismisses it | `Fn()` |
 | `onmousedown` / `onmouseup` | Pointer press / release (any button) | `Fn()` |
 | `onmousemove` | Pointer moves over the element — at most once per event-loop batch on desktop, at the newest position (see [Pointer moves are coalesced](#pointer-moves-are-coalesced)) | `Fn()` |
 | `onmouseenter` / `onmouseleave` | Pointer enters / leaves the element | `Fn()` |
