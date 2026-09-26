@@ -179,3 +179,100 @@ fn a_fractional_line_height_highlight_is_whole_pixels_tall() {
     }
     assert_eq!(doc.query_glyph_bounds(p, 0).unwrap().height, 25.0);
 }
+
+// ── Adjacent lines tile (#1024) ────────────────────────────────────────────
+//
+// At a fractional line-height Parley quantizes each line's block coords on
+// its own: the top is the line's rounded `y`, the bottom the rounded ascent,
+// descent and leading added to it. Two neighbours can then overlap by a pixel
+// (or leave one): at 15px x 1.65 on Inter line 3 is `50..75` and line 4
+// `74..99`, and a translucent highlight painted over both draws a darker seam
+// along row 74. Chrome 153 snaps a 16px x 1.65 paragraph's highlights to
+// `0-26, 26-53, 53-79, 79-106` — contiguous. Each line's rect ends where the
+// next line's begins; the last keeps its own bottom. Several line-heights,
+// because which rows collide depends on how the fractions accumulate.
+
+fn assert_tiles(style: &str) {
+    let (doc, p) = inter_paragraph(style);
+    let rects = doc.query_selection_rects(p, 0, TEXT.len());
+    assert!(
+        rects.len() >= 4,
+        "{style}: the paragraph must wrap: {rects:?}"
+    );
+    assert_eq!(
+        rects[0].1, 0.0,
+        "{style}: the first line starts at 0: {rects:?}"
+    );
+    for n in 0..rects.len() - 1 {
+        let (_, y, _, h) = rects[n];
+        assert_eq!(
+            y + h,
+            rects[n + 1].1,
+            "{style}: line {n}'s highlight must end where line {}'s begins \
+             (all rects: {rects:?})",
+            n + 1
+        );
+        assert!(h > 0.0, "{style}: line {n} is not empty: {rects:?}");
+    }
+}
+
+#[test]
+fn fractional_line_height_highlights_tile_at_15px_x_1_65() {
+    assert_tiles("font-size: 15px; line-height: 1.65");
+}
+
+#[test]
+fn fractional_line_height_highlights_tile_at_16px_x_1_65() {
+    assert_tiles("font-size: 16px; line-height: 1.65");
+}
+
+#[test]
+fn fractional_line_height_highlights_tile_at_13px_x_1_37() {
+    assert_tiles("font-size: 13px; line-height: 1.37");
+}
+
+#[test]
+fn fractional_line_height_highlights_tile_at_a_declared_23_4px() {
+    assert_tiles("font-size: 16px; line-height: 23.4px");
+}
+
+// ── A soft-wrapped line is highlighted to its end (#1010) ──────────────────
+//
+// A selection that runs past a soft-wrapped line's end used to take that
+// line's right edge from a *downstream* caret at the line's end — which
+// Parley places at the start of the NEXT line (x = 0), so the rect was
+// floored to a 1px sliver at the line's left. The line is highlighted to its
+// trailing edge, as a browser does.
+
+#[test]
+fn a_selection_past_a_soft_wrap_highlights_the_whole_line() {
+    let (doc, p) = inter_paragraph("font-size: 16px; line-height: 40px");
+    let rects = doc.query_selection_rects(p, 0, TEXT.len());
+    assert!(rects.len() >= 3, "{rects:?}");
+    for (n, &(x, _, w, _)) in rects.iter().enumerate() {
+        assert_eq!(x, 0.0, "line {n} starts at the left edge: {rects:?}");
+        // Every line of this paragraph holds at least one whole word, and no
+        // word here is narrower than 20px at 16px.
+        assert!(w > 20.0, "line {n} is highlighted, not a sliver: {rects:?}");
+    }
+}
+
+/// Off the fixed point of a selection that starts at 0: from the middle of the
+/// first line to the middle of the third. The middle line is covered from its
+/// start to its trailing edge, the first from the anchor to its trailing edge.
+#[test]
+fn a_selection_from_mid_line_highlights_to_each_wrapped_lines_end() {
+    let (doc, p) = inter_paragraph("font-size: 16px; line-height: 40px");
+    let all = doc.query_selection_rects(p, 0, TEXT.len());
+    // "beta" starts on the first line (after "alpha ").
+    let a = TEXT.find("beta").unwrap();
+    let b = TEXT.find("kappa").unwrap();
+    let rects = doc.query_selection_rects(p, a, b);
+    assert!(rects.len() >= 3, "{rects:?}");
+    let (x0, _, w0, _) = rects[0];
+    assert!(x0 > 20.0, "the first rect starts at 'beta': {rects:?}");
+    // Its right edge is the first line's own right edge, the same one the
+    // whole-paragraph selection reaches.
+    assert_eq!(x0 + w0, all[0].0 + all[0].2, "{rects:?} vs {all:?}");
+    assert_eq!(rects[1], all[1], "a middle line is covered whole");
+}
