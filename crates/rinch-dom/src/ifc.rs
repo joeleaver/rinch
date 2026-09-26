@@ -212,6 +212,10 @@ impl HangStats {
 /// hang, and an unconstrained layout has nothing to wrap, so both are broken
 /// exactly as before.
 ///
+/// Whatever the white space, a paragraph that ends in the empty line parley
+/// commits after an overflowing inline box ([`phantom_last_line`], #1050) is
+/// broken once more, the same way, without it.
+///
 /// [`BreakReason::Regular`]: parley::layout::BreakReason::Regular
 /// [`BreakLines::revert_to`]: parley::layout::BreakLines::revert_to
 /// [`set_prior_line_width`]: parley::layout::BreakLines::set_prior_line_width
@@ -221,13 +225,85 @@ pub(crate) fn break_lines_hanging_spaces(
     max_width: Option<f32>,
     preserves_spaces: bool,
 ) -> HangStats {
+    layout.break_all_lines(max_width);
+    let hang = max_width
+        .filter(|max| preserves_spaces && max.is_finite() && any_unhung_line(layout, text));
+    let mut stats = match hang {
+        Some(max) => hang_pass(layout, text, max, None),
+        None => HangStats::default(),
+    };
+    // #1050: parley's trailing empty line after an overflowing inline box.
+    // Broken again, the same way, up to the line before it.
+    if let Some(keep) = phantom_last_line(layout) {
+        match hang {
+            Some(max) => stats = hang_pass(layout, text, max, Some(keep)),
+            None => break_lines_up_to(layout, max_width, keep),
+        }
+    }
+    stats
+}
+
+/// The line count to keep when `layout` ends in the empty line parley 0.11.1
+/// commits after an inline box it placed by an **emergency** break (#1050).
+///
+/// At the start of a line, a box too wide for any line is consumed and the line
+/// committed on the spot (`BreakReason::Emergency`). When that box was the
+/// paragraph's last item the breaker is not marked done, so its next
+/// `break_next` commits one more line holding nothing. When text came before
+/// the box that line still carries an empty text-run item, so the breaker's own
+/// rule that an empty last line adds no height does not apply, and it is
+/// counted at the box's line height: a 300x80 box wrapped under `"x "` in a
+/// 200px paragraph made it 180px tall where Chrome makes it 105. Parley's
+/// `main` still has the same branch (checked 2026-09-26).
+///
+/// It is that line exactly: the last line, ended by the end of the text
+/// (`BreakReason::None`), with nothing to paint or hit (no glyph run, no box),
+/// right after an emergency break. A line of real content after the box — even
+/// a single space — has a glyph run and is kept.
+fn phantom_last_line(layout: &parley::Layout<Brush>) -> Option<usize> {
+    use parley::layout::BreakReason;
+    let n = layout.len();
+    if n < 2 {
+        return None;
+    }
+    let last = layout.get(n - 1)?;
+    let prev = layout.get(n - 2)?;
+    (last.break_reason() == BreakReason::None
+        && prev.break_reason() == BreakReason::Emergency
+        && last.items().next().is_none())
+    .then_some(n - 1)
+}
+
+/// Break `layout` at `max_width` as `break_all_lines` does, but commit only its
+/// first `keep` lines — what [`phantom_last_line`] leaves.
+fn break_lines_up_to(layout: &mut parley::Layout<Brush>, max_width: Option<f32>, keep: usize) {
+    use parley::layout::YieldData;
+    let max = max_width.unwrap_or(f32::MAX);
+    let mut breaker = layout.break_lines();
+    let state = breaker.state_mut();
+    state.set_layout_max_advance(max);
+    state.set_line_max_advance(max);
+    let mut committed = 0usize;
+    while committed < keep {
+        match breaker.break_next() {
+            Some(YieldData::LineBreak(_)) => committed += 1,
+            Some(_) => {}
+            None => break,
+        }
+    }
+    breaker.finish();
+}
+
+/// The hanging-space re-break of [`break_lines_hanging_spaces`], over a layout
+/// already broken at `max`, committing at most `limit` lines when given one.
+fn hang_pass(
+    layout: &mut parley::Layout<Brush>,
+    text: &str,
+    max: f32,
+    limit: Option<usize>,
+) -> HangStats {
     use parley::layout::{BreakReason, YieldData};
     let mut stats = HangStats::default();
-    layout.break_all_lines(max_width);
-    let Some(max) = max_width else { return stats };
-    if !preserves_spaces || !max.is_finite() || !any_unhung_line(layout, text) {
-        return stats;
-    }
     let units = logical_units(layout, text);
     stats.passes = 1;
     let mut breaker = layout.break_lines();
@@ -235,7 +311,13 @@ pub(crate) fn break_lines_hanging_spaces(
     let mut cursor = 0usize;
     let mut line_start = breaker.state().clone();
     let mut in_step = true;
+    // Every turn of this loop leaves exactly one line committed: a line broken
+    // again replaces itself.
+    let mut committed = 0usize;
     loop {
+        if limit == Some(committed) {
+            break;
+        }
         let state = breaker.state_mut();
         state.set_layout_max_advance(max);
         state.set_line_max_advance(max);
@@ -246,6 +328,7 @@ pub(crate) fn break_lines_hanging_spaces(
         let YieldData::LineBreak(data) = yielded else {
             continue;
         };
+        committed += 1;
         // The last line is committed as it is (`BreakReason::None`; an empty
         // one after a final newline even copies the previous line's advance).
         if !in_step || data.reason == BreakReason::None {
