@@ -983,11 +983,12 @@ const SCROLLER: &str = "height: 40px; overflow: auto; padding-bottom: 600px;";
 #[wasm_bindgen_test]
 fn home_and_end_on_a_line_scrolled_out_of_the_host() {
     let (f, start, caret, next) = middle_line(TEXT, SCROLLER);
+    // Asked before the focus: the oracle's selection takes it.
+    let chrome = f.chrome_line_boundary(caret, true);
     f.focus();
     scroll_line_away_in_host(&f, caret);
     f.caret_at(caret);
     assert!(f.key("End", false));
-    let chrome = f.chrome_line_boundary(caret, true);
     assert_eq!(
         f.head(),
         chrome,
@@ -1041,6 +1042,7 @@ fn soft_line_deletes_on_a_line_scrolled_out_of_the_host() {
 #[wasm_bindgen_test]
 fn home_and_end_on_a_line_scrolled_off_the_page() {
     let (f, start, caret, _) = middle_line(TEXT, "margin-bottom: 4000px;");
+    let chrome = f.chrome_line_boundary(caret, true);
     f.focus();
     let win = web_sys::window().unwrap();
     let line = f.char_rect(caret);
@@ -1053,7 +1055,6 @@ fn home_and_end_on_a_line_scrolled_off_the_page() {
     );
     f.caret_at(caret);
     assert!(f.key("End", false));
-    let chrome = f.chrome_line_boundary(caret, true);
     assert_eq!(f.head(), chrome, "End");
     f.caret_at(caret);
     assert!(f.key("Home", false));

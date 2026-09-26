@@ -1330,16 +1330,11 @@ fn delete_to(handle: &EditorHandle, motion: CursorMotion) -> bool {
 /// Delete from the caret to the edge of its visual line ([`visual_line_bound`]),
 /// or to the textblock's edge when there is no geometry to ask. An already
 /// non-empty selection is deleted as it stands.
-fn delete_to_visual_line(
-    handle: &EditorHandle,
-    container_nid: usize,
-    doc: &web_sys::Document,
-    forward: bool,
-) -> bool {
+fn delete_to_visual_line(handle: &EditorHandle, forward: bool) -> bool {
     let sel = handle.selection();
     if sel.is_empty() {
         let head = sel.head();
-        match visual_line_bound(handle, container_nid, doc, head, forward) {
+        match visual_line_bound(handle, head, forward) {
             Some(edge) if edge != head => handle.set_selection(Selection::text(head, edge)),
             Some(_) => {}
             None => {
@@ -1390,7 +1385,7 @@ fn on_before_input(event: &web_sys::InputEvent) {
     // not, since it fires only `paste` (measured). The cycle ends first so the field
     // the browser is about to edit is the mirror, not the sentinels.
     end_context_menu_cycle();
-    let Some((container_nid, handle)) = focused_handle() else {
+    let Some((_, handle)) = focused_handle() else {
         return;
     };
     let handled = match edit_intent(&event.input_type()) {
@@ -1419,17 +1414,7 @@ fn on_before_input(event: &web_sys::InputEvent) {
         }
         EditIntent::DeleteToVisualLine { forward } => {
             event.prevent_default();
-            match web_sys::window().and_then(|w| w.document()) {
-                Some(doc) => delete_to_visual_line(&handle, container_nid, &doc, forward),
-                None => delete_to(
-                    &handle,
-                    if forward {
-                        CursorMotion::LineEnd
-                    } else {
-                        CursorMotion::LineStart
-                    },
-                ),
-            }
+            delete_to_visual_line(&handle, forward)
         }
     };
     // Typing is a caret move as much as an edit: drop any vertical-motion goal column
@@ -2099,8 +2084,8 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         "Home" if ctrl => handle.move_cursor(CursorMotion::DocStart, shift),
         "End" if ctrl => handle.move_cursor(CursorMotion::DocEnd, shift),
         // The visual line's edges, as on desktop (#301).
-        "Home" => move_to_line_edge(&handle, container_nid, doc, false, shift),
-        "End" => move_to_line_edge(&handle, container_nid, doc, true, shift),
+        "Home" => move_to_line_edge(&handle, false, shift),
+        "End" => move_to_line_edge(&handle, true, shift),
         // 2. Tab: table cell-nav (shared) first; else the keymap resolves
         //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below. Consumed either way.
         "Tab" if handle.tab_cell(shift) => true,
@@ -2237,16 +2222,10 @@ fn hit_affinity(
 /// Home / End: move the head to the edge of its visual line, collapsing or
 /// (`extend`, Shift) extending. The textblock's edge without geometry — an empty
 /// block, or a caret with no rect.
-fn move_to_line_edge(
-    handle: &EditorHandle,
-    container_nid: usize,
-    doc: &web_sys::Document,
-    end: bool,
-    extend: bool,
-) -> bool {
+fn move_to_line_edge(handle: &EditorHandle, end: bool, extend: bool) -> bool {
     let sel = handle.selection();
     let head = sel.head();
-    let Some(edge) = visual_line_bound(handle, container_nid, doc, head, end) else {
+    let Some(edge) = visual_line_bound(handle, head, end) else {
         return handle.move_cursor(
             if end {
                 CursorMotion::LineEnd
@@ -2291,55 +2270,98 @@ fn is_wrap_below(handle: &EditorHandle, head: Pos, edge: Pos) -> bool {
 /// the caret at `head` is drawn on — the web twin of desktop's
 /// `RinchApp::visual_line_bound`.
 ///
-/// Hit-tests the textblock just inside **both** edges of its box at the
-/// vertical middle of the caret's line, and takes the smaller position as the
-/// start and the larger as the end. Probing both sides, rather than choosing one
-/// by `direction`, is what makes a right-to-left line right: its logical start
-/// is at its right edge — unless the line's text is itself left-to-right, when
-/// it is at the left again whatever the paragraph's `direction` says. A line
-/// that *mixes* directions has logical edges that need not sit at either visual
-/// edge; there this answers the extremes of the two probes, which is inside the
-/// line but may fall short of its logical edge (not handled, as on desktop).
+/// Found from caret geometry alone: a visual line holds a contiguous run of
+/// logical positions, so the positions whose caret is drawn above, on and below
+/// the caret's line are three consecutive runs, and a binary search over the
+/// caret's hard line (the textblock, cut at its hard breaks — [`hard_line`])
+/// finds the edge in a handful of `Range` rects. End takes the last position
+/// whose **upstream** caret is not below the line, so the end of a wrapped
+/// line is the wrap point (the next line's start, drawn upstream); Home the
+/// first whose **downstream** caret is not above it. Because nothing is hit
+/// tested, a caret line scrolled out of the viewport or its scroller, or
+/// covered by another box, answers the same as a visible one (#1026 — the
+/// previous `caretRangeFromPoint` probes answered nothing off screen, and the
+/// callers fell back to the textblock's edge). And it is right in a
+/// right-to-left line, and on a line that mixes directions, whose logical
+/// edges need not be at either visual edge.
 ///
-/// The end of a wrapped line is the wrap point — the same model position as the
-/// next line's start. `None` without geometry (no caret rect, a probe landing
-/// outside the caret's textblock, or an answer on the wrong side of `head`) —
-/// which includes a caret line scrolled out of the viewport, where
-/// `caretRangeFromPoint` answers nothing (#1026); the callers then fall back to
-/// the textblock's edge.
-fn visual_line_bound(
-    handle: &EditorHandle,
-    container_nid: usize,
-    doc: &web_sys::Document,
-    head: Pos,
-    end: bool,
-) -> Option<Pos> {
+/// `None` without geometry: no caret rect for `head` or for a position the
+/// search asks about. The callers then fall back to the textblock's edge.
+fn visual_line_bound(handle: &EditorHandle, head: Pos, end: bool) -> Option<Pos> {
+    use std::cmp::Ordering;
     let (_, hy, hh) = head_screen_rect(handle, head)?;
-    let (tb, _) = handle.caret_address(head)?;
-    let el = node_by_nid(tb)?.dyn_into::<web_sys::Element>().ok()?;
-    // Just inside the BORDER box, in the same viewport space the caret rect and
-    // `caretRangeFromPoint` use. `getBoundingClientRect` is scaled by a
-    // `transform` or CSS `zoom` on the way to the viewport, while `clientLeft`,
-    // `clientWidth` and the computed padding are not, so a content box built from
-    // them lands off the line under either (desktop pushes its edges through the
-    // painted transform for the same reason, #203). A point in the padding or
-    // border still resolves to the nearest position on the line (measured,
-    // Chrome 153, a 60px-padded, 7px-bordered paragraph).
-    let rect = el.get_bounding_client_rect();
-    let (left, right) = (rect.left() as f32, rect.right() as f32);
-    let y = hy + hh * 0.5;
-    let probe = |x: f32| {
-        resolve_editor_point(doc, x, y)
-            .filter(|hit| hit.container_nid == container_nid && hit.textblock_nid == tb)
-            .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+    let (lo, hi) = hard_line(handle, head)?;
+    // Where the caret at `p` is drawn against the caret's own line: on it when
+    // the two rects share more than half the shorter one's height (adjacent
+    // lines at `line-height: 1` overlap by a sliver, a taller span on the same
+    // line contains the caret), else above or below by their middles.
+    let side = |p: usize, affinity: CaretAffinity| -> Option<Ordering> {
+        let r = handle.caret_rect_with_affinity(Pos(p), affinity)?;
+        let overlap = (r.y + r.height).min(hy + hh) - r.y.max(hy);
+        Some(if overlap > 0.5 * r.height.min(hh) {
+            Ordering::Equal
+        } else {
+            (r.y + r.height * 0.5).total_cmp(&(hy + hh * 0.5))
+        })
     };
-    let hits = [probe(left + 1.0), probe(right - 1.0)];
-    let found = hits.iter().flatten().copied();
     if end {
-        found.max_by_key(|p| p.0).filter(|p| p.0 >= head.0)
+        // The last p in [head, hi] not drawn below the line; `head` itself is not.
+        let (mut ok, mut bad) = (head.0, hi + 1);
+        while bad - ok > 1 {
+            let mid = ok + (bad - ok) / 2;
+            if side(mid, CaretAffinity::Upstream)? == Ordering::Greater {
+                bad = mid;
+            } else {
+                ok = mid;
+            }
+        }
+        Some(Pos(ok))
     } else {
-        found.min_by_key(|p| p.0).filter(|p| p.0 <= head.0)
+        // The first p in [lo, head] not drawn above the line; `head` itself is not.
+        let (mut bad, mut ok) = (lo as isize - 1, head.0 as isize);
+        while ok - bad > 1 {
+            let mid = bad + (ok - bad) / 2;
+            if side(mid as usize, CaretAffinity::Downstream)? == Ordering::Less {
+                bad = mid;
+            } else {
+                ok = mid;
+            }
+        }
+        Some(Pos(ok as usize))
     }
+}
+
+/// The model range `(start, end)` of the hard line `head` is on: its
+/// textblock's content, cut at the hard breaks on either side of it. A hard
+/// break ends a visual line, and the view gives it no bytes, so the positions
+/// on its two sides share one byte offset and one upstream caret rect —
+/// [`visual_line_bound`]'s search must not be offered the far side. `None`
+/// outside a textblock.
+fn hard_line(handle: &EditorHandle, head: Pos) -> Option<(usize, usize)> {
+    let doc = handle.doc();
+    let r = doc.resolve(head).ok()?;
+    let parent = r.parent();
+    if !parent.is_textblock() {
+        return None;
+    }
+    let start = r.start(r.depth());
+    let off = r.parent_offset();
+    let (mut lo, mut hi) = (0, parent.content_size());
+    let mut at = 0;
+    for i in 0..parent.child_count() {
+        let child = parent.child(i);
+        let size = child.node_size();
+        if child.type_name() == "hard_break" {
+            if at + size <= off {
+                lo = at + size;
+            } else if at >= off {
+                hi = at;
+                break;
+            }
+        }
+        at += size;
+    }
+    Some((start + lo, start + hi))
 }
 
 /// The viewport `(x, y, height)` of the caret at model `pos`:
