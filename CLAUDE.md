@@ -2344,12 +2344,12 @@ cleared by the verb that moved it). A seed on a node **not connected to the
 document** is dropped: detached subtrees are no longer set up at all, and
 attaching one re-seeds it (#628's optimisation, half-landed — the
 `ifc_classifier_tests` detached-route fixtures now force the whole-document pass,
-which still walks detached subtrees). **Nor is a detached subtree measured or
-shaped** (#1040): `set_text_content` orphans without freeing, so the registries
-below still name what the orphan holds, and the three atomic-inline sizers and
-`build_ifc_layouts` each skip an entry `depth_if_connected` says is out of the
-document (`build_ifc_layouts` drops its paint layout, so it is shaped when next
-laid out). Anonymous boxes, splits and measure leaves
+which still walks detached subtrees). **Nor is a detached subtree's atomic
+inline measured** (#1040): `set_text_content` orphans without freeing, so the
+atomic-inline registry below still names what the orphan holds, and the three
+atomic-inline sizers each skip an entry `depth_if_connected` says is out of the
+document. `build_ifc_layouts` still shapes an orphaned IFC root that was dirtied
+before the detach (#1069). Anonymous boxes, splits and measure leaves
 whose owner left the slab (`set_inner_html`, pseudo-element churn) are swept as
 orphans at a scoped pass's start. **`tree.ifc_dirty` is now "run the
 whole-document pass"** — the first layout (`ifc_full_initial`),

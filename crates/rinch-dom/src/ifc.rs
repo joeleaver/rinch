@@ -608,18 +608,6 @@ impl RinchDocument {
                 }
             }
 
-            // A root outside the document is not shaped (#1040): nothing
-            // paints it, and `set_text_content` orphans a subtree without
-            // freeing it, so the registry still names its roots. Asked here,
-            // after the skip above, so a root with a valid layout pays no
-            // ancestor walk. Its layout is dropped rather than kept: the dirty
-            // mark that brought it here is cleared with the rest at the end of
-            // the pass, and a root with no layout is shaped the next time it
-            // is laid out in the document.
-            if self.depth_if_connected(root_id).is_none() {
-                self.tree.nodes[root_id].text_layout = None;
-                continue;
-            }
             self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
             let mut inline_layout = Self::build_inline_layout(
                 &self.tree.nodes,
