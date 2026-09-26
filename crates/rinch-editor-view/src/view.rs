@@ -2035,7 +2035,9 @@ fn leaf_flat_bytes(leaf: &Node, break_bytes: usize) -> usize {
 /// `break_bytes` for a hard break (`<br>`), which is what the host gives it
 /// ([`DomDocument::line_break_flat_bytes`]), and zero for anything else (an image
 /// is an inline box with no text). A zero-byte leaf shares its byte with the
-/// position beside it, so a byte offset cannot say which side of it it means.
+/// position beside it, so a byte offset cannot say which side of it it means:
+/// the caret beside one is drawn from its box instead
+/// ([`RinchDomEditorView::inline_box_beside`], #1104).
 fn textblock_flat_byte(block: &Node, char_off: usize, break_bytes: usize) -> usize {
     let mut chars_seen = 0usize;
     let mut bytes = 0usize;
