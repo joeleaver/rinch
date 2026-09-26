@@ -8,6 +8,11 @@
 //! early. Both fixed by #1099: a leaf child no longer makes its paragraph a
 //! container, and the view's flat byte map gives a `<br>` the byte the host's
 //! IFC gives it (`DomDocument::line_break_flat_bytes`).
+//!
+//! An image has no byte to count: it is an inline box, so its two sides are
+//! one flat byte. #1104 draws a caret beside one from its box
+//! (`DomDocument::query_inline_box_caret`) and resolves a point on one to the
+//! half it is on (`text_query::inline_box_at_point`).
 
 use super::hit_testing::painted_element_box;
 use super::*;
