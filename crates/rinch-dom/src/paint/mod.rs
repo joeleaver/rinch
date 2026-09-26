@@ -546,13 +546,14 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
 /// The box at `(x, y)`, `w` x `h` physical px, grown by the node's own ink
 /// ([`own_ink_outsets`], scaled): what the paint prune tests. Free for a node
 /// with no shadow and no outline.
+#[inline]
 fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale: f64) -> Rect {
     let r = Rect::new(x, y, x + w, y + h);
     let cs = &node.computed_style;
     if cs.box_shadow.is_empty()
         && cs.text_shadow.is_empty()
         && cs.outline_width <= 0.0
-        && (node.text_layout.is_none() || !tree.inline_text_shadows)
+        && (!tree.inline_text_shadows || node.text_layout.is_none())
     {
         return r;
     }

@@ -966,10 +966,10 @@ impl Walk<'_> {
             );
             // The shadows its inline elements declare are drawn with it (#1048).
             let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
-            for list in super::member_text_shadows(node, self.tree.inline_text_shadows, |id| {
-                self.tree.get(id)
-            }) {
-                reach = reach.union(text_shadow_reach(text, list, self.scale));
+            if self.tree.inline_text_shadows {
+                for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
+                    reach = reach.union(text_shadow_reach(text, list, self.scale));
+                }
             }
             extent = extent.union(Extent::Within(transform.transform_rect_bbox(reach)));
         }
