@@ -1701,6 +1701,20 @@ mod ifc_root_emptied_by_move_1064 {
         });
     }
 
+    /// The same move, set up by the whole-document structural pass rather
+    /// than the scoped one (a direct `ifc_dirty` write asks for it).
+    #[test]
+    fn a_span_moved_under_a_whole_document_ifc_pass_clears_its_old_line() {
+        let (mut app, hs) = page("", false);
+        assert_clean_after(&mut app, OLD_LINE, |app| {
+            hs[2].append_child(&hs[0]);
+            app.doc.as_ref().unwrap().borrow_mut().tree.ifc_dirty = true;
+            resolve(app);
+            let stats = app.doc.as_ref().unwrap().borrow().tree.perf.frame();
+            assert_eq!(stats.get(Counter::IfcFullPasses), 1, "{stats:?}");
+        });
+    }
+
     #[test]
     fn a_span_moved_out_of_a_static_block_clears_its_old_line() {
         let (mut app, hs) = mount_with(|scope| {
