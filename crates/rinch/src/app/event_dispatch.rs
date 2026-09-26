@@ -3707,10 +3707,15 @@ impl RinchApp {
             return false;
         }
         // Containers hold schema-node element children; a textblock's children are
-        // inline (text / mark wrappers) or it is empty.
+        // inline (text / mark wrappers / inline leaves) or it is empty. An inline
+        // leaf carries `data-pm-type` too (`<br data-pm-type="hard_break">`), and
+        // must not make its paragraph read as a container (#1099).
         !node.children.iter().any(|&c| {
-            tree.get(c)
-                .is_some_and(|n| n.attributes.contains_key("data-pm-type"))
+            tree.get(c).is_some_and(|n| {
+                n.attributes
+                    .get("data-pm-type")
+                    .is_some_and(|t| !matches!(t.as_str(), "hard_break" | "image"))
+            })
         })
     }
 
