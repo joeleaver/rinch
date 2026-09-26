@@ -236,6 +236,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         .gen::before { content: \"*\"; }
         .inset { width: 20px; height: 20px; box-shadow: inset 0 0 4px rgb(0, 0, 0); }
         .hang { width: 1px; white-space: pre-wrap; }
+        .narrow { width: 20px; }
         @media (min-width: 801px) { .mq { color: rgb(0, 0, 255); } }
         ",
     );
@@ -285,6 +286,19 @@ fn every_rinch_dom_counter_fires_somewhere() {
     let ht = doc.create_text("a  b");
     doc.append_child(hang, ht);
     doc.append_child(body, hang);
+
+    // A paragraph ending in an atomic inline too wide for its line: parley's
+    // empty line after it is broken away (#1050).
+    let narrow = doc.create_element("div");
+    doc.set_attribute(narrow, "class", "narrow");
+    let nt = doc.create_text("x ");
+    doc.append_child(narrow, nt);
+    let wide = doc.create_element("span");
+    doc.set_attribute(wide, "class", "chip");
+    let wt = doc.create_text("wide chip");
+    doc.append_child(wide, wt);
+    doc.append_child(narrow, wide);
+    doc.append_child(body, narrow);
 
     doc.resolve_layout(VP.0, VP.1);
     // A text edit: cache retains, and hits on the second measure.

@@ -157,6 +157,13 @@ pub struct HangStats {
 }
 
 impl HangStats {
+    /// Sum `other` into these, field by field.
+    pub(crate) fn add(&mut self, other: HangStats) {
+        self.passes += other.passes;
+        self.lines += other.lines;
+        self.phantom_rebreaks += other.phantom_rebreaks;
+    }
+
     /// Add these to `perf`'s `ifc_hang_*` counters.
     pub(crate) fn record(&self, perf: &crate::perf::PerfCounters) {
         perf.add(crate::perf::Counter::IfcHangPasses, u64::from(self.passes));

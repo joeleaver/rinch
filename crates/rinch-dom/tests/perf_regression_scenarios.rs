@@ -26,6 +26,8 @@
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
+//! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
+//! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
 //! exact, anything unlisted `0` (`support/perf_expect.rs`). A failure prints the
@@ -891,7 +893,34 @@ fn an_overflowing_last_chip_is_rebroken_without_parleys_empty_line() {
     text(&mut doc, p, "x ");
     el(&mut doc, p, "span", "chip");
     let s = cold_frame(&mut doc);
-    expect("overflowing last chip", &s, &[]);
+    expect(
+        "overflowing last chip",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 13),
+            (FullStyleWalks, 3),
+            (TaffyStyleSyncs, 6),
+            (TaffyStyleChanges, 4),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 3),
+            (IfcSignatureChanges, 1),
+            (IfcPhantomRebreaks, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (InlineBlockComputes, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
 }
 
 /// #1050's cost on the common shape: a flex item's paragraph that *ends* in a
@@ -910,7 +939,34 @@ fn a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_meas
     text(&mut doc, p, &"lorem ipsum ".repeat(30));
     el(&mut doc, p, "span", "chip");
     let s = cold_frame(&mut doc);
-    expect("flex item ending in a chip", &s, &[]);
+    expect(
+        "flex item ending in a chip",
+        &s,
+        &[
+            (StyleResolves, 4),
+            (ElementsCascaded, 5),
+            (StyleNodesVisited, 19),
+            (FullStyleWalks, 4),
+            (TaffyStyleSyncs, 8),
+            (TaffyStyleChanges, 5),
+            (ShapeMeasureIfc, 3),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 4),
+            (IfcSignatureChanges, 1),
+            (IfcPhantomRebreaks, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+            (InlineBlockComputes, 1),
+            (PaintNodesVisited, 4),
+            (StackingOrderBuilds, 1),
+        ],
+    );
 }
 
 // ── a detached subtree is not measured (#1040) ─────────────────────────────
