@@ -246,13 +246,22 @@ pub(super) fn render_text_shadow_pass(
 }
 
 /// The text's own extent relative to its origin, in physical px: each line
+/// `mask` may show ([`TextMask::may_show`]),
 /// from its first glyph run's start to its last one's end and from its top to
 /// its bottom (ascent and descent, or the line box when that is taller),
 /// grown by how far glyph ink may reach past them.
-fn text_extent(layout: &parley::layout::Layout<Brush>, scale: f64) -> Rect {
+fn text_extent(
+    layout: &parley::layout::Layout<Brush>,
+    scale: f64,
+    mask: Option<&TextMask>,
+) -> Rect {
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     for line in layout.lines() {
+        // A shadow group's lines only (#1048): a span's mask covers its text.
+        if mask.is_some_and(|m| !m.may_show(line.text_range())) {
+            continue;
+        }
         let m = line.metrics();
         let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
         for item in line.items() {
@@ -311,7 +320,7 @@ fn draw_masked(
     } else {
         (x, y, css_transform)
     };
-    let ext = text_extent(layout, scale);
+    let ext = text_extent(layout, scale, mask);
     // The mask's frame is anchored to the pixel the text's origin rounds to,
     // not to its exact position, so a sub-pixel move changes the mask's size
     // and origin only when it moves that pixel: the key (which includes the
@@ -822,7 +831,7 @@ fn draw_tapped(
 
     // Everything a copy can draw, grown by the kernel's reach, in the
     // painter's space. Vello clips a layer to its bounds.
-    let ext = text_extent(layout, scale);
+    let ext = text_extent(layout, scale, mask);
     let reach = 3.0 * sigma;
     let bounds = PaintShape::Rect(Rect::new(
         x + ext.x0 - reach,

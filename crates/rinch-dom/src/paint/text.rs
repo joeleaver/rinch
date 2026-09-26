@@ -257,7 +257,10 @@ fn paint_wavy_decorations(
         let brush = brush.cloned().unwrap_or(Brush::Solid(span.color));
         for line in layout.lines() {
             let line_range = line.text_range();
-            if line_range.end <= span.start || line_range.start >= span.end {
+            if line_range.end <= span.start
+                || line_range.start >= span.end
+                || mask.is_some_and(|m| !m.may_show(line_range.clone()))
+            {
                 continue;
             }
             let start = span.start.max(line_range.start);
@@ -394,11 +397,22 @@ impl<'a> ShadowGroup<'a> {
                         .map(|&(s, e, hidden, shadows)| (s, e, hidden || shadows != list))
                         .collect();
                     mask_ranges.sort_by_key(|&(s, _, _)| s);
+                    let default_hidden = root_hidden || root_shadows != list;
+                    // Uncovered bytes shown: no narrower span to promise.
+                    let shown_span = default_hidden.then(|| {
+                        mask_ranges
+                            .iter()
+                            .filter(|&&(_, _, hidden)| !hidden)
+                            .fold((usize::MAX, 0), |(s, e), &(rs, re, _)| {
+                                (s.min(rs), e.max(re))
+                            })
+                    });
                     Self {
                         shadows: list,
                         mask: TextMask {
                             ranges: mask_ranges,
-                            default_hidden: root_hidden || root_shadows != list,
+                            default_hidden,
+                            shown_span,
                         },
                     }
                 })
@@ -423,6 +437,10 @@ pub(super) struct TextMask {
     ranges: Vec<(usize, usize, bool)>,
     /// The answer for bytes no range covers.
     default_hidden: bool,
+    /// The byte span every shown byte lies in, when that is narrower than the
+    /// whole text: a line outside it draws nothing and is not walked
+    /// ([`Self::may_show`]). `None` means any line may.
+    shown_span: Option<(usize, usize)>,
 }
 
 impl TextMask {
@@ -451,7 +469,20 @@ impl TextMask {
         Some(Self {
             ranges,
             default_hidden: root_hidden,
+            shown_span: None,
         })
+    }
+
+    /// Whether anything in the byte range `range` (a line's) may be shown.
+    ///
+    /// A shadow group's mask shows only its own text (#1048), and walking a
+    /// line's items costs parley a scan of the run per glyph run it yields —
+    /// so each group's pass skips the lines its text is not on. Without that,
+    /// a paragraph of N spans with N distinct lists cost N passes over every
+    /// line: 298 ms at N = 400 (review of #1063).
+    pub(super) fn may_show(&self, range: std::ops::Range<usize>) -> bool {
+        self.shown_span
+            .is_none_or(|(s, e)| range.start < e && range.end > s)
     }
 
     /// Whether the cluster starting at layout byte `byte` is hidden.
@@ -644,6 +675,9 @@ fn draw_text(
 ) {
     let sf = scale as f32;
     for line in layout.lines() {
+        if mask.is_some_and(|m| !m.may_show(line.text_range())) {
+            continue;
+        }
         let mut cursor = GlyphCursor::default();
         for item in line.items() {
             let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {

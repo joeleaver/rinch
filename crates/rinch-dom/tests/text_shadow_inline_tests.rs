@@ -483,3 +483,34 @@ fn an_opacity_layer_holds_a_span_shadow() {
         );
     }
 }
+
+/// A blurred span shadow's mask covers the span's lines, not the paragraph's:
+/// a span on the second line rasterises no mask over the first.
+///
+/// Kills: `TextMask::may_show` answering `true` for every line (each group's
+/// pass walks, and its mask spans, the whole paragraph — the cost the review
+/// of #1063 measured at 298 ms for 400 distinct span lists).
+#[test]
+fn a_span_shadow_mask_covers_only_the_spans_lines() {
+    let ops = record(
+        &mut doc_with(
+            r#"<p class="t" style="width: 120px">aaaa<br>bb<span style="text-shadow: 0 0 4px rgb(255, 0, 0)">cc</span></p>"#,
+        ),
+        1.0,
+    );
+    let images: Vec<Rect> = ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Image { rect } => Some(*rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 1, "{ops:?}");
+    // Line 1 is 20..48, line 2 48..76; the blur reaches 6px, plus the ink
+    // margin (a quarter of 24px) and a pixel of rounding.
+    assert!(
+        images[0].y0 >= 48.0 - 6.0 - 6.0 - 2.0,
+        "the mask {:?} reaches up over the first line",
+        images[0]
+    );
+}
