@@ -285,3 +285,89 @@ fn a_selection_from_mid_line_highlights_to_each_wrapped_lines_end() {
     assert_eq!(x0 + w0, all[0].0 + all[0].2, "{rects:?} vs {all:?}");
     assert_eq!(rects[1], all[1], "a middle line is covered whole");
 }
+
+// ── The line-end edge, against Chrome (review of #1108) ────────────────────
+//
+// "To the line's end" is the line's trailing edge — its text plus the hanging
+// trailing space — not the container's edge. Chrome 153 paints this
+// paragraph's first line `0-84` when the whole paragraph is selected; rinch's
+// trailing edge on the bundled Inter is 83.52. A rect stretched to the
+// container would be 120.
+
+#[test]
+fn a_wrapped_lines_highlight_stops_at_its_trailing_edge_as_in_chrome() {
+    let (doc, p) = inter_paragraph("font-size: 16px; line-height: 40px");
+    let rects = doc.query_selection_rects(p, 0, TEXT.len());
+    let right = rects[0].0 + rects[0].2;
+    assert!((right - 83.52).abs() < 0.5, "line 0 ends at {right}: {rects:?}");
+}
+
+// ── The line before a hard break (review of #1108) ─────────────────────────
+//
+// A line ended by `<br>` (Shift+Enter in the editor) holds the break in its
+// text range, so the upstream caret at its end stands at the next line's
+// start (x = 0) and the line was a 1px sliver. A selection that runs past the
+// break covers the line's text plus a newline's width — Parley's own
+// `Selection::geometry` rule, a quarter of ascent + descent — as Chrome 153
+// paints `abc<br>def ghi` line 0 across `0..32` ("abc" is 28px).
+
+/// `abc<br>` + `rest` in the bundled Inter at 16px / 40px, laid out.
+fn hard_break_paragraph(parts: &[&str]) -> (RinchDocument, u64) {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let mut doc = RinchDocument::new();
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(INTER)),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
+    );
+    let body = doc.body();
+    let p = doc.create_element("p");
+    doc.set_attribute(
+        p,
+        "style",
+        "margin: 0; width: 120px; font-family: ProbeFace; font-size: 16px; line-height: 40px",
+    );
+    doc.append_child(body, p);
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            let br = doc.create_element("br");
+            doc.append_child(p, br);
+        }
+        if !part.is_empty() {
+            let t = doc.create_text(part);
+            doc.append_child(p, t);
+        }
+    }
+    doc.resolve_layout(400.0, 600.0);
+    (doc, p.0 as u64)
+}
+
+#[test]
+fn the_line_before_a_hard_break_is_highlighted_with_its_newline() {
+    let (doc, p) = hard_break_paragraph(&["abc", "def ghi"]);
+    let rects = doc.query_selection_rects(p, 0, 20);
+    assert_eq!(rects.len(), 2, "{rects:?}");
+    let (x, _, w, _) = rects[0];
+    assert_eq!(x, 0.0, "{rects:?}");
+    // "abc" alone is ~28px; with the newline ~32, as in Chrome.
+    assert!(w > 30.0 && w < 34.0, "line 0 is 'abc' plus a newline: {rects:?}");
+    // Stopping before the break is the text alone, no newline.
+    let text_only = doc.query_selection_rects(p, 0, 3);
+    assert_eq!(text_only.len(), 1, "{text_only:?}");
+    assert!(
+        (text_only[0].2 - 27.9).abs() < 0.5,
+        "'abc' without its newline: {text_only:?}"
+    );
+}
+
+#[test]
+fn an_empty_line_between_two_breaks_is_highlighted() {
+    let (doc, p) = hard_break_paragraph(&["abc", "", "def"]);
+    let rects = doc.query_selection_rects(p, 0, 20);
+    assert_eq!(rects.len(), 3, "{rects:?}");
+    let (_, y, w, _) = rects[1];
+    assert_eq!(y, 40.0, "the empty line is the second: {rects:?}");
+    assert!(w > 3.0, "an empty line shows its newline, not a sliver: {rects:?}");
+}
