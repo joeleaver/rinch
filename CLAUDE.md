@@ -2352,6 +2352,13 @@ input a shaped layout is built from:
   text node is never cascaded on its own. `invalidate_text_measure_for_node`
   therefore also drops each **text child's own `ifc_root`**; without it a font
   change on `div > ["t", li]` left the box at its old line height and glyphs.
+  Such a box takes its `text-overflow: ellipsis` from its block container —
+  its `parent`, for a split span's runs too — because it carries only the
+  inherited properties and neither `text-overflow` nor `overflow` is
+  (`ellipsis_style_owner`, #1071; Chrome 153 draws the container's "…" on
+  text beside a block child). So a restyle of the container also drops every
+  box in its **`run_boxes`**: a split span holds its runs' text, and does not
+  re-cascade when the container's non-inherited properties change.
 - **An atomic inline is two roots' business.** An `inline-block` / `-flex` /
   `-grid` holding text is a member of the IFC around it *and* the root of its
   own, so `invalidate_ifc_for_node` drops both: reaching only the outer one
@@ -2574,7 +2581,17 @@ answers: a positioned box with an explicit `z-index`, `position: fixed` or
 **None of them on a `display: contents` element** (#1038): it generates no box,
 so it is neither a stacking context nor a positioned layer (`is_positioned_z_auto`),
 its `opacity`/`transform` do not reach its children and its `z-index` scopes
-nothing (all measured in Chrome 153). Where a box is *anchored* depends on the
+nothing (all measured in Chrome 153). **Nor does a `transform` on a non-atomic
+`display: inline` element** (#1080, CSS Transforms 1 §1): a plain span is not
+transformable, so it is no stacking context and no containing block, and its
+transform moves nothing — the same set `clips_overflow` excludes. The computed
+value is kept (Chrome's `getComputedStyle` reports the matrix); every consumer
+of the *effect* — both predicates, `paint::compose_node_transform`,
+`PaintedState`, hit testing's inverse and its subtree prune — asks
+`Node::has_applied_transform()`, not `transform.is_identity`. The one reader
+left on the raw value is the hit cache's `HitStyleKey::transformed`, which sees
+only `ComputedStyle`; on such a span it only costs an extra (harmless) cache
+invalidation when the transform toggles. Where a box is *anchored* depends on the
 same fact, so every coordinate walk that can meet a contents node asks
 `Node::box_position()` — the computed `position`, `static` for `display:
 contents` — not `computed_style.position` (the readers left on the raw value are

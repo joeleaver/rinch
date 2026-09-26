@@ -2191,6 +2191,16 @@ impl RinchDocument {
                 let _ = self.tree.taffy.mark_dirty(t);
             }
         }
+        // The anonymous boxes this node is the container of take their
+        // `text-overflow: ellipsis` from it (`ellipsis_style_owner`, #1071),
+        // and hold none of what that reads: neither `text-overflow` nor
+        // `overflow` is inherited. The loop above reaches a box only through a
+        // text child of this node, which a run inside a split `<span>` (#513)
+        // is not — the span holds the text, and does not re-cascade when this
+        // node's non-inherited properties change.
+        for b in self.tree.nodes[node_id].run_boxes.clone() {
+            self.invalidate_ifc_root(b);
+        }
     }
 
     /// Invalidate the IFC that owns a node (if any).
