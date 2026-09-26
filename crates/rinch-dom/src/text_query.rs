@@ -182,6 +182,74 @@ pub fn hanging_whitespace_end_for_node(
     None
 }
 
+/// The byte range of the **visual line** a caret at `byte_offset` with
+/// `affinity` is drawn on, as its Home and End want it (#1107): `start` is the
+/// line's first byte; `end` is its wrap point on a soft-wrapped line (after
+/// any hanging whitespace — the same position as the next line's start, which
+/// End draws upstream, #301), the byte **before** the break on a line a hard
+/// break ends, and the text's end on the last line. `None` for an empty
+/// layout.
+///
+/// Read from the layout's own lines, not from geometry: it answers the same
+/// for a caret scrolled out of view, clipped, or transformed.
+///
+/// An `Upstream` caret at a soft wrap point is on the upper line, as Parley
+/// draws it; anywhere else (a hard break's far side included) `affinity` makes
+/// no difference.
+pub fn visual_line_range(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<std::ops::Range<usize>> {
+    use parley::layout::{BreakReason, Cluster};
+    let last = layout.lines().len().checked_sub(1)?;
+    let soft = |r: BreakReason| matches!(r, BreakReason::Regular | BreakReason::Emergency);
+    let upstream = (affinity == CaretAffinity::Upstream)
+        .then(|| {
+            layout.lines().position(|l| {
+                let r = l.text_range();
+                soft(l.break_reason()) && r.start < byte_offset && byte_offset == r.end
+            })
+        })
+        .flatten();
+    let index = upstream
+        .or_else(|| {
+            layout.lines().position(|l| {
+                let r = l.text_range();
+                r.start <= byte_offset && byte_offset < r.end
+            })
+        })
+        .unwrap_or(last);
+    let line = layout.lines().nth(index)?;
+    let range = line.text_range();
+    let mut end = range.end;
+    if line.break_reason() == BreakReason::Explicit
+        && end > range.start
+        && let Some(cluster) = Cluster::from_byte_index(layout, end - 1)
+        && cluster.is_hard_line_break()
+    {
+        end = cluster.text_range().start;
+    }
+    Some(range.start..end.max(range.start))
+}
+
+/// [`visual_line_range`] in the text-bearing element `node_id`'s layout.
+pub fn visual_line_range_for_node(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<std::ops::Range<usize>> {
+    let node = doc.tree.nodes.get(node_id as usize)?;
+    if let Some(ref inline_layout) = node.text_layout {
+        return visual_line_range(&inline_layout.layout, byte_offset, affinity);
+    }
+    if let Some(ref layout) = node.cached_text_parley {
+        return visual_line_range(layout, byte_offset, affinity);
+    }
+    None
+}
+
 /// [`caret_position_for_offset_layout`] for a caret with `affinity` at a soft
 /// wrap (#301): Parley's own `Cursor` affinity, whose geometry puts an
 /// `Upstream` caret at a soft line break at the end of the upper line.
