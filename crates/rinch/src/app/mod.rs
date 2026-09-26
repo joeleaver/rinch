@@ -131,6 +131,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(test)]
+mod right_press_click_1093_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 mod select_widget;
