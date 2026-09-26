@@ -1404,6 +1404,34 @@ impl Node {
         }
     }
 
+    /// Whether this element is a **scroll container** on the vertical axis:
+    /// `overflow-y` is `auto` or `scroll`, and it generates a box. A
+    /// `display: contents` element answers `false` (#1038): it has no box to
+    /// scroll, and Chrome 153 scrolls the scroller above it. Every scroll finder
+    /// asks this rather than matching `overflow_y` — the wheel's
+    /// `find_scroll_container`, the scrollbar geometry, scroll-into-view,
+    /// `clamp_scroll_offsets` — because a finder that picked a contents element
+    /// wrote a `scroll_offset` onto a box-less node: nothing painted moved, but
+    /// `compute_absolute_position` moved its children by the scroll.
+    pub fn scrolls_y(&self) -> bool {
+        use crate::computed_style::{DisplayValue, OverflowValue};
+        self.computed_style.display != DisplayValue::Contents
+            && matches!(
+                self.computed_style.overflow_y,
+                OverflowValue::Auto | OverflowValue::Scroll
+            )
+    }
+
+    /// [`Self::scrolls_y`] on the horizontal axis.
+    pub fn scrolls_x(&self) -> bool {
+        use crate::computed_style::{DisplayValue, OverflowValue};
+        self.computed_style.display != DisplayValue::Contents
+            && matches!(
+                self.computed_style.overflow_x,
+                OverflowValue::Auto | OverflowValue::Scroll
+            )
+    }
+
     /// Whether this box clips content that overflows it.
     ///
     /// **The** clip predicate: see [`crate::paint::clip`] for why it reads both
