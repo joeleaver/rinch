@@ -1772,8 +1772,9 @@ fn overlay_size(x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
 /// of the caret map. Walks the inline runs accumulating char and byte counts.
 ///
 /// Inline leaves (image / hard_break) are treated as one char of zero flat-byte
-/// width for now; exact leaf byte widths in the IFC text stream are tuned against
-/// the live renderer (caret-after-leaf is the open edge).
+/// width for now, so a byte offset cannot say which side of a leaf it means; the
+/// web counts leaves from the DOM instead (`pos_in_textblock`, #1025), and desktop's
+/// IFC gives a `<br>` one byte (`"\n"`) the map does not (#1099).
 /// Walk the descriptor tree for the block whose host node is `target`, returning
 /// its model **content-start** position and its model node. `content_start` is the
 /// position passed in for `desc`'s own content (0 for the root/doc).
