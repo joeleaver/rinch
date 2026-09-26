@@ -169,7 +169,10 @@ fn dom_point(x: f64, y: f64) -> (web_sys::Node, u32) {
         .unwrap()
         .dyn_into()
         .unwrap();
-    (range.start_container().unwrap(), range.start_offset().unwrap())
+    (
+        range.start_container().unwrap(),
+        range.start_offset().unwrap(),
+    )
 }
 
 const BR: &str = "<p>alpha bravo<br>charlie delta</p>";
@@ -234,9 +237,7 @@ fn home_after_a_break_stays_after_it() {
 /// it stays before it (char 5).
 #[wasm_bindgen_test]
 fn a_click_beside_an_image_lands_on_the_side_it_was_made() {
-    let f = F::new(&format!(
-        "<p>alpha<img src=\"{GIF}\" alt=\"\">bravo</p>"
-    ));
+    let f = F::new(&format!("<p>alpha<img src=\"{GIF}\" alt=\"\">bravo</p>"));
     // The model keeps no inline style; size the rendered image directly.
     f.block()
         .query_selector("img")
@@ -273,5 +274,29 @@ fn a_click_after_two_breaks_lands_after_both() {
     let (x, y) = (b.x() + 1.0, b.y() + b.height() / 2.0);
     f.click(x, y);
     assert_eq!(f.head(), 7);
+    f.done();
+}
+
+/// A press on the empty line between two breaks: Chrome resolves it to an
+/// ELEMENT point, `(<p>, 2)` — after the first `<br>` — not a text point.
+/// Lands between the breaks (char 6). At HEAD the element point matched no
+/// text node, so it counted every byte in the block and landed at its end.
+#[wasm_bindgen_test]
+fn a_click_on_the_empty_line_between_two_breaks_lands_between_them() {
+    let f = F::new("<p>alpha<br><br>bravo</p>");
+    let a = f.char_rect(0, 0);
+    let b = f.char_rect(1, 0);
+    assert!(
+        b.y() > a.y() + 40.0,
+        "positive control: an empty line between them"
+    );
+    let (x, y) = (a.x() + 30.0, (a.bottom() + b.y()) / 2.0);
+    let (node, off) = dom_point(x, y);
+    assert!(
+        node == f.block().into() && off == 2,
+        "oracle: an element point after the first <br>"
+    );
+    f.click(x, y);
+    assert_eq!(f.head(), 6);
     f.done();
 }
