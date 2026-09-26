@@ -295,3 +295,23 @@ fn a_childs_display_flip_redirects_the_table() {
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(xy(&doc, y), (30.0, 0.0), "cells again: side by side");
 }
+
+/// A wrapper that becomes `display: contents` hands its rows to the table:
+/// `r` was inside a block beside the cell `a`, and is now the table's own row,
+/// stacked under `a` (Chrome 153: `a` 0,0 · `r` 0,20). Neither the table nor
+/// `r` is restyled; only the wrapper is.
+#[test]
+fn a_wrapper_turning_contents_hands_its_rows_to_the_table() {
+    let (mut doc, t) = fresh();
+    let a = cell(&mut doc, t, 30, 20);
+    let w = el(&mut doc, t, "display: block");
+    let r = el(&mut doc, w, "display: table-row");
+    cell(&mut doc, r, 50, 20);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(xy(&doc, a), (0.0, 0.0), "a");
+
+    doc.set_attribute(w, "style", "display: contents");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(xy(&doc, a), (0.0, 0.0), "a");
+    assert_eq!(xy(&doc, r), (0.0, 20.0), "r stacks under a");
+}

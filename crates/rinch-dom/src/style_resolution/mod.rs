@@ -1282,20 +1282,19 @@ impl RinchDocument {
             self.tree.nodes[node_id].has_been_styled = true;
 
             // A table or row group lays out by its children's table parts
-            // (#1083), and those arrive on this same pass after it (parents
-            // cascade first): re-derive it after the loop. So does the one
-            // this node is a layout child of, when this node became or left a
-            // row, or is one (a row moved in from elsewhere keeps its part),
-            // or crossed `display: contents` (its children became, or stopped
-            // being, the container's).
+            // (#1083), and a child's part can change on this same pass, after
+            // the container was synced (parents cascade first): re-derive the
+            // container this node is a layout child of after the loop, when
+            // this node's part changed or it crossed `display: contents` (its
+            // children became, or stopped being, the container's). A child
+            // inserted or removed queues the container itself
+            // (`note_table_children_changed`), and a restyle of the container
+            // alone derives it in the sync below from children that did not
+            // move.
             {
                 let new = &self.tree.nodes[node_id].computed_style;
-                if new.table_part.holds_rows() {
-                    table_containers.push(node_id);
-                }
                 let contents = crate::computed_style::DisplayValue::Contents;
                 if (old_table_part != new.table_part
-                    || new.table_part.is_row_like()
                     || (old_display == contents) != (new.display == contents))
                     && let Some(p) = self.tree.nodes[node_id].parent
                     && let Some(table) = Self::table_container_of(&self.tree, p)
