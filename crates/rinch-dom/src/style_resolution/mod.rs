@@ -1703,7 +1703,10 @@ impl RinchDocument {
     /// The table or row group whose layout children include `node_id`'s own
     /// (its nearest ancestor-or-self that is not `display: contents`), when
     /// that box is one.
-    pub(crate) fn table_container_of(tree: &crate::node::NodeTree, node_id: usize) -> Option<usize> {
+    pub(crate) fn table_container_of(
+        tree: &crate::node::NodeTree,
+        node_id: usize,
+    ) -> Option<usize> {
         let mut id = node_id;
         loop {
             let node = tree.nodes.get(id)?;

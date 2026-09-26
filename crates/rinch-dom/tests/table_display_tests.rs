@@ -193,7 +193,11 @@ fn a_tables_rows_stack_and_each_rows_cells_sit_side_by_side() {
 fn row_groups_stack_and_hold_their_rows() {
     let (mut doc, t) = fresh();
     let mut groups = Vec::new();
-    for g in ["table-header-group", "table-row-group", "table-footer-group"] {
+    for g in [
+        "table-header-group",
+        "table-row-group",
+        "table-footer-group",
+    ] {
         let grp = el(&mut doc, t, &format!("display: {g}"));
         let row = el(&mut doc, grp, "display: table-row");
         let first = cell(&mut doc, row, 30, 20);
@@ -331,6 +335,10 @@ fn restyling_the_table_alone_keeps_its_rows_stacked() {
 
     doc.set_attribute(t, "style", "display: table; width: 300px");
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(doc.tree.get(t.0).unwrap().layout.width, 300.0, "restyle landed");
+    assert_eq!(
+        doc.tree.get(t.0).unwrap().layout.width,
+        300.0,
+        "restyle landed"
+    );
     assert_eq!(xy(&doc, r2), (0.0, 20.0), "r2 still stacks under r1");
 }
