@@ -1103,6 +1103,43 @@ fn a_removed_ifc_root_is_not_shaped_by_the_whole_document_pass() {
     );
 }
 
+/// `remeasure_dirty_atomic_inlines` when the orphaning and a whole-document
+/// pass land in one layout. The orphans lose their marks at the detach
+/// (#1073), which is what keeps the dirty `inline-flex` from being measured in
+/// [`a_detached_atomic_inline_is_not_remeasured`] — but the whole-document
+/// pass marks the orphaned subtree again before the dirty set is drained, so
+/// the connectivity filter there (#1040) is what turns it away.
+#[test]
+fn a_detached_atomic_inline_is_not_remeasured_after_a_whole_document_pass() {
+    let (mut doc, _p, em, flex) = detach_doc("");
+    let x = el(&mut doc, flex, "div", "x");
+    text(&mut doc, x, "a long sentence that is never on screen");
+    doc.set_text_content(em, "word");
+    doc.recompute_all_styles_full();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "detached atomic inline: remeasure after a whole-document pass",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 2),
+            (ShapeAtomicInline, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcSignatureChanges, 3),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullTheme, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (InlineBlockComputes, 1),
+        ],
+    );
+}
+
 /// The whole-document pass (`compute_inline_block_layouts`, through
 /// `inline_block_measure_roots`) after the same orphaning. That pass marks
 /// every slab node, the orphaned `div`'s IFC included, so the `inline-flex`
