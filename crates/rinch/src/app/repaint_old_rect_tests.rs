@@ -1615,3 +1615,118 @@ mod backface_997 {
         assert!(ink > 0, "the fixed child is drawn until #415 contains it");
     }
 }
+
+/// #1064: a block whose only inline content is moved to another parent stops
+/// being an IFC root, and the glyphs it painted must be cleared by the next
+/// incremental frame. Removing the content was always clean; moving it left
+/// the old line on screen.
+mod ifc_root_emptied_by_move_1064 {
+    use super::*;
+
+    const OLD_LINE: (i32, i32, i32, i32) = (20, 150, 110, 170);
+    const OLD_SHADOW: (i32, i32, i32, i32) = (20, 206, 110, 234);
+
+    /// An absolute block at (20, 150), 200x20, holding `<span>HHHH HHHH</span>`
+    /// (or the bare text when `bare`), and an empty absolute block at
+    /// (300, 20) holding an empty `<i>`. Returns
+    /// `[content, block, other, the <i>]`.
+    fn page(block_extra: &'static str, bare: bool) -> (RinchApp, Vec<NodeHandle>) {
+        mount_with(move |scope| {
+            let outer = scope.create_element("div");
+            outer.set_attribute("style", "width: 600px; height: 400px");
+            let b = el(
+                scope,
+                &outer,
+                &format!(
+                    "position: absolute; left: 20px; top: 150px; width: 200px; height: 20px; \
+                     font-size: 16px; line-height: 20px; color: rgb(0, 0, 0); {block_extra}"
+                ),
+            );
+            let t = scope.create_text("HHHH HHHH");
+            let content = if bare {
+                b.append_child(&t);
+                t
+            } else {
+                let span = scope.create_element("span");
+                b.append_child(&span);
+                span.append_child(&t);
+                span
+            };
+            let other = el(
+                scope,
+                &outer,
+                "position: absolute; left: 300px; top: 20px; width: 200px; height: 20px; \
+                 font-size: 16px; line-height: 20px",
+            );
+            let anchor = scope.create_element("i");
+            other.append_child(&anchor);
+            (outer, vec![content, b, other, anchor])
+        })
+    }
+
+    #[test]
+    fn a_span_appended_elsewhere_clears_its_old_line() {
+        let (mut app, hs) = page("", false);
+        assert_clean_after(&mut app, OLD_LINE, |app| {
+            hs[2].append_child(&hs[0]);
+            resolve(app);
+        });
+    }
+
+    #[test]
+    fn a_bare_text_node_appended_elsewhere_clears_its_old_line() {
+        let (mut app, hs) = page("", true);
+        assert_clean_after(&mut app, OLD_LINE, |app| {
+            hs[2].append_child(&hs[0]);
+            resolve(app);
+        });
+    }
+
+    #[test]
+    fn a_span_inserted_before_a_node_elsewhere_clears_its_old_line() {
+        let (mut app, hs) = page("", false);
+        let (other, anchor) = (hs[2].clone(), hs[3].clone());
+        assert_clean_after(&mut app, OLD_LINE, |app| {
+            other.insert_before(&hs[0], &anchor);
+            resolve(app);
+        });
+    }
+
+    #[test]
+    fn a_span_moved_out_of_a_block_with_a_text_shadow_clears_the_shadow() {
+        let (mut app, hs) = page("text-shadow: 0 60px 6px rgb(255, 0, 0)", false);
+        assert_clean_after(&mut app, OLD_SHADOW, |app| {
+            hs[2].append_child(&hs[0]);
+            resolve(app);
+        });
+    }
+
+    #[test]
+    fn a_span_moved_out_of_a_static_block_clears_its_old_line() {
+        let (mut app, hs) = mount_with(|scope| {
+            let outer = scope.create_element("div");
+            outer.set_attribute("style", "width: 600px; height: 400px");
+            let _spacer = el(scope, &outer, "height: 150px");
+            let b = el(
+                scope,
+                &outer,
+                "width: 200px; height: 20px; font-size: 16px; line-height: 20px; \
+                 color: rgb(0, 0, 0)",
+            );
+            let span = scope.create_element("span");
+            b.append_child(&span);
+            let t = scope.create_text("HHHH HHHH");
+            span.append_child(&t);
+            let other = el(
+                scope,
+                &outer,
+                "width: 200px; height: 20px; font-size: 16px; line-height: 20px",
+            );
+            (outer, vec![span, other])
+        });
+        assert_clean_after(&mut app, (0, 150, 90, 170), |app| {
+            hs[1].append_child(&hs[0]);
+            resolve(app);
+        });
+    }
+}
