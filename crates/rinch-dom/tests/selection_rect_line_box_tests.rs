@@ -127,7 +127,8 @@ fn the_highlight_covers_the_line_box_on_space_grotesk() {
 //   `12n - 4 .. 12n + 16`, measured by the review from a screenshot with a
 //   translucent `::selection`.
 // - **a fractional line-height** — 15px at 1.65 is a 24.75px line box, and the
-//   block coords are whole pixels, 25 tall.
+//   block coords are whole pixels, 25 tall; the highlight tiles them (#1024),
+//   so one rect of the four is 24.
 
 /// `TEXT` in a `width: 120px` paragraph of the bundled Inter at `style`.
 fn inter_paragraph(style: &str) -> (RinchDocument, u64) {
@@ -174,8 +175,208 @@ fn a_fractional_line_height_highlight_is_whole_pixels_tall() {
     let (doc, p) = inter_paragraph("font-size: 15px; line-height: 1.65");
     let rects = doc.query_selection_rects(p, 0, TEXT.len());
     assert!(rects.len() >= 3, "{rects:?}");
-    for (n, &(_, _, _, h)) in rects.iter().enumerate() {
-        assert_eq!(h, 25.0, "line {n}: {rects:?}");
-    }
+    // Whole pixels, and tiled (#1024): each rect ends where the next line's
+    // box begins, so a 24.75px line box is 25 rows or 24 — line 2's box is
+    // `50..75` and line 3's `74..99`, so line 2 is highlighted `50..74`. The
+    // last line keeps its own 25.
+    let spans: Vec<(f32, f32)> = rects.iter().map(|r| (r.1, r.3)).collect();
+    assert_eq!(
+        spans,
+        [(0.0, 25.0), (25.0, 25.0), (50.0, 24.0), (74.0, 25.0)],
+        "{rects:?}"
+    );
+    // The caret's box is Parley's own, untouched: 25 tall.
     assert_eq!(doc.query_glyph_bounds(p, 0).unwrap().height, 25.0);
+}
+
+// ── Adjacent lines tile (#1024) ────────────────────────────────────────────
+//
+// At a fractional line-height Parley quantizes each line's block coords on
+// its own: the top is the line's rounded `y`, the bottom the rounded ascent,
+// descent and leading added to it. Two neighbours can then overlap by a pixel
+// (or leave one): at 15px x 1.65 on Inter line 3 is `50..75` and line 4
+// `74..99`, and a translucent highlight painted over both draws a darker seam
+// along row 74. Chrome 153 snaps a 16px x 1.65 paragraph's highlights to
+// `0-26, 26-53, 53-79, 79-106` — contiguous. Each line's rect ends where the
+// next line's begins; the last keeps its own bottom. Several line-heights,
+// because which rows collide depends on how the fractions accumulate.
+
+fn assert_tiles(style: &str) {
+    let (doc, p) = inter_paragraph(style);
+    let rects = doc.query_selection_rects(p, 0, TEXT.len());
+    assert!(
+        rects.len() >= 4,
+        "{style}: the paragraph must wrap: {rects:?}"
+    );
+    assert_eq!(
+        rects[0].1, 0.0,
+        "{style}: the first line starts at 0: {rects:?}"
+    );
+    for n in 0..rects.len() - 1 {
+        let (_, y, _, h) = rects[n];
+        assert_eq!(
+            y + h,
+            rects[n + 1].1,
+            "{style}: line {n}'s highlight must end where line {}'s begins \
+             (all rects: {rects:?})",
+            n + 1
+        );
+        assert!(h > 0.0, "{style}: line {n} is not empty: {rects:?}");
+    }
+}
+
+#[test]
+fn fractional_line_height_highlights_tile_at_15px_x_1_65() {
+    assert_tiles("font-size: 15px; line-height: 1.65");
+}
+
+#[test]
+fn fractional_line_height_highlights_tile_at_16px_x_1_65() {
+    assert_tiles("font-size: 16px; line-height: 1.65");
+}
+
+#[test]
+fn fractional_line_height_highlights_tile_at_13px_x_1_37() {
+    assert_tiles("font-size: 13px; line-height: 1.37");
+}
+
+#[test]
+fn fractional_line_height_highlights_tile_at_a_declared_23_4px() {
+    assert_tiles("font-size: 16px; line-height: 23.4px");
+}
+
+// ── A soft-wrapped line is highlighted to its end (#1010) ──────────────────
+//
+// A selection that runs past a soft-wrapped line's end used to take that
+// line's right edge from a *downstream* caret at the line's end — which
+// Parley places at the start of the NEXT line (x = 0), so the rect was
+// floored to a 1px sliver at the line's left. The line is highlighted to its
+// trailing edge, as a browser does.
+
+#[test]
+fn a_selection_past_a_soft_wrap_highlights_the_whole_line() {
+    let (doc, p) = inter_paragraph("font-size: 16px; line-height: 40px");
+    let rects = doc.query_selection_rects(p, 0, TEXT.len());
+    assert!(rects.len() >= 3, "{rects:?}");
+    for (n, &(x, _, w, _)) in rects.iter().enumerate() {
+        assert_eq!(x, 0.0, "line {n} starts at the left edge: {rects:?}");
+        // Every line of this paragraph holds at least one whole word, and no
+        // word here is narrower than 20px at 16px.
+        assert!(w > 20.0, "line {n} is highlighted, not a sliver: {rects:?}");
+    }
+}
+
+/// Off the fixed point of a selection that starts at 0: from the middle of the
+/// first line to the middle of the third. The middle line is covered from its
+/// start to its trailing edge, the first from the anchor to its trailing edge.
+#[test]
+fn a_selection_from_mid_line_highlights_to_each_wrapped_lines_end() {
+    let (doc, p) = inter_paragraph("font-size: 16px; line-height: 40px");
+    let all = doc.query_selection_rects(p, 0, TEXT.len());
+    // "beta" starts on the first line (after "alpha ").
+    let a = TEXT.find("beta").unwrap();
+    let b = TEXT.find("kappa").unwrap();
+    let rects = doc.query_selection_rects(p, a, b);
+    assert!(rects.len() >= 3, "{rects:?}");
+    let (x0, _, w0, _) = rects[0];
+    assert!(x0 > 20.0, "the first rect starts at 'beta': {rects:?}");
+    // Its right edge is the first line's own right edge, the same one the
+    // whole-paragraph selection reaches.
+    assert_eq!(x0 + w0, all[0].0 + all[0].2, "{rects:?} vs {all:?}");
+    assert_eq!(rects[1], all[1], "a middle line is covered whole");
+}
+
+// ── The line-end edge, against Chrome (review of #1108) ────────────────────
+//
+// "To the line's end" is the line's trailing edge — its text plus the hanging
+// trailing space — not the container's edge. Chrome 153 paints this
+// paragraph's first line `0-84` when the whole paragraph is selected; rinch's
+// trailing edge on the bundled Inter is 83.52. A rect stretched to the
+// container would be 120.
+
+#[test]
+fn a_wrapped_lines_highlight_stops_at_its_trailing_edge_as_in_chrome() {
+    let (doc, p) = inter_paragraph("font-size: 16px; line-height: 40px");
+    let rects = doc.query_selection_rects(p, 0, TEXT.len());
+    let right = rects[0].0 + rects[0].2;
+    assert!(
+        (right - 83.52).abs() < 0.5,
+        "line 0 ends at {right}: {rects:?}"
+    );
+}
+
+// ── The line before a hard break (review of #1108) ─────────────────────────
+//
+// A line ended by `<br>` (Shift+Enter in the editor) holds the break in its
+// text range, so the upstream caret at its end stands at the next line's
+// start (x = 0) and the line was a 1px sliver. A selection that runs past the
+// break covers the line's text plus a newline's width — Parley's own
+// `Selection::geometry` rule, a quarter of ascent + descent — as Chrome 153
+// paints `abc<br>def ghi` line 0 across `0..32` ("abc" is 28px).
+
+/// `abc<br>` + `rest` in the bundled Inter at 16px / 40px, laid out.
+fn hard_break_paragraph(parts: &[&str]) -> (RinchDocument, u64) {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let mut doc = RinchDocument::new();
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(INTER)),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
+    );
+    let body = doc.body();
+    let p = doc.create_element("p");
+    doc.set_attribute(
+        p,
+        "style",
+        "margin: 0; width: 120px; font-family: ProbeFace; font-size: 16px; line-height: 40px",
+    );
+    doc.append_child(body, p);
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            let br = doc.create_element("br");
+            doc.append_child(p, br);
+        }
+        if !part.is_empty() {
+            let t = doc.create_text(part);
+            doc.append_child(p, t);
+        }
+    }
+    doc.resolve_layout(400.0, 600.0);
+    (doc, p.0 as u64)
+}
+
+#[test]
+fn the_line_before_a_hard_break_is_highlighted_with_its_newline() {
+    let (doc, p) = hard_break_paragraph(&["abc", "def ghi"]);
+    let rects = doc.query_selection_rects(p, 0, 20);
+    assert_eq!(rects.len(), 2, "{rects:?}");
+    let (x, _, w, _) = rects[0];
+    assert_eq!(x, 0.0, "{rects:?}");
+    // "abc" alone is ~28px; with the newline ~32, as in Chrome.
+    assert!(
+        w > 30.0 && w < 34.0,
+        "line 0 is 'abc' plus a newline: {rects:?}"
+    );
+    // Stopping before the break is the text alone, no newline.
+    let text_only = doc.query_selection_rects(p, 0, 3);
+    assert_eq!(text_only.len(), 1, "{text_only:?}");
+    assert!(
+        (text_only[0].2 - 27.9).abs() < 0.5,
+        "'abc' without its newline: {text_only:?}"
+    );
+}
+
+#[test]
+fn an_empty_line_between_two_breaks_is_highlighted() {
+    let (doc, p) = hard_break_paragraph(&["abc", "", "def"]);
+    let rects = doc.query_selection_rects(p, 0, 20);
+    assert_eq!(rects.len(), 3, "{rects:?}");
+    let (_, y, w, _) = rects[1];
+    assert_eq!(y, 40.0, "the empty line is the second: {rects:?}");
+    assert!(
+        w > 3.0,
+        "an empty line shows its newline, not a sliver: {rects:?}"
+    );
 }
