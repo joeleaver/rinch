@@ -1505,10 +1505,9 @@ that healthy drag is cancelled too, and its release then commits nothing.
 Accepted because it fails safe: a cancel, never a wrong commit. Before #381 the next unrelated
 click's `MouseUp` ran `finish_drag` and **committed** the stranded drag's
 `on_end` at that click's position. A right or middle press proves nothing (a
-chord can be real) and ends nothing. The left-press proof assumes a
-primary-button drag — `Drag` does not record which button armed it — so a
-middle- or right-button drag is ended by a left chord press (it used to be
-committed by that press's release), and a "grab mode" drag armed with no
+chord can be real) and ends nothing. The left-press proof does not ask which
+button armed the drag, so a middle- or right-button drag is ended by a left
+chord press (it used to be committed by that press's release), and a "grab mode" drag armed with no
 button held (a shortcut, a timer) and placed with a click is cancelled by that
 click, as rinch-web cancels it on its first move: arm a `Drag` from a press. Both events also release the editor's
 drag-select (`registry::DRAG`, the same shape — #294). What is left: between the
@@ -1537,9 +1536,27 @@ extending until some release arrived. The press heal and a `PointerCancel` share
 document-scoped, `PointerCancel` calls the unscoped `Drag::cancel`) and in
 `:active` (the heal does not clear it: after a press the new press sets its
 own, but after a blur nothing does, so `:active` stays on the element the
-stranded press was on until the next release — pre-existing, as before #1028).
+stranded press was on until the next left release — pre-existing, as before #1028).
 The blur trade-off above applies to
 all of them. Pins: `app/missed_release_1028_tests.rs`.
+
+**A gesture ends on the release of the button that started it** (#1087). The
+`MouseUp` arm ends the left-armed gestures — an element drag (dropped, or
+clicked while still pending), a scrollbar-thumb drag, the read-only text and
+editor drag-selects, `:active` — on a **left** release only; a right or middle
+release while the left button is held is a chord, and it used to drop a live
+element drag wherever the pointer was. `data-onmouseup` and a focused render
+surface still get every release with its button. A pointer-capture `Drag` ends
+through `rinch_core::finish_drag_for_button`, on the release of the button it
+belongs to: the button of the last press when `Drag::start` ran, which desktop
+reports for **every** press, handler or not, through
+`rinch_core::note_pointer_press` before dispatching it. So a drag armed by a
+right press ends on the right release, and one armed outside any press (a
+timer) belongs to the most recently pressed button. (A right press's `data-rid`
+click context also carries `Right` now; it said `Left`.) rinch-web keeps `finish_drag`: a browser's `pointerup` fires only
+once every button is up. A right or middle press also no longer starts,
+restarts or clears a read-only text selection. Pins:
+`app/mouse_up_button_1087_tests.rs`.
 
 ### File Drop (OS → App)
 
@@ -2529,7 +2546,14 @@ A third one is gone: **clipping no longer forms a stacking context** — see
 **A non-atomic `display: inline` element never clips** (#591 PR 1), whatever its
 `overflow` computes to — `overflow` applies to block, flex and grid containers
 (css-overflow-3 §3), and an inline *box* is none of those; an `inline-block` is a
-block container and still clips. The predicate says so, not `clip_shape`, so the
+block container and still clips. So does a **replaced element or form control at
+`display: inline`** (`<img>`, `<svg>`, `<input>`, `<button>`, …): it is an atomic
+inline whatever its `display` says, as in Chrome, and its `display_mode` is
+`InlineBlock` (`node::is_atomic_at_display_inline`, #1089 — it used to be a flowed
+inline with a `0x0` box). The same rule covers `video`, `canvas`, `iframe`, `meter`
+and `progress`, which the UA sheet leaves `display: inline`, so their **default**
+rendering changed too: an atomic box, with Chrome's default sizes not modelled and
+fallback content still laid out inside it. The predicate says so, not `clip_shape`, so the
 bracket, the chain, hit testing's gate and the dirty-region prune all agree. The
 rinch-specific reason it had to be said: a *flowed* inline element owns no box
 (`Node::is_flowed_inline_element` — its `layout` is zeroed and `E ghost box`
