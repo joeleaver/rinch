@@ -122,14 +122,13 @@ Command names are case-sensitive. The full catalogue:
 > deletes to the edge of the **visual** line the caret is drawn on — on a wrapped
 > paragraph, normally only the current line's prefix or rest — and
 > `deleteHardLine*` to the textblock's edge (issue #301). Home / End go to the
-> visual line's edges on both backends. The web finds the edge by hit-testing the
-> textblock just inside both sides of the caret's line and taking the smaller
-> position as the start, so a right-to-left line starts at its right edge.
-> Desktop reads the line from the textblock's text layout — the line holding the
-> caret, the upper one for a caret drawn at the end of a soft-wrapped line — and
-> takes its logical start and end: after a hanging space at a soft wrap, before
-> a hard break (Shift+Enter). No geometry is involved, so a caret line scrolled
-> out of the editor behaves as a visible one (#1107).
+> visual line's edges on both backends. The web finds the edge from caret
+> geometry: the first and last positions whose caret is drawn on the caret's own
+> line, which are the line's *logical* edges — a right-to-left line starts at its
+> right edge. Desktop reads the line from the textblock's text layout — the line
+> holding the caret, the upper one for a caret drawn at the end of a
+> soft-wrapped line — and takes its logical start and end: after a hanging space
+> at a soft wrap, before a hard break (Shift+Enter).
 >
 > **Caret affinity at a soft wrap.** The end of one visual line and the start of
 > the next are one model position, so a caret there could be drawn in either
@@ -151,16 +150,21 @@ Command names are case-sensitive. The full catalogue:
 > its own line. Set it yourself with `EditorHandle::set_selection_with_affinity`;
 > read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
 >
+> Neither backend hit-tests points on the line (the web uses collapsed `Range`
+> rects, desktop the text layout), so a caret line scrolled out of the editor's
+> scroller or off the page behaves as a visible one (#1026, #1107), and a hard
+> break (Shift+Enter) always ends the line: Home after it lands after it, End
+> before it stops before it.
+>
 > Where this still differs from a browser field:
 > - **Desktop, right after an image**: the caret is drawn before the image
 >   (#1104). A hard break is resolved on both sides on both platforms (#1099,
 >   #1025), and the web resolves both sides of an image too — a click, Home, a
 >   soft-line delete, and an IME commit or autocorrect right after one.
-> - **Web, a caret line scrolled out of view** has nothing to hit-test, so Home,
->   End and the soft-line deletes fall back to the textblock's edge there
->   (#1026). Desktop has no such gap (#1107).
-> - On a line that *mixes* directions the answer can fall short of the logical
->   edge.
+> - On a line that *mixes* directions the answer is the line's logical edge,
+>   which can differ from a browser field's: at the end of a line whose last
+>   run is right-to-left, Chrome's End stops before the trailing space where
+>   rinch's lands after it, on the wrap point.
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.
