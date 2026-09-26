@@ -254,3 +254,17 @@ fn a_hard_break_bounds_a_scrolled_away_line() {
     key(&mut p.app, KeyCode::Home, false);
     assert_eq!(p.head(), 12, "Home stops after the break");
 }
+
+/// Affinity chooses a line only at a SOFT wrap: an upstream caret just after
+/// a hard break is on the break's far line, as Parley draws it.
+#[test]
+fn upstream_after_a_hard_break_stays_on_the_far_line() {
+    let p = page("alpha bravo<br>charlie");
+    let doc = p.app.doc.as_ref().unwrap().borrow();
+    let line =
+        |b, a| rinch_dom::text_query::visual_line_range_for_node(&doc, p.block() as u64, b, a);
+    // "alpha bravo" is bytes 0..11, the break byte 11, "charlie" 12..19.
+    assert_eq!(line(12, CaretAffinity::Downstream), Some(12..19), "control");
+    assert_eq!(line(12, CaretAffinity::Upstream), Some(12..19));
+    assert_eq!(line(3, CaretAffinity::Upstream), Some(0..11));
+}
