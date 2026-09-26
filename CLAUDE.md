@@ -3153,7 +3153,16 @@ let tray = TrayIconBuilder::new()
   two `#[ignore]`d live ones: `live_a_dropped_tray_leaves_the_status_notifier_watcher`
   (session bus) and `live_dropping_a_tray_under_a_hung_watcher_is_bounded`
   (private bus running `crates/rinch/tests/fixtures/hung_sni_watcher.py`).
-  `build()` has the same unbounded shape and is not bounded yet (#1057).
+  **`build()` is bounded too** (#1057): ksni's `spawn()` `block_on`s a setup
+  ending in `RegisterStatusNotifierItem`, also untimed, so a hung watcher held
+  `build()` — the app's startup — forever. It now runs through `run_bounded`
+  and gives up after `BUILD_WAIT` (5 s) with `TrayError::CreateFailed` (no new
+  variant: `TrayError` is exhaustive, so one would break downstream matches).
+  A setup that finishes after the give-up goes to `on_late`, which shuts the
+  late service down, because the callbacks were released with the error.
+  Pinned by `a_bounded_run_*` and the `#[ignore]`d
+  `live_building_a_tray_under_a_hung_watcher_is_bounded` (fixture run with
+  `--hang-first`).
 - **`TrayIcon` is `!Send`/`!Sync`** on every platform, deliberately: its
   `MenuRegistration` holds `Rc`s (and `tray-icon`'s own handle off Linux holds
   one too) because release must run on the thread whose
