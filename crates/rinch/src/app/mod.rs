@@ -9,6 +9,8 @@
 #[cfg(test)]
 mod animation_theme_change_tests;
 #[cfg(test)]
+mod backdrop_any_button_1093_tests;
+#[cfg(test)]
 mod batched_handler_focus_tests;
 #[cfg(test)]
 mod blink_and_click_focus_tests;

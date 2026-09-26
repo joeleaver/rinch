@@ -1685,19 +1685,24 @@ mod unadopted_write {
             let (right, menu) = press(MouseButton::Right);
             assert!(menu, "the right press opened the menu");
             assert_eq!(right.0, v, "the app's write survives the gesture");
-            // The write landed before the gesture saved the selection, so the
-            // saved selection indexes the written text: never the old 2..5
-            // restored onto `€€€€`, where bytes 2 and 5 are inside a
-            // character. (Until #1093 the write came from a `data-rid` the
-            // right press clicked *after* the save, and this compared the
-            // right press with a left one.)
-            for offset in [&right.1, &right.2] {
-                let offset: usize = offset.parse().unwrap();
-                assert!(
-                    v.is_char_boundary(offset),
-                    "{v:?}: offset {offset} is inside a character"
-                );
-            }
+            // The write landed before the gesture saved the selection, and the
+            // gesture adopts it first, so what it saves indexes the written
+            // text. A same-length write keeps 2..5, and the press inside it
+            // keeps the selection; `€€€€` resizes the value and the caret
+            // ends collapsed at 6, a character boundary. Without the pre-save
+            // adoption the first ends at (2,2). (Until #1093 the write came from a
+            // `data-rid` the right press clicked *after* the save, and this
+            // compared the right press with a left one.)
+            let expected = if v == "HELLO WORLD" {
+                ("2", "5")
+            } else {
+                ("6", "6")
+            };
+            assert_eq!(
+                (right.1.as_str(), right.2.as_str()),
+                expected,
+                "{v:?}: the selection the right press leaves"
+            );
         }
     }
 
