@@ -39,7 +39,7 @@ pub mod transition;
 
 pub use computed_style::ComputedStyle;
 pub use dom_impl::RinchDocument;
-pub use ifc::TreeCheckVerdict;
+pub use ifc::{HangStats, TreeCheckVerdict};
 pub use node::{
     DirtyFlags, DisplayMode, ElementData, IfcTextRange, InlineFlowRole, InlineLayout, LayoutResult,
     Node, NodeContext, NodeKind, NodeTree, TextData, TextMeasure, first_legend_child,

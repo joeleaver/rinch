@@ -24,6 +24,8 @@
 //! | `inset_shadow_mask_px` | `paint/borders.rs`, blurred inset shadow (full repaint: cropped to the window) | [`a_blurred_inset_shadow_builds_its_visible_area`] |
 //! | `inset_shadow_mask_px` | the same, partial repaint (cropped to the damage) | [`a_partial_repaint_builds_only_the_damaged_part_of_an_inset_shadow`] |
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
 //! exact, anything unlisted `0` (`support/perf_expect.rs`). A failure prints the
@@ -781,6 +783,95 @@ fn a_blurred_text_shadow_is_rasterised_once() {
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A 40-line `pre-wrap` paragraph whose every line wraps at a double space:
+/// each line hangs its second space (#1018). `ifc_hang_passes` is the
+/// linearity pin — one re-break per layout however many lines it fixes, where
+/// #1018's first version re-broke the paragraph once per fixed line, 40 times
+/// per layout and quadratic in the paragraph (review of #1018, F1).
+/// `ifc_hang_lines` is the lines it fixed, summed over every layout the frame
+/// built: each measure the root compute made and the paint layout.
+#[test]
+fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
+    let mut doc = doc_with(".p { width: 36px; white-space: pre-wrap; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, &"river  ".repeat(40));
+    let s = cold_frame(&mut doc);
+    expect(
+        "pre-wrap paragraph, hanging",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 5),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 80),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The atomic-inline site of the same counters: an `inline-block` whose
+/// `pre-wrap` text wraps at double spaces inside it.
+#[test]
+fn an_inline_block_hangs_its_spaces_in_one_pass() {
+    let mut doc =
+        doc_with(".chip { display: inline-block; max-width: 36px; white-space: pre-wrap; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "p", "");
+    let chip = el(&mut doc, p, "span", "chip");
+    text(&mut doc, chip, &"river  ".repeat(10));
+    let s = cold_frame(&mut doc);
+    expect(
+        "inline-block, hanging",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 12),
+            (FullStyleWalks, 3),
+            (TaffyStyleSyncs, 7),
+            (TaffyStyleChanges, 4),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 2),
+            (ShapeAtomicInline, 2),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 3),
+            (IfcSignatureChanges, 2),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 20),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (InlineBlockComputes, 2),
+            (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
         ],
     );
