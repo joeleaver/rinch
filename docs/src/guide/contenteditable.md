@@ -122,9 +122,10 @@ Command names are case-sensitive. The full catalogue:
 > deletes to the edge of the **visual** line the caret is drawn on — on a wrapped
 > paragraph, normally only the current line's prefix or rest — and
 > `deleteHardLine*` to the textblock's edge (issue #301). Home / End go to the
-> visual line's edges on both backends. The web finds the edge by hit-testing the
-> textblock just inside both sides of the caret's line and taking the smaller
-> position as the start, so a right-to-left line starts at its right edge.
+> visual line's edges on both backends. The web finds the edge from caret
+> geometry: the first and last positions whose caret is drawn on the caret's own
+> line, which are the line's *logical* edges — a right-to-left line starts at its
+> right edge.
 >
 > **Caret affinity at a soft wrap.** The end of one visual line and the start of
 > the next are one model position, so a caret there could be drawn in either
@@ -146,14 +147,11 @@ Command names are case-sensitive. The full catalogue:
 > its own line. Set it yourself with `EditorHandle::set_selection_with_affinity`;
 > read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
 >
-> Where this still differs from a browser field:
-> - **After a hard break** (Shift+Enter) a position at the next line's start maps
->   before the break, so a soft-line delete backward on that line takes the break
->   with it (#1025).
-> - **A caret line scrolled out of view** has nothing to hit-test, so Home, End
->   and the soft-line deletes fall back to the textblock's edge there (#1026).
-> - On a line that *mixes* directions the answer can fall short of the logical
->   edge.
+> On the web the line's edges are found from caret geometry alone (collapsed
+> `Range` rects), not by hit-testing points on the line, so a caret line
+> scrolled out of the editor's scroller or off the page behaves as a visible one
+> (#1026), and a hard break (Shift+Enter) always ends the line: Home after it
+> lands after it, End before it stops before it.
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.

@@ -2281,9 +2281,10 @@ fn is_wrap_below(handle: &EditorHandle, head: Pos, edge: Pos) -> bool {
 /// tested, a caret line scrolled out of the viewport or its scroller, or
 /// covered by another box, answers the same as a visible one (#1026 — the
 /// previous `caretRangeFromPoint` probes answered nothing off screen, and the
-/// callers fell back to the textblock's edge). And it is right in a
-/// right-to-left line, and on a line that mixes directions, whose logical
-/// edges need not be at either visual edge.
+/// callers fell back to the textblock's edge; desktop's twin still hit-tests,
+/// #1107). What it answers are the line's *logical* edges: a right-to-left
+/// line's start is at its right edge, and a line that mixes directions answers
+/// its first and last logical positions wherever they are drawn.
 ///
 /// `None` without geometry: no caret rect for `head` or for a position the
 /// search asks about. The callers then fall back to the textblock's edge.
