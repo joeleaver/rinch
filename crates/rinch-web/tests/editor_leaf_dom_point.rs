@@ -374,7 +374,12 @@ fn a_composition_after_a_break_lands_after_it() {
     assert_eq!(ta.selection_start().unwrap(), Some(6));
     f.compose("X");
     assert_eq!(f.para(), "alpha|Xbravo");
-    assert_eq!(f.head(), 7, "the caret follows the commit");
+    let s = f.handle.selection();
+    assert_eq!(
+        (s.anchor().0, s.head().0),
+        (8, 8),
+        "a collapsed caret after the commit, where the field left it"
+    );
     f.done();
 }
 
