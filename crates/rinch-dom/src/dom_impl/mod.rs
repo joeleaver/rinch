@@ -861,8 +861,7 @@ impl RinchDocument {
                 continue;
             }
             if let Some(taffy_id) = node.taffy_id {
-                let dd = self.default_display_for_node(node_id);
-                let mut taffy_style = node.computed_style.to_taffy_style(dd);
+                let mut taffy_style = self.taffy_style_from_computed(node_id);
 
                 // HTML element must fill the viewport and clip horizontal overflow
                 if node_id == self.tree.html_id {
@@ -1025,8 +1024,7 @@ impl RinchDocument {
                 continue;
             }
             if let Some(taffy_id) = node.taffy_id {
-                let dd = self.default_display_for_node(node_id);
-                let mut taffy_style = node.computed_style.to_taffy_style(dd);
+                let mut taffy_style = self.taffy_style_from_computed(node_id);
 
                 // Body node needs the same overrides as apply_stylo_styles_to_taffy
                 if node_id == self.tree.body_id {

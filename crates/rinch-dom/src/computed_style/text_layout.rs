@@ -185,7 +185,9 @@ impl ComputedStyle {
     /// every call site tests `Node::display_mode`. The two agree because
     /// `RinchDocument::apply_stylo_styles_to_taffy` derives the second from the
     /// first — `DisplayValue::Inline => DisplayMode::Inline`, the only arm that
-    /// produces `DisplayMode::Inline` — a few lines after it calls this
+    /// produces `DisplayMode::Inline` (a replaced element at `display: inline`
+    /// is mapped to `InlineBlock` instead, #1089, which only over-lists here) —
+    /// a few lines after it calls this
     /// predicate, in the same loop iteration and from the same `new_style`. So
     /// there is no ordering hazard and no third source of truth *for a node the
     /// cascade has reached*. `display_mode`'s other writers cannot reintroduce

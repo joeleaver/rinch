@@ -82,6 +82,7 @@ impl ComputedStyle {
         Self {
             // Display/position
             display: display_from_stylo(&box_style.display),
+            table_part: table_part_from_stylo(&box_style.display),
             position: position_from_stylo(&box_style.position),
             overflow_x: overflow_from_stylo(&box_style.overflow_x),
             overflow_y: overflow_from_stylo(&box_style.overflow_y),
