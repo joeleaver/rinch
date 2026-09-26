@@ -824,7 +824,14 @@ impl WebDocument {
         };
         range.set_start(&next_node, start).ok()?;
         range.set_end(&next_node, start + len).ok()?;
-        let ch = range.get_bounding_client_rect();
+        // The glyph's own box: the LAST client rect. After a hyphenated
+        // soft-hyphen break the character's range also covers the break, so its
+        // bounding rect spans both lines and starts on the upper one — which
+        // read as "not on a later line" and answered upstream (#1115).
+        let ch = match range.get_client_rects() {
+            Some(list) if list.length() > 0 => list.item(list.length() - 1)?,
+            _ => range.get_bounding_client_rect(),
+        };
         if ch.height() <= 0.0 || ch.y() < collapsed.y() + collapsed.height() * 0.5 {
             return Some(upstream);
         }

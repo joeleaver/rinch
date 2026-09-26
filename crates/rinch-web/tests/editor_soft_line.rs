@@ -952,3 +952,202 @@ fn the_blind_caret_query_answers_downstream_at_a_wrap() {
     );
     f.teardown();
 }
+
+// ── #1026: a caret line scrolled out of view ────────────────────────────────
+
+/// Scroll `f`'s host (an `overflow: auto` scroller) so the caret's line —
+/// line 2 — sits far above its visible box, and prove it is clipped: the probe
+/// point at the line's middle is outside the scroller, so a hit test there
+/// cannot answer the paragraph.
+fn scroll_line_away_in_host(f: &Fixture, caret: u32) {
+    f.host.set_scroll_top(300);
+    let host = f.host.get_bounding_client_rect();
+    let line = f.char_rect(caret);
+    assert!(
+        f.host.scroll_top() >= 250 && line.bottom() < host.top(),
+        "positive control: the caret's line ({}..{}) is scrolled above the host ({})",
+        line.top(),
+        line.bottom(),
+        host.top()
+    );
+}
+
+/// A scroller whose content is much taller than its box: the paragraph wraps
+/// as in [`middle_line`], and a tall bottom padding gives it room to scroll.
+const SCROLLER: &str = "height: 40px; overflow: auto; padding-bottom: 600px;";
+
+/// Home and End on a caret whose line is scrolled out of an `overflow: auto`
+/// editor host still go to that visual line's edges — Chrome's own Home/End
+/// work on an off-screen caret. They used to fall back to the textblock's edges
+/// (#1026), because the line was found by hit-testing points on it.
+#[wasm_bindgen_test]
+fn home_and_end_on_a_line_scrolled_out_of_the_host() {
+    let (f, start, caret, next) = middle_line(TEXT, SCROLLER);
+    // Asked before the focus: the oracle's selection takes it.
+    let chrome = f.chrome_line_boundary(caret, true);
+    f.focus();
+    scroll_line_away_in_host(&f, caret);
+    f.caret_at(caret);
+    assert!(f.key("End", false));
+    assert_eq!(
+        f.head(),
+        chrome,
+        "End: Chrome's line boundary, not {next}.."
+    );
+    f.caret_at(caret);
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), start, "Home: the visual line's start");
+    f.teardown();
+}
+
+/// The soft-line deletes on a caret line scrolled out of the host take that
+/// line's prefix and rest, not the whole block's.
+#[wasm_bindgen_test]
+fn soft_line_deletes_on_a_line_scrolled_out_of_the_host() {
+    let (f, start, caret, _) = middle_line(TEXT, SCROLLER);
+    let chrome_end = f.chrome_line_boundary(caret, true);
+    f.focus();
+    scroll_line_away_in_host(&f, caret);
+    f.caret_at(caret);
+    assert!(f.before_input("deleteSoftLineForward"));
+    assert_eq!(
+        f.text(),
+        format!(
+            "{}{}",
+            slice(TEXT, 0, caret),
+            slice(TEXT, chrome_end, count(TEXT))
+        )
+    );
+    f.teardown();
+
+    let (f, start2, caret2, _) = middle_line(TEXT, SCROLLER);
+    assert_eq!((start2, caret2), (start, caret));
+    f.focus();
+    scroll_line_away_in_host(&f, caret);
+    f.caret_at(caret);
+    assert!(f.before_input("deleteSoftLineBackward"));
+    assert_eq!(
+        f.text(),
+        format!(
+            "{}{}",
+            slice(TEXT, 0, start),
+            slice(TEXT, caret, count(TEXT))
+        )
+    );
+    f.teardown();
+}
+
+/// The same off the page's viewport: the caret's line scrolled above the top of
+/// the window, where `caretRangeFromPoint` answers nothing at all.
+#[wasm_bindgen_test]
+fn home_and_end_on_a_line_scrolled_off_the_page() {
+    let (f, start, caret, _) = middle_line(TEXT, "margin-bottom: 4000px;");
+    let chrome = f.chrome_line_boundary(caret, true);
+    f.focus();
+    let win = web_sys::window().unwrap();
+    let line = f.char_rect(caret);
+    win.scroll_by_with_x_and_y(0.0, line.bottom() + 500.0);
+    let line = f.char_rect(caret);
+    assert!(
+        line.bottom() < 0.0,
+        "positive control: the caret's line is above the viewport ({})",
+        line.bottom()
+    );
+    f.caret_at(caret);
+    assert!(f.key("End", false));
+    assert_eq!(f.head(), chrome, "End");
+    f.caret_at(caret);
+    assert!(f.key("Home", false));
+    assert_eq!(f.head(), start, "Home");
+    win.scroll_to_with_x_and_y(0.0, 0.0);
+    f.teardown();
+}
+
+/// A hard break ends a visual line: End on the line before it stops before the
+/// `<br>`, and Home on the line after it starts after the `<br>` — with the
+/// caret on either line scrolled out of the host, too. The view gives a break
+/// no bytes, so the positions on its two sides share one byte offset and one
+/// upstream caret rect; a line edge found from caret geometry alone would step
+/// across it.
+#[wasm_bindgen_test]
+fn home_and_end_stop_at_a_hard_break() {
+    for style in [
+        "width: 400px;",
+        "width: 400px; height: 10px; overflow: auto; padding-bottom: 600px;",
+    ] {
+        let f = Fixture::mounted("alpha bravo<br>charlie delta", style);
+        f.focus();
+        f.host.set_scroll_top(300);
+        // "alpha bravo" is 1..12; the break 12..13; "charlie delta" 13..26.
+        f.handle.set_selection(Selection::cursor(Pos(4)));
+        assert!(f.key("End", false));
+        assert_eq!(
+            f.handle.selection().head(),
+            Pos(12),
+            "End before the break, {style}"
+        );
+        f.handle.set_selection(Selection::cursor(Pos(13)));
+        assert!(f.key("Home", false));
+        assert_eq!(
+            f.handle.selection().head(),
+            Pos(13),
+            "Home right after the break stays, {style}"
+        );
+        f.handle.set_selection(Selection::cursor(Pos(17)));
+        assert!(f.key("Home", false));
+        assert_eq!(
+            f.handle.selection().head(),
+            Pos(13),
+            "Home after the break, {style}"
+        );
+        f.handle.set_selection(Selection::cursor(Pos(17)));
+        assert!(f.key("End", false));
+        assert_eq!(
+            f.handle.selection().head(),
+            Pos(26),
+            "End of the last line, {style}"
+        );
+        f.handle.set_selection(Selection::cursor(Pos(4)));
+        assert!(f.key("Home", false));
+        assert_eq!(
+            f.handle.selection().head(),
+            Pos(1),
+            "Home of the first line, {style}"
+        );
+        f.teardown();
+    }
+}
+
+/// A caret inside a superscript: its rect is shorter than the line's text and
+/// raised, so the text after it on the same line is not drawn at the caret's
+/// height. It is still on the caret's line — End takes it, to the wrap point.
+#[wasm_bindgen_test]
+fn end_from_inside_a_superscript_takes_the_rest_of_its_line() {
+    let f = Fixture::mounted(
+        "alpha bravo charlie de<sup>xyz</sup>lta echo foxtrot golf hotel",
+        "",
+    );
+    f.focus();
+    let sup = document()
+        .query_selector("[data-pm-editor] p sup")
+        .unwrap()
+        .expect("a superscript");
+    let after = sup.next_sibling().expect("the text after it");
+    assert_eq!(after.text_content().unwrap(), "lta echo foxtrot golf hotel");
+    let s = f.char_rect_in(sup.first_child().unwrap(), 1);
+    let l = f.char_rect_in(after.clone(), 0);
+    assert!(
+        s.top() < l.top() - 1.0 && s.height() < l.height(),
+        "positive control: the superscript is raised and shorter ({s:?} vs {l:?})",
+        s = (s.top(), s.height()),
+        l = (l.top(), l.height()),
+    );
+    let wrap = (1..27u32)
+        .find(|&k| f.char_rect_in(after.clone(), k).top() > l.top() + 1.0)
+        .expect("positive control: the line after the superscript wraps");
+    // "alpha bravo charlie de" is Pos 1..23, the superscript 23..26.
+    f.handle.set_selection(Selection::cursor(Pos(24)));
+    assert!(f.key("End", false));
+    assert_eq!(f.handle.selection().head(), Pos(26 + wrap as usize));
+    f.teardown();
+}
