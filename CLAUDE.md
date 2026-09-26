@@ -30,6 +30,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     right in English: `y` is 0 for ordinary Latin shaping and non-zero only for mark positioning.
     `crates/rinch-dom/src/paint/text.rs` **adds** it, in the main pass and the shadow pass alike;
     `crates/rinch-dom/tests/glyph_y_ydown_tests.rs` is the pin, one fixture per site.
+  - **An inline box too wide for any line leaves an empty line after it** when it is the
+    paragraph's last item (its emergency break returns without marking the breaker done), and
+    with text before the box that line is counted at the box's height. `ifc::phantom_last_line`
+    finds it and `break_lines_hanging_spaces` breaks the paragraph again without it (#1050),
+    counted as `ifc_phantom_rebreaks`;
+    `crates/rinch-dom/tests/atomic_inline_line_box_tests.rs` is the pin.
   - **Preserved spaces do not hang in 0.11.1.** At a width a `pre-wrap` space overflows, parley
     hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
     is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC
