@@ -289,7 +289,7 @@ fn r4_soft_back_after_a_hard_break_keeps_the_break() {
     assert!(f.bi("deleteSoftLineBackward"));
     assert_eq!(
         f.block().inner_html(),
-        "alpha bravo<br>rlie delta echo foxtrot golf hotel india"
+        "alpha bravo<br data-pm-type=\"hard_break\">rlie delta echo foxtrot golf hotel india"
     );
     f.done();
 }

@@ -75,8 +75,8 @@ use rinch_editor_core::{CursorMotion, PasteContent, Pos, Selection};
 use rinch_editor_view::{CaretAffinity, EditorHandle, LinkClick, LinkHover, LinkSpan, registry};
 
 use crate::event_delegation::{
-    compute_byte_offset_in_block, drag_machine, modifiers_from_key_event, nearest_handler,
-    set_click_context_for, utf16_offset_to_utf8_bytes,
+    drag_machine, modifiers_from_key_event, nearest_handler, set_click_context_for,
+    utf16_offset_to_utf8_bytes,
 };
 use crate::web_document::{find_text_node_at_byte_offset, get_nid, node_by_nid};
 
@@ -143,11 +143,76 @@ fn set_goal_x(x: Option<f32>) {
 }
 
 /// A resolved pointer hit inside an editor: the container + textblock host ids and the
-/// flat UTF-8 byte offset within the textblock's concatenated inline text.
+/// model offset within the textblock's content ([`model_offset_in_block`]).
 struct EditorHit {
     container_nid: usize,
     textblock_nid: usize,
-    byte: usize,
+    offset: usize,
+}
+
+impl EditorHit {
+    /// The model position the hit names.
+    fn pos(&self, handle: &EditorHandle) -> Option<Pos> {
+        handle.pos_in_textblock(self.textblock_nid, self.offset)
+    }
+}
+
+/// The model offset, within `textblock`'s content, of the DOM point
+/// `(container, offset)` — a text character and an inline leaf (an element
+/// carrying `data-pm-type`: an image, a hard break) each count one, as in the
+/// model; mark and decoration wrappers count nothing of their own.
+///
+/// Counted from the DOM rather than as a flat byte offset because a leaf has no
+/// text bytes: the byte offset just before a `<br>` and the one just after it
+/// are the same number, which resolved a click at the start of the line after
+/// a Shift+Enter to the position BEFORE the break (#1025). The DOM point knows
+/// the side, whether it is `(text after the <br>, 0)` or an element point
+/// `(<p>, index after the <br>)`.
+fn model_offset_in_block(
+    textblock: &web_sys::Element,
+    container: &web_sys::Node,
+    offset: u32,
+) -> usize {
+    /// Adds what `node` holds up to the point to `n`; `true` once the point is found.
+    fn walk(node: &web_sys::Node, container: &web_sys::Node, offset: u32, n: &mut usize) -> bool {
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            let text = node.text_content().unwrap_or_default();
+            if node == container {
+                let mut units = 0u32;
+                for c in text.chars() {
+                    if units >= offset {
+                        break;
+                    }
+                    units += c.len_utf16() as u32;
+                    *n += 1;
+                }
+                return true;
+            }
+            *n += text.chars().count();
+            return false;
+        }
+        let kids = node.child_nodes();
+        let stop = if node == container {
+            offset.min(kids.length())
+        } else {
+            kids.length()
+        };
+        for i in 0..stop {
+            let Some(child) = kids.item(i) else { continue };
+            let is_leaf = child
+                .dyn_ref::<web_sys::Element>()
+                .is_some_and(|el| el.has_attribute("data-pm-type"));
+            if is_leaf && !child.contains(Some(container)) {
+                *n += 1;
+            } else if walk(&child, container, offset, n) {
+                return true;
+            }
+        }
+        node == container
+    }
+    let mut n = 0;
+    walk(textblock, container, offset, &mut n);
+    n
 }
 
 /// `document.caretRangeFromPoint(x, y)` — non-standard but available in Chromium/WebKit
@@ -189,11 +254,11 @@ fn resolve_editor_point(doc: &web_sys::Document, x: f32, y: f32) -> Option<Edito
     let container_nid = get_nid(&container?.into())?.0;
     let textblock = textblock?;
     let textblock_nid = get_nid(&textblock.clone().into())?.0;
-    let byte = compute_byte_offset_in_block(&textblock, &start, offset);
+    let offset = model_offset_in_block(&textblock, &start, offset);
     Some(EditorHit {
         container_nid,
         textblock_nid,
-        byte,
+        offset,
     })
 }
 
@@ -1493,7 +1558,7 @@ fn link_under_pointer(
         .filter(|a| editor_el.contains(Some(a)))?;
     let href = anchor.get_attribute("href").unwrap_or_default();
     let hit = resolve_editor_point(doc, x, y).filter(|hit| hit.container_nid == container_nid)?;
-    let pos = handle.pos_at(hit.textblock_nid, hit.byte)?;
+    let pos = hit.pos(handle)?;
     handle
         .link_at(pos)
         .filter(|link| link.href == href)
@@ -1613,8 +1678,8 @@ fn link_of_anchor(anchor: &web_sys::Element, handle: &EditorHandle) -> Option<Li
     };
     let textblock_nid = get_nid(&textblock.clone().into())?.0;
     let text = first_text_node(anchor)?;
-    let byte = compute_byte_offset_in_block(&textblock, &text, 0);
-    let pos = handle.pos_at(textblock_nid, byte)?;
+    let offset = model_offset_in_block(&textblock, &text, 0);
+    let pos = handle.pos_in_textblock(textblock_nid, offset)?;
     handle.link_at(pos).filter(|link| link.href == href)
 }
 
@@ -1768,7 +1833,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
             Some(_) => None,
             None => resolve_editor_point(doc, x, y)
                 .filter(|hit| hit.container_nid == container_nid)
-                .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte)),
+                .and_then(|hit| hit.pos(&handle)),
         };
         let sel = handle.selection();
         let inside = !sel.is_empty()
@@ -1834,7 +1899,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         && (x as f64) < content.get_bounding_client_rect().left()
         && let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(clicked) = hit.pos(&handle)
         && handle.toggle_task_checked_at(clicked.0)
     {
         registry::end_drag(None);
@@ -1844,7 +1909,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 
     if let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(clicked) = hit.pos(&handle)
     {
         match event.detail() {
             2 => {
@@ -1891,7 +1956,7 @@ fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     let y = event.client_y() as f32;
     if let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(head) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(head) = hit.pos(&handle)
     {
         handle.set_selection(Selection::text(Pos(anchor), head));
         refresh_caret();
@@ -2163,7 +2228,7 @@ fn vertical_step(
     // that line only upstream.
     let geo_head = resolve_editor_point(doc, gx, ty)
         .filter(|hit| hit.container_nid == container_nid)
-        .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+        .and_then(|hit| hit.pos(handle))
         .map(|p| (p, hit_affinity(handle, p, ty)))
         .filter(|&(p, (_, rect))| {
             if handle.caret_address(p).map(|(t, _)| t) != head_tb {
@@ -2331,7 +2396,7 @@ fn visual_line_bound(
     let probe = |x: f32| {
         resolve_editor_point(doc, x, y)
             .filter(|hit| hit.container_nid == container_nid && hit.textblock_nid == tb)
-            .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+            .and_then(|hit| hit.pos(handle))
     };
     let hits = [probe(left + 1.0), probe(right - 1.0)];
     let found = hits.iter().flatten().copied();

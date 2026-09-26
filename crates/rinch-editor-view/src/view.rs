@@ -961,6 +961,19 @@ impl RinchDomEditorView {
         Some(Pos(content_start + ifc_byte_to_char(block, ifc_byte)))
     }
 
+    /// The model [`Pos`] `offset` positions into the textblock whose host element
+    /// is `textblock_dom_id` — a text character and an inline leaf (image, hard
+    /// break) each count one, as in the model. Clamped to the block's end. `None`
+    /// if `textblock_dom_id` isn't a known textblock in this view.
+    ///
+    /// Unlike a flat byte offset ([`Self::pos_at`]), this names a side of a leaf:
+    /// a leaf is one position wide and zero text bytes wide, so the byte offset
+    /// just before it and the one just after it are the same number (#1025).
+    pub(crate) fn pos_in_textblock(&self, textblock_dom_id: usize, offset: usize) -> Option<Pos> {
+        let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
+        Some(Pos(content_start + offset.min(block.content().size())))
+    }
+
     /// The textblock's offset in container coordinates — the sum of parent-relative
     /// layouts from the block up to (excluding) the container.
     fn block_offset_in_container(&self, d: &dyn DomDocument, block_id: usize) -> (f32, f32) {
