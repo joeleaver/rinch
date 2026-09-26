@@ -1949,6 +1949,14 @@ pub struct NodeTree {
     pub inline_text_shadows: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
+    /// Tables and row groups whose flex direction may have moved with their
+    /// children (#1083): a child inserted, removed or restyled into or out of
+    /// being a row. Drained once per layout by
+    /// `RinchDocument::resolve_table_directions`, which rewrites only the
+    /// Taffy `flex_direction`, and only where it changed — so a reorder or a
+    /// bulk removal under a table costs one walk of its children per frame,
+    /// not a Taffy re-sync per move.
+    pub table_direction_owed: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
     /// `resolve_styles()` resolves only these subtrees instead of the
     /// full tree — turning O(tree) into O(changed_subtree).
@@ -2421,6 +2429,7 @@ impl NodeTree {
             whole_document_damaged: false,
             inline_text_shadows: false,
             style_dirty_nodes: Vec::new(),
+            table_direction_owed: Vec::new(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
             styles_dirty: true,    // Initial render needs styles
