@@ -488,3 +488,61 @@ fn enter_on_a_link_after_a_break_offers_it() {
     assert_eq!(*got.borrow(), Some((4, 8)));
     f.done();
 }
+
+fn ta_sel(f: &F) -> (u32, u32) {
+    let ta = f.capture();
+    (
+        ta.selection_start().unwrap().unwrap(),
+        ta.selection_end().unwrap().unwrap(),
+    )
+}
+
+/// A composition with a caller-chosen final value and caret (an IME that
+/// rewrites text around the caret, not only inserts).
+fn compose_to(f: &F, now: &str, caret: u32, data: &str) {
+    let ta = f.capture();
+    composition(&ta, "compositionstart", "");
+    composition(&ta, "compositionupdate", data);
+    ta.set_value(now);
+    ta.set_selection_range(caret, caret).unwrap();
+    composition(&ta, "compositionend", data);
+}
+
+/// Astral characters on both sides of a break: the mirror's caret is in UTF-16
+/// units, the commit's position in characters. a=0 😀=1 <br>=2 😀=3 b=4.
+/// From the round-2 review of #1101 (q1).
+#[wasm_bindgen_test]
+fn astral_characters_on_both_sides_of_a_break_compose() {
+    let f = F::new("<p>a\u{1F600}<br>\u{1F600}b</p>");
+    let c = f.char_rect(1, 0);
+    f.click(c.x() + 1.0, c.y() + c.height() / 2.0);
+    assert_eq!(f.head(), 3, "precondition: after the break");
+    assert_eq!(f.capture().value(), "a\u{1F600}\n\u{1F600}b");
+    assert_eq!(ta_sel(&f), (4, 4), "mirror caret in UTF-16 units");
+    f.compose("X");
+    assert_eq!(f.para(), "a\u{1F600}|X\u{1F600}b");
+    assert_eq!(f.head(), 4);
+    // After the resync: a(1) + 😀(2) + \n(1) + X(1) = 5 units.
+    assert_eq!(ta_sel(&f), (5, 5));
+    f.at(6);
+    f.compose("");
+    f.compose("Y");
+    assert_eq!(f.para(), "a\u{1F600}|X\u{1F600}bY");
+    assert_eq!(f.head(), 7);
+    f.done();
+}
+
+/// A composition over a selection that spans an image replaces it: the mirror
+/// carries the selection, the leaf's character included. From the round-2
+/// review of #1101 (q9).
+#[wasm_bindgen_test]
+fn a_composition_over_a_selection_spanning_an_image_replaces_it() {
+    let f = F::new(&format!("<p>ab<img src=\"{GIF}\" alt=\"\">cd</p>"));
+    f.handle.set_selection(Selection::text(Pos(2), Pos(5)));
+    f.compose("");
+    assert_eq!(ta_sel(&f), (1, 4), "field selection b..c, U+FFFC included");
+    compose_to(&f, "aXd", 2, "X");
+    assert_eq!(f.para(), "aXd");
+    assert_eq!(f.head(), 2);
+    f.done();
+}
