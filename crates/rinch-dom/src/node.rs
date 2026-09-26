@@ -1403,10 +1403,10 @@ impl Node {
     ///
     /// The set is the one [`Self::clips_overflow`] excludes, for the same
     /// reason: an element whose [`DisplayMode`] is `Inline`, flowed, split or
-    /// unmarked alike. rinch has no `display: inline` replaced element to carve
-    /// out of it: `img`, `svg` and the form controls are `inline-block` in the
-    /// UA sheet, and a `display: inline` one is flowed content that owns no box
-    /// (#635), so there is nothing a transform could move.
+    /// unmarked alike. A replaced element or form control at `display: inline`
+    /// needs no carve-out: its `display_mode` is `InlineBlock` (#1089,
+    /// [`is_atomic_at_display_inline`]), so a transform applies to it, as in
+    /// Chrome.
     ///
     /// `display: contents` is **not** decided here: the two predicates below
     /// exclude it themselves, and paint's transform composition treats it by
@@ -1808,6 +1808,53 @@ impl Node {
     }
 }
 
+/// Whether an element with this tag is an **atomic** inline-level box even
+/// when its computed `display` is `inline` (#1089).
+///
+/// A replaced element (`img`, `svg`, `video`, `canvas`, `iframe`) is atomic
+/// whatever its `display` says — css-display-3 §2.6's `inline` produces an
+/// atomic inline for a replaced element — and HTML's rendering rules make the
+/// form controls (`input`, `button`, `select`, `textarea`, `meter`,
+/// `progress`) behave as `inline-block` at `display: inline`. Measured in
+/// Chrome 153, every one of these gives the **identical** box at `inline` and
+/// at `inline-block` (`replaced_inline_tests`); `embed` and `object` without
+/// content, and `audio`, are left out — the first two measure `0x0` there and
+/// the third renders nothing without `controls`.
+///
+/// The UA sheet already gives `img`, `input`, `button`, `select`,
+/// `textarea` and `svg` `inline-block`, so for those six this only decides
+/// anything when author CSS writes `display: inline`. The UA sheet names none
+/// of `video`, `canvas`, `iframe`, `meter` and `progress`, so they are
+/// `display: inline` by **default** and this changes their default rendering:
+/// an atomic box sized by author CSS, where they used to be flowed. Chrome's
+/// intrinsic default sizes (300x150, 80x16, 160x16) are not modelled, and
+/// fallback content inside them is still laid out, inside the box, where
+/// Chrome renders none. Without this rule such an element was a *flowed*
+/// inline element (IFC content with no box) and measured `0x0`.
+///
+/// Read in exactly one place, the `display_mode` sync in
+/// `RinchDocument::apply_stylo_styles_to_taffy`, which maps `display: inline`
+/// on one of these tags to [`DisplayMode::InlineBlock`]. Every layout, clip,
+/// hit-test and paint question asks `display_mode`, so none of them has to
+/// know about replaced elements. `ComputedStyle::display` keeps `inline`, as
+/// `getComputedStyle` does for `img`/`svg` in Chrome.
+pub fn is_atomic_at_display_inline(tag: &str) -> bool {
+    matches!(
+        tag,
+        "img"
+            | "svg"
+            | "video"
+            | "canvas"
+            | "iframe"
+            | "input"
+            | "button"
+            | "select"
+            | "textarea"
+            | "meter"
+            | "progress"
+    )
+}
+
 /// Default display mode based on HTML tag name.
 fn default_display_for_tag(tag: &str) -> DisplayMode {
     match tag {
@@ -1902,6 +1949,14 @@ pub struct NodeTree {
     pub inline_text_shadows: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
+    /// Tables and row groups whose flex direction may have moved with their
+    /// children (#1083): a child inserted, removed or restyled into or out of
+    /// being a row. Drained once per layout by
+    /// `RinchDocument::resolve_table_directions`, which rewrites only the
+    /// Taffy `flex_direction`, and only where it changed — so a reorder or a
+    /// bulk removal under a table costs one walk of its children per frame,
+    /// not a Taffy re-sync per move.
+    pub table_direction_owed: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
     /// `resolve_styles()` resolves only these subtrees instead of the
     /// full tree — turning O(tree) into O(changed_subtree).
@@ -2374,6 +2429,7 @@ impl NodeTree {
             whole_document_damaged: false,
             inline_text_shadows: false,
             style_dirty_nodes: Vec::new(),
+            table_direction_owed: Vec::new(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
             styles_dirty: true,    // Initial render needs styles

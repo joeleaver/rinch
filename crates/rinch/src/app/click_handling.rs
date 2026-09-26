@@ -212,8 +212,14 @@ impl RinchApp {
         enum TextSelAction {
             StartSelection { ifc_node_id: usize, offset: usize },
             Clear,
+            Keep,
         }
-        let text_sel_action = {
+        // A left press only (issue #1087): a right or middle press — a
+        // context menu, or a chord while the left button drags a selection —
+        // leaves the selection, and a selection drag in progress, alone.
+        let text_sel_action = if button != MouseButton::Left {
+            TextSelAction::Keep
+        } else {
             let d = doc.borrow();
             if let Some(hit_id) = self.shared_hit(&d, x, y) {
                 if let Some(ifc_node_id) = Self::find_selectable_ifc(&d.tree, hit_id) {
@@ -251,6 +257,7 @@ impl RinchApp {
             TextSelAction::Clear => {
                 self.clear_text_selection();
             }
+            TextSelAction::Keep => {}
         }
 
         // ── Phase 3: normal click handling (data-oninput, data-rid) ─
@@ -471,7 +478,11 @@ impl RinchApp {
                     text_hit,
                     viewport_width,
                     viewport_height,
-                    button: events::MouseButton::Left,
+                    // The button that pressed (issue #1087): a pointer-capture
+                    // `Drag` armed from this handler ends on that button's
+                    // release, which a right press's `data-rid` would
+                    // otherwise have recorded as the left.
+                    button: Self::core_button(button),
                     modifiers: self.modifier_state(),
                 });
                 events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
