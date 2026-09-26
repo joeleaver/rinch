@@ -961,6 +961,21 @@ impl RinchDomEditorView {
         Some(Pos(content_start + ifc_byte_to_char(block, ifc_byte)))
     }
 
+    /// The inverse of [`Self::pos_in_textblock`]: the textblock holding `pos` (its
+    /// host element id) and `pos`'s offset into that block's content, a leaf
+    /// counting one. `None` when `pos` is not inside a textblock.
+    pub(crate) fn textblock_offset(&self, doc: &Node, pos: Pos) -> Option<(usize, usize)> {
+        let r = doc.resolve(pos).ok()?;
+        if !r.parent().is_textblock() {
+            return None;
+        }
+        let mut desc = &self.root;
+        for d in 0..r.depth() {
+            desc = desc.children.get(r.index(d))?;
+        }
+        Some((desc.dom.node_id().0, r.parent_offset()))
+    }
+
     /// The model [`Pos`] `offset` positions into the textblock whose host element
     /// is `textblock_dom_id` — a text character and an inline leaf (image, hard
     /// break) each count one, as in the model. Clamped to the block's end. `None`
