@@ -15,6 +15,7 @@
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
+use rinch_dom::perf::Counter;
 
 const VW: f32 = 800.0;
 const VH: f32 = 600.0;
@@ -188,5 +189,67 @@ fn a_reattached_orphan_ifc_root_lays_out_as_a_fresh_one() {
                 }
             }
         }
+    }
+}
+
+/// `body > wrap > outer > p > ["alpha beta ", span > "gamma"]`, laid out.
+fn nested_doc() -> (RinchDocument, NodeId, NodeId, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let wrap = child_of(&mut doc, body, "div", "");
+    let outer = child_of(&mut doc, wrap, "div", "");
+    let p = child_of(&mut doc, outer, "p", P_STYLE);
+    text_in(&mut doc, p, "alpha beta ");
+    let span = child_of(&mut doc, p, "span", "");
+    text_in(&mut doc, span, "gamma");
+    doc.resolve_layout(VW, VH);
+    doc.resolve_layout(VW, VH);
+    (doc, wrap, outer, p, span)
+}
+
+/// The root is not a direct orphan: an **ancestor** of it was removed, so the
+/// root's own `parent` is still `Some`. Every fixture above detaches the root
+/// itself, so a turn-away that only asked `parent.is_none()` passed them all
+/// (found by #1102's review). Re-attached through the ancestor, the root lays
+/// out as a fresh document does.
+///
+/// Kills: `build_ifc_layouts`' connectivity test weakened to
+/// `parent.is_none()`.
+#[test]
+fn a_root_under_a_detached_ancestor_is_turned_away_and_comes_back() {
+    for whole_on_attach in [false, true] {
+        let (mut doc, wrap, outer, p, span) = nested_doc();
+        text_in(&mut doc, span, " delta epsilon");
+        doc.remove_child(wrap, outer);
+        doc.resolve_layout(VW, VH);
+        let shapes0 = doc.tree.perf.get(Counter::ShapeIfcBuild);
+        doc.recompute_all_styles_full();
+        doc.resolve_layout(VW, VH);
+        assert!(
+            !marked_in(&doc, p).is_empty(),
+            "control: the whole-document pass marked the detached subtree again"
+        );
+        assert_eq!(
+            doc.tree.perf.get(Counter::ShapeIfcBuild) - shapes0,
+            0,
+            "a root under a detached ancestor is not shaped"
+        );
+        assert!(doc.tree.get(p.0).unwrap().text_layout.is_none());
+        text_in(&mut doc, span, " zeta eta theta");
+        doc.append_child(wrap, outer);
+        if whole_on_attach {
+            doc.recompute_all_styles_full();
+        }
+        doc.resolve_layout(VW, VH);
+        let got = ifc_summary(&doc, p);
+
+        let (mut fresh, _fw, _fo, fp, fspan) = nested_doc();
+        text_in(&mut fresh, fspan, " delta epsilon");
+        text_in(&mut fresh, fspan, " zeta eta theta");
+        fresh.resolve_layout(VW, VH);
+        fresh.resolve_layout(VW, VH);
+        let want = ifc_summary(&fresh, fp);
+        assert!(want.1 >= 2, "control: the fresh root wraps ({want:?})");
+        assert_eq!(got, want, "whole-document pass on attach {whole_on_attach}");
     }
 }

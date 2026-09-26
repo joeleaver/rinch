@@ -813,6 +813,18 @@ impl RinchDocument {
     /// pin is still reached by the whole-document pass itself.
     #[doc(hidden)]
     pub fn shape_ifc_root_for_tests(&mut self, root: rinch_core::dom::NodeId) {
+        debug_assert!(
+            self.tree
+                .nodes
+                .get(root.0)
+                .is_some_and(|n| n.ifc_children().iter().any(|&c| self
+                    .tree
+                    .nodes
+                    .get(c)
+                    .is_some_and(|c| c.ifc_root == Some(root.0)))),
+            "shape_ifc_root_for_tests: node {} is not an IFC root (no child carries its mark)",
+            root.0
+        );
         let max_width = self.ifc_paint_max_width(root.0);
         let mut cx = std::mem::take(&mut self.layout_cx);
         self.shape_ifc_root_paint_layout(root.0, max_width, &mut cx);
