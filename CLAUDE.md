@@ -4523,11 +4523,15 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for sixteen benchmarks, on the
+It records Callgrind instruction counts (Gungraun) for every benchmark in the crate, on the
 PR's merge commit and on its first parent (the current `main` tip). The report
 is a table in the job summary and one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks
-cannot run them. The `perf-regression-accepted` label turns either failure into
+cannot run them. The base runs the head's benchmark sources, and its own when
+those do not build there — a new bench calling a new API (#1036) — so the rest
+are still compared and the new one shows as `new`; the report names what was
+not compared, and fails unlabelled if the head's copy also edits an existing
+scenario rather than only adding. The `perf-regression-accepted` label turns either failure into
 a warning, and the PR then explains the cost the same way a baseline change
 does. Inside the measured operation the bench binary bump-allocates
 (`rinch_bench::alloc`): glibc's malloc cost depends on heap history and moved
