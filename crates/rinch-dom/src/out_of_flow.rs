@@ -109,10 +109,16 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
 ///   `scrollWidth == clientWidth` and grows no bar. rinch counted it, so a
 ///   closed `Drawer` — `position: fixed`, and since #751/#761 still rendered —
 ///   made an `overflow: auto` ancestor paint two scrollbars (issue #765).
-/// * **`position: absolute` contributes only when `parent` is its containing
-///   block**: `parent` is positioned or transformed
-///   ([`Node::establishes_abs_containing_block`]), or *is* the initial
-///   containing block, which in rinch is the `<html>` box. Those are exactly
+/// * **`position: absolute` contributes only when its containing block is
+///   `parent` or below it**: walking its DOM ancestors up to `parent`, one of
+///   them is positioned or transformed
+///   ([`Node::establishes_abs_containing_block`]), or `parent` *is* the
+///   initial containing block, which in rinch is the `<html>` box. Below
+///   `parent` that walk crosses only `display: contents` wrappers, which
+///   establish nothing, and — for a box hoisted into its host out of a flowed
+///   inline element (#591) — the inline elements between them, one of which
+///   may be a `position: relative` span: its containing block, and itself
+///   `parent`'s content (issue #1049). Those are exactly
 ///   [`out_of_flow_kind`]'s two stopping conditions, deliberately — an absolute
 ///   whose containing block is further up escapes this box's scroll range in
 ///   CSS (measured in Chrome: a static `overflow: auto` div inside a
@@ -142,11 +148,35 @@ pub(crate) fn contributes_to_scrollable_overflow(
     match child.computed_style.position {
         PositionValue::Fixed => false,
         PositionValue::Absolute => {
-            parent_id == tree.html_id
-                || parent_id == tree.root_id
-                || tree
-                    .get(parent_id)
-                    .is_some_and(Node::establishes_abs_containing_block)
+            // Walk the box's DOM ancestors up to and including the container,
+            // exactly as `out_of_flow_kind` walks them: the first one that
+            // establishes a containing block is at or below the container, so
+            // the box is in its containing-block chain. Below the container
+            // the chain holds only boxes the walk does not stop at — `display:
+            // contents` wrappers (which establish nothing) and, for a box
+            // hoisted into its host (#591), the flowed inline elements it was
+            // hoisted out of, any of which may be `position: relative`
+            // (issue #1049).
+            let mut current = child.parent;
+            while let Some(id) = current {
+                if id == parent_id {
+                    return id == tree.html_id
+                        || id == tree.root_id
+                        || tree
+                            .get(id)
+                            .is_some_and(Node::establishes_abs_containing_block);
+                }
+                let Some(ancestor) = tree.get(id) else {
+                    return false;
+                };
+                if ancestor.establishes_abs_containing_block() {
+                    return true;
+                }
+                current = ancestor.parent;
+            }
+            // The container is not a DOM ancestor of the box; nothing the
+            // walk can reach puts the box in its chain.
+            false
         }
         _ => true,
     }
