@@ -15,16 +15,19 @@
 # step fails the check for that when the base has the crate.
 #
 # Inputs (environment): BASE_DIR, HEAD_DIR (the two checkouts), OUT (the base's
-# Gungraun JSON lines), BENCH_ARGS, CARGO (default `cargo`; the self-test
+# Gungraun JSON lines), DIFF_OUT (the edits `perf_bench_changes.py` finds), BENCH_ARGS, CARGO (default `cargo`; the self-test
 # substitutes a fake), GITHUB_OUTPUT. Outputs:
 #   has_crate  true | false   the base checkout has `crates/rinch-bench`
 #   ran        true | false   OUT holds a complete base run
 #   sources    head | base | none   which copy produced OUT
+#   sources_changed  true | false   (fallback only) the head's copy changes an
+#              existing scenario of the base's; DIFF_OUT then lists the edits
 #
 # Self-test: `.github/scripts/test_perf_scripts.py`.
 set -uo pipefail
 
 : "${BASE_DIR:?}" "${HEAD_DIR:?}" "${OUT:?}"
+DIFF_OUT=${DIFF_OUT:-$OUT.sources-diff}
 CARGO=${CARGO:-cargo}
 GITHUB_OUTPUT=${GITHUB_OUTPUT:-/dev/null}
 BENCH_ARGS=${BENCH_ARGS:-}
@@ -69,6 +72,19 @@ if [ "$has_crate" != true ]; then
 fi
 
 echo "::warning title=perf baseline::the head's benchmark sources did not build or run on the base; running the base's own copy, so benchmarks only the head defines are not compared"
+# Does the head's copy change an EXISTING scenario (not just add new ones)?
+# Then the shared benchmarks compare two different scenarios, and a scenario
+# made cheaper would hide a real regression: perf_compare.py fails the check
+# for that unless it is labelled, and lists the edits (#1036 review).
+if python3 "$(dirname "$0")/perf_bench_changes.py" \
+     "$saved/rinch-bench" "$HEAD_DIR/crates/rinch-bench" > "$DIFF_OUT" \
+   && [ ! -s "$DIFF_OUT" ]; then
+  echo "sources_changed=false" >> "$GITHUB_OUTPUT"
+else
+  # A crash in the checker also counts as a change: it must not pass silently.
+  [ -s "$DIFF_OUT" ] || echo "@@ perf_bench_changes.py failed; see the step log" > "$DIFF_OUT"
+  echo "sources_changed=true" >> "$GITHUB_OUTPUT"
+fi
 rm -rf "$crate"
 cp -a "$saved/rinch-bench" "$crate"
 if [ -f "$saved/Cargo.lock" ]; then
