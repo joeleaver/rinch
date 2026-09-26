@@ -378,7 +378,7 @@ fn flow_subtree_may_contain(
     // context can be either, and callers never hand one in — but a box that
     // is one anyway is simply walked.
     if child.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed
-        || !child.computed_style.transform.is_identity
+        || child.has_applied_transform()
     {
         return true;
     }

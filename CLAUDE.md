@@ -2565,8 +2565,11 @@ transformable, so it is no stacking context and no containing block, and its
 transform moves nothing — the same set `clips_overflow` excludes. The computed
 value is kept (Chrome's `getComputedStyle` reports the matrix); every consumer
 of the *effect* — both predicates, `paint::compose_node_transform`,
-`PaintedState`, hit testing's inverse — asks `Node::has_applied_transform()`,
-not `transform.is_identity`. Where a box is *anchored* depends on the
+`PaintedState`, hit testing's inverse and its subtree prune — asks
+`Node::has_applied_transform()`, not `transform.is_identity`. The one reader
+left on the raw value is the hit cache's `HitStyleKey::transformed`, which sees
+only `ComputedStyle`; on such a span it only costs an extra (harmless) cache
+invalidation when the transform toggles. Where a box is *anchored* depends on the
 same fact, so every coordinate walk that can meet a contents node asks
 `Node::box_position()` — the computed `position`, `static` for `display:
 contents` — not `computed_style.position` (the readers left on the raw value are
