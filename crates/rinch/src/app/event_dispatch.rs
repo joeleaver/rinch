@@ -3574,17 +3574,20 @@ impl RinchApp {
     /// block when the point misses every textblock (see [`Self::editor_point_address_in`]).
     pub(crate) fn editor_point_address(&self, x: f32, y: f32) -> Option<(usize, usize, usize)> {
         self.editor_point_address_in(x, y, true)
+            .map(|p| (p.container, p.textblock, p.byte))
+    }
+
+    /// [`Self::editor_point_address`], also naming the inline box (an image)
+    /// the point is on and which half of it — what [`EditorPoint::pos`] needs
+    /// to resolve a point on an image to the side it is on (#1104).
+    pub(crate) fn editor_point(&self, x: f32, y: f32) -> Option<EditorPoint> {
+        self.editor_point_address_in(x, y, true)
     }
 
     /// The shared resolver. When `allow_nearest` is false it requires the point to
     /// land directly on (or inside) a textblock; when true it falls back to the
     /// geometrically nearest block in the editor (snap-to-line).
-    fn editor_point_address_in(
-        &self,
-        x: f32,
-        y: f32,
-        allow_nearest: bool,
-    ) -> Option<(usize, usize, usize)> {
+    fn editor_point_address_in(&self, x: f32, y: f32, allow_nearest: bool) -> Option<EditorPoint> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let hit = self.shared_hit(&d, x, y)?;
@@ -3616,8 +3619,14 @@ impl RinchApp {
         let node = d.tree.get(tb)?;
         // An empty textblock has no inline content and so no Parley layout — the
         // only cursor position in it is offset 0.
+        let point = |byte, inline_box| EditorPoint {
+            container: cont,
+            textblock: tb,
+            byte,
+            inline_box,
+        };
         let Some(layout) = node.text_layout.as_ref() else {
-            return Some((cont, tb, 0));
+            return Some(point(0, None));
         };
         // The click, mapped into the textblock's own space: Parley's layout is
         // in that space, so a transformed editor still resolves to the
@@ -3629,7 +3638,11 @@ impl RinchApp {
         let rel_y = local_y - pad_t + node.scroll_offset.1 as f32;
         let ifc_byte =
             rinch_dom::text_query::byte_offset_from_position(&layout.layout, rel_x, rel_y);
-        Some((cont, tb, ifc_byte))
+        // Parley steps over an inline box to the byte after it, which is the
+        // byte of both of the box's sides: name the box and the half instead.
+        let inline_box = rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y)
+            .map(|(id, after)| (id as usize, after));
+        Some(point(ifc_byte, inline_box))
     }
 
     /// Whether a click at logical `(x, y)` landed in a **task item's checkbox
@@ -3773,10 +3786,17 @@ impl RinchApp {
     ) -> Option<(f32, f32, f32)> {
         let (tb, flat) = handle.caret_address(pos)?;
         let doc = self.doc.clone()?;
+        let d = doc.borrow();
+        // Beside an image the flat byte names neither side; the image's box
+        // does (#1104).
+        if let Some((tb, leaf, after)) = handle.caret_inline_box(pos)
+            && let Some(rect) = d.inline_box_caret_window_rect(tb, leaf, after)
+        {
+            return Some(rect);
+        }
         // Text only: vertical motion falls back to the model on a blank line,
         // where `DomDocument::query_caret_rect` would answer the block's box.
-        doc.borrow()
-            .text_caret_window_rect_with_affinity(tb, flat, affinity)
+        d.text_caret_window_rect_with_affinity(tb, flat, affinity)
     }
 
     /// Which side of a soft wrap a caret placed at `pos` by a hit at window
@@ -3828,13 +3848,13 @@ impl RinchApp {
         let doc = handle.doc();
         if let Some((cx, cy, ch)) = self.editor_caret_point(handle, head)
             && let ty = if down { cy + ch * 1.5 } else { cy - ch * 0.5 }
-            && let Some((_c, tb, ifc)) = {
+            && let Some(hit) = {
                 // Hit-test at the goal column (preserved across consecutive
                 // Up/Down), falling back to the live caret x for the first step.
                 let tx = goal_x.unwrap_or(cx);
-                self.editor_point_address(tx, ty)
+                self.editor_point(tx, ty)
             }
-            && let Some(p) = handle.pos_at(tb, ifc)
+            && let Some(p) = hit.pos(handle)
         {
             // A goal column past the target line's end lands on its wrap
             // point, which is drawn on that line only upstream (#301).
@@ -4192,9 +4212,9 @@ impl RinchApp {
         // not a real element). Resolve the nearest textblock for a document position,
         // then toggle the enclosing task item.
         if self.editor_task_checkbox_at(x, y)
-            && let Some((c, tb, ifc)) = self.editor_point_address(x, y)
-            && c == container
-            && let Some(pos) = handle.pos_at(tb, ifc)
+            && let Some(hit) = self.editor_point(x, y)
+            && hit.container == container
+            && let Some(pos) = hit.pos(&handle)
             && handle.toggle_task_checked_at(pos.0)
         {
             crate::editor::end_drag(self.input_doc());
@@ -4211,9 +4231,9 @@ impl RinchApp {
         {
             handle.set_selection(selection);
             crate::editor::end_drag(self.input_doc());
-        } else if let Some((c, textblock, ifc_byte)) = self.editor_point_address(x, y)
-            && c == container
-            && let Some(clicked) = handle.pos_at(textblock, ifc_byte)
+        } else if let Some(hit) = self.editor_point(x, y)
+            && hit.container == container
+            && let Some(clicked) = hit.pos(&handle)
         {
             use rinch_editor_core::Selection;
             let doc = handle.doc();
@@ -4263,16 +4283,16 @@ impl RinchApp {
         let Some((container, anchor)) = crate::editor::drag_anchor(self.input_doc()) else {
             return false;
         };
-        let Some((c, tb, ifc)) = self.editor_point_address(x, y) else {
+        let Some(hit) = self.editor_point(x, y) else {
             return true; // dragged off the text; keep the drag, don't change selection
         };
-        if c != container {
+        if hit.container != container {
             return true;
         }
         let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) else {
             return false;
         };
-        if let Some(head) = handle.pos_at(tb, ifc) {
+        if let Some(head) = hit.pos(&handle) {
             use rinch_editor_core::{Pos, Selection, tables};
             let doc = handle.doc();
             // A drag that spans two different cells of one table is a cell (rectangle)
@@ -4875,5 +4895,30 @@ mod editor_key_binding_tests {
         // takes the logical arm — everything else keeps resolving physically.
         let b = editor_key_binding(KeyCode::Enter, Some("Enter"), false, false, false).unwrap();
         assert_eq!(b.key, Key::Enter);
+    }
+}
+
+/// A window point resolved inside an editor ([`RinchApp::editor_point`]): the
+/// container, the textblock, the flat byte Parley's hit test answers, and —
+/// when the point is on an inline box (an image) — that box's element id and
+/// whether the point is on its right half.
+pub(crate) struct EditorPoint {
+    pub(crate) container: usize,
+    pub(crate) textblock: usize,
+    pub(crate) byte: usize,
+    pub(crate) inline_box: Option<(usize, bool)>,
+}
+
+impl EditorPoint {
+    /// The model position the point resolves to: the side of the inline box
+    /// it is on, else the flat byte's position. The byte alone cannot name a
+    /// side of an image, which occupies no bytes (#1104).
+    pub(crate) fn pos(
+        &self,
+        handle: &crate::editor::EditorHandle,
+    ) -> Option<rinch_editor_core::Pos> {
+        self.inline_box
+            .and_then(|(leaf, after)| handle.pos_beside_inline_leaf(leaf, after))
+            .or_else(|| handle.pos_at(self.textblock, self.byte))
     }
 }
