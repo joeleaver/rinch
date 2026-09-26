@@ -183,59 +183,58 @@ mod pointer_capture {
     /// whatever the button, and since #1093 it clicks nothing.
     #[test]
     fn a_drag_armed_by_a_right_press_ends_on_the_right_release() {
-        for attribute in ["data-onmousedown"] {
-            let ends = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
-            let e = ends.clone();
-            let mut app = RinchApp::new(move |scope: &mut RenderScope| {
-                let root = scope.create_element("div");
-                root.set_attribute("style", "width: 800px; height: 600px");
-                let arm = scope.create_element("div");
-                arm.set_attribute(
-                    "style",
-                    "position: absolute; left: 0px; top: 0px; width: 120px; height: 40px",
-                );
-                let rid = scope.register_handler({
+        let attribute = "data-onmousedown";
+        let ends = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
+        let e = ends.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 800px; height: 600px");
+            let arm = scope.create_element("div");
+            arm.set_attribute(
+                "style",
+                "position: absolute; left: 0px; top: 0px; width: 120px; height: 40px",
+            );
+            let rid = scope.register_handler({
+                let e = e.clone();
+                move || {
                     let e = e.clone();
-                    move || {
-                        let e = e.clone();
-                        rinch_core::Drag::absolute()
-                            .on_end(move |x, y| e.borrow_mut().push((x, y)))
-                            .start();
-                    }
-                });
-                arm.set_attribute(attribute, &rid.0.to_string());
-                root.append_child(&arm);
-                root
+                    rinch_core::Drag::absolute()
+                        .on_end(move |x, y| e.borrow_mut().push((x, y)))
+                        .start();
+                }
             });
-            app.mount_component(800.0, 600.0);
-            app.resolve_and_repaint(800.0, 600.0);
+            arm.set_attribute(attribute, &rid.0.to_string());
+            root.append_child(&arm);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
 
-            send(
-                &mut app,
-                PlatformEvent::MouseDown {
-                    x: 37.0,
-                    y: 23.0,
-                    button: MouseButton::Right,
-                },
-            );
-            assert!(rinch_core::Drag::is_active(), "{attribute}: armed");
-            assert_eq!(
-                rinch_core::get_click_context().button,
-                rinch_core::events::MouseButton::Right,
-                "{attribute}: the handler's click context names the right button"
-            );
-            move_to(&mut app, (233.0, 149.0));
-            send(
-                &mut app,
-                PlatformEvent::MouseUp {
-                    x: 239.0,
-                    y: 151.0,
-                    button: MouseButton::Right,
-                },
-            );
-            assert_eq!(*ends.borrow(), vec![(239.0, 151.0)], "{attribute}");
-            assert!(!rinch_core::Drag::is_active(), "{attribute}");
-        }
+        send(
+            &mut app,
+            PlatformEvent::MouseDown {
+                x: 37.0,
+                y: 23.0,
+                button: MouseButton::Right,
+            },
+        );
+        assert!(rinch_core::Drag::is_active(), "{attribute}: armed");
+        assert_eq!(
+            rinch_core::get_click_context().button,
+            rinch_core::events::MouseButton::Right,
+            "{attribute}: the handler's click context names the right button"
+        );
+        move_to(&mut app, (233.0, 149.0));
+        send(
+            &mut app,
+            PlatformEvent::MouseUp {
+                x: 239.0,
+                y: 151.0,
+                button: MouseButton::Right,
+            },
+        );
+        assert_eq!(*ends.borrow(), vec![(239.0, 151.0)], "{attribute}");
+        assert!(!rinch_core::Drag::is_active(), "{attribute}");
     }
 
     /// A right chord on the probe's `data-onmousedown` rewrites the click
