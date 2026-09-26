@@ -701,11 +701,12 @@ pub fn create_video_frame_sink(viewport_id: &str) -> VideoFrameSink {
 /// The registry is thread-local, so a drop on another thread cannot reach it:
 /// that release is queued for the main thread instead (the sink is `Send`, even
 /// though every player in the workspace drops it on the main thread), and runs
-/// at the next drain of the main-thread queue. It does not wake the event loop
-/// to get there: `run_on_main_thread` would, but it panics where no dispatcher
-/// is registered, which a `Drop` must not risk, and a surface released one wake
-/// late costs nothing but its buffer until then. Every host drains the queue
-/// (desktop on each wake and paint, Android per frame, embed per `update`).
+/// at the next drain of the main-thread queue. It is queued through the host's
+/// dispatcher ([`rinch_core::dispatch_main_callback`]), so a host that wakes
+/// for queued work wakes for it, and it never takes the wake of a closure
+/// queued behind it (issue #1035). Not `run_on_main_thread`: that panics where
+/// no dispatcher is registered, which a `Drop` must not risk, and on the main
+/// thread it runs inline, inside the registry borrow this path exists to avoid.
 ///
 /// A lease dropped after the thread's registry was destroyed — a player still
 /// playing at thread or process exit, whose `ACTIVE_PLAYERS` entry is torn down
@@ -731,7 +732,7 @@ impl Drop for SurfaceLease {
         if std::thread::current().id() == self.thread && registry_free {
             unregister_render_surface(id);
         } else {
-            rinch_core::queue_main_callback(Box::new(move || unregister_render_surface(id)));
+            rinch_core::dispatch_main_callback(Box::new(move || unregister_render_surface(id)));
         }
     }
 }

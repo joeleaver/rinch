@@ -976,6 +976,15 @@ is coalesced (one pending `ReRender` at a time), so a callback queued between a
 wake's callback drain and its native-event drain would fold into the wake being
 served; the wake therefore asks `rinch_core::main_callbacks_pending()` after the
 native drain and owes itself another (`drain_wake_queues`, issue #988).
+Because the wake is coalesced on the queue, **library code must not push onto
+it with a bare `queue_main_callback`** where a host may be waking: that closure
+gets no wake, and the next sender from any thread finds the queue non-empty and
+asks for none either (issue #1035 — a video sink dropped off-thread did this).
+Use `rinch_core::dispatch_main_callback`, which goes through the registered
+dispatcher (or queues plainly when there is none) and, unlike
+`run_on_main_thread`, does not panic for a missing dispatcher and never runs
+inline — the shape a `Drop` needs. (The queue and the desktop dispatcher it
+reaches still `unwrap` their own locks.) A host's own dispatcher is the one place a bare push belongs.
 
 ## Native Menus
 
