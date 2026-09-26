@@ -985,6 +985,12 @@ impl DomDocument for RinchDocument {
         self.push_dirty_flags(node.0, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
     }
 
+    /// The inline formatting context lays a `<br>` out as `"\n"`
+    /// (`ifc.rs`), one byte of the flat offsets every text query here takes.
+    fn line_break_flat_bytes(&self) -> usize {
+        1
+    }
+
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
         use crate::text_query::caret_position_for_offset;
         caret_position_for_offset(self, node_id, byte_offset)
