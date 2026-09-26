@@ -267,3 +267,35 @@ fn k5_a_transform_above_a_fixed_contents_wrapper_still_moves_its_child() {
     // And the pixel agrees: blue at (75, 25), nothing at (25, 25).
     drop(doc);
 }
+
+/// P4: `scroll_into_view` of a box below the fold of a real scroller, reached
+/// through a `contents; overflow: auto` wrapper. The nearest scroll container
+/// is the real scroller (Chrome 153: `overflow` does not apply to a contents
+/// element); the wrapper used to be picked, and a `scroll_offset` written
+/// onto a box-less node moved nothing on screen.
+#[test]
+fn p4_scroll_into_view_through_an_overflow_auto_contents_wrapper_scrolls_the_scroller() {
+    let (mut app, clipper, b) = mount(
+        "",
+        "overflow: auto",
+        "display: contents; overflow: auto",
+        "margin-top: 200px",
+    );
+    b.scroll_into_view();
+    // A style write, so the frame runs a layout pass (the scroll is applied
+    // right after it).
+    b.set_style("outline", "1px solid red");
+    app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    let doc = app.doc.as_ref().unwrap().borrow();
+    let w = doc.tree.get(b.node_id().0).unwrap().parent.unwrap();
+    assert_eq!(
+        doc.tree.get(w).unwrap().scroll_offset,
+        (0.0, 0.0),
+        "nothing is written onto the box-less wrapper"
+    );
+    assert_eq!(
+        doc.scroll_top(rinch_core::dom::NodeId(clipper.node_id().0)),
+        140.0,
+        "the real scroller brings the 40px box at y 200 to its 100px bottom"
+    );
+}
