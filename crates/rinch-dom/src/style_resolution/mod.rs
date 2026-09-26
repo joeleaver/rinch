@@ -1276,19 +1276,6 @@ impl RinchDocument {
             }
             self.tree.nodes[node_id].has_been_styled = true;
 
-            // Whether an absolute descendant resolves against the initial
-            // containing block is decided by the ancestors' `position` and
-            // `transform` (`out_of_flow::out_of_flow_kind`), and such a box
-            // has the viewport baked into its Taffy style. A node that starts
-            // or stops being a containing block therefore owes its absolute
-            // descendants a Taffy re-sync — which no cascade of theirs will
-            // provide now that a restyle no longer re-cascades the subtree.
-            if was_abs_containing_block
-                != self.tree.nodes[node_id].establishes_abs_containing_block()
-            {
-                self.collect_absolute_descendants(node_id, &mut resync_absolutes);
-            }
-
             // Drop the Parley layout the old typography was baked into, and
             // every measurement taken from it (#654, #661, #678) —
             // `invalidate_text_measure_for_node` is the one place that knows
@@ -1410,6 +1397,25 @@ impl RinchDocument {
                 self.tree
                     .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
                 self.tree.layout_dirty = true;
+            }
+
+            // Whether an absolute descendant resolves against the initial
+            // containing block is decided by the ancestors' `position` and
+            // `transform` (`out_of_flow::out_of_flow_kind`), and such a box
+            // has the viewport baked into its Taffy style. A node that starts
+            // or stops being a containing block therefore owes its absolute
+            // descendants a Taffy re-sync — which no cascade of theirs will
+            // provide now that a restyle no longer re-cascades the subtree.
+            //
+            // Asked **after** `display_mode` is synced just above: whether a
+            // `transform` applies depends on it (a non-atomic inline is not
+            // transformable, #1080), so an `inline ↔ inline-block` flip under
+            // a standing transform changes the answer with no style field of
+            // the transform moving.
+            if was_abs_containing_block
+                != self.tree.nodes[node_id].establishes_abs_containing_block()
+            {
+                self.collect_absolute_descendants(node_id, &mut resync_absolutes);
             }
 
             // A node crossing into or out of `display: contents` changes the

@@ -1345,10 +1345,12 @@ pub fn compose_node_transform(
     scale: f64,
     parent_transform: Affine,
 ) -> Affine {
-    let tf = &node.computed_style.transform;
-    if tf.is_identity {
+    // A non-atomic inline element is not transformable (#1080): its
+    // `transform` moves nothing, so its descendants paint untransformed.
+    if !node.has_applied_transform() {
         return parent_transform;
     }
+    let tf = &node.computed_style.transform;
     let cs = &node.computed_style;
     let origin = (
         cs.transform_origin_x.resolve(node.layout.width),
@@ -1489,7 +1491,7 @@ impl Frame {
     fn is_identity(self, node: &Node) -> bool {
         match self.painted(node) {
             Some(p) => p.transform.is_none(),
-            None => node.computed_style.transform.is_identity,
+            None => !node.has_applied_transform(),
         }
     }
 }

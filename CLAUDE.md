@@ -2559,7 +2559,17 @@ answers: a positioned box with an explicit `z-index`, `position: fixed` or
 **None of them on a `display: contents` element** (#1038): it generates no box,
 so it is neither a stacking context nor a positioned layer (`is_positioned_z_auto`),
 its `opacity`/`transform` do not reach its children and its `z-index` scopes
-nothing (all measured in Chrome 153). Where a box is *anchored* depends on the
+nothing (all measured in Chrome 153). **Nor does a `transform` on a non-atomic
+`display: inline` element** (#1080, CSS Transforms 1 §1): a plain span is not
+transformable, so it is no stacking context and no containing block, and its
+transform moves nothing — the same set `clips_overflow` excludes. The computed
+value is kept (Chrome's `getComputedStyle` reports the matrix); every consumer
+of the *effect* — both predicates, `paint::compose_node_transform`,
+`PaintedState`, hit testing's inverse and its subtree prune — asks
+`Node::has_applied_transform()`, not `transform.is_identity`. The one reader
+left on the raw value is the hit cache's `HitStyleKey::transformed`, which sees
+only `ComputedStyle`; on such a span it only costs an extra (harmless) cache
+invalidation when the transform toggles. Where a box is *anchored* depends on the
 same fact, so every coordinate walk that can meet a contents node asks
 `Node::box_position()` — the computed `position`, `static` for `display:
 contents` — not `computed_style.position` (the readers left on the raw value are
