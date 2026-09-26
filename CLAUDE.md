@@ -1339,7 +1339,13 @@ Set these attributes on elements to participate in element-to-element drag-and-d
 | `data-ondragover` | Target | Pointer moves over drop target (every coalesced move) |
 | `data-ondragleave` | Target | Drag leaves a drop target |
 | `data-ondrop` | Target | Drop on target |
-| `data-ondragend` | Source | Drag finishes |
+| `data-ondragend` | Source | Drag finishes — dropped or cancelled |
+
+A drag is **cancelled** — `data-ondragleave` on the target it is over, then
+`data-ondragend` on the source, and no `data-ondrop` — by Escape, a
+`PointerCancel`, and on desktop by a left press or a window blur while it is
+still live, which prove its release was missed (#1028, see the Drag Builder
+section).
 
 **Input & activation — and the two backends do NOT agree.**
 - **rinch-web** drives this suite from Pointer Events and branches on the pointer kind, so activation differs by input and touch does not hijack scrolling. **Mouse:** past `WEB_DRAG_THRESHOLD`, 5 CSS px. **Touch / pen:** a short **long-press** hold, `TOUCH_LONG_PRESS_MS` = 350ms, while the contact stays within `TOUCH_MOVE_SLOP`; moving before the hold completes is a scroll/pan and the drag is abandoned. That is the standard mobile reorder gesture, and it lives in `rinch-web/src/event_delegation.rs`.
@@ -1509,8 +1515,22 @@ press, a second finger's press ends a drag the first finger is making, as a
 second finger's drag already does on rinch-web. Every heal is document-scoped
 like the rest of the drag — another document's idle pointer, press or blur
 cannot tear down this one's live drag. Pins: `app/missed_release_381_tests.rs`.
-The DOM DnD suite, the scrollbar drag and the read-only text-selection drag
-strand the same way and are not healed yet (#1028).
+
+**The same two events end every other press-armed desktop gesture** (#1028),
+through one `RinchApp::heal_missed_release`: an element drag of the DOM DnD
+suite (below) is **cancelled** — `data-ondragleave` on the target and
+`data-ondragend` on the source, **no** `data-ondrop`, which is HTML's cancelled
+drag and exactly what Escape and `PointerCancel` do (`cancel_active_dnd`); a
+press on a `draggable` whose release went missing before the threshold is
+**discarded**, not clicked; and a scrollbar-thumb drag and a read-only
+text-selection drag are released, the selection kept. Before #1028 the next
+unrelated click's release **dropped** a stranded element drag on whatever
+target it was last over, and a stranded thumb or selection went on scrolling or
+extending until some release arrived. The press heal and a `PointerCancel` share
+`release_press_gestures`; they differ in the pointer-capture drag (the heal is
+document-scoped, `PointerCancel` calls the unscoped `Drag::cancel`) and in
+`:active` (the heal leaves it to the press). The blur trade-off above applies to
+all of them. Pins: `app/missed_release_1028_tests.rs`.
 
 ### File Drop (OS → App)
 

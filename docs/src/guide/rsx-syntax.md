@@ -203,7 +203,7 @@ Supported HTML-element event attributes:
 | `oninput` | `<input>`/`<textarea>` value change, per keystroke | `Fn(String)` |
 | `onchange` | Commit boundary: the gesture ends (blur after a modification, Enter, a `<select>` pick) — fires with the final value | `Fn(String)` |
 | `onscroll` | Scroll container scrolls, on either axis | `Fn(ScrollEvent)` — `ev.scroll_top` and `ev.scroll_left` |
-| `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop | `Fn()` |
+| `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop. A cancelled drag (Escape; on desktop also a left press or a window blur while it is live, which prove its release went missing) fires `ondragleave` and `ondragend`, never `ondrop` | `Fn()` |
 | `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop | `Fn(Vec<PathBuf>)` / `Fn()` |
 
 ### Pointer moves are coalesced
@@ -237,7 +237,9 @@ the first move that reports the button up. Desktop cannot see the button on a
 move, so it ends the drag on the next event that proves the release was
 missed: a **left press** (handled before the press reaches any handler, so
 nothing it dispatches sees the old drag) or the window **losing focus**. Until
-one of those arrives, the stranded drag keeps following the pointer.
+one of those arrives, the stranded drag keeps following the pointer. The same
+press or blur also ends a stranded element drag (cancelled: `ondragend`, no
+`ondrop`), a scrollbar-thumb drag and a text-selection drag.
 
 Three consequences on desktop. A window blur mid-drag cancels the drag even
 when its release would still have arrived (on X11 and Wayland a global hotkey
