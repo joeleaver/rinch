@@ -161,55 +161,59 @@ mod pointer_capture {
     }
 
     /// A drag armed by a right press is the right button's gesture: its own
-    /// release ends it.
+    /// release ends it — armed from `data-onmousedown` or from the `data-rid`
+    /// a right press also dispatches, whose click context used to say `Left`
+    /// whatever the button.
     #[test]
     fn a_drag_armed_by_a_right_press_ends_on_the_right_release() {
-        let ends = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
-        let e = ends.clone();
-        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
-            let root = scope.create_element("div");
-            root.set_attribute("style", "width: 800px; height: 600px");
-            let arm = scope.create_element("div");
-            arm.set_attribute(
-                "style",
-                "position: absolute; left: 0px; top: 0px; width: 120px; height: 40px",
-            );
-            let rid = scope.register_handler({
-                let e = e.clone();
-                move || {
+        for attribute in ["data-onmousedown", "data-rid"] {
+            let ends = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
+            let e = ends.clone();
+            let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+                let root = scope.create_element("div");
+                root.set_attribute("style", "width: 800px; height: 600px");
+                let arm = scope.create_element("div");
+                arm.set_attribute(
+                    "style",
+                    "position: absolute; left: 0px; top: 0px; width: 120px; height: 40px",
+                );
+                let rid = scope.register_handler({
                     let e = e.clone();
-                    rinch_core::Drag::absolute()
-                        .on_end(move |x, y| e.borrow_mut().push((x, y)))
-                        .start();
-                }
+                    move || {
+                        let e = e.clone();
+                        rinch_core::Drag::absolute()
+                            .on_end(move |x, y| e.borrow_mut().push((x, y)))
+                            .start();
+                    }
+                });
+                arm.set_attribute(attribute, &rid.0.to_string());
+                root.append_child(&arm);
+                root
             });
-            arm.set_attribute("data-onmousedown", &rid.0.to_string());
-            root.append_child(&arm);
-            root
-        });
-        app.mount_component(800.0, 600.0);
-        app.resolve_and_repaint(800.0, 600.0);
+            app.mount_component(800.0, 600.0);
+            app.resolve_and_repaint(800.0, 600.0);
 
-        send(
-            &mut app,
-            PlatformEvent::MouseDown {
-                x: 37.0,
-                y: 23.0,
-                button: MouseButton::Right,
-            },
-        );
-        assert!(rinch_core::Drag::is_active(), "precondition: armed");
-        move_to(&mut app, (233.0, 149.0));
-        send(
-            &mut app,
-            PlatformEvent::MouseUp {
-                x: 239.0,
-                y: 151.0,
-                button: MouseButton::Right,
-            },
-        );
-        assert_eq!(*ends.borrow(), vec![(239.0, 151.0)]);
-        assert!(!rinch_core::Drag::is_active());
+            send(
+                &mut app,
+                PlatformEvent::MouseDown {
+                    x: 37.0,
+                    y: 23.0,
+                    button: MouseButton::Right,
+                },
+            );
+            assert!(rinch_core::Drag::is_active(), "{attribute}: armed");
+            move_to(&mut app, (233.0, 149.0));
+            send(
+                &mut app,
+                PlatformEvent::MouseUp {
+                    x: 239.0,
+                    y: 151.0,
+                    button: MouseButton::Right,
+                },
+            );
+            assert_eq!(*ends.borrow(), vec![(239.0, 151.0)], "{attribute}");
+            assert!(!rinch_core::Drag::is_active(), "{attribute}");
+        }
     }
 
     /// The editor's drag-select is armed only by a left press in an editor.

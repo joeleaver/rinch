@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::events::{ClickContext, get_click_context};
+use crate::events::{ClickContext, MouseButton, get_click_context};
 
 /// How coordinates are delivered to the `on_move` callback.
 enum DragMode {
@@ -224,9 +224,9 @@ fn heal_released_drag() -> bool {
 ///   in the middle of a healthy drag, which is cancelled too: an accepted cost,
 ///   since a cancel never commits a wrong position.
 ///
-/// The press proof assumes the drag was armed by the primary button; `Drag`
-/// does not record which button did, so a middle- or right-button drag, or one
-/// armed with no button held, is also ended by the next primary press.
+/// The press proof assumes the drag was armed by the primary button, and does
+/// not ask: a middle- or right-button drag (see [`finish_drag_for_button`]), or
+/// one armed with no button held, is also ended by the next primary press.
 ///
 /// Scoped like the #189 heal: a drag belonging to another document (#139) is
 /// left alone, since another window's press says nothing about this pointer; an
@@ -613,6 +613,32 @@ pub fn finish_drag(mouse_x: f32, mouse_y: f32) {
     if let Some(cb) = on_end {
         crate::reactive::batch(|| cb(mouse_x, mouse_y));
     }
+}
+
+/// Finish the drag on the release of `button`, which ends it only if `button`
+/// is the one that armed it (issue #1087).
+///
+/// A gesture ends on the release of the button that started it: a right or
+/// middle release while a left-button drag is live is a chord, not the end of
+/// the drag, and must not commit it at wherever the pointer happens to be. The
+/// arming button is the [`ClickContext::button`] of the dispatch that called
+/// [`Drag::start`] — for a drag armed outside any pointer dispatch (a timer),
+/// whatever click context was last set, which is the primary button unless a
+/// right or middle press was the last one dispatched.
+///
+/// For a backend whose release events say which button came up (desktop). One
+/// that ends a gesture only when **every** button is up — a browser's
+/// `pointerup` — calls [`finish_drag`].
+pub fn finish_drag_for_button(mouse_x: f32, mouse_y: f32, button: MouseButton) {
+    let armed_by = ACTIVE_DRAG.with(|drag| {
+        drag.borrow()
+            .as_ref()
+            .map(|state| state.start_context.button)
+    });
+    if armed_by.is_some_and(|armed_by| armed_by != button) {
+        return;
+    }
+    finish_drag(mouse_x, mouse_y);
 }
 
 #[cfg(test)]

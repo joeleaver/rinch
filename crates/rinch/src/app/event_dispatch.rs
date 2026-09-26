@@ -994,12 +994,29 @@ impl RinchApp {
                     vp_h,
                 );
 
+                // A gesture ends on the release of the button that started it
+                // (issue #1087). Every gesture ended below except the
+                // pointer-capture `Drag` — the element drag, the scrollbar
+                // thumb, the text-selection and editor drag-selects, `:active`
+                // — is armed only by a left press, so a right or middle release
+                // while the left button is still held is a chord, not their
+                // end: it used to drop a live element drag wherever the pointer
+                // was. `Drag` records the button that armed it and checks it
+                // itself (`finish_drag_for_button`). The release still reaches
+                // `data-onmouseup` above and a focused render surface below,
+                // which are told which button it was.
+                let primary = button == MouseButton::Left;
+
                 // New editor (M5): end any drag-select.
                 #[cfg(feature = "desktop")]
-                crate::editor::end_drag(self.input_doc());
+                if primary {
+                    crate::editor::end_drag(self.input_doc());
+                }
 
                 // ── Drag-and-drop: complete or cancel ─────────────────────
-                if let Some(pending) = self.pending_drag.take() {
+                if !primary {
+                    // A chord: the element drag, pending or active, stays live.
+                } else if let Some(pending) = self.pending_drag.take() {
                     // Threshold was never crossed — fire normal click instead
                     let (px, py) = pending.mousedown_pos;
                     let click_actions = self.handle_click(px, py, scale_factor, vp_w, vp_h);
@@ -1061,14 +1078,16 @@ impl RinchApp {
                     }
                 }
 
-                rinch_core::finish_drag(x, y);
-                self.scrollbar_drag = None;
-                self.text_selecting = false;
+                rinch_core::finish_drag_for_button(x, y, Self::core_button(button));
+                if primary {
+                    self.scrollbar_drag = None;
+                    self.text_selecting = false;
 
-                // Clear :active pseudo-class state on mouse release.
-                // Don't request redraw — AboutToWait batches dirty state.
-                if let Some(doc) = &self.doc {
-                    doc.borrow_mut().update_active(None);
+                    // Clear :active pseudo-class state on mouse release.
+                    // Don't request redraw — AboutToWait batches dirty state.
+                    if let Some(doc) = &self.doc {
+                        doc.borrow_mut().update_active(None);
+                    }
                 }
             }
             PlatformEvent::MouseWheel {
