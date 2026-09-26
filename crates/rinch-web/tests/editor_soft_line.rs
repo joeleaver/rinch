@@ -1110,3 +1110,37 @@ fn home_and_end_stop_at_a_hard_break() {
         f.teardown();
     }
 }
+
+/// A caret inside a superscript: its rect is shorter than the line's text and
+/// raised, so the text after it on the same line is not drawn at the caret's
+/// height. It is still on the caret's line — End takes it, to the wrap point.
+#[wasm_bindgen_test]
+fn end_from_inside_a_superscript_takes_the_rest_of_its_line() {
+    let f = Fixture::mounted(
+        "alpha bravo charlie de<sup>xyz</sup>lta echo foxtrot golf hotel",
+        "",
+    );
+    f.focus();
+    let sup = document()
+        .query_selector("[data-pm-editor] p sup")
+        .unwrap()
+        .expect("a superscript");
+    let after = sup.next_sibling().expect("the text after it");
+    assert_eq!(after.text_content().unwrap(), "lta echo foxtrot golf hotel");
+    let s = f.char_rect_in(sup.first_child().unwrap(), 1);
+    let l = f.char_rect_in(after.clone(), 0);
+    assert!(
+        s.top() < l.top() - 1.0 && s.height() < l.height(),
+        "positive control: the superscript is raised and shorter ({s:?} vs {l:?})",
+        s = (s.top(), s.height()),
+        l = (l.top(), l.height()),
+    );
+    let wrap = (1..27u32)
+        .find(|&k| f.char_rect_in(after.clone(), k).top() > l.top() + 1.0)
+        .expect("positive control: the line after the superscript wraps");
+    // "alpha bravo charlie de" is Pos 1..23, the superscript 23..26.
+    f.handle.set_selection(Selection::cursor(Pos(24)));
+    assert!(f.key("End", false));
+    assert_eq!(f.handle.selection().head(), Pos(26 + wrap as usize));
+    f.teardown();
+}
