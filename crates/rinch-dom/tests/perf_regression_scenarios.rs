@@ -1089,6 +1089,18 @@ fn a_removed_ifc_root_is_not_shaped_by_the_whole_document_pass() {
             (TaffyRootComputes, 1),
         ],
     );
+    // Turned away for good, not once: its stale layout is dropped and so is
+    // its registration, so the next layout does not ask about it again.
+    let n = doc.tree.get(gone.0).unwrap();
+    assert!(n.text_layout.is_none(), "the removed root keeps no layout");
+    assert!(
+        !doc.tree.ifc_root_registry.contains(&gone.0),
+        "the removed root is no longer registered"
+    );
+    assert!(
+        doc.tree.ifc_root_registry.contains(&p.0),
+        "control: the attached root is"
+    );
 }
 
 /// The whole-document pass (`compute_inline_block_layouts`, through
