@@ -479,6 +479,41 @@ pub(crate) fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
     }
 }
 
+/// Queue `f` for the main thread through the registered dispatcher, from any
+/// thread, without panicking for a missing dispatcher.
+///
+/// For a caller that must not panic and must not run `f` inline — a `Drop`,
+/// which may run on any thread, inside a borrow `f` needs, or at thread exit.
+/// Where a dispatcher is registered it gets `f` exactly as a `Signal::send`
+/// would, so a host that wakes its loop for a closure queued onto an empty
+/// queue (the desktop shell, Android) wakes for this one too. Where none is,
+/// `f` is queued plainly: there is no host to wake, and whatever drains the
+/// queue will run it.
+///
+/// Why not [`queue_main_callback`] from such a caller: a waking host coalesces
+/// on the queue — it wakes only for a push onto an empty queue, because a
+/// non-empty one already has a wake owed. A closure pushed with no wake breaks
+/// that, and strands not only itself but the next sender from any thread,
+/// which finds the queue non-empty and asks for no wake either (issue #1035).
+///
+/// The dispatcher is called with its lock released, so a dispatcher that drops
+/// something whose `Drop` dispatches in turn does not deadlock, and a poisoned
+/// lock is read through rather than propagated. That is this function's own
+/// guarantee, not its callees': the queue itself ([`queue_main_callback`]) and
+/// the desktop dispatcher still `unwrap` their locks, so either would panic if
+/// its lock were poisoned (nothing panics while holding them).
+pub fn dispatch_main_callback(f: Box<dyn FnOnce() + Send>) {
+    let dispatcher = *CROSS_THREAD_DISPATCHER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match dispatcher {
+        Some(dispatch) => dispatch(f),
+        None => {
+            queue_main_callback(f);
+        }
+    }
+}
+
 /// Run a closure on the main (UI) thread.
 ///
 /// If called from the main thread, runs `f` immediately. Otherwise dispatches it

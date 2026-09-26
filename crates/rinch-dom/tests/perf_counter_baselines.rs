@@ -235,6 +235,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         .vw { width: 10vw; height: 4px; }
         .gen::before { content: \"*\"; }
         .inset { width: 20px; height: 20px; box-shadow: inset 0 0 4px rgb(0, 0, 0); }
+        .hang { width: 1px; white-space: pre-wrap; }
         @media (min-width: 801px) { .mq { color: rgb(0, 0, 255); } }
         ",
     );
@@ -277,6 +278,13 @@ fn every_rinch_dom_counter_fires_somewhere() {
     let inset = doc.create_element("div");
     doc.set_attribute(inset, "class", "inset");
     doc.append_child(body, inset);
+    // Preserved spaces at a soft wrap: at 1px every word overflows, the first
+    // space after it hangs, and the second must be hung on the same line.
+    let hang = doc.create_element("div");
+    doc.set_attribute(hang, "class", "hang");
+    let ht = doc.create_text("a  b");
+    doc.append_child(hang, ht);
+    doc.append_child(body, hang);
 
     doc.resolve_layout(VP.0, VP.1);
     // A text edit: cache retains, and hits on the second measure.
@@ -341,6 +349,8 @@ fn every_rinch_dom_counter_fires_somewhere() {
         IfcMeasureCacheHits,
         IfcMeasureInvalidations,
         IfcSignatureChanges,
+        IfcHangPasses,
+        IfcHangLines,
         LayoutResolves,
         LayoutSkippedPaintOnly,
         LayoutSkippedTextOnly,
