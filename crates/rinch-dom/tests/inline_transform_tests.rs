@@ -216,3 +216,85 @@ fn a_transformed_span_does_not_move_its_inline_block_child() {
         "atomic {atomic:?} vs plain {plain:?}"
     );
 }
+
+// ── the cascade's containing-block re-sync ───────────────────────────────────
+
+/// An absolute's viewport size is baked into its Taffy style, so a node that
+/// starts or stops being its containing block owes it a re-sync. With a
+/// `transform` declared all along, a `display` flip between `inline` and
+/// `inline-block` is such a change — and the cascade must see it, although the
+/// transform itself did not move. Both directions, each against a fresh
+/// layout of the final state.
+#[test]
+fn a_display_flip_under_a_standing_transform_resyncs_the_absolute() {
+    const T: &str = "transform: translateX(30px); width: 120px; height: 40px";
+    let build = |display: &str| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let outer = el(
+            &mut doc,
+            "div",
+            body,
+            "margin: 100px 0 0 50px; width: 200px; height: 100px; font-size: 16px; line-height: 20px",
+        );
+        let span = el(&mut doc, "span", outer, &format!("display: {display}; {T}"));
+        text(&mut doc, span, "xy");
+        let abs = el(&mut doc, "div", span, "position: absolute; inset: 0");
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        (doc, span, abs)
+    };
+    let size = |doc: &RinchDocument, n: NodeId| {
+        let l = doc.tree.get(n.0).unwrap().layout;
+        (l.width, l.height)
+    };
+    for (from, to) in [("inline", "inline-block"), ("inline-block", "inline")] {
+        let (fresh, _, fresh_abs) = build(to);
+        let want = size(&fresh, fresh_abs);
+        let (mut doc, span, abs) = build(from);
+        let before = size(&doc, abs);
+        assert_ne!(before, want, "{from} → {to}: the flip must change the box");
+        doc.set_attribute(span, "style", &format!("display: {to}; {T}"));
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        assert_eq!(size(&doc, abs), want, "{from} → {to}");
+    }
+}
+
+// ── damage: where the last paint put it ──────────────────────────────────────
+
+/// The damage walk replays each node's *painted* state (`PaintedState`,
+/// written when a paint consumes the region), so it must record no transform
+/// for the span either: the inline-block's previous painted rect is its
+/// untransformed box, exactly where paint drew it. Kills a `PaintedState` that
+/// still records the span's transform (the rect lands 30px right).
+#[test]
+fn the_painted_state_records_no_transform_for_an_inline_span() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let d = el(
+        &mut doc,
+        "div",
+        body,
+        "position: relative; height: 60px; font-size: 16px; line-height: 20px",
+    );
+    text(&mut doc, d, "ab");
+    let span = el(&mut doc, "span", d, "transform: translateX(30px)");
+    text(&mut doc, span, "xy");
+    let ib = el(
+        &mut doc,
+        "span",
+        span,
+        "display: inline-block; width: 20px; height: 10px",
+    );
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    doc.tree.consume_paint_dirty();
+    assert!(
+        doc.tree.get(span.0).unwrap().painted.is_some(),
+        "positive control: the span's painted state was recorded"
+    );
+    let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, ib.0, 1.0);
+    let r = rinch_dom::paint::previous_painted_rect(&doc.tree, ib.0, 1.0).expect("painted");
+    assert!(x > 0.0, "positive control: the child sits after text");
+    assert_eq!((r.x0, r.y0, r.width(), r.height()), (x, y, 20.0, 10.0));
+}
