@@ -717,9 +717,15 @@ impl RinchDocument {
             );
             inline_layout.hang.record(&self.tree.perf);
 
-            // text-overflow: ellipsis — if text overflows the container, truncate and add "…"
+            // text-overflow: ellipsis — every line whose content overflows the
+            // container is cut and ends in "…" (#1091). CSS Overflow 3 §3.2
+            // asks the question per line box, after wrapping, and so does
+            // Chrome 153: an unbreakable word under `white-space: normal`, a
+            // `nowrap` span inside a wrapping root and each long line of `pre`
+            // text all overflow a line. The root's own `white-space` is not
+            // part of the question — it only decides whether lines wrap.
             {
-                use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
+                use crate::computed_style::{OverflowValue, TextOverflowValue};
                 let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
                     .computed_style;
                 let container_width = max_width.unwrap_or(f32::INFINITY);
@@ -730,22 +736,19 @@ impl RinchDocument {
                 // site since #982 (`ellipsis_route_tests.rs`).
                 if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
                     && !cs.display.is_flex_or_grid_container()
-                    && matches!(
-                        cs.white_space,
-                        WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                    )
                     && matches!(cs.overflow_x, OverflowValue::Hidden | OverflowValue::Clip)
-                    && inline_layout.layout.width() > container_width
+                    && container_width.is_finite()
                     && container_width > 0.0
+                    // Cheap: the widest line, which parley already knows.
+                    && inline_layout.layout.width() > container_width
                 {
-                    // Collect text content from the inline layout
-                    let full_text = inline_layout.text_content.clone();
-                    if !full_text.is_empty() {
+                    let lines = Self::ellipsis_lines(&inline_layout, container_width);
+                    if lines.iter().any(|&(_, overflows)| overflows) {
                         self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
                         inline_layout = Self::build_ellipsis_layout(
                             &self.tree.nodes,
                             root_id,
-                            &full_text,
+                            &lines,
                             container_width,
                             1.0,
                             &mut self.font_cx,
@@ -4861,15 +4864,44 @@ impl RinchDocument {
         }
     }
 
-    /// Build an IFC layout with ellipsis truncation.
+    /// The lines of `inline_layout` as `(text, overflows)`: each line's text
+    /// with its trailing white space (and the hard break ending it) removed,
+    /// and whether its content — its advance less that trailing white space,
+    /// which is how parley's own `Layout::width` measures a line — is wider
+    /// than `container_width` (#1091).
+    fn ellipsis_lines(inline_layout: &InlineLayout, container_width: f32) -> Vec<(String, bool)> {
+        let text = &inline_layout.text_content;
+        inline_layout
+            .layout
+            .lines()
+            .map(|line| {
+                let m = line.metrics();
+                let range = line.text_range();
+                let line_text = text.get(range).unwrap_or("").trim_end().to_string();
+                (line_text, m.advance - m.trailing_whitespace > container_width)
+            })
+            .collect()
+    }
+
+    /// Build an IFC layout with ellipsis truncation (#1091).
     ///
-    /// Binary-searches for the longest text prefix that fits within `container_width`
-    /// when combined with an ellipsis character, then rebuilds the layout.
+    /// `lines` is [`Self::ellipsis_lines`]: every line that overflows is cut
+    /// to the longest prefix that fits `container_width` together with an
+    /// ellipsis (a binary search over its characters), every other line is
+    /// kept as it was, and the lines are joined by hard breaks and laid out
+    /// again — so the result has the same lines as the layout it replaces,
+    /// with a "…" on exactly the ones that overflowed, as Chrome 153 draws
+    /// them. A single `nowrap` line is the one-line case of the same thing.
+    ///
+    /// The rebuild is flat text in the root's own style: inline styling,
+    /// inline boxes and the text-node ranges of the original are not carried
+    /// over (as before #1091, when only the `nowrap`/`pre` single line was
+    /// rebuilt). It runs only when some line actually overflows.
     #[allow(clippy::too_many_arguments)]
     fn build_ellipsis_layout(
         nodes: &slab::Slab<Node>,
         root_id: usize,
-        full_text: &str,
+        lines: &[(String, bool)],
         container_width: f32,
         scale: f32,
         font_cx: &mut parley::FontContext,
@@ -4908,61 +4940,80 @@ impl RinchDocument {
         };
 
         let target_width = container_width - ellipsis_width;
-        let chars: Vec<char> = full_text.chars().collect();
-        let mut best_len = 0;
 
-        if target_width > 0.0 {
-            let mut lo: usize = 0;
-            let mut hi: usize = chars.len();
-            while lo <= hi {
-                let mid = (lo + hi) / 2;
-                if mid == 0 {
-                    lo = 1;
-                    continue;
-                }
-                let prefix: String = chars[..mid].iter().collect();
-                let mut b = layout_cx.ranged_builder(font_cx, &prefix, scale, true);
-                b.push_default(parley::style::StyleProperty::FontSize(font_size));
-                b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
-                b.push_default(parley::style::StyleProperty::FontFamily(
-                    parley::style::FontFamily::Source(font_family.clone()),
-                ));
-                push_spacing(&mut b, letter_spacing, word_spacing);
-                let mut l = b.build(&prefix);
-                l.break_all_lines(None);
-                if l.width() <= target_width {
-                    best_len = mid;
-                    lo = mid + 1;
-                } else {
-                    if mid == 0 {
-                        break;
+        // The longest prefix of `line` that fits `target_width`, in chars.
+        let mut fit_prefix = |line: &str| -> String {
+            let chars: Vec<char> = line.chars().collect();
+            let mut best_len = 0;
+            if target_width > 0.0 {
+                let mut lo: usize = 1;
+                let mut hi: usize = chars.len();
+                while lo <= hi {
+                    let mid = (lo + hi) / 2;
+                    let prefix: String = chars[..mid].iter().collect();
+                    let mut b = layout_cx.ranged_builder(font_cx, &prefix, scale, true);
+                    b.push_default(parley::style::StyleProperty::FontSize(font_size));
+                    b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
+                    b.push_default(parley::style::StyleProperty::FontFamily(
+                        parley::style::FontFamily::Source(font_family.clone()),
+                    ));
+                    push_spacing(&mut b, letter_spacing, word_spacing);
+                    let mut l = b.build(&prefix);
+                    l.break_all_lines(None);
+                    if l.width() <= target_width {
+                        best_len = mid;
+                        lo = mid + 1;
+                    } else {
+                        hi = mid - 1;
                     }
-                    hi = mid - 1;
                 }
             }
-        }
-
-        // Build final layout: truncated text + ellipsis
-        let truncated: String = chars[..best_len]
+            chars[..best_len]
+                .iter()
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+                + ellipsis
+        };
+        let truncated = lines
             .iter()
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-            + ellipsis;
+            .map(|(line, overflows)| {
+                if *overflows {
+                    fit_prefix(line)
+                } else {
+                    line.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        let mut b = layout_cx.ranged_builder(font_cx, &truncated, scale, true);
-        b.push_default(parley::style::StyleProperty::FontSize(font_size));
-        b.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-        b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
-        b.push_default(parley::style::StyleProperty::FontFamily(
-            parley::style::FontFamily::Source(font_family),
-        ));
-        if let Some(lh) = line_height {
-            b.push_default(parley::style::StyleProperty::LineHeight(lh));
+        let build = |layout_cx: &mut parley::LayoutContext<Brush>,
+                     font_cx: &mut parley::FontContext,
+                     max: Option<f32>| {
+            let mut b = layout_cx.ranged_builder(font_cx, &truncated, scale, true);
+            b.push_default(parley::style::StyleProperty::FontSize(font_size));
+            b.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
+            b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
+            b.push_default(parley::style::StyleProperty::FontFamily(
+                parley::style::FontFamily::Source(font_family.clone()),
+            ));
+            if let Some(lh) = line_height {
+                b.push_default(parley::style::StyleProperty::LineHeight(lh));
+            }
+            push_spacing(&mut b, letter_spacing, word_spacing);
+            let mut layout = b.build(&truncated);
+            layout.break_all_lines(max);
+            layout
+        };
+        // Broken at the container's width so `text-align` lines each line up
+        // against the box, as the layout it replaces did. Every line fits by
+        // construction, but a cut line is shaped whole here where its prefix
+        // and "…" were measured apart; if that re-wraps anything, break only
+        // at the hard breaks instead.
+        let mut layout = build(layout_cx, font_cx, Some(container_width));
+        if layout.len() != lines.len() {
+            layout = build(layout_cx, font_cx, None);
         }
-        push_spacing(&mut b, letter_spacing, word_spacing);
-        let mut layout = b.build(&truncated);
-        layout.break_all_lines(None);
         layout.align(alignment, parley::layout::AlignmentOptions::default());
 
         InlineLayout {
@@ -4973,7 +5024,7 @@ impl RinchDocument {
             background_spans: Vec::new(),
             decoration_spans: Vec::new(),
             max_width: container_width,
-            // Laid out unconstrained, one line: nothing hangs.
+            // Every line fits: nothing hangs.
             preserves_spaces: false,
             hang: HangStats::default(),
         }
@@ -5068,6 +5119,23 @@ impl RinchDocument {
             && same_line_height
             && a.letter_spacing == b.letter_spacing
             && a.word_spacing == b.word_spacing
+            && Self::text_wrap_mode(a) == Self::text_wrap_mode(b)
+    }
+
+    /// Whether an element's text may wrap: `nowrap` and `pre` forbid it
+    /// (#1091). Pushed per inline element, so a `nowrap` span inside a
+    /// wrapping root keeps its text on one line — and overflows that line,
+    /// which is what draws its `text-overflow: ellipsis`. The IFC root's own
+    /// `nowrap`/`pre` is honoured by breaking it unconstrained instead
+    /// (`build_inline_layout`).
+    fn text_wrap_mode(
+        computed: &crate::computed_style::ComputedStyle,
+    ) -> parley::style::TextWrapMode {
+        use crate::computed_style::WhiteSpaceValue;
+        match computed.white_space {
+            WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre => parley::style::TextWrapMode::NoWrap,
+            _ => parley::style::TextWrapMode::Wrap,
+        }
     }
 
     /// The Parley style span an element contributes to the inline formatting
@@ -5165,6 +5233,9 @@ impl RinchDocument {
         ));
         props.push(parley::style::StyleProperty::WordSpacing(
             computed.word_spacing,
+        ));
+        props.push(parley::style::StyleProperty::TextWrapMode(
+            Self::text_wrap_mode(computed),
         ));
         props
     }
