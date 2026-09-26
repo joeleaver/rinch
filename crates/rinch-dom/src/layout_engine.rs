@@ -795,8 +795,7 @@ impl RinchDocument {
                                 nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                             );
                             let mut h = hang.get();
-                            h.passes += inline_layout.hang.passes;
-                            h.lines += inline_layout.hang.lines;
+                            h.add(inline_layout.hang);
                             hang.set(h);
                             let w = inline_layout.measured_width();
                             let h = inline_layout.layout.height();
