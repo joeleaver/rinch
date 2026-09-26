@@ -1974,14 +1974,19 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // `click`, and a browser clicks for the primary button only (issue
             // #1093): a right or middle press runs none — except a backdrop's
             // (`BACKDROP_ATTRIBUTE`), because dismissing an overlay on a press
-            // outside it is a `mousedown` of any button. A contextmenu handler
-            // in the ancestry still takes a right press first, as on desktop.
+            // outside it is a `mousedown` of any button. A live contextmenu
+            // handler in the ancestry still takes a right press first, as on
+            // desktop; a stale one (#141) is no handler.
             // Draggable sources defer their click to pointerup (above).
             let click_allowed = drag_source.is_none()
                 && (event.button() == 0
                     || (nearest_live_rid(&el).is_some_and(|(rid_el, _)| {
-                        rid_el.has_attribute(events::BACKDROP_ATTRIBUTE)
-                    }) && el.closest("[data-oncontextmenu]").ok().flatten().is_none()));
+                        rid_el
+                            .get_attribute(events::BACKDROP_ATTRIBUTE)
+                            .is_some_and(|v| rinch_core::dom::data_attr_is_on(&v))
+                    }) && nearest_handler(&el, "data-oncontextmenu")
+                        .filter(|(_, id)| events::has_click_handler(*id))
+                        .is_none()));
 
             // Dispatch the click for the nearest [data-rid] (draggables defer to
             // pointerup above).

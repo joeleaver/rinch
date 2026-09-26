@@ -983,14 +983,6 @@ mod tests {
         (doc, overlay_id, entry_id)
     }
 
-    /// The below-titlebar layout had the same defect and the same cure, and it
-    /// is the one whose overlay is not laid out where it has to cover: its
-    /// *parent* starts `TITLEBAR_HEIGHT` down the window. `position: fixed`
-    /// makes that irrelevant, which is the whole reason the overlay is fixed —
-    /// so this test is what catches an offset creeping back in, in either
-    /// direction. Sampled at **both ends** of the window, where an overlay
-    /// shifted by `±TITLEBAR_HEIGHT` stops answering; the middle is covered
-    /// however the box is placed and would prove nothing.
     /// The overlay is an outside-press backdrop: a right or middle press on it
     /// closes the open menu too, as it closes a native one (#1093).
     #[test]
@@ -1006,6 +998,14 @@ mod tests {
         );
     }
 
+    /// The below-titlebar layout had the same defect and the same cure, and it
+    /// is the one whose overlay is not laid out where it has to cover: its
+    /// *parent* starts `TITLEBAR_HEIGHT` down the window. `position: fixed`
+    /// makes that irrelevant, which is the whole reason the overlay is fixed —
+    /// so this test is what catches an offset creeping back in, in either
+    /// direction. Sampled at **both ends** of the window, where an overlay
+    /// shifted by `±TITLEBAR_HEIGHT` stops answering; the middle is covered
+    /// however the box is placed and would prove nothing.
     #[test]
     fn the_below_titlebar_overlay_covers_the_whole_window() {
         let (doc, overlay_id, entry_id) = open_below_titlebar_menu();

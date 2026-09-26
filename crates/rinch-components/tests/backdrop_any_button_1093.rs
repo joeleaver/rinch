@@ -10,6 +10,9 @@
 //! every `__backdrop` / `__overlay` node that carries a `data-rid`. The desktop
 //! event path is pinned by `rinch/src/app/backdrop_any_button_1093_tests.rs`,
 //! the web one by `rinch-web/tests/right_press_click_1093.rs`.
+//!
+//! The kinds are listed by hand, so a **new** overlay component that forgets
+//! the marker is not caught here: add it to the list when you add it.
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -367,7 +367,10 @@ impl RinchApp {
                     && let Ok(handler_id) = rid_str.parse::<usize>()
                     && events::has_click_handler(events::EventHandlerId(handler_id))
                 {
-                    let backdrop = node.attributes.contains_key(events::BACKDROP_ATTRIBUTE);
+                    let backdrop = node
+                        .attributes
+                        .get(events::BACKDROP_ATTRIBUTE)
+                        .is_some_and(|v| rinch_core::dom::data_attr_is_on(v));
                     claim = Some(ClickClaim::Rid(node_id, handler_id, backdrop));
                     break;
                 }
