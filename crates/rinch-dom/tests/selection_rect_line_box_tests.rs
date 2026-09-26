@@ -127,7 +127,8 @@ fn the_highlight_covers_the_line_box_on_space_grotesk() {
 //   `12n - 4 .. 12n + 16`, measured by the review from a screenshot with a
 //   translucent `::selection`.
 // - **a fractional line-height** — 15px at 1.65 is a 24.75px line box, and the
-//   block coords are whole pixels, 25 tall.
+//   block coords are whole pixels, 25 tall; the highlight tiles them (#1024),
+//   so one rect of the four is 24.
 
 /// `TEXT` in a `width: 120px` paragraph of the bundled Inter at `style`.
 fn inter_paragraph(style: &str) -> (RinchDocument, u64) {
@@ -174,9 +175,17 @@ fn a_fractional_line_height_highlight_is_whole_pixels_tall() {
     let (doc, p) = inter_paragraph("font-size: 15px; line-height: 1.65");
     let rects = doc.query_selection_rects(p, 0, TEXT.len());
     assert!(rects.len() >= 3, "{rects:?}");
-    for (n, &(_, _, _, h)) in rects.iter().enumerate() {
-        assert_eq!(h, 25.0, "line {n}: {rects:?}");
-    }
+    // Whole pixels, and tiled (#1024): each rect ends where the next line's
+    // box begins, so a 24.75px line box is 25 rows or 24 — line 2's box is
+    // `50..75` and line 3's `74..99`, so line 2 is highlighted `50..74`. The
+    // last line keeps its own 25.
+    let spans: Vec<(f32, f32)> = rects.iter().map(|r| (r.1, r.3)).collect();
+    assert_eq!(
+        spans,
+        [(0.0, 25.0), (25.0, 25.0), (50.0, 24.0), (74.0, 25.0)],
+        "{rects:?}"
+    );
+    // The caret's box is Parley's own, untouched: 25 tall.
     assert_eq!(doc.query_glyph_bounds(p, 0).unwrap().height, 25.0);
 }
 

@@ -287,7 +287,8 @@ pub fn selection_rects_for_layout(
 ) -> Vec<(f32, f32, f32, f32)> {
     let (a, b) = if a <= b { (a, b) } else { (b, a) };
     let mut rects = Vec::new();
-    for line in layout.lines() {
+    let mut lines = layout.lines().peekable();
+    while let Some(line) = lines.next() {
         let range = line.text_range();
         let start = a.max(range.start);
         let end = b.min(range.end);
@@ -303,11 +304,34 @@ pub fn selection_rects_for_layout(
         // `baseline - ascent` is the top plus the half-leading, which put the
         // highlight half a leading below its line and into the next (#1008).
         let top = metrics.block_min_coord;
-        let height = metrics.block_max_coord - metrics.block_min_coord;
+        // The bottom is where the next line's box begins (#1024). Parley
+        // quantizes each line's coords on its own — the top is the line's
+        // rounded `y`, the bottom the rounded ascent, descent and leading added
+        // to it — so at a fractional line-height two neighbours overlap by a
+        // pixel or leave one between them, and a translucent highlight drew a
+        // darker (or an empty) row there. Chrome's highlights are contiguous
+        // (16px x 1.65: `0-26, 26-53, 53-79, 79-106`, which this reproduces).
+        // Not under negative leading, where the rect is the content area and
+        // overlapping the neighbours is what Chrome paints; and the last line
+        // keeps its own bottom.
+        let bottom = match lines.peek() {
+            Some(next) if metrics.leading >= 0.0 => next.metrics().block_min_coord,
+            _ => metrics.block_max_coord,
+        };
+        let height = bottom - top;
         let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
             .geometry(layout, 0.0)
             .x0 as f32;
-        let right = Cursor::from_byte_index(layout, end, Affinity::Downstream)
+        // A range that runs to (or past) the line's end ends at the line's
+        // trailing edge: an *upstream* caret there. A downstream caret at a
+        // soft line break stands at the start of the NEXT line (x = 0), which
+        // made every wrapped line's highlight a 1px sliver (#1010).
+        let end_affinity = if end == range.end {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        let right = Cursor::from_byte_index(layout, end, end_affinity)
             .geometry(layout, 0.0)
             .x0 as f32;
         rects.push((left, top, (right - left).max(1.0), height));
