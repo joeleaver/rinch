@@ -74,7 +74,9 @@ fn scroller(scroller_style: &str, span_style: &str) -> (RinchDocument, NodeId, N
 
 fn vertical_range(doc: &RinchDocument, s: NodeId) -> (f64, Option<f64>) {
     let (_, h) = content_extents(&doc.tree, s.0);
-    let bar = scrollbars(&doc.tree, s.0, 1.0).vertical.map(|t| t.max_scroll);
+    let bar = scrollbars(&doc.tree, s.0, 1.0)
+        .vertical
+        .map(|t| t.max_scroll);
     (h, bar)
 }
 
@@ -410,5 +412,9 @@ fn a_split_inlines_transform_does_not_move_its_block_child() {
         [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
     };
     assert_eq!(px(10, 25), [255, 0, 0, 255], "painted at its laid-out box");
-    assert_ne!(px(40, 25), [255, 0, 0, 255], "not where the transform puts it");
+    assert_ne!(
+        px(40, 25),
+        [255, 0, 0, 255],
+        "not where the transform puts it"
+    );
 }

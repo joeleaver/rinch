@@ -1754,7 +1754,11 @@ mod tests {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         doc.set_attribute(body, "style", "margin: 0");
-        let d = child_of(&mut doc, body, "height: 80px; font-size: 16px; line-height: 20px");
+        let d = child_of(
+            &mut doc,
+            body,
+            "height: 80px; font-size: 16px; line-height: 20px",
+        );
         let ab = doc.create_text("ab");
         doc.append_child(d, ab);
         let span = doc.create_element("span");
@@ -1766,7 +1770,11 @@ mod tests {
         let zz = doc.create_text("zz");
         doc.append_child(span, zz);
         doc.resolve_layout(800.0, 600.0);
-        assert_eq!(hit_test(&doc.tree, 10.0, 25.0), Some(b.0), "the block, in place");
+        assert_eq!(
+            hit_test(&doc.tree, 10.0, 25.0),
+            Some(b.0),
+            "the block, in place"
+        );
         assert_ne!(hit_test(&doc.tree, 40.0, 25.0), Some(b.0), "not 30px right");
     }
     // ── CSS 2.1 Appendix E step 8: positioned descendants with `z-index: auto`
