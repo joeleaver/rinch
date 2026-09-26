@@ -4878,7 +4878,10 @@ impl RinchDocument {
                 let m = line.metrics();
                 let range = line.text_range();
                 let line_text = text.get(range).unwrap_or("").trim_end().to_string();
-                (line_text, m.advance - m.trailing_whitespace > container_width)
+                (
+                    line_text,
+                    m.advance - m.trailing_whitespace > container_width,
+                )
             })
             .collect()
     }
@@ -4896,7 +4899,7 @@ impl RinchDocument {
     /// The rebuild is flat text in the root's own style: inline styling,
     /// inline boxes and the text-node ranges of the original are not carried
     /// over (as before #1091, when only the `nowrap`/`pre` single line was
-    /// rebuilt). It runs only when some line actually overflows.
+    /// rebuilt; #1100). It runs only when some line actually overflows.
     #[allow(clippy::too_many_arguments)]
     fn build_ellipsis_layout(
         nodes: &slab::Slab<Node>,

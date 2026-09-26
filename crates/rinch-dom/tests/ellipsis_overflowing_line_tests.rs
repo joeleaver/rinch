@@ -65,8 +65,19 @@ fn build(class: &str, text: &str) -> (RinchDocument, NodeId, NodeId) {
 
 /// The lines of the inline layout that draws `text`, each trimmed at its end.
 fn lines(d: &RinchDocument, text: NodeId) -> Vec<String> {
-    let root = d.tree.get(text.0).unwrap().ifc_root.expect("text has an IFC root");
-    let il = d.tree.get(root).unwrap().text_layout.as_ref().expect("root is laid out");
+    let root = d
+        .tree
+        .get(text.0)
+        .unwrap()
+        .ifc_root
+        .expect("text has an IFC root");
+    let il = d
+        .tree
+        .get(root)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .expect("root is laid out");
     il.layout
         .lines()
         .map(|l| il.text_content[l.text_range()].trim_end().to_string())
@@ -113,7 +124,11 @@ fn each_overflowing_line_of_pre_text_gets_its_own_ellipsis() {
 
     let (d, _, t) = build("c pre", &format!("{WORD}\ntiny"));
     let got = lines(&d, t);
-    assert_eq!(got.len(), 2, "the lines after an overflowing one stay: {got:?}");
+    assert_eq!(
+        got.len(),
+        2,
+        "the lines after an overflowing one stay: {got:?}"
+    );
     assert!(is_cut_word(&got[0]), "{got:?}");
     assert_eq!(got[1], "tiny", "{got:?}");
 }
@@ -138,7 +153,11 @@ fn span_on_one_line(class: &str) {
     d.append_child(span, t);
     d.resolve_layout(400.0, 300.0);
     let got = lines(&d, t);
-    assert_eq!(got.len(), 1, "{class}: Chrome 153: the span does not wrap; got {got:?}");
+    assert_eq!(
+        got.len(),
+        1,
+        "{class}: Chrome 153: the span does not wrap; got {got:?}"
+    );
     let prefix = got[0]
         .strip_suffix('\u{2026}')
         .unwrap_or_else(|| panic!("Chrome 153: `long run …`; got {got:?}"));
@@ -233,10 +252,16 @@ fn text_align_still_lines_up_against_the_box_after_the_cut() {
     // widest rebuilt line's (the cut line, ~85px in Inter).
     let (d, _, t) = build("c r", &format!("ab {WORD}"));
     let got = lines(&d, t);
-    assert!(got.len() == 2 && got[0] == "ab" && is_cut_word(&got[1]), "{got:?}");
+    assert!(
+        got.len() == 2 && got[0] == "ab" && is_cut_word(&got[1]),
+        "{got:?}"
+    );
     let root = d.tree.get(t.0).unwrap().ifc_root.unwrap();
     let il = d.tree.get(root).unwrap().text_layout.as_ref().unwrap();
     let m = il.layout.lines().next().unwrap().metrics().clone();
     let right = m.offset + m.advance - m.trailing_whitespace;
-    assert!((right - 90.0).abs() < 0.5, "`ab` ends at {right}, want the box edge 90");
+    assert!(
+        (right - 90.0).abs() < 0.5,
+        "`ab` ends at {right}, want the box edge 90"
+    );
 }

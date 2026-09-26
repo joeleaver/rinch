@@ -2344,6 +2344,15 @@ input a shaped layout is built from:
   text beside a block child). So a restyle of the container also drops every
   box in its **`run_boxes`**: a split span holds its runs' text, and does not
   re-cascade when the container's non-inherited properties change.
+  **The "…" is decided per line, not by `white-space`** (#1091): each line
+  whose content is wider than the content box after wrapping is cut and ends
+  in "…", the others are kept — an unbreakable word under `white-space:
+  normal`, a `nowrap` span in a wrapping root and every long line of `pre`
+  text, as in Chrome 153. It used to need the root's own `nowrap`/`pre`. An
+  inline element's `nowrap`/`pre` reaches parley as `TextWrapMode::NoWrap`
+  (it used to wrap). The rebuilt layout is flat text in the root's style, so
+  an ellipsized root loses its inline styling and boxes, as the `nowrap`
+  single line always did (#1100 tracks keeping them).
 - **An atomic inline is two roots' business.** An `inline-block` / `-flex` /
   `-grid` holding text is a member of the IFC around it *and* the root of its
   own, so `invalidate_ifc_for_node` drops both: reaching only the outer one
