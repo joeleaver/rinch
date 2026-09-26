@@ -421,3 +421,15 @@ fn a_rich_nowrap_root_is_cut_whole_as_before() {
         il.text_content
     );
 }
+
+#[test]
+fn a_span_with_its_own_text_shadow_on_a_kept_line_keeps_it() {
+    // A span's own `text-shadow` list is drawn from the text ranges (#1048);
+    // a flat rebuild casts the root's list for every run (#1065).
+    let (d, div) = rich(|d, div| {
+        let s = span(d, div, "", "ab cd");
+        d.set_attribute(s, "style", "text-shadow: 2px 2px rgb(0, 0, 255)");
+        add_text(d, div, &format!(" ef {WORD}"));
+    });
+    assert_kept(&d, div, "text-shadow");
+}
