@@ -326,14 +326,31 @@ pub fn selection_rects_for_layout(
         // trailing edge: an *upstream* caret there. A downstream caret at a
         // soft line break stands at the start of the NEXT line (x = 0), which
         // made every wrapped line's highlight a 1px sliver (#1010).
-        let end_affinity = if end == range.end {
-            Affinity::Upstream
+        //
+        // A line ended by a hard break (`<br>`, a preserved `\n`) holds the
+        // break in its range, and even the upstream caret after it stands at
+        // the next line's start. Such a line is highlighted to the caret
+        // before the break plus a newline's width, the rule Parley's own
+        // `Selection::geometry` uses (a quarter of ascent + descent) — Chrome
+        // 153 paints `abc<br>def` line 0 across `0..32`, "abc" being 28px.
+        let right = if end == range.end
+            && range.end > range.start
+            && line.break_reason() == parley::layout::BreakReason::Explicit
+        {
+            let before_break = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
+                .geometry(layout, 0.0)
+                .x0 as f32;
+            before_break + (metrics.ascent + metrics.descent) * 0.25
         } else {
-            Affinity::Downstream
+            let end_affinity = if end == range.end {
+                Affinity::Upstream
+            } else {
+                Affinity::Downstream
+            };
+            Cursor::from_byte_index(layout, end, end_affinity)
+                .geometry(layout, 0.0)
+                .x0 as f32
         };
-        let right = Cursor::from_byte_index(layout, end, end_affinity)
-            .geometry(layout, 0.0)
-            .x0 as f32;
         rects.push((left, top, (right - left).max(1.0), height));
     }
     rects

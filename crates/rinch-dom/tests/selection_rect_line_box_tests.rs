@@ -299,7 +299,10 @@ fn a_wrapped_lines_highlight_stops_at_its_trailing_edge_as_in_chrome() {
     let (doc, p) = inter_paragraph("font-size: 16px; line-height: 40px");
     let rects = doc.query_selection_rects(p, 0, TEXT.len());
     let right = rects[0].0 + rects[0].2;
-    assert!((right - 83.52).abs() < 0.5, "line 0 ends at {right}: {rects:?}");
+    assert!(
+        (right - 83.52).abs() < 0.5,
+        "line 0 ends at {right}: {rects:?}"
+    );
 }
 
 // ── The line before a hard break (review of #1108) ─────────────────────────
@@ -352,7 +355,10 @@ fn the_line_before_a_hard_break_is_highlighted_with_its_newline() {
     let (x, _, w, _) = rects[0];
     assert_eq!(x, 0.0, "{rects:?}");
     // "abc" alone is ~28px; with the newline ~32, as in Chrome.
-    assert!(w > 30.0 && w < 34.0, "line 0 is 'abc' plus a newline: {rects:?}");
+    assert!(
+        w > 30.0 && w < 34.0,
+        "line 0 is 'abc' plus a newline: {rects:?}"
+    );
     // Stopping before the break is the text alone, no newline.
     let text_only = doc.query_selection_rects(p, 0, 3);
     assert_eq!(text_only.len(), 1, "{text_only:?}");
@@ -369,5 +375,8 @@ fn an_empty_line_between_two_breaks_is_highlighted() {
     assert_eq!(rects.len(), 3, "{rects:?}");
     let (_, y, w, _) = rects[1];
     assert_eq!(y, 40.0, "the empty line is the second: {rects:?}");
-    assert!(w > 3.0, "an empty line shows its newline, not a sliver: {rects:?}");
+    assert!(
+        w > 3.0,
+        "an empty line shows its newline, not a sliver: {rects:?}"
+    );
 }

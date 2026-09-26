@@ -125,3 +125,37 @@ fn no_seam_at_16px_x_1_65() {
 fn no_seam_at_13px_x_1_37() {
     assert_even_wash("font-size: 13px; line-height: 1.37");
 }
+
+/// The line before a Shift+Enter break is highlighted to its text plus a
+/// newline, not as a 1px sliver (review of #1108; Chrome 153 paints `abc` +
+/// its newline across `0..32`).
+#[test]
+fn the_line_before_a_hard_break_is_highlighted() {
+    let handle = crate::editor::create_editor();
+    assert!(handle.load_html("<p>abc<br>def ghi</p><p>second</p>"));
+    let handle_in = handle.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px; background: white");
+        let editor = handle_in.mount(scope);
+        editor.set_attribute(
+            "style",
+            "width: 160px; font-size: 16px; line-height: 40px; font-family: sans-serif",
+        );
+        root.append_child(&editor);
+        root
+    });
+    app.register_app_font(AppFont::sans_serif(INTER));
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    handle.focus();
+    idle(&mut app);
+    assert!(handle.command("selectAll"), "positive control");
+    idle(&mut app);
+    let rects = highlights(&app);
+    assert_eq!(rects.len(), 3, "three lines: {rects:?}");
+    assert!(
+        rects.iter().all(|r| r.2 > 25.0),
+        "no line is a sliver: {rects:?}"
+    );
+}
