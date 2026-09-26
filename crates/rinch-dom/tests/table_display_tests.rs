@@ -315,3 +315,22 @@ fn a_wrapper_turning_contents_hands_its_rows_to_the_table() {
     assert_eq!(xy(&doc, a), (0.0, 0.0), "a");
     assert_eq!(xy(&doc, r), (0.0, 20.0), "r stacks under a");
 }
+
+/// A restyle of the table alone — here a width — keeps its rows stacked:
+/// the Taffy style is rebuilt from the table's own computed values, which
+/// carry no direction of their own for a table.
+#[test]
+fn restyling_the_table_alone_keeps_its_rows_stacked() {
+    let (mut doc, t) = fresh();
+    let r1 = el(&mut doc, t, "display: table-row");
+    cell(&mut doc, r1, 30, 20);
+    let r2 = el(&mut doc, t, "display: table-row");
+    cell(&mut doc, r2, 50, 20);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(xy(&doc, r2), (0.0, 20.0), "r2 stacks under r1");
+
+    doc.set_attribute(t, "style", "display: table; width: 300px");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(doc.tree.get(t.0).unwrap().layout.width, 300.0, "restyle landed");
+    assert_eq!(xy(&doc, r2), (0.0, 20.0), "r2 still stacks under r1");
+}
