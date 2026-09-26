@@ -876,3 +876,252 @@ fn an_inline_block_hangs_its_spaces_in_one_pass() {
         ],
     );
 }
+
+// ── a detached subtree is not measured (#1040) ─────────────────────────────
+//
+// `set_text_content` orphans an element's children without freeing them, so
+// the atomic-inline registry still names every `inline-block`/`-flex`/`-grid`
+// in the orphaned subtree, and the IFC-root registry its roots. Each of the
+// three functions that size an atomic inline used to measure such a box on the
+// next layout — a Taffy compute and a Parley shape for a box nothing paints —
+// and `build_ifc_layouts` shaped such a root's paint layout. One scenario per
+// function, each the only route to its site in its frame (the remeasure one
+// also carries the `build_ifc_layouts` site), plus two that attach the
+// orphan again and compare it with a fresh layout.
+
+const DETACH_CSS: &str = ".ib { display: inline-block; padding: 2px; }
+    .ifx { display: inline-flex; padding: 3px; }
+    .pct { width: 50%; }";
+
+/// `body > p > ["before ", em.ib > div > ["in ", span.ifx > "chip"]]`, laid out
+/// and painted. `flex_class` is added to the `inline-flex`'s class list.
+///
+/// The `div` is what keeps the `inline-flex` an atomic inline *inside* the
+/// orphaned subtree — in an IFC of its own, the `div`'s — so the
+/// whole-document pass, which marks every node in the slab and therefore
+/// detached subtrees too, registers it again.
+fn detach_doc(flex_class: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+    let mut doc = doc_with(DETACH_CSS);
+    let body = doc.body();
+    let p = el(&mut doc, body, "p", "");
+    text(&mut doc, p, "before ");
+    let em = el(&mut doc, p, "em", "ib");
+    let wrap = el(&mut doc, em, "div", "");
+    text(&mut doc, wrap, "in ");
+    let flex = el(&mut doc, wrap, "span", &format!("ifx {flex_class}"));
+    text(&mut doc, flex, "chip");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    (doc, p, em, flex)
+}
+
+/// The shape the issue reports (#1040, found by #982's scoped differential at
+/// seeds 2 and 41): content appended inside the `inline-flex`, then the `div`
+/// holding it orphaned by `set_text_content` on the `inline-block` around it.
+/// The append left the `inline-flex` in `dirty_atomic_inlines`, and
+/// `remeasure_dirty_atomic_inlines` measured it though it had left the
+/// document: `inline_block_computes` 2 → 1 (the `em`, whose text changed, is
+/// the one left) and `shape_atomic_inline` 7 → 1 (the orphan's text leaves are
+/// no longer shaped). The `div` around the `inline-flex` was an IFC root dirtied
+/// by the append, and `build_ifc_layouts` shaped it while it was out:
+/// `shape_ifc_build` 3 → 2 (`p` and the `em` are the two left).
+#[test]
+fn a_detached_atomic_inline_is_not_remeasured() {
+    let (mut doc, _p, em, flex) = detach_doc("");
+    let x = el(&mut doc, flex, "div", "x");
+    text(&mut doc, x, "a long sentence that is never on screen");
+    doc.set_text_content(em, "word");
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "detached atomic inline: remeasure",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (TaffyStyleSyncs, 2),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 2),
+            (ShapeAtomicInline, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 1),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 1),
+            (IfcScopeNodes, 2),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (InlineBlockComputes, 1),
+        ],
+    );
+}
+
+/// The whole-document pass (`compute_inline_block_layouts`, through
+/// `inline_block_measure_roots`) after the same orphaning. That pass marks
+/// every slab node, the orphaned `div`'s IFC included, so the `inline-flex`
+/// is registered again and was measured: `inline_block_computes` 2 → 1.
+#[test]
+fn a_detached_atomic_inline_is_not_measured_by_the_whole_document_pass() {
+    let (mut doc, _p, em, _flex) = detach_doc("");
+    doc.set_text_content(em, "word");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.recompute_all_styles_full();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "detached atomic inline: whole-document pass",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullTheme, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (InlineBlockComputes, 1),
+        ],
+    );
+}
+
+/// The percentage re-measure (`resolve_percentage_inline_blocks`), which runs
+/// after every root compute for a box with a percentage inline size. An
+/// orphaned `width: 50%` `inline-flex` still named its IFC root, the orphaned
+/// `div`, whose box kept the width it was last laid out at, so it was
+/// re-measured against that width: `inline_block_computes` 2 → 1.
+#[test]
+fn a_detached_percentage_atomic_inline_is_not_remeasured() {
+    let (mut doc, _p, em, _flex) = detach_doc("pct");
+    doc.set_text_content(em, "word");
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "detached atomic inline: percentage",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (TaffyStyleSyncs, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 2),
+            (ShapeAtomicInline, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 1),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 1),
+            (IfcScopeNodes, 2),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (InlineBlockComputes, 1),
+        ],
+    );
+}
+
+/// Not measuring the orphan must not leave it stale: attached again, it is
+/// sized as a fresh document of the same final state sizes it — both after
+/// content changed inside it while it was out, and at a new width basis.
+#[test]
+fn a_detached_atomic_inline_is_sized_again_when_reattached() {
+    for class in ["", "pct"] {
+        let (mut doc, p, em, flex) = detach_doc(class);
+        let x = el(&mut doc, flex, "div", "x");
+        text(&mut doc, x, "grown while attached");
+        doc.set_text_content(em, "word");
+        doc.resolve_layout(VP.0, VP.1);
+        // Changed while out of the document.
+        let y = el(&mut doc, flex, "div", "y");
+        text(&mut doc, y, "and grown again while detached");
+        doc.append_child(p, flex);
+        doc.resolve_layout(VP.0, VP.1);
+        let got = {
+            let n = &doc.tree.nodes[flex.0];
+            (n.layout.width, n.layout.height)
+        };
+
+        let mut fresh = doc_with(DETACH_CSS);
+        let body = fresh.body();
+        let p2 = el(&mut fresh, body, "p", "");
+        text(&mut fresh, p2, "before ");
+        let em2 = el(&mut fresh, p2, "em", "ib");
+        text(&mut fresh, em2, "word");
+        let flex2 = el(&mut fresh, p2, "span", &format!("ifx {class}"));
+        text(&mut fresh, flex2, "chip");
+        let x2 = el(&mut fresh, flex2, "div", "x");
+        text(&mut fresh, x2, "grown while attached");
+        let y2 = el(&mut fresh, flex2, "div", "y");
+        text(&mut fresh, y2, "and grown again while detached");
+        fresh.resolve_layout(VP.0, VP.1);
+        fresh.resolve_layout(VP.0, VP.1);
+        let want = {
+            let n = &fresh.tree.nodes[flex2.0];
+            (n.layout.width, n.layout.height)
+        };
+        assert!(
+            want.0 > 100.0,
+            "positive control: the fresh box holds the text ({want:?})"
+        );
+        assert_eq!(
+            got, want,
+            "class {class:?}: re-attached box vs a fresh layout"
+        );
+    }
+}
+
+/// The IFC root inside the orphaned subtree is not shaped while it is out
+/// (`build_ifc_layouts`), and attached again it is shaped as a fresh document
+/// of the same final state shapes it.
+#[test]
+fn a_detached_ifc_root_is_shaped_again_when_reattached() {
+    let (mut doc, p, em, flex) = detach_doc("");
+    let wrap = doc.tree.nodes[flex.0]
+        .parent
+        .expect("the div holds the inline-flex");
+    let wrap = NodeId(wrap);
+    text(&mut doc, wrap, " grown while attached");
+    doc.set_text_content(em, "word");
+    doc.resolve_layout(VP.0, VP.1);
+    assert!(
+        doc.tree.nodes[wrap.0].text_layout.is_none(),
+        "the orphaned root is not shaped while it is out"
+    );
+    text(&mut doc, wrap, " and while detached");
+    doc.append_child(p, wrap);
+    doc.resolve_layout(VP.0, VP.1);
+    let got = doc.tree.nodes[wrap.0]
+        .text_layout
+        .as_ref()
+        .map(|l| (l.text_content.clone(), l.layout.len(), l.layout.width()));
+
+    let mut fresh = doc_with(DETACH_CSS);
+    let body = fresh.body();
+    let p2 = el(&mut fresh, body, "p", "");
+    text(&mut fresh, p2, "before ");
+    let em2 = el(&mut fresh, p2, "em", "ib");
+    text(&mut fresh, em2, "word");
+    let wrap2 = el(&mut fresh, p2, "div", "");
+    text(&mut fresh, wrap2, "in ");
+    let flex2 = el(&mut fresh, wrap2, "span", "ifx ");
+    text(&mut fresh, flex2, "chip");
+    text(&mut fresh, wrap2, " grown while attached");
+    text(&mut fresh, wrap2, " and while detached");
+    fresh.resolve_layout(VP.0, VP.1);
+    fresh.resolve_layout(VP.0, VP.1);
+    let want = fresh.tree.nodes[wrap2.0]
+        .text_layout
+        .as_ref()
+        .map(|l| (l.text_content.clone(), l.layout.len(), l.layout.width()));
+    assert!(want.is_some(), "positive control: the fresh root is shaped");
+    assert_eq!(got, want);
+}
