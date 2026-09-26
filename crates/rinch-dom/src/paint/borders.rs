@@ -2,7 +2,9 @@
 
 use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, BezPath, Cap, Point, Rect, RoundedRectRadii, Shape, Stroke, Vec2};
+use peniko::kurbo::{
+    Affine, BezPath, Cap, Join, Point, Rect, RoundedRectRadii, Shape, Stroke, Vec2,
+};
 
 use super::blur::Blur1d;
 use super::painter::{PaintShape, Painter};
@@ -321,18 +323,30 @@ fn midpt(a: Point, b: Point) -> Point {
 }
 
 /// Create a Stroke with dash pattern based on border style.
+///
+/// Every style but `dotted` takes a **miter** join. A uniform border or an
+/// outline is one stroke around the rectangle through the middle of its band,
+/// and kurbo's `Stroke::new` defaults to `Join::Round`, which leaves each
+/// outer corner square of the band unpainted — a notch `width / 2` on a side,
+/// enough to make a 50px border on a 100px box read as rounded (#1022). A 90°
+/// miter reaches exactly the corner (ratio √2, under the default limit of 4),
+/// so the band is the border box minus the padding box, as CSS draws it. On a
+/// rounded rect the path is smooth at every joint and the join is moot.
+/// `dotted` keeps its round join along with its round caps.
 pub(super) fn make_border_stroke(width: f64, style: BorderStyleValue) -> Stroke {
     match style {
-        BorderStyleValue::Dashed => Stroke::new(width).with_dashes(0.0, [width * 3.0, width * 3.0]),
+        BorderStyleValue::Dashed => Stroke::new(width)
+            .with_join(Join::Miter)
+            .with_dashes(0.0, [width * 3.0, width * 3.0]),
         BorderStyleValue::Dotted => Stroke::new(width)
             .with_dashes(0.0, [width, width])
             .with_caps(Cap::Round),
         BorderStyleValue::Double => {
             // For double, draw at 1/3 width (the caller draws two passes)
             // We approximate by drawing a single thinner stroke
-            Stroke::new((width / 3.0).max(1.0))
+            Stroke::new((width / 3.0).max(1.0)).with_join(Join::Miter)
         }
-        _ => Stroke::new(width), // Solid and others
+        _ => Stroke::new(width).with_join(Join::Miter), // Solid and others
     }
 }
 
