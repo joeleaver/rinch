@@ -436,8 +436,8 @@ impl RinchApp {
     }
 
     /// A context-menu gesture at `(x, y)`: if the press lands on a text target,
-    /// run the ordinary right-press path (focus, `data-rid`, the #316 claim
-    /// rule) and then apply the **caret rule** — a press outside the current
+    /// run the ordinary right-press path (focus and the #316 claim rule; a
+    /// right press clicks no `data-rid`, #1093) and then apply the **caret rule** — a press outside the current
     /// selection moves the caret to the press point, a press inside it keeps
     /// the selection — and answer the target's state. `None` when the press is
     /// not on a text target, or when the target refused the keyboard (a
@@ -692,17 +692,19 @@ impl RinchApp {
                 };
                 // The ordinary right-press path, unchanged: it focuses the
                 // field (or refuses a disabled one), places the caret at the
-                // press, commits a blurred field's `onchange`, dispatches an
-                // ancestor `data-rid`. `scale_factor` is unused by it.
+                // press, commits a blurred field's `onchange`. It clicks no
+                // `data-rid` above the field: a right press is not a click
+                // (#1093). `scale_factor` is unused by it.
                 let click_actions =
                     self.handle_click_with_button(x, y, 1.0, MouseButton::Right, vp_w, vp_h);
                 actions.extend(click_actions);
                 if self.focus_target != FocusTarget::Input(node_id) {
                     return None;
                 }
-                // The click path dispatched a `data-rid` above the field, and
-                // that handler may have written the field's `value`: take the
-                // write in before anything syncs the state back over it.
+                // The click path used to click a `data-rid` above the field
+                // here (#1093 took that away). The adoption stays so that a
+                // write made by any user code the click path does run is taken
+                // in before anything syncs the state back over it.
                 self.adopt_focused_input_value_from_dom();
                 // The caret rule's other half: a press inside the selection
                 // keeps it. The click path collapsed it, so put it back — unless
@@ -728,11 +730,11 @@ impl RinchApp {
                     .filter(|p| p.container == container)
                     .or_else(|| self.resolve_editor_context_press(x, y))
                     .filter(|p| p.container == container)?;
-                // The ordinary right-press path first (a `data-rid` above the
-                // editor, the blur of whatever else held the keyboard), then
-                // the claim the left press would have made. Re-checked after,
-                // because a handler is user code and may have re-rendered the
-                // editor away.
+                // The ordinary right-press path first (the blur of whatever
+                // else held the keyboard, whose `onchange` commit is user
+                // code), then the claim the left press would have made.
+                // Re-checked after, because that code may have re-rendered the
+                // editor away. A right press clicks no `data-rid` (#1093).
                 let click_actions =
                     self.handle_click_with_button(x, y, 1.0, MouseButton::Right, vp_w, vp_h);
                 actions.extend(click_actions);

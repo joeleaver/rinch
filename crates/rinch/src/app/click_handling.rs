@@ -435,6 +435,21 @@ impl RinchApp {
             self.set_focus_target(FocusTarget::None);
         }
 
+        // A `data-rid` is a `click`, and a browser clicks for the primary
+        // button only (issue #1093): a right press is a `contextmenu` (its
+        // `data-oncontextmenu` claim was offered before this path runs), a
+        // middle press an `auxclick`, which rinch has no attribute for. The
+        // press still claimed the `data-rid` above — so it stops the walk, and
+        // a right press on a titlebar button does not drag the window — but it
+        // dispatches nothing. Everything above (focus, the input caret, a
+        // blurred field's commit) applies to every button, as a browser's
+        // `mousedown` does; `data-onmousedown` / `data-onmouseup` fire for
+        // every button before this path is reached.
+        let click_claim = match click_claim {
+            Some(ClickClaim::Rid(..)) if button != MouseButton::Left => return actions,
+            claim => claim,
+        };
+
         // Dispatch the pre-resolved click claim. For a data-rid claim the node
         // is re-verified against the (possibly commit-mutated) tree: it must
         // still carry the SAME handler id, still live — a re-rendered or
@@ -480,8 +495,7 @@ impl RinchApp {
                     viewport_height,
                     // The button that pressed (issue #1087): a pointer-capture
                     // `Drag` armed from this handler ends on that button's
-                    // release, which a right press's `data-rid` would
-                    // otherwise have recorded as the left.
+                    // release. Only a left press reaches a `data-rid` (#1093).
                     button: Self::core_button(button),
                     modifiers: self.modifier_state(),
                 });
