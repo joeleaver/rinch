@@ -2367,21 +2367,29 @@ input a shaped layout is built from:
   whose content is wider than the content box after wrapping is cut and ends
   in "…", the others are kept — an unbreakable word under `white-space:
   normal`, a `nowrap` span in a wrapping root and every long line of `pre`
-  text, as in Chrome 153. It used to need the root's own `nowrap`/`pre`. An
+  text, where Chrome 153 draws one too. It used to need the root's own
+  `nowrap`/`pre`. An
   inline element's `nowrap`/`pre` reaches parley as `TextWrapMode::NoWrap`
   (it used to wrap). The "…" is drawn by rebuilding the paragraph as flat
   text in the root's style, which would strip every line of it, so the
-  per-line cut is taken only where that is the same picture
+  per-line cut is taken only where that draws the same glyphs
   (`ellipsis_rebuild_is_faithful`: no inline box, no background or
   decoration span, every run in the root's text style, `text-shadow` and
-  `visibility`). Anything else keeps the old behaviour: a `nowrap`/`pre` root
+  `visibility`, and no `text-align: justify`, which lines ended by the hard
+  breaks the rebuild joins them with do not get). Even then the rebuilt
+  layout has **no text ranges**, for the whole paragraph, so caret and
+  selection mapping go through the flat text. Anything else keeps the old behaviour: a `nowrap`/`pre` root
   is cut whole to one flat prefix — losing its spans' colours, its chips
   (dropped, left where they were) and hiding nothing, so a `visibility:
   hidden` span is painted — and any other root is clipped with no "…" and
   keeps its styling. Chrome keeps both; that needs the cut made at paint time
-  (#1100). The cut walks the clusters already shaped (`ellipsis_cut`), so
-  `ellipsis_shapes` is 2 per rebuild however many lines are cut; the
-  whole-text cut still shapes each prefix of its binary search.
+  (#1100). The cut walks the clusters already shaped, in **logical** order
+  (`ellipsis_cut_ends`; parley's `Line::runs` is visual, and summed that way
+  a mixed-direction line is not cut), so `ellipsis_shapes` is 2 per rebuild
+  however many lines are cut — one more when a cut line re-wraps and falls
+  back to hard breaks, and one more per step back when a cut line shaped
+  again overshoots the box by its broken kerning. The whole-text cut still
+  shapes each prefix of its binary search.
 - **An atomic inline is two roots' business.** An `inline-block` / `-flex` /
   `-grid` holding text is a member of the IFC around it *and* the root of its
   own, so `invalidate_ifc_for_node` drops both: reaching only the outer one

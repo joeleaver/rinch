@@ -5067,6 +5067,14 @@ impl RinchDocument {
             return false;
         }
         let root = &nodes[root_id].computed_style;
+        // The kept lines are joined by hard breaks, and a line ended by one is
+        // not justified: `text-align: justify` would be lost on every one.
+        if matches!(
+            root.text_align,
+            crate::computed_style::TextAlignValue::Justify
+        ) {
+            return false;
+        }
         il.text_ranges.iter().filter(|r| !r.is_br).all(|r| {
             let Some(el) = nodes.get(r.node_id).and_then(|t| t.parent) else {
                 return false;
@@ -5078,22 +5086,33 @@ impl RinchDocument {
         })
     }
 
-    /// The byte offset in `text` where the longest prefix of `line` that fits
-    /// `target` ends: its clusters' advances summed in logical order, so the
-    /// cut is found in the layout already shaped, without shaping anything.
-    fn ellipsis_cut(line: &parley::layout::Line<'_, Brush>, target: f32) -> usize {
+    /// The byte offsets in `text` where each prefix of `line` that fits
+    /// `target` ends, shortest first — the line's start (the empty prefix)
+    /// and then one per cluster. Its clusters' advances are summed in
+    /// **logical** order, so the cut is found in the layout already shaped,
+    /// without shaping anything. `Line::runs` yields runs in *visual* order:
+    /// summed that way, a line mixing directions reaches its logical end
+    /// first and is not cut at all (#1103's second review).
+    fn ellipsis_cut_ends(line: &parley::layout::Line<'_, Brush>, target: f32) -> Vec<usize> {
+        let mut clusters: Vec<(std::ops::Range<usize>, f32)> = line
+            .runs()
+            .flat_map(|run| {
+                run.clusters()
+                    .map(|c| (c.text_range(), c.advance()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        clusters.sort_by_key(|(r, _)| r.start);
+        let mut ends = vec![line.text_range().start];
         let mut x = 0.0;
-        let mut end = line.text_range().start;
-        for run in line.runs() {
-            for cluster in run.clusters() {
-                x += cluster.advance();
-                if x > target {
-                    return end;
-                }
-                end = cluster.text_range().end;
+        for (range, advance) in clusters {
+            x += advance;
+            if x > target {
+                break;
             }
+            ends.push(range.end);
         }
-        end
+        ends
     }
 
     /// Build an IFC layout with ellipsis truncation (#1091), and the number
@@ -5102,10 +5121,10 @@ impl RinchDocument {
     /// From [`EllipsisSource::Lines`], every line of the original layout whose
     /// content (its advance less its trailing white space, as parley's own
     /// `Layout::width` measures it) overflows `container_width` is cut at the
-    /// last cluster that fits together with a "…" ([`Self::ellipsis_cut`] —
+    /// last cluster that fits together with a "…" ([`Self::ellipsis_cut_ends`] —
     /// nothing is shaped for the search), every other line is kept, and the
     /// lines are joined by hard breaks and laid out again: the same lines,
-    /// with a "…" on exactly the ones that overflowed, as Chrome 153 draws
+    /// with a "…" on exactly the ones that overflowed, where Chrome 153 draws
     /// them. Only taken where [`Self::ellipsis_rebuild_is_faithful`].
     ///
     /// From [`EllipsisSource::Whole`], the whole text is cut to the longest
@@ -5134,27 +5153,34 @@ impl RinchDocument {
         let target_width = container_width - ellipsis_width;
         let cut = |prefix: &str| prefix.trim_end().to_string() + ellipsis;
 
-        let (lines, whole) = match source {
+        // Per cut line: its start and its candidate prefix ends (see
+        // [`Self::ellipsis_cut_ends`]), so an overshoot can step back.
+        let mut cuts: Vec<Option<(usize, Vec<usize>)>> = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
+        let source_text = match &source {
+            EllipsisSource::Lines(il) => il.text_content.as_str(),
+            EllipsisSource::Whole(t) => t,
+        };
+        let (mut lines, whole) = match source {
             EllipsisSource::Lines(il) => {
                 let text = &il.text_content;
-                let lines: Vec<String> = il
-                    .layout
-                    .lines()
-                    .map(|line| {
-                        let m = line.metrics();
-                        let range = line.text_range();
-                        if m.advance - m.trailing_whitespace > container_width {
-                            let end = if target_width > 0.0 {
-                                Self::ellipsis_cut(&line, target_width)
-                            } else {
-                                range.start
-                            };
-                            cut(text.get(range.start..end).unwrap_or(""))
+                for line in il.layout.lines() {
+                    let m = line.metrics();
+                    let range = line.text_range();
+                    if m.advance - m.trailing_whitespace > container_width {
+                        let ends = if target_width > 0.0 {
+                            Self::ellipsis_cut_ends(&line, target_width)
                         } else {
-                            text.get(range).unwrap_or("").trim_end().to_string()
-                        }
-                    })
-                    .collect();
+                            vec![range.start]
+                        };
+                        let end = *ends.last().unwrap_or(&range.start);
+                        lines.push(cut(text.get(range.start..end).unwrap_or("")));
+                        cuts.push(Some((range.start, ends)));
+                    } else {
+                        lines.push(text.get(range).unwrap_or("").trim_end().to_string());
+                        cuts.push(None);
+                    }
+                }
                 (lines, false)
             }
             EllipsisSource::Whole(full_text) => {
@@ -5188,7 +5214,7 @@ impl RinchDocument {
         if lines.iter().all(|l| l.is_empty()) {
             return None;
         }
-        let (layout, text, built) = if whole {
+        let (mut layout, mut text, built) = if whole {
             let text = lines.concat();
             let mut layout = style.shape(layout_cx, font_cx, &text, scale, true);
             layout.break_all_lines(None);
@@ -5198,6 +5224,46 @@ impl RinchDocument {
             Self::layout_ellipsis_lines(&style, &lines, container_width, scale, font_cx, layout_cx)
         };
         shapes += built;
+
+        // A cluster's advance carries its kerning against the character that
+        // followed it, which the "…" replaces, so a cut line shaped again can
+        // come out a little wider than the box (up to 1.26px measured, #1103's
+        // second review). Step such a line back one cluster and lay out again;
+        // it takes a shape only when a line actually overshoots.
+        for _ in 0..3 {
+            if whole || layout.len() != lines.len() {
+                break;
+            }
+            let mut changed = false;
+            for (i, line) in layout.lines().enumerate() {
+                let m = line.metrics();
+                if m.advance - m.trailing_whitespace <= container_width + 0.01 {
+                    continue;
+                }
+                if let Some(Some((start, ends))) = cuts.get_mut(i) {
+                    if ends.len() > 1 {
+                        ends.pop();
+                        let end = *ends.last().unwrap();
+                        lines[i] = cut(source_text.get(*start..end).unwrap_or(""));
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+            let (l, t, built) = Self::layout_ellipsis_lines(
+                &style,
+                &lines,
+                container_width,
+                scale,
+                font_cx,
+                layout_cx,
+            );
+            layout = l;
+            text = t;
+            shapes += built;
+        }
 
         Some((
             InlineLayout {

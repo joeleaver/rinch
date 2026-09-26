@@ -132,8 +132,9 @@ define_counters! {
     /// root whose lines overflow.
     EllipsisBuilds = "ellipsis_builds",
     /// Parley layouts those rebuilds shaped: the "…" itself, the rebuilt
-    /// layout (twice if it had to fall back to hard breaks), and each prefix
-    /// the whole-text binary search tried. The per-line cut of #1091 walks
+    /// layout (again if it had to fall back to hard breaks, and again per
+    /// step back from a cut line's kerning overshoot), and each prefix the
+    /// whole-text binary search tried. The per-line cut of #1091 walks
     /// the clusters already shaped, so it adds none however many lines it
     /// cuts.
     EllipsisShapes = "ellipsis_shapes",

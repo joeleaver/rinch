@@ -107,7 +107,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `shape_ifc_build` | Parley layouts built by `build_ifc_layouts` (the layouts paint uses) |
 | | `shape_atomic_inline` | Parley layouts built while sizing an `inline-block`/`-flex`/`-grid` box |
 | | `ellipsis_builds` | `text-overflow: ellipsis` rebuilds, one per root with an overflowing line |
-| | `ellipsis_shapes` | layouts those rebuilds shaped: 2 for a per-line cut (the "…" and the result, however many lines), plus one per prefix a whole-text cut's binary search tried |
+| | `ellipsis_shapes` | layouts those rebuilds shaped: 2 for a per-line cut (the "…" and the result, however many lines; one more for a hard-break fallback or a step back from a kerning overshoot), plus one per prefix a whole-text cut's binary search tried |
 | | `shape_paint` | Parley layouts built by paint itself: input values, `<select>` labels, the fallback for uncached text |
 | | `ifc_measure_cache_hits` | IFC measures answered from the per-root measure cache without shaping |
 | | `ifc_measure_invalidations` | Roots whose cached measures a restyle or content change dropped (O(1) each) |

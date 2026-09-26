@@ -433,3 +433,151 @@ fn a_span_with_its_own_text_shadow_on_a_kept_line_keeps_it() {
     });
     assert_kept(&d, div, "text-shadow");
 }
+
+// ── #1103's second review ───────────────────────────────────────────────────
+
+/// The widest line of the root laid out for `text`, less trailing white space.
+fn widest(d: &RinchDocument, div: NodeId) -> f32 {
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    il.layout
+        .lines()
+        .map(|l| l.metrics().advance - l.metrics().trailing_whitespace)
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn a_mixed_direction_line_is_cut_inside_the_box() {
+    // `Line::runs` is in visual order; summing clusters that way, an RTL line
+    // holding a Latin run reached its logical end first and was not cut
+    // (303.94px in a 120px box). Main cut it to `אבגד הוז abcd…`, 119.01px.
+    for text in [
+        "אבגד הוז abcdefghijklmnopqrstuvwxyz חטי כלמ נסע",
+        "אבגד abcdefghijklmnop הוזחטיכלמנסעפצקרשת",
+    ] {
+        let (d, div) = rich(|d, div| {
+            d.set_attribute(div, "class", "c w pre");
+            add_text(d, div, text);
+        });
+        let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+        assert!(
+            il.text_content.contains('\u{2026}'),
+            "{:?}",
+            il.text_content
+        );
+        let w = widest(&d, div);
+        assert!(
+            w <= 120.01,
+            "{text:?}: the cut line is {w}px in a 120px box"
+        );
+    }
+}
+
+#[test]
+fn a_justified_paragraph_keeps_its_justification() {
+    // Kept lines are rejoined by hard breaks, which parley does not justify,
+    // so a justified root is left clipped and justified, as on main.
+    let (d, div) = rich(|d, div| {
+        d.set_attribute(div, "style", "text-align: justify");
+        add_text(
+            d,
+            div,
+            &format!("aa bb cc dd ee ff gg hh ii jj {WORD} kk ll mm nn oo pp qq rr"),
+        );
+    });
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    assert!(!il.text_content.contains('\u{2026}'));
+    let first = il.layout.lines().next().unwrap();
+    let sum: f32 = first
+        .runs()
+        .flat_map(|r| r.clusters().map(|c| c.advance()).collect::<Vec<_>>())
+        .sum();
+    assert!(sum >= 119.0, "line 0 is justified to the box: {sum}");
+}
+
+#[test]
+fn a_span_background_on_a_kept_line_survives() {
+    let (d, div) = rich(|d, div| {
+        let s = span(d, div, "", "ab cd");
+        d.set_attribute(s, "style", "background-color: rgb(255, 255, 0)");
+        add_text(d, div, &format!(" ef {WORD}"));
+    });
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    assert!(
+        !il.background_spans.is_empty(),
+        "the span's background survives"
+    );
+}
+
+#[test]
+fn a_wavy_underline_on_the_root_survives() {
+    let (d, div) = rich(|d, div| {
+        d.set_attribute(
+            div,
+            "style",
+            "text-decoration: underline wavy rgb(255, 0, 0)",
+        );
+        add_text(d, div, &format!("ab cd {WORD} ef"));
+    });
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    assert!(
+        !il.decoration_spans.is_empty(),
+        "the wavy underline survives"
+    );
+}
+
+#[test]
+fn a_line_of_hanging_spaces_is_not_cut() {
+    // `pre-wrap` spaces hang past the box; the line's content is `ab`, which
+    // fits. Only the word's line is cut.
+    let (d, div) = rich(|d, div| {
+        d.set_attribute(div, "style", "white-space: pre-wrap");
+        add_text(d, div, &format!("ab{} {WORD}", " ".repeat(60)));
+    });
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    let first = &il.text_content[il.layout.lines().next().unwrap().text_range()];
+    assert!(
+        !first.contains('\u{2026}'),
+        "the hanging-space line fits: {first:?}"
+    );
+    assert!(
+        il.text_content.contains('\u{2026}'),
+        "the word's line is cut"
+    );
+}
+
+#[test]
+fn a_cut_line_shaped_again_stays_inside_the_box() {
+    // Kerning pairs (AV, Ty, WA) broken by the cut make the rebuilt line up
+    // to 1.26px wider than the sum it was cut by; the cut steps back a cluster
+    // when that happens. Swept over 400 widths (without the step back, 23 of
+    // 1480 overflowed in the review's sweep).
+    let text = "AVATAR office Type Ty fi fl affluent WAVY Toyota. WAVE ffi LT.AV";
+    let mut bad = Vec::new();
+    let mut w = 30.0f32;
+    while w < 230.0 {
+        let mut d = doc();
+        d.load_css(&format!(
+            ".s {{ width: {w}px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}"
+        ));
+        let body = d.body();
+        let div = d.create_element("div");
+        d.set_attribute(div, "class", "s");
+        d.append_child(body, div);
+        add_text(&mut d, div, text);
+        d.resolve_layout(800.0, 300.0);
+        // Against the box as laid out (Taffy rounds it to whole pixels), not
+        // the declared width.
+        let bx = d.tree.get(div.0).unwrap().layout.width;
+        let over = widest(&d, div) - bx;
+        if over > 0.01 {
+            bad.push((w, over));
+        }
+        w += 0.5;
+    }
+    assert!(
+        bad.is_empty(),
+        "{} widths overflow: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(8)]
+    );
+}
