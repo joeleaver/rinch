@@ -503,6 +503,7 @@ impl RinchDocument {
         at: usize,
         empty_may_flip: bool,
     ) {
+        self.note_table_children_changed(parent);
         let Some(p) = self.tree.nodes.get(parent) else {
             return;
         };

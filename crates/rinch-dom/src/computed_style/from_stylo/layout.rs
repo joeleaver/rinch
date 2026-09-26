@@ -47,10 +47,30 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
         (DisplayOutside::InternalTable, DisplayInside::TableCell) => DisplayValue::Block,
         (DisplayOutside::TableCaption, DisplayInside::Flow) => DisplayValue::Block,
         // Everything else — `table` / `inline-table`, `table-row`, the row and
-        // column groups — stays a flex row: that is what lays a table's cells
-        // side by side, the common use. It is wrong for a table of several
-        // `table-row`s, which lays its rows side by side where CSS stacks them.
+        // column groups — is a flex container. A row is a flex row, which puts
+        // its cells side by side. A table or row group is a flex row too when
+        // its children are bare cells (they share one anonymous row) and a
+        // flex column when it holds rows, which stack (#1083) — a choice made
+        // from its children, so at the Taffy sync, not here: see
+        // `ComputedStyle::table_part` and `table_flex_direction`.
         _ => DisplayValue::Flex,
+    }
+}
+
+/// The [`TablePart`] a computed `display` names (#1083).
+pub(super) fn table_part_from_stylo(display: &style::values::computed::Display) -> TablePart {
+    use style::values::specified::box_::{DisplayInside, DisplayOutside};
+    if display.is_none() || display.is_contents() {
+        return TablePart::None;
+    }
+    match (display.outside(), display.inside()) {
+        (_, DisplayInside::Table) => TablePart::Table,
+        (DisplayOutside::InternalTable, DisplayInside::TableRowGroup)
+        | (DisplayOutside::InternalTable, DisplayInside::TableHeaderGroup)
+        | (DisplayOutside::InternalTable, DisplayInside::TableFooterGroup) => TablePart::RowGroup,
+        (DisplayOutside::InternalTable, DisplayInside::TableRow) => TablePart::Row,
+        (DisplayOutside::InternalTable, _) | (DisplayOutside::TableCaption, _) => TablePart::Other,
+        _ => TablePart::None,
     }
 }
 
