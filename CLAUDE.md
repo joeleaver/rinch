@@ -1955,9 +1955,14 @@ Chrome, but no test compares it with `out_of_flow_kind`. They share
 a transformed ancestor containing a fixed box (#386/#415), say — has to be made
 in both. A `position:
 fixed` child resolves against the viewport, so it is no part of any scroll
-range below it; an `absolute` child counts only where the container is
-positioned or transformed (`Node::establishes_abs_containing_block`) or *is*
-the initial containing block, which in rinch is the `<html>` box. A
+range below it; an `absolute` child counts only where its containing block is
+the container or below it — walking its DOM ancestors up to the container, one
+is positioned or transformed (`Node::establishes_abs_containing_block`), or the
+container *is* the initial containing block, which in rinch is the `<html>` box.
+Below the container that walk crosses `display: contents` wrappers and, for a
+box hoisted into its host out of a flowed inline element (#591), the inline
+elements it was hoisted out of — a `position: relative` span among them is its
+containing block and the container's content, so the box counts (#1049). A
 `display: contents` element is neither, whatever its `position` or `transform`
 compute to: it generates no box, so the predicate answers `false` for it and an
 absolute under a `display: contents; position: relative` wrapper resolves

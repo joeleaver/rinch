@@ -474,8 +474,10 @@ For the cases in this paragraph, rinch counts the same content a browser does.
 A `position: fixed` child is anchored to the viewport, so it never makes an
 ancestor scroll — a `Modal`, `Drawer` or `Notification` inside an
 `overflow: auto` region adds nothing to that region's scroll range, open or
-closed. A `position: absolute` child counts only where the container is its
-containing block, i.e. the container is itself positioned (or transformed); an
+closed. A `position: absolute` child counts only where its containing block is
+the container or something inside it — the container is itself positioned (or
+transformed), or an inline element between them is, such as a
+`position: relative` `<span>` holding the absolute; an
 absolute that resolves against something further up escapes that container,
 exactly as it does on the web. `visibility: hidden` content still counts,
 because it still occupies its box; `display: none` content does not, because it
