@@ -231,6 +231,134 @@ fn release_closed_parked() {
     drop(done);
 }
 
+/// How long [`TrayIconBuilder::build`] waits on Linux for ksni to register the
+/// item with the StatusNotifierWatcher before it gives up with
+/// [`TrayError::CreateFailed`].
+///
+/// A healthy session registers in about 10 ms. Long enough for a watcher that
+/// is merely slow (a desktop still starting up), short enough that one that
+/// never answers costs the app's startup seconds rather than everything.
+#[cfg(target_os = "linux")]
+const BUILD_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Why [`run_bounded`] has no result.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+enum BoundedError {
+    /// The helper thread could not be started.
+    Spawn(std::io::Error),
+    /// The work panicked.
+    Panicked,
+    /// The work had not finished when the bound — the wait given, carried
+    /// here — ran out. It goes on, detached, and hands its result to
+    /// `on_late` when it does.
+    TimedOut(std::time::Duration),
+}
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Display for BoundedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoundedError::Spawn(e) => write!(f, "failed to spawn tray thread: {e}"),
+            BoundedError::Panicked => write!(f, "tray thread panicked"),
+            BoundedError::TimedOut(wait) => write!(
+                f,
+                "the status notifier watcher did not answer within {:.1} s",
+                wait.as_secs_f64()
+            ),
+        }
+    }
+}
+
+/// Run `work` on a thread named `name` and wait up to `wait` for its result.
+///
+/// If the wait runs out, the thread is left to finish on its own and its
+/// result goes to `on_late`, on that thread — never dropped unseen, whichever
+/// side of the deadline it lands on: the caller and the thread settle it under
+/// one lock, so a result is either returned here or handed to `on_late`,
+/// exactly once.
+#[cfg(target_os = "linux")]
+fn run_bounded<T: Send + 'static>(
+    name: &str,
+    wait: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+    on_late: impl FnOnce(T) + Send + 'static,
+) -> Result<T, BoundedError> {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    enum Slot<T> {
+        Waiting,
+        Done(std::thread::Result<T>),
+        Abandoned,
+    }
+
+    let shared = Arc::new((Mutex::new(Slot::Waiting), Condvar::new()));
+    let theirs = Arc::clone(&shared);
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            let (lock, cvar) = &*theirs;
+            let mut slot = lock.lock().unwrap_or_else(|p| p.into_inner());
+            if matches!(*slot, Slot::Abandoned) {
+                drop(slot);
+                if let Ok(value) = result {
+                    on_late(value);
+                }
+            } else {
+                *slot = Slot::Done(result);
+                cvar.notify_all();
+            }
+        })
+        .map_err(BoundedError::Spawn)?;
+
+    let (lock, cvar) = &*shared;
+    let deadline = std::time::Instant::now() + wait;
+    let mut slot = lock.lock().unwrap_or_else(|p| p.into_inner());
+    loop {
+        if matches!(*slot, Slot::Done(_)) {
+            let Slot::Done(result) = std::mem::replace(&mut *slot, Slot::Abandoned) else {
+                unreachable!()
+            };
+            return result.map_err(|_| BoundedError::Panicked);
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            *slot = Slot::Abandoned;
+            return Err(BoundedError::TimedOut(wait));
+        }
+        slot = cvar
+            .wait_timeout(slot, deadline - now)
+            .unwrap_or_else(|p| p.into_inner())
+            .0;
+    }
+}
+
+/// Run a tray service's setup (`work`, ksni's `spawn`) on a thread of its own
+/// and wait up to `wait` for it, as [`TrayIconBuilder::build`] does.
+///
+/// A setup that finishes after the wait gave up is shut down again at once:
+/// the build has already failed and released the menu's callbacks, so the icon
+/// it would put up could only show dead items (#1057). Each give-up leaves the
+/// setup thread and its D-Bus connection waiting on the watcher until it
+/// answers or goes away, which the setup cannot be told to stop doing.
+#[cfg(target_os = "linux")]
+fn spawn_bounded<S, E>(
+    wait: std::time::Duration,
+    work: impl FnOnce() -> Result<S, E> + Send + 'static,
+) -> Result<Result<S, E>, BoundedError>
+where
+    S: TrayService + Send + 'static,
+    E: Send + 'static,
+{
+    run_bounded("rinch-tray", wait, work, |late| {
+        if let Ok(service) = late {
+            // On the setup thread, inside no runtime; its outcome is moot.
+            let _ = service.shutdown();
+        }
+    })
+}
+
 impl Drop for TrayIcon {
     fn drop(&mut self) {
         // The icon first, the callbacks after (they are released when `_menu`
@@ -307,6 +435,19 @@ impl TrayIconBuilder {
     /// On Linux, spawns a background thread for the ksni D-Bus event loop.
     /// On other platforms, creates the tray icon on the main thread with
     /// push-based event delivery.
+    ///
+    /// On Linux this blocks until the item is registered with the
+    /// StatusNotifierWatcher — about 10 ms on a healthy session — but for no
+    /// more than five seconds: a watcher that holds its name and never answers
+    /// (a frozen `kded` or `plasmashell`) makes it return
+    /// [`TrayError::CreateFailed`] instead of hanging the caller (issue
+    /// #1057). If the registration completes after that, the service is shut
+    /// down again, so no icon with dead items is left behind.
+    ///
+    /// A registration that timed out cannot be cancelled: until the watcher
+    /// answers or goes away, each such failed build leaves a background thread
+    /// and a D-Bus connection waiting on it. Do not retry `build()` in a tight
+    /// loop while it keeps failing this way.
     pub fn build(self) -> TrayResult<TrayIcon> {
         #[cfg(target_os = "linux")]
         return self.build_ksni();
@@ -418,12 +559,16 @@ impl TrayIconBuilder {
         // first `block_on`s the D-Bus setup on ksni's runtime — which panics on
         // a thread that is already inside a tokio runtime. Doing the spawn on a
         // short-lived thread keeps the caller's runtime context out of it.
-        let handle = std::thread::Builder::new()
-            .name("rinch-tray".into())
-            .spawn(move || tray.spawn())
-            .map_err(|e| TrayError::CreateFailed(format!("failed to spawn tray thread: {}", e)))?
-            .join()
-            .map_err(|_| TrayError::CreateFailed("tray thread panicked".into()))?
+        //
+        // That setup ends in `RegisterStatusNotifierItem` on the watcher, a
+        // call zbus makes with no timeout; a watcher that holds its name and
+        // never answers (a frozen kded or plasmashell) would hold `build()`,
+        // and so the app's startup, forever (#1057). So the wait is bounded by
+        // `BUILD_WAIT`. A setup that finishes after the build gave up is shut
+        // down again at once (`spawn_bounded`): its menu's callbacks are
+        // released with the error, so an icon it put up would show dead items.
+        let handle = spawn_bounded(BUILD_WAIT, move || tray.spawn())
+            .map_err(|e| TrayError::CreateFailed(e.to_string()))?
             .map_err(|e| TrayError::CreateFailed(e.to_string()))?;
 
         Ok(TrayIcon {
@@ -844,6 +989,162 @@ mod tests {
                 "a timed-out drop keeps the callbacks registered"
             );
         }
+    }
+
+    /// Issue #1057: `run_bounded` returns within its bound when the work
+    /// hangs, and hands the result the work produces afterwards to `on_late`
+    /// instead of dropping it unseen (which, for a ksni handle, would leave a
+    /// late icon on the panel with its callbacks already released).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bounded_run_that_outlasts_its_bound_times_out_and_hands_the_result_on() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (late_tx, late_rx) = mpsc::channel::<u32>();
+        let (ret_tx, ret_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let r = run_bounded(
+                "bounded-test",
+                Duration::from_millis(200),
+                move || {
+                    let _ = release_rx.recv();
+                    7u32
+                },
+                move |late| {
+                    let _ = late_tx.send(late);
+                },
+            );
+            let _ = ret_tx.send((r, t0.elapsed()));
+        });
+        let (r, took) = ret_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("run_bounded returned while the work was still blocked");
+        assert!(matches!(r, Err(BoundedError::TimedOut(_))), "{r:?}");
+        assert!(took >= Duration::from_millis(200), "{took:?}");
+        assert!(late_rx.try_recv().is_err(), "nothing is late yet");
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            late_rx.recv_timeout(Duration::from_secs(5)),
+            Ok(7),
+            "the late result reaches on_late"
+        );
+    }
+
+    /// Issue #1057: work that finishes inside the bound is returned, not handed
+    /// to `on_late`, and a panic is reported at once rather than at the bound.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bounded_run_returns_a_prompt_result_and_a_prompt_panic() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let (late_tx, late_rx) = mpsc::channel::<u32>();
+        let r = run_bounded(
+            "bounded-test",
+            Duration::from_secs(5),
+            || {
+                std::thread::sleep(Duration::from_millis(50));
+                11u32
+            },
+            move |late| {
+                let _ = late_tx.send(late);
+            },
+        );
+        assert_eq!(r.ok(), Some(11));
+        assert!(late_rx.recv_timeout(Duration::from_millis(200)).is_err());
+
+        let t0 = Instant::now();
+        let r = run_bounded(
+            "bounded-test",
+            Duration::from_secs(5),
+            || -> u32 { panic!("expected panic in a bounded-run test") },
+            |_| {},
+        );
+        assert!(matches!(r, Err(BoundedError::Panicked)), "{r:?}");
+        assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    }
+
+    /// Issue #1057, review F1: a tray service whose setup finishes after the
+    /// build gave up is shut down, not merely dropped — ksni's handle does not
+    /// stop the service on drop, so dropping it left the icon up with its
+    /// callbacks already released (measured live on a private bus).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tray_service_that_arrives_after_the_build_gave_up_is_shut_down() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        struct Late(mpsc::Sender<()>);
+        impl TrayService for Late {
+            fn shutdown(&self) -> Shutdown {
+                let _ = self.0.send(());
+                Shutdown::Closed
+            }
+        }
+
+        let (shut_tx, shut_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let r = spawn_bounded(Duration::from_millis(50), move || {
+            let _ = release_rx.recv();
+            Ok::<_, ()>(Late(shut_tx))
+        });
+        assert!(
+            matches!(r, Err(BoundedError::TimedOut(w)) if w == Duration::from_millis(50)),
+            "{:?}",
+            r.as_ref().err()
+        );
+        assert_eq!(
+            r.err().map(|e| e.to_string()).as_deref(),
+            Some("the status notifier watcher did not answer within 0.1 s")
+        );
+        assert!(shut_rx.try_recv().is_err(), "nothing has arrived yet");
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            shut_rx.recv_timeout(Duration::from_secs(5)),
+            Ok(()),
+            "the late service was not shut down"
+        );
+    }
+
+    /// Issue #1057, live on a private bus: building a tray while the watcher
+    /// holds its name but never answers `RegisterStatusNotifierItem` returns
+    /// an error within the bound, and keeps none of the menu's callbacks. At
+    /// 2fa50a2f `build()` never returned (the watchdog below fired).
+    ///
+    /// Recipe as for the drop test above, with the watcher started as
+    /// `hung_sni_watcher.py --hang-first`. On a healthy session bus it fails
+    /// (the build succeeds), which is its positive control.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a private bus running tests/fixtures/hung_sni_watcher.py --hang-first"]
+    fn live_building_a_tray_under_a_hung_watcher_is_bounded() {
+        use std::time::{Duration, Instant};
+
+        let before = crate::menu::callback_count();
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(12));
+            eprintln!("HUNG: build() is still blocked after 12 s");
+            std::process::exit(3);
+        });
+        let t0 = Instant::now();
+        let built = TrayIconBuilder::new()
+            .with_menu(Menu::new().item(MenuItem::new("p").on_click(|| {})))
+            .build();
+        let took = t0.elapsed();
+        eprintln!("build returned after {took:?}: {:?}", built.as_ref().err());
+        assert!(
+            built.is_err(),
+            "the build cannot succeed under a hung watcher"
+        );
+        assert!(took < BUILD_WAIT + Duration::from_secs(1), "{took:?}");
+        assert_eq!(
+            crate::menu::callback_count(),
+            before,
+            "a failed build keeps no callbacks"
+        );
     }
 
     /// Issue #377 (1), live: a dropped `TrayIcon` must take its icon with it.
