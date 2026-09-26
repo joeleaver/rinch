@@ -125,6 +125,11 @@ Command names are case-sensitive. The full catalogue:
 > visual line's edges on both backends. The web finds the edge by hit-testing the
 > textblock just inside both sides of the caret's line and taking the smaller
 > position as the start, so a right-to-left line starts at its right edge.
+> Desktop reads the line from the textblock's text layout — the line holding the
+> caret, the upper one for a caret drawn at the end of a soft-wrapped line — and
+> takes its logical start and end: after a hanging space at a soft wrap, before
+> a hard break (Shift+Enter). No geometry is involved, so a caret line scrolled
+> out of the editor behaves as a visible one (#1107).
 >
 > **Caret affinity at a soft wrap.** The end of one visual line and the start of
 > the next are one model position, so a caret there could be drawn in either
@@ -151,8 +156,9 @@ Command names are case-sensitive. The full catalogue:
 >   (#1104). A hard break is resolved on both sides on both platforms (#1099,
 >   #1025), and the web resolves both sides of an image too — a click, Home, a
 >   soft-line delete, and an IME commit or autocorrect right after one.
-> - **A caret line scrolled out of view** has nothing to hit-test, so Home, End
->   and the soft-line deletes fall back to the textblock's edge there (#1026).
+> - **Web, a caret line scrolled out of view** has nothing to hit-test, so Home,
+>   End and the soft-line deletes fall back to the textblock's edge there
+>   (#1026). Desktop has no such gap (#1107).
 > - On a line that *mixes* directions the answer can fall short of the logical
 >   edge.
 
