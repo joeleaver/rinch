@@ -4066,27 +4066,18 @@ impl RinchDocument {
         // it missed it the other 17. It now kills it 25 times in 25. See that
         // field's doc.
         //
-        // A box no longer in the document is not measured (#1040) — a
+        // A box no longer in the document is dropped, not measured (#1040): a
         // `set_text_content` orphans a subtree without freeing it, and nothing
-        // paints what it holds. Its Taffy node is marked instead, which costs no
-        // compute (a detached atomic inline has no Taffy parent to propagate
-        // to) and keeps the one fact the dirty set carried: the measure Taffy
-        // cached for it is stale. Attaching it again seeds a structural pass
-        // that sizes it then.
-        let mut pending: std::collections::BTreeSet<(usize, usize)> =
-            std::collections::BTreeSet::new();
-        for id in dirty {
-            match self.depth_if_connected(id) {
-                Some(depth) => {
-                    pending.insert((depth, id));
-                }
-                None => {
-                    if let Some(taffy_id) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) {
-                        let _ = self.tree.taffy.mark_dirty(taffy_id);
-                    }
-                }
-            }
-        }
+        // paints what it holds. Dropping the entry loses nothing: attaching
+        // the box again seeds a structural pass that sizes it.
+        // `a_detached_atomic_inline_is_sized_again_when_reattached` pins that
+        // for a box whose content changed before the detach with no layout in
+        // between, with and without a change while it was out, under a scoped
+        // and a whole-document pass.
+        let mut pending: std::collections::BTreeSet<(usize, usize)> = dirty
+            .into_iter()
+            .filter_map(|id| self.depth_if_connected(id).map(|depth| (depth, id)))
+            .collect();
 
         // One box at a time, and each box's IFC invalidated — and every atomic
         // inline around that IFC queued — **before** the next box is measured.
