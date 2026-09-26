@@ -939,15 +939,11 @@ impl RinchDocument {
     /// After layout changes (e.g., viewport resize), a container's content or
     /// visible area may have changed, making the old scroll offset too large.
     fn clamp_scroll_offsets(&mut self) {
-        use crate::computed_style::OverflowValue;
         // Collect (node_id, max_scroll) for nodes that need clamping
         let mut clamps: Vec<(usize, f64)> = Vec::new();
         for (node_id, _) in self.tree.nodes.iter() {
             let node = &self.tree.nodes[node_id];
-            if !matches!(
-                node.computed_style.overflow_y,
-                OverflowValue::Auto | OverflowValue::Scroll
-            ) {
+            if !node.scrolls_y() {
                 continue;
             }
             if node.scroll_offset == (0.0, 0.0) {

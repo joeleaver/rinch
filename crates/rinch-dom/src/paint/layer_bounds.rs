@@ -809,7 +809,7 @@ impl Walk<'_> {
             // against the software painter can see it — so
             // `a_fixed_descendant_is_not_narrowed_by_a_clipper_it_escapes`
             // asserts on the bounds themselves.
-            if cs.position == PositionValue::Fixed {
+            if node.box_position() == PositionValue::Fixed {
                 return Extent::Escapes;
             }
             // `position: absolute` escapes the clippers **below its containing
@@ -832,7 +832,7 @@ impl Walk<'_> {
             // conservative whole-escape instead.
             if self.absolutes_escape_clips
                 && self.clipper_below_cb
-                && cs.position == PositionValue::Absolute
+                && node.box_position() == PositionValue::Absolute
             {
                 return Extent::Escapes;
             }
@@ -843,7 +843,7 @@ impl Walk<'_> {
             // create a second implementation of it to drift out of step with the
             // first. That drift is precisely the class of bug this module exists
             // to close, so a sticky descendant answers `Unknown`.
-            if cs.position == PositionValue::Sticky {
+            if node.box_position() == PositionValue::Sticky {
                 return Extent::Unknown;
             }
         }
