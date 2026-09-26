@@ -34,7 +34,8 @@ struct Page {
     handle: crate::editor::EditorHandle,
 }
 
-/// One paragraph in a 400px editor, Inter 16px / 24px, focused and settled.
+/// One paragraph in a 400px editor, Inter 16px / 24px, focused and settled;
+/// every image 40x16.
 fn page(html: &str) -> Page {
     let handle = crate::editor::create_editor();
     assert!(handle.load_html(html));
@@ -42,6 +43,11 @@ fn page(html: &str) -> Page {
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", "width: 800px; height: 600px");
+        // The model keeps an image's `src` and `alt`, not an inline style, so
+        // an image's size comes from a sheet: 40x16 wherever one appears.
+        let sheet = scope.create_element("style");
+        sheet.append_child(&scope.create_text("img { width: 40px; height: 16px; }"));
+        root.append_child(&sheet);
         let editor = handle_in.mount(scope);
         editor.set_attribute(
             "style",
@@ -170,22 +176,123 @@ fn a_press_after_a_hard_break_lands_on_the_character_hit() {
     assert_eq!(press(0.75, 1.5), 13, "right half of `c`: after it");
 }
 
+/// An image, 40x16 from the page's sheet ([`page`]).
+const IMG: &str = "<img src=\"x.png\" alt=\"\">";
+
+impl Page {
+    /// The drawn caret overlay's painted `(x, y)`, with the caret at char `i`.
+    fn caret_drawn(&mut self, i: usize) -> (f32, f32) {
+        self.handle.set_selection(Selection::cursor(Pos(i + 1)));
+        idle(&mut self.app);
+        let doc = self.app.doc.as_ref().unwrap().borrow();
+        let id = doc
+            .query_selector_all("[data-pm-caret]")
+            .into_iter()
+            .next()
+            .expect("a caret overlay");
+        let (x, y, _, _) = painted_element_box(&doc.tree, id.0);
+        (x, y)
+    }
+    /// `EditorHandle::caret_rect` for char `i`: the popup-frame caret.
+    fn caret_rect_x(&self, i: usize) -> f32 {
+        self.handle.caret_rect(Pos(i + 1)).expect("laid out").x
+    }
+    /// The painted boxes of the paragraph's images, in document order.
+    fn images(&self) -> Vec<(f32, f32, f32, f32)> {
+        let doc = self.app.doc.as_ref().unwrap().borrow();
+        doc.query_selector_all("img")
+            .into_iter()
+            .map(|id| painted_element_box(&doc.tree, id.0))
+            .collect()
+    }
+    /// Press at `from`, drag to `to`, release: the selection's head.
+    fn drag(&mut self, from: (f32, f32), to: (f32, f32)) -> usize {
+        let button = MouseButton::Left;
+        let (x, y) = from;
+        self.app
+            .handle_event(PlatformEvent::MouseDown { x, y, button }, VP, 1.0);
+        let (x, y) = to;
+        self.app
+            .handle_event(PlatformEvent::MouseMove { x, y }, VP, 1.0);
+        self.app
+            .handle_event(PlatformEvent::MouseUp { x, y, button }, VP, 1.0);
+        idle(&mut self.app);
+        self.head()
+    }
+}
+
 /// The caret on the far side of an image is drawn after it, and the one before
-/// it before it. It is not: desktop lays an image out as an inline box with no
-/// bytes, so the positions on its two sides share one flat byte, and the host
-/// draws both before it — the #1025 ambiguity, on desktop.
+/// it before it — the overlay and `EditorHandle::caret_rect` alike. It was
+/// not: desktop lays an image out as an inline box with no bytes, so the
+/// positions on its two sides share one flat byte, and the host drew both
+/// before it — the #1025 ambiguity, on desktop (#1104).
 #[test]
-#[ignore = "#1104: an image's two sides share one flat byte on desktop"]
 fn the_caret_beside_an_image_is_drawn_on_its_side() {
-    let p =
-        page("<p>alpha<img src=\"x.png\" alt=\"\" style=\"width: 40px; height: 16px\">bravo</p>");
-    let (before, y0) = p.local(5);
-    let (after, y1) = p.local(6);
+    let mut p = page(&format!("<p>alpha{IMG}bravo</p>"));
+    let img = p.images()[0];
+    let (before, y0) = p.caret_drawn(5);
+    let (after, y1) = p.caret_drawn(6);
     assert_eq!(y0, y1, "one line");
     assert!(
-        after >= before + 39.0,
-        "after the 40px image: {before} -> {after}"
+        (before - img.0).abs() < 1.5,
+        "before the image, at its left edge {}: {before}",
+        img.0
     );
+    assert!(
+        (after - (img.0 + img.2)).abs() < 1.5,
+        "after the 40px image, at its right edge {}: {after}",
+        img.0 + img.2
+    );
+    let (b, a) = (p.caret_rect_x(5), p.caret_rect_x(6));
+    assert!(a >= b + 39.0, "caret_rect: {b} -> {a}");
+}
+
+/// An image at a paragraph's start, and two in a row: the caret before the
+/// first is at the paragraph's start, the one between them at the first's
+/// right edge, the one after both at the second's. The position before a
+/// leading image has no text before it, and the one between two images
+/// shares its byte with both sides of both.
+#[test]
+fn the_carets_around_leading_and_adjacent_images_are_each_on_their_side() {
+    let mut p = page(&format!("<p>{IMG}{IMG}bravo</p>"));
+    let imgs = p.images();
+    assert_eq!(imgs.len(), 2, "positive control: two images");
+    assert!(imgs[1].0 >= imgs[0].0 + 39.0, "side by side: {imgs:?}");
+    let expect = [imgs[0].0, imgs[0].0 + imgs[0].2, imgs[1].0 + imgs[1].2];
+    for (i, want) in expect.into_iter().enumerate() {
+        let (x, _) = p.caret_drawn(i);
+        assert!(
+            (x - want).abs() < 1.5,
+            "char {i}: drawn at {x}, want {want}"
+        );
+        let r = p.caret_rect_x(i);
+        assert!((r - x).abs() < 1.5, "char {i}: caret_rect {r} vs drawn {x}");
+    }
+}
+
+/// A drag that ends over an image's right half puts the head after it, over
+/// its left half before it. Parley's hit test steps over an inline box to the
+/// next character's byte, which is the byte of both of the image's sides, so
+/// every drag onto an image ended before it — and onto a leading image, after.
+#[test]
+fn a_drag_onto_an_image_lands_on_the_half_it_ends_on() {
+    let drag = |html: &str, from: usize, img: usize, frac: f32| {
+        let mut p = page(html);
+        let (bx, by, _, _) = p.block_box();
+        let (fx, _) = p.local(from);
+        let (nx, _) = p.local(from + 1);
+        let i = p.images()[img];
+        let start = (bx + (fx + nx) / 2.0 - 0.5, by + LINE / 2.0);
+        p.drag(start, (i.0 + i.2 * frac, i.1 + i.3 / 2.0))
+    };
+    let one = format!("<p>alpha{IMG}bravo</p>");
+    assert_eq!(drag(&one, 1, 0, 0.25), 5, "left half: before the image");
+    assert_eq!(drag(&one, 1, 0, 0.75), 6, "right half: after it");
+    let two = format!("<p>{IMG}{IMG}bravo</p>");
+    assert_eq!(drag(&two, 3, 0, 0.25), 0, "first image, left half");
+    assert_eq!(drag(&two, 3, 0, 0.75), 1, "first image, right half");
+    assert_eq!(drag(&two, 3, 1, 0.25), 1, "second image, left half");
+    assert_eq!(drag(&two, 3, 1, 0.75), 2, "second image, right half");
 }
 
 /// A selection spanning a break highlights the tail of line 1 and the head of
