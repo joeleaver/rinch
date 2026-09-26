@@ -86,6 +86,43 @@ pub enum DisplayValue {
     InlineGrid,
 }
 
+/// Which part of a CSS table a box is, from its computed `display` (#1083).
+///
+/// rinch has no table formatting context: `display_from_stylo` maps a table,
+/// a row and a row group to [`DisplayValue::Flex`] and a cell or caption to
+/// [`DisplayValue::Block`]. That loses the one fact a flex approximation needs
+/// to be the right *flex*: whether a table (or row group) holds rows, which
+/// stack, or bare cells, which share one anonymous row. This keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub enum TablePart {
+    /// Not a table part.
+    #[default]
+    None,
+    /// `table` / `inline-table`.
+    Table,
+    /// `table-row-group`, `table-header-group`, `table-footer-group`.
+    RowGroup,
+    /// `table-row`.
+    Row,
+    /// Any other table-internal box: a cell, a caption, a column or a
+    /// column group.
+    Other,
+}
+
+impl TablePart {
+    /// Whether this box is a flex container whose direction depends on its
+    /// children (`RinchDocument::table_flex_direction`).
+    pub fn holds_rows(self) -> bool {
+        matches!(self, Self::Table | Self::RowGroup)
+    }
+
+    /// Whether a box of this part, as a child of a table or row group, is a
+    /// row of its own — stacked, not sharing an anonymous row with bare cells.
+    pub fn is_row_like(self) -> bool {
+        matches!(self, Self::RowGroup | Self::Row)
+    }
+}
+
 impl DisplayValue {
     /// Whether this box is a flex or grid container (either outside): its
     /// own text runs are anonymous flex / grid items. Such an item does not
