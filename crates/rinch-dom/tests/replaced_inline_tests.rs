@@ -138,3 +138,99 @@ fn flipping_to_display_inline_keeps_the_box() {
         }
     }
 }
+
+/// Paint `doc` into a 300x120 pixmap with the software painter.
+fn rasterize(doc: &mut RinchDocument) -> Vec<u8> {
+    let mut painter = rinch_dom::paint::skia_painter::TinySkiaPainter::new(300, 120);
+    let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        (300.0, 120.0),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    painter.pixels().to_vec()
+}
+
+fn html_doc(html: &str) -> RinchDocument {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let d = doc.create_element("div");
+    doc.set_attribute(
+        d,
+        "style",
+        "font-size: 16px; line-height: 20px; width: 280px; padding-top: 30px",
+    );
+    doc.append_child(body, d);
+    doc.set_inner_html(d, html);
+    doc.resolve_layout(300.0, 120.0);
+    doc
+}
+
+fn first_with_tag(doc: &RinchDocument, tag: &str) -> usize {
+    doc.tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.tag() == Some(tag))
+        .map(|(i, _)| i)
+        .unwrap()
+}
+
+/// An `<svg>` **with a child** at `display: inline` paints and classifies
+/// exactly as its `inline-block` twin. The childless fixtures above cannot
+/// tell `InlineBlock` from `InlineFlex` (the inside formatting context never
+/// shows); this one kills the mutant mapping the new arm to `InlineFlex`
+/// (review of #1095, M3).
+#[test]
+fn an_svg_with_a_child_at_display_inline_matches_its_inline_block_twin() {
+    let mk = |d: &str| {
+        html_doc(&format!(
+            "ab<svg style=\"display: {d}; width: 20px; height: 20px\" viewBox=\"0 0 20 20\">\
+             <rect x=\"0\" y=\"0\" width=\"20\" height=\"20\" fill=\"red\"></rect></svg>cd"
+        ))
+    };
+    let mut inl = mk("inline");
+    let mut blk = mk("inline-block");
+    let v = inl.taffy_tree_violations();
+    assert!(v.is_empty(), "{v:?}");
+    let pi = rasterize(&mut inl);
+    let pb = rasterize(&mut blk);
+    let red = |p: &[u8]| {
+        p.chunks(4)
+            .filter(|c| c[0] > 200 && c[1] < 60 && c[2] < 60 && c[3] > 200)
+            .count()
+    };
+    assert!(red(&pb) > 300, "the twin paints the rect: {}", red(&pb));
+    assert!(pi == pb, "pixels differ: {} vs {} red", red(&pi), red(&pb));
+    let ri = inl.tree.get(first_with_tag(&inl, "rect")).unwrap();
+    let rb = blk.tree.get(first_with_tag(&blk, "rect")).unwrap();
+    assert_eq!(ri.display_mode, rb.display_mode);
+    assert_eq!(ri.ifc_root.is_some(), rb.ifc_root.is_some());
+    assert_eq!(ri.layout, rb.layout);
+}
+
+/// A transform on a replaced element at `display: inline` applies: it moves
+/// the painted box by 37px, as in Chrome (`Node::transform_applies`, #1080).
+#[test]
+fn a_transform_moves_a_replaced_element_at_display_inline() {
+    for tag in ["img", "button", "svg"] {
+        let pos = |tf: &str| {
+            let doc = html_doc(&format!(
+                "ab<{tag} style=\"display: inline; width: 20px; height: 20px; {tf}\"></{tag}>"
+            ));
+            let id = first_with_tag(&doc, tag);
+            let (x, _, t) =
+                rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, id, 1.0);
+            (
+                doc.tree.get(id).unwrap().transform_applies(),
+                x + t.as_coeffs()[4],
+            )
+        };
+        let (applies, moved) = pos("transform: translateX(37px)");
+        assert!(applies, "{tag}: transform must apply");
+        let moved = moved - pos("").1;
+        assert!((moved - 37.0).abs() < 0.01, "{tag}: moved {moved}");
+    }
+}

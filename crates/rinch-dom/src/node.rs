@@ -1403,10 +1403,10 @@ impl Node {
     ///
     /// The set is the one [`Self::clips_overflow`] excludes, for the same
     /// reason: an element whose [`DisplayMode`] is `Inline`, flowed, split or
-    /// unmarked alike. rinch has no `display: inline` replaced element to carve
-    /// out of it: `img`, `svg` and the form controls are `inline-block` in the
-    /// UA sheet, and a `display: inline` one is flowed content that owns no box
-    /// (#635), so there is nothing a transform could move.
+    /// unmarked alike. A replaced element or form control at `display: inline`
+    /// needs no carve-out: its `display_mode` is `InlineBlock` (#1089,
+    /// [`is_atomic_at_display_inline`]), so a transform applies to it, as in
+    /// Chrome.
     ///
     /// `display: contents` is **not** decided here: the two predicates below
     /// exclude it themselves, and paint's transform composition treats it by
@@ -1821,11 +1821,16 @@ impl Node {
 /// content, and `audio`, are left out — the first two measure `0x0` there and
 /// the third renders nothing without `controls`.
 ///
-/// The UA sheet already gives the first six `inline-block`, so this only
-/// decides anything when author CSS writes `display: inline` (or for the
-/// other five, which rinch's UA sheet leaves `inline`). Without it such an
-/// element was a *flowed* inline element — IFC content with no box — and
-/// measured `0x0`.
+/// The UA sheet already gives `img`, `input`, `button`, `select`,
+/// `textarea` and `svg` `inline-block`, so for those six this only decides
+/// anything when author CSS writes `display: inline`. The UA sheet names none
+/// of `video`, `canvas`, `iframe`, `meter` and `progress`, so they are
+/// `display: inline` by **default** and this changes their default rendering:
+/// an atomic box sized by author CSS, where they used to be flowed. Chrome's
+/// intrinsic default sizes (300x150, 80x16, 160x16) are not modelled, and
+/// fallback content inside them is still laid out, inside the box, where
+/// Chrome renders none. Without this rule such an element was a *flowed*
+/// inline element (IFC content with no box) and measured `0x0`.
 ///
 /// Read in exactly one place, the `display_mode` sync in
 /// `RinchDocument::apply_stylo_styles_to_taffy`, which maps `display: inline`

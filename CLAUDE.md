@@ -2550,7 +2550,10 @@ block container and still clips. So does a **replaced element or form control at
 `display: inline`** (`<img>`, `<svg>`, `<input>`, `<button>`, …): it is an atomic
 inline whatever its `display` says, as in Chrome, and its `display_mode` is
 `InlineBlock` (`node::is_atomic_at_display_inline`, #1089 — it used to be a flowed
-inline with a `0x0` box). The predicate says so, not `clip_shape`, so the
+inline with a `0x0` box). The same rule covers `video`, `canvas`, `iframe`, `meter`
+and `progress`, which the UA sheet leaves `display: inline`, so their **default**
+rendering changed too: an atomic box, with Chrome's default sizes not modelled and
+fallback content still laid out inside it. The predicate says so, not `clip_shape`, so the
 bracket, the chain, hit testing's gate and the dirty-region prune all agree. The
 rinch-specific reason it had to be said: a *flowed* inline element owns no box
 (`Node::is_flowed_inline_element` — its `layout` is zeroed and `E ghost box`
