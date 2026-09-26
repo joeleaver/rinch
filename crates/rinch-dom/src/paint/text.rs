@@ -344,7 +344,10 @@ impl<'a> ShadowGroup<'a> {
     /// The non-empty lists `inline_layout`'s text casts, in the order their
     /// text first appears; `None` when every run casts `root_shadows` — the
     /// fast path, drawn exactly as before per-run shadows were consulted.
-    /// Bytes no range covers (an ellipsis) cast the root's list.
+    /// Bytes no range covers cast the root's list. A `text-overflow: ellipsis`
+    /// layout records no ranges at all, so there every run casts the root's
+    /// list and a span's own is not drawn — as `visibility` is not honoured
+    /// there either (#853, #1065).
     pub(super) fn for_ifc(
         tree: &'a NodeTree,
         inline_layout: &crate::node::InlineLayout,
