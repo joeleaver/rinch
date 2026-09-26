@@ -23,7 +23,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use peniko::kurbo::{Affine, Point, Rect, Shape, Stroke};
+use peniko::kurbo::{Affine, Point, Rect, Stroke};
 use peniko::{Brush, Fill, FontData};
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
