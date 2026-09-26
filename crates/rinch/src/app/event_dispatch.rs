@@ -161,6 +161,13 @@ impl RinchApp {
         // swallows a press: the press that closes it would otherwise skip the
         // heal, and its release, reaching the `MouseUp` arm with the menu gone,
         // committed the stranded drag after all.
+        // Every press, handler or not and before anything can swallow it,
+        // names the button a pointer-capture drag armed from now on belongs to
+        // (issue #1087): the `MouseUp` arm ends a drag only on that button's
+        // release.
+        if let PlatformEvent::MouseDown { button, .. } = event {
+            rinch_core::note_pointer_press(Self::core_button(button));
+        }
         if matches!(
             event,
             PlatformEvent::MouseDown {

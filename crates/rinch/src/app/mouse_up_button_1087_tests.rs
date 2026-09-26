@@ -116,6 +116,23 @@ fn a_right_press_and_release_leave_a_text_selection_drag_alone() {
     assert!(!app.text_selecting, "the left release ends it");
 }
 
+/// A middle press, like a right one, leaves the selection being dragged alone.
+#[test]
+fn a_middle_press_leaves_a_text_selection_drag_alone() {
+    let mut app = mount_text();
+    let focus = strand_a_text_selection(&mut app);
+    let anchor = app.text_selection.as_ref().unwrap().anchor_offset;
+    chord(&mut app, (301.0, 9.0), MouseButton::Middle);
+    assert_eq!(
+        app.text_selection.as_ref().map(|s| s.anchor_offset),
+        Some(anchor)
+    );
+    assert!(app.text_selecting);
+    move_to(&mut app, (371.0, 11.0));
+    assert!(focus_offset(&app) > focus);
+    release(&mut app, (371.0, 11.0));
+}
+
 /// A right press away from any text used to clear the selection under a held
 /// left button.
 #[test]
@@ -132,7 +149,7 @@ fn a_right_press_off_the_text_keeps_the_selection() {
 
 mod pointer_capture {
     use super::super::missed_release_381_tests::{
-        ELSEWHERE, LAST_MOVE, arm_and_lose_the_release, mount,
+        ELSEWHERE, LAST_MOVE, PROBE, arm_and_lose_the_release, mount,
     };
     use super::*;
 
@@ -202,6 +219,11 @@ mod pointer_capture {
                 },
             );
             assert!(rinch_core::Drag::is_active(), "{attribute}: armed");
+            assert_eq!(
+                rinch_core::get_click_context().button,
+                rinch_core::events::MouseButton::Right,
+                "{attribute}: the handler's click context names the right button"
+            );
             move_to(&mut app, (233.0, 149.0));
             send(
                 &mut app,
@@ -214,6 +236,84 @@ mod pointer_capture {
             assert_eq!(*ends.borrow(), vec![(239.0, 151.0)], "{attribute}");
             assert!(!rinch_core::Drag::is_active(), "{attribute}");
         }
+    }
+
+    /// A right chord on a `data-rid` rewrites the click context to `Right`; the
+    /// drag is still judged by the button that armed it, not by the context
+    /// current at the release.
+    #[test]
+    fn a_right_chord_on_a_data_rid_does_not_commit_a_left_drag() {
+        let (mut app, log) = mount();
+        arm_and_lose_the_release(&mut app, &log);
+        chord(&mut app, PROBE, MouseButton::Right);
+        assert_eq!(
+            rinch_core::get_click_context().button,
+            rinch_core::events::MouseButton::Right,
+            "precondition: the chord's press reached a handler"
+        );
+        assert!(
+            log.ends.borrow().is_empty(),
+            "committed by the right release"
+        );
+        assert!(rinch_core::Drag::is_active());
+        move_to(&mut app, (419.0, 283.0));
+        assert_eq!(*log.moves.borrow(), vec![LAST_MOVE, (419.0, 283.0)]);
+        release(&mut app, (421.0, 287.0));
+        assert_eq!(*log.ends.borrow(), vec![(421.0, 287.0)]);
+    }
+
+    /// A drag armed outside any press (a timer) belongs to the button most
+    /// recently pressed — every press counts, not only one that reached a
+    /// handler. Here a right press on a `data-rid` is followed by two left
+    /// presses on empty page, which set no click context: the drag is the left
+    /// button's, and a left release ends it.
+    #[test]
+    fn a_drag_armed_outside_a_press_belongs_to_the_last_press() {
+        let (mut app, log) = mount();
+        chord(&mut app, PROBE, MouseButton::Right);
+        chord(&mut app, ELSEWHERE, MouseButton::Left);
+        chord(&mut app, (617.0, 463.0), MouseButton::Left);
+        assert_eq!(
+            rinch_core::get_click_context().button,
+            rinch_core::events::MouseButton::Right,
+            "precondition: the left presses reached no handler"
+        );
+        let (e, c) = (log.clone(), log.clone());
+        rinch_core::Drag::absolute()
+            .on_end(move |x, y| e.ends.borrow_mut().push((x, y)))
+            .on_cancel(move |x, y| c.cancels.borrow_mut().push((x, y)))
+            .start();
+
+        send(
+            &mut app,
+            PlatformEvent::MouseUp {
+                x: 107.0,
+                y: 311.0,
+                button: MouseButton::Right,
+            },
+        );
+        assert!(rinch_core::Drag::is_active(), "a right release ended it");
+        release(&mut app, (103.0, 307.0));
+        assert_eq!(*log.ends.borrow(), vec![(103.0, 307.0)]);
+        assert!(log.cancels.borrow().is_empty());
+
+        // And the other way round: after a right press it is the right's.
+        chord(&mut app, (613.0, 459.0), MouseButton::Right);
+        let e = log.clone();
+        rinch_core::Drag::absolute()
+            .on_end(move |x, y| e.ends.borrow_mut().push((x, y)))
+            .start();
+        release(&mut app, (109.0, 313.0));
+        assert!(rinch_core::Drag::is_active(), "a left release ended it");
+        send(
+            &mut app,
+            PlatformEvent::MouseUp {
+                x: 113.0,
+                y: 317.0,
+                button: MouseButton::Right,
+            },
+        );
+        assert_eq!(*log.ends.borrow(), vec![(103.0, 307.0), (113.0, 317.0)]);
     }
 
     /// The editor's drag-select is armed only by a left press in an editor.
