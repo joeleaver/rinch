@@ -29,25 +29,25 @@ use super::*;
 const WINDOW: (u32, u32) = (800, 600);
 
 /// The button whose press arms the drag: (0,0)-(120,40).
-const ARM: (f32, f32) = (60.0, 20.0);
+pub(super) const ARM: (f32, f32) = (60.0, 20.0);
 /// The last place `on_move` saw the pointer before the release went missing.
-const LAST_MOVE: (f32, f32) = (313.0, 171.0);
+pub(super) const LAST_MOVE: (f32, f32) = (313.0, 171.0);
 /// A second button, (0,100)-(120,140): its click records whether a drag was
 /// still live while it ran — the ordering half of the fix.
-const PROBE: (f32, f32) = (60.0, 120.0);
+pub(super) const PROBE: (f32, f32) = (60.0, 120.0);
 /// Empty page, hit by nothing with a handler.
-const ELSEWHERE: (f32, f32) = (611.0, 457.0);
+pub(super) const ELSEWHERE: (f32, f32) = (611.0, 457.0);
 
 #[derive(Default)]
-struct Log {
-    moves: RefCell<Vec<(f32, f32)>>,
-    ends: RefCell<Vec<(f32, f32)>>,
-    cancels: RefCell<Vec<(f32, f32)>>,
+pub(super) struct Log {
+    pub(super) moves: RefCell<Vec<(f32, f32)>>,
+    pub(super) ends: RefCell<Vec<(f32, f32)>>,
+    pub(super) cancels: RefCell<Vec<(f32, f32)>>,
     /// `Drag::is_active()` as the probe's click handler saw it.
-    probe_saw_drag: RefCell<Vec<bool>>,
+    pub(super) probe_saw_drag: RefCell<Vec<bool>>,
 }
 
-fn mount() -> (RinchApp, Rc<Log>) {
+pub(super) fn mount() -> (RinchApp, Rc<Log>) {
     let log = Rc::new(Log::default());
     let log_in = log.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -113,7 +113,7 @@ fn move_to(app: &mut RinchApp, (x, y): (f32, f32)) {
 
 /// Arm the drag and move it once, then "lose" the release: the state a
 /// native context menu or a WM grab leaves behind.
-fn arm_and_lose_the_release(app: &mut RinchApp, log: &Log) {
+pub(super) fn arm_and_lose_the_release(app: &mut RinchApp, log: &Log) {
     press(app, ARM, MouseButton::Left);
     move_to(app, LAST_MOVE);
     assert_eq!(
