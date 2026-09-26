@@ -134,6 +134,10 @@ fn paragraph(rng: &mut Rng, with_boxes: bool) -> (String, Vec<(usize, f32)>) {
         }
         s.push_str(PIECES[rng.below(PIECES.len() as u64) as usize]);
     }
+    // Review of #1077: a box can be the paragraph's last item.
+    if with_boxes && rng.below(3) == 0 {
+        boxes.push((s.len(), 3.0 + rng.below(160) as f32));
+    }
     (s, boxes)
 }
 
@@ -252,6 +256,13 @@ fn with_inline_boxes_every_line_is_in_step_and_none_is_left_unhung() {
         let mut got = build(&mut fcx, &mut lcx, &text, &boxes);
         let stats = break_lines_hanging_spaces(&mut got, &text, Some(max), true);
         fixed_lines += stats.lines;
+        // Review of #1077: parley's trailing line after an overflowing last box
+        // (#1050) is never left behind, on the hang route either.
+        assert_eq!(
+            super::phantom_last_line(&got),
+            None,
+            "case {case}: phantom left {text:?} {boxes:?} at {max}"
+        );
         let units = super::logical_units(&got, &text);
         let mut cursor = 0;
         for (i, line) in got.lines().enumerate() {
