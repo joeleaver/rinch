@@ -341,6 +341,8 @@ impl Component for Drawer {
                 && let Some(handler_id) = close_handler_id
             {
                 overlay.set_attribute("data-rid", &handler_id.to_string());
+                // A press of any button outside dismisses, not only a left one (#1093).
+                overlay.set_attribute(rinch_core::events::BACKDROP_ATTRIBUTE, "");
             }
             root.append_child(&overlay);
         }

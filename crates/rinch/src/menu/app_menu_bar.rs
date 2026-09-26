@@ -325,6 +325,8 @@ fn build_overlay(scope: &mut RenderScope, active_menu: Signal<i32>) -> NodeHandl
         active_menu.set(-1);
     });
     overlay.set_attribute("data-rid", &handler_id.0.to_string());
+    // A press of any button outside dismisses, not only a left one (#1093).
+    overlay.set_attribute(rinch_core::events::BACKDROP_ATTRIBUTE, "");
     overlay
 }
 
@@ -989,6 +991,21 @@ mod tests {
     /// direction. Sampled at **both ends** of the window, where an overlay
     /// shifted by `±TITLEBAR_HEIGHT` stops answering; the middle is covered
     /// however the box is placed and would prove nothing.
+    /// The overlay is an outside-press backdrop: a right or middle press on it
+    /// closes the open menu too, as it closes a native one (#1093).
+    #[test]
+    fn the_overlay_answers_a_press_of_any_button() {
+        let (doc, overlay_id, _) = open_below_titlebar_menu();
+        let d = doc.borrow();
+        assert!(
+            d.tree
+                .get(overlay_id)
+                .unwrap()
+                .attributes
+                .contains_key(rinch_core::events::BACKDROP_ATTRIBUTE)
+        );
+    }
+
     #[test]
     fn the_below_titlebar_overlay_covers_the_whole_window() {
         let (doc, overlay_id, entry_id) = open_below_titlebar_menu();

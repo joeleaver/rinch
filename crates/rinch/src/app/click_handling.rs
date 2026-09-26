@@ -352,7 +352,8 @@ impl RinchApp {
         // dead button would consume clicks that belong to the row, backdrop or
         // modal wrapping it, silently and permanently.
         enum ClickClaim {
-            Rid(usize, usize), // (node_id, handler_id)
+            /// (node_id, handler_id, the node is a `BACKDROP_ATTRIBUTE` backdrop)
+            Rid(usize, usize, bool),
             DragWindow,
         }
         let click_claim = {
@@ -366,7 +367,8 @@ impl RinchApp {
                     && let Ok(handler_id) = rid_str.parse::<usize>()
                     && events::has_click_handler(events::EventHandlerId(handler_id))
                 {
-                    claim = Some(ClickClaim::Rid(node_id, handler_id));
+                    let backdrop = node.attributes.contains_key(events::BACKDROP_ATTRIBUTE);
+                    claim = Some(ClickClaim::Rid(node_id, handler_id, backdrop));
                     break;
                 }
                 if node.attributes.contains_key("data-drag-window") {
@@ -445,8 +447,12 @@ impl RinchApp {
         // blurred field's commit) applies to every button, as a browser's
         // `mousedown` does; `data-onmousedown` / `data-onmouseup` fire for
         // every button before this path is reached.
+        //
+        // A **backdrop** (`BACKDROP_ATTRIBUTE`) is the exception: dismissing an
+        // overlay on a press outside it is a `mousedown` of any button, so its
+        // `data-rid` runs for every button.
         let click_claim = match click_claim {
-            Some(ClickClaim::Rid(..)) if button != MouseButton::Left => return actions,
+            Some(ClickClaim::Rid(_, _, false)) if button != MouseButton::Left => return actions,
             claim => claim,
         };
 
@@ -457,7 +463,7 @@ impl RinchApp {
         // like a browser click on an element that was removed under the
         // pointer.
         match click_claim {
-            Some(ClickClaim::Rid(node_id, handler_id)) => {
+            Some(ClickClaim::Rid(node_id, handler_id, _)) => {
                 let d = doc.borrow();
                 let still_valid = d
                     .tree
@@ -495,7 +501,8 @@ impl RinchApp {
                     viewport_height,
                     // The button that pressed (issue #1087): a pointer-capture
                     // `Drag` armed from this handler ends on that button's
-                    // release. Only a left press reaches a `data-rid` (#1093).
+                    // release. Only a left press reaches a `data-rid`, or a
+                    // press of any button a backdrop (#1093).
                     button: Self::core_button(button),
                     modifiers: self.modifier_state(),
                 });

@@ -1970,14 +1970,18 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 }
             }
 
-            // Click dispatch (data-rid fires on pointerdown). The primary (left)
-            // button always clicks; a non-primary button clicks only when there
-            // is no contextmenu handler in the ancestry — mirroring the desktop
-            // right-click gate where oncontextmenu suppresses the click. Draggable
-            // sources defer their click to pointerup (above).
+            // Click dispatch (data-rid fires on pointerdown). A `data-rid` is a
+            // `click`, and a browser clicks for the primary button only (issue
+            // #1093): a right or middle press runs none — except a backdrop's
+            // (`BACKDROP_ATTRIBUTE`), because dismissing an overlay on a press
+            // outside it is a `mousedown` of any button. A contextmenu handler
+            // in the ancestry still takes a right press first, as on desktop.
+            // Draggable sources defer their click to pointerup (above).
             let click_allowed = drag_source.is_none()
                 && (event.button() == 0
-                    || el.closest("[data-oncontextmenu]").ok().flatten().is_none());
+                    || (nearest_live_rid(&el).is_some_and(|(rid_el, _)| {
+                        rid_el.has_attribute(events::BACKDROP_ATTRIBUTE)
+                    }) && el.closest("[data-oncontextmenu]").ok().flatten().is_none()));
 
             // Dispatch the click for the nearest [data-rid] (draggables defer to
             // pointerup above).
@@ -2164,18 +2168,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 finish_active_drag(&state, x, y, true);
             } else {
                 // Never activated (a quick tap / sub-threshold press) — treat as a
-                // click on the draggable, with the same right-click/contextmenu
-                // gate as the pointerdown path (a right-press under a
-                // data-oncontextmenu ancestor is suppressed, not doubled with the
-                // contextmenu).
-                let click_allowed = event.button() == 0
-                    || state
-                        .source
-                        .closest("[data-oncontextmenu]")
-                        .ok()
-                        .flatten()
-                        .is_none();
-                if click_allowed {
+                // click on the draggable, which only the primary button makes
+                // (issue #1093), as on the pointerdown path.
+                if event.button() == 0 {
                     dispatch_click_at(&state.source, &browser_doc_for_up, &event);
                 }
             }
