@@ -982,8 +982,9 @@ gets no wake, and the next sender from any thread finds the queue non-empty and
 asks for none either (issue #1035 — a video sink dropped off-thread did this).
 Use `rinch_core::dispatch_main_callback`, which goes through the registered
 dispatcher (or queues plainly when there is none) and, unlike
-`run_on_main_thread`, never panics and never runs inline — the shape a `Drop`
-needs. A host's own dispatcher is the one place a bare push belongs.
+`run_on_main_thread`, does not panic for a missing dispatcher and never runs
+inline — the shape a `Drop` needs. (The queue and the desktop dispatcher it
+reaches still `unwrap` their own locks.) A host's own dispatcher is the one place a bare push belongs.
 
 ## Native Menus
 

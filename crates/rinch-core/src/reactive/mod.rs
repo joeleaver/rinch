@@ -480,7 +480,7 @@ pub(crate) fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
 }
 
 /// Queue `f` for the main thread through the registered dispatcher, from any
-/// thread, and never panic.
+/// thread, without panicking for a missing dispatcher.
 ///
 /// For a caller that must not panic and must not run `f` inline — a `Drop`,
 /// which may run on any thread, inside a borrow `f` needs, or at thread exit.
@@ -498,7 +498,10 @@ pub(crate) fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
 ///
 /// The dispatcher is called with its lock released, so a dispatcher that drops
 /// something whose `Drop` dispatches in turn does not deadlock, and a poisoned
-/// lock is read through rather than propagated.
+/// lock is read through rather than propagated. That is this function's own
+/// guarantee, not its callees': the queue itself ([`queue_main_callback`]) and
+/// the desktop dispatcher still `unwrap` their locks, so either would panic if
+/// its lock were poisoned (nothing panics while holding them).
 pub fn dispatch_main_callback(f: Box<dyn FnOnce() + Send>) {
     let dispatcher = *CROSS_THREAD_DISPATCHER
         .lock()
