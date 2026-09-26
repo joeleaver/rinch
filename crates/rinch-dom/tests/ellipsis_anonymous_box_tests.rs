@@ -11,8 +11,9 @@
 //! container's lines, clipped by its `overflow`.
 //!
 //! The same holds when the run sits in a `<span>` split around the block child
-//! (#513): the anonymous boxes are then minted inside the span, and the box
-//! whose `text-overflow` and `overflow` apply is the span's block container.
+//! (#513). The span holds the text, but the boxes are its block container's,
+//! and a restyle of that container reaches no text child of its own — so this
+//! shape is the one that pins the container's `run_boxes` invalidation.
 //!
 //! Controls, also measured in Chrome 153: a **grid** container's text is an
 //! anonymous grid item, which does not clip, so no "…"; and a container with

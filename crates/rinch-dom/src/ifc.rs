@@ -720,7 +720,8 @@ impl RinchDocument {
             // text-overflow: ellipsis — if text overflows the container, truncate and add "…"
             {
                 use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
-                let cs = &self.tree.nodes[root_id].computed_style;
+                let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
+                    .computed_style;
                 let container_width = max_width.unwrap_or(f32::INFINITY);
                 // A grid (or flex) container holding only text is laid out
                 // here as an IFC root, but that text is an anonymous item of
@@ -764,6 +765,32 @@ impl RinchDocument {
             // its text reaches the screen only through this root. Paint-only:
             // the layout that asked for this rebuild has already run.
             self.tree.paint_dirty_nodes.push(root_id);
+        }
+    }
+
+    /// The node whose style decides an IFC root's `text-overflow: ellipsis`
+    /// (#1071): the root itself, unless it is an anonymous block box, when it
+    /// is the box's `parent` — its block container.
+    ///
+    /// An anonymous box carries only the inherited properties
+    /// ([`crate::computed_style::ComputedStyle::for_anonymous_box`]), and
+    /// `text-overflow` and `overflow` are not inherited — yet its lines are its
+    /// block container's lines, clipped by that container's `overflow`, and
+    /// Chrome 153 draws the container's "…" on them. The boxes of a `<span>`
+    /// split around a block child (#513) are minted with the span's block
+    /// container as their `parent` too, which is the box Chrome asks.
+    /// `white-space` is read there as well; the box inherits it, so the answer
+    /// is the same.
+    ///
+    /// The anonymous box holds none of what this reads, so a restyle of the
+    /// container must re-shape it: `invalidate_text_measure_for_node` drops
+    /// every box in the container's `run_boxes`
+    /// (`ellipsis_anonymous_box_tests.rs`).
+    fn ellipsis_style_owner(nodes: &slab::Slab<Node>, root_id: usize) -> usize {
+        let root = &nodes[root_id];
+        match root.parent {
+            Some(parent) if root.is_anonymous_block_box => parent,
+            _ => root_id,
         }
     }
 
