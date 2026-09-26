@@ -648,45 +648,8 @@ impl RinchDocument {
                 continue;
             }
 
+            let max_width = self.ifc_paint_max_width(root_id);
             let node = &self.tree.nodes[root_id];
-
-            // Use content-box width (subtract padding+border) for line breaking.
-            // For auto-width elements, don't re-constrain text to measured width
-            // as floating-point precision can cause unwanted line breaks.
-            let max_width = {
-                let cs = &node.computed_style;
-                let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
-                let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
-                let content_width = node.layout.width - padding_h - border_h;
-                if content_width > 0.0 {
-                    // An auto-width element is sized to its content: its box width is
-                    // the text's max-content width (+ padding/border) measured with NO
-                    // wrap, then ROUNDED DOWN to an integer pixel — losing strictly
-                    // less than 1px of the text's true width. So the paint layout here
-                    // must allow up to 1px more than `content_width`, or it re-wraps
-                    // the text at a space inside a box that was sized for one line
-                    // (the box says one line, the glyphs render two). A 0.5px
-                    // tolerance can't absorb a full 1px floor; 1.0px provably can
-                    // (`natural - content_width == frac(natural) < 1.0`). Explicit-
-                    // width elements get no tolerance — they should wrap at their width.
-                    //
-                    // The question is about the **used** size, not the declared
-                    // one, so it is `lays_out_as_auto` (#626): `width:
-                    // max-content` shrink-wraps exactly as `auto` does today,
-                    // so its box was measured and floored the same way and it
-                    // needs the same slack. Reading `is_auto()` here gave such a
-                    // box 0px and re-wrapped its text inside a box sized for one
-                    // line — the box unchanged, the glyphs on two.
-                    let tolerance = if cs.width.lays_out_as_auto() {
-                        1.0
-                    } else {
-                        0.0
-                    };
-                    Some(content_width + tolerance)
-                } else {
-                    None
-                }
-            };
 
             // Skip Parley rebuild if text hasn't changed and the layout already
             // exists with the same max_width. The existing text_layout is still valid.
@@ -706,66 +669,154 @@ impl RinchDocument {
                 }
             }
 
-            self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
-            let mut inline_layout = Self::build_inline_layout(
-                &self.tree.nodes,
-                root_id,
-                max_width,
-                1.0,
-                &mut self.font_cx,
-                paint_layout_cx,
-            );
-            inline_layout.hang.record(&self.tree.perf);
-
-            // text-overflow: ellipsis — if text overflows the container, truncate and add "…"
-            {
-                use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
-                let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
-                    .computed_style;
-                let container_width = max_width.unwrap_or(f32::INFINITY);
-                // A grid (or flex) container holding only text is laid out
-                // here as an IFC root, but that text is an anonymous item of
-                // the container, which does not clip — so no "…", as in
-                // Chrome (#904's second review). It is the only ellipsis
-                // site since #982 (`ellipsis_route_tests.rs`).
-                if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
-                    && !cs.display.is_flex_or_grid_container()
-                    && matches!(
-                        cs.white_space,
-                        WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                    )
-                    && matches!(cs.overflow_x, OverflowValue::Hidden | OverflowValue::Clip)
-                    && inline_layout.layout.width() > container_width
-                    && container_width > 0.0
-                {
-                    // Collect text content from the inline layout
-                    let full_text = inline_layout.text_content.clone();
-                    if !full_text.is_empty() {
-                        self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
-                        inline_layout = Self::build_ellipsis_layout(
-                            &self.tree.nodes,
-                            root_id,
-                            &full_text,
-                            container_width,
-                            1.0,
-                            &mut self.font_cx,
-                            paint_layout_cx,
-                        );
-                    }
-                }
+            // A root outside the document is not shaped (#1069): nothing
+            // paints it. `set_text_content` and `remove_child` take a subtree's
+            // marks with it (#1073), but the whole-document structural pass
+            // still walks the slab and marks detached subtrees again, so this
+            // is where a disconnected root is turned away. Asked only of a
+            // root about to be shaped, so a settled document pays nothing.
+            // Its old layout is dropped and so is its registration: attaching
+            // it again seeds a structural pass, which registers it, and it has
+            // no layout to keep, so it is shaped then
+            // (`a_reattached_orphan_ifc_root_lays_out_as_a_fresh_one`).
+            if self.depth_if_connected(root_id).is_none() {
+                self.tree.nodes[root_id].text_layout = None;
+                self.tree.ifc_root_registry.remove(&root_id);
+                continue;
             }
 
-            // Write positions from Parley layout back to child nodes
-            // Walk the layout lines to find positioned inline boxes and text runs
-            self.write_inline_positions(root_id, &inline_layout);
-
-            self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
-            // New glyphs are a paint change whether or not the root's box
-            // moved: a span that left the line (`display: none`) or changed
-            // its text reaches the screen only through this root. Paint-only:
-            // the layout that asked for this rebuild has already run.
-            self.tree.paint_dirty_nodes.push(root_id);
+            self.shape_ifc_root_paint_layout(root_id, max_width, paint_layout_cx);
         }
+    }
+
+    /// The width an IFC root's paint layout is broken at: its content-box
+    /// width, with the auto-width slack below. `None` for a root with no
+    /// positive content width (unconstrained).
+    fn ifc_paint_max_width(&self, root_id: usize) -> Option<f32> {
+        let node = &self.tree.nodes[root_id];
+        // Use content-box width (subtract padding+border) for line breaking.
+        // For auto-width elements, don't re-constrain text to measured width
+        // as floating-point precision can cause unwanted line breaks.
+        let cs = &node.computed_style;
+        let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
+        let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
+        let content_width = node.layout.width - padding_h - border_h;
+        if content_width > 0.0 {
+            // An auto-width element is sized to its content: its box width is
+            // the text's max-content width (+ padding/border) measured with NO
+            // wrap, then ROUNDED DOWN to an integer pixel — losing strictly
+            // less than 1px of the text's true width. So the paint layout here
+            // must allow up to 1px more than `content_width`, or it re-wraps
+            // the text at a space inside a box that was sized for one line
+            // (the box says one line, the glyphs render two). A 0.5px
+            // tolerance can't absorb a full 1px floor; 1.0px provably can
+            // (`natural - content_width == frac(natural) < 1.0`). Explicit-
+            // width elements get no tolerance — they should wrap at their width.
+            //
+            // The question is about the **used** size, not the declared
+            // one, so it is `lays_out_as_auto` (#626): `width:
+            // max-content` shrink-wraps exactly as `auto` does today,
+            // so its box was measured and floored the same way and it
+            // needs the same slack. Reading `is_auto()` here gave such a
+            // box 0px and re-wrapped its text inside a box sized for one
+            // line — the box unchanged, the glyphs on two.
+            let tolerance = if cs.width.lays_out_as_auto() {
+                1.0
+            } else {
+                0.0
+            };
+            Some(content_width + tolerance)
+        } else {
+            None
+        }
+    }
+
+    /// Shape `root_id`'s paint layout at `max_width` and store it — the
+    /// rebuild half of [`Self::build_ifc_layouts`], which decides *whether*.
+    fn shape_ifc_root_paint_layout(
+        &mut self,
+        root_id: usize,
+        max_width: Option<f32>,
+        paint_layout_cx: &mut parley::LayoutContext<Brush>,
+    ) {
+        self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
+        let mut inline_layout = Self::build_inline_layout(
+            &self.tree.nodes,
+            root_id,
+            max_width,
+            1.0,
+            &mut self.font_cx,
+            paint_layout_cx,
+        );
+        inline_layout.hang.record(&self.tree.perf);
+
+        // text-overflow: ellipsis — if text overflows the container, truncate and add "…"
+        {
+            use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
+            let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
+                .computed_style;
+            let container_width = max_width.unwrap_or(f32::INFINITY);
+            // A grid (or flex) container holding only text is laid out
+            // here as an IFC root, but that text is an anonymous item of
+            // the container, which does not clip — so no "…", as in
+            // Chrome (#904's second review). It is the only ellipsis
+            // site since #982 (`ellipsis_route_tests.rs`).
+            if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
+                && !cs.display.is_flex_or_grid_container()
+                && matches!(
+                    cs.white_space,
+                    WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
+                )
+                && matches!(cs.overflow_x, OverflowValue::Hidden | OverflowValue::Clip)
+                && inline_layout.layout.width() > container_width
+                && container_width > 0.0
+            {
+                // Collect text content from the inline layout
+                let full_text = inline_layout.text_content.clone();
+                if !full_text.is_empty() {
+                    self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
+                    inline_layout = Self::build_ellipsis_layout(
+                        &self.tree.nodes,
+                        root_id,
+                        &full_text,
+                        container_width,
+                        1.0,
+                        &mut self.font_cx,
+                        paint_layout_cx,
+                    );
+                }
+            }
+        }
+
+        // Write positions from Parley layout back to child nodes
+        // Walk the layout lines to find positioned inline boxes and text runs
+        self.write_inline_positions(root_id, &inline_layout);
+
+        self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
+        // New glyphs are a paint change whether or not the root's box
+        // moved: a span that left the line (`display: none`) or changed
+        // its text reaches the screen only through this root. Paint-only:
+        // the layout that asked for this rebuild has already run.
+        self.tree.paint_dirty_nodes.push(root_id);
+    }
+
+    /// Shape one IFC root's paint layout as `build_ifc_layouts` would, **even
+    /// though it is outside the document**, which that function declines to
+    /// do (#1069). Test support only.
+    ///
+    /// `walk_inline_children`'s `_ => break` arm has no known connected route
+    /// (#615's argument): in a document, an in-flow block inside an inline
+    /// element splits it (#513), so the walk never meets the block. Its only witnesses lay a detached
+    /// subtree out, where the fold that splits the inline does not reach
+    /// (`ifc_classifier_tests`, #615). Once detached roots stopped being
+    /// shaped they needed this to reach the walk. The marking half they also
+    /// pin is still reached by the whole-document pass itself.
+    #[doc(hidden)]
+    pub fn shape_ifc_root_for_tests(&mut self, root: rinch_core::dom::NodeId) {
+        let max_width = self.ifc_paint_max_width(root.0);
+        let mut cx = std::mem::take(&mut self.layout_cx);
+        self.shape_ifc_root_paint_layout(root.0, max_width, &mut cx);
+        self.layout_cx = cx;
     }
 
     /// The node whose style decides an IFC root's `text-overflow: ellipsis`
@@ -3959,8 +4010,10 @@ impl RinchDocument {
             };
             // A box outside the document is not measured (#1040): nothing
             // paints it, and attaching it again seeds a structural pass that
-            // sizes it then. `set_text_content` orphans a subtree without
-            // freeing it, so the registry still names its atomic inlines.
+            // sizes it then. A detach clears the subtree's marks (#1073), but
+            // this is the whole-document pass, which walks the slab and marks
+            // detached subtrees again, so the registry names their atomic
+            // inlines again.
             if node.ifc_root.is_some()
                 && node.display_mode.is_atomic_inline()
                 && let Some(taffy_id) = node.taffy_id
@@ -4179,9 +4232,11 @@ impl RinchDocument {
         // it missed it the other 17. It now kills it 25 times in 25. See that
         // field's doc.
         //
-        // A box no longer in the document is dropped, not measured (#1040): a
-        // `set_text_content` orphans a subtree without freeing it, and nothing
-        // paints what it holds. Dropping the entry loses nothing: attaching
+        // A box no longer in the document is dropped, not measured (#1040):
+        // nothing paints what it holds. A detach clears the subtree's marks
+        // (#1073), so such an entry is usually skipped below for its missing
+        // `ifc_root` anyway — but a whole-document pass in the same layout
+        // marks a detached subtree again. Dropping the entry loses nothing: attaching
         // the box again seeds a structural pass that sizes it.
         // `a_detached_atomic_inline_is_sized_again_when_reattached` pins that
         // for a box whose content changed before the detach with no layout in
@@ -4254,7 +4309,9 @@ impl RinchDocument {
                 let Some(an) = self.tree.nodes.get(a) else {
                     break;
                 };
-                // `a` is an ancestor of a connected box, so it is connected.
+                // `a` is an ancestor of a connected box, so it is connected:
+                // `depth_if_connected` is asked for its depth here, not used
+                // as a filter, and has no `None` to give.
                 if an.display_mode.is_atomic_inline()
                     && let Some(depth) = self.depth_if_connected(a)
                 {

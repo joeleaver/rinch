@@ -2154,17 +2154,19 @@ box:
   hit-test builders there have to move as one piece, which is #320. A
   percentage spacing is still dropped where Chrome resolves it against the
   font-size (#743).
-- **An atomic inline is sized by three passes and no compute (#661).**
+- **An atomic inline is sized by its own passes and no compute (#661).**
   `inline-block`, `inline-flex` and `inline-grid` boxes are detached from their
   parent's Taffy child list so the enclosing IFC can measure them as Parley
-  `InlineBox`es, so the **root compute never reaches one**. All three sizers go
+  `InlineBox`es, so the **root compute never reaches one**. All four sizers go
   through `measure_inline_blocks`: `compute_inline_block_layouts` on an
-  `ifc_dirty` pass, `resolve_percentage_inline_blocks` after the root compute
+  `ifc_dirty` pass, `measure_scoped_atomic_inlines` — its share of a scoped
+  structural pass, sizing only the scope's regions — on every other structural
+  pass, `resolve_percentage_inline_blocks` after the root compute
   for a percentage inline size (which is also what makes such a box track a
   viewport resize, on a pass with no `ifc_dirty` and an empty dirty set), and —
   since #661 —
   `remeasure_dirty_atomic_inlines`. `ifc_dirty` is left false by a style-only
-  restyle and by a `set_text_content` alike, so before that third pass the box
+  restyle and by a `set_text_content` alike, so before that last pass the box
   was measured once and frozen at `225x20` while paint drew six lines. It
   re-measures the ones a change actually reached, off a **dirty set**
   (`tree.dirty_atomic_inlines`) rather than a flag: measured, re-measuring the
@@ -2386,12 +2388,19 @@ cleared by the verb that moved it). A seed on a node **not connected to the
 document** is dropped: detached subtrees are no longer set up at all, and
 attaching one re-seeds it (#628's optimisation, half-landed — the
 `ifc_classifier_tests` detached-route fixtures now force the whole-document pass,
-which still walks detached subtrees). **Nor is a detached subtree's atomic
-inline measured** (#1040): `set_text_content` orphans without freeing, so the
-atomic-inline registry below still names what the orphan holds, and the three
-atomic-inline sizers each skip an entry `depth_if_connected` says is out of the
-document. `build_ifc_layouts` still shapes an orphaned IFC root that was dirtied
-before the detach (#1069). Anonymous boxes, splits and measure leaves
+which still walks detached subtrees). **Nor is a detached subtree measured or
+shaped.** Every verb that takes a subtree out of the document clears its
+`ifc_root` marks with `clear_ifc_root_recursive` — `set_text_content`'s orphans
+included since #1073; it orphans without freeing, and its orphans used to keep
+their marks, so their roots were shaped (#1069) and their atomic inlines sized
+(#1040) while out. Two filters remain for what the whole-document pass marks
+again: the three sizers that read the registries or the dirty set
+(`compute_inline_block_layouts`, `resolve_percentage_inline_blocks`,
+`remeasure_dirty_atomic_inlines`) skip an entry `depth_if_connected` says is out
+of the document — the fourth, `measure_scoped_atomic_inlines`, sizes only its
+scope's regions, and a scope holds no disconnected node — and
+`build_ifc_layouts` drops a disconnected root's layout and registration instead
+of shaping it. Anonymous boxes, splits and measure leaves
 whose owner left the slab (`set_inner_html`, pseudo-element churn) are swept as
 orphans at a scoped pass's start. **`tree.ifc_dirty` is now "run the
 whole-document pass"** — the first layout (`ifc_full_initial`),
