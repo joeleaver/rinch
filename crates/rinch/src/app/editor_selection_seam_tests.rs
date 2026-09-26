@@ -34,7 +34,10 @@ fn idle(app: &mut RinchApp) {
     }
 }
 
-fn highlights(app: &RinchApp) -> Vec<(f32, f32, f32, f32)> {
+/// A painted box, `(x, y, width, height)`.
+type Rect = (f32, f32, f32, f32);
+
+fn highlights(app: &RinchApp) -> Vec<Rect> {
     let doc = app.doc.as_ref().unwrap().borrow();
     doc.query_selector_all("[data-pm-selection]")
         .into_iter()
@@ -50,7 +53,7 @@ fn highlights(app: &RinchApp) -> Vec<(f32, f32, f32, f32)> {
 /// Select all of a wrapped paragraph set at `font` and return, top to bottom,
 /// the colour of every row under the highlight's leftmost column, with the
 /// highlight rects for the message.
-fn wash_column(font: &str) -> (Vec<[u8; 3]>, Vec<(f32, f32, f32, f32)>) {
+fn wash_column(font: &str) -> (Vec<[u8; 3]>, Vec<Rect>) {
     let handle = crate::editor::create_editor();
     assert!(handle.load_html(&format!("<p>{TEXT}</p>")));
     let handle_in = handle.clone();
@@ -101,7 +104,7 @@ fn assert_even_wash(font: &str) {
     for (y, c) in rows.iter().enumerate() {
         assert_eq!(
             *c, first,
-            "{font}: row {y} of the highlight is {c:?}, the rest {first:?} — a \
+            "{font}: row {y} (counted from the highlight's top) of the highlight is {c:?}, the rest {first:?} — a \
              seam where two lines' highlights overlap (darker) or leave a gap \
              (white). Rects: {rects:?}"
         );
