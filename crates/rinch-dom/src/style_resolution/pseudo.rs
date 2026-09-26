@@ -236,10 +236,6 @@ impl RinchDocument {
                     let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
                 }
             }
-            // Generated text is drawn by its originator's IFC too (#1048).
-            if !self.tree.inline_text_shadows {
-                self.note_inline_text_shadow(span_raw);
-            }
         }
     }
 
