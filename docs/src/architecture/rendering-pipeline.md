@@ -174,6 +174,24 @@ pub trait Painter {
 }
 ```
 
+**Each text run casts its own element's `text-shadow`** (#1048). The property
+is inherited, so an IFC's text casts its root's list unless an inline element on
+the way down declared another (`none` included). When every run casts the
+root's list the text is drawn exactly as one list; otherwise each distinct list
+is drawn through a mask that keeps it to the text casting it
+(`paint::text::ShadowGroup`, the #829 visibility mask's per-range rule), every
+shadow before any text, as for one list. Chrome 153 paints shadow-then-text per
+text node instead: in `<p style="text-shadow: -29px 0 blue">A<span>B</span></p>`
+the shadow of `B` covers `A` there (measured) and not in rinch, whether or not
+the span declares its own list. Such a list is ink of the root that draws it:
+damage, the paint prune, the painted state and `layer_bounds` all count it.
+Two limits. In a `text-overflow: ellipsis` line every run casts the root's list,
+because that layout records no text ranges, the same gap as #853 (#1065). And
+each distinct list is a pass over the lines its text is on, so a paragraph of
+many spans with *different* lists costs about lists × parley's per-line item
+walk: 193 ms for 400 distinct lists in one paragraph, against 4.6 ms for one
+shared list (#1066).
+
 **A blurred `text-shadow` is a blurred mask** (#980, `paint/text_shadow.rs`).
 Vello has no general blur, so wherever the software rasteriser is compiled in
 (every desktop and Android build) the shadow — glyphs, underline, line-through

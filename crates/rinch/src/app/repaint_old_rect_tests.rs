@@ -1255,6 +1255,271 @@ fn a_text_shadow_added_in_place_is_painted_whole() {
     );
 }
 
+// ── #1048: a span's own `text-shadow` is ink of the paragraph it flows in ──
+
+/// [`text_panel`], but the box declares no shadow and its text sits in a
+/// `<span>` that does: a flowed inline owns no box, so only the IFC root's
+/// rect, grown by its **members'** shadow reach, can name the shadow's pixels.
+fn span_text_panel(shadow: &str) -> (RinchApp, NodeHandle) {
+    let shadow = shadow.to_string();
+    let (app, hs) = mount_with(move |scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let root = el(
+            scope,
+            &outer,
+            "position: relative; width: 10px; height: 10px",
+        );
+        let b = el(
+            scope,
+            &root,
+            "position: absolute; left: 20px; top: 150px; width: 200px; height: 20px; \
+             font-size: 16px; line-height: 20px; color: rgb(0, 0, 0)",
+        );
+        let span = scope.create_element("span");
+        span.set_attribute("style", &format!("text-shadow: {shadow}"));
+        b.append_child(&span);
+        let t = scope.create_text("HHHH HHHH");
+        span.append_child(&t);
+        (outer, vec![span])
+    });
+    (app, hs[0].clone())
+}
+
+/// A span's text-shadow dropped in place is cleared (#1048).
+///
+/// Kills: the span's damage falling back to the paragraph's bare box (the
+/// shadow 60px below it is never repainted).
+#[test]
+fn a_span_text_shadow_dropped_in_place_is_cleared() {
+    let (mut app, span) = span_text_panel("0 60px 6px rgb(255, 0, 0)");
+    assert_clean_after(&mut app, TEXT_SHADOW_BAND, |app| {
+        span.set_style("text-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// A whole-document restyle's paint re-reads every painted node's state; the
+/// paragraph's must keep its span's shadow reach, or the span's shadow dropped
+/// after it is never cleared (#1048; review of #1063, F3).
+///
+/// Kills: the `whole_document_damaged` refresh in `consume_paint_dirty`
+/// recording the root's own ink only.
+#[test]
+fn a_span_text_shadow_dropped_after_a_full_restyle_is_cleared() {
+    let (mut app, span) = span_text_panel("0 60px 6px rgb(255, 0, 0)");
+    let _ = full_frame(&mut app);
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .tree
+        .note_full_restyle(rinch_dom::perf::FullRestyleReason::Theme);
+    assert_clean_after(&mut app, TEXT_SHADOW_BAND, |app| {
+        span.set_style("text-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// A span's text-shadow added in place is painted whole (#1048).
+///
+/// Kills: the span's new reach missing from the damage, or the paint prune
+/// testing the paragraph's own ink only (its box is outside the band, so the
+/// incremental frame never draws the shadow there).
+#[test]
+fn a_span_text_shadow_added_in_place_is_painted_whole() {
+    let (mut app, span) = span_text_panel("none");
+    let _ = full_frame(&mut app);
+    span.set_style("text-shadow", "0 60px 6px rgb(255, 0, 0)");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert!(
+        ink_in(&full, TEXT_SHADOW_BAND) > 100,
+        "positive control: the span's new shadow is there"
+    );
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
+/// A static paragraph shifted down by reflow, its span's shadow 60px below its
+/// box: the paragraph's painted ink must hold its span's shadow reach (#1048).
+///
+/// Kills: `PaintedState` recording the IFC root's own ink only (the old shadow
+/// is left behind).
+#[test]
+fn a_static_row_shifted_by_reflow_clears_its_spans_old_text_shadow() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let col = el(scope, &outer, "width: 300px");
+        let spacer = el(scope, &col, "height: 100px");
+        let row = el(
+            scope,
+            &col,
+            "height: 20px; font-size: 16px; line-height: 20px; color: rgb(0, 0, 0)",
+        );
+        let span = scope.create_element("span");
+        span.set_attribute("style", "text-shadow: 0 60px 6px rgb(255, 0, 0)");
+        row.append_child(&span);
+        let t = scope.create_text("HHHH HHHH");
+        span.append_child(&t);
+        (outer, vec![spacer])
+    });
+    assert_clean_after(&mut app, (0, 154, 90, 186), |app| {
+        hs[0].set_style("height", "40px");
+        resolve(app);
+    });
+}
+
+/// The same paragraph pushed **down** by reflow: its column's box ends above
+/// the new shadow, so only the paragraph's current ink — its span's shadow
+/// reach — names where the shadow is drawn now (#1048).
+///
+/// Kills: a paint-dirty IFC root's damage grown by its own ink only (the moved
+/// shadow is never drawn in the incremental frame).
+#[test]
+fn a_static_row_pushed_down_by_reflow_draws_its_spans_shadow_where_it_is_now() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let col = el(scope, &outer, "width: 300px");
+        let spacer = el(scope, &col, "height: 100px");
+        let row = el(
+            scope,
+            &col,
+            "height: 20px; font-size: 16px; line-height: 20px; color: rgb(0, 0, 0)",
+        );
+        let span = scope.create_element("span");
+        span.set_attribute("style", "text-shadow: 0 60px 6px rgb(255, 0, 0)");
+        row.append_child(&span);
+        let t = scope.create_text("HHHH HHHH");
+        span.append_child(&t);
+        (outer, vec![spacer])
+    });
+    let _ = full_frame(&mut app);
+    // The row moves from 100..120 to 160..180; its shadow to 220..240.
+    hs[0].set_style("height", "160px");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert!(
+        ink_in(&full, (0, 214, 90, 246)) > 100,
+        "positive control: the shadow is drawn at its new place"
+    );
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
+/// A span's shadow given in place, then dropped in the frame reflow moves its
+/// paragraph: the paragraph was not itself dirty for the restyle (only its
+/// span was), so its painted ink must have been brought up to the span's new
+/// shadow when that frame was consumed (#1048).
+///
+/// Kills: `consume_paint_dirty` not refreshing the IFC root's ink when a
+/// box-less member is consumed (the moved paragraph's old shadow stays).
+#[test]
+fn a_span_shadow_added_then_dropped_as_reflow_moves_it_is_cleared() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let col = el(scope, &outer, "width: 300px");
+        let spacer = el(scope, &col, "height: 100px");
+        let row = el(
+            scope,
+            &col,
+            "height: 20px; font-size: 16px; line-height: 20px; color: rgb(0, 0, 0)",
+        );
+        let span = scope.create_element("span");
+        row.append_child(&span);
+        let t = scope.create_text("HHHH HHHH");
+        span.append_child(&t);
+        (outer, vec![spacer, span])
+    });
+    let _ = full_frame(&mut app);
+    hs[1].set_style("text-shadow", "0 60px 6px rgb(255, 0, 0)");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    assert!(
+        ink_in(&inc, (0, 154, 90, 186)) > 100,
+        "positive control: the shadow is drawn"
+    );
+    // Moved and dropped in one frame: neither the paragraph's ink now nor the
+    // span's names where the old shadow is, only the paragraph's painted ink.
+    hs[0].set_style("height", "40px");
+    hs[1].set_style("text-shadow", "none");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
+/// A box under a span's shadow repaints, and nothing else does: the paint
+/// prune must enter the paragraph for its span's shadow, though its box is
+/// nowhere near the damage (#1048).
+///
+/// Kills: the prune testing the paragraph's own ink only (the shadow is
+/// cleared with the box's old background and never drawn back).
+#[test]
+fn a_box_under_a_span_shadow_repaints_the_shadow_over_it() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "position: relative; width: 600px; height: 400px");
+        let under = el(
+            scope,
+            &outer,
+            "position: absolute; left: 10px; top: 200px; width: 200px; height: 40px; \
+             background: rgb(200, 200, 255)",
+        );
+        let row = el(
+            scope,
+            &outer,
+            "position: absolute; left: 20px; top: 150px; width: 200px; height: 20px; \
+             font-size: 16px; line-height: 20px; color: rgb(0, 0, 0)",
+        );
+        let span = scope.create_element("span");
+        span.set_attribute("style", "text-shadow: 0 60px 0 rgb(255, 0, 0)");
+        row.append_child(&span);
+        let t = scope.create_text("HHHH HHHH");
+        span.append_child(&t);
+        (outer, vec![under])
+    });
+    let _ = full_frame(&mut app);
+    hs[0].set_style("background", "rgb(200, 255, 200)");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    let (w, (x0, y0, x1, y1)) = (SIZE.0 as i32, TEXT_SHADOW_BAND);
+    let red = (y0..y1)
+        .flat_map(|y| (x0..x1).map(move |x| ((y * w + x) * 4) as usize))
+        .filter(|&i| full[i] > 200 && full[i + 1] < 80 && full[i + 2] < 80)
+        .count();
+    assert!(
+        red > 50,
+        "positive control: the shadow is over the box ({red})"
+    );
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
 // ── #997: backface-visibility and transform-origin z ─────────────────────────
 /// A change that hides or shows a box through its backface, or moves it by its
 /// origin's z, repaints incrementally and matches a full frame. The first pins

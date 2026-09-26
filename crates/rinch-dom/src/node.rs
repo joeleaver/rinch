@@ -1849,6 +1849,12 @@ pub struct NodeTree {
     /// that consumes it repaints in full. Cleared by
     /// [`NodeTree::consume_paint_dirty`].
     pub whole_document_damaged: bool,
+    /// Whether an inline element (or a `display: contents` wrapper) has ever
+    /// computed a `text-shadow` other than its parent's (#1048). Until one
+    /// has, every text run casts its IFC root's list, and paint, damage and
+    /// the painted state skip the per-run walk that finds the others. Set by
+    /// the cascade; sticky — clearing it would need a count nobody keeps.
+    pub inline_text_shadows: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
@@ -2321,6 +2327,7 @@ impl NodeTree {
             paint_dirty_nodes: Vec::new(),
             paint_dirty_removed_rects: Vec::new(),
             whole_document_damaged: false,
+            inline_text_shadows: false,
             style_dirty_nodes: Vec::new(),
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
@@ -2518,7 +2525,21 @@ impl NodeTree {
     /// [`Node::painted`] — own ink reach and own transform — which is O(1) per
     /// node: nothing here walks a subtree.
     pub fn consume_paint_dirty(&mut self) {
+        let members = self.inline_text_shadows;
         let nodes = &mut self.nodes;
+        // Each state is read with the slab borrowed shared (an IFC root's ink
+        // reads its inline elements' styles, #1048), then written.
+        let refresh = |nodes: &mut slab::Slab<Node>, id: RawNodeId, layout: bool| {
+            let Some(node) = nodes.get(id) else {
+                return;
+            };
+            let state = PaintedState::of_in(node, members, |i| nodes.get(i));
+            let node = &mut nodes[id];
+            if layout {
+                node.prev_layout = node.layout;
+            }
+            node.painted = Some(state);
+        };
         // A whole-document restyle changes styles without pushing the nodes
         // it changed, and the paint consuming it drew *every* node with the
         // restyled values. So every painted node's state is re-read here, or
@@ -2526,19 +2547,42 @@ impl NodeTree {
         // screen were never drawn with — its ink and transform, and the
         // clipping and position the damage's clip chain reads (#909). O(n),
         // on a frame that has just restyled and repainted all n.
-        if self.whole_document_damaged {
+        if self.whole_document_damaged && !members {
             for (_, node) in nodes.iter_mut() {
                 if node.painted.is_some() {
                     node.painted = Some(PaintedState::of(node));
                 }
             }
-        }
-        for id in self.paint_dirty_nodes.drain(..) {
-            if let Some(node) = nodes.get_mut(id) {
-                node.prev_layout = node.layout;
-                node.painted = Some(PaintedState::of(node));
+        } else if self.whole_document_damaged {
+            let painted: Vec<RawNodeId> = nodes
+                .iter()
+                .filter(|(_, n)| n.painted.is_some())
+                .map(|(id, _)| id)
+                .collect();
+            for id in painted {
+                refresh(nodes, id, false);
             }
         }
+        let mut dirty = std::mem::take(&mut self.paint_dirty_nodes);
+        for &id in &dirty {
+            refresh(nodes, id, true);
+            // A box-less inline's own `text-shadow` is ink of the IFC root
+            // that draws its text, and the paint that consumes it redrew that
+            // root's text with the shadow as it is now (#1048).
+            if members
+                && let Some(root) = nodes.get(id).and_then(|n| n.ifc_root)
+                && root != id
+                && nodes.get(root).is_some_and(|r| r.painted.is_some())
+            {
+                let Some(r) = nodes.get(root) else { continue };
+                let ink = crate::paint::ink_outsets_in(r, true, |i| nodes.get(i));
+                if let Some(state) = nodes[root].painted.as_mut() {
+                    state.ink = ink;
+                }
+            }
+        }
+        dirty.clear();
+        self.paint_dirty_nodes = dirty;
         self.paint_dirty_removed_rects.clear();
         self.whole_document_damaged = false;
     }
@@ -2756,6 +2800,17 @@ pub struct PaintedTransform {
 impl PaintedState {
     /// What `node` paints with now.
     pub fn of(node: &Node) -> Self {
+        Self::of_in(node, false, |_| None)
+    }
+
+    /// [`Self::of`], with the ink an IFC root's text casts through its
+    /// inline elements' own `text-shadow`s (#1048) — `get` looks them up —
+    /// when `members` ([`NodeTree::inline_text_shadows`]).
+    pub fn of_in<'a>(
+        node: &'a Node,
+        members: bool,
+        get: impl Fn(RawNodeId) -> Option<&'a Node> + 'a,
+    ) -> Self {
         let cs = &node.computed_style;
         let transform = (!cs.transform.is_identity).then(|| {
             Box::new(PaintedTransform {
@@ -2768,7 +2823,7 @@ impl PaintedState {
             })
         });
         Self {
-            ink: crate::paint::own_ink_outsets(cs),
+            ink: crate::paint::ink_outsets_in(node, members, get),
             transform,
             clips: node.clips_overflow(),
             position: node.box_position(),

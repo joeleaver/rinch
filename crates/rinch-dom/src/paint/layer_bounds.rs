@@ -964,9 +964,14 @@ impl Walk<'_> {
                 content_x + inline.layout.width() as f64 * self.scale,
                 content_y + inline.layout.height() as f64 * self.scale,
             );
-            extent = extent.union(Extent::Within(
-                transform.transform_rect_bbox(text_shadow_reach(text, node, self.scale)),
-            ));
+            // The shadows its inline elements declare are drawn with it (#1048).
+            let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
+            if self.tree.inline_text_shadows {
+                for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
+                    reach = reach.union(text_shadow_reach(text, list, self.scale));
+                }
+            }
+            extent = extent.union(Extent::Within(transform.transform_rect_bbox(reach)));
         }
 
         // A text node paints its cached Parley layout at its own origin. The
@@ -982,9 +987,9 @@ impl Walk<'_> {
             );
             // Text shadows on a text node come from its parent's style.
             let styled = node.parent.and_then(|p| self.tree.get(p)).unwrap_or(node);
-            extent = extent.union(Extent::Within(
-                transform.transform_rect_bbox(text_shadow_reach(text, styled, self.scale)),
-            ));
+            extent = extent.union(Extent::Within(transform.transform_rect_bbox(
+                text_shadow_reach(text, &styled.computed_style.text_shadow, self.scale),
+            )));
         }
 
         let mut children =
@@ -1169,15 +1174,19 @@ impl Walk<'_> {
     }
 }
 
-/// `rect` grown by however far `node`'s `text-shadow` carries its glyphs.
+/// `rect` grown by however far the `text-shadow` list `shadows` carries its
+/// glyphs.
 ///
 /// `render_text_with_shadow` draws each shadow pass `offset × scale` physical
 /// px from the scaled text, at the text's own size (#409), so the reach is the
 /// offset plus [`REACH_PER_BLUR`](super::text_shadow::REACH_PER_BLUR) blur
 /// radii — three standard deviations, where the blur stops (#980) — times
 /// `scale`.
-fn text_shadow_reach(rect: Rect, node: &Node, scale: f64) -> Rect {
-    let shadows = &node.computed_style.text_shadow;
+fn text_shadow_reach(
+    rect: Rect,
+    shadows: &[crate::computed_style::TextShadowValue],
+    scale: f64,
+) -> Rect {
     if shadows.is_empty() {
         return rect;
     }

@@ -39,18 +39,49 @@ pub(super) fn paint_inline_layout(
         paint_inline_backgrounds(tree, painter, parent_x, parent_y, inline_layout, transform);
     }
 
-    render_text_with_shadow(
-        painter,
-        &inline_layout.layout,
-        parent_x,
-        parent_y,
-        text_shadows,
-        transform,
-        scale,
-        mask,
-        None,
-        Some(inline_layout),
-    );
+    // Each text run casts the `text-shadow` its own element computed (#1048);
+    // `None` — the common case — means every run casts the root's list.
+    match ShadowGroup::for_ifc(tree, inline_layout, text_shadows, root_hidden) {
+        None => render_text_with_shadow(
+            painter,
+            &inline_layout.layout,
+            parent_x,
+            parent_y,
+            text_shadows,
+            transform,
+            scale,
+            mask,
+            None,
+            Some(inline_layout),
+        ),
+        Some(groups) => {
+            // Every shadow under every glyph, as for one list: each group's
+            // passes through a mask that keeps them to the text casting them.
+            for group in &groups {
+                render_text_shadows(
+                    painter,
+                    &inline_layout.layout,
+                    parent_x,
+                    parent_y,
+                    group.shadows,
+                    transform,
+                    scale,
+                    Some(&group.mask),
+                    Some(inline_layout),
+                );
+            }
+            render_text(
+                painter,
+                &inline_layout.layout,
+                parent_x,
+                parent_y,
+                transform,
+                scale,
+                mask,
+                None,
+            );
+        }
+    }
 
     // Wavy underlines (`text-decoration-style: wavy` — the spellcheck squiggle)
     // paint AFTER the text, so the wave reads over the glyph descenders rather
@@ -226,7 +257,10 @@ fn paint_wavy_decorations(
         let brush = brush.cloned().unwrap_or(Brush::Solid(span.color));
         for line in layout.lines() {
             let line_range = line.text_range();
-            if line_range.end <= span.start || line_range.start >= span.end {
+            if line_range.end <= span.start
+                || line_range.start >= span.end
+                || mask.is_some_and(|m| !m.may_show(line_range.clone()))
+            {
                 continue;
             }
             let start = span.start.max(line_range.start);
@@ -284,6 +318,114 @@ pub(super) fn is_hidden(node: &Node) -> bool {
     )
 }
 
+/// The element whose computed style a text range is drawn with: its text
+/// node's DOM parent.
+fn range_element<'a>(tree: &'a NodeTree, range: &crate::node::IfcTextRange) -> Option<&'a Node> {
+    tree.get(range.node_id)
+        .and_then(|t| t.parent)
+        .and_then(|p| tree.get(p))
+}
+
+/// One `text-shadow` list an IFC's text casts, and the mask that keeps its
+/// passes to the text that casts it (#1048).
+///
+/// `text-shadow` is inherited, so a run casts its own element's list — the
+/// IFC root's unless an inline element on the way down declared another
+/// (`none` included). Like `visibility` ([`TextMask`]), that is per element
+/// and not per Parley run: text that differs only in its shadow shares one
+/// glyph run, so the mask is made glyph by glyph. A group's mask also hides
+/// what the visibility mask hides.
+pub(super) struct ShadowGroup<'a> {
+    pub(super) shadows: &'a [TextShadowValue],
+    pub(super) mask: TextMask,
+}
+
+impl<'a> ShadowGroup<'a> {
+    /// The non-empty lists `inline_layout`'s text casts, in the order their
+    /// text first appears; `None` when every run casts `root_shadows` — the
+    /// fast path, drawn exactly as before per-run shadows were consulted.
+    /// Bytes no range covers cast the root's list. A `text-overflow: ellipsis`
+    /// layout records no ranges at all, so there every run casts the root's
+    /// list and a span's own is not drawn — as `visibility` is not honoured
+    /// there either (#853, #1065).
+    pub(super) fn for_ifc(
+        tree: &'a NodeTree,
+        inline_layout: &crate::node::InlineLayout,
+        root_shadows: &'a [TextShadowValue],
+        root_hidden: bool,
+    ) -> Option<Vec<Self>> {
+        // Asked of every IFC on every paint: answer the common case without
+        // allocating, and without walking the runs at all while no inline
+        // element has ever cast a list of its own.
+        if !tree.inline_text_shadows
+            || inline_layout
+                .text_ranges
+                .iter()
+                .filter(|r| !r.is_br)
+                .all(|r| {
+                    range_element(tree, r)
+                        .is_none_or(|e| e.computed_style.text_shadow.as_slice() == root_shadows)
+                })
+        {
+            return None;
+        }
+        let ranges: Vec<(usize, usize, bool, &'a [TextShadowValue])> = inline_layout
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .map(|r| {
+                let el = range_element(tree, r);
+                (
+                    r.flat_start,
+                    r.flat_end,
+                    el.map(is_hidden).unwrap_or(root_hidden),
+                    el.map_or(root_shadows, |e| e.computed_style.text_shadow.as_slice()),
+                )
+            })
+            .collect();
+        let mut lists: Vec<&'a [TextShadowValue]> = Vec::new();
+        for list in ranges
+            .iter()
+            .map(|&(_, _, _, s)| s)
+            .chain(std::iter::once(root_shadows))
+        {
+            if !list.is_empty() && !lists.contains(&list) {
+                lists.push(list);
+            }
+        }
+        Some(
+            lists
+                .into_iter()
+                .map(|list| {
+                    let mut mask_ranges: Vec<(usize, usize, bool)> = ranges
+                        .iter()
+                        .map(|&(s, e, hidden, shadows)| (s, e, hidden || shadows != list))
+                        .collect();
+                    mask_ranges.sort_by_key(|&(s, _, _)| s);
+                    let default_hidden = root_hidden || root_shadows != list;
+                    // Uncovered bytes shown: no narrower span to promise.
+                    let shown_span = default_hidden.then(|| {
+                        mask_ranges
+                            .iter()
+                            .filter(|&&(_, _, hidden)| !hidden)
+                            .fold((usize::MAX, 0), |(s, e), &(rs, re, _)| {
+                                (s.min(rs), e.max(re))
+                            })
+                    });
+                    Self {
+                        shadows: list,
+                        mask: TextMask {
+                            ranges: mask_ranges,
+                            default_hidden,
+                            shown_span,
+                        },
+                    }
+                })
+                .collect(),
+        )
+    }
+}
+
 /// Which bytes of an IFC's laid-out text belong to a `visibility: hidden`
 /// element (#829).
 ///
@@ -300,6 +442,10 @@ pub(super) struct TextMask {
     ranges: Vec<(usize, usize, bool)>,
     /// The answer for bytes no range covers.
     default_hidden: bool,
+    /// The byte span every shown byte lies in, when that is narrower than the
+    /// whole text: a line outside it draws nothing and is not walked
+    /// ([`Self::may_show`]). `None` means any line may.
+    shown_span: Option<(usize, usize)>,
 }
 
 impl TextMask {
@@ -315,12 +461,7 @@ impl TextMask {
             .iter()
             .filter(|r| !r.is_br)
             .map(|r| {
-                let hidden = tree
-                    .get(r.node_id)
-                    .and_then(|t| t.parent)
-                    .and_then(|p| tree.get(p))
-                    .map(is_hidden)
-                    .unwrap_or(root_hidden);
+                let hidden = range_element(tree, r).map(is_hidden).unwrap_or(root_hidden);
                 (r.flat_start, r.flat_end, hidden)
             })
             .collect::<Vec<_>>();
@@ -333,7 +474,20 @@ impl TextMask {
         Some(Self {
             ranges,
             default_hidden: root_hidden,
+            shown_span: None,
         })
+    }
+
+    /// Whether anything in the byte range `range` (a line's) may be shown.
+    ///
+    /// A shadow group's mask shows only its own text (#1048), and walking a
+    /// line's items costs parley a scan of the run per glyph run it yields —
+    /// so each group's pass skips the lines its text is not on. Without that,
+    /// a paragraph of N spans with N distinct lists cost N passes over every
+    /// line: 298 ms at N = 400 (review of #1063).
+    pub(super) fn may_show(&self, range: std::ops::Range<usize>) -> bool {
+        self.shown_span
+            .is_none_or(|(s, e)| range.start < e && range.end > s)
     }
 
     /// Whether the cluster starting at layout byte `byte` is hidden.
@@ -526,6 +680,9 @@ fn draw_text(
 ) {
     let sf = scale as f32;
     for line in layout.lines() {
+        if mask.is_some_and(|m| !m.may_show(line.text_range())) {
+            continue;
+        }
         let mut cursor = GlyphCursor::default();
         for item in line.items() {
             let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
@@ -670,6 +827,36 @@ pub(super) fn render_text_with_shadow(
     color: Option<AlphaColor<Srgb>>,
     wavy: Option<&crate::node::InlineLayout>,
 ) {
+    render_text_shadows(
+        painter,
+        layout,
+        x,
+        y,
+        text_shadows,
+        css_transform,
+        scale,
+        mask,
+        wavy,
+    );
+
+    // Render the main text on top
+    render_text(painter, layout, x, y, css_transform, scale, mask, color);
+}
+
+/// The shadow passes of [`render_text_with_shadow`], without the text: every
+/// shadow in `text_shadows`, the first on top, each through `mask`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_text_shadows(
+    painter: &mut dyn Painter,
+    layout: &parley::layout::Layout<Brush>,
+    x: f64,
+    y: f64,
+    text_shadows: &[TextShadowValue],
+    css_transform: Affine,
+    scale: f64,
+    mask: Option<&TextMask>,
+    wavy: Option<&crate::node::InlineLayout>,
+) {
     // Render shadows in reverse order (first shadow = topmost, drawn last before main text)
     for shadow in text_shadows.iter().rev() {
         let shadow_color = shadow.color.unwrap_or_else(|| {
@@ -692,7 +879,4 @@ pub(super) fn render_text_with_shadow(
             wavy,
         );
     }
-
-    // Render the main text on top
-    render_text(painter, layout, x, y, css_transform, scale, mask, color);
 }
