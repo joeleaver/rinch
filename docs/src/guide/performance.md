@@ -442,10 +442,21 @@ build on the base when the PR adds a benchmark that calls an API the same PR
 introduces (#1036). The base then runs **its own** copy instead, restored with
 its own `Cargo.lock` (`.github/scripts/perf_bench_base.sh`). Every benchmark
 both copies define is still compared; one only the head defines shows as
-`new`, and one only the base defines as `removed`. The report says the base ran
-its own copy, because a benchmark whose scenario the PR changed then compares
-two different scenarios. Above the table, the report always says how many
-benchmarks were compared and names the ones that were not.
+`new`, and one only the base defines as `removed`. Above the table, the report
+always says how many benchmarks were compared and names the ones that were
+not.
+
+Two copies of the sources are only comparable while the head's copy merely
+**adds** to the base's: new functions, new `#[bench::…]` cases, new entries in
+a group list. A PR that also edits an existing scenario could make it cheaper
+and hide a real regression behind a small Δ. So in fallback mode
+`.github/scripts/perf_bench_changes.py` looks for any line the head's copy
+removes or rewrites, and any line it inserts inside an existing item (a new
+statement in an existing setup). If it finds one, the job **fails** and the
+report lists each edit with the function it is in; the
+`perf-regression-accepted` label downgrades that to a warning, and the PR then
+says what the scenario change was. The check is a text proxy, not a Rust
+parser, and errs towards reporting an edit.
 
 When neither copy runs, the outcome depends on whether the base has the crate
 at all:

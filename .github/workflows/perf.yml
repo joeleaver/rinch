@@ -25,7 +25,10 @@ name: Perf
 # API the same PR introduces (#1036) -- the base runs its OWN copy instead
 # (`.github/scripts/perf_bench_base.sh`), so every benchmark both copies define
 # is still compared and one only the head defines shows as `new`. The report
-# lists which benchmarks were compared and which were not. Only if neither copy
+# lists which benchmarks were compared and which were not. In that fallback, a
+# head copy that EDITS an existing scenario (rather than only adding) fails the
+# check unless labelled, since a cheaper scenario could hide a regression
+# (`.github/scripts/perf_bench_changes.py`). Only if neither copy
 # runs is there no baseline:
 #   * base has no `crates/rinch-bench` yet (the PR that adds it): the report
 #     shows the head alone and passes;
@@ -320,7 +323,7 @@ jobs:
           STATUS: ${{ steps.compare.outputs.status }}
         run: |
           case "$STATUS" in
-            1) echo "A benchmark regressed past the threshold, or neither copy of the benchmarks ran on a base that has them; see the job summary."
+            1) echo "A benchmark regressed past the threshold, the base ran its own benchmark sources and this PR edits an existing scenario, or neither copy ran on a base that has them; see the job summary."
                echo "If that is intended, add the '${ACCEPT_LABEL}' label." ;;
             2) echo "perf_compare.py failed (a malformed input or a crash in the script). That is a bug in this workflow, not a regression, and the label cannot fix it." ;;
             3) echo "The head's benchmarks did not build or run; see the 'Benchmark head' step." ;;
