@@ -270,6 +270,87 @@ fn the_carets_around_leading_and_adjacent_images_are_each_on_their_side() {
     }
 }
 
+/// An image at a paragraph's end, and one right after a hard break: the caret
+/// after the first is at its right edge, the one before the second at its left
+/// edge on line 2. Neither has a byte of its own to be drawn at: the first's is
+/// the paragraph's end, drawn after the `a` before it, and the second's is the
+/// start of line 2, which Parley draws before the next character — after the
+/// image.
+#[test]
+fn the_carets_at_a_trailing_image_and_after_a_break_are_each_on_their_side() {
+    let mut p = page(&format!("<p>alpha{IMG}</p>"));
+    let img = p.images()[0];
+    assert!((p.caret_drawn(5).0 - img.0).abs() < 1.5, "before it");
+    let (x, _) = p.caret_drawn(6);
+    assert!(
+        (x - (img.0 + img.2)).abs() < 1.5,
+        "after it: {x} vs {img:?}"
+    );
+
+    let mut p = page(&format!("<p>ab<br>{IMG}cd</p>"));
+    let img = p.images()[0];
+    let (x, y) = p.caret_drawn(3);
+    assert!(
+        img.1 > y,
+        "positive control: the image is on line 2, below {y}"
+    );
+    assert!((x - img.0).abs() < 1.5, "before it: {x} vs {img:?}");
+    let (x, _) = p.caret_drawn(4);
+    assert!(
+        (x - (img.0 + img.2)).abs() < 1.5,
+        "after it: {x} vs {img:?}"
+    );
+}
+
+/// ArrowDown from the caret after an image keeps the image's right edge as
+/// its column. The column is the caret's point (`editor_caret_point`), which
+/// read the flat byte and so started from the image's left edge.
+#[test]
+fn arrow_down_from_after_an_image_keeps_its_column() {
+    let mut p = page(&format!("<p>alpha{IMG}bravo<br>mmmmmmmmmmmmmmmm</p>"));
+    let img = p.images()[0];
+    let (_, y0) = p.caret_drawn(6);
+    let press = |app: &mut RinchApp, down: bool| {
+        let key = KeyCode::ArrowDown;
+        let modifiers = Modifiers::default();
+        if down {
+            app.handle_event(
+                PlatformEvent::KeyDown {
+                    key,
+                    logical_key: None,
+                    text: None,
+                    modifiers,
+                    repeat: KeyRepeat::Fresh,
+                },
+                VP,
+                1.0,
+            );
+        } else {
+            app.handle_event(
+                PlatformEvent::KeyUp {
+                    key,
+                    logical_key: None,
+                    modifiers,
+                },
+                VP,
+                1.0,
+            );
+        }
+    };
+    press(&mut p.app, true);
+    press(&mut p.app, false);
+    idle(&mut p.app);
+    let head = p.head();
+    let (x, y) = p.caret_drawn(head);
+    assert!(y > y0, "positive control: moved to line 2, head {head}");
+    // `m` is about 14px wide in Inter 16px: the nearest boundary is within 8.
+    assert!(
+        (x - (img.0 + img.2)).abs() < 8.0,
+        "below the image's right edge {}: {x}",
+        img.0 + img.2
+    );
+}
+
 /// A drag that ends over an image's right half puts the head after it, over
 /// its left half before it. Parley's hit test steps over an inline box to the
 /// next character's byte, which is the byte of both of the image's sides, so
