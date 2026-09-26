@@ -55,6 +55,8 @@ mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_focus_and_reveal_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_inline_leaf_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_space_tests;

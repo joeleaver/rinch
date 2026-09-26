@@ -615,6 +615,12 @@ pub struct RinchDomEditorView {
     /// ([`EditorHandle::caret_affinity`](super::EditorHandle::caret_affinity)),
     /// set before every caret pass.
     caret_affinity: CaretAffinity,
+    /// The bytes a hard break's `<br>` occupies in the host's flat byte offsets
+    /// ([`DomDocument::line_break_flat_bytes`]): `1` on rinch-dom, whose inline
+    /// layout pushes `"\n"` for it, `0` in the browser. Read once at
+    /// construction; the caret map (`textblock_flat_byte` / `ifc_byte_to_char`)
+    /// counts it so a caret after a break is drawn after it (#1099).
+    break_bytes: usize,
 }
 
 /// How far above and below a revealed range [`RinchDomEditorView::position_reveal`]
@@ -655,7 +661,12 @@ impl RinchDomEditorView {
             segments: Vec::new(),
             has_deco: false,
         };
+        let break_bytes = doc
+            .upgrade()
+            .and_then(|d| d.try_borrow().ok().map(|d| d.line_break_flat_bytes()))
+            .unwrap_or(0);
         let mut view = RinchDomEditorView {
+            break_bytes,
             doc,
             root,
             placeholder: None,
@@ -948,7 +959,7 @@ impl RinchDomEditorView {
         for d in 0..r.depth() {
             desc = desc.children.get(r.index(d))?;
         }
-        let flat_byte = textblock_flat_byte(&desc.node, r.parent_offset());
+        let flat_byte = textblock_flat_byte(&desc.node, r.parent_offset(), self.break_bytes);
         Some((desc.dom.clone(), flat_byte))
     }
 
@@ -958,7 +969,9 @@ impl RinchDomEditorView {
     /// textblock in this view.
     pub(crate) fn pos_at(&self, textblock_dom_id: usize, ifc_byte: usize) -> Option<Pos> {
         let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
-        Some(Pos(content_start + ifc_byte_to_char(block, ifc_byte)))
+        Some(Pos(
+            content_start + ifc_byte_to_char(block, ifc_byte, self.break_bytes)
+        ))
     }
 
     /// The textblock's offset in container coordinates — the sum of parent-relative
@@ -1232,8 +1245,8 @@ impl RinchDomEditorView {
                 {
                     targets.push((
                         block_id,
-                        textblock_flat_byte(node, a - content_start),
-                        textblock_flat_byte(node, b - content_start),
+                        textblock_flat_byte(node, a - content_start, self.break_bytes),
+                        textblock_flat_byte(node, b - content_start, self.break_bytes),
                     ));
                 }
                 false // don't descend into the textblock's inline content
@@ -1754,13 +1767,6 @@ fn overlay_size(x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
     ((x + w).round() - x.round(), (y + h).round() - y.round())
 }
 
-/// The flat UTF-8 byte offset, within a textblock's concatenated inline text,
-/// corresponding to the model **char** offset `char_off` — the A15 char→byte half
-/// of the caret map. Walks the inline runs accumulating char and byte counts.
-///
-/// Inline leaves (image / hard_break) are treated as one char of zero flat-byte
-/// width for now; exact leaf byte widths in the IFC text stream are tuned against
-/// the live renderer (caret-after-leaf is the open edge).
 /// Walk the descriptor tree for the block whose host node is `target`, returning
 /// its model **content-start** position and its model node. `content_start` is the
 /// position passed in for `desc`'s own content (0 for the root/doc).
@@ -1875,8 +1881,10 @@ fn apply_run_decos(desc: &mut ViewDesc, next: Vec<RunDeco>, doc: &DocRef) {
 
 /// The model **char** offset within a textblock for a flat UTF-8 `ifc_byte` offset
 /// — the inverse of [`textblock_flat_byte`], used to turn a pointer hit into a
-/// cursor position. Leaves count as one char (matching `textblock_flat_byte`).
-fn ifc_byte_to_char(block: &Node, ifc_byte: usize) -> usize {
+/// cursor position. Leaves count as one char (matching `textblock_flat_byte`);
+/// a byte inside a leaf's own flat bytes (a `<br>`'s `"\n"`) is the position
+/// before it.
+fn ifc_byte_to_char(block: &Node, ifc_byte: usize, break_bytes: usize) -> usize {
     let mut bytes = 0usize;
     let mut chars = 0usize;
     for i in 0..block.child_count() {
@@ -1895,13 +1903,37 @@ fn ifc_byte_to_char(block: &Node, ifc_byte: usize) -> usize {
             bytes += text.len();
             chars += text.chars().count();
         } else {
+            let width = leaf_flat_bytes(child, break_bytes);
+            if ifc_byte < bytes + width {
+                return chars;
+            }
+            bytes += width;
             chars += 1;
         }
     }
     chars
 }
 
-fn textblock_flat_byte(block: &Node, char_off: usize) -> usize {
+/// The flat bytes an inline leaf occupies in the host's offsets: `break_bytes`
+/// for one rendered as `<br>`, zero for any other (an `<img>` has no text).
+fn leaf_flat_bytes(leaf: &Node, break_bytes: usize) -> usize {
+    if break_bytes > 0 && node_dom_tag(leaf) == "br" {
+        break_bytes
+    } else {
+        0
+    }
+}
+
+/// The flat UTF-8 byte offset, within a textblock's concatenated inline text,
+/// corresponding to the model **char** offset `char_off` — the A15 char→byte half
+/// of the caret map. Walks the inline runs accumulating char and byte counts.
+///
+/// An inline leaf is one model char. Its flat-byte width is [`leaf_flat_bytes`]:
+/// `break_bytes` for a hard break (`<br>`), which is what the host gives it
+/// ([`DomDocument::line_break_flat_bytes`]), and zero for anything else (an image
+/// is an inline box with no text). A zero-byte leaf shares its byte with the
+/// position beside it, so a byte offset cannot say which side of it it means.
+fn textblock_flat_byte(block: &Node, char_off: usize, break_bytes: usize) -> usize {
     let mut chars_seen = 0usize;
     let mut bytes = 0usize;
     for i in 0..block.child_count() {
@@ -1924,6 +1956,7 @@ fn textblock_flat_byte(block: &Node, char_off: usize) -> usize {
                 return bytes;
             }
             chars_seen += 1; // leaf occupies one model char
+            bytes += leaf_flat_bytes(child, break_bytes);
         }
     }
     bytes
@@ -3565,10 +3598,46 @@ mod tests {
                 ]),
             )
             .unwrap();
-        assert_eq!(textblock_flat_byte(&p, 0), 0); // start
-        assert_eq!(textblock_flat_byte(&p, 2), 2); // after "ab"
-        assert_eq!(textblock_flat_byte(&p, 3), 4); // after "é" — past its 2 bytes
-        assert_eq!(textblock_flat_byte(&p, 4), 5); // after "c"
-        assert_eq!(textblock_flat_byte(&p, 5), 6); // end
+        assert_eq!(textblock_flat_byte(&p, 0, 0), 0); // start
+        assert_eq!(textblock_flat_byte(&p, 2, 0), 2); // after "ab"
+        assert_eq!(textblock_flat_byte(&p, 3, 0), 4); // after "é" — past its 2 bytes
+        assert_eq!(textblock_flat_byte(&p, 4, 0), 5); // after "c"
+        assert_eq!(textblock_flat_byte(&p, 5, 0), 6); // end
+    }
+
+    /// A hard break is worth the host's `line_break_flat_bytes` in the caret map
+    /// (#1099), an image nothing, and the two halves of the map invert each
+    /// other around both. `ab<br>cd<img>ef`: model chars a0 b1 br2 c3 d4 img5 e6 f7.
+    #[test]
+    fn the_caret_map_gives_a_break_the_hosts_bytes_and_an_image_none() {
+        let s = schema();
+        use rinch_editor_core::Attrs;
+        let leaf =
+            |name: &str, attrs: Attrs| s.create_node(name, attrs, Fragment::empty()).unwrap();
+        let img = Attrs::new().with("src", "x.png");
+        let p = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![
+                    s.text("ab").unwrap(),
+                    leaf("hard_break", Attrs::new()),
+                    s.text("cd").unwrap(),
+                    leaf("image", img),
+                    s.text("ef").unwrap(),
+                ]),
+            )
+            .unwrap();
+        // rinch-dom: the `<br>` is one byte, `"ab\ncdef"`.
+        let desktop: Vec<usize> = (0..=8).map(|c| textblock_flat_byte(&p, c, 1)).collect();
+        assert_eq!(desktop, [0, 1, 2, 3, 4, 5, 5, 6, 7]);
+        // The browser: no byte for either leaf, `"abcdef"`.
+        let web: Vec<usize> = (0..=8).map(|c| textblock_flat_byte(&p, c, 0)).collect();
+        assert_eq!(web, [0, 1, 2, 2, 3, 4, 4, 5, 6]);
+        // The inverse: the `"\n"` byte (2) is before the break, the next after
+        // it; an image's shared byte (5 / 4) reads as the side before it.
+        let back: Vec<usize> = (0..=7).map(|b| ifc_byte_to_char(&p, b, 1)).collect();
+        assert_eq!(back, [0, 1, 2, 3, 4, 5, 7, 8]);
+        let back_web: Vec<usize> = (0..=6).map(|b| ifc_byte_to_char(&p, b, 0)).collect();
+        assert_eq!(back_web, [0, 1, 2, 4, 5, 7, 8]);
     }
 }
