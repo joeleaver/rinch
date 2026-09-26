@@ -2337,6 +2337,13 @@ input a shaped layout is built from:
   text node is never cascaded on its own. `invalidate_text_measure_for_node`
   therefore also drops each **text child's own `ifc_root`**; without it a font
   change on `div > ["t", li]` left the box at its old line height and glyphs.
+  Such a box takes its `text-overflow: ellipsis` from its block container —
+  its `parent`, for a split span's runs too — because it carries only the
+  inherited properties and neither `text-overflow` nor `overflow` is
+  (`ellipsis_style_owner`, #1071; Chrome 153 draws the container's "…" on
+  text beside a block child). So a restyle of the container also drops every
+  box in its **`run_boxes`**: a split span holds its runs' text, and does not
+  re-cascade when the container's non-inherited properties change.
 - **An atomic inline is two roots' business.** An `inline-block` / `-flex` /
   `-grid` holding text is a member of the IFC around it *and* the root of its
   own, so `invalidate_ifc_for_node` drops both: reaching only the outer one
