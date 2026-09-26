@@ -1745,6 +1745,30 @@ mod tests {
             "where the span's transform would have put it must miss"
         );
     }
+
+    /// The split-inline twin (#513: a block inside the transformed span, which
+    /// keeps a box of its own). Chrome 153: `elementFromPoint(10, 25)` is the
+    /// block and `(40, 25)` is the span — the transform moves nothing.
+    #[test]
+    fn a_split_inlines_transform_does_not_move_its_block_child() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let d = child_of(&mut doc, body, "height: 80px; font-size: 16px; line-height: 20px");
+        let ab = doc.create_text("ab");
+        doc.append_child(d, ab);
+        let span = doc.create_element("span");
+        doc.set_attribute(span, "style", "transform: translateX(30px)");
+        doc.append_child(d, span);
+        let xy = doc.create_text("xy");
+        doc.append_child(span, xy);
+        let b = child_of(&mut doc, span, "width: 20px; height: 10px");
+        let zz = doc.create_text("zz");
+        doc.append_child(span, zz);
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(hit_test(&doc.tree, 10.0, 25.0), Some(b.0), "the block, in place");
+        assert_ne!(hit_test(&doc.tree, 40.0, 25.0), Some(b.0), "not 30px right");
+    }
     // ── CSS 2.1 Appendix E step 8: positioned descendants with `z-index: auto`
     //
     // These drive the real `hit_test`, which reads
