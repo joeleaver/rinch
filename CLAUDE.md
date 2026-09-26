@@ -2264,8 +2264,9 @@ input a shaped layout is built from:
   node's old and new text inputs (`same_text_layout_inputs`: font size, weight,
   family, style, line height, letter/word spacing, colour — it is baked into the
   glyphs' brush — text-align, decoration, underline offset, transform,
-  white-space, overflow-wrap, text-overflow, `overflow-x`, and an inline box's
-  background/padding) and calls `invalidate_text_measure_for_node` for the one
+  white-space, overflow-wrap, text-overflow, `overflow-x`, whether `display` is
+  a flex or grid container — it decides the ellipsis, #1046 — and an inline
+  box's background/padding) and calls `invalidate_text_measure_for_node` for the one
   that moved. An inherited change reaches every descendant that re-cascades,
   and each is compared on its own. There is **no** eager drop any more:
   `invalidate_descendant_styles`, `set_attribute`/`remove_attribute` and

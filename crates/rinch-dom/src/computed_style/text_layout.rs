@@ -158,9 +158,14 @@ impl ComputedStyle {
     /// Plus `text_transform`, which `walk_inline_children` applies to the text
     /// before it is pushed.
     ///
-    /// Two entries are not typography and are here because a producer reads
+    /// Three entries are not typography and are here because a producer reads
     /// them anyway. `overflow_x` is half the `text-overflow: ellipsis`
-    /// condition, which decides whether the layout is rebuilt truncated. The
+    /// condition, which decides whether the layout is rebuilt truncated, and
+    /// whether `display` is a flex or grid container is another part of it
+    /// (a grid's own text is an anonymous item and takes no "…", #904) — only
+    /// that bit, not `display` itself, because an IFC root that flips between
+    /// grid and block keeps its width and its text and nothing else would
+    /// rebuild it (#1046). The
     /// background-span row is **gated on `display: inline`**, because only a
     /// non-atomic inline box contributes a span. There are **three**
     /// `push_inline_spans` call sites, all in `walk_inline_children` and
@@ -225,6 +230,7 @@ impl ComputedStyle {
             && self.overflow_wrap == other.overflow_wrap
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x
+            && self.display.is_flex_or_grid_container() == other.display.is_flex_or_grid_container()
             && (!inline_level || self.same_inline_background_inputs(other))
     }
 
@@ -265,7 +271,9 @@ impl ComputedStyle {
     /// decided) and the `same_inline_background_inputs` group. `overflow_x` is
     /// absent for a different reason: it is a Taffy property, so a change in it
     /// is already caught by the Taffy style comparison that sets `layout_dirty`
-    /// in the first place. The same is true of the paddings inside that group.
+    /// in the first place. The same is true of the paddings inside that group,
+    /// and of the flex-or-grid bit of `display` (#1046), which only decides
+    /// whether the ellipsis rebuild runs.
     ///
     /// `color` is the one pinned by a fixture
     /// (`frozen_box_remeasure_tests::a_colour_only_restyle_still_skips_taffy`),
