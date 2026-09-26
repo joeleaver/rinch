@@ -277,7 +277,6 @@ fn r3_soft_back_at_a_wrapped_line_start_deletes_one_char() {
 /// Chrome keeps a hard break: deleteSoftLineBackward on the line after a
 /// Shift+Enter deletes that line's prefix only (`alpha bravo<br>rlie ...`).
 #[wasm_bindgen_test]
-#[ignore = "#1025: a DOM point after a hard break maps before it"]
 fn r4_soft_back_after_a_hard_break_keeps_the_break() {
     let f = F::new(
         "<p>alpha bravo<br>charlie delta echo foxtrot golf hotel india</p>",
@@ -290,7 +289,7 @@ fn r4_soft_back_after_a_hard_break_keeps_the_break() {
     assert!(f.bi("deleteSoftLineBackward"));
     assert_eq!(
         f.block().inner_html(),
-        "alpha bravo<br>rlie delta echo foxtrot golf hotel india"
+        "alpha bravo<br data-pm-type=\"hard_break\">rlie delta echo foxtrot golf hotel india"
     );
     f.done();
 }

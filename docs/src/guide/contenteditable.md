@@ -152,6 +152,19 @@ Command names are case-sensitive. The full catalogue:
 > scrolled out of the editor's scroller or off the page behaves as a visible one
 > (#1026), and a hard break (Shift+Enter) always ends the line: Home after it
 > lands after it, End before it stops before it.
+>
+> Where this still differs from a browser field:
+> - **Desktop, right after an image**: the caret is drawn before the image
+>   (#1104). A hard break is resolved on both sides on both platforms (#1099,
+>   #1025), and the web resolves both sides of an image too — a click, Home, a
+>   soft-line delete, and an IME commit or autocorrect right after one.
+> - **Desktop, a caret line scrolled out of its scroller** has nothing to
+>   hit-test, so Home, End and the soft-line deletes fall back to the
+>   textblock's edge there (#1107).
+> - On a line that *mixes* directions the answer is the line's logical edge,
+>   which can differ from a browser field's: at the end of a line whose last
+>   run is right-to-left, Chrome's End stops before the trailing space where
+>   rinch's lands after it, on the wrap point.
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.

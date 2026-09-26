@@ -75,8 +75,7 @@ use rinch_editor_core::{CursorMotion, PasteContent, Pos, Selection};
 use rinch_editor_view::{CaretAffinity, EditorHandle, LinkClick, LinkHover, LinkSpan, registry};
 
 use crate::event_delegation::{
-    compute_byte_offset_in_block, drag_machine, modifiers_from_key_event, nearest_handler,
-    set_click_context_for, utf16_offset_to_utf8_bytes,
+    drag_machine, modifiers_from_key_event, nearest_handler, set_click_context_for,
 };
 use crate::web_document::{find_text_node_at_byte_offset, get_nid, node_by_nid};
 
@@ -143,11 +142,76 @@ fn set_goal_x(x: Option<f32>) {
 }
 
 /// A resolved pointer hit inside an editor: the container + textblock host ids and the
-/// flat UTF-8 byte offset within the textblock's concatenated inline text.
+/// model offset within the textblock's content ([`model_offset_in_block`]).
 struct EditorHit {
     container_nid: usize,
     textblock_nid: usize,
-    byte: usize,
+    offset: usize,
+}
+
+impl EditorHit {
+    /// The model position the hit names.
+    fn pos(&self, handle: &EditorHandle) -> Option<Pos> {
+        handle.pos_in_textblock(self.textblock_nid, self.offset)
+    }
+}
+
+/// The model offset, within `textblock`'s content, of the DOM point
+/// `(container, offset)` — a text character and an inline leaf (an element
+/// carrying `data-pm-type`: an image, a hard break) each count one, as in the
+/// model; mark and decoration wrappers count nothing of their own.
+///
+/// Counted from the DOM rather than as a flat byte offset because a leaf has no
+/// text bytes: the byte offset just before a `<br>` and the one just after it
+/// are the same number, which resolved a click at the start of the line after
+/// a Shift+Enter to the position BEFORE the break (#1025). The DOM point knows
+/// the side, whether it is `(text after the <br>, 0)` or an element point
+/// `(<p>, index after the <br>)`.
+fn model_offset_in_block(
+    textblock: &web_sys::Element,
+    container: &web_sys::Node,
+    offset: u32,
+) -> usize {
+    /// Adds what `node` holds up to the point to `n`; `true` once the point is found.
+    fn walk(node: &web_sys::Node, container: &web_sys::Node, offset: u32, n: &mut usize) -> bool {
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            let text = node.text_content().unwrap_or_default();
+            if node == container {
+                let mut units = 0u32;
+                for c in text.chars() {
+                    if units >= offset {
+                        break;
+                    }
+                    units += c.len_utf16() as u32;
+                    *n += 1;
+                }
+                return true;
+            }
+            *n += text.chars().count();
+            return false;
+        }
+        let kids = node.child_nodes();
+        let stop = if node == container {
+            offset.min(kids.length())
+        } else {
+            kids.length()
+        };
+        for i in 0..stop {
+            let Some(child) = kids.item(i) else { continue };
+            let is_leaf = child
+                .dyn_ref::<web_sys::Element>()
+                .is_some_and(|el| el.has_attribute("data-pm-type"));
+            if is_leaf && !child.contains(Some(container)) {
+                *n += 1;
+            } else if walk(&child, container, offset, n) {
+                return true;
+            }
+        }
+        node == container
+    }
+    let mut n = 0;
+    walk(textblock, container, offset, &mut n);
+    n
 }
 
 /// `document.caretRangeFromPoint(x, y)` — non-standard but available in Chromium/WebKit
@@ -189,11 +253,11 @@ fn resolve_editor_point(doc: &web_sys::Document, x: f32, y: f32) -> Option<Edito
     let container_nid = get_nid(&container?.into())?.0;
     let textblock = textblock?;
     let textblock_nid = get_nid(&textblock.clone().into())?.0;
-    let byte = compute_byte_offset_in_block(&textblock, &start, offset);
+    let offset = model_offset_in_block(&textblock, &start, offset);
     Some(EditorHit {
         container_nid,
         textblock_nid,
-        byte,
+        offset,
     })
 }
 
@@ -280,6 +344,12 @@ fn sync_capture_read_only(handle: &EditorHandle) {
 
 /// The capture textarea's contents as we last wrote them: one textblock's text and the
 /// DOM id of the block it came from.
+///
+/// The text holds one character per model position of the block ([`mirror_text`]): a
+/// hard break is a `\n` and any other inline leaf (an image) a U+FFFC. So a char offset
+/// into it IS the model offset into the block, and an edit a keyboard makes right after
+/// a leaf maps to the position after it (#1025) — a leaf with no character of its own
+/// would make the offset before it and the one after it the same number.
 #[derive(Clone)]
 struct Mirror {
     textblock_nid: usize,
@@ -289,24 +359,54 @@ struct Mirror {
     sel: (u32, u32),
 }
 
-/// The byte offset of char index `i` (its length in bytes for `i` past the end).
-fn byte_of_char(text: &str, i: usize) -> usize {
-    text.char_indices().nth(i).map_or(text.len(), |(b, _)| b)
+/// The mirror's text for `textblock`: its text, with one character for each inline
+/// leaf (a `[data-pm-type]` element) — `\n` for a hard break, U+FFFC otherwise — so it
+/// has exactly one character per model position (see [`Mirror`]).
+fn mirror_text(textblock: &web_sys::Element) -> String {
+    fn walk(node: &web_sys::Node, out: &mut String) {
+        let kids = node.child_nodes();
+        for i in 0..kids.length() {
+            let Some(child) = kids.item(i) else { continue };
+            if child.node_type() == web_sys::Node::TEXT_NODE {
+                out.push_str(&child.text_content().unwrap_or_default());
+            } else if let Some(el) = child.dyn_ref::<web_sys::Element>()
+                && el.has_attribute("data-pm-type")
+            {
+                out.push(if el.tag_name().eq_ignore_ascii_case("br") {
+                    '\n'
+                } else {
+                    '\u{FFFC}'
+                });
+            } else {
+                walk(&child, out);
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(textblock, &mut out);
+    out
 }
 
 /// The number of UTF-16 code units — the unit `selectionStart`/`selectionEnd` count in
-/// — in `text` up to UTF-8 byte offset `byte`.
-///
-/// Deliberately walks rather than slicing `&text[..byte]`: `byte` comes from the *model*
-/// (`EditorHandle::caret_address`) while `text` comes from the *DOM*, and the two are
-/// only equal as long as nothing renders extra text inside a textblock. A slice at a
-/// non-boundary offset panics, which in wasm takes the whole page down; counting whole
-/// characters instead degrades to a caret at the nearest boundary.
-fn utf16_len_upto(text: &str, byte: usize) -> u32 {
-    text.char_indices()
-        .take_while(|(b, _)| *b < byte)
-        .map(|(_, c)| c.len_utf16() as u32)
-        .sum()
+/// — in the first `chars` characters of `text` (all of it for `chars` past the end).
+fn utf16_of_chars(text: &str, chars: usize) -> u32 {
+    text.chars().take(chars).map(|c| c.len_utf16() as u32).sum()
+}
+
+/// The number of characters of `text` in its first `units` UTF-16 code units — the
+/// inverse of [`utf16_of_chars`]. A unit count inside a surrogate pair counts the
+/// whole character, so a stale selection never splits one.
+fn chars_of_utf16(text: &str, units: u32) -> usize {
+    let mut seen = 0u32;
+    let mut n = 0;
+    for c in text.chars() {
+        if seen >= units {
+            break;
+        }
+        seen += c.len_utf16() as u32;
+        n += 1;
+    }
+    n
 }
 
 /// The minimal replacement turning `base` into `now`: `(from, to, inserted)` where
@@ -362,24 +462,26 @@ fn sync_mirror(handle: &EditorHandle) {
         return;
     };
     let selection = handle.selection();
-    let Some((textblock_nid, head_byte)) = handle.caret_address(selection.head()) else {
+    let Some((textblock_nid, head_off)) = handle.textblock_offset(selection.head()) else {
         // No text caret (a node selection, or an unmounted editor): nothing to mirror.
         clear_mirror(&ta);
         return;
     };
-    let Some(block) = node_by_nid(textblock_nid) else {
+    let Some(block) =
+        node_by_nid(textblock_nid).and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+    else {
         // The caret's block isn't in the host node map (mid-unmount). Leaving the old
         // mirror standing would let the next `input` diff live text against a field
         // that no longer holds it, so drop both rather than half of the pair.
         clear_mirror(&ta);
         return;
     };
-    let text = block.text_content().unwrap_or_default();
-    let head = utf16_len_upto(&text, head_byte);
+    let text = mirror_text(&block);
+    let head = utf16_of_chars(&text, head_off);
     // Mirror the selection too, but only when it lies in this same block — a
     // cross-block selection has no honest representation in one block's text.
-    let anchor = match handle.caret_address(selection.anchor()) {
-        Some((nid, byte)) if nid == textblock_nid => utf16_len_upto(&text, byte),
+    let anchor = match handle.textblock_offset(selection.anchor()) {
+        Some((nid, off)) if nid == textblock_nid => utf16_of_chars(&text, off),
         _ => head,
     };
     let sel = (anchor.min(head), anchor.max(head));
@@ -422,7 +524,8 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
     // Splicing a diff at those offsets would corrupt the document, so fail closed and
     // rebuild the mirror from the live block instead.
     if node_by_nid(mirror.textblock_nid)
-        .and_then(|n| n.text_content())
+        .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+        .map(|el| mirror_text(&el))
         .as_deref()
         != Some(mirror.text.as_str())
     {
@@ -432,11 +535,11 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
     let Some((from_char, to_char, inserted)) = text_diff(&mirror.text, &ta.value()) else {
         return false;
     };
-    let from_byte = byte_of_char(&mirror.text, from_char);
-    let to_byte = byte_of_char(&mirror.text, to_char);
+    // The mirror has one char per model position, so a char offset is the model
+    // offset into the block.
     let (Some(from), Some(to)) = (
-        handle.pos_at(mirror.textblock_nid, from_byte),
-        handle.pos_at(mirror.textblock_nid, to_byte),
+        handle.pos_in_textblock(mirror.textblock_nid, from_char),
+        handle.pos_in_textblock(mirror.textblock_nid, to_char),
     ) else {
         return false;
     };
@@ -476,8 +579,8 @@ fn adopt_field_caret(
     let start = ta.selection_start().ok().flatten().unwrap_or(0);
     let end = ta.selection_end().ok().flatten().unwrap_or(start);
     let (Some(from), Some(to)) = (
-        handle.pos_at(textblock_nid, utf16_offset_to_utf8_bytes(&text, start)),
-        handle.pos_at(textblock_nid, utf16_offset_to_utf8_bytes(&text, end)),
+        handle.pos_in_textblock(textblock_nid, chars_of_utf16(&text, start)),
+        handle.pos_in_textblock(textblock_nid, chars_of_utf16(&text, end)),
     ) else {
         return;
     };
@@ -1478,7 +1581,7 @@ fn link_under_pointer(
         .filter(|a| editor_el.contains(Some(a)))?;
     let href = anchor.get_attribute("href").unwrap_or_default();
     let hit = resolve_editor_point(doc, x, y).filter(|hit| hit.container_nid == container_nid)?;
-    let pos = handle.pos_at(hit.textblock_nid, hit.byte)?;
+    let pos = hit.pos(handle)?;
     handle
         .link_at(pos)
         .filter(|link| link.href == href)
@@ -1598,8 +1701,8 @@ fn link_of_anchor(anchor: &web_sys::Element, handle: &EditorHandle) -> Option<Li
     };
     let textblock_nid = get_nid(&textblock.clone().into())?.0;
     let text = first_text_node(anchor)?;
-    let byte = compute_byte_offset_in_block(&textblock, &text, 0);
-    let pos = handle.pos_at(textblock_nid, byte)?;
+    let offset = model_offset_in_block(&textblock, &text, 0);
+    let pos = handle.pos_in_textblock(textblock_nid, offset)?;
     handle.link_at(pos).filter(|link| link.href == href)
 }
 
@@ -1753,7 +1856,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
             Some(_) => None,
             None => resolve_editor_point(doc, x, y)
                 .filter(|hit| hit.container_nid == container_nid)
-                .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte)),
+                .and_then(|hit| hit.pos(&handle)),
         };
         let sel = handle.selection();
         let inside = !sel.is_empty()
@@ -1819,7 +1922,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         && (x as f64) < content.get_bounding_client_rect().left()
         && let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(clicked) = hit.pos(&handle)
         && handle.toggle_task_checked_at(clicked.0)
     {
         registry::end_drag(None);
@@ -1829,7 +1932,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 
     if let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(clicked) = hit.pos(&handle)
     {
         match event.detail() {
             2 => {
@@ -1876,7 +1979,7 @@ fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     let y = event.client_y() as f32;
     if let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
-        && let Some(head) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && let Some(head) = hit.pos(&handle)
     {
         handle.set_selection(Selection::text(Pos(anchor), head));
         refresh_caret();
@@ -2148,7 +2251,7 @@ fn vertical_step(
     // that line only upstream.
     let geo_head = resolve_editor_point(doc, gx, ty)
         .filter(|hit| hit.container_nid == container_nid)
-        .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+        .and_then(|hit| hit.pos(handle))
         .map(|p| (p, hit_affinity(handle, p, ty)))
         .filter(|&(p, (_, rect))| {
             if handle.caret_address(p).map(|(t, _)| t) != head_tb {
@@ -3081,42 +3184,35 @@ mod tests {
     }
 
     #[test]
-    fn char_offsets_convert_back_to_byte_offsets() {
-        let s = "café!";
-        assert_eq!(byte_of_char(s, 0), 0);
-        assert_eq!(byte_of_char(s, 3), 3);
-        // `é` is two bytes, so everything after it shifts.
-        assert_eq!(byte_of_char(s, 4), 5);
-        assert_eq!(byte_of_char(s, 5), 6);
-        // Past the end clamps to the length, so a stale mirror cannot panic.
-        assert_eq!(byte_of_char(s, 99), s.len());
-    }
-
-    #[test]
     fn utf16_lengths_are_what_the_textarea_counts_in() {
-        assert_eq!(utf16_len_upto("abc", 3), 3);
-        assert_eq!(utf16_len_upto("café", "café".len()), 4);
+        assert_eq!(utf16_of_chars("abc", 3), 3);
+        assert_eq!(utf16_of_chars("café", 4), 4);
         // Astral characters are surrogate pairs — two units, one char.
-        assert_eq!(utf16_len_upto("👋", 4), 2);
-        // Partial counts: `é` starts at byte 3 and is two bytes wide.
-        assert_eq!(utf16_len_upto("café!", 3), 3);
-        assert_eq!(utf16_len_upto("café!", 5), 4);
+        assert_eq!(utf16_of_chars("👋", 1), 2);
+        assert_eq!(utf16_of_chars("hi 👋!", 4), 5);
+        // Past the end counts the whole text, so a stale mirror cannot panic.
+        assert_eq!(utf16_of_chars("hi 👋!", 99), 6);
+        assert_eq!(utf16_of_chars("hi 👋!", 0), 0);
     }
 
     #[test]
-    fn a_byte_offset_off_a_char_boundary_never_panics() {
-        // The model supplies the byte offset and the DOM supplies the text; if they
-        // ever disagree, counting must degrade, not blow the page up on a bad slice.
-        // Byte 4 is inside the emoji: it counts as the whole character, not a panic.
-        assert_eq!(utf16_len_upto("hi 👋!", 4), 5);
-        assert_eq!(utf16_len_upto("hi 👋!", 99), 6); // past the end
-        assert_eq!(utf16_len_upto("hi 👋!", 0), 0);
+    fn textarea_offsets_convert_back_to_chars() {
+        assert_eq!(chars_of_utf16("hi 👋!", 3), 3);
+        assert_eq!(chars_of_utf16("hi 👋!", 5), 4);
+        // Inside the surrogate pair: the whole character, never half of it.
+        assert_eq!(chars_of_utf16("hi 👋!", 4), 4);
+        assert_eq!(chars_of_utf16("hi 👋!", 99), 5);
+        for text in ["", "plain", "café", "hi 👋 there", "a\nb\u{FFFC}c"] {
+            let n = text.chars().count();
+            assert_eq!(chars_of_utf16(text, utf16_of_chars(text, n)), n, "{text:?}");
+        }
     }
 
     #[test]
     fn a_textarea_caret_offset_converts_back_to_a_byte_offset() {
         // The shared converter from `event_delegation` — the same one the pointer
         // hit-test uses to read a browser selection offset.
+        use crate::event_delegation::utf16_offset_to_utf8_bytes;
         assert_eq!(utf16_offset_to_utf8_bytes("abc", 0), 0);
         assert_eq!(utf16_offset_to_utf8_bytes("abc", 3), 3);
         // `é` is one UTF-16 unit but two bytes.
@@ -3131,8 +3227,9 @@ mod tests {
 
     #[test]
     fn utf16_offsets_round_trip_through_bytes() {
+        use crate::event_delegation::utf16_offset_to_utf8_bytes;
         for text in ["", "plain", "café", "hi 👋 there", "aaa"] {
-            let units = utf16_len_upto(text, text.len());
+            let units = utf16_of_chars(text, text.chars().count());
             assert_eq!(
                 utf16_offset_to_utf8_bytes(text, units),
                 text.len(),

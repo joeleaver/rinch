@@ -528,6 +528,19 @@ impl DomDocument for RinchDocument {
                     // with both animation maps — so a handle app code still
                     // holds stays alive, styled, and transitioning.
                     self.detach_subtree_styles(child);
+                    // And it leaves its inline-formatting state behind, as
+                    // `remove_child` and the moves do (#1073). The orphans'
+                    // `ifc_root` marks are what every IFC consumer reads: left
+                    // in place, the orphaned roots stayed roots, the next
+                    // layout shaped them (#1069) and sized their atomic
+                    // inlines (#1040), for a subtree nothing paints. Attaching
+                    // the subtree again seeds a structural pass that marks it.
+                    // The two dirty sets are not scrubbed, for the same reason
+                    // `remove_child` does not: both are drained by the next
+                    // layout, and every consumer that measures or shapes asks
+                    // for a mark first — an atomic inline its own `ifc_root`,
+                    // a text root a marked child.
+                    self.clear_ifc_root_recursive(child);
                     // Remove each child's contribution from taffy — for a
                     // spliced `display: contents` child that is its
                     // children's slots, not its own id (#517)
@@ -970,6 +983,12 @@ impl DomDocument for RinchDocument {
 
         self.invalidate_parent_ifc(node.0);
         self.push_dirty_flags(node.0, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+    }
+
+    /// The inline formatting context lays a `<br>` out as `"\n"`
+    /// (`ifc.rs`), one byte of the flat offsets every text query here takes.
+    fn line_break_flat_bytes(&self) -> usize {
+        1
     }
 
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {

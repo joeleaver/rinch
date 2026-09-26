@@ -714,8 +714,9 @@ fn every_inline_role_kind_still_flows_and_is_marked() {
 // `if`/`match`/`for`.
 //
 // **One change would kill all three at once: #628.** The IFC passes iterate the whole
-// slab, so they run over detached subtrees at all — doing Parley work for a subtree
-// that paints nothing, on every layout pass. Skipping them is the optimisation #628
+// slab, so they run over detached subtrees at all — doing work for a subtree that
+// paints nothing (the paint-layout shaping part of it is gone since #1069, below).
+// Skipping them is the optimisation #628
 // proposes, and it would silently delete the *only* route that reaches either arm.
 // If you are that change: these arms need a new witness in the same commit, or an
 // explicit decision that they are dead (#615 is the history, and "no test covers it"
@@ -730,7 +731,17 @@ fn every_inline_role_kind_still_flows_and_is_marked() {
 // `tree.ifc_dirty = true` run. So those two fixtures now force it after the
 // removal, and remain the witnesses; route 2 needs nothing, because a never-attached
 // subtree's first layout is a whole-document pass anyway. If the whole-document pass
-// ever stops walking detached subtrees too, this is the decision to make again. Deleting these fixtures as obsolete is the
+// ever stops walking detached subtrees too, this is the decision to make again.
+//
+// **And the layout pass no longer shapes a detached root at all** (#1069): nothing
+// paints it. The whole-document pass still *marks* it, which keeps the
+// `mark_inline_descendants` arm's route, but `build_ifc_layouts` turns a disconnected
+// root away, so `walk_inline_children` is no longer reached by a layout. Each fixture
+// therefore builds the container's paint layout itself, through the same function the
+// layout pass uses (`RinchDocument::shape_ifc_root_for_tests`, via
+// `shape_the_detached_container`, which also checks the layout pass declined). No
+// connected route to either arm is known — #513's split is what closes it — so this is
+// how they keep a witness rather than a new route. Deleting these fixtures as obsolete is the
 // `ANCHOR-MISSING` failure mode; they are the witnesses, not decoration. A
 // reachability skip also has to seed `tree.anonymous_block_boxes` explicitly — a box
 // is not in the element tree (#566), so a naive walk over `children` skips every one
@@ -740,6 +751,28 @@ fn every_inline_role_kind_still_flows_and_is_marked() {
 // answer — is **not** witnessed by this route and cannot be: the same clearing
 // that un-splits the inline element also makes every wrapper in the subtree
 // answer *transparent*. Its own argument lives at that function.
+
+/// Shape the detached `container`'s paint layout, which `build_ifc_layouts`
+/// no longer does for a root outside the document (#1069).
+///
+/// The marking half of each fixture below is still reached by the layout
+/// pass itself: the whole-document structural pass walks the slab, detached
+/// subtrees included, and `mark_inline_descendants` runs there. The **walk**
+/// half — `walk_inline_children` — is reached only when a paint layout is
+/// built, and the layout pass now declines to build one here. So each fixture
+/// builds it the way `build_ifc_layouts` would, through the same function.
+///
+/// The control is that the layout pass really did decline: without it this
+/// helper would be a no-op on top of a layout that already existed, and the
+/// fixtures would be exercising the pass rather than the hook — or, once the
+/// pass stops marking detached subtrees too, nothing at all.
+fn shape_the_detached_container(doc: &mut RinchDocument, container: NodeId) {
+    assert!(
+        doc.tree.get(container.0).unwrap().text_layout.is_none(),
+        "control: the layout pass shapes no IFC root outside the document (#1069)"
+    );
+    doc.shape_ifc_root_for_tests(container);
+}
 
 /// Assert, on a document whose `container` holds `<a>text<div/>tail</a>` and is
 /// **not** part of the document tree, that both passes stop at the block.
@@ -878,6 +911,7 @@ fn a_removed_subtree_still_stops_the_mark_and_the_walk_at_a_block() {
     // A changed viewport, or `resolve_layout` early-returns on `!layout_dirty`
     // and neither pass runs at all.
     doc.resolve_layout(VW - 7.0, VH);
+    shape_the_detached_container(&mut doc, container);
 
     assert_both_passes_stop_at_the_block(&doc, container, link, text, block, tail);
 }
@@ -902,6 +936,7 @@ fn a_never_attached_subtree_stops_them_at_a_block_too() {
     let block = child_of(&mut doc, link, "div", "width: 30px; height: 30px");
     let tail = text_in(&mut doc, link, "tail");
     doc.resolve_layout(VW, VH);
+    shape_the_detached_container(&mut doc, container);
 
     assert_both_passes_stop_at_the_block(&doc, container, link, text, block, tail);
 }
@@ -975,6 +1010,7 @@ fn a_detached_contents_wrapper_answers_transparent_inside_a_detached_inline() {
     // The whole-document pass, which still reaches a detached subtree (#628).
     doc.tree.ifc_dirty = true;
     doc.resolve_layout(VW - 7.0, VH);
+    shape_the_detached_container(&mut doc, container);
 
     // Preconditions: the detached route reopened, one level deeper than the two
     // fixtures above.

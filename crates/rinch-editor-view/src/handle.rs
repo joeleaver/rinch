@@ -1712,6 +1712,29 @@ impl EditorHandle {
             .pos_at(textblock_dom_id, ifc_byte)
     }
 
+    /// Map `(textblock element id, model offset within its content)` to a model
+    /// [`Pos`] — a text character and an inline leaf (image, hard break) each
+    /// count one, and an offset past the block's end is clamped to it. For a
+    /// host that can count leaves where it found the point, as the web does
+    /// from the DOM: in the browser's flat byte offsets ([`Self::pos_at`]) a leaf
+    /// has no width, so they cannot tell the position before a hard break from
+    /// the one after it (#1025).
+    pub fn pos_in_textblock(&self, textblock_dom_id: usize, offset: usize) -> Option<Pos> {
+        self.core()
+            .view
+            .as_ref()?
+            .pos_in_textblock(textblock_dom_id, offset)
+    }
+
+    /// The inverse of [`Self::pos_in_textblock`]: `(textblock element id, offset
+    /// into its content)` for `pos`, a text character and an inline leaf each
+    /// counting one. Unlike [`Self::caret_address`]'s flat byte offset it tells
+    /// the two sides of a leaf apart. `None` when `pos` is not in a textblock.
+    pub fn textblock_offset(&self, pos: Pos) -> Option<(usize, usize)> {
+        let core = self.core();
+        core.view.as_ref()?.textblock_offset(&core.state.doc, pos)
+    }
+
     /// Model-based vertical fallback for the geometry-driven Up/Down caret step: the
     /// caret position in the **adjacent textblock** — just before (`down = false`) or
     /// after (`down = true`) the current textblock. Used when geometry can't resolve
