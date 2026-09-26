@@ -5646,6 +5646,12 @@ impl RinchDocument {
                     // block. Neither is caught by the other's assertion, which is
                     // why both are asserted.
                     //
+                    // Since #1069 the layout pass no longer shapes a detached
+                    // root, so the marking arm is still reached by the layout
+                    // pass and this one only through
+                    // `RinchDocument::shape_ifc_root_for_tests`, which the
+                    // witnesses call after checking the pass declined.
+                    //
                     // An in-flow block-level child — or the opaque
                     // `display: contents` wrapper standing for one — breaks
                     // the inline flow: stop here, exactly where
