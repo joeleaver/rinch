@@ -39,7 +39,18 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
         (DisplayOutside::Block, DisplayInside::Flex) => DisplayValue::Flex,
         (DisplayOutside::Block, DisplayInside::Grid) => DisplayValue::Grid,
         (DisplayOutside::Inline, DisplayInside::Grid) => DisplayValue::InlineGrid,
-        _ => DisplayValue::Flex, // Default to flex for unknown
+        // rinch has no table formatting context (#1072). The two table parts
+        // whose inside is flow content — a cell and a caption — are block
+        // containers: their children stack, their text is an IFC and takes
+        // `text-overflow`, as in Chrome. Mapping them to the flex fallback
+        // below made a cell a flex *row*.
+        (DisplayOutside::InternalTable, DisplayInside::TableCell) => DisplayValue::Block,
+        (DisplayOutside::TableCaption, DisplayInside::Flow) => DisplayValue::Block,
+        // Everything else — `table` / `inline-table`, `table-row`, the row and
+        // column groups — stays a flex row: that is what lays a table's cells
+        // side by side, the common use. It is wrong for a table of several
+        // `table-row`s, which lays its rows side by side where CSS stacks them.
+        _ => DisplayValue::Flex,
     }
 }
 
