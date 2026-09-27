@@ -212,9 +212,13 @@ fn unstyled_select_does_not_collapse() {
     let (mut doc, sel) = build_select(None, &[(Some("a"), "Apple", &[])]);
     doc.resolve_layout(1000.0, 800.0);
     let l = doc.tree.get(sel).unwrap().layout;
-    assert!(l.width > 22.0, "the label widens it past its arrow box, got {}", l.width);
     assert!(
-        l.height >= 16.0 * 1.2 + 2.0 + 2.0 - 0.01,
+        l.width > 22.0,
+        "the label widens it past its arrow box, got {}",
+        l.width
+    );
+    assert!(
+        l.height >= (16.0f32 * 1.2 + 2.0 + 2.0).round(),
         "one line of the label tall, got {}",
         l.height
     );

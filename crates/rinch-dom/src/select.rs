@@ -58,6 +58,97 @@ pub struct SelectOption {
     pub disabled: bool,
 }
 
+/// The closed control's inner box, which Chrome keeps **inside** the select's
+/// own padding (so an author padding adds to it rather than replacing it) and
+/// which the UA stylesheet therefore cannot spell as `padding` (#1098). Measured
+/// in Chrome 153 on Linux: a select is `border + padding + ceil(label) + 20`
+/// wide at every font size, and `border + padding + one line + 2` tall; its
+/// label's first ink sits 4px inside the border and its arrow is centred in the
+/// last 16px.
+///
+/// The label's inset from the content box's left edge, CSS px.
+pub const SELECT_LABEL_INSET: f32 = 4.0;
+/// The arrow box at the content box's right edge, CSS px.
+pub const SELECT_ARROW_BOX: f32 = 16.0;
+/// Space above and below the label's line inside the content box, CSS px.
+pub const SELECT_INNER_BLOCK: f32 = 1.0;
+
+/// Shape a closed select's label the one way both its **measure** (the
+/// widest-option width `apply_stylo_styles_to_taffy` sizes it from) and its
+/// **paint** (`paint::select`) do, so the width the box was given is the width
+/// of the text drawn in it — the #320 rule for form-control text, one
+/// builder for both. `font_size` is in the units the caller lays out in: CSS
+/// px for the measure, physical px for paint.
+pub(crate) fn select_label_layout(
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    style: &crate::computed_style::ComputedStyle,
+    font_size: f32,
+    brush: peniko::Brush,
+    label: &str,
+) -> parley::Layout<peniko::Brush> {
+    let font_family = if style.font_family.is_empty() {
+        "sans-serif".to_string()
+    } else {
+        style.font_family.clone()
+    };
+    let mut builder = layout_cx.ranged_builder(font_cx, label, 1.0, true);
+    builder.push_default(parley::style::StyleProperty::FontSize(font_size));
+    builder.push_default(parley::style::StyleProperty::Brush(brush));
+    builder.push_default(parley::style::StyleProperty::FontFamily(
+        parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family)),
+    ));
+    if (style.font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(parley::style::StyleProperty::FontWeight(
+            parley::style::FontWeight::new(style.font_weight),
+        ));
+    }
+    let mut layout = builder.build(label);
+    // Single line, clipped: never wrap the closed control's label.
+    layout.break_all_lines(None);
+    layout
+}
+
+/// The widest of a select's option labels in CSS px, as
+/// [`select_label_layout`] shapes them, and the key it was shaped from (the
+/// labels and every style input the builder reads). When the key matches
+/// `cached`, the cached width is returned and nothing is shaped.
+pub(crate) fn widest_select_label(
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    style: &crate::computed_style::ComputedStyle,
+    labels: &[&str],
+    cached: Option<(u64, f32)>,
+    perf: &crate::perf::PerfCounters,
+) -> (u64, f32) {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    labels.hash(&mut h);
+    style.font_family.hash(&mut h);
+    style.font_size.to_bits().hash(&mut h);
+    style.font_weight.to_bits().hash(&mut h);
+    let key = h.finish();
+    if let Some((k, w)) = cached
+        && k == key
+    {
+        return (key, w);
+    }
+    let mut widest = 0.0f32;
+    for label in labels.iter().filter(|l| !l.is_empty()) {
+        perf.bump(crate::perf::Counter::ShapeSelectLabel);
+        let layout = select_label_layout(
+            font_cx,
+            layout_cx,
+            style,
+            style.font_size,
+            peniko::Brush::default(),
+            label,
+        );
+        widest = widest.max(layout.full_width());
+    }
+    (key, widest)
+}
+
 /// The resolved options of a `<select>` plus which one is currently selected.
 #[derive(Debug, Clone, Default)]
 pub struct SelectModel {

@@ -33,8 +33,9 @@
 //! Every width is matched exactly. The heights are not quite: Chrome's
 //! `normal` is the face's rounded ascent plus descent (20px for Inter at
 //! 16px), rinch's is `1.2em` everywhere (19.2px), so a height here is
-//! `1.2em + 2 + padding + border` and within a pixel of Chrome's. Both are
-//! asserted: the rinch formula exactly, Chrome within `1.0`.
+//! `1.2em + 2 + padding + border`, rounded to the pixel grid like every laid
+//! out box, and within a pixel of Chrome's. Both are asserted: the rinch
+//! formula exactly, Chrome within `1.0`.
 //!
 //! Before #1098 an unstyled select was `max(60, 8 + 0.62em per char + 24)` wide
 //! (the UA `min-width: 60px` beside an estimated label width) and `8px` tall —
@@ -100,9 +101,11 @@ fn check(case: &str, got: (f32, f32), chrome: (f32, f32), rinch_height: f32) {
         got.0, chrome.0
     );
     assert!(
-        (got.1 - rinch_height).abs() < 0.01,
-        "{case}: height {} where 1.2em + 2 + padding + border is {rinch_height}",
-        got.1
+        got.1 == rinch_height.round(),
+        "{case}: height {} where 1.2em + 2 + padding + border is {rinch_height}, \
+         which rounds to {}",
+        got.1,
+        rinch_height.round()
     );
     assert!(
         (got.1 - chrome.1).abs() <= 1.0,
@@ -182,8 +185,18 @@ fn a_declared_line_height_does_not_change_the_height() {
 
 #[test]
 fn an_author_width_or_height_wins() {
-    check("width: 90px", size("width: 90px", &["abc"]), (90.0, 24.0), H16);
-    check("height: 40px", size("height: 40px", &["abc"]), (50.0, 40.0), 40.0);
+    check(
+        "width: 90px",
+        size("width: 90px", &["abc"]),
+        (90.0, 24.0),
+        H16,
+    );
+    check(
+        "height: 40px",
+        size("height: 40px", &["abc"]),
+        (50.0, 40.0),
+        40.0,
+    );
 }
 
 /// The issue's own case: no author CSS on the select at all. Chrome gives a
@@ -204,7 +217,25 @@ fn an_unstyled_select_is_not_its_padding() {
     doc.append_child(o, t);
     doc.resolve_layout(800.0, 600.0);
     let l = doc.tree.get(sel.0).unwrap().layout;
-    assert_eq!((l.width, l.height), (31.0, H16));
+    assert_eq!((l.width, l.height), (31.0, H16.round()));
+}
+
+/// A font change on an auto-width select re-sizes it: the cached label width
+/// is keyed on the font as well as the labels.
+#[test]
+fn a_font_size_change_resizes_the_select() {
+    let (mut doc, sel) = select_in("", &["Twenty"]);
+    let before = doc.tree.get(sel).unwrap().layout.width;
+    doc.set_style(rinch_core::dom::NodeId(sel), "font-size", "20px");
+    doc.resolve_layout(800.0, 600.0);
+    let after = doc.tree.get(sel).unwrap().layout.width;
+    let fresh = size("font-size: 20px", &["Twenty"]).0;
+    assert_eq!(fresh, 92.0, "Chrome's width at 20px");
+    assert!(
+        after > before,
+        "precondition: 20px is wider ({before} -> {after})"
+    );
+    assert_eq!(after, fresh, "the restyled select sizes to its new font");
 }
 
 /// A local pixel oracle for where paint puts the label and the arrow now that
@@ -256,13 +287,20 @@ fn the_label_is_inset_and_the_arrow_is_in_the_arrow_box() {
     let inked: Vec<u32> = (11..74)
         .filter(|&x| (top..bottom).any(|y| black(x, y)))
         .collect();
-    assert!(!inked.is_empty(), "nothing black was painted: no positive control");
-    let first = inked[0];
     assert!(
-        (17..=19).contains(&first),
-        "the label's first stem is at x = {first}; Chrome's is at 18 \
-         (border 1 + inset 4 + side bearing)"
+        !inked.is_empty(),
+        "nothing black was painted: no positive control"
     );
+    // Chrome's screenshot, same threshold: the first stem is black from x = 19
+    // to 21 (x = 18 is its anti-aliased edge), the fourth ends at 53.
+    let first = inked[0];
+    assert_eq!(
+        first, 19,
+        "the label's first black column is x = {first}; Chrome's is 19 \
+         (border 1 + inset 4 + the glyph's side bearing): {inked:?}"
+    );
+    let label_end = inked.iter().copied().filter(|&x| x < 58).max().unwrap();
+    assert_eq!(label_end, 53, "the label's last black column: {inked:?}");
     // The arrow: black ink in the last 16px of the content box, x in 58..74.
     assert!(
         inked.iter().any(|&x| (58..74).contains(&x)),

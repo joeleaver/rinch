@@ -394,16 +394,23 @@ impl RinchDocument {
 
             /* A closed <select> shows the selected option's label (painted by the
                backend) plus a dropdown arrow — its <option>/<optgroup> children are
-               not laid out. Reserve room on the right for the arrow, and a
-               min-width so an unstyled control doesn't collapse to its padding.
-               The interactive popup is drawn by the app/shell layer (issue #121). */
+               not laid out, so its size comes from its widest option label
+               (`apply_stylo_styles_to_taffy`, issue #1098). Chrome 153's values,
+               measured: no padding and no `min-width` — the label inset and the
+               arrow box are the control's own inner box, kept inside any author
+               padding (`select::SELECT_ARROW_BOX`) — a 1px grey border, and a
+               line-height forced to `normal`, which an author declaration does
+               not move (`!important` from the UA origin outranks every author
+               declaration, important ones included). The interactive popup is
+               drawn by the app/shell layer (issue #121). */
             option, optgroup {
                 display: none;
             }
 
             select {
-                padding: 4px 24px 4px 8px;
-                min-width: 60px;
+                padding: 0;
+                border: 1px solid rgb(118, 118, 118);
+                line-height: normal !important;
                 white-space: nowrap;
                 overflow: hidden;
             }
