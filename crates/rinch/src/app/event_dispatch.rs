@@ -3789,7 +3789,7 @@ impl RinchApp {
         let d = doc.borrow();
         // Beside an image the flat byte names neither side; the image's box
         // does (#1104).
-        if let Some((tb, leaf, after)) = handle.caret_inline_box(pos)
+        if let Some((tb, leaf, after)) = handle.caret_inline_box(pos, affinity)
             && let Some(rect) = d.inline_box_caret_window_rect(tb, leaf, after)
         {
             return Some(rect);

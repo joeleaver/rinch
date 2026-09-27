@@ -1727,14 +1727,18 @@ impl EditorHandle {
 
     /// The inline leaf a caret at `pos` is drawn against rather than placed by
     /// its flat byte offset, as `(textblock element id, leaf element id,
-    /// after)`: the image just before `pos`, or the one just after it when no
-    /// text precedes `pos` (#1104). The host draws such a caret from the leaf's
+    /// after)`: the image just before `pos`, or, for a `Downstream` caret, the
+    /// one just after it (#1104). The host draws such a caret from the leaf's
     /// box (`DomDocument::query_inline_box_caret`). `None` anywhere else.
-    pub fn caret_inline_box(&self, pos: Pos) -> Option<(usize, usize, bool)> {
+    pub fn caret_inline_box(
+        &self,
+        pos: Pos,
+        affinity: CaretAffinity,
+    ) -> Option<(usize, usize, bool)> {
         let core = self.core();
         let view = core.view.as_ref()?;
         let (tb, _) = view.caret_address(&core.state.doc, pos)?;
-        let (leaf, after) = view.inline_box_beside(&core.state.doc, pos)?;
+        let (leaf, after) = view.inline_box_beside(&core.state.doc, pos, affinity)?;
         Some((tb, leaf, after))
     }
 

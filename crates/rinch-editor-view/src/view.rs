@@ -937,7 +937,7 @@ impl RinchDomEditorView {
         // the document; that answers "no geometry" rather than panicking.
         let host = host.try_borrow().ok()?;
         let block_id = block.node_id().0 as u64;
-        if let Some((leaf, after)) = self.inline_box_beside(doc, pos)
+        if let Some((leaf, after)) = self.inline_box_beside(doc, pos, affinity)
             && let Some(rect) = host.query_inline_box_caret_rect(block_id, leaf as u64, after)
         {
             return Some(rect);
@@ -948,14 +948,22 @@ impl RinchDomEditorView {
     /// The inline leaf whose box a caret at `pos` is drawn against, as `(its
     /// host element id, after)`, when the flat byte offset cannot place it
     /// (#1104): the zero-byte leaf (an image) just before `pos` — the caret is
-    /// after it — or, with no text before `pos` (the block's start, or right
-    /// after a hard break), the zero-byte leaf just after it. `None` anywhere
-    /// else, including before an image that follows text, where the byte's
-    /// caret is already the image's leading edge.
+    /// after it — or else, for a `Downstream` caret, the zero-byte leaf just
+    /// after `pos`. The byte's own caret is the leading edge of whatever follows
+    /// the image, so it is drawn after the image at a block's start, right after
+    /// a hard break, and where the image starts a soft-wrapped line; on one line
+    /// after text the image's left edge is the byte's caret anyway. An
+    /// `Upstream` caret before an image at a wrap is the upper line's end, which
+    /// the byte query draws. `None` anywhere else.
     ///
     /// Two images in a row share one byte with all four of their sides, which
     /// is why this names the leaf rather than a side of a byte.
-    pub(crate) fn inline_box_beside(&self, doc: &Node, pos: Pos) -> Option<(usize, bool)> {
+    pub(crate) fn inline_box_beside(
+        &self,
+        doc: &Node,
+        pos: Pos,
+        affinity: CaretAffinity,
+    ) -> Option<(usize, bool)> {
         let r = doc.resolve(pos).ok()?;
         if !r.parent().is_textblock() {
             return None;
@@ -978,7 +986,7 @@ impl RinchDomEditorView {
                 {
                     return Some((desc.children.get(before?)?.dom.node_id().0, true));
                 }
-                if prev.is_none_or(|p| p.text().is_none()) && zero_byte_leaf(block.child(i)) {
+                if affinity == CaretAffinity::Downstream && zero_byte_leaf(block.child(i)) {
                     return Some((desc.children.get(i)?.dom.node_id().0, false));
                 }
                 return None;
@@ -1109,7 +1117,7 @@ impl RinchDomEditorView {
         flat_byte: usize,
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
-        if let Some((leaf, after)) = self.inline_box_beside(doc, pos)
+        if let Some((leaf, after)) = self.inline_box_beside(doc, pos, affinity)
             && let Some((x, y, height)) =
                 d.query_inline_box_caret(block_id as u64, leaf as u64, after)
         {
