@@ -356,6 +356,56 @@ fn arrow_down_from_after_an_image_keeps_its_column() {
     );
 }
 
+/// An image that starts a soft-wrapped line after text: the caret before it
+/// is drawn at its left edge on line 2, the one after it at its right edge.
+/// Parley's downstream caret at the image's byte is the leading edge of the
+/// character after the image, so the caret before it was drawn after it —
+/// the after-a-break shape, reached by a wrap. (Review of PR #1119, F1.)
+#[test]
+fn the_caret_before_an_image_that_starts_a_wrapped_line_is_before_it() {
+    let mut p = page(&format!("<p>mmmmmmmmmmmmmmmmmmmmmmm {IMG}bravo</p>"));
+    let img = p.images()[0];
+    let (_, by, _, _) = p.block_box();
+    assert!(
+        img.1 > by + LINE * 0.9,
+        "positive control: the image wrapped {img:?}"
+    );
+    let (x, y) = p.caret_drawn(24);
+    assert!(y > by + LINE * 0.9, "before it: on line 2, got y {y}");
+    assert!((x - img.0).abs() < 1.5, "before it: {x} vs {img:?}");
+    let (x, _) = p.caret_drawn(25);
+    assert!(
+        (x - (img.0 + img.2)).abs() < 1.5,
+        "after it: {x} vs {img:?}"
+    );
+    let r = p.caret_rect_x(24);
+    assert!(
+        (r - img.0).abs() < 1.5,
+        "caret_rect before it: {r} vs {img:?}"
+    );
+}
+
+/// A drag onto an image on line 2 lands on the half it ends on: the hit test
+/// has to find the line the point is on before the box on it. (Review of PR
+/// #1119, F3: nothing pinned an image below line 1.)
+#[test]
+fn a_drag_onto_an_image_on_line_two_lands_on_its_half() {
+    for (frac, want) in [(0.25, 3), (0.75, 4)] {
+        let mut p = page(&format!("<p>ab<br>{IMG}cd</p>"));
+        let (bx, by, _, _) = p.block_box();
+        let i = p.images()[0];
+        assert!(
+            i.1 > by + LINE * 0.9,
+            "positive control: image on line 2 {i:?}"
+        );
+        let (fx, _) = p.local(0);
+        let (nx, _) = p.local(1);
+        let from = (bx + (fx + nx) / 2.0, by + LINE / 2.0);
+        let head = p.drag(from, (i.0 + i.2 * frac, i.1 + i.3 / 2.0));
+        assert_eq!(head, want, "frac {frac}");
+    }
+}
+
 /// A drag that ends over an image's right half puts the head after it, over
 /// its left half before it. Parley's hit test steps over an inline box to the
 /// next character's byte, which is the byte of both of the image's sides, so
