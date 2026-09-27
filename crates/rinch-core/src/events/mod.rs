@@ -24,6 +24,21 @@ pub use modifier::*;
 pub use paste::*;
 pub use selection::*;
 
+/// Marks a `data-rid` element as an **outside-press backdrop** (issue #1093).
+///
+/// A `data-rid` is a `click`, and a click is a primary-button press only: a
+/// right or middle press runs no `data-rid`, on either backend. A backdrop is
+/// the exception. Dismissing an overlay on a press outside it is a `mousedown`
+/// of **any** button — a native menu closes on a right press outside it, and so
+/// does Mantine's `useClickOutside` — so a `data-rid` element that also carries
+/// this attribute is dispatched for every button. It is one of rinch's `data-`
+/// boolean attributes: on unless its value is `false` (any case), read with
+/// [`crate::dom::data_attr_is_on`], and written by presence from a `bool`
+/// ([`crate::dom::is_boolean_attribute`]), so a reactive `false` removes it. Every dismiss
+/// backdrop in `rinch-components` and the DOM menu bar carries it; a custom
+/// overlay's backdrop should too.
+pub const BACKDROP_ATTRIBUTE: &str = "data-backdrop";
+
 use std::cell::RefCell;
 
 /// Text hit testing result from the layout engine.

@@ -40,10 +40,10 @@
 ///   `hidden="false"` hides. It fails exactly the way a boolean attribute
 ///   fails, so it is written the same way. (rinch honours it through
 ///   `.rinch-tabs__panel[hidden]`, a presence selector, so desktop agrees.)
-/// - **`data-disabled`**, **`data-nofocus`** and **`data-trap-focus`** are
-///   rinch's own boolean attributes, documented as "present unless the value is
-///   `false`" — desktop reads all three that way, and the web reads
-///   `data-nofocus` and `data-trap-focus` that way (it has no `data-disabled`
+/// - **`data-disabled`**, **`data-nofocus`**, **`data-trap-focus`** and
+///   **`data-backdrop`** are rinch's own boolean attributes, documented as
+///   "present unless the value is `false`" — desktop reads all four that way,
+///   and the web reads the last three that way (it has no `data-disabled`
 ///   reader at all). Writing them by presence makes a reactive binding correct
 ///   by construction instead of correct by that tolerance.
 ///
@@ -114,6 +114,7 @@ fn is_lowercase_boolean_attribute(name: &str) -> bool {
             | "data-disabled"
             | "data-nofocus"
             | "data-trap-focus"
+            | "data-backdrop"
     )
 }
 
@@ -182,13 +183,15 @@ pub fn attr_is_truthy(value: &str) -> bool {
 
 /// Whether one of **rinch's own** `data-` boolean attributes is on.
 ///
-/// `data-disabled`, `data-nofocus` and `data-trap-focus` are rinch inventions,
+/// `data-disabled`, `data-nofocus`, `data-trap-focus` and `data-backdrop`
+/// (issue #1093) are rinch inventions,
 /// not HTML, and rinch gives them an escape HTML has no equivalent of: present
 /// means on *unless* the value is the literal `false`, ASCII-case-insensitively.
 /// It is a rinch convention rather than a desktop quirk, and the latter two are
 /// what show that: desktop reads them through this function and the web through
 /// `event_delegation.rs`'s `[data-nofocus]:not([data-nofocus="false" i])` and
-/// `[data-trap-focus]:not([data-trap-focus="false" i])`. (`data-disabled` has no
+/// `[data-trap-focus]:not([data-trap-focus="false" i])`, and `data-backdrop`
+/// through this very function on both. (`data-disabled` has no
 /// web reader, so there is nothing on that side to agree or disagree with.)
 ///
 /// The plain HTML `disabled` / `readonly` deliberately do **not** go through
@@ -258,11 +261,17 @@ mod tests {
         }
     }
 
-    /// The four deliberate additions, so removing one is a test failure rather
+    /// The five deliberate additions, so removing one is a test failure rather
     /// than a silent narrowing.
     #[test]
-    fn the_non_spec_additions_are_the_documented_four() {
-        for name in ["hidden", "data-disabled", "data-nofocus", "data-trap-focus"] {
+    fn the_non_spec_additions_are_the_documented_five() {
+        for name in [
+            "hidden",
+            "data-disabled",
+            "data-nofocus",
+            "data-trap-focus",
+            "data-backdrop",
+        ] {
             assert!(
                 is_boolean_attribute(name),
                 "{name} must be written by presence"

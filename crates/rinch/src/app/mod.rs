@@ -9,6 +9,8 @@
 #[cfg(test)]
 mod animation_theme_change_tests;
 #[cfg(test)]
+mod backdrop_any_button_1093_tests;
+#[cfg(test)]
 mod batched_handler_focus_tests;
 #[cfg(test)]
 mod blink_and_click_focus_tests;
@@ -137,6 +139,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(test)]
+mod right_press_click_1093_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 mod select_widget;

@@ -443,6 +443,8 @@ impl Component for ColorInput {
             let backdrop = rinch_macros::rsx! { div { class: "rinch-color-input__backdrop" } };
             let handler_id = __scope.register_handler(move || opened.set(false));
             backdrop.set_attribute("data-rid", &handler_id.to_string());
+            // A press of any button outside dismisses, not only a left one (#1093).
+            backdrop.set_attribute(rinch_core::events::BACKDROP_ATTRIBUTE, "");
             wrapper.append_child(&backdrop);
         }
 

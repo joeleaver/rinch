@@ -60,9 +60,11 @@ alone**, exactly as a browser reads them: `disabled="false"` disables and
 That applies to every tag the attribute reaches, so a `<textarea readonly="false">`
 is read-only too.
 
-rinch's **own** `data-disabled`, `data-nofocus` and `data-trap-focus` are the
-exception, and the only one: there the literal `"false"` turns the attribute off.
-`data-nofocus` and `data-trap-focus` are read that way on both backends;
+rinch's **own** `data-disabled`, `data-nofocus`, `data-trap-focus` and
+`data-backdrop` (an overlay backdrop that answers a press of any button, #1093)
+are the exception, and the only one: there the literal `"false"` turns the
+attribute off. `data-nofocus`, `data-trap-focus` and `data-backdrop` are read
+that way on both backends;
 `data-disabled` is a desktop attribute with no web reader, because the browser
 does not know it. Only `"false"` is excused — `"0"` is on, matching the web's
 `[data-nofocus="false" i]` selector. Reach for the escape

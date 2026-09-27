@@ -318,6 +318,8 @@ impl Component for Popover {
             let cb = self.onclose.clone().unwrap();
             let handler_id = __scope.register_handler(move || cb.invoke());
             backdrop.set_attribute("data-rid", &handler_id.0.to_string());
+            // A press of any button outside dismisses, not only a left one (#1093).
+            backdrop.set_attribute(rinch_core::events::BACKDROP_ATTRIBUTE, "");
 
             root.append_child(&backdrop);
         }
