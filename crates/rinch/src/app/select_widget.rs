@@ -384,10 +384,16 @@ impl RinchApp {
 
     /// Handle a click while a popup is open. Returns `true` (the click is always
     /// consumed while open — the backdrop is modal).
+    ///
+    /// Only the **primary** button picks an option (issue #1111): a right or
+    /// middle press on the list is consumed and leaves it open, as a browser's
+    /// list ignores them. A press **outside** the list dismisses it whatever the
+    /// button — a browser takes a transient popup down on any press elsewhere.
     pub(super) fn handle_open_select_click(
         &mut self,
         x: f32,
         y: f32,
+        button: MouseButton,
         vp_w: f32,
         vp_h: f32,
     ) -> bool {
@@ -434,7 +440,7 @@ impl RinchApp {
 
         match hit {
             Hit::Option(idx) => {
-                if !open.disabled.get(idx).copied().unwrap_or(true) {
+                if button == MouseButton::Left && !open.disabled.get(idx).copied().unwrap_or(true) {
                     self.commit_select(idx, vp_w, vp_h);
                 }
             }
