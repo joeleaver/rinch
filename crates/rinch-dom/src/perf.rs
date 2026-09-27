@@ -128,9 +128,16 @@ define_counters! {
     /// Parley layouts built while sizing an atomic inline
     /// (`inline-block` / `inline-flex` / `inline-grid`).
     ShapeAtomicInline = "shape_atomic_inline",
-    /// `text-overflow: ellipsis` truncations. Each one shapes several
-    /// candidate layouts (a binary search over the prefix length).
+    /// `text-overflow: ellipsis` rebuilds of an IFC root's layout, one per
+    /// root whose lines overflow.
     EllipsisBuilds = "ellipsis_builds",
+    /// Parley layouts those rebuilds shaped: the "…" itself, the rebuilt
+    /// layout (again if it had to fall back to hard breaks, and again per
+    /// step back from a cut line's kerning overshoot), and each prefix the
+    /// whole-text binary search tried. The per-line cut of #1091 walks
+    /// the clusters already shaped, so it adds none however many lines it
+    /// cuts.
+    EllipsisShapes = "ellipsis_shapes",
     /// Parley layouts built by paint itself: every `<input>` / `<textarea>`
     /// value and `<select>` label, every frame they are painted, plus the
     /// fallback for text with no cached layout. (Query-time shaping — hit

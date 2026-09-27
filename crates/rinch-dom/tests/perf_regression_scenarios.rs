@@ -16,6 +16,8 @@
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
+//! | `ellipsis_shapes` | `ifc.rs`, the per-line cut (no search shapes) | [`a_pre_block_ellipsis_cuts_every_line_without_shaping`] |
+//! | `ellipsis_shapes` | `ifc.rs`, the whole-text prefix search | [`a_rich_nowrap_root_ellipsis_shapes_its_prefix_search`] |
 //! | `ellipsis_builds` | `ifc.rs`, text leaf — **deleted in #982** | none: [`a_text_leaf_ellipsis`] pins that a flex container's own text builds none, and [`a_contents_wrapped_flex_item_ellipsis`], the last route to the site until #998, now reaches the IFC-root one |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::InlineRoot` | [`an_inline_block_holding_an_ifc`] |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::Text` | [`an_inline_flex_holding_a_text_leaf`] |
@@ -204,8 +206,104 @@ fn an_ifc_root_ellipsis() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
+            (EllipsisShapes, 2),
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A `pre` block of 40 lines, **every** one overflowing, each cut with its
+/// own "…" (#1091): the cut is found by walking the clusters the paint layout
+/// already shaped, so `ellipsis_shapes` is the "…" and the rebuilt layout —
+/// 2, however many lines are cut. Shaping each candidate prefix per line, as
+/// #1103's first round did, was about 7 shapes a line (#1103's review: a
+/// 300-line block went 34 → 163 ms with `ellipsis_builds` unmoved).
+#[test]
+fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
+    let mut doc = doc_with(
+        ".clip { width: 60px; overflow: hidden; white-space: pre;
+                 text-overflow: ellipsis; }",
+    );
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let clip = el(&mut doc, body, "div", "clip");
+    let block = vec!["a line much too long for sixty pixels"; 40].join("\n");
+    text(&mut doc, clip, &block);
+    let s = cold_frame(&mut doc);
+    expect(
+        "ellipsis (40-line pre block)",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 5),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (EllipsisBuilds, 1),
+            (EllipsisShapes, 2),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A `nowrap` root whose content the flat rebuild cannot represent (a
+/// coloured span) keeps the behaviour before #1091: the whole text cut to one
+/// prefix by a binary search that shapes each candidate — every one counted.
+#[test]
+fn a_rich_nowrap_root_ellipsis_shapes_its_prefix_search() {
+    let mut doc = doc_with(
+        ".clip { width: 60px; overflow: hidden; white-space: nowrap;
+                 text-overflow: ellipsis; }
+         .red { color: rgb(255, 0, 0); }",
+    );
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let clip = el(&mut doc, body, "div", "clip");
+    let red = el(&mut doc, clip, "span", "red");
+    text(&mut doc, red, "a line much");
+    text(&mut doc, clip, " too long for sixty pixels");
+    let s = cold_frame(&mut doc);
+    expect(
+        "ellipsis (rich nowrap root)",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 13),
+            (FullStyleWalks, 3),
+            (TaffyStyleSyncs, 7),
+            (TaffyStyleChanges, 4),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (EllipsisBuilds, 1),
+            (EllipsisShapes, 8),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
@@ -318,6 +416,7 @@ fn a_contents_wrapped_flex_item_ellipsis() {
             (ShapeMeasureIfc, 2),
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
+            (EllipsisShapes, 2),
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),

@@ -359,6 +359,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         ShapeIfcBuild,
         ShapeAtomicInline,
         EllipsisBuilds,
+        EllipsisShapes,
         ShapePaint,
         IfcMeasureCacheHits,
         IfcMeasureInvalidations,
