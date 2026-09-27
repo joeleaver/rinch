@@ -9,11 +9,13 @@
 //! under the real theme and component stylesheets.
 
 use super::*;
+#[cfg(any(feature = "desktop", feature = "android"))]
 use crate::shell::touch_gesture::{TouchAction, TouchGesture};
 use rinch_components::context_menu::ContextMenu;
 use rinch_components::{Drawer, DropdownMenu, Modal, Popover};
 use rinch_core::{Callback, Component, Signal};
 use std::cell::Cell;
+#[cfg(any(feature = "desktop", feature = "android"))]
 use std::time::{Duration, Instant};
 
 const VP: (u32, u32) = (800, 600);
@@ -81,6 +83,7 @@ fn a_press_of_any_button_outside_an_open_context_menu_closes_it() {
 /// An Android long press is a right press (`touch_gesture`), so a long press
 /// outside an open context menu — Pimble's tree — dismisses it too. Fed through
 /// the real recogniser rather than as a hand-built right press.
+#[cfg(any(feature = "desktop", feature = "android"))]
 #[test]
 fn a_long_press_outside_an_open_context_menu_closes_it() {
     let (mut app, opened) = mount_context_menu();
