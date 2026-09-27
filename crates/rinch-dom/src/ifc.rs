@@ -124,15 +124,100 @@ pub struct TreeCheckVerdict {
     pub fatal: Vec<String>,
 }
 
+/// What `build_ellipsis_layout` rebuilds from (#1091).
+pub(crate) enum EllipsisSource<'a> {
+    /// The original layout, whose lines are kept and cut one by one.
+    Lines(&'a InlineLayout),
+    /// The whole text, cut to one prefix (a `nowrap`/`pre` root whose inline
+    /// content the flat rebuild cannot represent — the behaviour before
+    /// #1091).
+    Whole(&'a str),
+}
+
+/// The IFC root's own text style, as the flat ellipsis rebuild applies it to
+/// every character.
+pub(crate) struct EllipsisStyle {
+    font_size: f32,
+    font_family: std::borrow::Cow<'static, str>,
+    font_weight: parley::style::FontWeight,
+    font_style: parley::style::FontStyle,
+    color: peniko::Color,
+    line_height: Option<parley::style::LineHeight>,
+    letter_spacing: f32,
+    word_spacing: f32,
+    underline: bool,
+    strikethrough: bool,
+    decoration_color: Option<peniko::Color>,
+    alignment: parley::layout::Alignment,
+}
+
+impl EllipsisStyle {
+    pub(crate) fn of(cs: &crate::computed_style::ComputedStyle, scale: f32) -> Self {
+        Self {
+            font_size: cs.font_size * scale,
+            font_family: if cs.font_family.is_empty() {
+                "sans-serif".into()
+            } else {
+                cs.font_family.clone().into()
+            },
+            font_weight: parley::style::FontWeight::new(cs.font_weight),
+            font_style: cs.font_style.to_parley(),
+            color: cs.color.unwrap_or(peniko::Color::BLACK),
+            line_height: cs.line_height.to_parley(),
+            letter_spacing: cs.letter_spacing,
+            word_spacing: cs.word_spacing,
+            underline: cs.text_decoration.underline && !cs.text_decoration.is_wavy_underline(),
+            strikethrough: cs.text_decoration.strikethrough,
+            decoration_color: cs.text_decoration.color,
+            alignment: cs.text_align.to_parley(),
+        }
+    }
+
+    /// `text` shaped in this style, not yet broken into lines. `paint` adds
+    /// what only the drawn layout needs (brush, line height, decorations);
+    /// a measurement leaves them out.
+    pub(crate) fn shape(
+        &self,
+        layout_cx: &mut parley::LayoutContext<Brush>,
+        font_cx: &mut parley::FontContext,
+        text: &str,
+        scale: f32,
+        paint: bool,
+    ) -> parley::layout::Layout<Brush> {
+        use parley::style::StyleProperty as P;
+        let mut b = layout_cx.ranged_builder(font_cx, text, scale, true);
+        b.push_default(P::FontSize(self.font_size));
+        b.push_default(P::FontWeight(self.font_weight));
+        b.push_default(P::FontStyle(self.font_style));
+        b.push_default(P::FontFamily(parley::style::FontFamily::Source(
+            self.font_family.clone(),
+        )));
+        push_spacing(&mut b, self.letter_spacing, self.word_spacing);
+        if paint {
+            b.push_default(P::Brush(Brush::Solid(self.color)));
+            if let Some(lh) = self.line_height {
+                b.push_default(P::LineHeight(lh));
+            }
+            b.push_default(P::Underline(self.underline));
+            b.push_default(P::Strikethrough(self.strikethrough));
+            if let Some(c) = self.decoration_color {
+                b.push_default(P::UnderlineBrush(Some(Brush::Solid(c))));
+                b.push_default(P::StrikethroughBrush(Some(Brush::Solid(c))));
+            }
+        }
+        b.build(text)
+    }
+}
+
 /// Push the inherited `letter-spacing` / `word-spacing` onto a ranged builder,
 /// in CSS pixels (#698).
 ///
-/// The `text-overflow: ellipsis` paths build **three** throwaway layouts per
-/// truncation — the ellipsis glyph's width, each binary-search prefix, and the
-/// final truncated line — and all three have to shape the text the way the
-/// untruncated line was shaped, or the prefix that "fits" is measured under one
-/// set of advances and painted under another. One call site each, so they
-/// cannot drift apart.
+/// The `text-overflow: ellipsis` rebuild shapes the ellipsis glyph, each
+/// binary-search prefix of a whole-text cut and the final truncated layout,
+/// and all of them have to shape the text the way the untruncated line was
+/// shaped, or the prefix that "fits" is measured under one set of advances and
+/// painted under another. They all go through [`EllipsisStyle::shape`], so
+/// they cannot drift apart.
 ///
 /// Unconditional, like the sibling pushes in
 /// [`RinchDocument::inline_style_props`]: 0 is parley's own default, so a zero
@@ -750,7 +835,12 @@ impl RinchDocument {
         );
         inline_layout.hang.record(&self.tree.perf);
 
-        // text-overflow: ellipsis — if text overflows the container, truncate and add "…"
+        // text-overflow: ellipsis — every line whose content overflows the
+        // container is cut and ends in "…" (#1091). CSS Overflow 3 §3.2 asks
+        // the question per line box, after wrapping, and so does Chrome 153:
+        // an unbreakable word under `white-space: normal`, a `nowrap` span
+        // inside a wrapping root and each long line of `pre` text all
+        // overflow a line.
         {
             use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
             let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
@@ -763,27 +853,51 @@ impl RinchDocument {
             // site since #982 (`ellipsis_route_tests.rs`).
             if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
                 && !cs.display.is_flex_or_grid_container()
-                && matches!(
+                && matches!(cs.overflow_x, OverflowValue::Hidden | OverflowValue::Clip)
+                && container_width.is_finite()
+                && container_width > 0.0
+                // Cheap: the widest line, which parley already knows.
+                && inline_layout.layout.width() > container_width
+            {
+                let root_is_nowrap = matches!(
                     cs.white_space,
                     WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                )
-                && matches!(cs.overflow_x, OverflowValue::Hidden | OverflowValue::Clip)
-                && inline_layout.layout.width() > container_width
-                && container_width > 0.0
-            {
-                // Collect text content from the inline layout
-                let full_text = inline_layout.text_content.clone();
-                if !full_text.is_empty() {
-                    self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
-                    inline_layout = Self::build_ellipsis_layout(
+                );
+                // The "…" is drawn by rebuilding the text flat in the root's
+                // own style (#1100 is keeping the original layout instead).
+                // Per line, that is taken only where the flat text is the
+                // same picture: otherwise one long word would strip the
+                // colours, chips and hidden spans from every other line of
+                // the paragraph, which main left clipped and styled.
+                let source = if Self::ellipsis_rebuild_is_faithful(
+                    &self.tree.nodes,
+                    root_id,
+                    &inline_layout,
+                ) {
+                    Some(EllipsisSource::Lines(&inline_layout))
+                } else if root_is_nowrap {
+                    // As before #1091: the whole text, cut to one prefix.
+                    Some(EllipsisSource::Whole(&inline_layout.text_content))
+                } else {
+                    None
+                };
+                if let Some(source) = source {
+                    let built = Self::build_ellipsis_layout(
                         &self.tree.nodes,
                         root_id,
-                        &full_text,
+                        source,
                         container_width,
                         1.0,
                         &mut self.font_cx,
                         paint_layout_cx,
                     );
+                    if let Some((layout, shapes)) = built {
+                        self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
+                        self.tree
+                            .perf
+                            .add(crate::perf::Counter::EllipsisShapes, shapes);
+                        inline_layout = layout;
+                    }
                 }
             }
         }
@@ -4930,122 +5044,269 @@ impl RinchDocument {
         }
     }
 
-    /// Build an IFC layout with ellipsis truncation.
+    /// Whether rebuilding `il` as flat text in the root's own style draws
+    /// the same thing as `il` (#1091): no inline box (a chip would be dropped
+    /// and left at its old position), no inline background or decoration
+    /// span, and every text run's nearest element carries the root's text
+    /// style, its `text-shadow` list and `visibility: visible`. Inherited
+    /// properties are what an element passes to its text, so the nearest
+    /// element answers for each run; the non-inherited ones that reach text
+    /// arrive as `background_spans` / `decoration_spans`. `white-space` is
+    /// not compared: it decides only where lines break, and the rebuild keeps
+    /// the lines it was given.
+    fn ellipsis_rebuild_is_faithful(
+        nodes: &slab::Slab<Node>,
+        root_id: usize,
+        il: &InlineLayout,
+    ) -> bool {
+        use crate::computed_style::VisibilityValue;
+        if !il.layout.inline_boxes().is_empty()
+            || !il.background_spans.is_empty()
+            || !il.decoration_spans.is_empty()
+        {
+            return false;
+        }
+        let root = &nodes[root_id].computed_style;
+        // The kept lines are joined by hard breaks, and a line ended by one is
+        // not justified: `text-align: justify` would be lost on every one.
+        if matches!(
+            root.text_align,
+            crate::computed_style::TextAlignValue::Justify
+        ) {
+            return false;
+        }
+        il.text_ranges.iter().filter(|r| !r.is_br).all(|r| {
+            let Some(el) = nodes.get(r.node_id).and_then(|t| t.parent) else {
+                return false;
+            };
+            let s = &nodes[el].computed_style;
+            Self::same_inline_text_style_but_wrap(s, root)
+                && s.text_shadow == root.text_shadow
+                && matches!(s.visibility, VisibilityValue::Visible)
+        })
+    }
+
+    /// The byte offsets in `text` where each prefix of `line` that fits
+    /// `target` ends, shortest first — the line's start (the empty prefix)
+    /// and then one per cluster. Its clusters' advances are summed in
+    /// **logical** order, so the cut is found in the layout already shaped,
+    /// without shaping anything. `Line::runs` yields runs in *visual* order:
+    /// summed that way, a line mixing directions reaches its logical end
+    /// first and is not cut at all (#1103's second review).
+    fn ellipsis_cut_ends(line: &parley::layout::Line<'_, Brush>, target: f32) -> Vec<usize> {
+        let mut clusters: Vec<(std::ops::Range<usize>, f32)> = line
+            .runs()
+            .flat_map(|run| {
+                run.clusters()
+                    .map(|c| (c.text_range(), c.advance()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        clusters.sort_by_key(|(r, _)| r.start);
+        let mut ends = vec![line.text_range().start];
+        let mut x = 0.0;
+        for (range, advance) in clusters {
+            x += advance;
+            if x > target {
+                break;
+            }
+            ends.push(range.end);
+        }
+        ends
+    }
+
+    /// Build an IFC layout with ellipsis truncation (#1091), and the number
+    /// of parley layouts shaped to do it; `None` when there is no text.
     ///
-    /// Binary-searches for the longest text prefix that fits within `container_width`
-    /// when combined with an ellipsis character, then rebuilds the layout.
+    /// From [`EllipsisSource::Lines`], every line of the original layout whose
+    /// content (its advance less its trailing white space, as parley's own
+    /// `Layout::width` measures it) overflows `container_width` is cut at the
+    /// last cluster that fits together with a "…" ([`Self::ellipsis_cut_ends`] —
+    /// nothing is shaped for the search), every other line is kept, and the
+    /// lines are joined by hard breaks and laid out again: the same lines,
+    /// with a "…" on exactly the ones that overflowed, where Chrome 153 draws
+    /// them. Only taken where [`Self::ellipsis_rebuild_is_faithful`].
+    ///
+    /// From [`EllipsisSource::Whole`], the whole text is cut to the longest
+    /// prefix that fits (a binary search, shaping each candidate) and laid out
+    /// unconstrained — what a `nowrap`/`pre` root always got. That rebuild is
+    /// flat text in the root's own style: inline styling, inline boxes and
+    /// text-node ranges are lost (#1100).
     #[allow(clippy::too_many_arguments)]
     fn build_ellipsis_layout(
         nodes: &slab::Slab<Node>,
         root_id: usize,
-        full_text: &str,
+        source: EllipsisSource<'_>,
         container_width: f32,
         scale: f32,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<Brush>,
-    ) -> InlineLayout {
-        let root_computed = &nodes[root_id].computed_style;
-        let font_size = root_computed.font_size * scale;
-        let font_family: std::borrow::Cow<'static, str> = if root_computed.font_family.is_empty() {
-            "sans-serif".into()
-        } else {
-            root_computed.font_family.clone().into()
-        };
-        let font_weight = parley::style::FontWeight::new(root_computed.font_weight);
-        let color = root_computed.color.unwrap_or_else(|| {
-            peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
-        });
-        let line_height = root_computed.line_height.to_parley();
-        let letter_spacing = root_computed.letter_spacing;
-        let word_spacing = root_computed.word_spacing;
-        let alignment = root_computed.text_align.to_parley();
-
+    ) -> Option<(InlineLayout, u64)> {
+        let style = EllipsisStyle::of(&nodes[root_id].computed_style, scale);
         let ellipsis = "\u{2026}";
-
-        // Measure ellipsis width
+        let mut shapes = 1u64;
         let ellipsis_width = {
-            let mut b = layout_cx.ranged_builder(font_cx, ellipsis, scale, true);
-            b.push_default(parley::style::StyleProperty::FontSize(font_size));
-            b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
-            b.push_default(parley::style::StyleProperty::FontFamily(
-                parley::style::FontFamily::Source(font_family.clone()),
-            ));
-            push_spacing(&mut b, letter_spacing, word_spacing);
-            let mut l = b.build(ellipsis);
+            let mut l = style.shape(layout_cx, font_cx, ellipsis, scale, false);
             l.break_all_lines(None);
             l.width()
         };
-
         let target_width = container_width - ellipsis_width;
-        let chars: Vec<char> = full_text.chars().collect();
-        let mut best_len = 0;
+        let cut = |prefix: &str| prefix.trim_end().to_string() + ellipsis;
 
-        if target_width > 0.0 {
-            let mut lo: usize = 0;
-            let mut hi: usize = chars.len();
-            while lo <= hi {
-                let mid = (lo + hi) / 2;
-                if mid == 0 {
-                    lo = 1;
+        // Per cut line: its start and its candidate prefix ends (see
+        // [`Self::ellipsis_cut_ends`]), so an overshoot can step back.
+        let mut cuts: Vec<Option<(usize, Vec<usize>)>> = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
+        let source_text = match &source {
+            EllipsisSource::Lines(il) => il.text_content.as_str(),
+            EllipsisSource::Whole(t) => t,
+        };
+        let (mut lines, whole) = match source {
+            EllipsisSource::Lines(il) => {
+                let text = &il.text_content;
+                for line in il.layout.lines() {
+                    let m = line.metrics();
+                    let range = line.text_range();
+                    if m.advance - m.trailing_whitespace > container_width {
+                        let ends = if target_width > 0.0 {
+                            Self::ellipsis_cut_ends(&line, target_width)
+                        } else {
+                            vec![range.start]
+                        };
+                        let end = *ends.last().unwrap_or(&range.start);
+                        lines.push(cut(text.get(range.start..end).unwrap_or("")));
+                        cuts.push(Some((range.start, ends)));
+                    } else {
+                        lines.push(text.get(range).unwrap_or("").trim_end().to_string());
+                        cuts.push(None);
+                    }
+                }
+                (lines, false)
+            }
+            EllipsisSource::Whole(full_text) => {
+                if full_text.is_empty() {
+                    return None;
+                }
+                let chars: Vec<char> = full_text.chars().collect();
+                let mut best_len = 0;
+                if target_width > 0.0 {
+                    let (mut lo, mut hi) = (1usize, chars.len());
+                    while lo <= hi {
+                        let mid = (lo + hi) / 2;
+                        let prefix: String = chars[..mid].iter().collect();
+                        let mut l = style.shape(layout_cx, font_cx, &prefix, scale, false);
+                        shapes += 1;
+                        l.break_all_lines(None);
+                        if l.width() <= target_width {
+                            best_len = mid;
+                            lo = mid + 1;
+                        } else {
+                            hi = mid - 1;
+                        }
+                    }
+                }
+                (
+                    vec![cut(&chars[..best_len].iter().collect::<String>())],
+                    true,
+                )
+            }
+        };
+        if lines.iter().all(|l| l.is_empty()) {
+            return None;
+        }
+        let (mut layout, mut text, built) = if whole {
+            let text = lines.concat();
+            let mut layout = style.shape(layout_cx, font_cx, &text, scale, true);
+            layout.break_all_lines(None);
+            layout.align(style.alignment, parley::layout::AlignmentOptions::default());
+            (layout, text, 1)
+        } else {
+            Self::layout_ellipsis_lines(&style, &lines, container_width, scale, font_cx, layout_cx)
+        };
+        shapes += built;
+
+        // A cluster's advance carries its kerning against the character that
+        // followed it, which the "…" replaces, so a cut line shaped again can
+        // come out a little wider than the box (up to 1.26px measured, #1103's
+        // second review). Step such a line back one cluster and lay out again;
+        // it takes a shape only when a line actually overshoots.
+        for _ in 0..3 {
+            if whole || layout.len() != lines.len() {
+                break;
+            }
+            let mut changed = false;
+            for (i, line) in layout.lines().enumerate() {
+                let m = line.metrics();
+                if m.advance - m.trailing_whitespace <= container_width + 0.01 {
                     continue;
                 }
-                let prefix: String = chars[..mid].iter().collect();
-                let mut b = layout_cx.ranged_builder(font_cx, &prefix, scale, true);
-                b.push_default(parley::style::StyleProperty::FontSize(font_size));
-                b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
-                b.push_default(parley::style::StyleProperty::FontFamily(
-                    parley::style::FontFamily::Source(font_family.clone()),
-                ));
-                push_spacing(&mut b, letter_spacing, word_spacing);
-                let mut l = b.build(&prefix);
-                l.break_all_lines(None);
-                if l.width() <= target_width {
-                    best_len = mid;
-                    lo = mid + 1;
-                } else {
-                    if mid == 0 {
-                        break;
+                if let Some(Some((start, ends))) = cuts.get_mut(i) {
+                    if ends.len() > 1 {
+                        ends.pop();
+                        let end = *ends.last().unwrap();
+                        lines[i] = cut(source_text.get(*start..end).unwrap_or(""));
+                        changed = true;
                     }
-                    hi = mid - 1;
                 }
             }
+            if !changed {
+                break;
+            }
+            let (l, t, built) = Self::layout_ellipsis_lines(
+                &style,
+                &lines,
+                container_width,
+                scale,
+                font_cx,
+                layout_cx,
+            );
+            layout = l;
+            text = t;
+            shapes += built;
         }
 
-        // Build final layout: truncated text + ellipsis
-        let truncated: String = chars[..best_len]
-            .iter()
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-            + ellipsis;
+        Some((
+            InlineLayout {
+                layout,
+                text_content: text,
+                child_positions: Vec::new(),
+                text_ranges: Vec::new(),
+                background_spans: Vec::new(),
+                decoration_spans: Vec::new(),
+                max_width: container_width,
+                // Every line fits: nothing hangs.
+                preserves_spaces: false,
+                hang: HangStats::default(),
+            },
+            shapes,
+        ))
+    }
 
-        let mut b = layout_cx.ranged_builder(font_cx, &truncated, scale, true);
-        b.push_default(parley::style::StyleProperty::FontSize(font_size));
-        b.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-        b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
-        b.push_default(parley::style::StyleProperty::FontFamily(
-            parley::style::FontFamily::Source(font_family),
-        ));
-        if let Some(lh) = line_height {
-            b.push_default(parley::style::StyleProperty::LineHeight(lh));
+    /// Lay `lines` out one per line, joined by hard breaks, and the number of
+    /// layouts shaped. Broken at `container_width` so `text-align` lines each
+    /// line up against the box, as the layout it replaces did. Every line fits
+    /// by construction, but a cut line is shaped whole here where its prefix
+    /// and "…" were measured apart; if that wraps anything, the text is broken
+    /// only at the hard breaks instead, so a line is never split in two.
+    pub(crate) fn layout_ellipsis_lines(
+        style: &EllipsisStyle,
+        lines: &[String],
+        container_width: f32,
+        scale: f32,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<Brush>,
+    ) -> (parley::layout::Layout<Brush>, String, u64) {
+        let text = lines.join("\n");
+        let mut layout = style.shape(layout_cx, font_cx, &text, scale, true);
+        layout.break_all_lines(Some(container_width));
+        let mut shapes = 1;
+        if layout.len() != lines.len() {
+            layout = style.shape(layout_cx, font_cx, &text, scale, true);
+            layout.break_all_lines(None);
+            shapes += 1;
         }
-        push_spacing(&mut b, letter_spacing, word_spacing);
-        let mut layout = b.build(&truncated);
-        layout.break_all_lines(None);
-        layout.align(alignment, parley::layout::AlignmentOptions::default());
-
-        InlineLayout {
-            layout,
-            text_content: truncated,
-            child_positions: Vec::new(),
-            text_ranges: Vec::new(),
-            background_spans: Vec::new(),
-            decoration_spans: Vec::new(),
-            max_width: container_width,
-            // Laid out unconstrained, one line: nothing hangs.
-            preserves_spaces: false,
-            hang: HangStats::default(),
-        }
+        layout.align(style.alignment, parley::layout::AlignmentOptions::default());
+        (layout, text, shapes)
     }
 
     /// Whether two computed styles agree on every property
@@ -5121,6 +5382,16 @@ impl RinchDocument {
         a: &crate::computed_style::ComputedStyle,
         b: &crate::computed_style::ComputedStyle,
     ) -> bool {
+        Self::same_inline_text_style_but_wrap(a, b)
+            && Self::text_wrap_mode(a) == Self::text_wrap_mode(b)
+    }
+
+    /// [`Self::same_inline_text_style`] less the wrap mode: every property
+    /// that decides how a span's glyphs look.
+    fn same_inline_text_style_but_wrap(
+        a: &crate::computed_style::ComputedStyle,
+        b: &crate::computed_style::ComputedStyle,
+    ) -> bool {
         use crate::computed_style::values::LineHeightValue;
         let same_line_height = match (a.line_height, b.line_height) {
             (LineHeightValue::Normal, LineHeightValue::Normal) => true,
@@ -5137,6 +5408,22 @@ impl RinchDocument {
             && same_line_height
             && a.letter_spacing == b.letter_spacing
             && a.word_spacing == b.word_spacing
+    }
+
+    /// Whether an element's text may wrap: `nowrap` and `pre` forbid it
+    /// (#1091). Pushed per inline element, so a `nowrap` span inside a
+    /// wrapping root keeps its text on one line — and overflows that line,
+    /// which is what draws its `text-overflow: ellipsis`. The IFC root's own
+    /// `nowrap`/`pre` is honoured by breaking it unconstrained instead
+    /// (`build_inline_layout`).
+    fn text_wrap_mode(
+        computed: &crate::computed_style::ComputedStyle,
+    ) -> parley::style::TextWrapMode {
+        use crate::computed_style::WhiteSpaceValue;
+        match computed.white_space {
+            WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre => parley::style::TextWrapMode::NoWrap,
+            _ => parley::style::TextWrapMode::Wrap,
+        }
     }
 
     /// The Parley style span an element contributes to the inline formatting
@@ -5234,6 +5521,9 @@ impl RinchDocument {
         ));
         props.push(parley::style::StyleProperty::WordSpacing(
             computed.word_spacing,
+        ));
+        props.push(parley::style::StyleProperty::TextWrapMode(
+            Self::text_wrap_mode(computed),
         ));
         props
     }
@@ -6074,5 +6364,45 @@ mod atomic_leaf_layout_tests {
             n,
             "the painted layout is the one laid out for the box, not the unwrapped line"
         );
+    }
+}
+
+#[cfg(test)]
+mod ellipsis_layout_tests {
+    use crate::RinchDocument;
+
+    /// The hard-break fallback of `layout_ellipsis_lines` (#1091, #1103's
+    /// review Mx2): handed a line wider than the box, the break at the box's
+    /// width would split it in two, and the fallback keeps it one line. The
+    /// faithful per-line path cannot hand it one by construction, so the line
+    /// is handed in directly.
+    #[test]
+    fn a_line_wider_than_the_box_is_never_split_by_the_rebuild() {
+        let mut doc = RinchDocument::new();
+        let cs = crate::computed_style::ComputedStyle::default();
+        let style = super::EllipsisStyle::of(&cs, 1.0);
+        let lines = vec!["ab cd ef gh ij kl mn op".to_string(), "x".to_string()];
+        let mut cx = parley::LayoutContext::new();
+        let (layout, text, shapes) = RinchDocument::layout_ellipsis_lines(
+            &style,
+            &lines,
+            20.0,
+            1.0,
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        assert_eq!(text, "ab cd ef gh ij kl mn op\nx");
+        assert_eq!(layout.len(), 2, "one layout line per given line");
+        assert_eq!(shapes, 2, "the break at the box width was tried first");
+        // Positive control: the same lines at a width they fit take one shape.
+        let (layout, _, shapes) = RinchDocument::layout_ellipsis_lines(
+            &style,
+            &lines,
+            1000.0,
+            1.0,
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        assert_eq!((layout.len(), shapes), (2, 1));
     }
 }

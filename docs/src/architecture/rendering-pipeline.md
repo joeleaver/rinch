@@ -185,8 +185,9 @@ text node instead: in `<p style="text-shadow: -29px 0 blue">A<span>B</span></p>`
 the shadow of `B` covers `A` there (measured) and not in rinch, whether or not
 the span declares its own list. Such a list is ink of the root that draws it:
 damage, the paint prune, the painted state and `layer_bounds` all count it.
-Two limits. In a `text-overflow: ellipsis` line every run casts the root's list,
-because that layout records no text ranges, the same gap as #853 (#1065). And
+Two limits. In a `nowrap`/`pre` root that `text-overflow: ellipsis` cuts, every
+run casts the root's list, because that layout records no text ranges, the same
+gap as #853 (#1065); a wrapping root with such a span is left un-cut. And
 each distinct list is a pass over the lines its text is on, so a paragraph of
 many spans with *different* lists costs about lists × parley's per-line item
 walk: 193 ms for 400 distinct lists in one paragraph, against 4.6 ms for one

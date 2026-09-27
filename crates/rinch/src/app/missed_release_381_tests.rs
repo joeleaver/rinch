@@ -87,6 +87,11 @@ pub(super) fn mount() -> (RinchApp, Rc<Log>) {
             }
         });
         probe.set_attribute("data-rid", &rid.0.to_string());
+        // A no-op `data-onmousedown`, so a right press on the probe still
+        // reaches a handler and writes a `Right` click context: a right press
+        // clicks no `data-rid` (#1093), and #1087's fixtures need one that did.
+        let noop = scope.register_handler(|| {});
+        probe.set_attribute("data-onmousedown", &noop.0.to_string());
         root.append_child(&probe);
         root
     });

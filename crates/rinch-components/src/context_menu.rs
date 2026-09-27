@@ -95,6 +95,8 @@ impl Component for ContextMenu {
             }
         });
         overlay.set_attribute("data-rid", &close_handler_id.0.to_string());
+        // A press of any button outside dismisses, not only a left one (#1093).
+        overlay.set_attribute(rinch_core::events::BACKDROP_ATTRIBUTE, "");
 
         // Dropdown container — sibling of overlay so clicks inside it
         // don't bubble to the overlay's close handler

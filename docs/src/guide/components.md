@@ -542,8 +542,9 @@ On desktop, "excluded from paint" covers the box's background, border and
 shadow, and also its text, underline (wavy too) and line-through, `text-shadow`, inline
 backgrounds, SVG shapes, scrollbar thumbs, `RenderSurface` frame, `filter`
 overlay and read-only selection highlight (desktop drew the text until issue
-#829). Three known exceptions remain: a hidden span inside a
-`text-overflow: ellipsis` line is still drawn (#853), a hidden `data-viewport`
+#829). Three known exceptions remain: a hidden span inside a `nowrap` or
+`pre` root that `text-overflow: ellipsis` cuts is still drawn (#853; a
+wrapping root holding one is clipped without a "…" instead), a hidden `data-viewport`
 still cuts its hole in its ancestors' backgrounds (#854), and a ligature that
 straddles a visibility boundary follows the wrong end of it (#852). As in CSS,
 a descendant that declares `visibility: visible` is painted again.

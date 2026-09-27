@@ -9,6 +9,8 @@
 #[cfg(test)]
 mod animation_theme_change_tests;
 #[cfg(test)]
+mod backdrop_any_button_1093_tests;
+#[cfg(test)]
 mod batched_handler_focus_tests;
 #[cfg(test)]
 mod blink_and_click_focus_tests;
@@ -56,6 +58,8 @@ mod editor_decoration_tests;
 mod editor_focus_and_reveal_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_inline_leaf_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_line_edge_scrolled_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
@@ -108,6 +112,8 @@ mod mouse_up_button_1087_tests;
 #[cfg(all(test, software_shell))]
 mod named_damage_tests;
 #[cfg(test)]
+mod native_select_button_1111_tests;
+#[cfg(test)]
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;
@@ -135,6 +141,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(test)]
+mod right_press_click_1093_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 mod select_widget;

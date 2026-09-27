@@ -896,7 +896,11 @@ to join it is a real choice and these three overlays make the opposite one from
 renders while it is open, one stacking level under its own panel, so a click on
 the overlay's own content still reaches the content. `Modal` and `Drawer` use
 their dimming overlay for this and always have; `Popover` gained one with the
-same PR.
+same PR. Each such backdrop carries `data-backdrop`
+(`rinch_core::events::BACKDROP_ATTRIBUTE`), so a press of **any** button outside
+dismisses, not only a left one. A custom overlay's own backdrop needs it too, or
+a right or middle press outside it is swallowed by the backdrop and does nothing
+(#1093): a `data-rid` without it runs for a left press only.
 
 *`auto_close`* arms a timer when the notification **opens** and cancels it if
 the notification closes — or unmounts — first, so a toast the user dismisses by

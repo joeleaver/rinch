@@ -178,71 +178,71 @@ mod pointer_capture {
     }
 
     /// A drag armed by a right press is the right button's gesture: its own
-    /// release ends it — armed from `data-onmousedown` or from the `data-rid`
-    /// a right press also dispatches, whose click context used to say `Left`
-    /// whatever the button.
+    /// release ends it. It is armed from `data-onmousedown`; a right press
+    /// used to click the `data-rid` too, with a click context that said `Left`
+    /// whatever the button, and since #1093 it clicks nothing.
     #[test]
     fn a_drag_armed_by_a_right_press_ends_on_the_right_release() {
-        for attribute in ["data-onmousedown", "data-rid"] {
-            let ends = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
-            let e = ends.clone();
-            let mut app = RinchApp::new(move |scope: &mut RenderScope| {
-                let root = scope.create_element("div");
-                root.set_attribute("style", "width: 800px; height: 600px");
-                let arm = scope.create_element("div");
-                arm.set_attribute(
-                    "style",
-                    "position: absolute; left: 0px; top: 0px; width: 120px; height: 40px",
-                );
-                let rid = scope.register_handler({
+        let attribute = "data-onmousedown";
+        let ends = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
+        let e = ends.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 800px; height: 600px");
+            let arm = scope.create_element("div");
+            arm.set_attribute(
+                "style",
+                "position: absolute; left: 0px; top: 0px; width: 120px; height: 40px",
+            );
+            let rid = scope.register_handler({
+                let e = e.clone();
+                move || {
                     let e = e.clone();
-                    move || {
-                        let e = e.clone();
-                        rinch_core::Drag::absolute()
-                            .on_end(move |x, y| e.borrow_mut().push((x, y)))
-                            .start();
-                    }
-                });
-                arm.set_attribute(attribute, &rid.0.to_string());
-                root.append_child(&arm);
-                root
+                    rinch_core::Drag::absolute()
+                        .on_end(move |x, y| e.borrow_mut().push((x, y)))
+                        .start();
+                }
             });
-            app.mount_component(800.0, 600.0);
-            app.resolve_and_repaint(800.0, 600.0);
+            arm.set_attribute(attribute, &rid.0.to_string());
+            root.append_child(&arm);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
 
-            send(
-                &mut app,
-                PlatformEvent::MouseDown {
-                    x: 37.0,
-                    y: 23.0,
-                    button: MouseButton::Right,
-                },
-            );
-            assert!(rinch_core::Drag::is_active(), "{attribute}: armed");
-            assert_eq!(
-                rinch_core::get_click_context().button,
-                rinch_core::events::MouseButton::Right,
-                "{attribute}: the handler's click context names the right button"
-            );
-            move_to(&mut app, (233.0, 149.0));
-            send(
-                &mut app,
-                PlatformEvent::MouseUp {
-                    x: 239.0,
-                    y: 151.0,
-                    button: MouseButton::Right,
-                },
-            );
-            assert_eq!(*ends.borrow(), vec![(239.0, 151.0)], "{attribute}");
-            assert!(!rinch_core::Drag::is_active(), "{attribute}");
-        }
+        send(
+            &mut app,
+            PlatformEvent::MouseDown {
+                x: 37.0,
+                y: 23.0,
+                button: MouseButton::Right,
+            },
+        );
+        assert!(rinch_core::Drag::is_active(), "{attribute}: armed");
+        assert_eq!(
+            rinch_core::get_click_context().button,
+            rinch_core::events::MouseButton::Right,
+            "{attribute}: the handler's click context names the right button"
+        );
+        move_to(&mut app, (233.0, 149.0));
+        send(
+            &mut app,
+            PlatformEvent::MouseUp {
+                x: 239.0,
+                y: 151.0,
+                button: MouseButton::Right,
+            },
+        );
+        assert_eq!(*ends.borrow(), vec![(239.0, 151.0)], "{attribute}");
+        assert!(!rinch_core::Drag::is_active(), "{attribute}");
     }
 
-    /// A right chord on a `data-rid` rewrites the click context to `Right`; the
+    /// A right chord on the probe's `data-onmousedown` rewrites the click
+    /// context to `Right`; the
     /// drag is still judged by the button that armed it, not by the context
     /// current at the release.
     #[test]
-    fn a_right_chord_on_a_data_rid_does_not_commit_a_left_drag() {
+    fn a_right_chord_on_a_handler_does_not_commit_a_left_drag() {
         let (mut app, log) = mount();
         arm_and_lose_the_release(&mut app, &log);
         chord(&mut app, PROBE, MouseButton::Right);
@@ -264,7 +264,8 @@ mod pointer_capture {
 
     /// A drag armed outside any press (a timer) belongs to the button most
     /// recently pressed — every press counts, not only one that reached a
-    /// handler. Here a right press on a `data-rid` is followed by two left
+    /// handler. Here a right press on the probe's `data-onmousedown` is
+    /// followed by two left
     /// presses on empty page, which set no click context: the drag is the left
     /// button's, and a left release ends it.
     #[test]

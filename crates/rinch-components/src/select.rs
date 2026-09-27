@@ -335,6 +335,8 @@ impl Component for Select {
             opened.set(false);
         });
         backdrop.set_attribute("data-rid", &backdrop_handler.0.to_string());
+        // A press of any button outside dismisses, not only a left one (#1093).
+        backdrop.set_attribute(rinch_core::events::BACKDROP_ATTRIBUTE, "");
         trigger_wrapper.append_child(&backdrop);
 
         container.append_child(&trigger_wrapper);
