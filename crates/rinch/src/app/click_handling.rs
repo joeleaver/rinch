@@ -59,7 +59,7 @@ impl RinchApp {
         // commits an option, no-ops on the panel, or dismisses. Handled here so it
         // pre-empts every other phase.
         if self.is_select_open() {
-            self.handle_open_select_click(x, y, viewport_width, viewport_height);
+            self.handle_open_select_click(x, y, button, viewport_width, viewport_height);
             actions.push(AppAction::RequestRedraw);
             return actions;
         }
@@ -113,8 +113,10 @@ impl RinchApp {
         // ── Phase 0.5: open a native <select> popup ──────────────────
         // A click on a closed `<select>` (its options are display:none, so the hit
         // lands on the control itself) opens the combobox popup and consumes the
-        // click.
-        {
+        // click. The primary button only (issue #1111), as in a browser: a right
+        // press is the context menu's gesture and a middle press is not an
+        // activation, so either falls through to the ordinary phases below.
+        if button == MouseButton::Left {
             let select_hit = {
                 let d = doc.borrow();
                 self.shared_hit(&d, x, y)

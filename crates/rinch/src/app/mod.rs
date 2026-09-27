@@ -110,6 +110,8 @@ mod mouse_up_button_1087_tests;
 #[cfg(all(test, software_shell))]
 mod named_damage_tests;
 #[cfg(test)]
+mod native_select_button_1111_tests;
+#[cfg(test)]
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;

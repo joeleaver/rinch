@@ -1653,7 +1653,11 @@ the nearest focusable ancestor** of the hit node, browser-style, so a clicked
 `tabindex` div owns Enter/Space immediately.
 
 A focused **`<select>` is closed**, like a browser's — Enter/Space/Alt+Down
-opens its popup, which then owns the keyboard (issue #314). It is never handed
+opens its popup, which then owns the keyboard (issue #314). A pointer opens and
+picks with the primary button only (issue #1111): a right or middle press on the
+closed control falls through to the ordinary click phases, one on an open list's
+option is consumed and picks nothing, and a press of any button outside the list
+still dismisses it. It is never handed
 to the text engine, whatever handlers it carries: branching on `data-oninput`
 without a tag guard used to install an `EditableState` over a select's `value`
 and make it a typable text field (issue #424). `Select`'s trigger `<div>`
