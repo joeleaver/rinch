@@ -991,6 +991,12 @@ impl DomDocument for RinchDocument {
         1
     }
 
+    /// The inline formatting context lays a tab out as four spaces
+    /// (`ifc::TAB_SPACES`), four bytes of the same flat offsets (#1109).
+    fn tab_flat_bytes(&self) -> usize {
+        crate::ifc::TAB_SPACES.len()
+    }
+
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
         use crate::text_query::caret_position_for_offset;
         caret_position_for_offset(self, node_id, byte_offset)
