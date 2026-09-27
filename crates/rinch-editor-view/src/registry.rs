@@ -56,7 +56,7 @@ thread_local! {
     /// See [`set_focus_handler`].
     static FOCUS_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
     /// See [`set_unregister_listener`].
-    static UNREGISTER_LISTENER: Cell<Option<fn(u64, usize)>> = const { Cell::new(None) };
+    static UNREGISTER_LISTENER: Cell<Option<UnregisterListener>> = const { Cell::new(None) };
     /// The `doc_key`s of documents with an editor that is owed an overlay pass
     /// no DOM change will bring — see [`overlay_pass_owed`]. Empty while nothing
     /// is owed.
@@ -76,6 +76,9 @@ pub fn set_focus_handler(focus: fn(usize)) {
     FOCUS_HANDLER.with(|slot| slot.set(Some(focus)));
 }
 
+/// What [`set_unregister_listener`] takes: `(doc_key, container id)`.
+pub type UnregisterListener = fn(u64, usize);
+
 /// Tell [`unregister_editor`] whom to notify once an editor has left the
 /// registry — `(doc_key, container id)`, after the entry and its link-hover
 /// state are gone and with no registry borrow held. The web registers one: its
@@ -84,7 +87,7 @@ pub fn set_focus_handler(focus: fn(usize)) {
 /// (issue #1112). Desktop registers none.
 ///
 /// Per thread, like the rest of this registry; setting it again replaces it.
-pub fn set_unregister_listener(listener: fn(u64, usize)) {
+pub fn set_unregister_listener(listener: UnregisterListener) {
     UNREGISTER_LISTENER.with(|slot| slot.set(Some(listener)));
 }
 
