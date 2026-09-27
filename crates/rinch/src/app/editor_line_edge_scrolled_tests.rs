@@ -110,10 +110,12 @@ impl Page {
     }
 
     /// The layout-local downstream caret `(x, y)` at char offset `i` of the
-    /// first paragraph (text only: no leaves before `i`).
+    /// first paragraph (text only: no leaves before `i`), through the view's
+    /// char → byte map.
     fn local(&self, i: u32) -> (f32, f32) {
+        let (block, byte) = self.handle.caret_address(Pos(i as usize + 1)).unwrap();
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        doc.query_caret_position(self.block() as u64, i as usize)
+        doc.query_caret_position(block as u64, byte)
             .expect("laid out")
     }
 
@@ -267,4 +269,56 @@ fn upstream_after_a_hard_break_stays_on_the_far_line() {
     assert_eq!(line(12, CaretAffinity::Downstream), Some(12..19), "control");
     assert_eq!(line(12, CaretAffinity::Upstream), Some(12..19));
     assert_eq!(line(3, CaretAffinity::Upstream), Some(0..11));
+}
+
+const IMG: &str = "<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\" style=\"width: 40px; height: 16px\">";
+
+/// An image that ends a wrapped line has no bytes, so the byte of a caret
+/// right before it is where the NEXT line's bytes start — while Parley draws
+/// that caret on the image's own line. Home goes to the start of the line the
+/// caret is drawn on (review of #1118: picking the line by byte range made
+/// Home a no-op here and sent End to the next line's end), visible or
+/// scrolled away.
+#[test]
+fn home_before_an_image_that_ends_a_line_goes_to_that_lines_start() {
+    for scrolled in [false, true] {
+        let mut p = page(&format!(
+            "alpha bravo{IMG}charlie delta echo foxtrot golf hotel"
+        ));
+        p.caret_at(11); // model pos 12: right before the image
+        let y = p.app.editor_caret_point(&p.handle, Pos(12)).unwrap().1;
+        let y0 = p.app.editor_caret_point(&p.handle, Pos(1)).unwrap().1;
+        let y2 = p.app.editor_caret_point(&p.handle, Pos(14)).unwrap().1;
+        assert_eq!(y, y0, "control: the caret before the image is on line 1");
+        assert!(y2 > y0 + 10.0, "control: the text after the image wraps");
+        if scrolled {
+            p.scroll_first_paragraph_away();
+        }
+        key(&mut p.app, KeyCode::Home, false);
+        assert_eq!(
+            p.head(),
+            0,
+            "Home reaches line 1's start (scrolled: {scrolled})"
+        );
+    }
+}
+
+const HEBREW: &str = "שלום עולם זה טקסט ארוך בעברית שנשבר לכמה שורות בעורך הזה";
+
+/// Home / End on a right-to-left line are its LOGICAL edges — Home the
+/// line's first character (drawn at its right edge), End its wrap point —
+/// as in Chrome 153 (Home 0, End at the wrap from offset 3 on the same text).
+/// The hit-test code this replaced answered the visual edges: Home at the
+/// line's logical end, End at 0.
+#[test]
+fn home_and_end_on_a_right_to_left_line_are_its_logical_edges() {
+    let mut p = page(HEBREW);
+    let starts = p.line_starts(HEBREW.chars().count() as u32);
+    assert!(starts.len() >= 3, "positive control: 3+ lines, {starts:?}");
+    p.caret_at(3);
+    key(&mut p.app, KeyCode::Home, false);
+    assert_eq!(p.head(), 0, "Home: the line's first character");
+    p.caret_at(3);
+    key(&mut p.app, KeyCode::End, false);
+    assert_eq!(p.head(), starts[1], "End: the line's wrap point");
 }

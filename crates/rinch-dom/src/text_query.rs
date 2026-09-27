@@ -134,54 +134,6 @@ pub fn caret_position_for_offset_layout(
     caret_position_for_offset_layout_with_affinity(layout, byte_offset, CaretAffinity::Downstream)
 }
 
-/// If `byte_offset` sits in the whitespace that hangs at the end of a
-/// soft-wrapped line — the only thing between it and the wrap — the line's end
-/// (`Line::text_range().end`, the wrap point) — else `None` (#301).
-///
-/// A hit-test past a ragged line's end answers the position *before* its
-/// hanging space; the line's own end, which End and a line delete want, is the
-/// position after it: the same model position as the next line's start.
-pub fn hanging_whitespace_end(
-    layout: &parley::layout::Layout<Brush>,
-    byte_offset: usize,
-) -> Option<usize> {
-    use parley::layout::{BreakReason, Cluster};
-    let mut cluster = Cluster::from_byte_index(layout, byte_offset)?;
-    let line = cluster.line();
-    if !matches!(
-        line.break_reason(),
-        BreakReason::Regular | BreakReason::Emergency
-    ) {
-        return None;
-    }
-    let end = line.text_range().end;
-    loop {
-        if !cluster.source_char().is_whitespace() {
-            return None;
-        }
-        if cluster.text_range().end >= end {
-            return Some(end);
-        }
-        cluster = cluster.next_logical()?;
-    }
-}
-
-/// [`hanging_whitespace_end`] in the text-bearing element `node_id`'s layout.
-pub fn hanging_whitespace_end_for_node(
-    doc: &crate::dom_impl::RinchDocument,
-    node_id: u64,
-    byte_offset: usize,
-) -> Option<usize> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
-    if let Some(ref inline_layout) = node.text_layout {
-        return hanging_whitespace_end(&inline_layout.layout, byte_offset);
-    }
-    if let Some(ref layout) = node.cached_text_parley {
-        return hanging_whitespace_end(layout, byte_offset);
-    }
-    None
-}
-
 /// The byte range of the **visual line** a caret at `byte_offset` with
 /// `affinity` is drawn on, as its Home and End want it (#1107): `start` is the
 /// line's first byte; `end` is its wrap point on a soft-wrapped line (after
@@ -190,12 +142,13 @@ pub fn hanging_whitespace_end_for_node(
 /// break ends, and the text's end on the last line. `None` for an empty
 /// layout.
 ///
-/// Read from the layout's own lines, not from geometry: it answers the same
-/// for a caret scrolled out of view, clipped, or transformed.
-///
-/// An `Upstream` caret at a soft wrap point is on the upper line, as Parley
-/// draws it; anywhere else (a hard break's far side included) `affinity` makes
-/// no difference.
+/// The line is the one Parley draws the caret on, in the layout's own space —
+/// no hit test and no window geometry — so it answers the same for a caret
+/// scrolled out of view, clipped, or transformed. An `Upstream` caret at a
+/// soft wrap point is drawn on the upper line; a caret after a hard break on
+/// the far line whatever its affinity; a caret right before an inline box
+/// (an image, which has no bytes) that ends a line on that line (#1118
+/// review).
 pub fn visual_line_range(
     layout: &parley::layout::Layout<Brush>,
     byte_offset: usize,
@@ -203,21 +156,17 @@ pub fn visual_line_range(
 ) -> Option<std::ops::Range<usize>> {
     use parley::layout::{BreakReason, Cluster};
     let last = layout.lines().len().checked_sub(1)?;
-    let soft = |r: BreakReason| matches!(r, BreakReason::Regular | BreakReason::Emergency);
-    let upstream = (affinity == CaretAffinity::Upstream)
-        .then(|| {
-            layout.lines().position(|l| {
-                let r = l.text_range();
-                soft(l.break_reason()) && r.start < byte_offset && byte_offset == r.end
-            })
-        })
-        .flatten();
-    let index = upstream
-        .or_else(|| {
-            layout.lines().position(|l| {
-                let r = l.text_range();
-                r.start <= byte_offset && byte_offset < r.end
-            })
+    // The line the caret is DRAWN on (Parley's own `Cursor`, which puts an
+    // upstream caret at a soft wrap on the upper line and a caret after a hard
+    // break on the far one), not the line whose byte range holds the caret
+    // byte: an inline box has no bytes, so a caret right before an image that
+    // ends a line is drawn on that line while its byte starts the next one.
+    let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
+    let index = layout
+        .lines()
+        .position(|l| {
+            let m = l.metrics();
+            cy >= m.block_min_coord - 0.5 && cy < m.block_max_coord - 0.5
         })
         .unwrap_or(last);
     let line = layout.lines().nth(index)?;
