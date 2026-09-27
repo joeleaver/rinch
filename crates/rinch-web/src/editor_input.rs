@@ -654,6 +654,29 @@ fn focus_editor(container_nid: usize) {
     refresh_caret();
 }
 
+/// The editor at `container_nid` has unmounted ([`registry::set_unregister_listener`]).
+///
+/// If it was the focused one, the capture textarea still holds the keyboard,
+/// its block's text as the mirror (U+FFFC for an image, `\n` for a break) and
+/// the model selection over it: a Ctrl+C there would be the browser's native
+/// copy of a document that is no longer on the page, and the text would stay
+/// in the DOM (issue #1112). Release the editor, empty the field with its
+/// mirror, and blur it — what a browser does when a focused element leaves the
+/// document. Releasing first keeps the `blur` this raises from refreshing an
+/// editor that is gone.
+fn on_editor_unregistered(_doc_key: u64, container_nid: usize) {
+    if focused_editor() != Some(container_nid) {
+        return;
+    }
+    set_focused_editor(None);
+    end_context_menu_cycle();
+    COMPOSING.with(|c| c.set(false));
+    if let Some(ta) = capture_target() {
+        clear_mirror(&ta);
+        let _ = ta.blur();
+    }
+}
+
 /// Blur the capture target (when focus leaves the editor for another field).
 fn blur_capture_target() {
     end_context_menu_cycle();
@@ -1187,6 +1210,7 @@ fn on_copy(event: &web_sys::ClipboardEvent) {
     // The menu's Copy: the cycle has served its purpose.
     end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
+        refuse_orphan_clipboard(event);
         return;
     };
     event.prevent_default();
@@ -1198,6 +1222,19 @@ fn on_copy(event: &web_sys::ClipboardEvent) {
     }
 }
 
+/// A `copy` or `cut` on the capture textarea with no editor behind it: never the
+/// browser's native one. The field only ever holds a mirror of an editor's text, so
+/// a native copy of it is a copy of text that is not on the page (issue #1112).
+/// [`on_editor_unregistered`] empties and blurs it when the focused editor
+/// unmounts; this is the net for whatever still reaches it (the listener is on the
+/// textarea itself, so every event here is aimed at it).
+fn refuse_orphan_clipboard(event: &web_sys::ClipboardEvent) {
+    event.prevent_default();
+    if let Some(ta) = capture_target() {
+        clear_mirror(&ta);
+    }
+}
+
 /// Cut: copy the selection, then delete it. Nothing at all in a read-only editor,
 /// as in a `readonly` field: the delete would be refused, and a Cut that only
 /// copies has changed the clipboard while appearing to do nothing. (The capture
@@ -1206,6 +1243,7 @@ fn on_copy(event: &web_sys::ClipboardEvent) {
 fn on_cut(event: &web_sys::ClipboardEvent) {
     end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
+        refuse_orphan_clipboard(event);
         return;
     };
     event.prevent_default();
@@ -2884,6 +2922,9 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // capture textarea, so a programmatic focus has to go through the same
     // steps a press does.
     registry::set_focus_handler(focus_editor);
+    // An editor unmounting while it holds the keyboard must take its text out
+    // of the capture textarea with it (#1112).
+    registry::set_unregister_listener(on_editor_unregistered);
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {
