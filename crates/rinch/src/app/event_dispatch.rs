@@ -3884,9 +3884,12 @@ impl RinchApp {
 
     /// The model position at the start (`end = false`) or end (`end = true`) of the
     /// caret's current **visual** line — so Home/End land at the wrapped line's edge,
-    /// not the whole block's. Hit-tests the far-left / far-right of the caret's line
-    /// box via the same geometry as [`Self::vertical_step`]. `None` when the caret
-    /// has no Parley geometry (an empty block); the caller falls back to the
+    /// not the whole block's. Read from the caret's Parley layout
+    /// ([`rinch_dom::text_query::visual_line_range_for_node`]), with the caret's
+    /// affinity hint choosing the upper line at a soft wrap (#301), so it answers
+    /// the same for a line scrolled out of view — where it used to hit-test a point
+    /// on the line, which a clipping scroller hides (#1107). `None` when the caret
+    /// has no Parley layout (an empty block); the caller falls back to the
     /// block-level `rinch_editor_core::motion::line_boundary`.
     fn visual_line_bound(
         &self,
@@ -3894,47 +3897,21 @@ impl RinchApp {
         head: rinch_editor_core::Pos,
         end: bool,
     ) -> Option<rinch_editor_core::Pos> {
-        let (_cx, cy, ch) = self.editor_caret_point(handle, head)?;
-        let (tb, _flat) = handle.caret_address(head)?;
-        // Content-box left/right of the textblock, in window coords.
-        let (content_left, content_right) = {
+        let (tb, flat) = handle.caret_address(head)?;
+        let range = {
             let doc = self.doc.clone()?;
             let d = doc.borrow();
-            let node = d.tree.get(tb)?;
-            let pad_l = node.computed_style.padding_left.to_px();
-            let pad_r = node.computed_style.padding_right.to_px();
-            let w = node.layout.width;
-            // Both edges pushed forward through the composed transform, so the
-            // probe lands on the painted line rather than beside it (#203).
-            let fwd = |lx: f32| {
-                rinch_dom::paint::point_from_painted_box(&d.tree, tb, 1.0, lx as f64, 0.0).0 as f32
-            };
-            (fwd(pad_l), fwd(w - pad_r))
+            rinch_dom::text_query::visual_line_range_for_node(
+                &d,
+                tb as u64,
+                flat,
+                handle.caret_affinity_at(head),
+            )?
         };
-        // Probe the middle of the caret's line box, just inside the far edge.
-        let ty = cy + ch * 0.5;
-        let tx = if end {
-            content_right - 1.0
-        } else {
-            content_left + 1.0
-        };
-        let (_c, tb2, ifc) = self.editor_point_address(tx, ty)?;
         // At a soft wrap the end-of-line position is the same model position as
-        // the start of the next visual line. It is the answer as it stands: End
-        // draws it at the end of this line by setting the caret-affinity hint
-        // (#301), where it used to step back one position — which, inside a word
-        // broken by `overflow-wrap`, stopped before the line's last letter. A hit
-        // past a ragged line's end answers the position before its hanging space;
-        // the line's end is after it.
-        let ifc = if end {
-            let doc = self.doc.clone()?;
-            let d = doc.borrow();
-            rinch_dom::text_query::hanging_whitespace_end_for_node(&d, tb2 as u64, ifc)
-                .unwrap_or(ifc)
-        } else {
-            ifc
-        };
-        handle.pos_at(tb2, ifc)
+        // the start of the next visual line. End draws it at the end of this line
+        // by setting the caret-affinity hint (#301).
+        handle.pos_at(tb, if end { range.end } else { range.start })
     }
 
     /// The id of the `data-pm-editor` container under window/logical point
