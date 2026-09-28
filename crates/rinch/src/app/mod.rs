@@ -147,6 +147,8 @@ mod repaint_old_rect_tests;
 mod right_press_click_1093_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
+#[cfg(test)]
+mod scrollbar_thumb_press_443_tests;
 mod select_widget;
 #[cfg(test)]
 mod shared_hit_tests;
