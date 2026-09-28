@@ -1816,6 +1816,30 @@ mod tests {
         );
     }
 
+    /// A host change made outside any batch is owed to the next batch, which
+    /// notifies for it once, written to or not (PR #1134 round-2 review, N1).
+    /// Any notification pays the debt: after one, an empty batch owes nothing.
+    #[test]
+    fn a_host_change_outside_a_batch_is_owed_to_the_next_batch() {
+        let (hits, _sub) = count_notifies();
+        note_host_change();
+        assert_eq!(
+            hits.get(),
+            0,
+            "outside a batch it notifies nothing by itself"
+        );
+        batch(|| {});
+        assert_eq!(hits.get(), 1, "the next batch pays it");
+        batch(|| {});
+        assert_eq!(hits.get(), 1, "once");
+
+        note_host_change();
+        Signal::new(0).set(1); // an unbatched write notifies, and pays it too
+        assert_eq!(hits.get(), 2);
+        batch(|| {});
+        assert_eq!(hits.get(), 2, "nothing left owed after that notification");
+    }
+
     /// A batch whose writes were already flushed mid-batch still notifies at
     /// its exit: the queue is empty by then, but the writes happened and the
     /// host has not been told (`flush_pending_effects` never calls the
