@@ -1,6 +1,8 @@
 //! With both bars up, every thumb pixel paint draws is a pixel a press grabs,
 //! and the bottom-right corner belongs to neither bar — in paint as well as in
-//! hit testing (#444).
+//! hit testing (#444). Not on a track shorter than `MIN_THUMB`, where the
+//! clamped thumb is drawn past the track's end: #1141, pinned below by an
+//! `#[ignore]`d fixture.
 //!
 //! Paint used to reserve `THICKNESS + MARGIN` (8px) at each track's far end
 //! while the hit strips stopped `SCROLLBAR_HIT_THICKNESS` (16px) short, so at
@@ -361,4 +363,102 @@ fn each_painted_track_lies_inside_its_hit_strip_at_every_scale_and_width() {
             assert_eq!((vs.3, hs.2), (bh - b.hit_thickness, bw - b.hit_thickness));
         }
     }
+}
+
+// ── From the review of #1139 ────────────────────────────────────────────────
+
+/// HiDPI: the pixel oracle at device scales 2 and 1.5. Paint multiplies the
+/// geometry by `scale`; hit testing asks at scale 1 in logical px, so every
+/// device pixel the thumb covers at least half of must map to a logical point
+/// that grabs it.
+#[cfg(software_shell)]
+#[test]
+fn review_every_painted_thumb_pixel_is_grabbable_at_hidpi() {
+    for scale in [2.0f64, 1.5] {
+        for wheel in WHEELS {
+            let (mut app, id) = mount("", wheel, None);
+            app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+            app.has_previous_frame = false;
+            let (pixels, w, _h) = app.build_pixels(scale, SIZE, false);
+            let pixels = pixels.to_vec();
+            let d = app.doc.as_ref().unwrap().borrow();
+            let (mut n, mut bad) = (0, Vec::new());
+            for y in 0..(H as f64 * scale) as u32 {
+                for x in 0..(W as f64 * scale) as u32 {
+                    let i = ((y * w + x) * 4) as usize;
+                    if !pixels[i..i + 3].iter().any(|&c| c <= 204) {
+                        continue;
+                    }
+                    n += 1;
+                    let cx = ((x as f64 + 0.5) / scale) as f32;
+                    let cy = ((y as f64 + 0.5) / scale) as f32;
+                    let on = find_scrollbar_hit(&d.tree, cx, cy).is_some_and(|h| h.node_id == id)
+                        && pointer_on_scrollbar_thumb(&d.tree, cx, cy);
+                    if !on {
+                        bad.push((x, y));
+                    }
+                }
+            }
+            assert!(n > 100, "premise: thumbs painted at x{scale} ({n})");
+            assert!(
+                bad.is_empty(),
+                "x{scale} {wheel:?}: {} of {n} device px not grabbable, e.g. {:?}",
+                bad.len(),
+                &bad[..bad.len().min(6)]
+            );
+        }
+    }
+}
+
+/// The strip is 16px wide across the bar, not merely wide enough to hold the
+/// 6px thumb: a press 14.5px in from the right edge (resp. bottom edge) at the
+/// thumb's height is that bar's, and one 16.5px in is not. Off the painted
+/// thumb on purpose — a strip narrowed to the thumb's footprint still contains
+/// every painted pixel, so the pixel oracle cannot see it.
+#[test]
+fn review_the_hit_strip_is_hit_thickness_wide_across_each_bar() {
+    let (app, id) = mount("", (137.0, 61.0), None);
+    let d = app.doc.as_ref().unwrap().borrow();
+    let b = rinch_dom::paint::scrollbar::scrollbars(&d.tree, id, 1.0);
+    let (v, h) = (b.vertical.unwrap(), b.horizontal.unwrap());
+    let (sx, sy) = d.tree.nodes[id].scroll_offset;
+    let vy = (v.thumb_start(sy) + v.thumb_len / 2.0) as f32;
+    let hx = (h.thumb_start(sx) + h.thumb_len / 2.0) as f32;
+    let axis_at = |x: f32, y: f32| find_scrollbar_hit(&d.tree, x, y).map(|h| h.axis);
+    assert_eq!(axis_at(W - 14.5, vy), Some(ScrollAxis::Vertical));
+    assert_eq!(axis_at(W - 16.5, vy), None);
+    assert_eq!(axis_at(hx, H - 14.5), Some(ScrollAxis::Horizontal));
+    assert_eq!(axis_at(hx, H - 16.5), None);
+}
+
+/// Counter-case for "no thumb pixel is ever drawn where a press cannot grab
+/// it": a scroller too short for a `MIN_THUMB` thumb plus the corner. At 30px
+/// tall the vertical track is 30 - 4 - 16 = 10px, the thumb is clamped up to
+/// 20px and painted y 2..22, and the strip stops at y 14.
+#[cfg(software_shell)]
+#[test]
+#[ignore = "#1141: a MIN_THUMB-clamped thumb paints past a track shorter than MIN_THUMB"]
+fn review_a_short_scroller_paints_its_min_thumb_into_the_corner() {
+    let (mut app, id) = mount("height: 30px", (0.0, 0.0), None);
+    let px = painted_pixels(&mut app, 204);
+    let d = app.doc.as_ref().unwrap().borrow();
+    let b = rinch_dom::paint::scrollbar::scrollbars(&d.tree, id, 1.0);
+    assert!(
+        b.vertical.is_some() && b.horizontal.is_some(),
+        "premise: both bars"
+    );
+    let bad: Vec<_> = px
+        .iter()
+        .filter(|&&(x, y)| {
+            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            !(find_scrollbar_hit(&d.tree, cx, cy).is_some()
+                && pointer_on_scrollbar_thumb(&d.tree, cx, cy))
+        })
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{} painted px not grabbable, e.g. {:?}",
+        bad.len(),
+        &bad[..bad.len().min(6)]
+    );
 }

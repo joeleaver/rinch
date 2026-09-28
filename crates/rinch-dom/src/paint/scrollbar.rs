@@ -54,8 +54,11 @@ pub const MIN_THUMB: f64 = 20.0;
 /// It is also the side of the **corner**: where both bars are up, the
 /// `HIT_THICKNESS` square at the bottom-right belongs to neither bar. Each hit
 /// strip stops at it ([`Scrollbars::hit_strip`]), and each painted track gives
-/// it up too ([`ScrollbarTrack::track_len`]), so no thumb pixel is ever drawn
-/// where a press cannot grab it (#444). Paint used to reserve only the other
+/// it up too ([`ScrollbarTrack::track_len`]), so a thumb that fits its track
+/// is never drawn where a press cannot grab it (#444). A track shorter than
+/// [`MIN_THUMB`] — a box under about 38px on an axis with both bars up — is
+/// the exception: the clamped thumb is drawn past the track's end, into the
+/// corner (#1141). Paint used to reserve only the other
 /// bar's drawn footprint (`THICKNESS + MARGIN`), which left the last ~6px of a
 /// thumb at full scroll painted inside the square no strip claims.
 pub const HIT_THICKNESS: f64 = 16.0;
@@ -194,7 +197,8 @@ impl Scrollbars {
     /// — except that where both bars are up each strip stops at the corner
     /// square, which belongs to neither: a press there falls through to the
     /// container. The painted track gives up the same square, so every thumb
-    /// pixel lies inside its bar's strip (#444).
+    /// pixel lies inside its bar's strip (#444) — unless the thumb is clamped
+    /// to [`MIN_THUMB`] past a shorter track (#1141).
     pub fn hit_strip(&self, axis: ScrollbarAxis) -> Option<(f64, f64, f64, f64)> {
         self.axis(axis)?;
         let (w, h, t) = (self.box_width, self.box_height, self.hit_thickness);
@@ -581,7 +585,8 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
     // end so the two thumbs cannot pile into it. The square is the hit strips'
     // corner, not the painted bars' footprint: nothing is painted where
     // hit-testing gives the corner to neither bar, so every thumb pixel is
-    // grabbable (#444).
+    // grabbable (#444) — unless a track shorter than MIN_THUMB leaves the
+    // clamped thumb drawn past its end (#1141).
     let corner = HIT_THICKNESS;
     let track_of = |box_extent: f64, visible: f64, content: f64, other_bar: bool| {
         let reserved = if other_bar { corner } else { 0.0 };
