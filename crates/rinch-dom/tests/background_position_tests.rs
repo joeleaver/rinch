@@ -268,3 +268,139 @@ fn a_background_position_tick_dirties_paint_only() {
         "background-position is paint-only; the tick must not owe a layout"
     );
 }
+
+// =============================================================================
+// The positioning area, and images
+// =============================================================================
+
+/// A box whose whole style is `style`, at the viewport's top-left, with
+/// [`IMAGE`] in the image cache.
+///
+/// rinch sizes every box as `box-sizing: border-box` (it reads no
+/// `box-sizing`), so where the Chrome oracle wrote `width: 80px; height: 10px;
+/// border: 10px` these write the same 100x30 border box as `width: 100px;
+/// height: 30px`.
+fn styled_box(style: &str) -> TinySkiaPainter {
+    let mut doc = RinchDocument::new();
+    doc.load_css("html, body { margin: 0; background: rgb(255, 255, 255); }");
+    let body = doc.body();
+    let node = doc.create_element("div");
+    doc.set_attribute(
+        node,
+        "style",
+        &format!("position: absolute; left: 0; top: 0; {style}"),
+    );
+    doc.append_child(body, node);
+    doc.resolve_layout(VW, VH);
+    doc.tree.image_cache.insert_decoded(IMAGE.to_string(), ten_by_ten());
+    paint(&mut doc)
+}
+
+fn row_at(painter: &TinySkiaPainter, y: u32, xs: &[u32]) -> String {
+    xs.iter().map(|&x| class_at(painter, x, y)).collect()
+}
+
+/// `background-origin: padding-box` (the initial value): an `auto`-sized
+/// gradient is the padding box, and with `no-repeat` the transparent border
+/// shows the page. Chrome 153: top border row all W; middle row
+/// W 0-10, R 10-50, B 50-90, W 90-100.
+#[test]
+fn an_auto_sized_tile_is_the_padding_box() {
+    let p = styled_box(&format!(
+        "width: 100px; height: 30px; border: 10px solid transparent; {GRADIENT}; \
+         background-repeat: no-repeat"
+    ));
+    assert_eq!(row_at(&p, 5, &[5, 30, 70, 95]), "WWWW", "the top border is outside the tile");
+    assert_eq!(row_at(&p, 15, &[5, 30, 70, 95]), "WRBW");
+}
+
+/// …and with `repeat` the tiles run on under the (transparent) border, because
+/// the painting area is the border box. Chrome 153, every row:
+/// B 0-10, R 10-50, B 50-90, R 90-100.
+#[test]
+fn a_repeating_tile_paints_under_the_border() {
+    let p = styled_box(&format!(
+        "width: 100px; height: 30px; border: 10px solid transparent; {GRADIENT}"
+    ));
+    assert_eq!(row_at(&p, 5, &[5, 30, 70, 95]), "BRBR");
+    assert_eq!(row_at(&p, 15, &[5, 30, 70, 95]), "BRBR");
+}
+
+/// `background-origin: border-box` sizes the tile to the border box.
+/// Chrome 153: R 0-50, B 50-100 on every row.
+#[test]
+fn a_border_box_origin_sizes_the_tile_to_the_border_box() {
+    let p = styled_box(&format!(
+        "width: 100px; height: 30px; border: 10px solid transparent; {GRADIENT}; \
+         background-origin: border-box; background-repeat: no-repeat"
+    ));
+    assert_eq!(row_at(&p, 5, &[5, 45, 55, 95]), "RRBB");
+    assert_eq!(row_at(&p, 15, &[5, 45, 55, 95]), "RRBB");
+}
+
+/// A 10x10 image, red columns 0-4 and blue 5-9, put straight into the image
+/// cache (a background URL is loaded by the app's loader, which a unit test
+/// has none of). Chrome was given the same pixels as a `data:` PNG.
+const IMAGE: &str = "k468-ten-by-ten.png";
+
+fn ten_by_ten() -> rinch_dom::image_cache::DecodedImage {
+    let mut data = Vec::with_capacity(10 * 10 * 4);
+    for _y in 0..10 {
+        for x in 0..10 {
+            data.extend_from_slice(if x < 5 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
+        }
+    }
+    rinch_dom::image_cache::DecodedImage::new(data, 10, 10)
+}
+
+/// An image's `auto` size is its intrinsic size — it used to be stretched
+/// over the box. Chrome 153: W 0-30, R 30-35, B 35-40, W 40-100, and the
+/// rows below the image (y >= 10) white.
+#[test]
+fn an_auto_sized_image_is_its_intrinsic_size() {
+    let p = styled_box(&format!(
+        "width: 100px; height: 20px; background-image: url({IMAGE}); \
+         background-repeat: no-repeat; background-position: 30px 0"
+    ));
+    assert_eq!(row_at(&p, 5, &[15, 32, 37, 60]), "WRBW");
+    assert_eq!(row_at(&p, 15, &[32, 37]), "WW", "the image is 10px tall");
+}
+
+/// …and repeats at that size. Chrome 153: B 0-3, R 3-8, B 8-13, … every 5px.
+#[test]
+fn an_image_repeats_at_its_intrinsic_size() {
+    let p = styled_box(&format!(
+        "width: 100px; height: 20px; background-image: url({IMAGE}); \
+         background-position: 3px 0"
+    ));
+    assert_eq!(row_at(&p, 5, &[1, 5, 10, 55, 60, 96]), "BRBRBR");
+    assert_eq!(row_at(&p, 15, &[1, 5, 10, 55, 60, 96]), "BRBRBR", "repeated down too");
+}
+
+// =============================================================================
+// Transitions
+// =============================================================================
+
+/// A `transition: background-position` interpolates, percentages included:
+/// halfway from `0%` to `100%` of a 50%-wide tile's free space is 25px.
+#[test]
+fn a_background_position_transition_interpolates_a_percentage() {
+    let (mut doc, node) = mount(
+        ".t { transition: background-position 1000ms linear; }
+         .t.end { background-position: 100% 0; }",
+        "background-size: 50% 100%; background-repeat: no-repeat",
+    );
+    doc.set_attribute(node, "class", "t");
+    doc.resolve_layout(VW + 1.0, VH);
+    doc.set_attribute(node, "class", "t end");
+    doc.resolve_layout(VW + 2.0, VH);
+    let started = doc.tree.active_transitions[&node.0]
+        .values()
+        .map(|t| t.start_time_ms)
+        .next()
+        .expect("changing background-position starts a transition");
+
+    rinch_dom::transition::tick_transitions(&mut doc.tree, started + 500.0);
+    let p = paint(&mut doc);
+    assert_eq!(row(&p, &[12, 37, 62, 87]), "WRBW", "25px: W 0-25, R 25-50, B 50-75, W 75-100");
+}
