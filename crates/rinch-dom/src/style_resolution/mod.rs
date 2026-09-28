@@ -872,32 +872,61 @@ impl RinchDocument {
             // fit the *widest* option — the width stays stable when the selection
             // changes. Its `<option>` children are `display:none` and give it no
             // content, so without this the control collapses to its padding and
-            // clips the label. Only applied when the author left `width: auto`; an
-            // explicit width is respected and the label clips (the painter clips
-            // too). The text width is estimated from the label length rather than
-            // measured with Parley (not available at style-resolution time) —
-            // erring wide is harmless since the painter clips to the content box.
-            if node.tag() == Some("select") && new_style.width.lays_out_as_auto() {
-                let model = crate::select::resolve_select_model(&self.tree, node_id);
-                let widest = model
-                    .options
-                    .iter()
-                    .map(|o| o.label.chars().count())
-                    .max()
-                    .unwrap_or(0);
-                if widest > 0 {
-                    let text_w = widest as f32 * new_style.font_size * 0.62;
-                    // border-box, and padding_right already reserves the arrow box.
-                    let intrinsic = text_w
-                        + new_style.padding_left.to_px()
-                        + new_style.padding_right.to_px()
-                        + new_style.border_left_width.to_px()
-                        + new_style.border_right_width.to_px();
+            // clips the label (it was 8px tall until #1098: its vertical padding
+            // alone). Chrome 153's rule, measured (see `select::SELECT_ARROW_BOX`):
+            //
+            //   width  = border + padding + ceil(widest label) + 4 + 16
+            //   height = border + padding + one line + 2
+            //
+            // applied as a `min-width` / `min-height` (border-box), and only on
+            // an axis the author left `auto` — an explicit size is respected and
+            // the label clips (the painter clips too). The label is shaped by
+            // the builder paint draws it with (`select_label_layout`), and the
+            // width is cached on the node against its labels and font, so a
+            // restyle that moves neither re-shapes nothing. The line is the
+            // select's `line-height`, which the UA sheet forces to `normal`.
+            if node.tag() == Some("select") {
+                let border_padding_x = new_style.padding_left.to_px()
+                    + new_style.padding_right.to_px()
+                    + new_style.border_left_width.to_px()
+                    + new_style.border_right_width.to_px();
+                let border_padding_y = new_style.padding_top.to_px()
+                    + new_style.padding_bottom.to_px()
+                    + new_style.border_top_width.to_px()
+                    + new_style.border_bottom_width.to_px();
+                if new_style.width.lays_out_as_auto() {
+                    let model = crate::select::resolve_select_model(&self.tree, node_id);
+                    let labels: Vec<&str> =
+                        model.options.iter().map(|o| o.label.as_str()).collect();
+                    let (key, widest) = crate::select::widest_select_label(
+                        &mut self.font_cx,
+                        &mut self.layout_cx,
+                        &new_style,
+                        &labels,
+                        node.select_label_width.get(),
+                        &self.tree.perf,
+                    );
+                    node.select_label_width.set(Some((key, widest)));
+                    let intrinsic = widest.ceil()
+                        + crate::select::SELECT_LABEL_INSET
+                        + crate::select::SELECT_ARROW_BOX
+                        + border_padding_x;
                     let author_min = match new_style.min_width {
                         crate::computed_style::DimensionValue::Length(px) => px,
                         _ => 0.0,
                     };
                     new_style.min_width =
+                        crate::computed_style::DimensionValue::Length(intrinsic.max(author_min));
+                }
+                if new_style.height.lays_out_as_auto() {
+                    let intrinsic = new_style.line_height_px()
+                        + 2.0 * crate::select::SELECT_INNER_BLOCK
+                        + border_padding_y;
+                    let author_min = match new_style.min_height {
+                        crate::computed_style::DimensionValue::Length(px) => px,
+                        _ => 0.0,
+                    };
+                    new_style.min_height =
                         crate::computed_style::DimensionValue::Length(intrinsic.max(author_min));
                 }
             }

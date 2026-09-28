@@ -924,6 +924,11 @@ pub struct Node {
     /// yet (`invalidation::note_attribute_change`). Set by the pseudo
     /// resolution at each cascade of the element.
     pub content_reads_attrs: Cell<bool>,
+    /// A closed `<select>`'s widest option label width in CSS px, with the
+    /// hash of what it was shaped from (the labels and the font) — so a
+    /// restyle that moves neither re-shapes nothing (#1098). `None` until an
+    /// auto-width select is first sized.
+    pub(crate) select_label_width: Cell<Option<(u64, f32)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1095,6 +1100,7 @@ impl Node {
             uses_viewport_units: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            select_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1155,6 +1161,7 @@ impl Node {
             uses_viewport_units: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            select_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1214,6 +1221,7 @@ impl Node {
             uses_viewport_units: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            select_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1271,6 +1279,7 @@ impl Node {
             uses_viewport_units: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            select_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,

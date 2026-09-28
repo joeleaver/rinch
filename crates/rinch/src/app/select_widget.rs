@@ -54,6 +54,13 @@ pub(crate) struct OpenSelect {
     pub initial_value: String,
 }
 
+/// The popup rows' `font-size` in `NATIVE_SELECT_CSS` (`.rinch-nsel-option`).
+const POPUP_ROW_FONT_SIZE: f32 = 14.0;
+/// Horizontal chrome around a popup row's label in `NATIVE_SELECT_CSS`: the
+/// panel's border (1px) and padding (4px) and the row's padding (10px), each
+/// side. The panel is `box-sizing: border-box`, so its `width` includes them.
+const POPUP_ROW_CHROME: f32 = 2.0 * (1.0 + 4.0 + 10.0);
+
 /// Popup stylesheet, injected once. Uses theme variables with light fallbacks so
 /// it looks right with or without the theme feature.
 const NATIVE_SELECT_CSS: &str = r#"
@@ -215,11 +222,31 @@ impl RinchApp {
         d.set_attribute(panel, "class", "rinch-nsel-panel");
         d.set_style(panel, "left", &format!("{sx}px"));
         d.set_style(panel, "top", &format!("{top}px"));
-        // Match the control's width. A `width: auto` fixed block fills the
-        // viewport, and the closed control is already sized to its widest option
-        // (PR1), so the control width is the right popup width. Long labels clip
-        // (option is white-space: nowrap), as a browser's popup does.
-        d.set_style(panel, "width", &format!("{sw}px"));
+        // At least the control's width, and wide enough for the widest row, as
+        // Chrome's popup is. (A `width: auto` fixed block fills the viewport, so
+        // the width is spelled out.) The control's own width is no stand-in for
+        // the rows': since #1098 it is exactly its label plus 22px at the
+        // select's font, with no slack for the panel's 30px of chrome, and the
+        // rows are set at `POPUP_ROW_FONT_SIZE` in the body's font, which can be
+        // wider than the select's. Capped at the viewport's right edge (never
+        // below the control's width); a row wider than that clips (option is
+        // `white-space: nowrap`).
+        let row_style = d
+            .tree
+            .get(body.0)
+            .map(|n| n.computed_style.clone())
+            .unwrap_or_default();
+        let label_refs: Vec<&str> = model.options.iter().map(|o| o.label.as_str()).collect();
+        let widest = rinch_dom::select::widest_label_at(
+            &mut d,
+            &row_style,
+            POPUP_ROW_FONT_SIZE,
+            &label_refs,
+        );
+        let rows_w = widest.ceil() + POPUP_ROW_CHROME;
+        let panel_w = rows_w.min(vp_w - sx).max(sw);
+        d.set_style(panel, "min-width", &format!("{sw}px"));
+        d.set_style(panel, "width", &format!("{panel_w}px"));
         d.set_style(panel, "max-height", &format!("{max_h}px"));
 
         let mut option_ids = Vec::with_capacity(model.options.len());
