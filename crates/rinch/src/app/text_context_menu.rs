@@ -601,9 +601,9 @@ impl RinchApp {
             && let Some(node_sel) = handle.node_selection_at_host(leaf)
         {
             Some(EditorPressAt::Node(node_sel))
-        } else if let Some((c, textblock, ifc_byte)) = self.editor_point_address(x, y)
-            && c == container
-            && let Some(pressed) = handle.pos_at(textblock, ifc_byte)
+        } else if let Some(hit) = self.editor_point(x, y)
+            && hit.container == container
+            && let Some(pressed) = hit.pos(&handle)
         {
             Some(EditorPressAt::Pos(pressed))
         } else {

@@ -935,7 +935,71 @@ impl RinchDomEditorView {
         // A soft borrow: an app may ask from a callback while a runtime holds
         // the document; that answers "no geometry" rather than panicking.
         let host = host.try_borrow().ok()?;
-        host.query_caret_rect_with_affinity(block.node_id().0 as u64, byte, affinity)
+        let block_id = block.node_id().0 as u64;
+        if let Some((leaf, after)) = self.inline_box_beside(doc, pos, affinity)
+            && let Some(rect) = host.query_inline_box_caret_rect(block_id, leaf as u64, after)
+        {
+            return Some(rect);
+        }
+        host.query_caret_rect_with_affinity(block_id, byte, affinity)
+    }
+
+    /// The inline leaf whose box a caret at `pos` is drawn against, as `(its
+    /// host element id, after)`, when the flat byte offset cannot place it
+    /// (#1104): the zero-byte leaf (an image) just before `pos` — the caret is
+    /// after it — or else, for a `Downstream` caret, the zero-byte leaf just
+    /// after `pos`. The byte's own caret is the leading edge of whatever follows
+    /// the image, so it is drawn after the image at a block's start, right after
+    /// a hard break, and where the image starts a soft-wrapped line; on one line
+    /// after text the image's left edge is the byte's caret anyway. An
+    /// `Upstream` caret before an image at a wrap is the upper line's end, which
+    /// the byte query draws. `None` anywhere else.
+    ///
+    /// Two images in a row share one byte with all four of their sides, which
+    /// is why this names the leaf rather than a side of a byte.
+    pub(crate) fn inline_box_beside(
+        &self,
+        doc: &Node,
+        pos: Pos,
+        affinity: CaretAffinity,
+    ) -> Option<(usize, bool)> {
+        let r = doc.resolve(pos).ok()?;
+        if !r.parent().is_textblock() {
+            return None;
+        }
+        let mut desc = &self.root;
+        for d in 0..r.depth() {
+            desc = desc.children.get(r.index(d))?;
+        }
+        let off = r.parent_offset();
+        let block = &desc.node;
+        let zero_byte_leaf = |n: &Node| n.text().is_none() && leaf_flat_bytes(n, self.flat) == 0;
+        let mut at = 0usize;
+        let mut before: Option<usize> = None;
+        for i in 0..block.child_count() {
+            if at == off {
+                let prev = before.map(|p| block.child(p));
+                if let Some(prev) = prev
+                    && zero_byte_leaf(prev)
+                {
+                    return Some((desc.children.get(before?)?.dom.node_id().0, true));
+                }
+                if affinity == CaretAffinity::Downstream && zero_byte_leaf(block.child(i)) {
+                    return Some((desc.children.get(i)?.dom.node_id().0, false));
+                }
+                return None;
+            }
+            if at > off {
+                return None; // inside a text run
+            }
+            at += block.child(i).node_size();
+            before = Some(i);
+        }
+        // The block's end.
+        let p = before?;
+        (at == off && zero_byte_leaf(block.child(p)))
+            .then(|| desc.children.get(p).map(|c| (c.dom.node_id().0, true)))
+            .flatten()
     }
 
     /// Whether an IME composition (preedit) is being shown — the input method
@@ -986,6 +1050,16 @@ impl RinchDomEditorView {
             desc = desc.children.get(r.index(d))?;
         }
         Some((desc.dom.node_id().0, r.parent_offset()))
+    }
+
+    /// The model position on `after`'s side of the inline leaf whose host
+    /// element is `leaf_dom_id` — before it, or after it when `after`. `None`
+    /// if that element is not an inline leaf in this view. What a pointer hit
+    /// on an image's half resolves to (#1104), since the flat byte offset of
+    /// [`Self::pos_at`] is the same number on both of its sides.
+    pub(crate) fn pos_beside_inline_leaf(&self, leaf_dom_id: usize, after: bool) -> Option<Pos> {
+        let (pos, node) = self.node_pos_for_host(leaf_dom_id)?;
+        (node.is_inline() && node.node_type().is_leaf()).then_some(Pos(pos + usize::from(after)))
     }
 
     /// The model [`Pos`] `offset` positions into the textblock whose host element
@@ -1041,6 +1115,13 @@ impl RinchDomEditorView {
         flat_byte: usize,
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
+        if let Some((leaf, after)) = self.inline_box_beside(doc, pos, affinity)
+            && let Some((x, y, height)) =
+                d.query_inline_box_caret(block_id as u64, leaf as u64, after)
+        {
+            let (ox, oy) = self.block_offset_in_container(d, block_id);
+            return Some((ox + x, oy + y, height));
+        }
         let from_parley = d
             .query_caret_position_with_affinity(block_id as u64, flat_byte, affinity)
             .map(|(local_x, local_y)| {
@@ -2014,8 +2095,10 @@ fn leaf_flat_bytes(leaf: &Node, flat: FlatWidths) -> usize {
 /// gives it ([`DomDocument::line_break_flat_bytes`]), and zero for anything else
 /// (an image is an inline box with no text). A zero-byte leaf shares its byte
 /// with the position beside it, so a byte offset cannot say which side of it it
-/// means. A tab in the text is the host's tab bytes
-/// ([`DomDocument::tab_flat_bytes`]) rather than its one UTF-8 byte (#1109).
+/// means: the caret beside one is drawn from its box instead
+/// ([`RinchDomEditorView::inline_box_beside`], #1104). A tab in the text is the
+/// host's tab bytes ([`DomDocument::tab_flat_bytes`]) rather than its one UTF-8
+/// byte (#1109).
 fn textblock_flat_byte(block: &Node, char_off: usize, flat: FlatWidths) -> usize {
     let mut chars_seen = 0usize;
     let mut bytes = 0usize;
