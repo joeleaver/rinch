@@ -1692,6 +1692,48 @@ mod text_geometry_units_tests {
         );
     }
 
+    /// An `<input>` with an empty value takes its own early return (its
+    /// caret is the content origin, no layout built), with its own paddings:
+    /// logical at scale 2 too. From the PR #1133 review, which found this
+    /// branch unpinned by the fixtures above.
+    #[test]
+    fn an_empty_input_caret_is_logical_at_scale_two() {
+        let id: Rc<Cell<usize>> = Rc::default();
+        let id2 = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "width: 800px; height: 600px; font-family: sans-serif; \
+                 font-size: 14px; line-height: 20px",
+            );
+            let input = scope.create_element("input");
+            input.set_attribute(
+                "style",
+                "position: absolute; left: 40px; top: 30px; width: 300px; height: 20px; \
+                 padding: 3px 0 0 13px; font-size: 14px; line-height: 20px",
+            );
+            input.set_attribute("value", "");
+            root.append_child(&input);
+            id2.set(input.node_id().0);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let input = id.get();
+
+        let one = caret(&mut app, input, 0, 1.0);
+        assert!(
+            close(one.0, 40.0 + 13.0) && close(one.1, 30.0 + 3.0),
+            "the empty input's caret is its logical content origin (53, 33), got {one:?}"
+        );
+        let two = caret(&mut app, input, 0, 2.0);
+        assert!(
+            close(one.0, two.0) && close(one.1, two.1),
+            "scale 2 must answer the scale-1 (logical) caret {one:?}, got {two:?}"
+        );
+    }
+
     /// IFC text was already logical; pinned so it stays that way.
     #[test]
     fn a_paragraph_caret_and_glyph_are_the_same_at_both_scales() {
