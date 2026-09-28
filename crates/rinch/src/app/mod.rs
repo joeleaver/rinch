@@ -148,6 +148,8 @@ mod right_press_click_1093_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]
+mod scrollbar_corner_444_tests;
+#[cfg(test)]
 mod scrollbar_thumb_press_443_tests;
 #[cfg(test)]
 mod select_popup_width_tests;
