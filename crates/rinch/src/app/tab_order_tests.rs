@@ -308,3 +308,129 @@ fn a_start_after_every_stop_resumes_at_the_first_zero() {
     app.focus_element(ids["F"]);
     assert_eq!(tour(&mut app, &ids, 1, true), ["D"]);
 }
+
+/// `(name, tag, tabindex, parent)` — a stop whose `parent` names an earlier
+/// entry is nested inside it; `None` puts it under the root.
+type Nested = (
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    Option<&'static str>,
+);
+
+fn mount_nested(
+    markup: &'static [Nested],
+) -> (RinchApp, std::collections::HashMap<&'static str, usize>) {
+    let ids: Rc<RefCell<std::collections::HashMap<&'static str, usize>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let ids_in = ids.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let mut handles: std::collections::HashMap<&'static str, NodeHandle> =
+            std::collections::HashMap::new();
+        for &(name, tag, tabindex, parent) in markup {
+            let n = scope.create_element(tag);
+            // `height: auto` on a container so its nested stops give it a box.
+            n.set_attribute("style", "display: block; width: 120px; min-height: 20px");
+            if let Some(t) = tabindex {
+                n.set_attribute("tabindex", t);
+            }
+            parent.map_or(&root, |p| &handles[p]).append_child(&n);
+            ids_in.borrow_mut().insert(name, n.node_id().0);
+            handles.insert(name, n);
+        }
+        root
+    });
+    app.mount_component(W, H);
+    app.resolve_and_repaint(W, H);
+    let map = ids.borrow().clone();
+    (app, map)
+}
+
+/// A `tabindex="-1"` start **inside** a Tab stop still resumes at its tree
+/// neighbour — not at the enclosing stop's place in the sequence. Chrome 153:
+/// `D[2]{F[-1]} A E[2]`, F focused — Tab → `A`, Shift+Tab → `D`.
+///
+/// **Mutant: the ancestor walk ahead of the tree-neighbour rule** (the first
+/// cut of #435) anchors on `D` and Tab goes to `E`, `D`'s successor in the
+/// sequence.
+#[test]
+fn a_negative_start_inside_a_stop_resumes_at_its_tree_neighbour() {
+    const MARKUP: &[Nested] = &[
+        ("D", "div", Some("2"), None),
+        ("F", "div", Some("-1"), Some("D")),
+        ("A", "button", None, None),
+        ("E", "button", Some("2"), None),
+    ];
+    let (mut app, ids) = mount_nested(MARKUP);
+    app.focus_element(ids["F"]);
+    assert_eq!(focused(&app), Some(ids["F"]), "precondition: F holds focus");
+    assert_eq!(tour(&mut app, &ids, 1, false), ["A"], "Tab from F");
+    app.focus_element(ids["F"]);
+    assert_eq!(tour(&mut app, &ids, 1, true), ["D"], "Shift+Tab from F");
+}
+
+/// The Shift+Tab half off the ancestor's own neighbour: Chrome 153,
+/// `A D[0]{F[-1] X} Q`, F focused — Shift+Tab → `D` (the stop before F in tree
+/// order is its own container), Tab → `X`. Anchoring on `D` gives `A` backwards.
+#[test]
+fn shift_tab_from_a_negative_start_inside_a_stop_reaches_the_stop() {
+    const MARKUP: &[Nested] = &[
+        ("A", "button", None, None),
+        ("D", "div", Some("0"), None),
+        ("F", "div", Some("-1"), Some("D")),
+        ("X", "button", None, Some("D")),
+        ("Q", "button", None, None),
+    ];
+    let (mut app, ids) = mount_nested(MARKUP);
+    app.focus_element(ids["F"]);
+    assert_eq!(tour(&mut app, &ids, 1, true), ["D"], "Shift+Tab from F");
+    app.focus_element(ids["F"]);
+    assert_eq!(tour(&mut app, &ids, 1, false), ["X"], "Tab from F");
+}
+
+/// The arbiter holds nothing, but the DOM's own focus sits on a
+/// `tabindex="-1"` node: Tab starts from that node, not from the top.
+///
+/// **Mutant: the probe is the arbiter's claim only** (no `focused_node`
+/// fallback) — Tab enters at the sequence's first (`C`), Shift+Tab at its last
+/// (`G`).
+#[test]
+fn with_no_claim_tab_starts_from_the_doms_focused_node() {
+    const MARKUP: &[(&str, &str, Option<&str>)] = &[
+        ("A", "button", None),
+        ("B", "button", Some("2")),
+        ("C", "button", Some("1")),
+        ("F", "button", Some("-1")),
+        ("D", "button", None),
+        ("E", "button", Some("2")),
+        ("G", "button", None),
+    ];
+    let (mut app, ids) = mount_stops(&[], MARKUP, false);
+    for (shift, expected) in [(false, "D"), (true, "C")] {
+        app.set_focus_target(FocusTarget::None);
+        app.doc.as_ref().unwrap().borrow_mut().tree.focused_node = Some(ids["F"]);
+        assert_eq!(
+            focused(&app),
+            None,
+            "precondition: the arbiter holds nothing"
+        );
+        assert_eq!(tour(&mut app, &ids, 1, shift), [expected], "shift: {shift}");
+    }
+}
+
+/// `tabindex` is parsed with HTML's integer rules in a browser (Chrome 153:
+/// `" 3"` → 3, `"2.5"` → 2, `"+2"` → 2), so `A S1[" 3"] S2["2.5"] S3["+2"]`
+/// tours `S2 S3 S1 A` there. Desktop's `i32::from_str` rejects the first two.
+#[test]
+#[ignore = "#1138: desktop parses tabindex with i32::from_str, not HTML's rules"]
+fn tabindex_parses_like_html() {
+    const MARKUP: &[(&str, &str, Option<&str>)] = &[
+        ("A", "button", None),
+        ("S1", "div", Some(" 3")),
+        ("S2", "div", Some("2.5")),
+        ("S3", "div", Some("+2")),
+    ];
+    let (mut app, ids) = mount_stops(&[], MARKUP, false);
+    assert_eq!(tour(&mut app, &ids, 4, false), ["S2", "S3", "S1", "A"]);
+}
