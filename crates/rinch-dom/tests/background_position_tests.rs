@@ -292,7 +292,9 @@ fn styled_box(style: &str) -> TinySkiaPainter {
     );
     doc.append_child(body, node);
     doc.resolve_layout(VW, VH);
-    doc.tree.image_cache.insert_decoded(IMAGE.to_string(), ten_by_ten());
+    doc.tree
+        .image_cache
+        .insert_decoded(IMAGE.to_string(), ten_by_ten());
     paint(&mut doc)
 }
 
@@ -310,7 +312,11 @@ fn an_auto_sized_tile_is_the_padding_box() {
         "width: 100px; height: 30px; border: 10px solid transparent; {GRADIENT}; \
          background-repeat: no-repeat"
     ));
-    assert_eq!(row_at(&p, 5, &[5, 30, 70, 95]), "WWWW", "the top border is outside the tile");
+    assert_eq!(
+        row_at(&p, 5, &[5, 30, 70, 95]),
+        "WWWW",
+        "the top border is outside the tile"
+    );
     assert_eq!(row_at(&p, 15, &[5, 30, 70, 95]), "WRBW");
 }
 
@@ -347,7 +353,11 @@ fn ten_by_ten() -> rinch_dom::image_cache::DecodedImage {
     let mut data = Vec::with_capacity(10 * 10 * 4);
     for _y in 0..10 {
         for x in 0..10 {
-            data.extend_from_slice(if x < 5 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
+            data.extend_from_slice(if x < 5 {
+                &[255, 0, 0, 255]
+            } else {
+                &[0, 0, 255, 255]
+            });
         }
     }
     rinch_dom::image_cache::DecodedImage::new(data, 10, 10)
@@ -374,7 +384,11 @@ fn an_image_repeats_at_its_intrinsic_size() {
          background-position: 3px 0"
     ));
     assert_eq!(row_at(&p, 5, &[1, 5, 10, 55, 60, 96]), "BRBRBR");
-    assert_eq!(row_at(&p, 15, &[1, 5, 10, 55, 60, 96]), "BRBRBR", "repeated down too");
+    assert_eq!(
+        row_at(&p, 15, &[1, 5, 10, 55, 60, 96]),
+        "BRBRBR",
+        "repeated down too"
+    );
 }
 
 // =============================================================================
@@ -402,5 +416,9 @@ fn a_background_position_transition_interpolates_a_percentage() {
 
     rinch_dom::transition::tick_transitions(&mut doc.tree, started + 500.0);
     let p = paint(&mut doc);
-    assert_eq!(row(&p, &[12, 37, 62, 87]), "WRBW", "25px: W 0-25, R 25-50, B 50-75, W 75-100");
+    assert_eq!(
+        row(&p, &[12, 37, 62, 87]),
+        "WRBW",
+        "25px: W 0-25, R 25-50, B 50-75, W 75-100"
+    );
 }

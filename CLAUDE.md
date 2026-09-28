@@ -3007,6 +3007,19 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
 6. `paint_image()` renders via `scene.draw_image()` with proper affine transforms
 
+**Background layers** (#468, `crates/rinch-dom/src/paint/background.rs`): the
+**first** layer of `background-image` is sized, positioned and tiled by
+`background-size`/`-position`/`-repeat`/`-origin` (all in `ComputedStyle`), over
+a painting area that is always the border box (`background-clip` is not read),
+with `background-color` painted under it (`ComputedStyle::background_underlay` —
+`BackgroundValue` holds one value, so the colour and the image used to be one or
+the other). `space`/`round` paint as `repeat`; past `MAX_BACKGROUND_TILES`
+(4096) the layer is one tile over its area. The common case — one tile covering
+the box — is one fill and no clip, as before. `background-position-x`/`-y` are
+`TransitionProperty`s (paint-only: `affects_layout` is `false`), and
+`transition: background-position` expands to both. An image's `auto` size is
+its intrinsic size now; it used to be stretched over the border box.
+
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 
 **Circular avatars:** a clipping ancestor with `border-radius` clips to a

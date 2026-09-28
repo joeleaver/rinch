@@ -339,8 +339,9 @@ pub(super) fn background_underlay_from_stylo(
     }
     match background_from_stylo(bg, text_color) {
         BackgroundValue::None | BackgroundValue::Color(_) => None,
-        _ => color_from_computed(&bg.background_color, text_color)
-            .filter(|c| c.components[3] > 0.0),
+        _ => {
+            color_from_computed(&bg.background_color, text_color).filter(|c| c.components[3] > 0.0)
+        }
     }
 }
 
@@ -351,7 +352,9 @@ pub(super) fn background_size_from_stylo(
 ) -> BackgroundSizeValue {
     use style::values::generics::background::BackgroundSize;
     use style::values::generics::length::LengthPercentageOrAuto;
-    let axis = |v: &LengthPercentageOrAuto<style::values::computed::NonNegativeLengthPercentage>| {
+    let axis = |v: &LengthPercentageOrAuto<
+        style::values::computed::NonNegativeLengthPercentage,
+    >| {
         match v {
             LengthPercentageOrAuto::Auto => LengthPercentageAutoValue::Auto,
             LengthPercentageOrAuto::LengthPercentage(lp) => {

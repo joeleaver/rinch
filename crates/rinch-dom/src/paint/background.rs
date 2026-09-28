@@ -69,10 +69,9 @@ pub(super) fn paint_background(
             }
             let intrinsic = match image {
                 BackgroundValue::Image { url } => match tree.image_cache.get(url) {
-                    Some(decoded) => Some((
-                        decoded.width as f64 * scale,
-                        decoded.height as f64 * scale,
-                    )),
+                    Some(decoded) => {
+                        Some((decoded.width as f64 * scale, decoded.height as f64 * scale))
+                    }
                     // Not loaded yet: nothing to draw.
                     None => return,
                 },

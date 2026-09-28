@@ -30,6 +30,32 @@ fn app() -> NodeHandle {
 
 Supported formats: PNG, JPEG, GIF, WebP.
 
+### Background layers
+
+A background image — a `url(...)` or a `linear-gradient`/`radial-gradient` —
+is sized, placed and tiled the way a browser does it, for the **first** layer
+of the list (#468):
+
+- `background-size`: lengths, percentages, `auto`, `cover`, `contain`. An
+  image's `auto` is its intrinsic size; a gradient's is the positioning area.
+- `background-position` (and `-x`/`-y`): lengths, percentages, keywords and
+  edge offsets (`right 10px top 0`). A percentage is a share of the area
+  *less* the tile, so `100%` puts the tile's far edge on the area's.
+- `background-repeat`: `repeat`, `no-repeat`, `repeat-x`, `repeat-y`. `space`
+  and `round` are painted as `repeat`.
+- `background-origin`: `padding-box` (the default), `border-box`,
+  `content-box`. `background-clip` is not read, so the painting area is always
+  the border box.
+- `background-color` is painted under the image.
+
+`background-position` is animatable, by `transition` and `@keyframes` alike;
+it moves paint only, never layout. This is what makes the striped `Progress`
+bar's stripes move and the `Skeleton` pulse.
+
+An image used to be stretched over the element's border box whatever its
+`background-size`; one that relied on that now tiles at its natural size —
+say `background-size: 100% 100%` to keep the stretch.
+
 ### Network Images (optional)
 
 Enable with: `features = ["image-network"]`
