@@ -274,6 +274,64 @@ pub fn byte_offset_from_position(layout: &parley::layout::Layout<Brush>, x: f32,
     Cursor::from_point(layout, x, y).index()
 }
 
+/// The caret beside the inline box `box_id` in `layout`, as `(x, y, height)`
+/// layout-local: on the box's left edge, or its right edge when `after`, at the
+/// top of the box's line and one line high — the line box a text caret on that
+/// line is drawn in ([`glyph_bounds_for_offset_layout`]). `None` when no line
+/// holds the box.
+///
+/// An inline box occupies no bytes of the layout's text, so no byte offset can
+/// say which side of it a caret is on (#1104). Left-to-right only: `after` is
+/// the right edge whatever the box's bidi level.
+pub fn inline_box_caret(
+    layout: &parley::layout::Layout<Brush>,
+    box_id: u64,
+    after: bool,
+) -> Option<(f32, f32, f32)> {
+    for line in layout.lines() {
+        for item in line.items() {
+            if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
+                && b.id == box_id
+            {
+                let m = line.metrics();
+                let x = if after { b.x + b.width } else { b.x };
+                return Some((x, m.block_min_coord, m.block_max_coord - m.block_min_coord));
+            }
+        }
+    }
+    None
+}
+
+/// The inline box under layout-local `(x, y)`, as `(box id, after)`: `after`
+/// when the point is on the box's right half. `None` when the point is on no
+/// inline box — over text, beside a line's end, or above or below the text.
+///
+/// Parley's own hit test ([`byte_offset_from_position`]) steps over an inline
+/// box to the byte of what follows it, which is the byte of both of the box's
+/// sides; this is what tells them apart (#1104). Left-to-right only, like
+/// [`inline_box_caret`].
+pub fn inline_box_at_point(
+    layout: &parley::layout::Layout<Brush>,
+    x: f32,
+    y: f32,
+) -> Option<(u64, bool)> {
+    for line in layout.lines() {
+        let m = line.metrics();
+        if !(m.block_min_coord..m.block_max_coord).contains(&y) {
+            continue;
+        }
+        for item in line.items() {
+            if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
+                && (b.x..b.x + b.width).contains(&x)
+            {
+                return Some((b.id, x >= b.x + b.width / 2.0));
+            }
+        }
+        return None;
+    }
+    None
+}
+
 /// The byte range of the glyph cluster **under** layout-local `(x, y)` — the
 /// character the pointer is over — or `None` when no glyph is under it: beside
 /// the end of a line, above or below the text, in an inline box.

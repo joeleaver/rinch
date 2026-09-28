@@ -157,10 +157,13 @@ Command names are case-sensitive. The full catalogue:
 > before it stops before it.
 >
 > Where this still differs from a browser field:
-> - **Desktop, right after an image**: the caret is drawn before the image
->   (#1104). A hard break is resolved on both sides on both platforms (#1099,
->   #1025), and the web resolves both sides of an image too — a click, Home, a
->   soft-line delete, and an IME commit or autocorrect right after one.
+> - **Desktop, Home and End beside an image**: Home on a line that starts with
+>   an image lands after it, and End on a line that ends with one lands before
+>   it (#1116). The caret beside an image is drawn on its side, and a drag or
+>   Up/Down onto an image lands on the half it reaches (#1104); a hard break is
+>   resolved on both sides on both platforms (#1099, #1025), and the web
+>   resolves both sides of an image too — a click, Home, a soft-line delete,
+>   and an IME commit or autocorrect right after one.
 > - On a line that *mixes* directions the answer is the line's logical edge,
 >   which can differ from a browser field's: at the end of a line whose last
 >   run is right-to-left, Chrome's End stops before the trailing space where
