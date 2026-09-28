@@ -83,9 +83,10 @@ fn bars(app: &RinchApp, id: usize) -> rinch_dom::paint::scrollbar::Scrollbars {
     rinch_dom::paint::scrollbar::scrollbars(&d.tree, id, 1.0)
 }
 
-/// Every non-white pixel inside the container, as `(x, y)` device pixels.
+/// Every pixel inside the container with a channel at or below `max_channel`,
+/// as `(x, y)` device pixels. `254` is "painted at all".
 #[cfg(software_shell)]
-fn painted_pixels(app: &mut RinchApp) -> Vec<(u32, u32)> {
+fn painted_pixels(app: &mut RinchApp, max_channel: u8) -> Vec<(u32, u32)> {
     app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
     app.has_previous_frame = false;
     let (pixels, w, _h) = app.build_pixels(1.0, SIZE, false);
@@ -93,7 +94,7 @@ fn painted_pixels(app: &mut RinchApp) -> Vec<(u32, u32)> {
     for y in 0..H as u32 {
         for x in 0..W as u32 {
             let i = ((y * w + x) * 4) as usize;
-            if pixels[i] != 255 || pixels[i + 1] != 255 || pixels[i + 2] != 255 {
+            if pixels[i..i + 3].iter().any(|&c| c <= max_channel) {
                 out.push((x, y));
             }
         }
@@ -117,12 +118,24 @@ fn every_painted_thumb_pixel_is_grabbable_with_both_bars_up() {
         let (v, h) = (b.vertical.unwrap(), b.horizontal.unwrap());
         let (sx, sy) = offsets(&app, id);
         if wheel.0 > 1000.0 {
-            assert_eq!((sx, sy), (h.max_scroll, v.max_scroll), "premise: at the far end");
+            assert_eq!(
+                (sx, sy),
+                (h.max_scroll, v.max_scroll),
+                "premise: at the far end"
+            );
         } else {
             assert!(sx > 0.0 && sx < h.max_scroll && sy > 0.0 && sy < v.max_scroll);
         }
-        let px = painted_pixels(&mut app);
-        assert!(px.len() > 100, "premise: both thumbs are painted ({} px)", px.len());
+        // Pixels the thumb covers at least half of. The built-in thumb is 40%
+        // black over white, 153 fully covered; 204 is half coverage. A pixel
+        // the round cap or the thumb's end only grazes has its centre off the
+        // thumb, and a press there is correctly not a grab.
+        let px = painted_pixels(&mut app, 204);
+        assert!(
+            px.len() > 100,
+            "premise: both thumbs are painted ({} px)",
+            px.len()
+        );
         let d = app.doc.as_ref().unwrap().borrow();
         let mut bad = Vec::new();
         for &(x, y) in &px {
@@ -152,7 +165,7 @@ fn nothing_is_painted_in_the_corner_neither_bar_claims() {
     for style in ["", "--rinch-scrollbar-color: #808080 #c0c0c0"] {
         for wheel in WHEELS {
             let (mut app, _id) = mount(style, wheel, None);
-            let px = painted_pixels(&mut app);
+            let px = painted_pixels(&mut app, 254);
             let t = SCROLLBAR_HIT_THICKNESS;
             let in_corner: Vec<_> = px
                 .iter()
@@ -168,13 +181,16 @@ fn nothing_is_painted_in_the_corner_neither_bar_claims() {
             // track) is at that end, which the far-end run and the track run
             // both guarantee.
             if wheel.0 > 1000.0 || !style.is_empty() {
-                let above = px
-                    .iter()
-                    .any(|&(x, y)| x as f32 >= W - t && (y as f32) < H - t && y as f32 >= H - t - 4.0);
-                let left = px
-                    .iter()
-                    .any(|&(x, y)| y as f32 >= H - t && (x as f32) < W - t && x as f32 >= W - t - 4.0);
-                assert!(above && left, "the bars reach the corner ({style:?}, {wheel:?})");
+                let above = px.iter().any(|&(x, y)| {
+                    x as f32 >= W - t && (y as f32) < H - t && y as f32 >= H - t - 4.0
+                });
+                let left = px.iter().any(|&(x, y)| {
+                    y as f32 >= H - t && (x as f32) < W - t && x as f32 >= W - t - 4.0
+                });
+                assert!(
+                    above && left,
+                    "the bars reach the corner ({style:?}, {wheel:?})"
+                );
             }
         }
     }
@@ -238,16 +254,32 @@ fn a_track_press_that_cannot_move_the_scroll_fires_nothing() {
         let at = (W - 5.0, along as f32);
         {
             let d = app.doc.as_ref().unwrap().borrow();
-            assert!(find_scrollbar_hit(&d.tree, at.0, at.1).is_some(), "premise: on the strip");
-            assert!(!d.tree.dirty_nodes.contains(&id), "premise: clean before the press");
+            assert!(
+                find_scrollbar_hit(&d.tree, at.0, at.1).is_some(),
+                "premise: on the strip"
+            );
+            assert!(
+                !d.tree.dirty_nodes.contains(&id),
+                "premise: clean before the press"
+            );
         }
         let base = fired.get();
         press(&mut app, at);
         assert!(app.scrollbar_drag.is_some(), "the press arms a drag");
         assert_eq!(offsets(&app, id).1, s);
-        assert_eq!(fired.get(), base, "a press that moved nothing fires nothing");
+        assert_eq!(
+            fired.get(),
+            base,
+            "a press that moved nothing fires nothing"
+        );
         assert!(
-            !app.doc.as_ref().unwrap().borrow().tree.dirty_nodes.contains(&id),
+            !app.doc
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .tree
+                .dirty_nodes
+                .contains(&id),
             "and dirties nothing"
         );
         // The drag it armed still scrolls, back toward the other end.
@@ -266,11 +298,67 @@ fn a_track_press_that_cannot_move_the_scroll_fires_nothing() {
         // Positive control: a track press that does move fires.
         app.resolve_and_repaint(800.0, 600.0);
         let s = offsets(&app, id).1;
-        let far = if far_end { v.track_start + 3.0 } else { v.track_start + v.track_len - 3.0 };
+        let far = if far_end {
+            v.track_start + 3.0
+        } else {
+            v.track_start + v.track_len - 3.0
+        };
         assert!(!v.thumb_contains(s, far));
         let base = fired.get();
         press(&mut app, (W - 5.0, far as f32));
         assert!((offsets(&app, id).1 - s).abs() > 1.0);
         assert_eq!(fired.get(), base + 1, "a track press that moves fires");
+    }
+}
+
+/// The geometry the two pixel fixtures rest on, at every thickness and at a
+/// device scale of 2: each bar's painted track (its whole length, across the
+/// width it is drawn) lies inside that bar's hit strip, and the two strips do
+/// not meet — the corner is neither's. Asked of `scrollbars` itself, which is
+/// what paint and hit testing both read.
+#[test]
+fn each_painted_track_lies_inside_its_hit_strip_at_every_scale_and_width() {
+    use rinch_dom::paint::scrollbar::ScrollbarAxis;
+    for width in ["", "--rinch-scrollbar-width: thin"] {
+        let (app, id) = mount(width, (0.0, 0.0), None);
+        for scale in [1.0, 2.0] {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let b = rinch_dom::paint::scrollbar::scrollbars(&d.tree, id, scale);
+            let (bw, bh) = (W as f64 * scale, H as f64 * scale);
+            assert_eq!((b.box_width, b.box_height), (bw, bh));
+            let v = b.vertical.expect("a vertical bar");
+            let h = b.horizontal.expect("a horizontal bar");
+            let vs = b.hit_strip(ScrollbarAxis::Vertical).unwrap();
+            let hs = b.hit_strip(ScrollbarAxis::Horizontal).unwrap();
+            // Painted rects, as paint draws them (`paint_node`).
+            let vx0 = bw - b.thickness - b.margin;
+            let hy0 = bh - b.thickness - b.margin;
+            let v_paint = (
+                vx0,
+                v.track_start,
+                vx0 + b.thickness,
+                v.track_start + v.track_len,
+            );
+            let h_paint = (
+                h.track_start,
+                hy0,
+                h.track_start + h.track_len,
+                hy0 + b.thickness,
+            );
+            let inside = |p: (f64, f64, f64, f64), s: (f64, f64, f64, f64)| {
+                p.0 >= s.0 && p.1 >= s.1 && p.2 <= s.2 && p.3 <= s.3
+            };
+            assert!(
+                inside(v_paint, vs),
+                "{width:?} x{scale}: {v_paint:?} in {vs:?}"
+            );
+            assert!(
+                inside(h_paint, hs),
+                "{width:?} x{scale}: {h_paint:?} in {hs:?}"
+            );
+            // The corner: each strip stops at the `hit_thickness` square at the
+            // bottom-right, so its interior is on neither.
+            assert_eq!((vs.3, hs.2), (bh - b.hit_thickness, bw - b.hit_thickness));
+        }
     }
 }
