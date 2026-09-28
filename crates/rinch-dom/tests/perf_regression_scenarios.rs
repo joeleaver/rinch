@@ -13,6 +13,7 @@
 //! | counter | site | scenario |
 //! |---|---|---|
 //! | `shape_paint` | `paint/select.rs` (closed `<select>` label) | [`a_select_label_is_shaped_by_paint`] |
+//! | `shape_select_label` | `select.rs` `widest_select_label` (an auto-width select's size) | [`an_auto_width_select_shapes_its_labels_only_when_they_change`] |
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
@@ -152,6 +153,68 @@ fn a_select_label_is_shaped_by_paint() {
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── shape_select_label ─────────────────────────────────────────────────────
+
+/// An auto-width `<select>` is sized from its widest option label, shaped at
+/// style sync (`style_resolution`, #1098) — one shape per label, and none on a
+/// restyle that moves neither the labels nor the font (the width is cached on
+/// the node). An edited label shapes them all again.
+#[test]
+fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
+    let mut doc = doc_with("");
+    let body = doc.body();
+    let sel = el(&mut doc, body, "select", "");
+    let mut last = None;
+    for label in ["Apple", "Banana"] {
+        let o = el(&mut doc, sel, "option", "");
+        last = Some(text(&mut doc, o, label));
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+
+    doc.set_style(sel, "color", "rgb(255, 0, 0)");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "select colour restyle",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 3),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 3),
+            (ShapeIfcBuild, 3),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+        ],
+    );
+
+    doc.set_text_content(last.unwrap(), "Blueberry");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "select label edit",
+        &s,
+        &[
+            (ShapeSelectLabel, 2),
+            (StyleResolves, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 2),
+            (IfcMeasureCacheHits, 2),
+            (IfcMeasureInvalidations, 4),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 3),
+            (InlineBlockComputes, 1),
         ],
     );
 }

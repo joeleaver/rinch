@@ -143,6 +143,11 @@ define_counters! {
     /// fallback for text with no cached layout. (Query-time shaping — hit
     /// testing an input, the MCP text tools — is not counted.)
     ShapePaint = "shape_paint",
+    /// Parley layouts built to size a closed `<select>`: one per non-empty
+    /// option label, when an auto-width select's labels or font changed
+    /// since it was last sized (#1098). A restyle that moves neither shapes
+    /// none.
+    ShapeSelectLabel = "shape_select_label",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",
     /// Per-root invalidations of the IFC measure cache by a restyle or a
