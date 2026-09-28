@@ -490,7 +490,11 @@ pub fn ifc_offset_to_dom_cursor(
                 if flat >= target_flat {
                     return Some((r.node_id, i + r.node_offset));
                 }
-                flat += if ch == '\t' { 4 } else { ch.len_utf8() };
+                flat += if ch == '\t' {
+                    crate::ifc::TAB_SPACES.len()
+                } else {
+                    ch.len_utf8()
+                };
             }
             return Some((r.node_id, r.dom_text.len() + r.node_offset));
         }
@@ -531,7 +535,11 @@ pub fn dom_cursor_to_ifc_offset(
                 if i >= local_offset {
                     break;
                 }
-                flat += if ch == '\t' { 4 } else { ch.len_utf8() };
+                flat += if ch == '\t' {
+                    crate::ifc::TAB_SPACES.len()
+                } else {
+                    ch.len_utf8()
+                };
             }
             return Some(r.flat_start + flat.min(flat_len));
         }

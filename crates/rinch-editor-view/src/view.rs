@@ -615,12 +615,11 @@ pub struct RinchDomEditorView {
     /// ([`EditorHandle::caret_affinity`](super::EditorHandle::caret_affinity)),
     /// set before every caret pass.
     caret_affinity: CaretAffinity,
-    /// The bytes a hard break's `<br>` occupies in the host's flat byte offsets
-    /// ([`DomDocument::line_break_flat_bytes`]): `1` on rinch-dom, whose inline
-    /// layout pushes `"\n"` for it, `0` in the browser. Read once at
-    /// construction; the caret map (`textblock_flat_byte` / `ifc_byte_to_char`)
-    /// counts it so a caret after a break is drawn after it (#1099).
-    break_bytes: usize,
+    /// What a hard break and a tab occupy in the host's flat byte offsets
+    /// ([`FlatWidths`]). Read once at construction; the caret map
+    /// (`textblock_flat_byte` / `ifc_byte_to_char`) counts them so a caret after
+    /// a break (#1099) or a tab (#1109) is drawn after it.
+    flat: FlatWidths,
 }
 
 /// How far above and below a revealed range [`RinchDomEditorView::position_reveal`]
@@ -661,12 +660,12 @@ impl RinchDomEditorView {
             segments: Vec::new(),
             has_deco: false,
         };
-        let break_bytes = doc
+        let flat = doc
             .upgrade()
-            .and_then(|d| d.try_borrow().ok().map(|d| d.line_break_flat_bytes()))
-            .unwrap_or(0);
+            .and_then(|d| d.try_borrow().ok().map(|d| FlatWidths::of(&*d)))
+            .unwrap_or(FlatWidths::UTF8);
         let mut view = RinchDomEditorView {
-            break_bytes,
+            flat,
             doc,
             root,
             placeholder: None,
@@ -974,8 +973,7 @@ impl RinchDomEditorView {
         }
         let off = r.parent_offset();
         let block = &desc.node;
-        let zero_byte_leaf =
-            |n: &Node| n.text().is_none() && leaf_flat_bytes(n, self.break_bytes) == 0;
+        let zero_byte_leaf = |n: &Node| n.text().is_none() && leaf_flat_bytes(n, self.flat) == 0;
         let mut at = 0usize;
         let mut before: Option<usize> = None;
         for i in 0..block.child_count() {
@@ -1024,7 +1022,7 @@ impl RinchDomEditorView {
         for d in 0..r.depth() {
             desc = desc.children.get(r.index(d))?;
         }
-        let flat_byte = textblock_flat_byte(&desc.node, r.parent_offset(), self.break_bytes);
+        let flat_byte = textblock_flat_byte(&desc.node, r.parent_offset(), self.flat);
         Some((desc.dom.clone(), flat_byte))
     }
 
@@ -1035,7 +1033,7 @@ impl RinchDomEditorView {
     pub(crate) fn pos_at(&self, textblock_dom_id: usize, ifc_byte: usize) -> Option<Pos> {
         let (content_start, block) = find_block(&self.root, textblock_dom_id, 0)?;
         Some(Pos(
-            content_start + ifc_byte_to_char(block, ifc_byte, self.break_bytes)
+            content_start + ifc_byte_to_char(block, ifc_byte, self.flat)
         ))
     }
 
@@ -1356,8 +1354,8 @@ impl RinchDomEditorView {
                 {
                     targets.push((
                         block_id,
-                        textblock_flat_byte(node, a - content_start, self.break_bytes),
-                        textblock_flat_byte(node, b - content_start, self.break_bytes),
+                        textblock_flat_byte(node, a - content_start, self.flat),
+                        textblock_flat_byte(node, b - content_start, self.flat),
                     ));
                 }
                 false // don't descend into the textblock's inline content
@@ -1990,31 +1988,86 @@ fn apply_run_decos(desc: &mut ViewDesc, next: Vec<RunDeco>, doc: &DocRef) {
     desc.decos = next;
 }
 
+/// What the host's flat byte offsets make of the two things in a textblock
+/// whose width there is not their UTF-8 length in the model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FlatWidths {
+    /// The bytes a hard break's `<br>` occupies
+    /// ([`DomDocument::line_break_flat_bytes`]): `1` on rinch-dom, whose inline
+    /// layout pushes `"\n"` for it, `0` in the browser.
+    line_break: usize,
+    /// The bytes a tab occupies ([`DomDocument::tab_flat_bytes`]): `4` on
+    /// rinch-dom, which lays a tab out as four spaces, `1` in the browser.
+    tab: usize,
+}
+
+impl FlatWidths {
+    /// Plain UTF-8 text with no bytes for a `<br>`: the browser, and a host
+    /// that cannot be asked.
+    const UTF8: FlatWidths = FlatWidths {
+        line_break: 0,
+        tab: 1,
+    };
+
+    fn of(doc: &dyn DomDocument) -> FlatWidths {
+        FlatWidths {
+            line_break: doc.line_break_flat_bytes(),
+            tab: doc.tab_flat_bytes(),
+        }
+    }
+
+    /// The flat bytes of one model char of text.
+    fn char_bytes(&self, ch: char) -> usize {
+        if ch == '\t' { self.tab } else { ch.len_utf8() }
+    }
+
+    /// The flat bytes of a run of model text.
+    fn text_bytes(&self, text: &str) -> usize {
+        if self.tab == 1 {
+            text.len()
+        } else {
+            text.chars().map(|ch| self.char_bytes(ch)).sum()
+        }
+    }
+}
+
 /// The model **char** offset within a textblock for a flat UTF-8 `ifc_byte` offset
 /// — the inverse of [`textblock_flat_byte`], used to turn a pointer hit into a
 /// cursor position. Leaves count as one char (matching `textblock_flat_byte`);
 /// a byte inside a leaf's own flat bytes (a `<br>`'s `"\n"`) is the position
-/// before it.
-fn ifc_byte_to_char(block: &Node, ifc_byte: usize, break_bytes: usize) -> usize {
+/// before it. A byte inside a tab's flat bytes (rinch-dom's four spaces) picks a
+/// side of the tab (#1109): the first of its four bytes is before it, the rest
+/// after. A pointer hit answers the nearest byte boundary, so a press lands
+/// before the tab on its first 3/8 and after it from 3/8 on, where a browser
+/// splits at the middle. A byte cannot say more, so some band of an eighth of
+/// a tab is on the wrong side whichever way the byte at the middle is read.
+fn ifc_byte_to_char(block: &Node, ifc_byte: usize, flat: FlatWidths) -> usize {
     let mut bytes = 0usize;
     let mut chars = 0usize;
     for i in 0..block.child_count() {
         let child = block.child(i);
         if let Some(text) = child.text() {
-            if ifc_byte <= bytes + text.len() {
+            let run_bytes = flat.text_bytes(text);
+            if ifc_byte <= bytes + run_bytes {
                 let into_byte = ifc_byte - bytes;
-                for (b, _) in text.char_indices() {
+                let mut b = 0usize;
+                for ch in text.chars() {
                     if b >= into_byte {
                         return chars;
                     }
+                    let width = flat.char_bytes(ch);
+                    if ch == '\t' && 2 * (into_byte - b) < width {
+                        return chars;
+                    }
+                    b += width;
                     chars += 1;
                 }
                 return chars;
             }
-            bytes += text.len();
+            bytes += run_bytes;
             chars += text.chars().count();
         } else {
-            let width = leaf_flat_bytes(child, break_bytes);
+            let width = leaf_flat_bytes(child, flat);
             if ifc_byte < bytes + width {
                 return chars;
             }
@@ -2025,11 +2078,12 @@ fn ifc_byte_to_char(block: &Node, ifc_byte: usize, break_bytes: usize) -> usize 
     chars
 }
 
-/// The flat bytes an inline leaf occupies in the host's offsets: `break_bytes`
-/// for one rendered as `<br>`, zero for any other (an `<img>` has no text).
-fn leaf_flat_bytes(leaf: &Node, break_bytes: usize) -> usize {
-    if break_bytes > 0 && node_dom_tag(leaf) == "br" {
-        break_bytes
+/// The flat bytes an inline leaf occupies in the host's offsets: the host's
+/// line-break bytes for one rendered as `<br>`, zero for any other (an `<img>`
+/// has no text).
+fn leaf_flat_bytes(leaf: &Node, flat: FlatWidths) -> usize {
+    if flat.line_break > 0 && node_dom_tag(leaf) == "br" {
+        flat.line_break
     } else {
         0
     }
@@ -2040,13 +2094,15 @@ fn leaf_flat_bytes(leaf: &Node, break_bytes: usize) -> usize {
 /// of the caret map. Walks the inline runs accumulating char and byte counts.
 ///
 /// An inline leaf is one model char. Its flat-byte width is [`leaf_flat_bytes`]:
-/// `break_bytes` for a hard break (`<br>`), which is what the host gives it
-/// ([`DomDocument::line_break_flat_bytes`]), and zero for anything else (an image
-/// is an inline box with no text). A zero-byte leaf shares its byte with the
-/// position beside it, so a byte offset cannot say which side of it it means:
-/// the caret beside one is drawn from its box instead
-/// ([`RinchDomEditorView::inline_box_beside`], #1104).
-fn textblock_flat_byte(block: &Node, char_off: usize, break_bytes: usize) -> usize {
+/// the host's line-break bytes for a hard break (`<br>`), which is what the host
+/// gives it ([`DomDocument::line_break_flat_bytes`]), and zero for anything else
+/// (an image is an inline box with no text). A zero-byte leaf shares its byte
+/// with the position beside it, so a byte offset cannot say which side of it it
+/// means: the caret beside one is drawn from its box instead
+/// ([`RinchDomEditorView::inline_box_beside`], #1104). A tab in the text is the
+/// host's tab bytes ([`DomDocument::tab_flat_bytes`]) rather than its one UTF-8
+/// byte (#1109).
+fn textblock_flat_byte(block: &Node, char_off: usize, flat: FlatWidths) -> usize {
     let mut chars_seen = 0usize;
     let mut bytes = 0usize;
     for i in 0..block.child_count() {
@@ -2055,21 +2111,18 @@ fn textblock_flat_byte(block: &Node, char_off: usize, break_bytes: usize) -> usi
             let run_chars = text.chars().count();
             if chars_seen + run_chars >= char_off {
                 let into = char_off - chars_seen;
-                let byte_in_run = text
-                    .char_indices()
-                    .nth(into)
-                    .map(|(b, _)| b)
-                    .unwrap_or(text.len());
+                let byte_in_run: usize =
+                    text.chars().take(into).map(|ch| flat.char_bytes(ch)).sum();
                 return bytes + byte_in_run;
             }
             chars_seen += run_chars;
-            bytes += text.len();
+            bytes += flat.text_bytes(text);
         } else {
             if chars_seen >= char_off {
                 return bytes;
             }
             chars_seen += 1; // leaf occupies one model char
-            bytes += leaf_flat_bytes(child, break_bytes);
+            bytes += leaf_flat_bytes(child, flat);
         }
     }
     bytes
@@ -3695,6 +3748,14 @@ mod tests {
         assert_eq!(text(&h, block).as_deref(), Some("helo"));
     }
 
+    /// rinch-dom's flat offsets: a `<br>` is `"\n"`, a tab four spaces.
+    const DESKTOP: FlatWidths = FlatWidths {
+        line_break: 1,
+        tab: 4,
+    };
+    /// The browser's: a `<br>` has no text, a tab is its one character.
+    const WEB: FlatWidths = FlatWidths::UTF8;
+
     #[test]
     fn textblock_flat_byte_spans_runs_and_multibyte() {
         // paragraph(text("ab",[bold]), text("é"), text("cd")) — flat text "abécd",
@@ -3711,11 +3772,11 @@ mod tests {
                 ]),
             )
             .unwrap();
-        assert_eq!(textblock_flat_byte(&p, 0, 0), 0); // start
-        assert_eq!(textblock_flat_byte(&p, 2, 0), 2); // after "ab"
-        assert_eq!(textblock_flat_byte(&p, 3, 0), 4); // after "é" — past its 2 bytes
-        assert_eq!(textblock_flat_byte(&p, 4, 0), 5); // after "c"
-        assert_eq!(textblock_flat_byte(&p, 5, 0), 6); // end
+        assert_eq!(textblock_flat_byte(&p, 0, WEB), 0); // start
+        assert_eq!(textblock_flat_byte(&p, 2, WEB), 2); // after "ab"
+        assert_eq!(textblock_flat_byte(&p, 3, WEB), 4); // after "é" — past its 2 bytes
+        assert_eq!(textblock_flat_byte(&p, 4, WEB), 5); // after "c"
+        assert_eq!(textblock_flat_byte(&p, 5, WEB), 6); // end
     }
 
     /// A hard break is worth the host's `line_break_flat_bytes` in the caret map
@@ -3741,16 +3802,49 @@ mod tests {
             )
             .unwrap();
         // rinch-dom: the `<br>` is one byte, `"ab\ncdef"`.
-        let desktop: Vec<usize> = (0..=8).map(|c| textblock_flat_byte(&p, c, 1)).collect();
+        let desktop: Vec<usize> = (0..=8)
+            .map(|c| textblock_flat_byte(&p, c, DESKTOP))
+            .collect();
         assert_eq!(desktop, [0, 1, 2, 3, 4, 5, 5, 6, 7]);
         // The browser: no byte for either leaf, `"abcdef"`.
-        let web: Vec<usize> = (0..=8).map(|c| textblock_flat_byte(&p, c, 0)).collect();
+        let web: Vec<usize> = (0..=8).map(|c| textblock_flat_byte(&p, c, WEB)).collect();
         assert_eq!(web, [0, 1, 2, 2, 3, 4, 4, 5, 6]);
         // The inverse: the `"\n"` byte (2) is before the break, the next after
         // it; an image's shared byte (5 / 4) reads as the side before it.
-        let back: Vec<usize> = (0..=7).map(|b| ifc_byte_to_char(&p, b, 1)).collect();
+        let back: Vec<usize> = (0..=7).map(|b| ifc_byte_to_char(&p, b, DESKTOP)).collect();
         assert_eq!(back, [0, 1, 2, 3, 4, 5, 7, 8]);
-        let back_web: Vec<usize> = (0..=6).map(|b| ifc_byte_to_char(&p, b, 0)).collect();
+        let back_web: Vec<usize> = (0..=6).map(|b| ifc_byte_to_char(&p, b, WEB)).collect();
         assert_eq!(back_web, [0, 1, 2, 4, 5, 7, 8]);
+    }
+
+    /// A tab is worth the host's `tab_flat_bytes` in the caret map (#1109),
+    /// across runs and beside a multibyte char, and a byte inside a tab's four
+    /// is before it for the first, after it for the rest. `a\té` + bold `\tb`: chars a0 tab1 é2 tab3 b4.
+    #[test]
+    fn the_caret_map_gives_a_tab_the_hosts_bytes() {
+        let s = schema();
+        let p = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![
+                    s.text("a\té").unwrap(),
+                    s.text_with_marks("\tb", vec![mk(&s, "bold", Default::default())])
+                        .unwrap(),
+                ]),
+            )
+            .unwrap();
+        // rinch-dom: `"a    é    b"`, é two bytes.
+        let desktop: Vec<usize> = (0..=5)
+            .map(|c| textblock_flat_byte(&p, c, DESKTOP))
+            .collect();
+        assert_eq!(desktop, [0, 1, 5, 7, 11, 12]);
+        let web: Vec<usize> = (0..=5).map(|c| textblock_flat_byte(&p, c, WEB)).collect();
+        assert_eq!(web, [0, 1, 2, 4, 5, 6]);
+        // Inverse: bytes 2 inside the first tab (1..5) is before it (1), 3 and
+        // 4 after it (2); 6 inside é reads after it; 8 before the second tab.
+        let back: Vec<usize> = (0..=12).map(|b| ifc_byte_to_char(&p, b, DESKTOP)).collect();
+        assert_eq!(back, [0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5]);
+        let back_web: Vec<usize> = (0..=6).map(|b| ifc_byte_to_char(&p, b, WEB)).collect();
+        assert_eq!(back_web, [0, 1, 2, 3, 3, 4, 5]);
     }
 }

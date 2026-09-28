@@ -630,7 +630,7 @@ pub trait DomDocument {
     ///
     /// A flat byte offset counts the text of the text nodes under the element, in
     /// document order, as the backend lays that text out — rinch-dom expands a tab
-    /// to four spaces, which the editor's caret map does not yet count (#1109). A
+    /// to four spaces ([`Self::tab_flat_bytes`]). A
     /// `<br>` has no text node, so a backend that counts only
     /// text gives it none — the browser's DOM ranges, and this default — while one
     /// that lays inline content out as a single string may give it the line break
@@ -639,6 +639,24 @@ pub trait DomDocument {
     /// view) asks this so a caret after a break lands after it (#1099).
     fn line_break_flat_bytes(&self) -> usize {
         0
+    }
+
+    /// How many bytes a tab (`'\t'`) in a text node occupies in the same flat
+    /// byte offsets as [`Self::line_break_flat_bytes`]. Its UTF-8 length, `1`, by
+    /// default — the browser's DOM ranges count the character. rinch-dom's inline
+    /// formatting context lays a tab out as four spaces, whatever the tab's
+    /// column, and answers `4`, so the rich-text editor's caret map counts each
+    /// tab as that many bytes (#1109).
+    ///
+    /// The answer is per host, not per node, and it holds only where
+    /// `white-space` preserves the tab: measured on rinch-dom, a tab is four
+    /// bytes under `pre`, `pre-wrap` and `pre-line`, and under `normal`,
+    /// `nowrap` and `break-spaces` it collapses like a space — one byte, as
+    /// `a b` lays out. The editor's stylesheet sets `pre-wrap` on its container
+    /// and its code blocks, which is why the editor may use it; a caller mapping
+    /// text under collapsing `white-space` would have to count differently.
+    fn tab_flat_bytes(&self) -> usize {
+        1
     }
 
     /// The caret beside the atomic inline `box_id` (an `<img>`) that the
