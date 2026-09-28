@@ -106,8 +106,17 @@ committing an edit, and browsers dispatch no `change` for it either.
 
 Focus arrives three ways, and all three go through the same arbiter:
 
-- **Tab / Shift+Tab** — walks the focusable elements in DOM order, and paints
-  the `:focus-visible` keyboard ring.
+- **Tab / Shift+Tab** — walks the focusable elements in the browser's
+  sequential order, and paints the `:focus-visible` keyboard ring: every
+  positive `tabindex` first, in ascending order, then everything at `0` or
+  focusable by its tag, ties in DOM order — `tabindex="2"` before `"3"` before
+  a plain `<button>`, wherever each sits in the document. Inside a
+  `trap_focus` overlay the same order applies to the overlay's own controls.
+  Tab from an element that is not in that order (a clicked `tabindex="-1"`
+  node, or one whose box has just gone) goes to the next Tab stop after it **in
+  DOM order**, and Shift+Tab to the previous one, as Chrome does. What an
+  opening dialog focuses is still its first control in DOM order, not the
+  first in Tab order — HTML picks it that way.
 - **A mouse press** — claims the *nearest focusable ancestor-or-self* of
   whatever was hit, exactly as a browser does. Pointer focus does **not** paint
   the `:focus-visible` ring. A press that resolves to something *other* than
@@ -135,9 +144,7 @@ Everything else focusable activates the nearest ancestor-or-self
 behave like a button — and what makes Space on a `Checkbox`'s visually hidden
 `<input>` toggle the `<label>` that wraps it.
 
-> **Still not matched to the web.** A positive `tabindex` does not order ahead
-> of DOM order — the collector is a plain pre-order walk (issue #435).
-> Arrow/Enter/Escape navigation of the `Select` component's open option list is
+> **Still not matched to the web.** Arrow/Enter/Escape navigation of the `Select` component's open option list is
 > issue #434.
 
 ### Taking the click without the keyboard

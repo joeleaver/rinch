@@ -1726,8 +1726,18 @@ not checked, so a recycled node id (issue #304, live on desktop through
 `crates/rinch-web/tests/overlay_focus.rs` are the pins, twins like the
 containment pair.
 
-Still unmatched to the web: a positive `tabindex` does not order ahead of DOM
-order (issue #435).
+**Tab walks the HTML sequential order** (issue #435): positive `tabindex`
+ascending, ties in tree order, then every `0` / tag-focusable stop in tree
+order — `RinchApp::tab_sequence`, a stable sort over
+`collect_tab_stops_from`'s tree-ordered stops, applied inside a trap as well
+(rinch-web's `handle_trapped_tab` sorts its ring the same way, by
+`tabIndex`). The collection itself (`collect_focusable_nodes_from`) stays in
+**tree order**, because `focus_into_subtree` picks a dialog's first control in
+tree order, as HTML and Chrome do. A start that is not a stop — a focused
+`tabindex="-1"` node, or a claim whose box just went — resumes at its **tree**
+neighbour (next stop after it for Tab, previous for Shift+Tab; with nothing
+after it, the first stop at `0`), all measured in Chrome 153 and pinned by
+`app/tab_order_tests.rs` and the #435 fixtures in `rinch-web/tests/trap_focus.rs`.
 
 **`data-nofocus` takes the click without the keyboard** (issue #312) — the
 `preventDefault()`-on-mousedown mechanism browsers converged on, which an editor

@@ -101,17 +101,18 @@ fn mount_stops(
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
-        let mut make = |scope: &mut RenderScope,
-                        parent: &NodeHandle,
-                        (name, tag, tabindex): (&'static str, &'static str, Option<&str>)| {
-            let n = scope.create_element(tag);
-            n.set_attribute("style", "display: block; width: 120px; height: 20px");
-            if let Some(t) = tabindex {
-                n.set_attribute("tabindex", t);
-            }
-            parent.append_child(&n);
-            ids_in.borrow_mut().insert(name, n.node_id().0);
-        };
+        let make =
+            |scope: &mut RenderScope,
+             parent: &NodeHandle,
+             (name, tag, tabindex): (&'static str, &'static str, Option<&str>)| {
+                let n = scope.create_element(tag);
+                n.set_attribute("style", "display: block; width: 120px; height: 20px");
+                if let Some(t) = tabindex {
+                    n.set_attribute("tabindex", t);
+                }
+                parent.append_child(&n);
+                ids_in.borrow_mut().insert(name, n.node_id().0);
+            };
         for &s in outside {
             make(scope, &root, s);
         }
@@ -151,7 +152,9 @@ fn tour(
             } else {
                 tab(app)
             }
-            focused(app).and_then(|id| by_id.get(&id).copied()).unwrap_or("?")
+            focused(app)
+                .and_then(|id| by_id.get(&id).copied())
+                .unwrap_or("?")
         })
         .collect()
 }

@@ -462,16 +462,19 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
         .set_attribute("style", "display: none")
         .unwrap();
 
+    // `in-b` is no longer a stop, so Tab resumes at its tree neighbour inside
+    // the outer trap — `out-b`, which follows the inner region — as Chrome 153
+    // does from a focused element hidden under it (issue #435).
     tab(false);
     assert_eq!(
         f.active(),
-        "out-a",
+        "out-b",
         "the outer trap takes over; the inner's two controls are gone"
     );
     tab(false);
-    assert_eq!(f.active(), "out-b");
-    tab(false);
     assert_eq!(f.active(), "out-a", "and the outer cycle wraps");
+    tab(false);
+    assert_eq!(f.active(), "out-b");
     f.teardown();
 }
 
