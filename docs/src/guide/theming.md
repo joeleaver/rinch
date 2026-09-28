@@ -448,7 +448,10 @@ For dynamic dark mode toggling (e.g., a switch in your app), use `dark_mode_fn` 
 ## Scrollbars
 
 A desktop scroll container paints an overlay thumb on each axis that is
-scrollable and overflowing. Two custom properties style it, and both **inherit**
+scrollable and overflowing. Pressing the thumb grabs it where it is, and
+dragging moves it with the pointer; pressing the empty track beside it jumps
+there, a position along the track mapping linearly onto the scroll range.
+Two custom properties style it, and both **inherit**
 — one declaration on a root node restyles every scroll region in the app.
 
 ```css
