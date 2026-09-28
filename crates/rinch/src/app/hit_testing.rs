@@ -602,9 +602,8 @@ pub(crate) fn pointer_on_scrollbar_thumb(tree: &rinch_dom::NodeTree, x: f32, y: 
     // same space the pointer is mapped into, so a scroller under a
     // `transform: scale()` answers about the thumb you can see (#203).
     let local = pointer_in_node(tree, hit.node_id, x, y);
-    let along = hit.axis.along(local.0, local.1) as f64;
-    let start = hit.track.thumb_start(scroll);
-    along >= start && along <= start + hit.track.thumb_len
+    hit.track
+        .thumb_contains(scroll, hit.axis.along(local.0, local.1) as f64)
 }
 
 /// Map a resize direction to the appropriate cursor style.

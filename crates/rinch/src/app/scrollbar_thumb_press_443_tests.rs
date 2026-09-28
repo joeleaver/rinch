@@ -16,6 +16,10 @@ const SIZE: (u32, u32) = (800, 600);
 /// A 200x100 scroller at the document origin whose content overflows on
 /// `axis` only, scrolled by `wheel` px along it.
 fn mount(vertical: bool, wheel: f64) -> (RinchApp, usize) {
+    mount_with(vertical, wheel, None)
+}
+
+fn mount_with(vertical: bool, wheel: f64, onscroll: Option<String>) -> (RinchApp, usize) {
     let (overflow, content) = if vertical {
         ("overflow-y: auto", "width: 40px; height: 400px")
     } else {
@@ -30,6 +34,9 @@ fn mount(vertical: bool, wheel: f64) -> (RinchApp, usize) {
         let scroller = scope.create_element("div");
         scroller.set_attribute("style", &container_style);
         scroller.set_attribute("id", "scroller");
+        if let Some(h) = &onscroll {
+            scroller.set_attribute("data-onscroll", h);
+        }
         let inner = scope.create_element("div");
         inner.set_attribute("style", &content);
         scroller.append_child(&inner);
@@ -233,4 +240,43 @@ fn the_painted_thumb_does_not_move_under_the_press() {
         before, after,
         "the painted thumb must not jump under the press"
     );
+}
+
+/// A grab scrolls nothing, so it fires no `onscroll`; the first move does. The
+/// track press is the positive control that the handler is wired at all.
+#[test]
+fn a_thumb_grab_fires_no_onscroll_until_it_moves() {
+    use rinch_core::events::{ScrollCallback, ScrollEvent, register_scroll_handler};
+    use std::cell::Cell;
+
+    let fired = Rc::new(Cell::new(0usize));
+    let fired_in = fired.clone();
+    let handler = register_scroll_handler(ScrollCallback::from(move |_: ScrollEvent| {
+        fired_in.set(fired_in.get() + 1);
+    }));
+    let (mut app, id) = mount_with(true, 110.0, Some(handler.0.to_string()));
+    let s = scroll(&app, id, true);
+    let t = track(&app, id, true);
+    let base = fired.get();
+
+    // Positive control: a track press scrolls and fires.
+    let below = t.thumb_start(s) + t.thumb_len + 6.0;
+    press(&mut app, on_bar(true, below));
+    app.handle_event(
+        PlatformEvent::MouseUp {
+            x: on_bar(true, below).0,
+            y: on_bar(true, below).1,
+            button: rinch_platform::MouseButton::Left,
+        },
+        SIZE,
+        1.0,
+    );
+    assert_eq!(fired.get(), base + 1, "the track press fires onscroll");
+
+    let s = scroll(&app, id, true);
+    let along = t.thumb_start(s) + t.thumb_len * 0.75;
+    press(&mut app, on_bar(true, along));
+    assert_eq!(fired.get(), base + 1, "the grab fires nothing");
+    move_to(&mut app, on_bar(true, along + 10.0));
+    assert_eq!(fired.get(), base + 2, "the first move does");
 }

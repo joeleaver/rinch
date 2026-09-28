@@ -100,6 +100,17 @@ impl ScrollbarTrack {
         self.track_start + self.thumb_travel * ratio
     }
 
+    /// Whether a point `pos` along the track (from the container's border-box
+    /// origin) is on the thumb as it is painted at `scroll`, ends included.
+    ///
+    /// This is the question both input sites ask: a press here grabs the thumb
+    /// in place rather than jumping (#443), and it wins a borderless window's
+    /// resize zone (#399, #420).
+    pub fn thumb_contains(&self, scroll: f64, pos: f64) -> bool {
+        let start = self.thumb_start(scroll);
+        pos >= start && pos <= start + self.thumb_len
+    }
+
     /// The scroll offset a thumb dragged `moved` along the track from
     /// `start_scroll` should land on, clamped to the scrollable range.
     ///
@@ -118,6 +129,9 @@ impl ScrollbarTrack {
     /// The scroll offset for a press `pos` along the track, measured from the
     /// container's border-box origin — rinch's jump-to-click, where a position
     /// along the track maps linearly onto the scroll range.
+    ///
+    /// For a press on the empty track only: a press on the thumb
+    /// ([`thumb_contains`](Self::thumb_contains)) grabs it where it is (#443).
     pub fn scroll_for_click(&self, pos: f64) -> f64 {
         if self.track_len <= 0.0 {
             return 0.0;
