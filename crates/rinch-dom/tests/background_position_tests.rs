@@ -27,7 +27,31 @@
 //! Every position is **off** zero on purpose: at `0 0` with `auto` size the
 //! tile is the box and the unfixed paint (the gradient stretched over the
 //! box) is already right, so a fixture there passes with the fix absent.
-//! Samples sit mid-run, clear of the anti-aliased stop edges.
+//! Samples sit mid-run, clear of the anti-aliased stop edges. rinch sizes
+//! every box `border-box` (it reads no `box-sizing`), so the bordered fixtures
+//! spell Chrome's content-box `80x10 + 10px border` as `100x30`.
+//!
+//! `a_border_box_origin_sizes_the_tile_to_the_border_box` passes on the
+//! unfixed code too — stretching over the border box is what it used to do —
+//! and is here as the control for the two `padding-box` fixtures beside it.
+//!
+//! # Mutants, and what kills each
+//!
+//! Each applied to the committed source, this file run against it, the source
+//! restored from the commit (`b5d9c340`).
+//!
+//! | mutant | killed by |
+//! |---|---|
+//! | a percentage position resolves against the area, not area − tile | 5, incl. `a_percentage_position_is_a_share_of_the_free_space`, `an_edge_offset_position_measures_from_that_edge` |
+//! | every layer is `no-repeat` | 6, incl. `a_sized_tile_repeats_both_ways_from_its_position`, `an_image_repeats_at_its_intrinsic_size` |
+//! | the first repeated tile rounds with `floor` (a gap at the start edge) | 6 |
+//! | `background-origin` ignored (always the border box) | `an_auto_sized_tile_is_the_padding_box`, `a_repeating_tile_paints_under_the_border` |
+//! | no underlay | `the_background_colour_is_painted_under_the_image`, **alone** |
+//! | an image's `auto` size is the area | both image fixtures |
+//! | `background-position-x` affects layout | `a_background_position_tick_dirties_paint_only`, **alone** |
+//! | `transition: background-position` not expanded to its longhands | `a_background_position_transition_interpolates_a_percentage`, **alone** |
+//! | a computed `0` position is `Length(0)`, not `Zero` | `a_background_position_transition_interpolates_a_percentage`, **alone** (`Length` ↔ `Percent` snaps) |
+//! | keyframes drop `background-position-x` | both animation fixtures |
 
 #![cfg(feature = "software-renderer")]
 
