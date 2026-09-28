@@ -49,6 +49,10 @@ pub enum TransitionProperty {
     /// step in which every progress strictly between 0 and 1 is `visible` when
     /// either end is (#759). See [`interpolate_visibility`].
     Visibility,
+    /// `background-position-x` of the first background layer (#468).
+    BackgroundPositionX,
+    /// `background-position-y` of the first background layer (#468).
+    BackgroundPositionY,
 }
 
 /// All individual animatable properties (excluding All).
@@ -81,6 +85,8 @@ const _ALL_ANIMATABLE: &[TransitionProperty] = &[
     TransitionProperty::FontSize,
     TransitionProperty::Transform,
     TransitionProperty::Visibility,
+    TransitionProperty::BackgroundPositionX,
+    TransitionProperty::BackgroundPositionY,
 ];
 
 impl TransitionProperty {
@@ -116,6 +122,8 @@ impl TransitionProperty {
             "font-size" => Self::FontSize,
             "transform" => Self::Transform,
             "visibility" => Self::Visibility,
+            "background-position-x" => Self::BackgroundPositionX,
+            "background-position-y" => Self::BackgroundPositionY,
             _ => return None,
         })
     }
@@ -189,7 +197,9 @@ impl TransitionProperty {
             | Self::BorderRadiusBottomLeft
             | Self::FontSize
             | Self::Transform
-            | Self::Visibility => false,
+            | Self::Visibility
+            | Self::BackgroundPositionX
+            | Self::BackgroundPositionY => false,
         }
     }
 
@@ -206,6 +216,8 @@ impl TransitionProperty {
                 | Self::BorderLeftColor
                 | Self::Transform
                 | Self::Visibility
+                | Self::BackgroundPositionX
+                | Self::BackgroundPositionY
         )
     }
 }
@@ -329,7 +341,11 @@ impl TransitionSpec {
         for i in 0..prop_count {
             let stylo_prop = ui.transition_property_at(i);
 
-            // Map Stylo's TransitionProperty to our enum
+            // Map Stylo's TransitionProperty to our enum. A shorthand we
+            // carry every longhand of expands to them (#468: without this,
+            // `transition: background-position` — the spelling everyone
+            // writes — started nothing).
+            let mut expanded: &[TransitionProperty] = &[];
             let property = match &stylo_prop {
                 StyloTransitionProperty::NonCustom(id) => {
                     match id.longhand_or_shorthand() {
@@ -342,6 +358,12 @@ impl TransitionSpec {
                             let name = shorthand_id.name();
                             if name == "all" {
                                 Some(TransitionProperty::All)
+                            } else if name == "background-position" {
+                                expanded = &[
+                                    TransitionProperty::BackgroundPositionX,
+                                    TransitionProperty::BackgroundPositionY,
+                                ];
+                                None
                             } else {
                                 // For shorthands like "border-color", "padding", etc.
                                 // we skip them — individual longhands will be listed
@@ -356,8 +378,9 @@ impl TransitionSpec {
                 }
             };
 
-            let property = match property {
-                Some(p) => p,
+            let properties: &[TransitionProperty] = match &property {
+                Some(p) => std::slice::from_ref(p),
+                None if !expanded.is_empty() => expanded,
                 None => continue,
             };
 
@@ -374,12 +397,14 @@ impl TransitionSpec {
             let timing = convert_timing_function(&stylo_tf);
 
             if duration_ms > 0.0 || delay_ms > 0.0 {
-                specs.push(TransitionSpec {
-                    property,
-                    duration_ms,
-                    delay_ms,
-                    timing,
-                });
+                for &property in properties {
+                    specs.push(TransitionSpec {
+                        property,
+                        duration_ms,
+                        delay_ms,
+                        timing,
+                    });
+                }
             }
         }
 

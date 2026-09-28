@@ -3,6 +3,7 @@
 //! Walks the node tree and emits drawing commands via the `Painter` trait
 //! for backgrounds, borders, and text.
 
+mod background;
 mod blur;
 mod borders;
 pub mod clip;
@@ -3175,98 +3176,31 @@ fn paint_node(
                 // `viewport_holes` is collected for a background that will be
                 // painted or an inset shadow (#974), so the background arm
                 // asks `paints_a_background` too.
-                if paints_a_background && !viewport_holes.is_empty() {
-                    // Build a compound path: outer shape + inner holes (wound opposite)
-                    let bg_path = build_background_with_holes(rect, radii, radius, &viewport_holes);
-                    match &node.computed_style.background {
-                        BackgroundValue::Color(bg_color) => {
-                            painter.fill_color(
-                                Fill::EvenOdd,
-                                node_transform,
-                                *bg_color,
-                                &bg_path.into(),
-                            );
-                        }
-                        BackgroundValue::LinearGradient {
-                            angle_degrees,
-                            stops,
-                        } => {
-                            let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
-                            painter.fill(Fill::EvenOdd, node_transform, &brush, &bg_path.into());
-                        }
-                        BackgroundValue::RadialGradient { stops } => {
-                            let brush = build_radial_gradient_brush(stops, &rect);
-                            painter.fill(Fill::EvenOdd, node_transform, &brush, &bg_path.into());
-                        }
-                        BackgroundValue::Image { url } => {
-                            if let Some(decoded) = tree.image_cache.get(url) {
-                                image::paint_image(
-                                    painter,
-                                    decoded,
-                                    rect,
-                                    scale,
-                                    crate::computed_style::ObjectFitValue::Fill,
-                                    node_transform,
-                                );
-                            }
-                        }
-                        BackgroundValue::None => {}
-                    }
-                } else if paints_a_background {
-                    match &node.computed_style.background {
-                        BackgroundValue::Color(bg_color) => {
-                            if radius > 0.0 {
-                                let rrect = rect.to_rounded_rect(radii);
-                                painter.fill_color(
-                                    Fill::NonZero,
-                                    node_transform,
-                                    *bg_color,
-                                    &rrect.into(),
-                                );
-                            } else {
-                                painter.fill_color(
-                                    Fill::NonZero,
-                                    node_transform,
-                                    *bg_color,
-                                    &rect.into(),
-                                );
-                            }
-                        }
-                        BackgroundValue::LinearGradient {
-                            angle_degrees,
-                            stops,
-                        } => {
-                            let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
-                            if radius > 0.0 {
-                                let rrect = rect.to_rounded_rect(radii);
-                                painter.fill(Fill::NonZero, node_transform, &brush, &rrect.into());
-                            } else {
-                                painter.fill(Fill::NonZero, node_transform, &brush, &rect.into());
-                            }
-                        }
-                        BackgroundValue::RadialGradient { stops } => {
-                            let brush = build_radial_gradient_brush(stops, &rect);
-                            if radius > 0.0 {
-                                let rrect = rect.to_rounded_rect(radii);
-                                painter.fill(Fill::NonZero, node_transform, &brush, &rrect.into());
-                            } else {
-                                painter.fill(Fill::NonZero, node_transform, &brush, &rect.into());
-                            }
-                        }
-                        BackgroundValue::Image { url } => {
-                            if let Some(decoded) = tree.image_cache.get(url) {
-                                image::paint_image(
-                                    painter,
-                                    decoded,
-                                    rect,
-                                    scale,
-                                    crate::computed_style::ObjectFitValue::Fill,
-                                    node_transform,
-                                );
-                            }
-                        }
-                        BackgroundValue::None => {}
-                    }
+                if paints_a_background {
+                    // With viewport holes the background is one compound
+                    // path (outer shape + inner holes wound opposite, EvenOdd)
+                    // so compositor layers show through.
+                    let (bg_fill, bg_shape): (Fill, PaintShape) = if !viewport_holes.is_empty() {
+                        (
+                            Fill::EvenOdd,
+                            build_background_with_holes(rect, radii, radius, &viewport_holes)
+                                .into(),
+                        )
+                    } else if radius > 0.0 {
+                        (Fill::NonZero, rect.to_rounded_rect(radii).into())
+                    } else {
+                        (Fill::NonZero, rect.into())
+                    };
+                    background::paint_background(
+                        painter,
+                        tree,
+                        &node.computed_style,
+                        scale,
+                        rect,
+                        bg_fill,
+                        &bg_shape,
+                        node_transform,
+                    );
                 }
 
                 // Inset shadows: above the background, below the border
