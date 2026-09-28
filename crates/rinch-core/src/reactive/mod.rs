@@ -77,6 +77,7 @@ mod memo;
 #[cfg(test)]
 mod memo_cutoff_tests;
 mod poll;
+pub(crate) mod restore;
 mod scope;
 mod scoped;
 mod signal;
@@ -950,24 +951,11 @@ impl BatchGuard {
 
 impl Drop for BatchGuard {
     fn drop(&mut self) {
-        // `try_with`: TLS may already be torn down at thread exit.
-        let _ = RUNTIME.try_with(|rt| {
-            if let Ok(mut rt) = rt.try_borrow_mut() {
-                rt.batching = self.prev;
-            } else {
-                // Unreachable today: if a caller held the borrow, `raise()`
-                // would have panicked before a guard existed, and unwinding
-                // releases inner `RefMut`s before this frame drops. But a
-                // *silent* skip here would latch `batching = true` for the
-                // rest of the thread's life — the #232 freeze this guard
-                // exists to prevent, now unrecoverable because nothing
-                // clears the flag unconditionally anymore. Fail loud.
-                tracing::error!(
-                    "BatchGuard could not restore the batching flag (runtime already \
-                     borrowed); reactive updates may stop flushing"
-                );
-            }
-        });
+        // A borrowed runtime is logged, not skipped silently: that would latch
+        // `batching = true` for the rest of the thread's life — the #232
+        // freeze this guard exists to prevent.
+        let prev = self.prev;
+        let _ = restore::with_runtime_on_drop("the batching flag", |rt| rt.batching = prev);
     }
 }
 
@@ -1112,18 +1100,15 @@ thread_local! {
 
 /// Saves [`REACTIVE_DEPTH`], zeroes it, and puts it back on drop — for an
 /// outermost [`batch`], which is a flush context of its own.
-struct DepthSetAside(u32);
+struct DepthSetAside {
+    _restore: restore::RestoreCell<std::cell::Cell<u32>, u32>,
+}
 
 impl DepthSetAside {
     fn enter() -> Self {
-        DepthSetAside(REACTIVE_DEPTH.with(|d| d.replace(0)))
-    }
-}
-
-impl Drop for DepthSetAside {
-    fn drop(&mut self) {
-        let saved = self.0;
-        let _ = REACTIVE_DEPTH.try_with(|d| d.set(saved));
+        DepthSetAside {
+            _restore: restore::RestoreCell::replace(&REACTIVE_DEPTH, 0),
+        }
     }
 }
 
@@ -1228,11 +1213,7 @@ pub fn flush_pending_effects() {
     struct Lowered;
     impl Drop for Lowered {
         fn drop(&mut self) {
-            let _ = RUNTIME.try_with(|rt| {
-                if let Ok(mut rt) = rt.try_borrow_mut() {
-                    rt.batching = true;
-                }
-            });
+            let _ = restore::with_runtime_on_drop("the batching flag", |rt| rt.batching = true);
         }
     }
     RUNTIME.with(|rt| rt.borrow_mut().batching = false);
@@ -1336,16 +1317,8 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
     impl Drop for RestoreObserver {
         fn drop(&mut self) {
             if let Some(obs) = self.observer.take() {
-                // `try_with`: TLS may already be torn down at thread exit.
-                let _ = RUNTIME.try_with(|rt| {
-                    if let Ok(mut rt) = rt.try_borrow_mut() {
-                        rt.observer_stack.push(obs);
-                    } else {
-                        tracing::error!(
-                            "untracked() could not restore the observer (runtime already \
-                             borrowed); an effect may silently stop subscribing"
-                        );
-                    }
+                let _ = restore::with_runtime_on_drop("the observer untracked() popped", |rt| {
+                    rt.observer_stack.push(obs)
                 });
             }
         }
@@ -1773,7 +1746,11 @@ mod tests {
         batch(|| {
             batch(|| sig.set(2));
         });
-        assert_eq!(hits.get(), 2, "a write in a nested batch reaches the outer exit");
+        assert_eq!(
+            hits.get(),
+            2,
+            "a write in a nested batch reaches the outer exit"
+        );
     }
 
     /// A batch whose writes were already flushed mid-batch still notifies at

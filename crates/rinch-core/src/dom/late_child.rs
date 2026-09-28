@@ -306,15 +306,6 @@ pub(super) fn forget_node(node: &NodeHandle) {
     forget(key, Half::Removed);
 }
 
-/// Restores [`DISPATCHING`] however a callback leaves the stack.
-struct DispatchGuard;
-
-impl Drop for DispatchGuard {
-    fn drop(&mut self) {
-        DISPATCHING.with(|d| d.set(false));
-    }
-}
-
 /// Tell every registered ancestor of `parent` that `inserted` landed.
 ///
 /// Called from the four [`NodeHandle`] methods that put a node into a tree.
@@ -410,8 +401,8 @@ fn notify(parent: &NodeHandle, subject: &NodeHandle, half: Half) {
         return;
     }
 
-    DISPATCHING.with(|d| d.set(true));
-    let _guard = DispatchGuard;
+    // Restores `DISPATCHING` however a callback leaves the stack.
+    let _guard = crate::reactive::restore::RestoreCell::replace(&DISPATCHING, true);
     // Untracked (#931): an insertion or removal is very often made from inside
     // an effect — every `for` reconcile, `if` branch swap and component
     // re-render — and an observer's reads are not that effect's dependencies.
