@@ -3122,6 +3122,14 @@ impl RinchApp {
         let seq_pos = |node: usize| sequence.iter().position(|&n| n == node);
 
         let current_idx = current.and_then(seq_pos).or_else(|| {
+            // A start the walk visited is not a stop, and resumes at its tree
+            // neighbour below — also when it sits *inside* a stop, where Chrome
+            // does not anchor on the enclosing stop (`D[2]{F[-1]} A E[2]`: Tab
+            // from F is A, not E). The ancestor walk is for a claim the walk
+            // could not place at all.
+            if probe_rank.is_some() {
+                return None;
+            }
             let doc = self.doc.as_ref()?;
             let d = doc.borrow();
             let mut cur = d.tree.focused_node;
