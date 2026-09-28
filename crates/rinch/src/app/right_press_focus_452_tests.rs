@@ -299,3 +299,64 @@ fn a_right_press_does_not_set_active() {
     let active = f.app.doc.as_ref().unwrap().borrow().tree.active_node;
     assert!(active.is_some(), "a left press is :active");
 }
+
+/// A press on an editor is the editor's to place, on the right button as on
+/// the left: the generic claim must not run first and hand the keyboard to a
+/// focusable *around* the editor, only for the editor path to take it back —
+/// a lost/gained pair on the wrapper, and an editor blur, for a press that
+/// never left the editor.
+#[cfg(feature = "desktop")]
+#[test]
+fn a_right_press_in_an_editor_inside_a_focusable_leaves_the_wrapper_alone() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    type Slot = Option<(usize, crate::editor::EditorHandle)>;
+    let slot: Rc<RefCell<Slot>> = Rc::new(RefCell::new(None));
+    let (log_in, slot_in) = (log.clone(), slot.clone());
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let card = scope.create_element("div");
+        card.set_attribute("style", "margin-left: 23px; margin-top: 17px; width: 450px");
+        card.set_attribute("tabindex", "0");
+        register_focus_target(
+            &card,
+            FocusEntry::new()
+                .on_focus_gained({
+                    let log = log_in.clone();
+                    move || log.borrow_mut().push("card:gained".into())
+                })
+                .on_focus_lost({
+                    let log = log_in.clone();
+                    move || log.borrow_mut().push("card:lost".into())
+                }),
+        );
+        let (container, handle) = crate::editor::mount_editor(scope);
+        handle.load_html("<p>hello world</p>");
+        container.set_attribute(
+            "style",
+            "width: 400px; height: 200px; font-size: 16px; line-height: 24px; \
+             font-family: sans-serif",
+        );
+        card.append_child(&container);
+        root.append_child(&card);
+        *slot_in.borrow_mut() = Some((container.node_id().0, handle));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let (container, handle) = slot.borrow_mut().take().expect("captured at mount");
+    let (cx, cy, ch) = app
+        .editor_caret_point(&handle, rinch_editor_core::Pos(4))
+        .expect("the position has a caret");
+    let (x, y) = (cx + 1.0, cy + ch / 2.0);
+
+    ev(&mut app, PlatformEvent::MouseDown { x, y, button: MouseButton::Left });
+    ev(&mut app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
+    assert_eq!(app.focus_target, FocusTarget::Editor(container));
+    log.borrow_mut().clear();
+
+    ev(&mut app, PlatformEvent::MouseDown { x, y, button: MouseButton::Right });
+
+    assert_eq!(app.focus_target, FocusTarget::Editor(container));
+    assert!(app.is_text_context_menu_open(), "positive control: the press reached the editor");
+    assert!(log.borrow().is_empty(), "the wrapper was never focused: {:?}", log.borrow());
+}
