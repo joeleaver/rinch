@@ -205,17 +205,23 @@ fn options_do_not_lay_out_as_stacked_text() {
 
 #[test]
 fn unstyled_select_does_not_collapse() {
-    // A raw <select> with no CSS must still be a visible control (min-width +
-    // padding), not collapse the way a raw <input> does.
+    // A raw <select> with no CSS must still be a visible control: as tall as a
+    // line of its label plus the menulist's inner box and border (#1098 — it
+    // was its 8px of vertical padding alone, the label painting past its own
+    // bounds), and wider than its arrow box.
     let (mut doc, sel) = build_select(None, &[(Some("a"), "Apple", &[])]);
     doc.resolve_layout(1000.0, 800.0);
     let l = doc.tree.get(sel).unwrap().layout;
     assert!(
-        l.width >= 60.0,
-        "min-width keeps the control visible, got {}",
+        l.width > 22.0,
+        "the label widens it past its arrow box, got {}",
         l.width
     );
-    assert!(l.height > 0.0, "control has height, got {}", l.height);
+    assert!(
+        l.height >= (16.0f32 * 1.2 + 2.0 + 2.0).round(),
+        "one line of the label tall, got {}",
+        l.height
+    );
 }
 
 #[test]
