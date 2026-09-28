@@ -1694,6 +1694,103 @@ mod tests {
         assert_eq!(guard.get(), 2, "guard-based subscriber survives the clear");
     }
 
+    /// Counts the notifications that reach the host — the signal-change
+    /// callback is what the desktop shell turns into a `ReRender` and an
+    /// embedded context into its dirty flag.
+    fn count_notifies() -> (Rc<Cell<u32>>, SignalChangeSubscription) {
+        let hits = Rc::new(Cell::new(0));
+        let h = hits.clone();
+        let sub = subscribe_signal_change(move || h.set(h.get() + 1));
+        (hits, sub)
+    }
+
+    /// An outermost batch that wrote nothing tells the host nothing (issue
+    /// #234, item 2). Every event dispatch is a batch, so before this a click
+    /// on a handler that wrote no signal — or a timer, or a drained main-thread
+    /// callback that changed nothing — posted a desktop `ReRender` and dirtied
+    /// every embedded context for a no-op.
+    ///
+    /// The positive control is a write to a signal **nobody observes**: it
+    /// queues no effect and leaves the queue as empty as the no-op batch does,
+    /// so the only thing telling the two apart is whether a write happened.
+    #[test]
+    fn an_outermost_batch_that_writes_nothing_does_not_notify() {
+        let (hits, _sub) = count_notifies();
+        let sig = Signal::new(0);
+
+        batch(|| {});
+        assert_eq!(hits.get(), 0, "an empty batch does not notify");
+
+        batch(|| batch(|| {}));
+        assert_eq!(hits.get(), 0, "nor does an empty batch nested in one");
+
+        batch(|| sig.get());
+        assert_eq!(hits.get(), 0, "a read is not a write");
+
+        batch(|| sig.set(1));
+        assert_eq!(
+            hits.get(),
+            1,
+            "a write with no observer still notifies, once, at the batch's exit"
+        );
+
+        batch(|| {
+            batch(|| sig.set(2));
+        });
+        assert_eq!(hits.get(), 2, "a write in a nested batch reaches the outer exit");
+    }
+
+    /// A batch whose writes were already flushed mid-batch still notifies at
+    /// its exit: the queue is empty by then, but the writes happened and the
+    /// host has not been told (`flush_pending_effects` never calls the
+    /// signal-change callbacks). A gate on "is anything queued" alone would
+    /// drop this re-render.
+    #[test]
+    fn a_batch_whose_writes_flushed_mid_batch_still_notifies() {
+        let (hits, _sub) = count_notifies();
+        let sig = Signal::new(0);
+        let seen = Rc::new(Cell::new(-1));
+        let s = seen.clone();
+        let _effect = Effect::new(move || s.set(sig.get()));
+
+        batch(|| {
+            sig.set(7);
+            flush_pending_effects();
+            assert_eq!(seen.get(), 7, "the mid-batch flush ran the effect");
+            assert_eq!(hits.get(), 0, "and told the host nothing yet");
+        });
+        assert_eq!(hits.get(), 1, "the batch's exit notifies for the write");
+    }
+
+    /// An empty batch still flushes, and notifies for, effects an earlier
+    /// batch left queued — the documented recovery for a `batch()` whose
+    /// closure panicked and was caught (issue #234, item 1, decided as "keep
+    /// today's behaviour": no flush is scheduled on unwind, the next flush
+    /// runs them). Every event dispatch is a batch, so the next handler of
+    /// any kind is that next flush; a gate on "was anything written in *this*
+    /// batch" alone would strand them until a write.
+    #[test]
+    fn an_empty_batch_flushes_effects_a_panicked_batch_left_queued() {
+        let sig = Signal::new(0);
+        let seen = Rc::new(Cell::new(-1));
+        let s = seen.clone();
+        let _effect = Effect::new(move || s.set(sig.get()));
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            batch(|| {
+                sig.set(5);
+                panic!("boom");
+            })
+        }));
+        assert!(caught.is_err(), "the batch closure panicked");
+        assert_eq!(seen.get(), 0, "nothing flushed on the way out");
+
+        let (hits, _sub) = count_notifies();
+        batch(|| {});
+        assert_eq!(seen.get(), 5, "the next batch ran the stranded effect");
+        assert_eq!(hits.get(), 1, "and told the host about the write it showed");
+    }
+
     #[test]
     fn signal_basic() {
         let signal = Signal::new(0);
