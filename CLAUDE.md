@@ -1734,7 +1734,7 @@ order — `RinchApp::tab_sequence`, a stable sort over
 `tabIndex`). The collection itself (`collect_focusable_nodes_from`) stays in
 **tree order**, because `focus_into_subtree` picks a dialog's first control in
 tree order, as HTML and Chrome do. A start that is not a stop — a focused
-`tabindex="-1"` node, or a claim whose box just went — resumes at its **tree**
+`tabindex="-1"` node (even one nested inside a stop), or a claim whose box just went — resumes at its **tree**
 neighbour (next stop after it for Tab, previous for Shift+Tab; with nothing
 after it, the first stop at `0`), all measured in Chrome 153 and pinned by
 `app/tab_order_tests.rs` and the #435 fixtures in `rinch-web/tests/trap_focus.rs`.

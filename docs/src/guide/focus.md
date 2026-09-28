@@ -113,7 +113,7 @@ Focus arrives three ways, and all three go through the same arbiter:
   a plain `<button>`, wherever each sits in the document. Inside a
   `trap_focus` overlay the same order applies to the overlay's own controls.
   Tab from an element that is not in that order (a clicked `tabindex="-1"`
-  node, or one whose box has just gone) goes to the next Tab stop after it **in
+  node, even one inside another Tab stop, or one whose box has just gone) goes to the next Tab stop after it **in
   DOM order**, and Shift+Tab to the previous one, as Chrome does. What an
   opening dialog focuses is still its first control in DOM order, not the
   first in Tab order — HTML picks it that way.
