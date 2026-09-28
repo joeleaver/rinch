@@ -154,3 +154,112 @@ async fn a_copy_or_cut_on_the_capture_field_after_unmount_is_not_the_browsers() 
     drop(f.handle);
     f.host.remove();
 }
+
+/// Remove every host an earlier fixture in this binary left behind.
+fn purge_hosts() {
+    if let Ok(stale) = document().query_selector_all(&format!("[{HOST}]")) {
+        for i in 0..stale.length() {
+            if let Some(n) = stale.item(i) {
+                n.dyn_into::<web_sys::Element>().unwrap().remove();
+            }
+        }
+    }
+}
+
+fn host_with_id(id: &str) -> web_sys::Element {
+    let host = document().create_element("div").unwrap();
+    host.set_attribute(HOST, "").unwrap();
+    host.set_id(id);
+    host.set_attribute(
+        "style",
+        "font-family: monospace; font-size: 16px; line-height: 24px; padding: 20px; width: 400px;",
+    )
+    .unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    host
+}
+
+fn editor_root(host: &web_sys::Element, html: &str) -> (RootHandle, EditorHandle) {
+    let handle = create_editor();
+    assert!(handle.load_html(html));
+    let m = handle.clone();
+    let root = rinch_web::mount_into(
+        host,
+        ThemeProviderProps::default(),
+        move |s: &mut RenderScope| m.mount(s),
+    );
+    (root, handle)
+}
+
+/// Press into the first textblock under `sel`, as a user would.
+fn press_into(sel: &str) {
+    let p = document().query_selector(sel).unwrap().expect("block");
+    let r = p.get_bounding_client_rect();
+    mouse("mousedown", (r.x() + 2.0) as f32, (r.y() + 12.0) as f32);
+    mouse("mouseup", (r.x() + 2.0) as f32, (r.y() + 12.0) as f32);
+}
+
+fn capture_is_active(ta: &web_sys::HtmlTextAreaElement) -> bool {
+    document().active_element().as_ref() == Some(ta.as_ref())
+}
+
+/// Two editors on the page share the one capture field. Unmounting the one
+/// that does NOT hold the keyboard must leave the focused one's focus, mirror
+/// and copy exactly as they were (review of PR #1125, R1).
+#[wasm_bindgen_test]
+async fn unmounting_an_unfocused_editor_leaves_the_focused_one_alone() {
+    purge_hosts();
+    let ha = host_with_id("h1112-a");
+    let hb = host_with_id("h1112-b");
+    let (ra, _a) = editor_root(&ha, "<p>alpha</p>");
+    let (rb, b) = editor_root(&hb, "<p>bravo</p>");
+    press_into("#h1112-b [data-pm-editor] p");
+    let ta = capture();
+    assert!(capture_is_active(&ta), "positive control: B took the keyboard");
+    b.set_selection(Selection::text(Pos(2), Pos(4)));
+    microtask().await;
+    assert_eq!(ta.value(), "bravo", "positive control: B's mirror");
+    ra.unmount();
+    assert!(capture_is_active(&ta), "B keeps the keyboard");
+    assert_eq!(ta.value(), "bravo", "B's mirror survives A's unmount");
+    let (prevented, plain) = clipboard_event(ta.as_ref(), "copy");
+    assert!(prevented, "B's copy is still rinch's");
+    assert_eq!(plain, "ra");
+    rb.unmount();
+    purge_hosts();
+}
+
+/// Focus left the editor for a page `<input>` BEFORE the editor unmounted: the
+/// blur released the editor but left its block in the (now unfocused) capture
+/// field. The unmount must not leave that text in the DOM (review of PR #1125,
+/// finding 2 / R4).
+#[wasm_bindgen_test]
+async fn an_editor_blurred_before_it_unmounts_leaves_no_text_in_the_field() {
+    purge_hosts();
+    let h = host_with_id("h1112-r4");
+    let input = document().create_element("input").unwrap();
+    input.set_attribute(HOST, "").unwrap();
+    document().body().unwrap().append_child(&input).unwrap();
+    let (root, e) = editor_root(&h, "<p>secret</p>");
+    press_into("#h1112-r4 [data-pm-editor] p");
+    e.set_selection(Selection::text(Pos(1), Pos(4)));
+    microtask().await;
+    let ta = capture();
+    assert_eq!(ta.value(), "secret", "positive control: the mirror is live");
+    input
+        .dyn_ref::<web_sys::HtmlElement>()
+        .unwrap()
+        .focus()
+        .unwrap();
+    assert!(
+        document().active_element().as_ref() == Some(input.as_ref()),
+        "positive control: focus moved to the page input"
+    );
+    root.unmount();
+    assert_eq!(ta.value(), "", "no mirror text left in the field");
+    assert!(
+        document().active_element().as_ref() == Some(input.as_ref()),
+        "the page input keeps focus"
+    );
+    purge_hosts();
+}
