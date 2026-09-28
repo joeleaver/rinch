@@ -774,7 +774,7 @@ impl RinchMcpServer {
     }
 
     #[tool(
-        description = "Get the screen position of a text caret at a given byte offset in a node"
+        description = "Get the screen position (x, y) of a text caret at a given byte offset in a node, in logical (CSS) pixels like `absolute` and the input tools — multiply by the scale factor to find it in a screenshot"
     )]
     async fn get_caret_position(
         &self,
@@ -788,7 +788,7 @@ impl RinchMcpServer {
     }
 
     #[tool(
-        description = "Get the bounding box of a glyph cluster at a given byte offset in a node"
+        description = "Get the bounding box of the glyph cluster at a given byte offset in a node, in logical (CSS) pixels like `absolute` and the input tools — multiply by the scale factor to find it in a screenshot"
     )]
     async fn get_glyph_bounds(
         &self,

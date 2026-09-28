@@ -3076,8 +3076,8 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `mouse_down` / `mouse_move` / `mouse_up` | The pointer primitives. **This trio is the only way to drive a drag** — `click` cannot, so any test of the DnD suite or a scrollbar thumb needs these. `mouse_down`'s `modifiers` stay held (through moves: a Shift- or Alt-drag) until the next `mouse_up`, which restores the state from before that press after its release; `mouse_up` takes its own `modifiers` for the release |
 | `scroll` | Scroll a container at (x, y) |
 | `key_press` | Press a single key (with modifiers), as distinct from `type_text`'s literal text |
-| `get_caret_position` | The text caret's rect — note it mixes logical and physical px at scale != 1 (#421) |
-| `get_glyph_bounds` | The box of the **one** glyph cluster at a given `byte_offset` in a text node — not every glyph; same #421 caveat |
+| `get_caret_position` | A caret point (`x`, `y`) for a `byte_offset`, in logical px in the same frame as `absolute` (#421). It can differ from where the caret is painted (a vertically centred `<input>`, password bullets, a padded element's text, a textarea's wrap width) — tracked in #1136 |
+| `get_glyph_bounds` | The box of the **one** glyph cluster at a given `byte_offset` in a text node — not every glyph; logical px in the same frame as `absolute` (#421), with the same painted-geometry caveat (#1136) |
 | `disconnect` | Disconnect from the app without closing it |
 | `launch_app` | Launch a rinch app via `cargo run -p <package>`, wait for debug registration, auto-connect |
 | `perf_stats` | The app's per-frame performance counters (cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, repainted px, hit tests, effect runs, phase times) as `last_frame` / `current_frame` / `total` JSON; `reset: true` zeroes them after reading. Use it, not DevTools, to measure an interaction |
