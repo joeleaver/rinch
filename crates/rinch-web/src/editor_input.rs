@@ -664,16 +664,35 @@ fn focus_editor(container_nid: usize) {
 /// mirror, and blur it — what a browser does when a focused element leaves the
 /// document. Releasing first keeps the `blur` this raises from refreshing an
 /// editor that is gone.
+///
+/// If it was not the focused one, the field is left alone while it holds the
+/// keyboard — it is then another editor's, mirror and all. But when the field
+/// is **not** `document.activeElement`, no editor is reading it: focus left the
+/// editor for somewhere else before the unmount, and the blur released the
+/// editor while leaving its block in the field. Empty it then too, so that text
+/// does not outlive the editor either. Nothing is lost: the next focus empties
+/// the field anyway ([`focus_capture_target`]) and refills it from that editor's
+/// caret block.
 fn on_editor_unregistered(_doc_key: u64, container_nid: usize) {
-    if focused_editor() != Some(container_nid) {
+    let ta = capture_target();
+    if focused_editor() == Some(container_nid) {
+        set_focused_editor(None);
+        end_context_menu_cycle();
+        COMPOSING.with(|c| c.set(false));
+        if let Some(ta) = ta {
+            clear_mirror(&ta);
+            let _ = ta.blur();
+        }
         return;
     }
-    set_focused_editor(None);
-    end_context_menu_cycle();
-    COMPOSING.with(|c| c.set(false));
-    if let Some(ta) = capture_target() {
+    let Some(ta) = ta else {
+        return;
+    };
+    let field_active = web_sys::window()
+        .and_then(|w| w.document())
+        .is_some_and(|d| d.active_element().as_ref() == Some(ta.as_ref()));
+    if !field_active {
         clear_mirror(&ta);
-        let _ = ta.blur();
     }
 }
 
