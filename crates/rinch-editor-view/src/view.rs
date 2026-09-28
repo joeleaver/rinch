@@ -2035,9 +2035,12 @@ impl FlatWidths {
 /// — the inverse of [`textblock_flat_byte`], used to turn a pointer hit into a
 /// cursor position. Leaves count as one char (matching `textblock_flat_byte`);
 /// a byte inside a leaf's own flat bytes (a `<br>`'s `"\n"`) is the position
-/// before it. A byte inside a tab's flat bytes (rinch-dom's four spaces) is the
-/// nearer side of the tab: the first half before it, the rest after (#1109) —
-/// which side of a tab a press lands on, as in a browser.
+/// before it. A byte inside a tab's flat bytes (rinch-dom's four spaces) picks a
+/// side of the tab (#1109): the first of its four bytes is before it, the rest
+/// after. A pointer hit answers the nearest byte boundary, so a press lands
+/// before the tab on its first 3/8 and after it from 3/8 on, where a browser
+/// splits at the middle. A byte cannot say more, so some band of an eighth of
+/// a tab is on the wrong side whichever way the byte at the middle is read.
 fn ifc_byte_to_char(block: &Node, ifc_byte: usize, flat: FlatWidths) -> usize {
     let mut bytes = 0usize;
     let mut chars = 0usize;
@@ -2053,7 +2056,7 @@ fn ifc_byte_to_char(block: &Node, ifc_byte: usize, flat: FlatWidths) -> usize {
                         return chars;
                     }
                     let width = flat.char_bytes(ch);
-                    if ch == '\t' && into_byte < b + width && 2 * (into_byte - b) < width {
+                    if ch == '\t' && 2 * (into_byte - b) < width {
                         return chars;
                     }
                     b += width;
@@ -3816,7 +3819,7 @@ mod tests {
 
     /// A tab is worth the host's `tab_flat_bytes` in the caret map (#1109),
     /// across runs and beside a multibyte char, and a byte inside a tab's four
-    /// is its nearer side. `a\té` + bold `\tb`: chars a0 tab1 é2 tab3 b4.
+    /// is before it for the first, after it for the rest. `a\té` + bold `\tb`: chars a0 tab1 é2 tab3 b4.
     #[test]
     fn the_caret_map_gives_a_tab_the_hosts_bytes() {
         let s = schema();

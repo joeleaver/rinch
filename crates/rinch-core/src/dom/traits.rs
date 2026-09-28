@@ -644,9 +644,17 @@ pub trait DomDocument {
     /// How many bytes a tab (`'\t'`) in a text node occupies in the same flat
     /// byte offsets as [`Self::line_break_flat_bytes`]. Its UTF-8 length, `1`, by
     /// default — the browser's DOM ranges count the character. rinch-dom's inline
-    /// formatting context lays a tab out as four spaces and answers `4`, whatever
-    /// the tab's column and whatever `white-space` says, so the rich-text editor's
-    /// caret map counts each tab as that many bytes (#1109).
+    /// formatting context lays a tab out as four spaces, whatever the tab's
+    /// column, and answers `4`, so the rich-text editor's caret map counts each
+    /// tab as that many bytes (#1109).
+    ///
+    /// The answer is per host, not per node, and it holds only where
+    /// `white-space` preserves the tab: measured on rinch-dom, a tab is four
+    /// bytes under `pre`, `pre-wrap` and `pre-line`, and under `normal`,
+    /// `nowrap` and `break-spaces` it collapses like a space — one byte, as
+    /// `a b` lays out. The editor's stylesheet sets `pre-wrap` on its container
+    /// and its code blocks, which is why the editor may use it; a caller mapping
+    /// text under collapsing `white-space` would have to count differently.
     fn tab_flat_bytes(&self) -> usize {
         1
     }

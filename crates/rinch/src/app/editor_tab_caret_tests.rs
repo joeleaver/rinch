@@ -190,9 +190,11 @@ fn a_selection_across_a_tab_highlights_the_tab_and_what_follows() {
     );
 }
 
-/// A press on a tab lands on its nearer side, and a press on the glyph after
-/// it lands on that glyph's nearer side — Chrome 153's answers (1, 2, 3 for
-/// the first tab; 3, 4, 5 for the second). Where to press is read off the
+/// A press on a tab's left fifth lands before it and on its right fifth after
+/// it, and a press on the glyph after it lands on that glyph's nearer side —
+/// Chrome 153's answers (1, 2, 3 for the first tab; 3, 4, 5 for the second).
+/// Near the tab's middle rinch splits at 3/8, not 1/2 (`ifc_byte_to_char`), so
+/// the presses stay clear of that band. Where to press is read off the
 /// four-spaces line, not off the caret map under test. Each press is on a
 /// fresh page, so no two read as a double click.
 #[test]
@@ -238,5 +240,73 @@ fn typing_after_a_press_behind_a_tab_inserts_after_the_tab() {
     assert!(
         (p.local(5).0 - s.local(11).0).abs() < 0.01,
         "after the second tab"
+    );
+}
+
+fn key(app: &mut RinchApp, key: KeyCode) {
+    app.handle_event(
+        PlatformEvent::KeyDown {
+            key,
+            logical_key: None,
+            text: None,
+            modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Fresh,
+        },
+        VP,
+        1.0,
+    );
+    idle(app);
+}
+
+/// End, Home, and ArrowDown then End on a wrapped line holding tabs land where
+/// the same keys land on the four-spaces line (#1107's Home/End read the
+/// caret's line from its layout, through the caret map). Fifteen tabs, so the
+/// first line's end is many tabs in and its error would be many bytes.
+#[test]
+fn home_and_end_on_a_wrapped_line_with_tabs_match_the_spaces_line() {
+    let words_t = "aaa\tbbb\tccc\tddd\teee\tfff\tggg\thhh\tiii\tjjj\tkkk\tlll\tmmm\tnnn\tooo\tppp";
+    let words_s = words_t.replace('\t', "    ");
+    let mut t = page(&format!("<pre><code>{words_t}</code></pre>"));
+    let mut s = page(&format!("<pre><code>{words_s}</code></pre>"));
+    // The caret inside "bbb" on the first visual line: char 5 with tabs, 8
+    // with spaces.
+    t.handle.set_selection(Selection::cursor(Pos(1 + 5)));
+    s.handle.set_selection(Selection::cursor(Pos(1 + 8)));
+    idle(&mut t.app);
+    idle(&mut s.app);
+    assert_eq!(t.local(5).1, s.local(8).1, "both carets on the first line");
+    // A char offset on the spaces line, as a char offset on the tabs line.
+    let s_to_t = |c: usize| {
+        let (mut sc, mut tc) = (0, 0);
+        for ch in words_t.chars() {
+            if sc >= c {
+                break;
+            }
+            sc += if ch == '\t' { 4 } else { 1 };
+            tc += 1;
+        }
+        tc
+    };
+    key(&mut t.app, KeyCode::End);
+    key(&mut s.app, KeyCode::End);
+    let (th, sh) = (t.head(), s.head());
+    assert!(
+        sh < words_s.chars().count(),
+        "positive control: the line wraps: {sh}"
+    );
+    assert_eq!(th, s_to_t(sh), "End: tabs {th}, spaces {sh}");
+    key(&mut t.app, KeyCode::Home);
+    key(&mut s.app, KeyCode::Home);
+    assert_eq!(t.head(), s_to_t(s.head()), "Home");
+    key(&mut t.app, KeyCode::ArrowDown);
+    key(&mut s.app, KeyCode::ArrowDown);
+    key(&mut t.app, KeyCode::End);
+    key(&mut s.app, KeyCode::End);
+    assert_eq!(
+        t.head(),
+        s_to_t(s.head()),
+        "End on line 2: tabs {}, spaces {}",
+        t.head(),
+        s.head()
     );
 }
