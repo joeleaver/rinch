@@ -149,6 +149,34 @@ pub(crate) fn widest_select_label(
     (key, widest)
 }
 
+/// The widest of `labels` in CSS px, shaped by [`select_label_layout`] in
+/// `style`'s font family and weight at `font_size` CSS px. For a caller that
+/// sets option labels in a font other than the closed control's — the desktop
+/// runtime's native popup, whose rows are 14px in the body's font — and must
+/// size its own box to them. Uncached: it shapes every non-empty label, and
+/// counts each in `shape_select_label`.
+pub fn widest_label_at(
+    doc: &mut crate::RinchDocument,
+    style: &crate::computed_style::ComputedStyle,
+    font_size: f32,
+    labels: &[&str],
+) -> f32 {
+    let mut widest = 0.0f32;
+    for label in labels.iter().filter(|l| !l.is_empty()) {
+        doc.tree.perf.bump(crate::perf::Counter::ShapeSelectLabel);
+        let layout = select_label_layout(
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+            style,
+            font_size,
+            peniko::Brush::default(),
+            label,
+        );
+        widest = widest.max(layout.full_width());
+    }
+    widest
+}
+
 /// The resolved options of a `<select>` plus which one is currently selected.
 #[derive(Debug, Clone, Default)]
 pub struct SelectModel {
