@@ -862,8 +862,16 @@ callbacks, each drained main-thread callback (one batch **per callback**), each
 timer, and web `rinch-http`/`rinch-ws` completions — on desktop, web and embed
 alike. The guide lists what is **not** batched (`run_on_main_thread` on the main
 thread, selection / configuration-change / child-observer callbacks, surface
-events, `on_change`); keep that list exact. A handler's writes flush effects
-once, when it returns — **except that every `NodeHandle` operation from handler
+events, `on_change`); keep that list exact. An outermost batch that wrote
+no signal and finds nothing queued at its exit runs no flush and calls no
+signal-change callback (#234: a no-op click posted a desktop `ReRender` and
+dirtied every embed context); one that wrote notifies once even if its
+effects ran mid-batch, and one that wrote nothing still flushes effects a
+caught-panic batch left queued. The write test is the thread's
+`SIGNAL_NOTIFIES` counter, so every signal write must keep bumping it.
+Thread-local save/restore guards go through `reactive::restore`
+(`RestoreCell`, `with_runtime_on_drop`) — a new one should too. A handler's
+writes flush effects once, when it returns — **except that every `NodeHandle` operation from handler
 code first runs the effects queued so far** (`NodeHandle::accessed_doc` →
 `rinch_core::flush_pending_effects`), the analogue of a browser's forced style
 flush. That keeps program order: `open.set(true); field.focus()` focuses after
