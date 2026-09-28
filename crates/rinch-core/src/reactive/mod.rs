@@ -1038,9 +1038,10 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // legitimately open one while holding a guard), so its exit can check that
     // nothing taken inside it outlived it.
     let suppressed_at_entry = outermost.then(|| FLUSH_SUPPRESSED.with(|s| s.get()));
-    // How many signal writes this thread had made when the outermost batch
-    // opened, so its exit can tell a batch that wrote nothing (issue #234).
-    let writes_at_entry = outermost.then(|| SIGNAL_NOTIFIES.with(|c| c.get()));
+    // How many signal writes and host changes this thread had made when the
+    // outermost batch opened, so its exit can tell a batch that changed
+    // nothing (issue #234).
+    let changes_at_entry = outermost.then(changes_seen);
 
     let result = f();
 
@@ -1071,14 +1072,51 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // its notification; and effects an earlier batch left queued — one whose
     // closure panicked and was caught, see `# Panics` — are run, and notified
     // for, by the next batch, written to or not.
-    if let Some(writes) = writes_at_entry {
-        let wrote = SIGNAL_NOTIFIES.with(|c| c.get()) != writes;
+    //
+    // "Wrote" includes a host change made outside the signal graph
+    // ([`note_host_change`] — the thread-global theme slot is one), which the
+    // hosts only pick up from this notification.
+    if let Some(at_entry) = changes_at_entry {
+        let wrote = changes_seen() != at_entry;
         if wrote || has_pending_effects() {
             flush_effects_and_notify();
         }
     }
 
     result
+}
+
+/// This thread's signal writes and [host changes](note_host_change), read
+/// together so [`batch`] can tell whether it owes the host a notification.
+fn changes_seen() -> (u64, u64) {
+    (
+        SIGNAL_NOTIFIES.with(|c| c.get()),
+        HOST_CHANGES.with(|c| c.get()),
+    )
+}
+
+thread_local! {
+    /// Bumped by [`note_host_change`]; compared by [`batch`].
+    static HOST_CHANGES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Record a change to state the **hosts** read outside the signal graph, so
+/// the batch it is made in still calls the signal-change callbacks.
+///
+/// An outermost [`batch`] that wrote no signal calls no signal-change callback
+/// (issue #234), and those callbacks are how a host learns something changed:
+/// the desktop shell's `ReRender`, an embedded context's dirty flag, the web
+/// backend's theme `<style>` refresh. A piece of state that is not a
+/// [`Signal`], that code may change from a handler, and that a host reads
+/// only when told — `set_current_theme_css` (`rinch::update_theme`) is the one
+/// in rinch today — calls this when it changes, and the enclosing batch's exit
+/// notifies as if a signal had been written. Outside any batch it does nothing
+/// by itself, which is what such a change got before #234.
+///
+/// State a host polls on its own (a dirty DOM node, a pending focus request,
+/// an owed scroll, a finished image decode) does not need it.
+pub fn note_host_change() {
+    HOST_CHANGES.with(|c| c.set(c.get().wrapping_add(1)));
 }
 
 /// Whether any effect is queued on this thread. Answers `true` when the
@@ -1750,6 +1788,28 @@ mod tests {
             hits.get(),
             2,
             "a write in a nested batch reaches the outer exit"
+        );
+    }
+
+    /// A batch that changed host state outside the signal graph notifies like
+    /// one that wrote a signal (PR #1134's review, F1: `update_theme` from a
+    /// handler that wrote nothing stopped restyling every host). Off the
+    /// one-change point: two changes in one batch still notify once.
+    #[test]
+    fn a_batch_that_notes_a_host_change_notifies_once() {
+        let (hits, _sub) = count_notifies();
+        batch(note_host_change);
+        assert_eq!(hits.get(), 1, "a host change owes the host a notification");
+        batch(|| {
+            note_host_change();
+            batch(note_host_change);
+        });
+        assert_eq!(hits.get(), 2, "once per outermost batch, nested or not");
+        batch(|| {});
+        assert_eq!(
+            hits.get(),
+            2,
+            "and an empty batch after it still owes nothing"
         );
     }
 
