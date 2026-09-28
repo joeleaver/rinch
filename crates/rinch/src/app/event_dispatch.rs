@@ -4287,6 +4287,33 @@ impl RinchApp {
     }
 }
 
+/// A window point resolved inside an editor ([`RinchApp::editor_point`]): the
+/// container, the textblock, the flat byte Parley's hit test answers, and —
+/// when the point is on an inline box (an image) — that box's element id and
+/// whether the point is on its right half.
+#[cfg(feature = "desktop")]
+pub(crate) struct EditorPoint {
+    pub(crate) container: usize,
+    pub(crate) textblock: usize,
+    pub(crate) byte: usize,
+    pub(crate) inline_box: Option<(usize, bool)>,
+}
+
+#[cfg(feature = "desktop")]
+impl EditorPoint {
+    /// The model position the point resolves to: the side of the inline box
+    /// it is on, else the flat byte's position. The byte alone cannot name a
+    /// side of an image, which occupies no bytes (#1104).
+    pub(crate) fn pos(
+        &self,
+        handle: &crate::editor::EditorHandle,
+    ) -> Option<rinch_editor_core::Pos> {
+        self.inline_box
+            .and_then(|(leaf, after)| handle.pos_beside_inline_leaf(leaf, after))
+            .or_else(|| handle.pos_at(self.textblock, self.byte))
+    }
+}
+
 /// Insert clipboard `content` into `handle` at `anchor` — the completion half of
 /// the asynchronous paste, always on the main thread. `text` is the `text/plain`
 /// flavour offered beside an html `content` (`paste_rich_with_text`).
@@ -4866,30 +4893,5 @@ mod editor_key_binding_tests {
         // takes the logical arm — everything else keeps resolving physically.
         let b = editor_key_binding(KeyCode::Enter, Some("Enter"), false, false, false).unwrap();
         assert_eq!(b.key, Key::Enter);
-    }
-}
-
-/// A window point resolved inside an editor ([`RinchApp::editor_point`]): the
-/// container, the textblock, the flat byte Parley's hit test answers, and —
-/// when the point is on an inline box (an image) — that box's element id and
-/// whether the point is on its right half.
-pub(crate) struct EditorPoint {
-    pub(crate) container: usize,
-    pub(crate) textblock: usize,
-    pub(crate) byte: usize,
-    pub(crate) inline_box: Option<(usize, bool)>,
-}
-
-impl EditorPoint {
-    /// The model position the point resolves to: the side of the inline box
-    /// it is on, else the flat byte's position. The byte alone cannot name a
-    /// side of an image, which occupies no bytes (#1104).
-    pub(crate) fn pos(
-        &self,
-        handle: &crate::editor::EditorHandle,
-    ) -> Option<rinch_editor_core::Pos> {
-        self.inline_box
-            .and_then(|(leaf, after)| handle.pos_beside_inline_leaf(leaf, after))
-            .or_else(|| handle.pos_at(self.textblock, self.byte))
     }
 }

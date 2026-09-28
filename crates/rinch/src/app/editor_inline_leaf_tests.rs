@@ -118,7 +118,7 @@ impl Page {
 }
 
 /// A press in a paragraph holding a hard break or an image lands in it. It
-/// lands nowhere: `editor_point_address` answers `None`.
+/// lands nowhere: `editor_point` answers `None`.
 #[test]
 fn a_press_in_a_paragraph_holding_a_leaf_lands_in_it() {
     for html in [
