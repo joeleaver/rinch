@@ -599,8 +599,12 @@ impl RinchApp {
                     };
                 };
 
-                let scale = scale_factor as f32;
-
+                // Everything below is in logical (CSS) px, like `absolute` and
+                // the input tools: the box comes from
+                // `compute_absolute_position_and_transform(.., 1.0)`, so the
+                // offset inside it — paddings, and the probe layout's font size
+                // against its logical `max_width` — must be unscaled too (#421).
+                // The window's scale factor plays no part.
                 let d = doc.borrow();
                 let Some(node) = d.tree.get(node_id) else {
                     return DebugResult::Error {
@@ -626,10 +630,8 @@ impl RinchApp {
                 if matches!(tag, Some("input" | "textarea")) {
                     let value = node.attributes.get("value").cloned().unwrap_or_default();
                     if value.is_empty() {
-                        let padding_left =
-                            node.computed_style.padding_left.to_px() as f64 * scale as f64;
-                        let padding_top =
-                            node.computed_style.padding_top.to_px() as f64 * scale as f64;
+                        let padding_left = node.computed_style.padding_left.to_px() as f64;
+                        let padding_top = node.computed_style.padding_top.to_px() as f64;
                         let (cx, cy) = fwd(padding_left, padding_top);
                         return DebugResult::Json {
                             data: json!({ "x": cx, "y": cy }),
@@ -642,15 +644,15 @@ impl RinchApp {
 
                     let layout = computed_style.build_parley_layout(
                         &value,
-                        scale,
+                        1.0,
                         &mut self.hit_test_font_cx,
                         &mut self.paint_layout_cx,
                         Some(input_width),
                     );
 
                     let (x, y) = caret_position_for_offset_layout(&layout, byte_offset);
-                    let padding_left = computed_style.padding_left.to_px() as f64 * scale as f64;
-                    let padding_top = computed_style.padding_top.to_px() as f64 * scale as f64;
+                    let padding_left = computed_style.padding_left.to_px() as f64;
+                    let padding_top = computed_style.padding_top.to_px() as f64;
 
                     let (cx, cy) = fwd(padding_left + x as f64, padding_top + y as f64);
                     return DebugResult::Json {
@@ -681,8 +683,12 @@ impl RinchApp {
                     };
                 };
 
-                let scale = scale_factor as f32;
-
+                // Everything below is in logical (CSS) px, like `absolute` and
+                // the input tools: the box comes from
+                // `compute_absolute_position_and_transform(.., 1.0)`, so the
+                // offset inside it — paddings, and the probe layout's font size
+                // against its logical `max_width` — must be unscaled too (#421).
+                // The window's scale factor plays no part.
                 let d = doc.borrow();
                 let Some(node) = d.tree.get(node_id) else {
                     return DebugResult::Error {
@@ -719,7 +725,7 @@ impl RinchApp {
 
                     let layout = computed_style.build_parley_layout(
                         &value,
-                        scale,
+                        1.0,
                         &mut self.hit_test_font_cx,
                         &mut self.paint_layout_cx,
                         Some(input_width),
@@ -727,10 +733,8 @@ impl RinchApp {
 
                     match glyph_bounds_for_offset_layout(&layout, byte_offset) {
                         Some(bounds) => {
-                            let padding_left =
-                                computed_style.padding_left.to_px() as f64 * scale as f64;
-                            let padding_top =
-                                computed_style.padding_top.to_px() as f64 * scale as f64;
+                            let padding_left = computed_style.padding_left.to_px() as f64;
+                            let padding_top = computed_style.padding_top.to_px() as f64;
                             let (gx, gy) = fwd(
                                 padding_left + bounds.x as f64,
                                 padding_top + bounds.y as f64,
@@ -1580,7 +1584,11 @@ mod text_geometry_units_tests {
             p.append_child(&text);
             root.append_child(&p);
 
-            ids.set(Some((input.node_id().0, textarea.node_id().0, p.node_id().0)));
+            ids.set(Some((
+                input.node_id().0,
+                textarea.node_id().0,
+                p.node_id().0,
+            )));
             root
         });
         app.mount_component(800.0, 600.0);
