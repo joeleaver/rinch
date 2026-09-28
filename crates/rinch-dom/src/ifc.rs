@@ -5749,7 +5749,7 @@ impl RinchDocument {
                         // Expand tabs to 4 spaces for Parley (which has no tab stop support)
                         let has_tabs = raw.contains('\t');
                         let display = if has_tabs {
-                            raw.replace('\t', "    ")
+                            raw.replace('\t', TAB_SPACES)
                         } else {
                             raw
                         };
@@ -6406,3 +6406,9 @@ mod ellipsis_layout_tests {
         assert_eq!((layout.len(), shapes), (2, 1));
     }
 }
+
+/// What the inline formatting context lays a tab (`'\t'`) out as: four spaces,
+/// since Parley has no tab stops. So a tab is `TAB_SPACES.len()` bytes of the
+/// flat offsets every text query takes (`text_query`'s DOM↔flat maps,
+/// `DomDocument::tab_flat_bytes`), and they must all read this one constant.
+pub(crate) const TAB_SPACES: &str = "    ";
