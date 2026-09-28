@@ -1004,6 +1004,13 @@ impl Drop for BatchGuard {
 /// ([`flush_pending_effects`]), so the DOM a handler touches is never behind the
 /// writes it already made.
 ///
+/// An outermost batch that wrote no signal and finds no effect queued at its
+/// exit does nothing there: no flush, and no signal-change callback — so a
+/// handler that wrote nothing requests no re-render. A batch that wrote runs
+/// the callbacks once at its exit even when its effects already ran mid-batch,
+/// and a batch that wrote nothing still flushes (and notifies for) effects an
+/// earlier batch left queued.
+///
 /// # Panics
 ///
 /// A panic inside the closure propagates, and the batching flag is restored on
@@ -1043,6 +1050,9 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // legitimately open one while holding a guard), so its exit can check that
     // nothing taken inside it outlived it.
     let suppressed_at_entry = outermost.then(|| FLUSH_SUPPRESSED.with(|s| s.get()));
+    // How many signal writes this thread had made when the outermost batch
+    // opened, so its exit can tell a batch that wrote nothing (issue #234).
+    let writes_at_entry = outermost.then(|| SIGNAL_NOTIFIES.with(|c| c.get()));
 
     let result = f();
 
@@ -1064,11 +1074,34 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // must count as a fresh outermost batch.
     drop(guard);
 
-    if outermost {
-        flush_effects_and_notify();
+    // An outermost batch that wrote no signal and left nothing queued has
+    // nothing to run and nothing to tell the host (issue #234): every event
+    // dispatch is a batch, so a handler that wrote nothing used to post a
+    // desktop `ReRender` and dirty every embedded context for a no-op. Both
+    // halves of the test matter. A write whose effects already ran mid-batch
+    // (`flush_pending_effects`) leaves the queue empty and still owes the host
+    // its notification; and effects an earlier batch left queued — one whose
+    // closure panicked and was caught, see `# Panics` — are run, and notified
+    // for, by the next batch, written to or not.
+    if let Some(writes) = writes_at_entry {
+        let wrote = SIGNAL_NOTIFIES.with(|c| c.get()) != writes;
+        if wrote || has_pending_effects() {
+            flush_effects_and_notify();
+        }
     }
 
     result
+}
+
+/// Whether any effect is queued on this thread. Answers `true` when the
+/// runtime is borrowed — unreachable at a batch's exit (see `BatchGuard::drop`),
+/// and `true` keeps the unconditional flush that was there before #234.
+fn has_pending_effects() -> bool {
+    RUNTIME.with(|rt| {
+        rt.try_borrow()
+            .map(|rt| !rt.pending_effects.is_empty())
+            .unwrap_or(true)
+    })
 }
 
 thread_local! {
@@ -1242,6 +1275,9 @@ pub struct ReactiveCounters {
 
 thread_local! {
     static EFFECT_RUNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Not only a counter: [`batch`] compares it across an outermost batch to
+    /// tell whether the batch wrote anything (issue #234), so every signal
+    /// write must keep bumping it.
     static SIGNAL_NOTIFIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
