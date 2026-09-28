@@ -15,8 +15,9 @@
 //!
 //! Two shapes cover them:
 //!
-//! - [`RestoreCell`] — a thread-local [`Cell`] (or a `Cell` field of one) set
-//!   to a value now and put back to the value it had on drop.
+//! - [`RestoreCell`] — a thread-local [`Slot`] (a `Cell`, or a `Cell` field of
+//!   a struct thread-local, declared with `restore_slot!`)
+//!   set to a value now and put back to the value it had on drop.
 //! - [`with_runtime_on_drop`] — what a guard over a [`Runtime`](super::Runtime)
 //!   field does in its `Drop`: nothing if the thread's TLS is already gone (a
 //!   guard dropped at thread exit — legitimate, silent), an error log if the
@@ -28,59 +29,98 @@
 //! on entry and decrement on drop rather than save and restore, so that an
 //! out-of-order drop still balances; they are not this module's shape.
 
-use std::cell::Cell;
 use std::marker::PhantomData;
-use std::thread::LocalKey;
 
 use super::{RUNTIME, Runtime};
 
-/// Sets a thread-local [`Cell`] now and restores its previous value on drop —
+/// A thread-local value a [`RestoreCell`] can set and put back.
+///
+/// Implemented by zero-sized marker types, so the guard dispatches statically
+/// and inlines to the bare TLS accesses the hand-rolled guards made — a
+/// `ReactiveFrameGuard` is entered around every effect run and memo recompute,
+/// and a `fn`-pointer selector cost that path measurably (PR #1134's Perf run).
+/// Implement it with `restore_slot!`, which writes
+/// `put_back` with `try_with`; a hand-written impl (a slot restoring two
+/// fields in one access) must do the same.
+pub(crate) trait Slot: 'static {
+    /// What the slot holds.
+    type Value: Copy;
+    /// Store `value` and answer what was there (`with`: the TLS is live
+    /// whenever a guard is being made).
+    fn swap(value: Self::Value) -> Self::Value;
+    /// Store `prev` back — with `try_with`, silently doing nothing once the
+    /// thread's TLS has been torn down (a guard dropped at thread exit).
+    fn put_back(prev: Self::Value);
+}
+
+/// Declare a zero-sized [`Slot`] over a thread-local `Cell`, or over a `Cell`
+/// field of a struct thread-local:
+///
+/// ```ignore
+/// restore_slot!(ReactiveDepth: u32 = REACTIVE_DEPTH);
+/// restore_slot!(pub(crate) ContextRoot: u64 = AMBIENT.root);
+/// ```
+macro_rules! restore_slot {
+    ($vis:vis $name:ident : $t:ty = $key:ident) => {
+        $vis struct $name;
+        impl $crate::reactive::restore::Slot for $name {
+            type Value = $t;
+            #[inline]
+            fn swap(value: $t) -> $t {
+                $key.with(|c| c.replace(value))
+            }
+            #[inline]
+            fn put_back(prev: $t) {
+                let _ = $key.try_with(|c| c.set(prev));
+            }
+        }
+    };
+    ($vis:vis $name:ident : $t:ty = $key:ident . $field:ident) => {
+        $vis struct $name;
+        impl $crate::reactive::restore::Slot for $name {
+            type Value = $t;
+            #[inline]
+            fn swap(value: $t) -> $t {
+                $key.with(|s| s.$field.replace(value))
+            }
+            #[inline]
+            fn put_back(prev: $t) {
+                let _ = $key.try_with(|s| s.$field.set(prev));
+            }
+        }
+    };
+}
+
+pub(crate) use restore_slot;
+
+/// Sets a thread-local [`Slot`] now and restores its previous value on drop —
 /// including while unwinding, and silently not at all once the thread's TLS
 /// has been torn down.
 ///
-/// `S` is the thread-local's type and `cell` picks the `Cell` inside it, so a
-/// guard can restore one field of a struct thread-local (`AMBIENT.root`) as
-/// well as a bare `thread_local! { static X: Cell<T> }` ([`Self::replace`]).
-///
 /// `!Send`: the value it restores belongs to the thread that made it.
 #[must_use = "the previous value is restored the instant this guard drops"]
-pub(crate) struct RestoreCell<S: 'static, T: Copy + 'static> {
-    key: &'static LocalKey<S>,
-    cell: fn(&S) -> &Cell<T>,
-    prev: T,
+pub(crate) struct RestoreCell<K: Slot> {
+    prev: K::Value,
+    _slot: PhantomData<K>,
     _not_send: PhantomData<*const ()>,
 }
 
-impl<S: 'static, T: Copy + 'static> RestoreCell<S, T> {
-    /// Set the `Cell` `cell` picks out of `key` to `value` until the guard
-    /// drops.
-    pub(crate) fn replace_in(
-        key: &'static LocalKey<S>,
-        cell: fn(&S) -> &Cell<T>,
-        value: T,
-    ) -> Self {
-        let prev = key.with(|s| cell(s).replace(value));
+impl<K: Slot> RestoreCell<K> {
+    /// Set the slot `K` to `value` until the guard drops.
+    #[inline]
+    pub(crate) fn replace(value: K::Value) -> Self {
         RestoreCell {
-            key,
-            cell,
-            prev,
+            prev: K::swap(value),
+            _slot: PhantomData,
             _not_send: PhantomData,
         }
     }
 }
 
-impl<T: Copy + 'static> RestoreCell<Cell<T>, T> {
-    /// Set the thread-local `key` to `value` until the guard drops.
-    pub(crate) fn replace(key: &'static LocalKey<Cell<T>>, value: T) -> Self {
-        Self::replace_in(key, |c| c, value)
-    }
-}
-
-impl<S: 'static, T: Copy + 'static> Drop for RestoreCell<S, T> {
+impl<K: Slot> Drop for RestoreCell<K> {
+    #[inline]
     fn drop(&mut self) {
-        let (cell, prev) = (self.cell, self.prev);
-        // `try_with`: TLS may already be torn down at thread exit.
-        let _ = self.key.try_with(|s| cell(s).set(prev));
+        K::put_back(self.prev);
     }
 }
 
@@ -106,6 +146,7 @@ pub(crate) enum Unrestored {
 ///   an inner `RefMut` before the guard's frame drops — but skipping it
 ///   silently would leave the state changed for the rest of the thread's life,
 ///   which is the failure every one of these guards exists to prevent.
+#[inline]
 pub(crate) fn with_runtime_on_drop<R>(
     what: &'static str,
     restore: impl FnOnce(&mut Runtime) -> R,
@@ -114,23 +155,36 @@ pub(crate) fn with_runtime_on_drop<R>(
         .try_with(|rt| match rt.try_borrow_mut() {
             Ok(mut rt) => Ok(restore(&mut rt)),
             Err(_) => {
-                tracing::error!(
-                    "could not restore {what} (reactive runtime already borrowed); \
-                     reactive state may be left changed"
-                );
+                log_unrestored(what);
                 Err(Unrestored::Borrowed)
             }
         })
         .unwrap_or(Err(Unrestored::TlsGone))
 }
 
+/// Out of line and cold: it never runs in a correct program, and keeping it
+/// out of `with_runtime_on_drop` keeps every guard's `Drop` small enough to
+/// inline into the effect-run path.
+#[cold]
+#[inline(never)]
+fn log_unrestored(what: &'static str) {
+    tracing::error!(
+        "could not restore {what} (reactive runtime already borrowed); \
+         reactive state may be left changed"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     thread_local! {
         static PLAIN: Cell<u32> = const { Cell::new(0) };
     }
+
+    restore_slot!(Plain: u32 = PLAIN);
+    restore_slot!(PairA: u32 = PAIR.a);
 
     struct Pair {
         a: Cell<u32>,
@@ -148,9 +202,9 @@ mod tests {
     fn nested_guards_restore_the_value_each_displaced() {
         PLAIN.with(|c| c.set(3));
         {
-            let _outer = RestoreCell::replace(&PLAIN, 5);
+            let _outer = RestoreCell::<Plain>::replace(5);
             {
-                let _inner = RestoreCell::replace(&PLAIN, 9);
+                let _inner = RestoreCell::<Plain>::replace(9);
                 assert_eq!(PLAIN.with(|c| c.get()), 9);
             }
             assert_eq!(PLAIN.with(|c| c.get()), 5, "the inner guard put back 5");
@@ -163,7 +217,7 @@ mod tests {
     fn a_guard_restores_while_unwinding() {
         PLAIN.with(|c| c.set(4));
         let caught = std::panic::catch_unwind(|| {
-            let _g = RestoreCell::replace(&PLAIN, 8);
+            let _g = RestoreCell::<Plain>::replace(8);
             panic!("boom");
         });
         assert!(caught.is_err());
@@ -178,7 +232,7 @@ mod tests {
             p.b.set(2);
         });
         {
-            let _g = RestoreCell::replace_in(&PAIR, |p| &p.a, 7);
+            let _g = RestoreCell::<PairA>::replace(7);
             PAIR.with(|p| p.b.set(6));
             assert_eq!(PAIR.with(|p| p.a.get()), 7);
         }

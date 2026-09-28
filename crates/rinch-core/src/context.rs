@@ -35,7 +35,7 @@
 //! To opt out and keep an entry for the life of the thread, create it under
 //! [`unowned`](crate::reactive::unowned).
 
-use crate::reactive::restore::RestoreCell;
+use crate::reactive::restore::{RestoreCell, Slot, restore_slot};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -142,8 +142,10 @@ pub fn current_context_root() -> u64 {
 /// RAII guard returned by [`push_context_root`]; restores the previous root
 /// when dropped.
 pub struct ContextRootGuard {
-    _restore: RestoreCell<Ambient, u64>,
+    _restore: RestoreCell<AmbientRoot>,
 }
+
+restore_slot!(AmbientRoot: u64 = AMBIENT.root);
 
 /// Make `root` the current context root until the returned guard drops.
 ///
@@ -153,7 +155,7 @@ pub struct ContextRootGuard {
 /// resolve the thread-global root `0`.
 pub fn push_context_root(root: u64) -> ContextRootGuard {
     ContextRootGuard {
-        _restore: RestoreCell::replace_in(&AMBIENT, |a| &a.root, root),
+        _restore: RestoreCell::replace(root),
     }
 }
 
@@ -241,8 +243,10 @@ pub fn doc_matches(owner: Option<u64>, caller: Option<u64>) -> bool {
 /// mis-attribution is invisible until two documents share a thread.
 #[must_use = "the marker is only live while the guard is held — bind it, e.g. `let _d = …`"]
 pub struct DispatchDocGuard {
-    _restore: RestoreCell<Ambient, u64>,
+    _restore: RestoreCell<AmbientDoc>,
 }
+
+restore_slot!(AmbientDoc: u64 = AMBIENT.doc);
 
 /// Mark `doc_key` as the document being dispatched until the returned guard
 /// drops (issue #139).
@@ -256,15 +260,33 @@ pub struct DispatchDocGuard {
 pub fn push_dispatching_doc(doc_key: u64) -> DispatchDocGuard {
     // Stored raw: `0` reads back as `None` through `doc_identity`.
     DispatchDocGuard {
-        _restore: RestoreCell::replace_in(&AMBIENT, |a| &a.doc, doc_key),
+        _restore: RestoreCell::replace(doc_key),
     }
 }
 
 /// RAII guard returned by [`enter_reactive_frame`]; restores both the root and
 /// the document it displaced.
 pub(crate) struct ReactiveFrameGuard {
-    _root: RestoreCell<Ambient, u64>,
-    _doc: RestoreCell<Ambient, u64>,
+    _restore: RestoreCell<AmbientFrame>,
+}
+
+/// The root and the document together: one TLS access each way, on the path
+/// every effect run and memo recompute takes.
+struct AmbientFrame;
+
+impl Slot for AmbientFrame {
+    type Value = (u64, u64);
+    #[inline]
+    fn swap((root, doc): (u64, u64)) -> (u64, u64) {
+        AMBIENT.with(|a| (a.root.replace(root), a.doc.replace(doc)))
+    }
+    #[inline]
+    fn put_back((root, doc): (u64, u64)) {
+        let _ = AMBIENT.try_with(|a| {
+            a.root.set(root);
+            a.doc.set(doc);
+        });
+    }
 }
 
 /// The context root and the document current right now, read together in one
@@ -286,8 +308,7 @@ pub(crate) fn current_reactive_frame() -> (u64, u64) {
 /// is re-entered as `0` — "nobody's", never a borrowed document.
 pub(crate) fn enter_reactive_frame(root: u64, doc: u64) -> ReactiveFrameGuard {
     ReactiveFrameGuard {
-        _root: RestoreCell::replace_in(&AMBIENT, |a| &a.root, root),
-        _doc: RestoreCell::replace_in(&AMBIENT, |a| &a.doc, doc),
+        _restore: RestoreCell::replace((root, doc)),
     }
 }
 

@@ -1139,13 +1139,15 @@ thread_local! {
 /// Saves [`REACTIVE_DEPTH`], zeroes it, and puts it back on drop — for an
 /// outermost [`batch`], which is a flush context of its own.
 struct DepthSetAside {
-    _restore: restore::RestoreCell<std::cell::Cell<u32>, u32>,
+    _restore: restore::RestoreCell<ReactiveDepthSlot>,
 }
+
+restore::restore_slot!(ReactiveDepthSlot: u32 = REACTIVE_DEPTH);
 
 impl DepthSetAside {
     fn enter() -> Self {
         DepthSetAside {
-            _restore: restore::RestoreCell::replace(&REACTIVE_DEPTH, 0),
+            _restore: restore::RestoreCell::replace(0),
         }
     }
 }
