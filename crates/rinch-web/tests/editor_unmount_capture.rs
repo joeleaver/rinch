@@ -215,7 +215,10 @@ async fn unmounting_an_unfocused_editor_leaves_the_focused_one_alone() {
     let (rb, b) = editor_root(&hb, "<p>bravo</p>");
     press_into("#h1112-b [data-pm-editor] p");
     let ta = capture();
-    assert!(capture_is_active(&ta), "positive control: B took the keyboard");
+    assert!(
+        capture_is_active(&ta),
+        "positive control: B took the keyboard"
+    );
     b.set_selection(Selection::text(Pos(2), Pos(4)));
     microtask().await;
     assert_eq!(ta.value(), "bravo", "positive control: B's mirror");
