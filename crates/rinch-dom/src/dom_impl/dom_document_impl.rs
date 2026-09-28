@@ -1014,6 +1014,33 @@ impl DomDocument for RinchDocument {
         )
     }
 
+    /// From the IFC root's Parley layout: the box's positioned item is keyed by
+    /// its node id (`ifc.rs` pushes `InlineBox { id: child_id }`).
+    fn query_inline_box_caret(
+        &self,
+        node_id: u64,
+        box_id: u64,
+        after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        let layout = &self
+            .tree
+            .nodes
+            .get(node_id as usize)?
+            .text_layout
+            .as_ref()?
+            .layout;
+        crate::text_query::inline_box_caret(layout, box_id, after)
+    }
+
+    fn query_inline_box_caret_rect(
+        &self,
+        node_id: u64,
+        box_id: u64,
+        after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        self.inline_box_caret_window_rect(node_id as usize, box_id as usize, after)
+    }
+
     fn query_caret_rect_with_affinity(
         &self,
         node_id: u64,
@@ -1785,6 +1812,19 @@ impl RinchDocument {
         self.text_caret_window_rect_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
 
+    /// [`Self::text_caret_window_rect`] for the caret beside the inline box
+    /// `box_id` (an `<img>`) in `node_id`'s inline layout — its left edge, or
+    /// its right when `after` ([`DomDocument::query_inline_box_caret`], #1104).
+    pub fn inline_box_caret_window_rect(
+        &self,
+        node_id: usize,
+        box_id: usize,
+        after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        let (x, y, h) = self.query_inline_box_caret(node_id as u64, box_id as u64, after)?;
+        self.caret_to_window(node_id, x, y, h)
+    }
+
     /// [`Self::text_caret_window_rect`] for a caret with `affinity` at a soft
     /// wrap (#301): an `Upstream` caret there is at the end of the upper line.
     pub fn text_caret_window_rect_with_affinity(
@@ -1799,6 +1839,19 @@ impl RinchDocument {
             .query_glyph_bounds(node_id as u64, byte_offset)
             .map(|g| g.height)
             .unwrap_or(18.0);
+        self.caret_to_window(node_id, local_x, local_y, height)
+    }
+
+    /// A layout-local caret `(x, y, height)` in `node_id`'s inline layout,
+    /// pushed through its padding and the composed transform of its ancestors
+    /// into logical window pixels.
+    fn caret_to_window(
+        &self,
+        node_id: usize,
+        local_x: f32,
+        local_y: f32,
+        height: f32,
+    ) -> Option<(f32, f32, f32)> {
         let node = self.tree.get(node_id)?;
         let pad_l = node.computed_style.padding_left.to_px();
         let pad_t = node.computed_style.padding_top.to_px();

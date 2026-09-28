@@ -1712,6 +1712,36 @@ impl EditorHandle {
             .pos_at(textblock_dom_id, ifc_byte)
     }
 
+    /// The model position before the inline leaf (an image) whose host element
+    /// is `leaf_dom_id`, or after it when `after` — what a pointer hit on one
+    /// half of an image resolves to. A flat byte offset cannot say this on
+    /// desktop, where an image is an inline box with no bytes, so the byte on
+    /// its two sides is one number (#1104). `None` if that element is not an
+    /// inline leaf of this editor.
+    pub fn pos_beside_inline_leaf(&self, leaf_dom_id: usize, after: bool) -> Option<Pos> {
+        self.core()
+            .view
+            .as_ref()?
+            .pos_beside_inline_leaf(leaf_dom_id, after)
+    }
+
+    /// The inline leaf a caret at `pos` is drawn against rather than placed by
+    /// its flat byte offset, as `(textblock element id, leaf element id,
+    /// after)`: the image just before `pos`, or, for a `Downstream` caret, the
+    /// one just after it (#1104). The host draws such a caret from the leaf's
+    /// box (`DomDocument::query_inline_box_caret`). `None` anywhere else.
+    pub fn caret_inline_box(
+        &self,
+        pos: Pos,
+        affinity: CaretAffinity,
+    ) -> Option<(usize, usize, bool)> {
+        let core = self.core();
+        let view = core.view.as_ref()?;
+        let (tb, _) = view.caret_address(&core.state.doc, pos)?;
+        let (leaf, after) = view.inline_box_beside(&core.state.doc, pos, affinity)?;
+        Some((tb, leaf, after))
+    }
+
     /// Map `(textblock element id, model offset within its content)` to a model
     /// [`Pos`] — a text character and an inline leaf (image, hard break) each
     /// count one, and an offset past the block's end is clamped to it. For a

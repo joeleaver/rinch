@@ -641,6 +641,40 @@ pub trait DomDocument {
         0
     }
 
+    /// The caret beside the atomic inline `box_id` (an `<img>`) that the
+    /// text-bearing element `node_id` lays out in its inline layout, as
+    /// `(x, y, height)`, layout-local like [`Self::query_caret_position`]:
+    /// on the box's leading edge, or its trailing edge when `after`, at the top
+    /// of its line and one line high.
+    ///
+    /// A flat byte offset cannot name this side: an atomic inline occupies no
+    /// bytes of the flat text, so the offsets on its two sides are one number,
+    /// and so are those around two such boxes in a row. A caller that knows
+    /// which box a caret is beside (the rich-text editor's view, for an image)
+    /// asks this instead (#1104). `None` when the box is not in `node_id`'s
+    /// inline layout; the caller then asks by byte. Default `None`, so a host
+    /// that does not implement it (the browser backend, the mock) is asked by
+    /// byte as before.
+    fn query_inline_box_caret(
+        &self,
+        _node_id: u64,
+        _box_id: u64,
+        _after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        None
+    }
+
+    /// [`Self::query_inline_box_caret`] **on screen**, in the frame of
+    /// [`Self::query_caret_rect`]. Default `None`.
+    fn query_inline_box_caret_rect(
+        &self,
+        _node_id: u64,
+        _box_id: u64,
+        _after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        None
+    }
+
     /// Per-line selection rectangles `(x, y, width, height)`, layout-local to the
     /// node's inline layout, covering the byte range `[a, b)`. Used to render a
     /// text selection's highlight. Default: empty (no inline layout / mock).
