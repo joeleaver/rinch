@@ -271,6 +271,13 @@ fn every_rinch_dom_counter_fires_somewhere() {
     let input = doc.create_element("input");
     doc.set_attribute(input, "value", "typed");
     doc.append_child(body, input);
+    // An auto-width select (sized from its option label, #1098).
+    let select = doc.create_element("select");
+    let option = doc.create_element("option");
+    let ot = doc.create_text("option");
+    doc.append_child(option, ot);
+    doc.append_child(select, option);
+    doc.append_child(body, select);
     // A viewport-unit user, generated content, and a media-query dependant.
     let vw = doc.create_element("div");
     doc.set_attribute(vw, "class", "vw gen mq");
@@ -361,6 +368,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         EllipsisBuilds,
         EllipsisShapes,
         ShapePaint,
+        ShapeSelectLabel,
         IfcMeasureCacheHits,
         IfcMeasureInvalidations,
         IfcSignatureChanges,

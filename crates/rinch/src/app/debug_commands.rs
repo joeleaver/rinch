@@ -599,8 +599,12 @@ impl RinchApp {
                     };
                 };
 
-                let scale = scale_factor as f32;
-
+                // Everything below is in logical (CSS) px, like `absolute` and
+                // the input tools: the box comes from
+                // `compute_absolute_position_and_transform(.., 1.0)`, so the
+                // offset inside it — paddings, and the probe layout's font size
+                // against its logical `max_width` — must be unscaled too (#421).
+                // The window's scale factor plays no part.
                 let d = doc.borrow();
                 let Some(node) = d.tree.get(node_id) else {
                     return DebugResult::Error {
@@ -626,10 +630,8 @@ impl RinchApp {
                 if matches!(tag, Some("input" | "textarea")) {
                     let value = node.attributes.get("value").cloned().unwrap_or_default();
                     if value.is_empty() {
-                        let padding_left =
-                            node.computed_style.padding_left.to_px() as f64 * scale as f64;
-                        let padding_top =
-                            node.computed_style.padding_top.to_px() as f64 * scale as f64;
+                        let padding_left = node.computed_style.padding_left.to_px() as f64;
+                        let padding_top = node.computed_style.padding_top.to_px() as f64;
                         let (cx, cy) = fwd(padding_left, padding_top);
                         return DebugResult::Json {
                             data: json!({ "x": cx, "y": cy }),
@@ -642,15 +644,15 @@ impl RinchApp {
 
                     let layout = computed_style.build_parley_layout(
                         &value,
-                        scale,
+                        1.0,
                         &mut self.hit_test_font_cx,
                         &mut self.paint_layout_cx,
                         Some(input_width),
                     );
 
                     let (x, y) = caret_position_for_offset_layout(&layout, byte_offset);
-                    let padding_left = computed_style.padding_left.to_px() as f64 * scale as f64;
-                    let padding_top = computed_style.padding_top.to_px() as f64 * scale as f64;
+                    let padding_left = computed_style.padding_left.to_px() as f64;
+                    let padding_top = computed_style.padding_top.to_px() as f64;
 
                     let (cx, cy) = fwd(padding_left + x as f64, padding_top + y as f64);
                     return DebugResult::Json {
@@ -681,8 +683,12 @@ impl RinchApp {
                     };
                 };
 
-                let scale = scale_factor as f32;
-
+                // Everything below is in logical (CSS) px, like `absolute` and
+                // the input tools: the box comes from
+                // `compute_absolute_position_and_transform(.., 1.0)`, so the
+                // offset inside it — paddings, and the probe layout's font size
+                // against its logical `max_width` — must be unscaled too (#421).
+                // The window's scale factor plays no part.
                 let d = doc.borrow();
                 let Some(node) = d.tree.get(node_id) else {
                     return DebugResult::Error {
@@ -719,7 +725,7 @@ impl RinchApp {
 
                     let layout = computed_style.build_parley_layout(
                         &value,
-                        scale,
+                        1.0,
                         &mut self.hit_test_font_cx,
                         &mut self.paint_layout_cx,
                         Some(input_width),
@@ -727,10 +733,8 @@ impl RinchApp {
 
                     match glyph_bounds_for_offset_layout(&layout, byte_offset) {
                         Some(bounds) => {
-                            let padding_left =
-                                computed_style.padding_left.to_px() as f64 * scale as f64;
-                            let padding_top =
-                                computed_style.padding_top.to_px() as f64 * scale as f64;
+                            let padding_left = computed_style.padding_left.to_px() as f64;
+                            let padding_top = computed_style.padding_top.to_px() as f64;
                             let (gx, gy) = fwd(
                                 padding_left + bounds.x as f64,
                                 padding_top + bounds.y as f64,
@@ -1518,5 +1522,227 @@ mod tests {
             "back to the state before the press"
         );
         assert_eq!(app.debug_modifiers_to_restore, None);
+    }
+}
+
+#[cfg(test)]
+mod text_geometry_units_tests {
+    //! `get_caret_position` / `get_glyph_bounds` answer in **logical** px at
+    //! every scale factor (#421), like `absolute` and the input tools.
+    //!
+    //! Before #421 the two handlers took the node's box at scale 1.0 and the
+    //! offset inside it (paddings, the probe Parley layout's font size) at the
+    //! window's scale factor, so at scale 2 the answer was the box's logical
+    //! origin plus a doubled intra-box offset — and the probe layout paired a
+    //! doubled font with the logical `max_width`, wrapping at the wrong width.
+    //! Every fixture compares scale 2 against scale 1: at scale 1 the two units
+    //! coincide, which is the fixed point that hid the bug.
+
+    use super::*;
+    use std::cell::Cell;
+
+    /// `(input, textarea, paragraph)` node ids.
+    type Ids = Rc<Cell<Option<(usize, usize, usize)>>>;
+
+    /// An `<input>` and a `<textarea>` with off-zero paddings, placed off the
+    /// origin, and a `<p>` holding IFC text. Fonts and line heights are
+    /// declared; the textarea's text fits its 300px width at 14px but not at
+    /// 28px, so a probe layout built with a doubled font wraps it.
+    fn app_with_text_fields(ids: Ids) -> RinchApp {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "position: relative; width: 800px; height: 600px; \
+                 font-family: sans-serif; font-size: 14px; line-height: 20px",
+            );
+            let input = scope.create_element("input");
+            input.set_attribute(
+                "style",
+                "position: absolute; left: 40px; top: 30px; width: 300px; height: 28px; \
+                 padding: 5px 0 0 13px; font-size: 14px; line-height: 20px",
+            );
+            input.set_attribute("value", "hello world");
+            root.append_child(&input);
+
+            let textarea = scope.create_element("textarea");
+            textarea.set_attribute(
+                "style",
+                "position: absolute; left: 40px; top: 100px; width: 300px; height: 120px; \
+                 padding: 7px 0 0 11px; font-size: 14px; line-height: 20px",
+            );
+            textarea.set_attribute("value", "one two three four five six");
+            root.append_child(&textarea);
+
+            let p = scope.create_element("p");
+            p.set_attribute(
+                "style",
+                "position: absolute; left: 40px; top: 300px; width: 300px; margin: 0; \
+                 font-size: 14px; line-height: 20px",
+            );
+            let text = scope.create_text("hello paragraph");
+            p.append_child(&text);
+            root.append_child(&p);
+
+            ids.set(Some((
+                input.node_id().0,
+                textarea.node_id().0,
+                p.node_id().0,
+            )));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+
+    fn query(app: &mut RinchApp, kind: DebugCommandKind, scale: f64) -> serde_json::Value {
+        let mut actions = Vec::new();
+        let size = ((800.0 * scale) as u32, (600.0 * scale) as u32);
+        match app.execute_debug_command(kind, &mut actions, scale, size) {
+            DebugResult::Json { data } => data,
+            other => panic!("expected JSON, got {other:?}"),
+        }
+    }
+
+    fn caret(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64) -> (f64, f64) {
+        let v = query(
+            app,
+            DebugCommandKind::GetCaretPosition {
+                node_id,
+                byte_offset,
+            },
+            scale,
+        );
+        (v["x"].as_f64().unwrap(), v["y"].as_f64().unwrap())
+    }
+
+    fn glyph(app: &mut RinchApp, node_id: usize, byte_offset: usize, scale: f64) -> [f64; 4] {
+        let v = query(
+            app,
+            DebugCommandKind::GetGlyphBounds {
+                node_id,
+                byte_offset,
+            },
+            scale,
+        );
+        ["x", "y", "width", "height"].map(|k| v[k].as_f64().unwrap())
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 0.01
+    }
+
+    /// The input's caret at scale 2 is where it is at scale 1, and at byte 0
+    /// it is the box's logical origin plus its logical paddings.
+    #[test]
+    fn an_input_caret_is_logical_at_scale_two() {
+        let ids: Ids = Rc::default();
+        let mut app = app_with_text_fields(ids.clone());
+        let (input, _, _) = ids.get().unwrap();
+
+        let (x0, y0) = caret(&mut app, input, 0, 1.0);
+        assert!(
+            close(x0, 40.0 + 13.0) && close(y0, 30.0 + 5.0),
+            "byte 0 sits at the logical content origin (53, 35), got ({x0}, {y0})"
+        );
+        for byte in [0, 5, 11] {
+            let one = caret(&mut app, input, byte, 1.0);
+            let two = caret(&mut app, input, byte, 2.0);
+            assert!(
+                close(one.0, two.0) && close(one.1, two.1),
+                "byte {byte}: scale 2 must answer the scale-1 (logical) caret {one:?}, got {two:?}"
+            );
+        }
+    }
+
+    /// The same for an input's glyph box, width and height included.
+    #[test]
+    fn an_input_glyph_box_is_logical_at_scale_two() {
+        let ids: Ids = Rc::default();
+        let mut app = app_with_text_fields(ids.clone());
+        let (input, _, _) = ids.get().unwrap();
+        for byte in [0, 6] {
+            let one = glyph(&mut app, input, byte, 1.0);
+            let two = glyph(&mut app, input, byte, 2.0);
+            assert!(
+                one.iter().zip(two).all(|(a, b)| close(*a, b)),
+                "byte {byte}: scale 2 must answer the scale-1 (logical) box {one:?}, got {two:?}"
+            );
+        }
+    }
+
+    /// A textarea's probe layout wraps at the logical width: its last caret
+    /// stays on the first line at scale 2, where a doubled font wrapped it.
+    #[test]
+    fn a_textarea_caret_wraps_at_the_logical_width_at_scale_two() {
+        let ids: Ids = Rc::default();
+        let mut app = app_with_text_fields(ids.clone());
+        let (_, textarea, _) = ids.get().unwrap();
+        let end = "one two three four five six".len();
+        let one = caret(&mut app, textarea, end, 1.0);
+        let two = caret(&mut app, textarea, end, 2.0);
+        assert!(
+            close(one.1, 100.0 + 7.0),
+            "at scale 1 the text fits one line, got {one:?}"
+        );
+        assert!(
+            close(one.0, two.0) && close(one.1, two.1),
+            "scale 2 must answer the scale-1 (logical) caret {one:?}, got {two:?}"
+        );
+    }
+
+    /// An `<input>` with an empty value takes its own early return (its
+    /// caret is the content origin, no layout built), with its own paddings:
+    /// logical at scale 2 too. From the PR #1133 review, which found this
+    /// branch unpinned by the fixtures above.
+    #[test]
+    fn an_empty_input_caret_is_logical_at_scale_two() {
+        let id: Rc<Cell<usize>> = Rc::default();
+        let id2 = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "width: 800px; height: 600px; font-family: sans-serif; \
+                 font-size: 14px; line-height: 20px",
+            );
+            let input = scope.create_element("input");
+            input.set_attribute(
+                "style",
+                "position: absolute; left: 40px; top: 30px; width: 300px; height: 20px; \
+                 padding: 3px 0 0 13px; font-size: 14px; line-height: 20px",
+            );
+            input.set_attribute("value", "");
+            root.append_child(&input);
+            id2.set(input.node_id().0);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let input = id.get();
+
+        let one = caret(&mut app, input, 0, 1.0);
+        assert!(
+            close(one.0, 40.0 + 13.0) && close(one.1, 30.0 + 3.0),
+            "the empty input's caret is its logical content origin (53, 33), got {one:?}"
+        );
+        let two = caret(&mut app, input, 0, 2.0);
+        assert!(
+            close(one.0, two.0) && close(one.1, two.1),
+            "scale 2 must answer the scale-1 (logical) caret {one:?}, got {two:?}"
+        );
+    }
+
+    /// IFC text was already logical; pinned so it stays that way.
+    #[test]
+    fn a_paragraph_caret_and_glyph_are_the_same_at_both_scales() {
+        let ids: Ids = Rc::default();
+        let mut app = app_with_text_fields(ids.clone());
+        let (_, _, p) = ids.get().unwrap();
+        assert_eq!(caret(&mut app, p, 6, 1.0), caret(&mut app, p, 6, 2.0));
+        assert_eq!(glyph(&mut app, p, 6, 1.0), glyph(&mut app, p, 6, 2.0));
+        let (x, y) = caret(&mut app, p, 0, 1.0);
+        assert!(close(x, 40.0) && close(y, 300.0), "got ({x}, {y})");
     }
 }
