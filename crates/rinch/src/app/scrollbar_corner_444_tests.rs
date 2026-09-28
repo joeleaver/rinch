@@ -17,7 +17,10 @@
 //! the scroll (it clamps to the value it already has) writes, dirties and fires
 //! nothing.
 
-use super::hit_testing::{SCROLLBAR_HIT_THICKNESS, find_scrollbar_hit, pointer_on_scrollbar_thumb};
+use super::hit_testing::find_scrollbar_hit;
+// Only the pixel fixtures, which need the software painter, use these.
+#[cfg(software_shell)]
+use super::hit_testing::{SCROLLBAR_HIT_THICKNESS, pointer_on_scrollbar_thumb};
 use super::*;
 
 const SIZE: (u32, u32) = (800, 600);
@@ -106,6 +109,7 @@ fn painted_pixels(app: &mut RinchApp, max_channel: u8) -> Vec<(u32, u32)> {
 
 /// The scroll positions every pixel fixture is run at: the far end on both
 /// axes (where the defect was), and part-way on both, off the midpoint.
+#[cfg(software_shell)]
 const WHEELS: [(f64, f64); 2] = [(5000.0, 5000.0), (137.0, 61.0)];
 
 /// Every pixel of either thumb is on a hit strip, on the thumb that strip
