@@ -55,6 +55,8 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
     /// See [`set_focus_handler`].
     static FOCUS_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
+    /// See [`set_unregister_listener`].
+    static UNREGISTER_LISTENER: Cell<Option<UnregisterListener>> = const { Cell::new(None) };
     /// The `doc_key`s of documents with an editor that is owed an overlay pass
     /// no DOM change will bring — see [`overlay_pass_owed`]. Empty while nothing
     /// is owed.
@@ -72,6 +74,21 @@ thread_local! {
 /// Per thread, like the rest of this registry; setting it again replaces it.
 pub fn set_focus_handler(focus: fn(usize)) {
     FOCUS_HANDLER.with(|slot| slot.set(Some(focus)));
+}
+
+/// What [`set_unregister_listener`] takes: `(doc_key, container id)`.
+pub type UnregisterListener = fn(u64, usize);
+
+/// Tell [`unregister_editor`] whom to notify once an editor has left the
+/// registry — `(doc_key, container id)`, after the entry and its link-hover
+/// state are gone and with no registry borrow held. The web registers one: its
+/// hidden capture textarea mirrors the focused editor's text and would
+/// otherwise keep it, focused and selected, after that editor unmounted
+/// (issue #1112). Desktop registers none.
+///
+/// Per thread, like the rest of this registry; setting it again replaces it.
+pub fn set_unregister_listener(listener: UnregisterListener) {
+    UNREGISTER_LISTENER.with(|slot| slot.set(Some(listener)));
 }
 
 /// The registered [`set_focus_handler`], if any.
@@ -305,6 +322,8 @@ pub fn register_editor(doc_key: u64, container_id: usize, handle: EditorHandle) 
 /// the entry here is also what releases the editor's count in
 /// [`link_hover_wanted`] at the unmount rather than at the next move, since the
 /// entry held a strong handle.
+///
+/// Last, it tells the [`set_unregister_listener`], if one is registered.
 pub fn unregister_editor(doc_key: u64, container_id: usize) {
     let removed: Vec<EditorHandle> = EDITORS.with(|e| {
         let mut e = e.borrow_mut();
@@ -336,6 +355,11 @@ pub fn unregister_editor(doc_key: u64, container_id: usize) {
         }
         forgotten
     });
+    drop(_forgotten);
+    drop(removed);
+    if let Some(listener) = UNREGISTER_LISTENER.with(|slot| slot.get()) {
+        listener(doc_key, container_id);
+    }
 }
 
 /// Every mounted editor as `(doc_key, container id, handle)`. The desktop

@@ -33,7 +33,8 @@ pub use registry::collab_receive_for;
 pub use registry::{
     any_overlay_pass_owed, begin_drag, drag_anchor, editor_for, editor_for_doc, end_drag,
     link_hover_wanted, overlay_pass_owed, reveal_owed, set_focus_handler, set_link_hover,
-    set_overlay_pass_scheduler, set_overlay_refresher, unregister_editor, update_all_carets,
+    set_overlay_pass_scheduler, set_overlay_refresher, set_unregister_listener, unregister_editor,
+    update_all_carets,
 };
 /// Which side of a soft wrap a caret is drawn on — see
 /// [`EditorHandle::set_selection_with_affinity`].
