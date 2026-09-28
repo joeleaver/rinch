@@ -47,6 +47,18 @@ pub const MARGIN: f64 = 2.0;
 /// A thumb is never drawn shorter than this, however little of the content is
 /// visible — otherwise a long document's thumb shrinks to a point.
 pub const MIN_THUMB: f64 = 20.0;
+/// How wide the strip along a container's edge that answers a press as its
+/// scrollbar is, in logical pixels — deliberately wider than the thumb is
+/// drawn, so the bar is easy to grab. Both axes use it.
+///
+/// It is also the side of the **corner**: where both bars are up, the
+/// `HIT_THICKNESS` square at the bottom-right belongs to neither bar. Each hit
+/// strip stops at it ([`Scrollbars::hit_strip`]), and each painted track gives
+/// it up too ([`ScrollbarTrack::track_len`]), so no thumb pixel is ever drawn
+/// where a press cannot grab it (#444). Paint used to reserve only the other
+/// bar's drawn footprint (`THICKNESS + MARGIN`), which left the last ~6px of a
+/// thumb at full scroll painted inside the square no strip claims.
+pub const HIT_THICKNESS: f64 = 16.0;
 /// How opaque the built-in thumb is over whatever it covers.
 pub const AUTO_THUMB_ALPHA: f32 = 0.4;
 
@@ -75,9 +87,11 @@ pub struct ScrollbarTrack {
     /// [`MARGIN`] at the requested scale; named so callers do not re-derive it.
     pub track_start: f64,
     /// How long the track is. Measured across the container's **border box**
-    /// less a [`MARGIN`] at each end, less [`THICKNESS`] + [`MARGIN`] at the
-    /// far end when the other bar is up — that reserved square is the corner
-    /// neither bar claims.
+    /// less a [`MARGIN`] at each end, less [`HIT_THICKNESS`] at the far end
+    /// when the other bar is up — that reserved square is the corner neither
+    /// bar claims, in paint and in hit testing alike (#444). The track's end
+    /// therefore sits a [`MARGIN`] clear of the corner, and so inside its own
+    /// bar's hit strip.
     pub track_len: f64,
     /// How long the thumb is, never below [`MIN_THUMB`].
     pub thumb_len: f64,
@@ -150,6 +164,12 @@ pub struct Scrollbars {
     pub thickness: f64,
     /// [`MARGIN`] at the requested scale.
     pub margin: f64,
+    /// [`HIT_THICKNESS`] at the requested scale.
+    pub hit_thickness: f64,
+    /// The container's border-box width at the requested scale.
+    pub box_width: f64,
+    /// The container's border-box height at the requested scale.
+    pub box_height: f64,
     /// What to fill the thumb with.
     pub thumb_color: AlphaColor<Srgb>,
     /// What to fill the track with, or `None` for no track — the default, since
@@ -164,6 +184,30 @@ impl Scrollbars {
             ScrollbarAxis::Vertical => self.vertical,
             ScrollbarAxis::Horizontal => self.horizontal,
         }
+    }
+
+    /// The strip that answers a press as `axis`'s bar, as `(x0, y0, x1, y1)`
+    /// from the container's border-box origin, ends included — or `None`
+    /// where that axis has no bar.
+    ///
+    /// [`HIT_THICKNESS`] wide against the container's edge, the full box long
+    /// — except that where both bars are up each strip stops at the corner
+    /// square, which belongs to neither: a press there falls through to the
+    /// container. The painted track gives up the same square, so every thumb
+    /// pixel lies inside its bar's strip (#444).
+    pub fn hit_strip(&self, axis: ScrollbarAxis) -> Option<(f64, f64, f64, f64)> {
+        self.axis(axis)?;
+        let (w, h, t) = (self.box_width, self.box_height, self.hit_thickness);
+        Some(match axis {
+            ScrollbarAxis::Vertical => {
+                let end = if self.horizontal.is_some() { h - t } else { h };
+                (w - t, 0.0, w, end)
+            }
+            ScrollbarAxis::Horizontal => {
+                let end = if self.vertical.is_some() { w - t } else { w };
+                (0.0, h - t, end, h)
+            }
+        })
     }
 }
 
@@ -486,6 +530,9 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
             horizontal: None,
             thickness: THICKNESS * scale,
             margin: MARGIN * scale,
+            hit_thickness: HIT_THICKNESS * scale,
+            box_width: 0.0,
+            box_height: 0.0,
             thumb_color: auto_thumb_color(None),
             track_color: None,
         };
@@ -500,6 +547,9 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
         horizontal: None,
         thickness: thickness * scale,
         margin: MARGIN * scale,
+        hit_thickness: HIT_THICKNESS * scale,
+        box_width: node.layout.width as f64 * scale,
+        box_height: node.layout.height as f64 * scale,
         thumb_color: cs
             .scrollbar_color
             .thumb
@@ -527,10 +577,12 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
     let show_vertical = scrollable_y && content_h > visible_h;
     let show_horizontal = scrollable_x && content_w > visible_w;
 
-    // Where both bars are up, each track gives up the other bar's footprint at
-    // its far end so the two thumbs cannot pile into the same square. Nothing
-    // is painted there, and hit-testing gives the corner to neither bar.
-    let corner = thickness + MARGIN;
+    // Where both bars are up, each track gives up the corner square at its far
+    // end so the two thumbs cannot pile into it. The square is the hit strips'
+    // corner, not the painted bars' footprint: nothing is painted where
+    // hit-testing gives the corner to neither bar, so every thumb pixel is
+    // grabbable (#444).
+    let corner = HIT_THICKNESS;
     let track_of = |box_extent: f64, visible: f64, content: f64, other_bar: bool| {
         let reserved = if other_bar { corner } else { 0.0 };
         let track_len = (box_extent - MARGIN * 2.0 - reserved).max(0.0);
