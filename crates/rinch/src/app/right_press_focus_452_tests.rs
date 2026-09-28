@@ -294,7 +294,14 @@ fn a_right_press_does_not_set_active() {
 
     // Positive control: a left press does set it.
     let (x, y) = center(&f.app, f.item);
-    ev(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Right });
+    ev(
+        &mut f.app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Right,
+        },
+    );
     down(&mut f.app, f.item, MouseButton::Left);
     let active = f.app.doc.as_ref().unwrap().borrow().tree.active_node;
     assert!(active.is_some(), "a left press is :active");
@@ -349,14 +356,42 @@ fn a_right_press_in_an_editor_inside_a_focusable_leaves_the_wrapper_alone() {
         .expect("the position has a caret");
     let (x, y) = (cx + 1.0, cy + ch / 2.0);
 
-    ev(&mut app, PlatformEvent::MouseDown { x, y, button: MouseButton::Left });
-    ev(&mut app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
+    ev(
+        &mut app,
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
+    ev(
+        &mut app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
     assert_eq!(app.focus_target, FocusTarget::Editor(container));
     log.borrow_mut().clear();
 
-    ev(&mut app, PlatformEvent::MouseDown { x, y, button: MouseButton::Right });
+    ev(
+        &mut app,
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Right,
+        },
+    );
 
     assert_eq!(app.focus_target, FocusTarget::Editor(container));
-    assert!(app.is_text_context_menu_open(), "positive control: the press reached the editor");
-    assert!(log.borrow().is_empty(), "the wrapper was never focused: {:?}", log.borrow());
+    assert!(
+        app.is_text_context_menu_open(),
+        "positive control: the press reached the editor"
+    );
+    assert!(
+        log.borrow().is_empty(),
+        "the wrapper was never focused: {:?}",
+        log.borrow()
+    );
 }

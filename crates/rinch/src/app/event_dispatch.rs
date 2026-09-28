@@ -2199,9 +2199,9 @@ impl RinchApp {
             let dom_target = match press_focus {
                 PressFocus::Preserve => None,
                 PressFocus::Node(nid) => Some(Some(nid)),
-                PressFocus::Release => Some(
-                    hit.filter(|&nid| !Self::node_is_disabled_in_tree(&d.tree, nid)),
-                ),
+                PressFocus::Release => {
+                    Some(hit.filter(|&nid| !Self::node_is_disabled_in_tree(&d.tree, nid)))
+                }
             };
             (hit, press_focus, dom_target)
         };
