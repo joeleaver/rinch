@@ -7469,8 +7469,9 @@ mod horizontal_scrollbar_tests {
 
     /// The corner. With both bars up their strips would overlap in a square at
     /// the bottom-right and one would silently win every click there. Neither
-    /// claims it — which also matches the paint pass, where both tracks stop
-    /// short so no thumb is ever drawn in a square that cannot be grabbed.
+    /// claims it — which also matches the paint pass, where both tracks give up
+    /// the same square so no thumb is ever drawn in it (#444,
+    /// `scrollbar_corner_444_tests`).
     #[test]
     fn the_corner_between_two_scrollbars_belongs_to_neither() {
         let Bars { app, rect, .. } = mount(BOTH, "width: 800px; height: 800px");
