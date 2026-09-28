@@ -167,6 +167,8 @@ mod textarea_vertical_arrow_tests;
 #[cfg(test)]
 mod trap_focus_tests;
 #[cfg(test)]
+mod tab_order_tests;
+#[cfg(test)]
 mod ua_block_defaults_components_tests;
 #[cfg(all(test, software_shell))]
 mod visibility_hidden_overlay_paint_tests;
