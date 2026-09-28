@@ -1641,6 +1641,10 @@ fn trap_root(browser_doc: &web_sys::Document) -> Option<web_sys::Element> {
 
 /// The Tab stops inside `root`, in document order, `root` itself included.
 ///
+/// **Tree order, not Tab order**: [`handle_trapped_tab`] sorts positive
+/// `tabindex` first itself (issue #435), and `focus_into` wants tree order —
+/// HTML picks a dialog's focus delegate in tree order.
+///
 /// **This is not desktop's collector, and cannot be.** It is a CSS selector
 /// plus a filter where desktop walks its own tree, so the two sets are computed
 /// by different code and agree only as far as they are each written to. Known
@@ -1732,26 +1736,61 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     let Some(root) = trap_root(browser_doc) else {
         return false;
     };
-    let items = trap_focusables(&root);
-    let n = items.len();
+    let tree = trap_focusables(&root);
+    let n = tree.len();
     if n == 0 {
         return true;
     }
+    // The Tab sequence (issue #435): positive `tabindex` ascending, then `0`,
+    // ties in tree order — a stable sort of the tree-ordered set. The browser
+    // orders Tab this way itself, but inside a trap this function moves focus,
+    // so it has to order the ring the same way desktop's `tab_sequence` does.
+    // `tabIndex` is `-1` for a `data-oninput` control with no attribute, which
+    // sorts with the zeros, as desktop gives it `0`.
+    let mut items = tree.clone();
+    items.sort_by_key(|el| match el.tab_index() {
+        t if t > 0 => (0u8, t),
+        _ => (1u8, 0),
+    });
+    let seq_pos = |el: &web_sys::HtmlElement| items.iter().position(|i| i.is_same_node(Some(el)));
 
     let active = browser_doc.active_element();
-    let current = active.and_then(|a| {
+    let current = active.as_ref().and_then(|a| {
         items
             .iter()
             .position(|el| el.is_same_node(Some(a.unchecked_ref())))
     });
+    // A focused element inside the trap that is not a stop (`tabindex="-1"`):
+    // how many stops precede it in tree order. Tab resumes at the next stop
+    // after it in tree order, Shift+Tab at the previous — desktop's rule,
+    // measured in Chrome 153.
+    let rank = match (&current, &active) {
+        (None, Some(a)) if root.contains(Some(a.unchecked_ref())) => Some(
+            tree.iter()
+                .filter(|el| {
+                    a.compare_document_position(el.unchecked_ref())
+                        & web_sys::Node::DOCUMENT_POSITION_PRECEDING
+                        != 0
+                })
+                .count(),
+        ),
+        _ => None,
+    };
     // Identical arithmetic to desktop's `handle_tab`, including where focus
     // starts outside the trap: Tab enters at the first stop, Shift+Tab at the
     // last.
     let first = match (current, shift) {
         (Some(i), false) => (i + 1) % n,
         (Some(i), true) => i.checked_sub(1).unwrap_or(n - 1),
-        (None, false) => 0,
-        (None, true) => n - 1,
+        (None, false) => match rank {
+            Some(r) if r < n => seq_pos(&tree[r]).unwrap_or(0),
+            Some(_) => items.iter().position(|el| el.tab_index() <= 0).unwrap_or(0),
+            None => 0,
+        },
+        (None, true) => match rank {
+            Some(r) if r > 0 => seq_pos(&tree[r - 1]).unwrap_or(n - 1),
+            _ => n - 1,
+        },
     };
 
     for step in 0..n {
