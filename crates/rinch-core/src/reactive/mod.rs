@@ -300,6 +300,8 @@ pub fn clear_on_signal_change() {
 /// the [`SignalChangeSubscription`] "dropping detaches the callback" contract
 /// exact even mid-notification.
 pub(crate) fn notify_signal_change() {
+    // Every notification tells every host, so no host change is owed after it.
+    HOST_CHANGE_OWED.with(|c| c.set(false));
     let snapshot: Vec<(u64, Rc<dyn Fn()>)> =
         RUNTIME.with(|rt| rt.borrow().on_signal_change.clone());
     for (id, cb) in snapshot {
@@ -992,8 +994,8 @@ impl Drop for BatchGuard {
 /// ([`flush_pending_effects`]), so the DOM a handler touches is never behind the
 /// writes it already made.
 ///
-/// An outermost batch that wrote no signal, noted no [host
-/// change](note_host_change) and finds no effect queued at its exit does
+/// An outermost batch that wrote no signal, finds no [host
+/// change](note_host_change) owed and no effect queued at its exit does
 /// nothing there: no flush, and no signal-change callback — so a handler that
 /// wrote nothing requests no re-render. A batch that wrote runs
 /// the callbacks once at its exit even when its effects already ran mid-batch,
@@ -1039,10 +1041,9 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // legitimately open one while holding a guard), so its exit can check that
     // nothing taken inside it outlived it.
     let suppressed_at_entry = outermost.then(|| FLUSH_SUPPRESSED.with(|s| s.get()));
-    // How many signal writes and host changes this thread had made when the
-    // outermost batch opened, so its exit can tell a batch that changed
-    // nothing (issue #234).
-    let changes_at_entry = outermost.then(changes_seen);
+    // How many signal writes this thread had made when the outermost batch
+    // opened, so its exit can tell a batch that wrote nothing (issue #234).
+    let writes_at_entry = outermost.then(|| SIGNAL_NOTIFIES.with(|c| c.get()));
 
     let result = f();
 
@@ -1074,12 +1075,13 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // closure panicked and was caught, see `# Panics` — are run, and notified
     // for, by the next batch, written to or not.
     //
-    // "Wrote" includes a host change made outside the signal graph
-    // ([`note_host_change`] — the thread-global theme slot is one), which the
-    // hosts only pick up from this notification.
-    if let Some(at_entry) = changes_at_entry {
-        let wrote = changes_seen() != at_entry;
-        if wrote || has_pending_effects() {
+    // A host change ([`note_host_change`] — the thread-global theme slot is
+    // one) that no notification has delivered yet is owed too, whether it was
+    // made inside this batch or outside any: the hosts pick it up only from
+    // this notification.
+    if let Some(at_entry) = writes_at_entry {
+        let wrote = SIGNAL_NOTIFIES.with(|c| c.get()) != at_entry;
+        if wrote || host_change_owed() || has_pending_effects() {
             flush_effects_and_notify();
         }
     }
@@ -1087,18 +1089,14 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
-/// This thread's signal writes and [host changes](note_host_change), read
-/// together so [`batch`] can tell whether it owes the host a notification.
-fn changes_seen() -> (u64, u64) {
-    (
-        SIGNAL_NOTIFIES.with(|c| c.get()),
-        HOST_CHANGES.with(|c| c.get()),
-    )
+thread_local! {
+    /// Set by [`note_host_change`], cleared by every signal-change notification
+    /// (each one tells every host), and read by [`batch`]'s exit.
+    static HOST_CHANGE_OWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-thread_local! {
-    /// Bumped by [`note_host_change`]; compared by [`batch`].
-    static HOST_CHANGES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+fn host_change_owed() -> bool {
+    HOST_CHANGE_OWED.with(|c| c.get())
 }
 
 /// Record a change to state the **hosts** read outside the signal graph, so
@@ -1111,13 +1109,19 @@ thread_local! {
 /// [`Signal`], that code may change from a handler, and that a host reads
 /// only when told — `set_current_theme_css` (`rinch::update_theme`) is the one
 /// in rinch today — calls this when it changes, and the enclosing batch's exit
-/// notifies as if a signal had been written. Outside any batch it does nothing
-/// by itself, which is what such a change got before #234.
+/// notifies as if a signal had been written. Made outside any batch, it
+/// notifies nothing at once and is owed to the next notification: the next
+/// outermost batch notifies for it whether or not that batch writes anything
+/// (so the user's next click of any kind delivers it, as before #234), and any
+/// other notification — an unbatched signal write — pays it along the way.
 ///
 /// State a host polls on its own (a dirty DOM node, a pending focus request,
-/// an owed scroll, a finished image decode) does not need it.
+/// the editor's owed overlay pass, a finished image decode) does not need it.
+/// A `NodeHandle::scroll_into_view` request from a handler that dirties
+/// nothing is **not** such state on desktop — it is applied only by a resolve
+/// that something else triggers (#1145).
 pub fn note_host_change() {
-    HOST_CHANGES.with(|c| c.set(c.get().wrapping_add(1)));
+    HOST_CHANGE_OWED.with(|c| c.set(true));
 }
 
 /// Whether any effect is queued on this thread. Answers `true` when the
