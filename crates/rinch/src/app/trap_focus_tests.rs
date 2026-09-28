@@ -414,10 +414,15 @@ fn a_closed_but_mounted_modal_traps_nothing_and_traps_again_when_reopened() {
 
     open.set(false);
     settle(&mut app);
+    // The claim is still on `inside_last`, which lost its box with the modal.
+    // Tab resumes at that node's tree neighbour (`after`) rather than at the
+    // document's first stop — what Chrome 153 does from a focused element
+    // hidden under it (issue #435, `tab_order_tests`). Either way the trap is
+    // gone: `after` is outside it.
     let tour = tab_tour(&mut app, 2);
     assert_eq!(
         tour,
-        vec![Some(ids.before), Some(ids.after)],
+        vec![Some(ids.after), Some(ids.before)],
         "and gone again when it closes"
     );
 }
@@ -661,10 +666,13 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
         "the claim is untouched until the parked request is applied"
     );
 
+    // `inner_a` is no longer a stop, so Tab resumes at its tree neighbour
+    // inside the outer trap — `outer_b`, which follows the inner modal — as
+    // Chrome 153 does from a focused element hidden under it (issue #435).
     let tour = tab_tour(&mut app, 3);
     assert_eq!(
         tour,
-        vec![Some(ids.outer_a), Some(ids.outer_b), Some(ids.outer_a)],
+        vec![Some(ids.outer_b), Some(ids.outer_a), Some(ids.outer_b)],
         "the outer modal traps again"
     );
 
@@ -677,7 +685,7 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
     turn(&mut app);
     assert_eq!(
         focused(&app),
-        Some(ids.outer_a),
+        Some(ids.outer_b),
         "a parked release must not take the keyboard off the trap that has it"
     );
 }

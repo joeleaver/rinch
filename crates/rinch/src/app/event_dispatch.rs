@@ -855,31 +855,58 @@ impl RinchApp {
                         // (#203). The track itself comes from the paint pass
                         // (#400), so the press and the thumb agree about where
                         // the track's ends are.
+                        //
+                        // A press on the thumb itself grabs it in place (#443):
+                        // only the motion after it scrolls, as in every browser
+                        // and toolkit. Jumping there made the thumb leap so its
+                        // leading edge landed under the pointer before the drag
+                        // began. The thumb is the one paint draws at the
+                        // current offset — the same `thumb_contains` the resize
+                        // zone asks (#399, #420).
                         let local = pointer_in_node(&d.tree, node_id, x, y);
-                        let new_scroll =
-                            track.scroll_for_click(axis.along(local.0, local.1) as f64);
-
-                        let handler_id = d
+                        let along = axis.along(local.0, local.1) as f64;
+                        let current = d
                             .tree
                             .nodes
                             .get(node_id)
-                            .and_then(|n| n.attributes.get("data-onscroll"))
-                            .and_then(|s| s.parse::<usize>().ok());
-                        if let Some(node) = d.tree.nodes.get_mut(node_id) {
-                            match axis {
-                                ScrollAxis::Vertical => node.scroll_offset.1 = new_scroll,
-                                ScrollAxis::Horizontal => node.scroll_offset.0 = new_scroll,
+                            .map(|n| match axis {
+                                ScrollAxis::Vertical => n.scroll_offset.1,
+                                ScrollAxis::Horizontal => n.scroll_offset.0,
+                            })
+                            .unwrap_or(0.0);
+                        let on_thumb = track.thumb_contains(current, along);
+                        let new_scroll = if on_thumb {
+                            current
+                        } else {
+                            track.scroll_for_click(along)
+                        };
+
+                        // A grab moved nothing, so it dirties nothing and
+                        // fires no `onscroll`: the first scroll is the first
+                        // move's.
+                        if !on_thumb {
+                            let handler_id = d
+                                .tree
+                                .nodes
+                                .get(node_id)
+                                .and_then(|n| n.attributes.get("data-onscroll"))
+                                .and_then(|s| s.parse::<usize>().ok());
+                            if let Some(node) = d.tree.nodes.get_mut(node_id) {
+                                match axis {
+                                    ScrollAxis::Vertical => node.scroll_offset.1 = new_scroll,
+                                    ScrollAxis::Horizontal => node.scroll_offset.0 = new_scroll,
+                                }
+                                // The thumb lives inside the container's own layout
+                                // rect, which `compute_dirty_region` unions whole —
+                                // so marking the container paint-dirty covers where
+                                // the thumb was as well as where it now is, and the
+                                // software renderer leaves no #173-style trail.
+                                d.tree.mark_scrolled(node_id);
                             }
-                            // The thumb lives inside the container's own layout
-                            // rect, which `compute_dirty_region` unions whole —
-                            // so marking the container paint-dirty covers where
-                            // the thumb was as well as where it now is, and the
-                            // software renderer leaves no #173-style trail.
-                            d.tree.mark_scrolled(node_id);
-                        }
-                        d.tree.dirty_nodes.insert(node_id);
-                        if let Some(hid) = handler_id {
-                            scroll_handler_to_fire = Some(hid);
+                            d.tree.dirty_nodes.insert(node_id);
+                            if let Some(hid) = handler_id {
+                                scroll_handler_to_fire = Some(hid);
+                            }
                         }
 
                         self.scrollbar_drag = Some(ScrollbarDrag {

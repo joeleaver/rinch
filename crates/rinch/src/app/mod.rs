@@ -150,12 +150,16 @@ mod right_press_click_1093_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]
+mod scrollbar_thumb_press_443_tests;
+#[cfg(test)]
 mod select_popup_width_tests;
 mod select_widget;
 #[cfg(test)]
 mod shared_hit_tests;
 #[cfg(test)]
 mod stepper_state_709_tests;
+#[cfg(test)]
+mod tab_order_tests;
 #[cfg(test)]
 mod text_action_word_tests;
 mod text_context_menu;
@@ -3100,40 +3104,83 @@ impl RinchApp {
         // one substitution here and no change to the cycling below. Resolved
         // *after* `current`, because the trap chosen is the one the current
         // claim sits inside.
-        let focusable = match self.tab_trap_root(current) {
-            Some(root) => self.collect_focusable_nodes_from(root),
-            None => self.collect_focusable_nodes(),
-        };
+        // The node Tab starts from when it is not itself a Tab stop (a clicked
+        // `tabindex="-1"` node): the arbiter's claim, else the DOM's focus.
+        let probe = current.or_else(|| {
+            let d = self.doc.as_ref()?.borrow();
+            d.tree.focused_node
+        });
+        let root = self.tab_trap_root(current).unwrap_or(0);
+        let TabStops { stops, probe_rank } = self.collect_tab_stops_from(root, probe);
         // A trap with nothing focusable inside it swallows Tab rather than
         // letting it out: that is what containment means, and it is the state a
         // browser leaves an `inert`-ed page in too.
-        if focusable.is_empty() {
+        if stops.is_empty() {
             return;
         }
+        // The sequence (issue #435): positive `tabindex` ascending, then `0`,
+        // ties in tree order — a stable sort of the tree-ordered stops. The
+        // focusable set stays tree-ordered in `stops`, because a start that is
+        // not in the sequence resumes at its *tree* neighbour below.
+        let sequence = Self::tab_sequence(&stops);
+        let seq_pos = |node: usize| sequence.iter().position(|&n| n == node);
 
-        let current_idx = current
-            .and_then(|id| focusable.iter().position(|&fid| fid == id))
-            .or_else(|| {
-                let doc = self.doc.as_ref()?;
-                let d = doc.borrow();
-                let mut cur = d.tree.focused_node;
-                while let Some(id) = cur {
-                    if let Some(idx) = focusable.iter().position(|&fid| fid == id) {
-                        return Some(idx);
-                    }
-                    cur = d.tree.get(id).and_then(|n| n.parent);
+        let current_idx = current.and_then(seq_pos).or_else(|| {
+            // A start the walk visited is not a stop, and resumes at its tree
+            // neighbour below — also when it sits *inside* a stop, where Chrome
+            // does not anchor on the enclosing stop (`D[2]{F[-1]} A E[2]`: Tab
+            // from F is A, not E). The ancestor walk is for a claim the walk
+            // could not place at all.
+            if probe_rank.is_some() {
+                return None;
+            }
+            let doc = self.doc.as_ref()?;
+            let d = doc.borrow();
+            let mut cur = d.tree.focused_node;
+            while let Some(id) = cur {
+                if let Some(idx) = seq_pos(id) {
+                    return Some(idx);
                 }
-                None
-            });
+                cur = d.tree.get(id).and_then(|n| n.parent);
+            }
+            None
+        });
 
+        let n = sequence.len();
         let target_idx = match (current_idx, shift) {
-            (Some(idx), false) => (idx + 1) % focusable.len(),
-            (Some(idx), true) => idx.checked_sub(1).unwrap_or(focusable.len() - 1),
-            (None, false) => 0,
-            (None, true) => focusable.len() - 1,
+            (Some(idx), false) => (idx + 1) % n,
+            (Some(idx), true) => idx.checked_sub(1).unwrap_or(n - 1),
+            // A start inside `root` that is not a Tab stop goes to the next
+            // stop after it in TREE order, whatever that stop's tabindex, and
+            // Shift+Tab to the previous one; the sequence continues from there.
+            // With nothing after it, Tab goes to the first stop at `0` (not the
+            // sequence's first) and Shift+Tab with nothing before it wraps to
+            // the last — all as measured in Chrome 153 (`tab_order_tests`).
+            (None, false) => match probe_rank {
+                Some(r) if r < stops.len() => seq_pos(stops[r].0).unwrap_or(0),
+                Some(_) => sequence
+                    .iter()
+                    .position(|&id| stops.iter().any(|&(s, t)| s == id && t <= 0))
+                    .unwrap_or(0),
+                None => 0,
+            },
+            (None, true) => match probe_rank {
+                Some(r) if r > 0 => seq_pos(stops[r - 1].0).unwrap_or(n - 1),
+                _ => n - 1,
+            },
         };
 
-        self.focus_element(focusable[target_idx]);
+        self.focus_element(sequence[target_idx]);
+    }
+
+    /// The Tab sequence over tree-ordered `stops` (issue #435): every positive
+    /// `tabindex` in ascending order, then every `0`, ties in tree order — the
+    /// HTML sequential focus navigation order. A stable sort, so tree order is
+    /// what breaks ties.
+    fn tab_sequence(stops: &[(usize, i32)]) -> Vec<usize> {
+        let mut seq: Vec<(usize, i32)> = stops.to_vec();
+        seq.sort_by_key(|&(_, t)| if t > 0 { (0u8, t) } else { (1u8, 0) });
+        seq.into_iter().map(|(id, _)| id).collect()
     }
 
     /// Whether a node is disabled, and so takes no focus and accepts no edit —
@@ -3520,23 +3567,47 @@ impl RinchApp {
         false
     }
 
-    /// Collect all focusable node IDs in DOM pre-order (natural tab order).
+    /// Collect all focusable node IDs in DOM pre-order.
+    ///
+    /// **Tree order, not Tab order** — `handle_tab` sorts positive `tabindex`
+    /// first itself ([`Self::tab_sequence`], issue #435). Tests only: the
+    /// runtime walks through [`Self::collect_tab_stops_from`].
+    #[cfg(test)]
     fn collect_focusable_nodes(&self) -> Vec<usize> {
         self.collect_focusable_nodes_from(0)
     }
 
-    /// The same collection, confined to the subtree at `root`.
+    /// The same collection, confined to the subtree at `root`, in tree order.
     ///
     /// `root = 0` is the whole document, which is what
     /// [`Self::collect_focusable_nodes`] asks for. Any other root is a focus
     /// trap (issue #474) — and because `handle_tab` wraps modulo the list it is
-    /// given, confining the list is the whole of confining Tab.
+    /// given, confining the list is the whole of confining Tab. Tree order is
+    /// also what [`Self::focus_into_subtree`] needs: HTML picks a dialog's
+    /// focus delegate in tree order, not in Tab order.
     fn collect_focusable_nodes_from(&self, root: usize) -> Vec<usize> {
+        self.collect_tab_stops_from(root, None)
+            .stops
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// The walk behind [`Self::collect_focusable_nodes_from`]: every Tab stop
+    /// under `root` in tree order with the `tabindex` it behaves as (`0` for a
+    /// `data-oninput` control with none), plus — when `probe` is inside `root`
+    /// — how many stops precede it in tree order, which is where a Tab from a
+    /// node that is not itself a stop resumes.
+    fn collect_tab_stops_from(&self, root: usize, probe: Option<usize>) -> TabStops {
         let Some(doc) = &self.doc else {
-            return Vec::new();
+            return TabStops {
+                stops: Vec::new(),
+                probe_rank: None,
+            };
         };
         let d = doc.borrow();
         let mut result = Vec::new();
+        let mut out_probe_rank = None;
 
         // Walk DOM tree depth-first from `root`. The flag rides the stack
         // because `<fieldset disabled>` is the one element whose `disabled`
@@ -3549,6 +3620,9 @@ impl RinchApp {
             let Some(node) = d.tree.get(nid) else {
                 continue;
             };
+            if probe == Some(nid) {
+                out_probe_rank = Some(result.len());
+            }
 
             // A disabled or negative-tabindex node is not itself focusable, but
             // its children still are (web semantics remove only the node from
@@ -3568,10 +3642,10 @@ impl RinchApp {
                 // implied by the tag (issue #252) — or a custom control that
                 // takes text input without one.
                 let has_oninput = node.attributes.contains_key("data-oninput");
-                let has_tabindex = Self::effective_tabindex(node).is_some_and(|v| v >= 0);
+                let tabindex = Self::effective_tabindex(node).filter(|&v| v >= 0);
 
-                if has_oninput || has_tabindex {
-                    result.push(nid);
+                if has_oninput || tabindex.is_some() {
+                    result.push((nid, tabindex.unwrap_or(0)));
                 }
             }
 
@@ -3596,7 +3670,10 @@ impl RinchApp {
             }
         }
 
-        result
+        TabStops {
+            stops: result,
+            probe_rank: out_probe_rank,
+        }
     }
 
     /// Apply a parked [`FocusRequest`] (issue #695), **after a layout pass**.
@@ -10054,3 +10131,12 @@ mod click_viewport_tests {
 
 #[cfg(test)]
 mod editor_scroll_gate_tests;
+
+/// What [`RinchApp::collect_tab_stops_from`] found under a root.
+struct TabStops {
+    /// Every Tab stop, in tree order, with the `tabindex` it behaves as.
+    stops: Vec<(usize, i32)>,
+    /// How many of `stops` precede the probe in tree order, when the probe was
+    /// inside the root.
+    probe_rank: Option<usize>,
+}
