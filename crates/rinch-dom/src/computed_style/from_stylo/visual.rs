@@ -359,8 +359,8 @@ pub(super) fn background_size_from_stylo(
             LengthPercentageOrAuto::Auto => LengthPercentageAutoValue::Auto,
             LengthPercentageOrAuto::LengthPercentage(lp) => {
                 match super::calc::split_length_percentage(&lp.0) {
-                    (px, pct) if pct == 0.0 => LengthPercentageAutoValue::Length(px),
-                    (px, pct) if px == 0.0 => LengthPercentageAutoValue::Percent(pct),
+                    (px, 0.0) => LengthPercentageAutoValue::Length(px),
+                    (0.0, pct) => LengthPercentageAutoValue::Percent(pct),
                     (px, pct) => LengthPercentageAutoValue::Calc { px, pct },
                 }
             }
@@ -387,9 +387,9 @@ pub(super) fn background_position_from_stylo(
         return LengthPercentageValue::Zero;
     };
     match super::calc::split_length_percentage(lp) {
-        (px, pct) if px == 0.0 && pct == 0.0 => LengthPercentageValue::Zero,
-        (px, pct) if pct == 0.0 => LengthPercentageValue::Length(px),
-        (px, pct) if px == 0.0 => LengthPercentageValue::Percent(pct),
+        (0.0, 0.0) => LengthPercentageValue::Zero,
+        (px, 0.0) => LengthPercentageValue::Length(px),
+        (0.0, pct) => LengthPercentageValue::Percent(pct),
         (px, pct) => LengthPercentageValue::Calc { px, pct },
     }
 }
