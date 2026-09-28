@@ -992,9 +992,10 @@ impl Drop for BatchGuard {
 /// ([`flush_pending_effects`]), so the DOM a handler touches is never behind the
 /// writes it already made.
 ///
-/// An outermost batch that wrote no signal and finds no effect queued at its
-/// exit does nothing there: no flush, and no signal-change callback — so a
-/// handler that wrote nothing requests no re-render. A batch that wrote runs
+/// An outermost batch that wrote no signal, noted no [host
+/// change](note_host_change) and finds no effect queued at its exit does
+/// nothing there: no flush, and no signal-change callback — so a handler that
+/// wrote nothing requests no re-render. A batch that wrote runs
 /// the callbacks once at its exit even when its effects already ran mid-batch,
 /// and a batch that wrote nothing still flushes (and notifies for) effects an
 /// earlier batch left queued.

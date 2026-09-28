@@ -868,9 +868,17 @@ signal-change callback (#234: a no-op click posted a desktop `ReRender` and
 dirtied every embed context); one that wrote notifies once even if its
 effects ran mid-batch, and one that wrote nothing still flushes effects a
 caught-panic batch left queued. The write test is the thread's
-`SIGNAL_NOTIFIES` counter, so every signal write must keep bumping it.
-Thread-local save/restore guards go through `reactive::restore`
-(`RestoreCell`, `with_runtime_on_drop`) — a new one should too. A handler's
+`SIGNAL_NOTIFIES` counter plus a host-change counter, so every signal write
+must keep bumping the first, and **state outside the signal graph that a host
+reads only when a signal-change callback tells it to** must call
+`rinch_core::note_host_change()` when it changes — `set_current_theme_css`
+(`rinch::update_theme`) does, or a no-write handler's theme change never
+reached desktop, Android or the web's theme `<style>` (PR #1134 review). State
+a host polls itself (dirty nodes, focus requests, owed scrolls, image decodes)
+does not need it. Thread-local save/restore guards go through
+`reactive::restore` (`RestoreCell<K: Slot>` over a `restore_slot!`, and
+`with_runtime_on_drop`) — a new one should too; the slots dispatch statically
+because a `fn`-pointer selector cost the effect-run path +2.4% instructions. A handler's
 writes flush effects once, when it returns — **except that every `NodeHandle` operation from handler
 code first runs the effects queued so far** (`NodeHandle::accessed_doc` →
 `rinch_core::flush_pending_effects`), the analogue of a browser's forced style
