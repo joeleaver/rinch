@@ -859,7 +859,11 @@ mod batch_tests {
         assert!(dispatch_event(id));
 
         assert_eq!(ran.get(), 1, "the handler ran");
-        assert_eq!(flushes.get(), 0, "and wrote nothing, so nothing is requested");
+        assert_eq!(
+            flushes.get(),
+            0,
+            "and wrote nothing, so nothing is requested"
+        );
     }
 
     /// A handler that writes and then reads a memo of what it wrote gets the
