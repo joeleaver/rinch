@@ -876,7 +876,9 @@ pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) 
 /// The width of the invisible strip along a container's edge that counts as
 /// its scrollbar for hit-testing — [`rinch_dom::paint::scrollbar::HIT_THICKNESS`],
 /// which is where it is defined, beside the painted geometry it has to agree
-/// with (#444).
+/// with (#444). Only tests name it; the strips come from
+/// [`rinch_dom::paint::scrollbar::Scrollbars::hit_strip`].
+#[cfg(test)]
 pub(crate) const SCROLLBAR_HIT_THICKNESS: f32 = rinch_dom::paint::scrollbar::HIT_THICKNESS as f32;
 
 /// A scrollbar the pointer is over.
