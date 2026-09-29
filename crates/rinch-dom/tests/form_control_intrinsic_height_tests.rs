@@ -539,7 +539,10 @@ fn a_text_child_input_that_becomes_a_checkbox_gets_its_shaped_height_back() {
     doc.set_attribute(i, "type", "checkbox");
     doc.resolve_layout(800.0, 600.0);
     let shaped = height(&doc, i);
-    assert!(shaped > 20.0, "positive control: the text wraps, got {shaped}");
+    assert!(
+        shaped > 20.0,
+        "positive control: the text wraps, got {shaped}"
+    );
     doc.set_attribute(i, "type", "text");
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(height(&doc, i), 20.0, "a text field is one line");

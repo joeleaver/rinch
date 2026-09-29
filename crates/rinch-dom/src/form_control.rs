@@ -84,21 +84,28 @@ pub(crate) fn sync_form_control_measure(tree: &mut NodeTree, node_id: usize) -> 
         return false;
     };
     let want = form_control_content_height(node);
+    // An `<input>` whose `type` just left the line types still owes a
+    // re-measure: its InlineRoot measure stops answering the rows height.
+    let control_tag = matches!(node.tag(), Some("input" | "textarea"));
     let have = match tree.taffy.get_node_context(taffy_id) {
         Some(NodeContext::FormControl { content_height }) => Some(*content_height),
         // A context this module did not write is never overwritten. The one
         // reachable case is a `<textarea>` whose value arrived as a text
         // **child** (`textarea { "hi" }`, `set_text_content`, parsed HTML): it
         // is an IFC root, the IFC pass owns its context, and the `InlineRoot`
-        // measure answers `form_control_content_height` for it (see
+        // measure's *height* is `form_control_content_height` for it (see
         // [`inline_root_override`]). Overwriting it here made the two passes
         // trade the slot — one line after a structural pass, `rows` lines after
         // the next restyle (PR #1152 review, F1). What can still change under
-        // it is the `rows`/line height this restyle read, and that measure is
-        // not cached, so the Taffy node is marked dirty whenever it is a
-        // control.
+        // it is the `rows`/line height/`type` this restyle read — including a
+        // `type` that leaves the line types, where `want` is `None` and the
+        // shaped height must come back (review round 2, R2-2) — and Taffy
+        // caches that measure, so the node is marked dirty on every restyle of
+        // an `input`/`textarea` carrying one. That is a Taffy compute per
+        // restyle of such a control, colour-only ones included; the shape is
+        // rare, and the cure is to stop its text child forming an IFC (#1159).
         Some(NodeContext::InlineRoot(_)) | Some(NodeContext::Text(_)) => {
-            if want.is_some() {
+            if control_tag {
                 let _ = tree.taffy.mark_dirty(taffy_id);
                 return true;
             }
@@ -134,17 +141,16 @@ pub(crate) fn measure(content_height: f32, known: taffy::Size<Option<f32>>) -> t
     }
 }
 
-/// What an `InlineRoot` measure answers for a root that is a line-sized
-/// control, instead of shaping its children: a `<textarea>`'s text children are
-/// its default **value**, not content it is sized by (Chrome 153: a two-row
-/// textarea holding "abc" as a child is 40px, the same as an empty one). `None`
-/// for every ordinary IFC root. Checked before the IFC measure cache, which is
-/// keyed by width only and would otherwise answer the shaped height.
-pub(crate) fn inline_root_override(
-    nodes: &slab::Slab<Node>,
-    root_id: usize,
-    known: taffy::Size<Option<f32>>,
-) -> Option<taffy::Size<f32>> {
-    let height = form_control_content_height(nodes.get(root_id)?)?;
-    Some(measure(height, known))
+/// The **height** an `InlineRoot` measure answers for a root that is a
+/// line-sized control, in place of its shaped height: a `<textarea>`'s text
+/// children are its default **value**, not content it is sized by (Chrome 153:
+/// a two-row textarea holding "abc" as a child is 40px, the same as an empty
+/// one). `None` for every ordinary IFC root. Only the height: the width stays
+/// the shaped text's, so a control whose width is intrinsic (inline, a flex-row
+/// item, in an `inline-block`) does not collapse to 0 under its own text
+/// (review round 2, R2-1). Both measure sites apply it on the cached path too.
+/// Chrome takes that width from `cols`/`size` instead; the text-child shape's
+/// remaining problems are #1159.
+pub(crate) fn inline_root_override(nodes: &slab::Slab<Node>, root_id: usize) -> Option<f32> {
+    form_control_content_height(nodes.get(root_id)?)
 }

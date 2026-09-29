@@ -4380,11 +4380,7 @@ impl RinchDocument {
                             };
                         }
                         // Sized by its `rows`, not its text child (#297).
-                        if let Some(size) =
-                            crate::form_control::inline_root_override(nodes, root_id, known_dims)
-                        {
-                            return size;
-                        }
+                        let rows_h = crate::form_control::inline_root_override(nodes, root_id);
                         perf.bump(crate::perf::Counter::ShapeAtomicInline);
                         let inline_layout = Self::build_inline_layout(
                             nodes, root_id, max_width, 1.0, font_cx, layout_cx,
@@ -4392,7 +4388,9 @@ impl RinchDocument {
                         inline_layout.hang.record(perf);
                         taffy::Size {
                             width: known_dims.width.unwrap_or(inline_layout.measured_width()),
-                            height: known_dims.height.unwrap_or(inline_layout.layout.height()),
+                            height: known_dims
+                                .height
+                                .unwrap_or(rows_h.unwrap_or(inline_layout.layout.height())),
                         }
                     }
                     Some(NodeContext::Text(text)) => {
