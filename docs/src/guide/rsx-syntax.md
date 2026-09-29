@@ -446,7 +446,9 @@ types `abcd abcd Xabcd`.
 
 A `<textarea>` holds its value in an attribute rather than as child text, so it
 has no content to size against. Its height comes from `rows`, which reserves
-that many lines plus padding and border — 2 rows when unset, matching HTML:
+that many lines plus padding and border — 2 rows when unset, matching HTML.
+`rows` is read as HTML reads it: the leading digits (`"3abc"` is 3, `"2.5"` is
+2), and 2 when there are none or they come to zero:
 
 ```rust
 rsx! {
