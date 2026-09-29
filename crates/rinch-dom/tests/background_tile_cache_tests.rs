@@ -415,8 +415,10 @@ fn a_covering_image_is_drawn_not_rasterised() {
     assert_eq!(doc.tree.perf.get(Counter::BackgroundTileRasters), 0);
     assert_eq!(doc.tree.perf.get(Counter::BackgroundTileCacheHits), 0);
     assert_eq!(px(&p, 150, 75), [0, 150, 0, 255], "the image is drawn");
+    // The tile is 300x100 CSS px and the box 200 wide: device x 330 (CSS 220)
+    // is on the tile and off the box.
     assert_eq!(
-        px(&p, 290, 75),
+        px(&p, 330, 75),
         [255, 255, 255, 255],
         "and clipped to the box"
     );
