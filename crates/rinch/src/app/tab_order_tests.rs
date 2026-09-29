@@ -421,9 +421,9 @@ fn with_no_claim_tab_starts_from_the_doms_focused_node() {
 
 /// `tabindex` is parsed with HTML's integer rules in a browser (Chrome 153:
 /// `" 3"` → 3, `"2.5"` → 2, `"+2"` → 2), so `A S1[" 3"] S2["2.5"] S3["+2"]`
-/// tours `S2 S3 S1 A` there. Desktop's `i32::from_str` rejects the first two.
+/// tours `S2 S3 S1 A` there. Desktop's `i32::from_str` rejected the first two
+/// (#1138); `rinch_core::dom::parse_html_integer` is the reader now.
 #[test]
-#[ignore = "#1138: desktop parses tabindex with i32::from_str, not HTML's rules"]
 fn tabindex_parses_like_html() {
     const MARKUP: &[(&str, &str, Option<&str>)] = &[
         ("A", "button", None),
@@ -433,4 +433,25 @@ fn tabindex_parses_like_html() {
     ];
     let (mut app, ids) = mount_stops(&[], MARKUP, false);
     assert_eq!(tour(&mut app, &ids, 4, false), ["S2", "S3", "S1", "A"]);
+}
+
+/// The other half of #1138: what HTML's rules make **invalid** or
+/// **negative**. Chrome 153 on `A B["  -2"] C["99999999999"] D["99999999999"]
+/// E["3abc"]` (buttons `A B C`, divs `D E`) tabs `E A C`: `"  -2"` is `-2`
+/// (leading whitespace is skipped), so `B` leaves the sequence; an integer
+/// past `i32` is an error, so the button `C` falls back to its tag's `0` and
+/// the div `D` is not focusable at all; `"3abc"` is `3`.
+/// `i32::from_str` read `B` as unparsable (a Tab stop at `0`) and `E` as
+/// unparsable (not focusable): `A B C`.
+#[test]
+fn an_invalid_or_whitespace_led_tabindex_reads_like_html() {
+    const MARKUP: &[(&str, &str, Option<&str>)] = &[
+        ("A", "button", None),
+        ("B", "button", Some("  -2")),
+        ("C", "button", Some("99999999999")),
+        ("D", "div", Some("99999999999")),
+        ("E", "div", Some("3abc")),
+    ];
+    let (mut app, ids) = mount_stops(&[], MARKUP, false);
+    assert_eq!(tour(&mut app, &ids, 3, false), ["E", "A", "C"]);
 }

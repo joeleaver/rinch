@@ -171,8 +171,8 @@ fn a_max_height_caps_the_control() {
 /// `rows=3` padded is 3 × 20 + 14 = 74; `rows="2.5"` is 40 (2 rows);
 /// `rows="0"` and `rows="0.5"` are 40 (the default). 3 and 2.5 are off the
 /// default on purpose: a fixture at `rows=2` cannot tell a parsed `rows` from
-/// the default. `rows` is read as a float, not by HTML's integer rules, so
-/// `"3abc"` and `"1e1"` still disagree with Chrome — #1153.
+/// the default. `rows` is read by HTML's rules for parsing non-negative
+/// integers (#1153) — the next fixture pins the values a float parse got wrong.
 #[test]
 fn a_textarea_is_rows_lines_tall() {
     let mut doc = RinchDocument::new();
@@ -195,6 +195,55 @@ fn a_textarea_is_rows_lines_tall() {
     assert_eq!(height(&doc, three), 74.0, "Chrome 153: 74");
     assert_eq!(height(&doc, fractional), 40.0, "Chrome 153: 40");
     assert_eq!(height(&doc, zero), 40.0, "Chrome 153: 40");
+}
+
+/// `rows` is read by HTML's rules for parsing non-negative integers (#1153):
+/// leading ASCII whitespace, an optional sign, then the digits up to the first
+/// non-digit; no digits, a value past `i32`, or a result below 1 is the
+/// default 2. Chrome 153, `line-height: 20px`, no padding or border:
+///
+/// | `rows` | Chrome 153 | `str::parse::<f32>` |
+/// |---|---|---|
+/// | `"3abc"` | 60 | 40 (unparsable → 2) |
+/// | `"1e1"` | 20 | 200 (10 rows) |
+/// | `"1e30"` | 20 | NaN |
+/// | `"inf"` | 40 | infinite |
+/// | `"\t\n 4"` | 80 | 80 (`trim` covered it) |
+/// | `"-01"` | 40 | 40 |
+/// | `"2147483648"` | 40 | 2147483648 rows |
+///
+/// The box after them must stay finite: `inf` and `1e30` made every box laid
+/// out after the textarea NaN.
+#[test]
+fn rows_is_parsed_as_an_html_non_negative_integer() {
+    let mut doc = RinchDocument::new();
+    let c = container(&mut doc, "");
+    let mut ta = |rows: &str| {
+        let t = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
+        doc.set_attribute(t, "rows", rows);
+        t
+    };
+    let cases = [
+        ("3abc", ta("3abc"), 60.0),
+        ("1e1", ta("1e1"), 20.0),
+        ("1e30", ta("1e30"), 20.0),
+        ("inf", ta("inf"), 40.0),
+        ("\t\n 4", ta("\t\n 4"), 80.0),
+        ("-01", ta("-01"), 40.0),
+        ("2147483648", ta("2147483648"), 40.0),
+    ];
+    let after = el(&mut doc, c, "div", "height: 10px");
+    doc.resolve_layout(800.0, 600.0);
+    for (rows, id, want) in cases {
+        assert_eq!(height(&doc, id), want, "rows={rows:?}: Chrome 153 {want}");
+    }
+    let a = doc.tree.get(after.0).unwrap().layout;
+    assert!(
+        a.y.is_finite() && a.height == 10.0,
+        "the box after the textareas is laid out: {a:?}"
+    );
+    // 60 + 20 + 20 + 40 + 80 + 40 + 40 above it.
+    assert_eq!(a.y, 300.0);
 }
 
 /// The line height is not a Taffy property, so a `line-height` or `font-size`
