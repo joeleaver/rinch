@@ -431,9 +431,8 @@ impl Drop for SuspendObservers {
             return;
         }
         let saved = std::mem::take(&mut self.saved);
-        // `try_with`: TLS may already be torn down at thread exit.
-        let _ = RUNTIME.try_with(|rt| {
-            if let Ok(mut rt) = rt.try_borrow_mut() {
+        let _ =
+            super::restore::with_runtime_on_drop("the observer stack disposal suspended", |rt| {
                 // The saved frames go back *under* anything still on the stack:
                 // an observer pushed during the suspension and not yet popped
                 // belongs to a frame above this guard, and its `ObserverGuard`
@@ -442,13 +441,7 @@ impl Drop for SuspendObservers {
                 // finished — so this is belt and braces for unwinding.)
                 let since = std::mem::replace(&mut rt.observer_stack, saved);
                 rt.observer_stack.extend(since);
-            } else {
-                tracing::error!(
-                    "disposal could not restore the observer stack (runtime already \
-                     borrowed); an effect may silently stop subscribing"
-                );
-            }
-        });
+            });
     }
 }
 
@@ -798,18 +791,17 @@ pub(in crate::reactive) fn push_owner_weak(owner: Weak<ScopeInner>) -> OwnerGuar
 
 impl Drop for OwnerGuard {
     fn drop(&mut self) {
-        // `try_with`: TLS may already be torn down at thread exit, exactly as in
-        // `ObserverGuard::drop`. That case is legitimate and silent.
-        let in_order = RUNTIME.try_with(|rt| match rt.try_borrow_mut() {
-            Ok(mut rt) => {
-                let lifo = rt.owner_stack.len() == self.restore_len + 1;
-                // `truncate`, not `pop`: restores exactly the pre-push depth, so
-                // a lost inner guard is repaired rather than compounded, and it
-                // can never panic on an empty stack.
-                rt.owner_stack.truncate(self.restore_len);
-                lifo
-            }
-            Err(_) => false,
+        // TLS already torn down at thread exit is legitimate and silent
+        // (`Unrestored::TlsGone`); a borrowed runtime is logged by the helper
+        // and asserted on below.
+        let restore_len = self.restore_len;
+        let in_order = super::restore::with_runtime_on_drop("the owner stack", |rt| {
+            let lifo = rt.owner_stack.len() == restore_len + 1;
+            // `truncate`, not `pop`: restores exactly the pre-push depth, so
+            // a lost inner guard is repaired rather than compounded, and it
+            // can never panic on an empty stack.
+            rt.owner_stack.truncate(restore_len);
+            lifo
         });
 
         // A stranded owner is worse than a stranded observer — every later
@@ -817,7 +809,10 @@ impl Drop for OwnerGuard {
         // swallow the failure. The assert is gated on `!panicking()` because a
         // panic inside a `Drop` during unwind aborts the process, and this guard
         // is live during exactly that unwind in the panic-safety tests.
-        if matches!(in_order, Ok(false)) {
+        if matches!(
+            in_order,
+            Ok(false) | Err(super::restore::Unrestored::Borrowed)
+        ) {
             tracing::error!("owner guard dropped out of LIFO order, or RUNTIME was borrowed");
             if !std::thread::panicking() {
                 debug_assert!(false, "owner guards must drop in LIFO order (issue #141)");

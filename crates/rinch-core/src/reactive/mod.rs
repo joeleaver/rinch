@@ -77,6 +77,7 @@ mod memo;
 #[cfg(test)]
 mod memo_cutoff_tests;
 mod poll;
+pub(crate) mod restore;
 mod scope;
 mod scoped;
 mod signal;
@@ -299,6 +300,8 @@ pub fn clear_on_signal_change() {
 /// the [`SignalChangeSubscription`] "dropping detaches the callback" contract
 /// exact even mid-notification.
 pub(crate) fn notify_signal_change() {
+    // Every notification tells every host, so no host change is owed after it.
+    HOST_CHANGE_OWED.with(|c| c.set(false));
     let snapshot: Vec<(u64, Rc<dyn Fn()>)> =
         RUNTIME.with(|rt| rt.borrow().on_signal_change.clone());
     for (id, cb) in snapshot {
@@ -950,24 +953,11 @@ impl BatchGuard {
 
 impl Drop for BatchGuard {
     fn drop(&mut self) {
-        // `try_with`: TLS may already be torn down at thread exit.
-        let _ = RUNTIME.try_with(|rt| {
-            if let Ok(mut rt) = rt.try_borrow_mut() {
-                rt.batching = self.prev;
-            } else {
-                // Unreachable today: if a caller held the borrow, `raise()`
-                // would have panicked before a guard existed, and unwinding
-                // releases inner `RefMut`s before this frame drops. But a
-                // *silent* skip here would latch `batching = true` for the
-                // rest of the thread's life — the #232 freeze this guard
-                // exists to prevent, now unrecoverable because nothing
-                // clears the flag unconditionally anymore. Fail loud.
-                tracing::error!(
-                    "BatchGuard could not restore the batching flag (runtime already \
-                     borrowed); reactive updates may stop flushing"
-                );
-            }
-        });
+        // A borrowed runtime is logged, not skipped silently: that would latch
+        // `batching = true` for the rest of the thread's life — the #232
+        // freeze this guard exists to prevent.
+        let prev = self.prev;
+        let _ = restore::with_runtime_on_drop("the batching flag", |rt| rt.batching = prev);
     }
 }
 
@@ -1003,6 +993,14 @@ impl Drop for BatchGuard {
 /// operation inside the batch runs the effects queued so far first
 /// ([`flush_pending_effects`]), so the DOM a handler touches is never behind the
 /// writes it already made.
+///
+/// An outermost batch that wrote no signal, finds no [host
+/// change](note_host_change) owed and no effect queued at its exit does
+/// nothing there: no flush, and no signal-change callback — so a handler that
+/// wrote nothing requests no re-render. A batch that wrote runs
+/// the callbacks once at its exit even when its effects already ran mid-batch,
+/// and a batch that wrote nothing still flushes (and notifies for) effects an
+/// earlier batch left queued.
 ///
 /// # Panics
 ///
@@ -1043,6 +1041,9 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // legitimately open one while holding a guard), so its exit can check that
     // nothing taken inside it outlived it.
     let suppressed_at_entry = outermost.then(|| FLUSH_SUPPRESSED.with(|s| s.get()));
+    // How many signal writes this thread had made when the outermost batch
+    // opened, so its exit can tell a batch that wrote nothing (issue #234).
+    let writes_at_entry = outermost.then(|| SIGNAL_NOTIFIES.with(|c| c.get()));
 
     let result = f();
 
@@ -1064,11 +1065,74 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // must count as a fresh outermost batch.
     drop(guard);
 
-    if outermost {
-        flush_effects_and_notify();
+    // An outermost batch that wrote no signal and left nothing queued has
+    // nothing to run and nothing to tell the host (issue #234): every event
+    // dispatch is a batch, so a handler that wrote nothing used to post a
+    // desktop `ReRender` and dirty every embedded context for a no-op. Both
+    // halves of the test matter. A write whose effects already ran mid-batch
+    // (`flush_pending_effects`) leaves the queue empty and still owes the host
+    // its notification; and effects an earlier batch left queued — one whose
+    // closure panicked and was caught, see `# Panics` — are run, and notified
+    // for, by the next batch, written to or not.
+    //
+    // A host change ([`note_host_change`] — the thread-global theme slot is
+    // one) that no notification has delivered yet is owed too, whether it was
+    // made inside this batch or outside any: the hosts pick it up only from
+    // this notification.
+    if let Some(at_entry) = writes_at_entry {
+        let wrote = SIGNAL_NOTIFIES.with(|c| c.get()) != at_entry;
+        if wrote || host_change_owed() || has_pending_effects() {
+            flush_effects_and_notify();
+        }
     }
 
     result
+}
+
+thread_local! {
+    /// Set by [`note_host_change`], cleared by every signal-change notification
+    /// (each one tells every host), and read by [`batch`]'s exit.
+    static HOST_CHANGE_OWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn host_change_owed() -> bool {
+    HOST_CHANGE_OWED.with(|c| c.get())
+}
+
+/// Record a change to state the **hosts** read outside the signal graph, so
+/// the batch it is made in still calls the signal-change callbacks.
+///
+/// An outermost [`batch`] that wrote no signal calls no signal-change callback
+/// (issue #234), and those callbacks are how a host learns something changed:
+/// the desktop shell's `ReRender`, an embedded context's dirty flag, the web
+/// backend's theme `<style>` refresh. A piece of state that is not a
+/// [`Signal`], that code may change from a handler, and that a host reads
+/// only when told — `set_current_theme_css` (`rinch::update_theme`) is the one
+/// in rinch today — calls this when it changes, and the enclosing batch's exit
+/// notifies as if a signal had been written. Made outside any batch, it
+/// notifies nothing at once and is owed to the next notification: the next
+/// outermost batch notifies for it whether or not that batch writes anything
+/// (so the user's next click of any kind delivers it, as before #234), and any
+/// other notification — an unbatched signal write — pays it along the way.
+///
+/// State a host polls on its own (a dirty DOM node, a pending focus request,
+/// the editor's owed overlay pass, a finished image decode) does not need it.
+/// A `NodeHandle::scroll_into_view` request from a handler that dirties
+/// nothing is **not** such state on desktop — it is applied only by a resolve
+/// that something else triggers (#1145).
+pub fn note_host_change() {
+    HOST_CHANGE_OWED.with(|c| c.set(true));
+}
+
+/// Whether any effect is queued on this thread. Answers `true` when the
+/// runtime is borrowed — unreachable at a batch's exit (see `BatchGuard::drop`),
+/// and `true` keeps the unconditional flush that was there before #234.
+fn has_pending_effects() -> bool {
+    RUNTIME.with(|rt| {
+        rt.try_borrow()
+            .map(|rt| !rt.pending_effects.is_empty())
+            .unwrap_or(true)
+    })
 }
 
 thread_local! {
@@ -1079,18 +1143,17 @@ thread_local! {
 
 /// Saves [`REACTIVE_DEPTH`], zeroes it, and puts it back on drop — for an
 /// outermost [`batch`], which is a flush context of its own.
-struct DepthSetAside(u32);
+struct DepthSetAside {
+    _restore: restore::RestoreCell<ReactiveDepthSlot>,
+}
+
+restore::restore_slot!(ReactiveDepthSlot: u32 = REACTIVE_DEPTH);
 
 impl DepthSetAside {
     fn enter() -> Self {
-        DepthSetAside(REACTIVE_DEPTH.with(|d| d.replace(0)))
-    }
-}
-
-impl Drop for DepthSetAside {
-    fn drop(&mut self) {
-        let saved = self.0;
-        let _ = REACTIVE_DEPTH.try_with(|d| d.set(saved));
+        DepthSetAside {
+            _restore: restore::RestoreCell::replace(0),
+        }
     }
 }
 
@@ -1195,11 +1258,7 @@ pub fn flush_pending_effects() {
     struct Lowered;
     impl Drop for Lowered {
         fn drop(&mut self) {
-            let _ = RUNTIME.try_with(|rt| {
-                if let Ok(mut rt) = rt.try_borrow_mut() {
-                    rt.batching = true;
-                }
-            });
+            let _ = restore::with_runtime_on_drop("the batching flag", |rt| rt.batching = true);
         }
     }
     RUNTIME.with(|rt| rt.borrow_mut().batching = false);
@@ -1242,6 +1301,9 @@ pub struct ReactiveCounters {
 
 thread_local! {
     static EFFECT_RUNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Not only a counter: [`batch`] compares it across an outermost batch to
+    /// tell whether the batch wrote anything (issue #234), so every signal
+    /// write must keep bumping it.
     static SIGNAL_NOTIFIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -1300,16 +1362,8 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
     impl Drop for RestoreObserver {
         fn drop(&mut self) {
             if let Some(obs) = self.observer.take() {
-                // `try_with`: TLS may already be torn down at thread exit.
-                let _ = RUNTIME.try_with(|rt| {
-                    if let Ok(mut rt) = rt.try_borrow_mut() {
-                        rt.observer_stack.push(obs);
-                    } else {
-                        tracing::error!(
-                            "untracked() could not restore the observer (runtime already \
-                             borrowed); an effect may silently stop subscribing"
-                        );
-                    }
+                let _ = restore::with_runtime_on_drop("the observer untracked() popped", |rt| {
+                    rt.observer_stack.push(obs)
                 });
             }
         }
@@ -1692,6 +1746,153 @@ mod tests {
         sig.set(2);
         assert_eq!(legacy.get(), 1, "cleared legacy callback does not fire");
         assert_eq!(guard.get(), 2, "guard-based subscriber survives the clear");
+    }
+
+    /// Counts the notifications that reach the host — the signal-change
+    /// callback is what the desktop shell turns into a `ReRender` and an
+    /// embedded context into its dirty flag.
+    fn count_notifies() -> (Rc<Cell<u32>>, SignalChangeSubscription) {
+        let hits = Rc::new(Cell::new(0));
+        let h = hits.clone();
+        let sub = subscribe_signal_change(move || h.set(h.get() + 1));
+        (hits, sub)
+    }
+
+    /// An outermost batch that wrote nothing tells the host nothing (issue
+    /// #234, item 2). Every event dispatch is a batch, so before this a click
+    /// on a handler that wrote no signal — or a timer, or a drained main-thread
+    /// callback that changed nothing — posted a desktop `ReRender` and dirtied
+    /// every embedded context for a no-op.
+    ///
+    /// The positive control is a write to a signal **nobody observes**: it
+    /// queues no effect and leaves the queue as empty as the no-op batch does,
+    /// so the only thing telling the two apart is whether a write happened.
+    #[test]
+    fn an_outermost_batch_that_writes_nothing_does_not_notify() {
+        let (hits, _sub) = count_notifies();
+        let sig = Signal::new(0);
+
+        batch(|| {});
+        assert_eq!(hits.get(), 0, "an empty batch does not notify");
+
+        batch(|| batch(|| {}));
+        assert_eq!(hits.get(), 0, "nor does an empty batch nested in one");
+
+        batch(|| sig.get());
+        assert_eq!(hits.get(), 0, "a read is not a write");
+
+        batch(|| sig.set(1));
+        assert_eq!(
+            hits.get(),
+            1,
+            "a write with no observer still notifies, once, at the batch's exit"
+        );
+
+        batch(|| {
+            batch(|| sig.set(2));
+        });
+        assert_eq!(
+            hits.get(),
+            2,
+            "a write in a nested batch reaches the outer exit"
+        );
+    }
+
+    /// A batch that changed host state outside the signal graph notifies like
+    /// one that wrote a signal (PR #1134's review, F1: `update_theme` from a
+    /// handler that wrote nothing stopped restyling every host). Off the
+    /// one-change point: two changes in one batch still notify once.
+    #[test]
+    fn a_batch_that_notes_a_host_change_notifies_once() {
+        let (hits, _sub) = count_notifies();
+        batch(note_host_change);
+        assert_eq!(hits.get(), 1, "a host change owes the host a notification");
+        batch(|| {
+            note_host_change();
+            batch(note_host_change);
+        });
+        assert_eq!(hits.get(), 2, "once per outermost batch, nested or not");
+        batch(|| {});
+        assert_eq!(
+            hits.get(),
+            2,
+            "and an empty batch after it still owes nothing"
+        );
+    }
+
+    /// A host change made outside any batch is owed to the next batch, which
+    /// notifies for it once, written to or not (PR #1134 round-2 review, N1).
+    /// Any notification pays the debt: after one, an empty batch owes nothing.
+    #[test]
+    fn a_host_change_outside_a_batch_is_owed_to_the_next_batch() {
+        let (hits, _sub) = count_notifies();
+        note_host_change();
+        assert_eq!(
+            hits.get(),
+            0,
+            "outside a batch it notifies nothing by itself"
+        );
+        batch(|| {});
+        assert_eq!(hits.get(), 1, "the next batch pays it");
+        batch(|| {});
+        assert_eq!(hits.get(), 1, "once");
+
+        note_host_change();
+        Signal::new(0).set(1); // an unbatched write notifies, and pays it too
+        assert_eq!(hits.get(), 2);
+        batch(|| {});
+        assert_eq!(hits.get(), 2, "nothing left owed after that notification");
+    }
+
+    /// A batch whose writes were already flushed mid-batch still notifies at
+    /// its exit: the queue is empty by then, but the writes happened and the
+    /// host has not been told (`flush_pending_effects` never calls the
+    /// signal-change callbacks). A gate on "is anything queued" alone would
+    /// drop this re-render.
+    #[test]
+    fn a_batch_whose_writes_flushed_mid_batch_still_notifies() {
+        let (hits, _sub) = count_notifies();
+        let sig = Signal::new(0);
+        let seen = Rc::new(Cell::new(-1));
+        let s = seen.clone();
+        let _effect = Effect::new(move || s.set(sig.get()));
+
+        batch(|| {
+            sig.set(7);
+            flush_pending_effects();
+            assert_eq!(seen.get(), 7, "the mid-batch flush ran the effect");
+            assert_eq!(hits.get(), 0, "and told the host nothing yet");
+        });
+        assert_eq!(hits.get(), 1, "the batch's exit notifies for the write");
+    }
+
+    /// An empty batch still flushes, and notifies for, effects an earlier
+    /// batch left queued — the documented recovery for a `batch()` whose
+    /// closure panicked and was caught (issue #234, item 1, decided as "keep
+    /// today's behaviour": no flush is scheduled on unwind, the next flush
+    /// runs them). Every event dispatch is a batch, so the next handler of
+    /// any kind is that next flush; a gate on "was anything written in *this*
+    /// batch" alone would strand them until a write.
+    #[test]
+    fn an_empty_batch_flushes_effects_a_panicked_batch_left_queued() {
+        let sig = Signal::new(0);
+        let seen = Rc::new(Cell::new(-1));
+        let s = seen.clone();
+        let _effect = Effect::new(move || s.set(sig.get()));
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            batch(|| {
+                sig.set(5);
+                panic!("boom");
+            })
+        }));
+        assert!(caught.is_err(), "the batch closure panicked");
+        assert_eq!(seen.get(), 0, "nothing flushed on the way out");
+
+        let (hits, _sub) = count_notifies();
+        batch(|| {});
+        assert_eq!(seen.get(), 5, "the next batch ran the stranded effect");
+        assert_eq!(hits.get(), 1, "and told the host about the write it showed");
     }
 
     #[test]

@@ -116,6 +116,8 @@ mod named_damage_tests;
 #[cfg(test)]
 mod native_select_button_1111_tests;
 #[cfg(test)]
+mod no_write_handler_234_tests;
+#[cfg(test)]
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;

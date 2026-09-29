@@ -430,11 +430,8 @@ impl ObserverGuard {
 
 impl Drop for ObserverGuard {
     fn drop(&mut self) {
-        // `try_with`: TLS may already be torn down at thread exit.
-        let _ = RUNTIME.try_with(|rt| {
-            if let Ok(mut rt) = rt.try_borrow_mut() {
-                rt.observer_stack.pop();
-            }
+        let _ = super::restore::with_runtime_on_drop("the observer stack", |rt| {
+            rt.observer_stack.pop();
         });
     }
 }

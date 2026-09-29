@@ -845,6 +845,27 @@ mod batch_tests {
         assert_eq!(*seen.borrow(), vec![15], "1+2+3+4+5, never a partial sum");
     }
 
+    /// A click whose handler writes no signal requests no re-render (issue
+    /// #234): the batch the dispatch runs in wrote nothing, so the host's
+    /// signal-change callback — a desktop `ReRender`, an embedded context's
+    /// dirty flag — is not called. The handler did run (positive control).
+    #[test]
+    fn a_click_handler_that_writes_nothing_requests_no_rerender() {
+        let ran = Rc::new(Cell::new(0));
+        let r = Rc::clone(&ran);
+        let id = register_handler(Rc::new(move || r.set(r.get() + 1)));
+        let (flushes, _sub) = count_flushes();
+
+        assert!(dispatch_event(id));
+
+        assert_eq!(ran.get(), 1, "the handler ran");
+        assert_eq!(
+            flushes.get(),
+            0,
+            "and wrote nothing, so nothing is requested"
+        );
+    }
+
     /// A handler that writes and then reads a memo of what it wrote gets the
     /// new value, although the flush has not happened yet.
     #[test]

@@ -862,8 +862,28 @@ callbacks, each drained main-thread callback (one batch **per callback**), each
 timer, and web `rinch-http`/`rinch-ws` completions — on desktop, web and embed
 alike. The guide lists what is **not** batched (`run_on_main_thread` on the main
 thread, selection / configuration-change / child-observer callbacks, surface
-events, `on_change`); keep that list exact. A handler's writes flush effects
-once, when it returns — **except that every `NodeHandle` operation from handler
+events, `on_change`); keep that list exact. An outermost batch that wrote
+no signal and finds nothing queued at its exit runs no flush and calls no
+signal-change callback (#234: a no-op click posted a desktop `ReRender` and
+dirtied every embed context); one that wrote notifies once even if its
+effects ran mid-batch, and one that wrote nothing still flushes effects a
+caught-panic batch left queued. The write test is the thread's
+`SIGNAL_NOTIFIES` counter plus a host-change-owed flag, so every signal write
+must keep bumping the counter, and **state outside the signal graph that a host
+reads only when a signal-change callback tells it to** must call
+`rinch_core::note_host_change()` when it changes — `set_current_theme_css`
+(`rinch::update_theme`) does, or a no-write handler's theme change never
+reached desktop or the web's theme `<style>` (PR #1134 review; Android never
+applies a theme-only change at all, #1144). The change is *owed* until the
+next notification, so one made outside any batch is delivered by the next
+handler of any kind. State a host polls itself (dirty nodes, focus requests,
+the editor's owed overlay pass, image decodes) does not need it; a desktop
+`NodeHandle::scroll_into_view` from a handler that dirties nothing is **not**
+polled and is never applied (#1145). Thread-local save/restore guards go through
+`reactive::restore` (`RestoreCell<K: Slot>` over a `restore_slot!`, and
+`with_runtime_on_drop`) — a new one should too; the slots dispatch statically
+because a `fn`-pointer selector cost the effect-run path +2.4% instructions. A handler's
+writes flush effects once, when it returns — **except that every `NodeHandle` operation from handler
 code first runs the effects queued so far** (`NodeHandle::accessed_doc` →
 `rinch_core::flush_pending_effects`), the analogue of a browser's forced style
 flush. That keeps program order: `open.set(true); field.focus()` focuses after
