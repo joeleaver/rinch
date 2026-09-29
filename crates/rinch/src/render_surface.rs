@@ -790,6 +790,20 @@ pub fn any_surface_dirty() -> bool {
     })
 }
 
+/// Whether an **inline** surface (a `RenderSurface` component) has a new frame
+/// waiting — [`any_surface_dirty`] without the compositor-path surfaces, whose
+/// flags only a compositor clears. An embedded context composites nothing, so
+/// asking about those would report a frame to draw on every update for as long
+/// as a video was loaded (issue #331).
+#[cfg(any(feature = "desktop", feature = "embed"))]
+pub fn any_inline_surface_dirty() -> bool {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .any(|s| is_inline_surface(s) && s.needs_redraw.load(Ordering::Acquire))
+    })
+}
+
 /// Check if a surface uses inline painting (RenderSurface component)
 /// vs compositor/hole-punch (video, GameViewport).
 ///
@@ -797,9 +811,10 @@ pub fn any_surface_dirty() -> bool {
 /// starting with `__render_surface_` and paint inline. Surfaces created by
 /// `create_render_surface_with_name()` have custom names and use the compositor.
 ///
-/// Every caller is behind `desktop` or `gpu` (which implies `desktop`), so this is
-/// dead code on a wasm build — gate it the same way rather than warn there.
-#[cfg(feature = "desktop")]
+/// Every caller is behind `desktop`, `gpu` (which implies `desktop`) or `embed`,
+/// so this is dead code on a wasm build without `embed` — gate it the same way
+/// rather than warn there.
+#[cfg(any(feature = "desktop", feature = "embed"))]
 fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
     surface.viewport_name.starts_with("__render_surface_")
 }
@@ -903,7 +918,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
 /// For GPU texture surfaces, call [`readback_gpu_textures`] first to
 /// populate the CPU buffers.
 /// Clears dirty flags as a side effect.
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "embed"))]
 pub fn collect_surface_pixels_by_id()
 -> std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData> {
     use std::collections::HashMap;

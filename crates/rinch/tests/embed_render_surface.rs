@@ -20,8 +20,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use rinch::embed::{RinchContext, RinchContextConfig};
-use rinch::prelude::*;
 use rinch::platform::AppAction;
+use rinch::prelude::*;
 
 /// Late-bound resources the scene carries: an image draw is one of them, and
 /// nothing else in this document (no text, no gradient) adds any.
@@ -91,12 +91,29 @@ fn a_render_surface_in_an_embedded_context_is_sized_driven_and_painted() {
         "the submitted frame is drawn into the scene (no image in it)"
     );
 
+    // A render callback delivers a new frame into every scene, and each one is
+    // drawn: nothing else changed, so a scene not told about the frame would be
+    // served from the cache with the old one in it.
+    use rinch_dom::perf::Counter;
+    ctx.update(&[]);
+    ctx.reset_perf();
+    let _ = ctx.scene();
+    let _ = ctx.scene();
+    assert_eq!(
+        ctx.perf_total().get(Counter::PaintCachedFrames),
+        0,
+        "a fresh frame rebuilds the scene"
+    );
+
     // A frame submitted from outside the callback — another thread, a decoder —
     // is something to draw: the host is told, and the next update asks for a
     // redraw.
     ctx.update(&[]);
     let _ = ctx.scene();
-    assert!(!ctx.needs_update(), "control: nothing pending after a scene");
+    assert!(
+        !ctx.needs_update(),
+        "control: nothing pending after a scene"
+    );
     let px = [0u8, 0, 255, 255].repeat(180 * 90);
     surface.writer().submit_frame(&px, 180, 90);
     assert!(ctx.needs_update(), "a submitted frame needs an update");

@@ -114,6 +114,9 @@ pub struct RinchContext {
     size: (u32, u32),
     scale_factor: f64,
     dirty: Arc<AtomicBool>,
+    /// When the focused editor's caret next toggles, as of the last
+    /// [`update`](RinchContext::update) — see [`RinchContext::next_wake`].
+    next_wake: Option<rinch_platform::Instant>,
     /// This context's signal-change subscription. Multi-subscriber: several
     /// concurrent contexts (plus a mounted shell/web root) each hold their own,
     /// and dropping this context detaches only its own callback — creating or
@@ -210,6 +213,7 @@ impl RinchContext {
             size: (width, height),
             scale_factor,
             dirty,
+            next_wake: None,
             _signal_change_sub: signal_change_sub,
         }
     }
@@ -218,6 +222,11 @@ impl RinchContext {
     ///
     /// Returns actions the game should handle (e.g. `SetCursor`, `Exit`).
     /// Input events that rinch doesn't consume are ignored.
+    ///
+    /// Also runs the housekeeping the desktop event loop does each turn,
+    /// including the focused editor's caret blink: an event-driven host should
+    /// call `update` again at [`next_wake`](RinchContext::next_wake) even with
+    /// no input.
     pub fn update(&mut self, events: &[PlatformEvent]) -> Vec<AppAction> {
         let mut all_actions = Vec::new();
 
@@ -251,6 +260,22 @@ impl RinchContext {
                 .app
                 .handle_event(event.clone(), self.size, self.scale_factor);
             all_actions.extend(actions);
+        }
+
+        // Blink the focused editor's caret (issue #331) — the tick desktop runs
+        // after every event-loop turn. Ahead of the layout pass below, so the
+        // toggle's style write is resolved in this same update.
+        if self.tick_caret_blink() && !all_actions.contains(&AppAction::RequestRedraw) {
+            all_actions.push(AppAction::RequestRedraw);
+        }
+
+        // A `RenderSurface` frame submitted since the last scene — from its
+        // render callback's previous run, another thread, a decoder — is
+        // something to draw. `scene` collects it.
+        if crate::render_surface::any_inline_surface_dirty()
+            && !all_actions.contains(&AppAction::RequestRedraw)
+        {
+            all_actions.push(AppAction::RequestRedraw);
         }
 
         // If signals changed, resolve layout
@@ -294,6 +319,10 @@ impl RinchContext {
     ///
     /// The returned scene contains the full rinch UI and can be rendered
     /// to a texture via [`RinchOverlayRenderer`] or your own Vello setup.
+    ///
+    /// Mounted `RenderSurface`s are driven here, as the desktop paint drives
+    /// them: each is told its layout size, its render callback runs, and its
+    /// latest frame is painted inline at its box.
     pub fn scene(&mut self) -> &Scene {
         // `build_scene`'s size reaches `paint_document` as its `viewport`, which
         // is in **logical** pixels — the unit every other caller passes, and the
@@ -306,8 +335,94 @@ impl RinchContext {
         // with two meanings. `logical_size` is the same conversion `update`
         // already uses.
         let (lw, lh) = self.logical_size();
+        let surface_pixels = self.prepare_render_surfaces();
+        let installed = !surface_pixels.is_empty();
+        if installed {
+            rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
+        }
         self.app
-            .build_scene(self.scale_factor, (lw as u32, lh as u32))
+            .build_scene(self.scale_factor, (lw as u32, lh as u32));
+        if installed {
+            rinch_dom::paint::set_surface_pixels(None);
+        }
+        self.app.painter.scene()
+    }
+
+    /// Drive every mounted `RenderSurface` for this frame and return its
+    /// pixels for inline painting — the desktop paint's surface steps, in its
+    /// order (issue #331): tell each surface its **physical** layout size, run
+    /// the render callbacks (which skip a surface not yet measured), then
+    /// collect the frames. A surface that delivered a frame since the last
+    /// scene marks the scene dirty; one that did not is still installed, so a
+    /// scene rebuilt for some other reason draws its last frame.
+    ///
+    /// Only the inline path. The compositor path — video, and a surface
+    /// registered under a `data-viewport` name — is the host's to composite in
+    /// an embedded context, like a `GameViewport` hole, and a
+    /// `GpuTextureRegistrar` texture is not read back here: the host owns the
+    /// device (see the game-engine guide).
+    fn prepare_render_surfaces(
+        &mut self,
+    ) -> std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData> {
+        use crate::render_surface as rs;
+        let s = self.scale_factor as f32;
+        for (surface_id, rect) in self.app.all_surface_layout_rects() {
+            rs::update_layout_size_by_id(surface_id, (rect.2 * s) as u32, (rect.3 * s) as u32);
+        }
+        rs::invoke_render_callbacks();
+        let fresh: Vec<usize> = rs::registered_surface_ids()
+            .into_iter()
+            .filter(|&id| rs::is_surface_dirty_by_id(id))
+            .collect();
+        let pixels = rs::collect_surface_pixels_by_id();
+        if fresh.iter().any(|id| pixels.contains_key(id)) {
+            self.app.request_repaint();
+        }
+        pixels
+    }
+
+    /// Advance the focused editor's caret blink and record when it next
+    /// toggles. Returns whether the caret toggled (a redraw is owed).
+    #[cfg(feature = "desktop")]
+    fn tick_caret_blink(&mut self) -> bool {
+        let focused = self.app.blinking_editor_id();
+        match crate::editor::caret_blink_tick(self.app.doc_key(), focused) {
+            Some(blink) => {
+                self.next_wake = Some(rinch_platform::Instant::now() + blink.next);
+                blink.redraw
+            }
+            None => {
+                self.next_wake = None;
+                false
+            }
+        }
+    }
+
+    /// No rich-text editor without `desktop`, so nothing blinks.
+    #[cfg(not(feature = "desktop"))]
+    fn tick_caret_blink(&mut self) -> bool {
+        false
+    }
+
+    /// When this context next needs an [`update`](RinchContext::update) with
+    /// no input, or `None` when nothing is scheduled.
+    ///
+    /// Today that is the focused editor's caret blink (issue #331): an
+    /// editor's caret toggles every 530 ms while it has the keyboard, and it
+    /// is what the desktop runtime arms its only timed wake
+    /// (`ControlFlow::WaitUntil`) with. A host that renders continuously can
+    /// ignore this — every `update` ticks the blink. An event-driven host
+    /// schedules a wake for this instant, or its caret toggles only when some
+    /// other event happens to arrive. [`needs_update`](RinchContext::needs_update)
+    /// answers `true` once it has passed.
+    ///
+    /// As of the last `update`: it moves when the caret moves (the blink
+    /// restarts solid) and becomes `None` when the editor loses the keyboard or
+    /// the host window reports `WindowFocus(false)`. A running transition or
+    /// animation is not a wake — `update` answers `RequestRedraw` for each of
+    /// its frames instead.
+    pub fn next_wake(&self) -> Option<rinch_platform::Instant> {
+        self.next_wake
     }
 
     /// Notify rinch the window was resized.
@@ -444,6 +559,10 @@ impl RinchContext {
         self.dirty.load(Ordering::Acquire)
             || self.app.has_dirty_nodes()
             || self.app.has_deferred_work()
+            || crate::render_surface::any_inline_surface_dirty()
+            || self
+                .next_wake
+                .is_some_and(|t| rinch_platform::Instant::now() >= t)
     }
 
     /// Access the underlying `RinchApp` for advanced use cases.

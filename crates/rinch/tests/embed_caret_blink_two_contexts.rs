@@ -28,7 +28,10 @@ use rinch::prelude::*;
 /// no caret element at all.
 fn caret_hidden(ctx: &RinchContext) -> Option<bool> {
     let doc = ctx.app().doc().expect("mounted").borrow();
-    let id = doc.query_selector_all("[data-pm-caret]").into_iter().next()?;
+    let id = doc
+        .query_selector_all("[data-pm-caret]")
+        .into_iter()
+        .next()?;
     let style = doc.tree.nodes[id.0]
         .attributes
         .get("style")
@@ -88,8 +91,15 @@ fn a_context_without_a_focused_editor_leaves_the_other_ones_blink_alone() {
         with_editor.update(&[]);
         plain.update(&[]);
     }
-    assert!(with_editor.app().has_focused_contenteditable(), "precondition");
-    assert_eq!(plain.next_wake(), None, "nothing blinks in the plain context");
+    assert!(
+        with_editor.app().has_focused_contenteditable(),
+        "precondition"
+    );
+    assert_eq!(
+        plain.next_wake(),
+        None,
+        "nothing blinks in the plain context"
+    );
 
     // A host frame loop: both contexts updated every frame, in turn.
     let deadline = Instant::now() + Duration::from_secs(5);

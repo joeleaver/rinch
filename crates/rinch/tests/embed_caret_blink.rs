@@ -28,7 +28,10 @@ use rinch::prelude::*;
 /// no caret element at all.
 fn caret_hidden(ctx: &RinchContext) -> Option<bool> {
     let doc = ctx.app().doc().expect("mounted").borrow();
-    let id = doc.query_selector_all("[data-pm-caret]").into_iter().next()?;
+    let id = doc
+        .query_selector_all("[data-pm-caret]")
+        .into_iter()
+        .next()?;
     let style = doc.tree.nodes[id.0]
         .attributes
         .get("style")
@@ -116,5 +119,9 @@ fn the_focused_editors_caret_blinks_in_an_embedded_context() {
     // wake — desktop's #316 rule.
     ctx.update(&[PlatformEvent::WindowFocus(false)]);
     assert_eq!(ctx.next_wake(), None, "a blurred window arms no wake");
-    assert_eq!(caret_hidden(&ctx), Some(false), "and leaves the caret solid");
+    assert_eq!(
+        caret_hidden(&ctx),
+        Some(false),
+        "and leaves the caret solid"
+    );
 }

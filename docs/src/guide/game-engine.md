@@ -343,6 +343,33 @@ touches is still repainted by its own `update()`.
 > If you pinned an older rinch and wrapped your worker writes to avoid it, you
 > can drop the workaround.
 
+**Timed work: the caret blink.** A focused rich-text `Editor`'s caret toggles
+every 530 ms, and `update()` ticks that clock just as the desktop runtime does
+after each event-loop turn (issue #331). A host that calls `update()` every
+frame needs nothing more. An **event-driven** host — one that renders only when
+input arrives — asks `ctx.next_wake()` after each `update()`: it is the instant
+the caret next toggles (what desktop arms its `ControlFlow::WaitUntil` with), or
+`None` when nothing is blinking. Schedule a wake for it, or the caret toggles
+only when some unrelated event happens to arrive. `needs_update()` answers
+`true` once that instant has passed. A blurred host window
+(`PlatformEvent::WindowFocus(false)`) stops the blink with the caret solid and
+arms no wake. The blink clock is one per thread, because one caret has the
+keyboard: a context with no focused editor leaves another context's blink alone,
+but two contexts that *each* have a focused editor keep both carets solid.
+
+**RenderSurface in an embedded context.** A `RenderSurface` works inside a
+`RinchContext` the way it does on desktop: `scene()` tells each surface its
+physical layout size, runs its render callback, and paints its latest frame
+inline at the surface's box (issue #331). A frame submitted from another thread
+makes `needs_update()` true and the next `update()` answer `RequestRedraw`.
+Three things are **not** composited by rinch in an embedded context, because
+the host owns compositing there: a surface registered under a `data-viewport`
+name (`create_render_surface_with_name`), a `<video>` / `VideoViewport` (whose
+frame sink is installed only by the desktop runtime), and a
+`GpuTextureRegistrar` texture on a `RenderSurface` (read back only through the
+desktop runtime's own device). Treat them like a [`GameViewport`](#split-layout-viewport-hole)
+hole: render into your own target and composite it under rinch's overlay.
+
 ### Input Routing
 
 For HUD overlays, use `wants_mouse` and `wants_keyboard` to decide whether input goes to the UI or the game:
@@ -651,7 +678,8 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `viewport_rect(name) -> Option<LayoutRect>` | Query a GameViewport's computed rect |
 | `wants_mouse(x, y) -> bool` | True if point hits UI (not viewport hole) |
 | `wants_keyboard() -> bool` | True if a text input is focused |
-| `needs_update() -> bool` | True if UI needs repaint |
+| `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake` or a new `RenderSurface` frame) |
+| `next_wake() -> Option<Instant>` | When to call `update()` again with no input (the caret blink), or `None` |
 | `register_font(data)` | Register font data for text rendering |
 | `app() / app_mut()` | Access the underlying RinchApp |
 
