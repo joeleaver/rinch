@@ -881,10 +881,13 @@ impl RinchApp {
                             track.scroll_for_click(along)
                         };
 
-                        // A grab moved nothing, so it dirties nothing and
+                        // A press that moved nothing dirties nothing and
                         // fires no `onscroll`: the first scroll is the first
-                        // move's.
-                        if !on_thumb {
+                        // move's. That is every grab, and a track press whose
+                        // jump clamps to the offset it already has — past the
+                        // thumb at the far end, before it at the start (#444,
+                        // the #1135 review's L3).
+                        if new_scroll != current {
                             let handler_id = d
                                 .tree
                                 .nodes

@@ -150,6 +150,8 @@ mod right_press_click_1093_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]
+mod scrollbar_corner_444_tests;
+#[cfg(test)]
 mod scrollbar_thumb_press_443_tests;
 #[cfg(test)]
 mod select_popup_width_tests;
@@ -4934,7 +4936,8 @@ mod resize_vs_scrollbar_tests {
         // The probe for the vacated track, and the premises that make it
         // probative: inside the span the thumb held at scroll 0 (which ran
         // [margin, margin + thumb_len)), above the thumb as painted now, and
-        // clear of the 8px corner square.
+        // clear of the window's top-right *resize* corner (`resize_inset` 8px
+        // square) — this window has one bar, so no scrollbar corner applies.
         let old_y = 100.0_f32;
         let thumb_len = thumb_bottom - thumb_top;
         assert!(
@@ -7544,8 +7547,10 @@ mod horizontal_scrollbar_tests {
 
     /// The corner. With both bars up their strips would overlap in a square at
     /// the bottom-right and one would silently win every click there. Neither
-    /// claims it — which also matches the paint pass, where both tracks stop
-    /// short so no thumb is ever drawn in a square that cannot be grabbed.
+    /// claims it — which also matches the paint pass, where both tracks give up
+    /// the same square so no thumb that fits its track is drawn in it (#444,
+    /// `scrollbar_corner_444_tests`; a `MIN_THUMB` thumb on a shorter track is
+    /// #1141).
     #[test]
     fn the_corner_between_two_scrollbars_belongs_to_neither() {
         let Bars { app, rect, .. } = mount(BOTH, "width: 800px; height: 800px");

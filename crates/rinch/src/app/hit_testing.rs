@@ -1,6 +1,7 @@
 // ── Free functions (platform-agnostic hit testing) ───────────────────────────
 
 use super::ScrollAxis;
+use rinch_dom::paint::scrollbar::ScrollbarAxis;
 use std::rc::Rc;
 
 use rinch_dom::stacking::{PaintOrder, paints_at_stacking_root, stacking_paint_order};
@@ -873,10 +874,12 @@ pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) 
 }
 
 /// The width of the invisible strip along a container's edge that counts as
-/// its scrollbar for hit-testing — deliberately wider than the 6px thumb the
-/// paint pass draws, so the bar is easy to grab. Both axes use it, so the
-/// corner the two strips would share is a square of this side.
-pub(crate) const SCROLLBAR_HIT_THICKNESS: f32 = 16.0;
+/// its scrollbar for hit-testing — [`rinch_dom::paint::scrollbar::HIT_THICKNESS`],
+/// which is where it is defined, beside the painted geometry it has to agree
+/// with (#444). Only tests name it; the strips come from
+/// [`rinch_dom::paint::scrollbar::Scrollbars::hit_strip`].
+#[cfg(test)]
+pub(crate) const SCROLLBAR_HIT_THICKNESS: f32 = rinch_dom::paint::scrollbar::HIT_THICKNESS as f32;
 
 /// A scrollbar the pointer is over.
 ///
@@ -985,43 +988,26 @@ fn find_scrollbar_hit_node(
     // for an ordinary node in the recursion — `scrollbars` returns after two
     // enum checks when neither axis scrolls, without walking children.
     let bars = rinch_dom::paint::scrollbar::scrollbars(tree, node_id, 1.0);
-    let (vertical, horizontal) = (bars.vertical, bars.horizontal);
 
-    // The corner. Where both bars are present their strips would overlap in a
-    // square at the far end, and one of them would silently win the click.
-    // Neither claims it: each strip stops short by the other's thickness, so
-    // the corner falls through to ordinary click handling on the container.
-    // The paint pass shortens both tracks the same way, so no thumb is ever
-    // drawn in a square that cannot be grabbed.
-    let t = SCROLLBAR_HIT_THICKNESS;
-    let v_end = if horizontal.is_some() {
-        ny + nh - t
-    } else {
-        ny + nh
-    };
-    let h_end = if vertical.is_some() {
-        nx + nw - t
-    } else {
-        nx + nw
-    };
-
-    if let Some(track) = vertical {
-        let scrollbar_left = nx + nw - t;
-        if x >= scrollbar_left && x <= nx + nw && y >= ny && y <= v_end {
+    // The strips, and the corner neither claims, come from the same module as
+    // the painted tracks (#444): where both bars are present their strips
+    // would overlap in a square at the far end and one would silently win the
+    // click, so each stops at it and the corner falls through to ordinary
+    // click handling on the container. The paint pass gives up the same
+    // square, so a thumb that fits its track is never drawn where it cannot
+    // be grabbed (a `MIN_THUMB` thumb on a shorter track is #1141).
+    for (axis, scroll_axis) in [
+        (ScrollbarAxis::Vertical, ScrollAxis::Vertical),
+        (ScrollbarAxis::Horizontal, ScrollAxis::Horizontal),
+    ] {
+        let (Some(track), Some((x0, y0, x1, y1))) = (bars.axis(axis), bars.hit_strip(axis)) else {
+            continue;
+        };
+        let (lx, ly) = ((x - nx) as f64, (y - ny) as f64);
+        if lx >= x0 && lx <= x1 && ly >= y0 && ly <= y1 {
             return Some(ScrollbarHit {
                 node_id,
-                axis: ScrollAxis::Vertical,
-                track,
-            });
-        }
-    }
-
-    if let Some(track) = horizontal {
-        let scrollbar_top = ny + nh - t;
-        if y >= scrollbar_top && y <= ny + nh && x >= nx && x <= h_end {
-            return Some(ScrollbarHit {
-                node_id,
-                axis: ScrollAxis::Horizontal,
+                axis: scroll_axis,
                 track,
             });
         }
