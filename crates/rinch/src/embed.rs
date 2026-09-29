@@ -117,6 +117,13 @@ pub struct RinchContext {
     /// When the focused editor's caret next toggles, as of the last
     /// [`update`](RinchContext::update) — see [`RinchContext::next_wake`].
     next_wake: Option<rinch_platform::Instant>,
+    /// The `RenderSurface` ids in this context's document, as of the last
+    /// [`scene`](RinchContext::scene): what its surface pass drives, and what
+    /// `update` / `needs_update` ask about a new frame for.
+    surface_ids: Vec<usize>,
+    /// How many `scene()` calls ran the surface pass — see
+    /// [`RinchContext::surface_pass_count`].
+    surface_passes: u64,
     /// This context's signal-change subscription. Multi-subscriber: several
     /// concurrent contexts (plus a mounted shell/web root) each hold their own,
     /// and dropping this context detaches only its own callback — creating or
@@ -214,6 +221,8 @@ impl RinchContext {
             scale_factor,
             dirty,
             next_wake: None,
+            surface_ids: Vec::new(),
+            surface_passes: 0,
             _signal_change_sub: signal_change_sub,
         }
     }
@@ -272,7 +281,7 @@ impl RinchContext {
         // A `RenderSurface` frame submitted since the last scene — from its
         // render callback's previous run, another thread, a decoder — is
         // something to draw. `scene` collects it.
-        if crate::render_surface::any_inline_surface_dirty()
+        if crate::render_surface::inline_surfaces_dirty(&self.surface_ids)
             && !all_actions.contains(&AppAction::RequestRedraw)
         {
             all_actions.push(AppAction::RequestRedraw);
@@ -320,9 +329,11 @@ impl RinchContext {
     /// The returned scene contains the full rinch UI and can be rendered
     /// to a texture via [`RinchOverlayRenderer`] or your own Vello setup.
     ///
-    /// Mounted `RenderSurface`s are driven here, as the desktop paint drives
-    /// them: each is told its layout size, its render callback runs, and its
-    /// latest frame is painted inline at its box.
+    /// This context's mounted `RenderSurface`s are driven here, as the desktop
+    /// paint drives them: each is told its layout size, its render callback
+    /// runs, and its latest frame is painted inline at its box. Call it once
+    /// per frame: **every** call runs the render callbacks again, so a second
+    /// `scene()` in one frame renders each callback-driven surface twice.
     pub fn scene(&mut self) -> &Scene {
         // `build_scene`'s size reaches `paint_document` as its `viewport`, which
         // is in **logical** pixels — the unit every other caller passes, and the
@@ -348,7 +359,7 @@ impl RinchContext {
         self.app.painter.scene()
     }
 
-    /// Drive every mounted `RenderSurface` for this frame and return its
+    /// Drive this context's mounted `RenderSurface`s for this frame and return their
     /// pixels for inline painting — the desktop paint's surface steps, in its
     /// order (issue #331): tell each surface its **physical** layout size, run
     /// the render callbacks (which skip a surface not yet measured), then
@@ -361,24 +372,47 @@ impl RinchContext {
     /// an embedded context, like a `GameViewport` hole, and a
     /// `GpuTextureRegistrar` texture is not read back here: the host owns the
     /// device (see the game-engine guide).
+    ///
+    /// Only **this** context's surfaces — the ones in its own document. The
+    /// registry is thread-global, and a pass over every surface would run
+    /// another context's render callbacks and take its fresh frame, leaving
+    /// that context's own `scene()` cached with the old one.
+    ///
+    /// A thread with no inline surface registered skips the pass, and with it
+    /// the document walk that finds the surfaces: every step would be a no-op,
+    /// and the walk is O(document) on a `scene()` that is otherwise a cache
+    /// hit.
     fn prepare_render_surfaces(
         &mut self,
     ) -> std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData> {
         use crate::render_surface as rs;
+        if !rs::any_inline_surface_registered() {
+            self.surface_ids.clear();
+            return Default::default();
+        }
+        self.surface_passes += 1;
         let s = self.scale_factor as f32;
+        self.surface_ids.clear();
         for (surface_id, rect) in self.app.all_surface_layout_rects() {
             rs::update_layout_size_by_id(surface_id, (rect.2 * s) as u32, (rect.3 * s) as u32);
+            self.surface_ids.push(surface_id);
         }
-        rs::invoke_render_callbacks();
-        let fresh: Vec<usize> = rs::registered_surface_ids()
-            .into_iter()
-            .filter(|&id| rs::is_surface_dirty_by_id(id))
-            .collect();
-        let pixels = rs::collect_surface_pixels_by_id();
-        if fresh.iter().any(|id| pixels.contains_key(id)) {
+        rs::invoke_render_callbacks_for(&self.surface_ids);
+        let (pixels, fresh) = rs::collect_surface_pixels_for(&self.surface_ids);
+        if !fresh.is_empty() {
             self.app.request_repaint();
         }
         pixels
+    }
+
+    /// How many [`scene`](RinchContext::scene) calls have run the
+    /// `RenderSurface` pass, which walks the document to find this context's
+    /// surfaces. It is skipped while the thread has no surface registered, so
+    /// that a `scene()` on an unchanged document stays a cache hit. A
+    /// structural test hook, not a stable API.
+    #[doc(hidden)]
+    pub fn surface_pass_count(&self) -> u64 {
+        self.surface_passes
     }
 
     /// Advance the focused editor's caret blink and record when it next
@@ -559,7 +593,7 @@ impl RinchContext {
         self.dirty.load(Ordering::Acquire)
             || self.app.has_dirty_nodes()
             || self.app.has_deferred_work()
-            || crate::render_surface::any_inline_surface_dirty()
+            || crate::render_surface::inline_surfaces_dirty(&self.surface_ids)
             || self
                 .next_wake
                 .is_some_and(|t| rinch_platform::Instant::now() >= t)
