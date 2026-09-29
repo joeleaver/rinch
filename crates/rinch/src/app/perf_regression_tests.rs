@@ -926,6 +926,11 @@ fn ten_queued_drag_moves_lay_out_once() {
 /// toggle changes is used by no text here, and the full restyle drops an IFC's
 /// layout only when that IFC's typography moved. It used to drop all of them —
 /// 211, every row and side-scroller row.
+///
+/// And no Taffy measure call (`taffy_measure_calls` 0, was 1): the
+/// whole-document IFC pass used to `set_style` every childless block to apply
+/// the one-line floor, which dirtied the page's one childless leaf; #296
+/// removed the floor.
 #[cfg(feature = "theme")]
 #[test]
 fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
@@ -954,7 +959,6 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (IfcFullPasses, 1),
             (IfcFullTheme, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 1),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullTheme, 1),
