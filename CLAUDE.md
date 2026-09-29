@@ -1688,8 +1688,15 @@ still dismisses it. It is never handed
 to the text engine, whatever handlers it carries: branching on `data-oninput`
 without a tag guard used to install an `EditableState` over a select's `value`
 and make it a typable text field (issue #424). `Select`'s trigger `<div>`
-carries `tabindex="0"` + combobox ARIA (issue #251); arrow/Enter/Escape
-navigation of its **open** option list is issue #434.
+carries `tabindex="0"` + combobox ARIA (issue #251), and its **open** option
+list answers the keyboard on both backends (issue #434): ArrowUp/Down (wrapping),
+Home/End, Enter/Space to commit, Escape and Tab to close without committing, and
+type-ahead, with `aria-activedescendant` naming the highlighted option. The
+trigger keeps the focus; the keys arrive through a
+`rinch_core::push_key_handler` entry pushed at open and released at close (a
+dismiss-stack entry offered every key press, ahead of the Escape scan, by
+`dispatch_keyboard_event`), and Escape through
+`arm_close_on_escape_while_open`. A closed `Select` consumes no key.
 
 **Tab is contained by an open overlay** (`trap_focus`, #474). `Modal`, `Drawer`
 and `Popover` stamp **`data-trap-focus`** on their root while open and **remove**

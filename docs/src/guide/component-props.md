@@ -292,6 +292,12 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `onchange` | `Option<InputCallback>` | `None` | Receives selected value as `String` |
 | `data` | `Vec<SelectOption>` | `[]` | The list of selectable options |
 
+**Keyboard (#251, #434).** The trigger is focusable; Enter or Space opens the
+list, and while it is open ArrowUp/ArrowDown move the highlight (wrapping),
+Home/End jump, Enter or Space commits, Escape closes without committing, Tab
+closes, and typing jumps to the first matching label. The trigger keeps the
+focus throughout, a pointer pick included.
+
 Options are passed via `data`, not as children — the trigger's `_children` param
 is unused. Build a `Vec<SelectOption>` with `SelectOption::new(value, label)` (a
 `SelectOption` is `{ value: String, label: String }`; an empty `label` falls back

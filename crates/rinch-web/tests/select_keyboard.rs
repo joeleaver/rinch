@@ -106,10 +106,10 @@ fn highlighted(doc: &web_sys::Document) -> Option<usize> {
     let mut lit = Vec::new();
     for i in 0..options.length() {
         let el: web_sys::Element = options.item(i).unwrap().dyn_into().unwrap();
-        if el
-            .get_attribute("class")
-            .is_some_and(|c| c.split_whitespace().any(|one| one == "rinch-select__option--highlighted"))
-        {
+        if el.get_attribute("class").is_some_and(|c| {
+            c.split_whitespace()
+                .any(|one| one == "rinch-select__option--highlighted")
+        }) {
             lit.push(i as usize);
         }
     }
@@ -139,10 +139,17 @@ fn open(doc: &web_sys::Document) -> web_sys::Element {
 fn the_arrows_move_the_highlight_and_are_default_prevented_in_chrome() {
     let (doc, picks) = mount("banana");
     let trigger = open(&doc);
-    assert_eq!(highlighted(&doc), Some(1), "the highlight starts at the selection");
+    assert_eq!(
+        highlighted(&doc),
+        Some(1),
+        "the highlight starts at the selection"
+    );
 
     let ev = keydown(&trigger, "ArrowDown");
-    assert!(ev.default_prevented(), "a consumed ArrowDown must not scroll the page");
+    assert!(
+        ev.default_prevented(),
+        "a consumed ArrowDown must not scroll the page"
+    );
     assert_eq!(highlighted(&doc), Some(2));
     keydown(&trigger, "ArrowUp");
     assert_eq!(highlighted(&doc), Some(1));

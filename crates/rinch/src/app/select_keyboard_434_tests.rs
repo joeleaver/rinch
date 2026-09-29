@@ -84,7 +84,9 @@ fn find_all(app: &RinchApp, class: &str) -> Vec<usize> {
 fn attr(app: &RinchApp, node: usize, name: &str) -> Option<String> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    d.tree.get(node).and_then(|n| n.attributes.get(name).cloned())
+    d.tree
+        .get(node)
+        .and_then(|n| n.attributes.get(name).cloned())
 }
 
 impl Fixture {
@@ -172,7 +174,11 @@ impl Fixture {
 fn the_keyboard_alone_opens_moves_and_commits() {
     let mut f = mount("banana");
     f.open_by_keyboard();
-    assert_eq!(f.highlighted(), Some(1), "the highlight starts at the selection");
+    assert_eq!(
+        f.highlighted(),
+        Some(1),
+        "the highlight starts at the selection"
+    );
 
     f.key(KeyCode::ArrowDown, None);
     assert_eq!(f.highlighted(), Some(2));
@@ -209,7 +215,11 @@ fn escape_closes_without_committing_and_keeps_the_trigger_focused() {
     // where it was, and nothing is left armed.
     f.key(KeyCode::Enter, None);
     assert!(f.is_open());
-    assert_eq!(f.highlighted(), Some(1), "reopening starts at the selection");
+    assert_eq!(
+        f.highlighted(),
+        Some(1),
+        "reopening starts at the selection"
+    );
 }
 
 #[test]

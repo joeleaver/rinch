@@ -112,7 +112,10 @@ impl Mounted {
             .filter(|(_, o)| has_class(o, HIGHLIGHTED))
             .map(|(i, _)| i)
             .collect();
-        assert!(lit.len() <= 1, "more than one option is highlighted: {lit:?}");
+        assert!(
+            lit.len() <= 1,
+            "more than one option is highlighted: {lit:?}"
+        );
         lit.first().copied()
     }
 
@@ -130,7 +133,11 @@ fn opening_highlights_the_selected_option_not_the_first() {
     let m = Mounted::new("cherry");
     assert_eq!(m.highlighted(), None, "a closed list highlights nothing");
     m.open();
-    assert_eq!(m.highlighted(), Some(2), "the highlight starts at the selection");
+    assert_eq!(
+        m.highlighted(),
+        Some(2),
+        "the highlight starts at the selection"
+    );
 }
 
 #[test]
@@ -144,7 +151,10 @@ fn opening_with_no_selection_highlights_the_first_option() {
 fn arrow_down_and_up_move_the_highlight_and_are_consumed() {
     let m = Mounted::new("banana");
     m.open();
-    assert!(m.press("ArrowDown"), "ArrowDown on an open list is consumed");
+    assert!(
+        m.press("ArrowDown"),
+        "ArrowDown on an open list is consumed"
+    );
     assert_eq!(m.highlighted(), Some(2));
     assert!(m.press("ArrowDown"));
     assert_eq!(m.highlighted(), Some(3));
@@ -160,9 +170,17 @@ fn the_arrows_wrap_at_both_ends() {
     m.open();
     assert_eq!(m.highlighted(), Some(4));
     m.press("ArrowDown");
-    assert_eq!(m.highlighted(), Some(0), "ArrowDown past the last wraps to the first");
+    assert_eq!(
+        m.highlighted(),
+        Some(0),
+        "ArrowDown past the last wraps to the first"
+    );
     m.press("ArrowUp");
-    assert_eq!(m.highlighted(), Some(4), "ArrowUp past the first wraps to the last");
+    assert_eq!(
+        m.highlighted(),
+        Some(4),
+        "ArrowUp past the first wraps to the last"
+    );
 }
 
 #[test]
@@ -206,8 +224,19 @@ fn escape_closes_without_committing() {
 #[test]
 fn a_closed_select_consumes_no_key() {
     let m = Mounted::new("banana");
-    for key in ["ArrowDown", "ArrowUp", "Home", "End", "Enter", "Escape", "c"] {
-        assert!(!m.press(key), "a closed Select must leave {key:?} to the page");
+    for key in [
+        "ArrowDown",
+        "ArrowUp",
+        "Home",
+        "End",
+        "Enter",
+        "Escape",
+        "c",
+    ] {
+        assert!(
+            !m.press(key),
+            "a closed Select must leave {key:?} to the page"
+        );
     }
     m.open();
     m.press("Escape");
@@ -294,8 +323,14 @@ fn the_aria_names_the_highlighted_option() {
     );
     m.press("Enter");
     assert_eq!(m.trigger().get_attribute("aria-activedescendant"), None);
-    assert_eq!(options[2].get_attribute("aria-selected").as_deref(), Some("true"));
-    assert_eq!(options[1].get_attribute("aria-selected").as_deref(), Some("false"));
+    assert_eq!(
+        options[2].get_attribute("aria-selected").as_deref(),
+        Some("true")
+    );
+    assert_eq!(
+        options[1].get_attribute("aria-selected").as_deref(),
+        Some("false")
+    );
 }
 
 /// Two `Select`s mint distinct option ids — `aria-activedescendant` is a
@@ -307,4 +342,28 @@ fn two_selects_do_not_share_option_ids() {
     let ida = a.options()[0].get_attribute("id");
     let idb = b.options()[0].get_attribute("id");
     assert!(ida.is_some() && ida != idb, "{ida:?} vs {idb:?}");
+}
+
+/// Tab closes the list without committing and is **not** consumed, so the
+/// backend's own Tab moves focus on; Space commits like Enter (both spellings:
+/// desktop names it `"Space"`, the browser sends `" "`).
+#[test]
+fn tab_closes_and_passes_on_and_space_commits() {
+    let m = Mounted::new("banana");
+    m.open();
+    m.press("ArrowDown");
+    assert!(!m.press("Tab"), "Tab must reach the focus order");
+    assert!(!m.is_open(), "Tab closes the list");
+    assert!(m.picks.borrow().is_empty(), "and commits nothing");
+
+    for space in ["Space", " "] {
+        m.open();
+        m.press("ArrowDown");
+        assert!(m.press(space), "{space:?} is consumed");
+        assert!(!m.is_open());
+    }
+    assert_eq!(
+        *m.picks.borrow(),
+        vec!["cherry".to_string(), "blueberry".to_string()]
+    );
 }

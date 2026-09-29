@@ -120,8 +120,6 @@ mod named_damage_tests;
 #[cfg(test)]
 mod native_select_button_1111_tests;
 #[cfg(test)]
-mod select_keyboard_434_tests;
-#[cfg(test)]
 mod no_write_handler_234_tests;
 #[cfg(test)]
 mod node_ime_tests;
@@ -163,6 +161,8 @@ mod screenshot_capture_tests;
 mod scrollbar_corner_444_tests;
 #[cfg(test)]
 mod scrollbar_thumb_press_443_tests;
+#[cfg(test)]
+mod select_keyboard_434_tests;
 #[cfg(test)]
 mod select_popup_width_tests;
 mod select_widget;

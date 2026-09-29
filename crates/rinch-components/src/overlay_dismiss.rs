@@ -1,4 +1,5 @@
-//! Escape-to-dismiss, shared by `Modal`, `Drawer` and `Popover` (issue #474).
+//! Escape-to-dismiss, shared by `Modal`, `Drawer` and `Popover` (issue #474),
+//! plus the open-time policies `ColorInput` (#465) and `Select` (#434) use.
 //!
 //! The three declared `close_on_escape` and did nothing with it. They all need
 //! the same wiring, and getting any of them subtly different is the bug this

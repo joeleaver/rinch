@@ -209,14 +209,13 @@ impl Component for Select {
             let open = opened.get();
             let next = if open {
                 let val = rinch_core::untracked(|| selected_value.get());
-                opts_for_highlight
-                    .iter()
-                    .position(|o| o.value == val)
-                    .or(if opts_for_highlight.is_empty() {
+                opts_for_highlight.iter().position(|o| o.value == val).or(
+                    if opts_for_highlight.is_empty() {
                         None
                     } else {
                         Some(0)
-                    })
+                    },
+                )
             } else {
                 None
             };
@@ -497,7 +496,9 @@ impl Component for Select {
                     let now = Instant::now();
                     let query = {
                         let mut t = typed.borrow_mut();
-                        if t.1.is_none_or(|at| now.duration_since(at) > TYPEAHEAD_RESET) {
+                        if t.1
+                            .is_none_or(|at| now.duration_since(at) > TYPEAHEAD_RESET)
+                        {
                             t.0.clear();
                         }
                         t.0.push_str(&key.to_lowercase());

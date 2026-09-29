@@ -149,8 +149,14 @@ Everything else focusable activates the nearest ancestor-or-self
 behave like a button — and what makes Space on a `Checkbox`'s visually hidden
 `<input>` toggle the `<label>` that wraps it.
 
-> **Still not matched to the web.** Arrow/Enter/Escape navigation of the `Select` component's open option list is
-> issue #434.
+The **`Select` component** (not a native `<select>`) behaves the same way on
+both backends (issue #434): its trigger keeps the focus while the list is open,
+ArrowUp/ArrowDown move a highlight (wrapping at the ends), Home/End jump,
+Enter or Space commits the highlighted option, Escape closes without
+committing, Tab closes and moves on, and typing jumps to the first option whose
+label starts with what was typed. The highlight starts at the selected option
+and is announced through `aria-activedescendant`. A key with Ctrl, Alt or Meta
+held is left to the app.
 
 ### Taking the click without the keyboard
 
@@ -646,6 +652,19 @@ an overlay of your own. **Prefer it over `set_keyboard_interceptor` for
 Escape**: the interceptor is a single slot per document, so a second overlay
 registering there silently disables the first, and when it unmounts it clears
 the slot rather than restoring what it displaced.
+
+### A popup that owns every key while it is open
+
+`push_key_handler(doc_key, |k: &KeyEventData| -> bool)` puts an entry on the
+same stack that is offered **every key press** (never a release), ahead of the
+Escape scan; `true` consumes the key, which on `rinch-web` also
+`preventDefault`s it. It exists for a popup whose keys have no focused element
+to land on — the `Select` component's option list, whose trigger keeps the
+focus — and it is only safe registered **at open** and released at close:
+an entry left on the stack while its popup is closed swallows the page's keys.
+`rinch_components::overlay_dismiss::arm_keys_while_open` is that policy. Decline
+Escape in it and give Escape its own dismiss entry, so "which overlay is on top"
+stays one question.
 
 [`DismissHandle`]: https://docs.rs/rinch/latest/rinch/struct.DismissHandle.html
 

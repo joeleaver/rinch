@@ -618,7 +618,10 @@ mod tests {
         });
 
         assert!(dispatch_keyboard_event(&press("ArrowDown")));
-        assert!(!dispatch_keyboard_event(&press("x")), "declined: not consumed");
+        assert!(
+            !dispatch_keyboard_event(&press("x")),
+            "declined: not consumed"
+        );
         assert!(!dispatch_keyboard_event(
             &press("ArrowDown").with_kind(KeyEventKind::Up)
         ));
