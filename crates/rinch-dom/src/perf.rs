@@ -320,6 +320,12 @@ define_counters! {
     /// paint; a live frame source every draw, unless its producer vouched it
     /// opaque (then never).
     ImagePremultiplies = "image_premultiplies",
+    /// Background layers painted as a repeating pattern whose tile had to be
+    /// rasterised this frame (#468): a new image, gradient or tile size.
+    BackgroundTileRasters = "background_tile_rasters",
+    /// …and those whose rasterised tile came from the cache — a repaint
+    /// that did not change the layer.
+    BackgroundTileCacheHits = "background_tile_cache_hits",
     /// Software painter: opaque images copied straight into the surface
     /// instead of sampled through `draw_pixmap` — a frame whose producer
     /// vouched every pixel opaque, drawn with no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands (#361). Scaled draws count.

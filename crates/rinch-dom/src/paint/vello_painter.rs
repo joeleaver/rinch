@@ -159,17 +159,22 @@ impl Painter for VelloPainter {
         shape: &PaintShape,
     ) {
         let image = ImageData {
-            data: Blob::from(tile.data.to_vec()),
+            data: tile.pixels.clone(),
             format: ImageFormat::Rgba8,
             alpha_type: ImageAlphaType::AlphaPremultiplied,
             width: tile.width,
             height: tile.height,
         };
+        let quality = if tile.smooth {
+            peniko::ImageQuality::Medium
+        } else {
+            peniko::ImageQuality::Low
+        };
         let brush: Brush = peniko::ImageBrush::new(image)
             .with_extend(peniko::Extend::Repeat)
-            .with_quality(peniko::ImageQuality::Low)
+            .with_quality(quality)
             .into();
-        let brush_transform = Some(Affine::translate(tile.origin));
+        let brush_transform = Some(tile.transform);
         match shape {
             PaintShape::Rect(r) => self.scene.fill(fill, transform, &brush, brush_transform, r),
             PaintShape::RoundedRect(r) => {

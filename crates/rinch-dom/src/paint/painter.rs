@@ -147,15 +147,21 @@ pub struct PaintImage<'a> {
 }
 
 /// A premultiplied RGBA8 image tiled edge to edge by
-/// [`Painter::fill_repeating`] (#468): tile `(0, 0)` has its top-left corner
-/// at `origin`, in the shape's own space (before the fill's transform).
+/// [`Painter::fill_repeating`] (#468).
 #[derive(Clone, Copy, Debug)]
 pub struct RepeatTile<'a> {
     /// `width * height * 4` bytes, premultiplied RGBA8, rows top to bottom.
-    pub data: &'a [u8],
+    /// A `Blob` so a painter that keeps images (Vello) shares it, not copies.
+    pub pixels: &'a peniko::Blob<u8>,
     pub width: u32,
     pub height: u32,
-    pub origin: (f64, f64),
+    /// Maps the tile's pixel grid (tile `(0, 0)` covering `0..width`,
+    /// `0..height`) into the shape's own space, before the fill's transform.
+    pub transform: Affine,
+    /// Sample bilinearly (a tile scaled to a fractional size, or under a
+    /// transform); otherwise nearest, which is exact for a whole-pixel tile
+    /// on the device grid.
+    pub smooth: bool,
 }
 
 // ── Glyph run ───────────────────────────────────────────────────────────────
@@ -279,10 +285,10 @@ pub trait Painter {
         shape: &PaintShape,
     ) {
         let (w, h) = (tile.width as f64, tile.height as f64);
-        if w <= 0.0 || h <= 0.0 {
+        if w <= 0.0 || h <= 0.0 || tile.transform.determinant().abs() < 1e-12 {
             return;
         }
-        let straight = crate::image_cache::unpremultiply_rgba(tile.data);
+        let straight = crate::image_cache::unpremultiply_rgba(tile.pixels.data());
         let image = PaintImage {
             data: &straight,
             width: tile.width,
@@ -290,19 +296,19 @@ pub trait Painter {
             decoded: None,
             opaque: false,
         };
-        let bb = shape.bounding_box();
-        let (ox, oy) = tile.origin;
-        let x0 = ox + ((bb.x0 - ox) / w).floor() * w;
-        let y0 = oy + ((bb.y0 - oy) / h).floor() * h;
+        // The shape's bounds in tile-grid space: which repetitions touch it.
+        let bb = tile
+            .transform
+            .inverse()
+            .transform_rect_bbox(shape.bounding_box());
+        let (i0, i1) = ((bb.x0 / w).floor() as i64, (bb.x1 / w).ceil() as i64);
+        let (j0, j1) = ((bb.y0 / h).floor() as i64, (bb.y1 / h).ceil() as i64);
         self.push_clip(fill, transform, shape);
-        let mut y = y0;
-        while y < bb.y1 {
-            let mut x = x0;
-            while x < bb.x1 {
-                self.draw_image(&image, transform * Affine::translate((x, y)));
-                x += w;
+        for j in j0..j1 {
+            for i in i0..i1 {
+                let at = Affine::translate((i as f64 * w, j as f64 * h));
+                self.draw_image(&image, transform * tile.transform * at);
             }
-            y += h;
         }
         self.pop_layer();
     }

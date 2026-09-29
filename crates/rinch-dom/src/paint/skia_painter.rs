@@ -1555,17 +1555,23 @@ impl Painter for TinySkiaPainter {
         tile: &crate::paint::painter::RepeatTile<'_>,
         shape: &PaintShape,
     ) {
-        let Some(pixmap) = tiny_skia::PixmapRef::from_bytes(tile.data, tile.width, tile.height)
+        let Some(pixmap) =
+            tiny_skia::PixmapRef::from_bytes(tile.pixels.data(), tile.width, tile.height)
         else {
             return;
+        };
+        let quality = if tile.smooth {
+            tiny_skia::FilterQuality::Bilinear
+        } else {
+            tiny_skia::FilterQuality::Nearest
         };
         let paint = Paint {
             shader: tiny_skia::Pattern::new(
                 pixmap,
                 tiny_skia::SpreadMode::Repeat,
-                tiny_skia::FilterQuality::Nearest,
+                quality,
                 1.0,
-                tiny_skia::Transform::from_translate(tile.origin.0 as f32, tile.origin.1 as f32),
+                affine_to_transform(tile.transform),
             ),
             anti_alias: true,
             ..Paint::default()
