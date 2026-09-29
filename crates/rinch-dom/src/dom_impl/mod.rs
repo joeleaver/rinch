@@ -914,12 +914,6 @@ impl RinchDocument {
                     taffy_style.size.height = taffy::Dimension::length(est_h);
                 }
 
-                // This rebuilds the Taffy style from the computed values, so it
-                // drops the childless-block line floor exactly the way
-                // apply_stylo_styles_to_taffy used to — re-apply it here or a
-                // transition frame collapses a blockified `<input>` to nothing.
-                crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
-
                 // A `display: contents` wrapper's Taffy style belongs to
                 // `sync_display_contents`, as in `apply_stylo_styles_to_taffy`;
                 // rebuilding it from the computed values would give the wrapper
@@ -956,6 +950,13 @@ impl RinchDocument {
                     // and leave the `inline-block` at `50x10` against a `300x10`
                     // oracle — #661's symptom, on the one path that reaches it
                     // without the cascade.
+                    self.mark_atomic_inline_dirty(node_id);
+                }
+                // A text-entry control's content height follows its line
+                // height, which a `font-size` or `line-height` frame moves
+                // without moving the Taffy style (#297).
+                if crate::form_control::sync_form_control_measure(&mut self.tree, node_id) {
+                    self.tree.layout_dirty = true;
                     self.mark_atomic_inline_dirty(node_id);
                 }
             }
@@ -1064,11 +1065,6 @@ impl RinchDocument {
                     taffy_style.size.height = taffy::Dimension::length(est_h);
                 }
 
-                // Same rebuild-from-computed-values hazard as tick_transitions:
-                // without this an animation frame drops the childless-block line
-                // floor and the element collapses to zero height.
-                crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
-
                 // Same ownership rule as `tick_transitions`.
                 if node.taffy_style_owned_by_contents_splice() {
                     taffy_style = crate::node::display_contents_taffy_style();
@@ -1087,6 +1083,13 @@ impl RinchDocument {
                     // pre-pass above covers it no better here: an animated
                     // `width` on a box inside an `inline-block` leaves that box
                     // frozen without this (#661).
+                    self.mark_atomic_inline_dirty(node_id);
+                }
+                // A text-entry control's content height follows its line
+                // height, which a `font-size` or `line-height` frame moves
+                // without moving the Taffy style (#297).
+                if crate::form_control::sync_form_control_measure(&mut self.tree, node_id) {
+                    self.tree.layout_dirty = true;
                     self.mark_atomic_inline_dirty(node_id);
                 }
             }

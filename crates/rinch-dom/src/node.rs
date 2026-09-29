@@ -110,6 +110,16 @@ pub enum NodeContext {
     /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
     /// invariant after every setup pass.
     InlineRoot(usize), // stores the RawNodeId of the IFC root
+    /// A text-entry form control — `<textarea>`, or an `<input>` of a
+    /// text-like type — whose value is an attribute rather than a child, so
+    /// nothing in the tree gives it a content height (#297). The measure
+    /// answers `content_height` (its rows times its line height; Taffy adds
+    /// the padding and border) and a width of zero. Written and kept current by
+    /// [`crate::form_control::sync_form_control_measure`].
+    FormControl {
+        /// Content-box height: `rows × line-height` (one row for an `<input>`).
+        content_height: f32,
+    },
 }
 
 /// Text measurement context for Parley.

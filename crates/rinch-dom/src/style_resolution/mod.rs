@@ -837,37 +837,6 @@ impl RinchDocument {
                 new_style.user_select = crate::computed_style::UserSelectValue::Text;
             }
 
-            // `<textarea rows=N>` maps to an intrinsic height of N lines, as
-            // browsers do. A textarea holds its value in an attribute rather
-            // than as a text child, so nothing else gives it a content height —
-            // without this it collapses to a single line regardless of `rows`.
-            // The HTML default is 2 rows.
-            if node.tag() == Some("textarea") && new_style.height.lays_out_as_auto() {
-                let rows = node
-                    .attributes
-                    .get("rows")
-                    .and_then(|r| r.trim().parse::<f32>().ok())
-                    .filter(|r| *r >= 1.0)
-                    .unwrap_or(2.0);
-                let line_h = new_style.line_height_px();
-                // min-height is a border-box value (rinch sets a global
-                // `box-sizing: border-box`, and Taffy defaults to it), so the
-                // padding and border have to be added on top of the line boxes.
-                let intrinsic = rows * line_h
-                    + new_style.padding_top.to_px()
-                    + new_style.padding_bottom.to_px()
-                    + new_style.border_top_width.to_px()
-                    + new_style.border_bottom_width.to_px();
-                // An author `min-height` still wins when it is the larger of
-                // the two, matching `max(rows, min-height)` in browsers.
-                let author_min = match new_style.min_height {
-                    crate::computed_style::DimensionValue::Length(px) => px,
-                    _ => 0.0,
-                };
-                new_style.min_height =
-                    crate::computed_style::DimensionValue::Length(intrinsic.max(author_min));
-            }
-
             // A closed `<select>` shows one option's label, so browsers size it to
             // fit the *widest* option — the width stays stable when the selection
             // changes. Its `<option>` children are `display:none` and give it no
@@ -1546,14 +1515,6 @@ impl RinchDocument {
                 taffy_style.size.height = taffy::Dimension::length(est_h);
             }
 
-            // A childless block container is one line box tall. The IFC pass
-            // writes that floor straight onto the Taffy style, and this function
-            // rebuilds the style from the computed values — so the floor has to
-            // be re-applied here or the next restyle of the node drops it — it
-            // would come back only on a structural change, the one thing that
-            // re-runs the IFC pass. See `apply_empty_block_line_floor`.
-            crate::ifc::apply_empty_block_line_floor(&self.tree.nodes[node_id], &mut taffy_style);
-
             // A spliced `display: contents` wrapper's Taffy style is not built
             // from its computed values: `sync_display_contents` owns it and
             // writes `Display::None`, while `to_taffy_style` maps `contents` to
@@ -1604,6 +1565,15 @@ impl RinchDocument {
                 self.tree
                     .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
                 taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
+            }
+
+            // A text-entry control's content height is its line height times
+            // its rows (#297), and the line height is no Taffy property — so the
+            // measure context is re-synced from the new computed style here,
+            // and a change is a layout change of its own.
+            if crate::form_control::sync_form_control_measure(&mut self.tree, node_id) {
+                self.tree.layout_dirty = true;
+                self.mark_atomic_inline_dirty(node_id);
             }
         }
         // Children restyled on this pass carry their new table part now.

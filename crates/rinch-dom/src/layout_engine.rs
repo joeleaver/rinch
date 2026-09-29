@@ -816,6 +816,9 @@ impl RinchDocument {
                                 height: known_dims.height.unwrap_or(h),
                             }
                         }
+                        Some(NodeContext::FormControl { content_height }) => {
+                            crate::form_control::measure(*content_height, known_dims)
+                        }
                         _ => taffy::Size::ZERO,
                     }
                 },

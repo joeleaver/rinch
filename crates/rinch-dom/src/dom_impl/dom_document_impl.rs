@@ -134,7 +134,6 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
-        self.note_first_child(p);
         self.tree.nodes[p].children.push(c);
         // Sync taffy
         if let (Some(parent_taffy), Some(child_taffy)) =
@@ -235,7 +234,6 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
-        self.note_first_child(p);
         let insert_pos = if let Some(pos) = self.tree.nodes[p].children.iter().position(|&x| x == r)
         {
             self.tree.nodes[p].children.insert(pos, c);
@@ -549,7 +547,6 @@ impl DomDocument for RinchDocument {
                     }
                 }
                 self.tree.nodes[n].children.clear();
-                self.note_first_child(n);
                 // Create text child with taffy node and context
                 let text_id = self.tree.nodes.vacant_key();
                 let mut text_node = Node::text(text_id, text, self.tree.guard.clone());
@@ -863,7 +860,6 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
-        self.note_first_child(p);
         let len = self.tree.nodes[p].children.len();
         let actual_index = if index >= len {
             self.tree.nodes[p].children.push(c);
@@ -1548,26 +1544,6 @@ impl RinchDocument {
             }
         }
         serialize_declarations(&decls)
-    }
-
-    /// Called just before a child is added to `parent`: when `parent` has no
-    /// children yet, queue it for a Taffy style re-sync.
-    ///
-    /// A childless block container carries a one-line `min-height` floor on
-    /// its Taffy style (`ifc::apply_empty_block_line_floor`), and nothing but a
-    /// re-sync from its computed values takes it off again — the IFC pass only
-    /// ever *applies* it. The sync used to happen by accident: the first layout
-    /// re-cascaded the whole document through its viewport branch, so every
-    /// element built childless and filled before then lost its floor there.
-    /// An element that gained its first child after the first layout never
-    /// did, and kept a line-tall minimum under content shorter than a line (a
-    /// `height: 10px` block child left its parent 20px tall).
-    fn note_first_child(&mut self, parent: usize) {
-        let node = &self.tree.nodes[parent];
-        if node.children.is_empty() && node.is_element() {
-            self.tree.style_dirty_nodes.push(parent);
-            self.tree.styles_dirty = true;
-        }
     }
 
     /// Called when the children or text under `node` changed: when `node` is,
