@@ -75,3 +75,132 @@ fn an_empty_option_row_is_as_tall_as_a_labelled_one() {
 fn a_whitespace_only_option_row_is_as_tall_as_a_labelled_one() {
     assert_rows_match_labelled(&["   ", "One"]);
 }
+
+// Review of PR #1162: the replacement reaches only an empty label, and the
+// full row is a hit target.
+
+use std::cell::RefCell;
+
+/// A mounted `select` whose options are `(value, label, disabled)`, and the
+/// values its `data-oninput` handler was handed.
+struct Mounted {
+    app: RinchApp,
+    picks: Rc<RefCell<Vec<String>>>,
+}
+
+fn mount(
+    root_style: &'static str,
+    select_style: &'static str,
+    opts: &[(&'static str, &'static str, bool)],
+) -> Mounted {
+    let sel: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let s2 = sel.clone();
+    let picks: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let p2 = picks.clone();
+    let opts: Vec<(&'static str, &'static str, bool)> = opts.to_vec();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", root_style);
+        let select = scope.create_element("select");
+        select.set_attribute("style", select_style);
+        for (v, l, disabled) in &opts {
+            let o = scope.create_element("option");
+            o.set_attribute("value", v);
+            if *disabled {
+                o.set_attribute("disabled", "");
+            }
+            if !l.is_empty() {
+                let t = scope.create_text(l);
+                o.append_child(&t);
+            }
+            select.append_child(&o);
+        }
+        let hid = scope.register_input_handler(move |v| p2.borrow_mut().push(v));
+        select.set_attribute("data-oninput", &hid.0.to_string());
+        root.append_child(&select);
+        s2.set(Some(select.node_id().0));
+        root
+    });
+    app.mount_component(VP.0, VP.1);
+    app.resolve_and_repaint(VP.0, VP.1);
+    let select = sel.get().unwrap();
+    app.open_select_popup(select, VP.0, VP.1);
+    app.resolve_and_repaint(VP.0, VP.1);
+    assert!(app.is_select_open());
+    Mounted { app, picks }
+}
+
+/// Each open row's DOM text and painted box.
+fn rows(m: &Mounted) -> Vec<(String, (f32, f32, f32, f32))> {
+    let open = m.app.open_select.as_ref().unwrap();
+    let d = m.app.doc.as_ref().unwrap().borrow();
+    open.option_ids
+        .iter()
+        .map(|&id| {
+            (
+                rinch_dom::testing::get_text_content(&d.tree, id),
+                super::hit_testing::painted_element_box(&d.tree, id),
+            )
+        })
+        .collect()
+}
+
+/// Only an empty label is replaced: a one-letter label, a disabled labelled
+/// option and an ordinary one keep their text.
+#[test]
+fn labelled_rows_keep_their_text() {
+    let m = mount(
+        "",
+        "",
+        &[
+            ("", "", false),
+            ("a", "A", false),
+            ("off", "Off", true),
+            ("one", "One", false),
+            ("ws", "   ", false),
+        ],
+    );
+    let t: Vec<String> = rows(&m).into_iter().map(|r| r.0).collect();
+    assert_eq!(
+        t,
+        vec![
+            "\u{200B}".to_string(),
+            "A".into(),
+            "Off".into(),
+            "One".into(),
+            "\u{200B}".into()
+        ]
+    );
+}
+
+/// The whole full row is a hit target: a press 25px into the empty row (past
+/// the old 12px sliver) picks the empty option, not the next one.
+#[test]
+fn a_press_low_in_the_empty_row_picks_it() {
+    let mut m = mount(
+        "padding: 20px",
+        "width: 200px; height: 30px",
+        &[("x", "Ex", false), ("", "", false), ("one", "One", false)],
+    );
+    let (x, y, w, _) = rows(&m)[1].1;
+    let (px, py) = (x + w / 2.0, y + 25.0);
+    m.app.handle_event(
+        PlatformEvent::MouseDown {
+            x: px,
+            y: py,
+            button: MouseButton::Left,
+        },
+        (800, 600),
+        1.0,
+    );
+    m.app.handle_event(
+        PlatformEvent::MouseUp {
+            x: px,
+            y: py,
+            button: MouseButton::Left,
+        },
+        (800, 600),
+        1.0,
+    );
+    assert_eq!(*m.picks.borrow(), vec!["".to_string()]);
+}
