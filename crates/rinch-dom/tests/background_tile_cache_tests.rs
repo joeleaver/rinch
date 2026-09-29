@@ -202,13 +202,12 @@ fn probe_bilinear_wrap_at_fractional_dpr() {
 fn probe_eviction_thrash() {
     // 1600x1600 device px tile at scale 2 => 800px css tile, 10.24 MB each
     let mut total_rasters = 0;
-    for round in 0..3 {
+    for _round in 0..3 {
         for k in 0..4 {
             let (mut doc, _) = mount(
                 "",
                 &format!(
-                    "width:1700px;height:10px;background-image:linear-gradient(to right, rgb({k},9,9) 0 50%, rgb(0,0,{}) 50% 100%);background-size:800px 800px",
-                    200 + round * 0
+                    "width:1700px;height:10px;background-image:linear-gradient(to right, rgb({k},9,9) 0 50%, rgb(0,0,200) 50% 100%);background-size:800px 800px"
                 ),
                 1800.0,
                 20.0,
