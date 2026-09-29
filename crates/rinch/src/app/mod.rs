@@ -162,9 +162,9 @@ mod scrollbar_corner_444_tests;
 #[cfg(test)]
 mod scrollbar_thumb_press_443_tests;
 #[cfg(test)]
-mod select_popup_width_tests;
-#[cfg(test)]
 mod select_popup_empty_option_1155_tests;
+#[cfg(test)]
+mod select_popup_width_tests;
 mod select_widget;
 #[cfg(test)]
 mod shared_hit_tests;
