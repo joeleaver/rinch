@@ -7559,8 +7559,7 @@ mod horizontal_scrollbar_tests {
     /// the bottom-right and one would silently win every click there. Neither
     /// claims it — which also matches the paint pass, where both tracks give up
     /// the same square so no thumb that fits its track is drawn in it (#444,
-    /// `scrollbar_corner_444_tests`; a `MIN_THUMB` thumb on a shorter track is
-    /// #1141).
+    /// `scrollbar_corner_444_tests`; a thumb never outgrows its track, #1141).
     #[test]
     fn the_corner_between_two_scrollbars_belongs_to_neither() {
         let Bars { app, rect, .. } = mount(BOTH, "width: 800px; height: 800px");
