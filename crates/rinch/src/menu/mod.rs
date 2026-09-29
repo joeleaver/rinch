@@ -1908,7 +1908,7 @@ mod tests {
     /// being added here is caught by
     /// [`the_two_key_tables_name_the_same_codes`], which counts the arms.
     #[cfg(feature = "desktop")]
-    const NAMED_KEYS: [KeyCode; 64] = [
+    const NAMED_KEYS: [KeyCode; 73] = [
         KeyCode::KeyA,
         KeyCode::KeyB,
         KeyCode::KeyC,
@@ -1973,7 +1973,177 @@ mod tests {
         KeyCode::ArrowDown,
         KeyCode::ArrowLeft,
         KeyCode::ArrowRight,
+        KeyCode::Backquote,
+        KeyCode::Backslash,
+        KeyCode::BracketLeft,
+        KeyCode::BracketRight,
+        KeyCode::Comma,
+        KeyCode::Period,
+        KeyCode::Quote,
+        KeyCode::Semicolon,
+        KeyCode::Slash,
     ];
+
+    /// Every punctuation key a shortcut string can name, by its character, with
+    /// the winit key and the W3C `code` a keystroke on it carries (#1160).
+    ///
+    /// Each one used to register **no chord at all**, silently, on both
+    /// backends: the forward table had no row for the character and
+    /// `key_code_name` no arm for the key, so neither the desktop nor the
+    /// browser could fire the item from the keyboard — while the native menu,
+    /// whose accelerator muda parses on its own, still *labelled* it.
+    #[cfg(feature = "desktop")]
+    const PUNCTUATION: [(&str, KeyCode, &str); 9] = [
+        ("`", KeyCode::Backquote, "Backquote"),
+        ("\\", KeyCode::Backslash, "Backslash"),
+        ("[", KeyCode::BracketLeft, "BracketLeft"),
+        ("]", KeyCode::BracketRight, "BracketRight"),
+        (",", KeyCode::Comma, "Comma"),
+        (".", KeyCode::Period, "Period"),
+        ("'", KeyCode::Quote, "Quote"),
+        (";", KeyCode::Semicolon, "Semicolon"),
+        ("/", KeyCode::Slash, "Slash"),
+    ];
+
+    /// `Ctrl+/`, `Ctrl+,`, `Ctrl+[` … fire their item from the keyboard on
+    /// **both** backends — every row, not a sample (#807's lesson): the desktop
+    /// through winit's `KeyCode`, the browser through `KeyboardEvent.code`.
+    /// Alt rides along so no other test's chord on this thread can answer.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn every_punctuation_shortcut_fires_on_the_desktop_and_the_web() {
+        for (ch, key, code) in PUNCTUATION {
+            let chord = format!("Ctrl+Alt+{ch}");
+            let (fired, cb) = probe();
+            let id = format!("punct-{code}");
+            let mut registration = MenuRegistration::default();
+            registration.register_callback(&id, cb, None);
+            registration.register_shortcut(&chord, &id);
+
+            assert!(
+                match_shortcut(true, false, true, false, key),
+                "{chord}: the desktop keystroke ({key:?}) must fire the item"
+            );
+            assert!(
+                match_shortcut_code(true, false, true, false, code),
+                "{chord}: the browser keystroke (code {code}) must fire the item"
+            );
+            assert_eq!(fired.get(), 2, "{chord}");
+            assert!(
+                !match_shortcut_code(true, false, true, true, code),
+                "{chord}: Shift is part of the chord, so Ctrl+Alt+Shift+{ch} is another one"
+            );
+            drop(registration);
+        }
+    }
+
+    /// A shortcut string's key is a **key**, not the character Shift makes of
+    /// it. The browser reports Ctrl+Shift+/ on a US layout as `code: "Slash"`,
+    /// `key: "?"`, `shiftKey: true` (measured, Chrome 153), and rinch matches
+    /// on `code` + modifiers, so the chord is spelled `"Ctrl+Shift+/"`. `"?"`
+    /// names no key — which one makes it depends on the layout — so
+    /// `"Ctrl+?"` registers nothing, and says so once.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_shifted_character_is_spelled_as_its_key_and_shift() {
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("help", cb, None);
+        registration.register_shortcut("Ctrl+Shift+/", "help");
+        assert!(match_shortcut(true, false, false, true, KeyCode::Slash));
+        assert!(match_shortcut_code(true, false, false, true, "Slash"));
+        assert_eq!(fired.get(), 2);
+
+        assert!(
+            parse_shortcut_for_matching("Ctrl+?").is_none(),
+            "\"?\" is a character, not a key"
+        );
+    }
+
+    /// A shortcut string that names no key used to vanish without a word — the
+    /// item showed its label and the keystroke did nothing. It now warns, once
+    /// per string, however many times a menu is rebuilt with it.
+    #[test]
+    fn an_unparseable_shortcut_warns_once_and_registers_nothing() {
+        let shortcuts = shortcut_count();
+        let warned = warned_shortcut_count();
+        let mut registration = MenuRegistration::default();
+        registration.register_shortcut("Ctrl+?", "unparseable-1");
+        registration.register_shortcut("Ctrl+?", "unparseable-2");
+        registration.register_shortcut("Ctrl+Nope", "unparseable-3");
+        assert_eq!(shortcut_count(), shortcuts, "no chord registered");
+        assert_eq!(
+            warned_shortcut_count(),
+            warned + 2,
+            "one warning per distinct string, not per registration"
+        );
+        assert_eq!(
+            shifted_key_hint("?"),
+            Some("/"),
+            "the warning names the key a US layout makes it with"
+        );
+        assert_eq!(shifted_key_hint("/"), None);
+
+        // Positive control: a string that parses warns about nothing.
+        registration.register_shortcut("Ctrl+Alt+/", "parseable");
+        assert_eq!(shortcut_count(), shortcuts + 1);
+        assert_eq!(warned_shortcut_count(), warned + 2);
+    }
+
+    /// The native menu's accelerator is derived from the **same** parse the
+    /// chord is, for every key the table knows — so the label muda shows and
+    /// the chord that fires cannot disagree. They used to be two parsers:
+    /// muda's accepted `"Ctrl+/"` (a label over a dead chord, #1160) and
+    /// refused rinch's own `Plus`, `Return` and `Del` spellings (a live chord
+    /// with no label).
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn the_native_accelerator_names_the_key_the_chord_matches() {
+        use muda::accelerator::{Code, Modifiers};
+        let ctrl = if cfg!(target_os = "macos") {
+            Modifiers::SUPER
+        } else {
+            Modifiers::CONTROL
+        };
+        for key in NAMED_KEYS {
+            let code = key_code_name(key).expect("every named key has a code");
+            let spelling = code
+                .strip_prefix("Key")
+                .or_else(|| code.strip_prefix("Digit"))
+                .unwrap_or(code);
+            let expected = Accelerator::new(
+                Some(ctrl | Modifiers::SHIFT),
+                Code::from_str(code).expect("a W3C code muda knows"),
+            );
+            assert_eq!(
+                parse_shortcut(&format!("Ctrl+Shift+{spelling}")),
+                Some(expected),
+                "{code}"
+            );
+        }
+        for (ch, _, code) in PUNCTUATION {
+            assert_eq!(
+                parse_shortcut(&format!("Alt+{ch}")),
+                Some(Accelerator::new(
+                    Some(Modifiers::ALT),
+                    Code::from_str(code).unwrap()
+                )),
+                "{ch}"
+            );
+        }
+        for (alias, code) in [
+            ("Plus", Code::Equal),
+            ("Return", Code::Enter),
+            ("Del", Code::Delete),
+        ] {
+            assert_eq!(
+                parse_shortcut(&format!("Ctrl+{alias}")),
+                Some(Accelerator::new(Some(ctrl), code)),
+                "{alias} arms a chord, so it must label one"
+            );
+        }
+        assert_eq!(parse_shortcut("Ctrl+?"), None, "no chord, no label");
+    }
 
     /// The two tables name the **same set** of codes — the other direction, and
     /// the one a per-arm walk cannot reach.
