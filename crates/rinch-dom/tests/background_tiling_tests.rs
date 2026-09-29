@@ -87,6 +87,122 @@ fn r1_no_seam_at_a_fractional_position() {
     assert!(bad.is_empty(), "seams: {bad:?}");
 }
 
+/// `r1` on the tile-by-tile path: `repeat-x` is not a pattern (it repeats on
+/// one axis), so each tile is filled on its own and only the device-pixel
+/// snap keeps the seams shut. Chrome 153 (measured): every column pure red.
+#[test]
+fn r1b_no_seam_at_a_fractional_position_tile_by_tile() {
+    let (mut doc, _) = mount(
+        &format!(
+            "width: 100px; height: 20px; {SOLID}; background-size: 10px 20px; \
+             background-position: 0.5px 0; background-repeat: repeat-x"
+        ),
+        200.0,
+        100.0,
+    );
+    let p = paint_at(&mut doc, 1.0, 200.0, 100.0);
+    let bad: Vec<(u32, [u8; 4])> = (0..100)
+        .map(|x| (x, px(&p, x, 10)))
+        .filter(|(_, c)| *c != [255, 0, 0, 255])
+        .collect();
+    assert!(bad.is_empty(), "seams: {bad:?}");
+}
+
+/// The default `Painter::fill_repeating` (one `draw_image` per repetition,
+/// what a painter without a pattern primitive gets) and the software
+/// painter's `Pattern` override paint the same pixels for the same tile.
+#[test]
+fn the_default_fill_repeating_agrees_with_the_software_pattern() {
+    use peniko::Fill;
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter, RepeatTile};
+
+    /// Everything forwarded to a `TinySkiaPainter` except `fill_repeating`,
+    /// which takes the trait default.
+    struct Plain(TinySkiaPainter);
+    impl Painter for Plain {
+        fn reset(&mut self) {
+            self.0.reset()
+        }
+        fn fill(&mut self, f: Fill, t: Affine, b: &Brush, s: &PaintShape) {
+            self.0.fill(f, t, b, s)
+        }
+        fn stroke(
+            &mut self,
+            st: &peniko::kurbo::Stroke,
+            t: Affine,
+            b: &Brush,
+            s: &PaintShape,
+        ) {
+            self.0.stroke(st, t, b, s)
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn draw_glyphs(
+            &mut self,
+            font: &peniko::FontData,
+            size: f32,
+            t: Affine,
+            gt: Option<Affine>,
+            b: &Brush,
+            hint: bool,
+            coords: &[i16],
+            glyphs: &[rinch_dom::paint::painter::PaintGlyph],
+        ) {
+            self.0.draw_glyphs(font, size, t, gt, b, hint, coords, glyphs)
+        }
+        fn draw_image(&mut self, i: &rinch_dom::paint::painter::PaintImage<'_>, t: Affine) {
+            self.0.draw_image(i, t)
+        }
+        fn push_clip(&mut self, f: Fill, t: Affine, s: &PaintShape) {
+            self.0.push_clip(f, t, s)
+        }
+        fn push_layer(
+            &mut self,
+            b: rinch_dom::paint::painter::BlendMode,
+            o: f32,
+            t: Affine,
+            s: &PaintShape,
+        ) {
+            self.0.push_layer(b, o, t, s)
+        }
+        fn pop_layer(&mut self) {
+            self.0.pop_layer()
+        }
+    }
+
+    // A 7x5 tile of distinct, partly translucent (premultiplied) pixels.
+    let mut data = Vec::new();
+    for y in 0..5u8 {
+        for x in 0..7u8 {
+            let a = 128 + x * 16;
+            data.extend_from_slice(&[(x * 30).min(a), (y * 50).min(a), 20.min(a), a]);
+        }
+    }
+    let tile = RepeatTile {
+        data: &data,
+        width: 7,
+        height: 5,
+        origin: (3.0, -2.0),
+    };
+    let shape = PaintShape::Rect(Rect::new(4.0, 6.0, 57.0, 38.0));
+    let t = Affine::translate((5.0, 1.0));
+
+    let mut pattern = TinySkiaPainter::new(70, 50);
+    pattern.fill_repeating(Fill::NonZero, t, &tile, &shape);
+    let mut plain = Plain(TinySkiaPainter::new(70, 50));
+    plain.fill_repeating(Fill::NonZero, t, &tile, &shape);
+
+    let (a, b) = (pattern.pixels(), plain.0.pixels());
+    assert!(a.iter().any(|&v| v != 0), "positive control: the pattern drew");
+    let worst = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| (*x as i16 - *y as i16).abs())
+        .max()
+        .unwrap();
+    assert!(worst <= 1, "the two paths differ by up to {worst} per channel");
+}
+
 /// A solid 10px tile at DPR 1.25 (12.5 device px) at an integer CSS position.
 #[test]
 fn r2_no_seam_at_hidpi() {
