@@ -479,7 +479,8 @@ impl Component for Select {
                 return true;
             }
             match k.key.as_str() {
-                // Desktop spells Space by name, the browser as the character.
+                // Desktop spells Space by name, the browser as the character
+                // (a pinned divergence, #1161).
                 "Enter" | " " | "Space" => {
                     match current {
                         Some(i) => pick_k(i),
