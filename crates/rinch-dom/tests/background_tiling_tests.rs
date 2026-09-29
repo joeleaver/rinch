@@ -454,12 +454,12 @@ fn f4_keyframe_center() {
 #[ignore = "#781: an animation's auto-generated stop pins every base property"]
 fn r8_an_unrelated_animation_does_not_pin_background_position() {
     let mut doc = RinchDocument::new();
-    doc.load_css(&format!(
-        "html, body {{ margin: 0; background: rgb(255, 255, 255); }}
-         @keyframes r1143o {{ to {{ opacity: 1; }} }}
-         .a {{ animation: r1143o 1000ms linear infinite; }}
-         .a.moved {{ background-position: 30px 0; }}"
-    ));
+    doc.load_css(
+        "html, body { margin: 0; background: rgb(255, 255, 255); }
+         @keyframes r1143o { to { opacity: 1; } }
+         .a { animation: r1143o 1000ms linear infinite; }
+         .a.moved { background-position: 30px 0; }",
+    );
     let body = doc.body();
     let node = doc.create_element("div");
     doc.set_attribute(

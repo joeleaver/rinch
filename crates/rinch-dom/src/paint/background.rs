@@ -170,6 +170,7 @@ fn draw_tile(
 }
 
 /// The largest tile, in device pixels, the pattern path rasterises.
+#[cfg(feature = "software-renderer")]
 const MAX_PATTERN_TILE_PX: f64 = 4.0 * 1024.0 * 1024.0;
 
 /// Paint the layer as one repeating pattern: rasterise one tile with the
