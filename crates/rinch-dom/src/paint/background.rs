@@ -627,3 +627,36 @@ fn resolve_lpa(v: LengthPercentageAutoValue, scale: f64, basis: f64) -> Option<f
         LengthPercentageAutoValue::Calc { px, pct } => Some(px as f64 * scale + pct as f64 * basis),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #468's review, N2: under a translation with a fractional part the
+    /// tile-by-tile path's edges land on whole **device** pixels. Snapping in
+    /// shape space left them mid-pixel (a seam). This path is reached by a
+    /// build without the software painter and by a tile too large to
+    /// rasterise, neither of which a pixel fixture reaches, so the geometry
+    /// is pinned here.
+    #[test]
+    fn tile_edges_snap_in_device_space_under_a_fractional_translate() {
+        let layer = LayerGeometry {
+            origin: (0.0, 0.0),
+            size: (10.0, 20.0),
+            repeats_x: true,
+            repeats_y: false,
+        };
+        let snap = DeviceSnap::of(Affine::translate((10.5, 0.25)));
+        let tiles = layer.tiles(Rect::new(0.0, 0.0, 100.0, 20.0), snap);
+        assert!(tiles.len() >= 10);
+        for t in tiles {
+            for (v, tx) in [(t.x0, 10.5), (t.x1, 10.5), (t.y0, 0.25), (t.y1, 0.25)] {
+                let device = v + tx;
+                assert!(
+                    (device - device.round()).abs() < 1e-9,
+                    "{t:?}: edge at device {device}"
+                );
+            }
+        }
+    }
+}

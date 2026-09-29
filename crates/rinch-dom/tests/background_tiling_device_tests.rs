@@ -263,6 +263,11 @@ fn a_dot_grid_at_dpr_1_25_is_drawn() {
             (lo..=hi).contains(&dark),
             "DPR {s}: {dark} dark px, want {lo}..={hi}"
         );
+        // One pattern, not 4800 fills: the fractional tile took the pattern path.
+        use rinch_dom::perf::Counter;
+        let patterns = doc.tree.perf.get(Counter::BackgroundTileRasters)
+            + doc.tree.perf.get(Counter::BackgroundTileCacheHits);
+        assert_eq!(patterns, 1, "DPR {s}: the layer is one pattern");
     }
 }
 
@@ -329,4 +334,48 @@ fn k7_fractional_tile_keeps_its_period() {
     let p = paint_at(&mut doc, 1.25, 300.0, 100.0);
     assert_eq!(px(&p, 99, 5), [0, 0, 255, 255], "end of tile 8");
     assert_eq!(px(&p, 101, 5), [255, 0, 0, 255], "start of tile 9");
+}
+
+/// `repeat-x` / `repeat-y` on the pattern path: the pattern is clipped to the
+/// one-tile strip on the axis that does not repeat. Chrome 153 (measured), a
+/// 10x20 tile at `3px 7px` in a 100x40 box:
+/// `repeat-x` column x=5: W 0-7, R 7-27, W 27-40; row y=15 repeats (B 0-3, R 3-8, …).
+/// `repeat-y` row y=15: W 0-3, R 3-8, B 8-13, W 13-40; column x=5 all R.
+#[test]
+fn a_one_axis_repeat_is_clipped_to_its_strip() {
+    let cls = |c: [u8; 4]| match c {
+        [255, 0, 0, 255] => 'R',
+        [0, 0, 255, 255] => 'B',
+        [255, 255, 255, 255] => 'W',
+        _ => '?',
+    };
+    let paint = |repeat: &str| {
+        let (mut doc, _) = mount(
+            &format!(
+                "width:100px;height:40px;{RB};background-size:10px 20px;background-position:3px 7px;background-repeat:{repeat}"
+            ),
+            200.0,
+            100.0,
+        );
+        paint_at(&mut doc, 1.0, 200.0, 100.0)
+    };
+    let p = paint("repeat-x");
+    let col: String = [3, 10, 20, 30, 38]
+        .iter()
+        .map(|&y| cls(px(&p, 5, y)))
+        .collect();
+    assert_eq!(col, "WRRWW", "repeat-x column");
+    let row: String = [1, 5, 10, 15, 35]
+        .iter()
+        .map(|&x| cls(px(&p, x, 15)))
+        .collect();
+    assert_eq!(row, "BRBRR", "repeat-x row");
+    let p = paint("repeat-y");
+    let row: String = [1, 5, 10, 20, 35]
+        .iter()
+        .map(|&x| cls(px(&p, x, 15)))
+        .collect();
+    assert_eq!(row, "WRBWW", "repeat-y row");
+    let col: String = [1, 10, 25, 39].iter().map(|&y| cls(px(&p, 5, y))).collect();
+    assert_eq!(col, "RRRR", "repeat-y column");
 }
