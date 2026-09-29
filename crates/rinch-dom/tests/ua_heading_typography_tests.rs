@@ -469,7 +469,8 @@ fn the_ua_heading_rules_survive_a_restyle() {
 /// agreeing is not the same claim as the layout moving, and at HEAD both the
 /// gap and the offset below were 0.
 ///
-/// Both shapes are measured in Chrome 150, and rinch is asserted against
+/// Both shapes are measured in Chrome 150 (re-measured in Chrome 153 with a
+/// line of text in each heading, same numbers), and rinch is asserted against
 /// **Chrome's numbers**, including the margin collapsing that makes the two
 /// differ:
 ///
@@ -503,6 +504,16 @@ fn the_heading_margins_reach_layout() {
         let c = el(&mut doc, body, "div", container_style);
         let first = el(&mut doc, c, "h1", "line-height: 20px");
         let second = el(&mut doc, c, "h1", "line-height: 20px");
+        // Each heading holds a line. An **empty** one is 0 tall (#296), and its
+        // margins then collapse *through* it: Chrome 153 puts two empty `<h1>`s
+        // at one y with no gap at all. The numbers in the table are the
+        // one-line headings'. This fixture used to hold empty headings and
+        // lean, without saying so, on rinch's one-line floor for childless
+        // blocks to stand in for the line.
+        for h in [first, second] {
+            let t = doc.create_text("x");
+            doc.append_child(h, t);
+        }
         doc.resolve_layout(800.0, 600.0);
 
         let y = |id: NodeId| doc.tree.get(id.0).unwrap().layout.y;

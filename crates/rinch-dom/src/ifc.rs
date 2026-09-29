@@ -10,107 +10,6 @@ use crate::node::{
     DisplayMode, InlineFlowRole, InlineLayout, LayoutResult, Node, NodeContext, NodeKind,
 };
 
-/// Write the one-line height floor an empty block container is owed onto its
-/// Taffy style.
-///
-/// A deliberate rinch divergence from CSS, **not** a spec rule: CSS 2.1 §10.6.3
-/// gives a block container with no in-flow children `height: 0` (an empty
-/// `<div></div>` is 0px in every browser). Rinch floors it at one line box
-/// instead because `<input>` and `<textarea>` keep their value in an *attribute*
-/// rather than in a text child — they are childless however much text they hold,
-/// there is no `NodeContext` measure function for them, and this floor is the
-/// only thing that gives a blockified one a height at all. The right fix is an
-/// intrinsic size for form controls (as `<textarea rows>` already gets); until
-/// then the floor must be applied consistently or the control vanishes.
-///
-/// **Called from both passes that write a node's Taffy style, because either
-/// runs without the other.** [`RinchDocument::setup_inline_formatting_contexts`]
-/// only runs on a structural change (`ifc_dirty`), while
-/// `apply_stylo_styles_to_taffy` runs on every style recompute and rebuilds the
-/// style from the computed values. Applied in the IFC pass alone, the floor was
-/// silently discarded by the next restyle of that node — a `:focus` write when
-/// a text field is clicked was enough — collapsing the element to zero height,
-/// which `paint_node` skips outright: no background, no value, no caret, and
-/// nothing to restore it short of a new structural change.
-///
-/// No-ops unless the node is a childless element that would establish an IFC
-/// and left its height `auto`; an explicit height (a `height: 1px` separator)
-/// is never inflated.
-///
-/// # The `is_block_container()` test survives mutation, and the reason is not
-/// reachability
-///
-/// Removing `Inline` from it — letting a childless `display: inline` element
-/// take the one-line floor — keeps `-p rinch-dom -p rinch` green (#593).
-/// Re-measured after #513 landed and still green. The arm is **reached**, and
-/// often: instrumented, a childless inline element reaches it in 29 of the
-/// suite's 52 test binaries and in 38 of 67 constructed shapes, so this is not
-/// a dead branch.
-///
-/// What is unobserved is the *consequence*, and the mechanism is the detach: an
-/// inline element that is IFC content is removed from its parent's Taffy node by
-/// `mark_inline_descendants`, so Taffy computes nothing from its style and a
-/// `min-height` written there reaches no number anybody reads. That is the reason
-/// the green is unsurprising, **not** a proof of it — it does not cover a
-/// childless inline element whose parent is not an IFC root, which keeps its Taffy
-/// node. The measurement is the measurement; this is why it came out that way.
-///
-/// Keep the test regardless: a `min-height` on an inline-level box is wrong
-/// whether or not anything can see it, and the four sites asking this question
-/// are one authority (#614) — with the one qualification #592 added below, that
-/// this site alone excludes an **atomic inline**, because the floor is a rinch
-/// divergence for form controls and not a CSS rule the other three share.
-pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style) {
-    use crate::computed_style::values::DisplayValue;
-
-    if !node.is_element() || !node.children.is_empty() {
-        return;
-    }
-    // Only block containers establish an IFC; a `display: contents` node
-    // generates no box at all.
-    //
-    // **And not an atomic inline**, which is the one place the four sites
-    // deliberately diverge (#592). `is_block_container` admits `inline-block`
-    // since #592 — its *inside* is a block container, which is what the other
-    // three sites ask about — but this floor is a rinch divergence invented for
-    // blockified form controls, and CSS is unambiguous that an **empty**
-    // `inline-block` is 0 tall: measured in Chrome 150, `<span
-    // style="display:inline-block"></span>` in a `line-height: 20px` container
-    // is `0x0`, not `0x20`. Applying the floor here made every childless
-    // atomic inline one line tall, `<img>` included (it is `inline-block` in the
-    // UA sheet), so an image with no `src` got a 19px box and a 3x2 data URI
-    // got a 3x19 one — `pending_image_tests`' two failures, which is how this
-    // was found rather than argued.
-    if !node.display_mode.is_block_container()
-        || node.display_mode.is_atomic_inline()
-        || node.computed_style.display == DisplayValue::Contents
-    {
-        return;
-    }
-    if !style.size.height.is_auto() {
-        return;
-    }
-
-    let line_h = node.computed_style.line_height_px();
-
-    // The floor must not stomp an author `min-height` — it is a *floor*, not an
-    // override. A childless block (a `<textarea>`, an empty spacer div)
-    // otherwise collapses to one line no matter what the author asked for.
-    if let Some(author_min) = style.min_size.height.into_option() {
-        // An explicit length: the floor is the larger of the two.
-        style.min_size.height = taffy::Dimension::length(line_h.max(author_min));
-    } else if style.min_size.height.is_auto() {
-        style.min_size.height = taffy::Dimension::length(line_h);
-    }
-    // A percentage/calc min-height is left untouched so Taffy can resolve it
-    // against the containing block (it could not before the 0.12 upgrade, which
-    // is why this used to flatten it to `line_h`). Note the consequence: if the
-    // containing block's height is indefinite the percentage resolves to zero
-    // per CSS, so such a block collapses rather than keeping the one-line floor.
-    // That matches browsers, and an empty block with no min-height at all still
-    // gets the floor.
-}
-
 /// What the post-layout tree-check sweep may fail on, and what it may not.
 ///
 /// See [`RinchDocument::tree_check_verdict`], which is the only thing that
@@ -672,25 +571,19 @@ impl RinchDocument {
             // would have missed it) — over 67 constructed shapes and all of
             // `-p rinch-dom -p rinch`. **Zero.**
             //
-            // Kept rather than deleted: the four sites asking this question are
-            // one authority since #614, and a redundant fourth agreement costs a
+            // Kept rather than deleted: the three sites asking this question are
+            // one authority since #614, and a redundant agreement costs a
             // `matches!` while a site that has stopped asking is how #518, #476
-            // and #568 happened. (Three of the four ask it bare; the fourth,
-            // `apply_empty_block_line_floor`, subtracts the atomic inlines —
-            // #592, and stated at that site.)
+            // and #568 happened. (There were four until #296 removed the
+            // one-line floor for childless blocks, `apply_empty_block_line_floor`,
+            // the one site that subtracted the atomic inlines.)
             //
-            // **"Redundant" means something different at each of the other three,
-            // and lumping them together was this comment's own error.** Two are
-            // load-bearing with witnesses: the same mutation fails 9 tests at
-            // `create_anonymous_block_boxes`' phase-1 scan and 7 at
-            // `setup_inline_formatting_contexts`' root scan, six and four of them
-            // pre-dating this change. The third,
-            // `apply_empty_block_line_floor`, is a *third* category rather than a
-            // second redundancy — its mutant is green like this one's, but for an
-            // unrelated reason: its arm is **reached constantly** and what is
-            // unobserved is the consequence (see that function's own doc). So this
-            // site is the only one of the four whose arm nothing can reach in a way
-            // that matters.
+            // **"Redundant" means something different at each site.** The other
+            // two are load-bearing with witnesses: the same mutation fails 9
+            // tests at `create_anonymous_block_boxes`' phase-1 scan and 7 at
+            // `setup_inline_formatting_contexts`' root scan (counts from when
+            // this comment was written, before #296). So this site is the only
+            // one whose arm nothing can reach in a way that matters.
             if !node.display_mode.is_block_container() {
                 stale.push(id);
                 continue;
@@ -2456,18 +2349,15 @@ impl RinchDocument {
             // until #586 and is deleted; the measurement is in that issue, and
             // the short form is that it never once decided this condition
             // across the whole suite.
+            // A childless block container is **not** floored at a line (#296):
+            // with no in-flow content it has no line box, so its auto height is
+            // 0 (CSS 2.1 §10.6.3), as in every browser. The floor that used to
+            // be written here was written for `<input>`/`<textarea>`, which had
+            // no content height, and also carried a blockified `<br>` and the
+            // non-text input types; the line-sized ones are measured now (#297,
+            // `form_control.rs`).
             if has_non_comment_inline || all_children_are_comments {
                 ifc_roots.push(id);
-            } else if own_children.is_empty() {
-                // Always call set_style for consistent Taffy invalidation, even
-                // when the floor does not apply.
-                if let Some(taffy_id) = node.taffy_id
-                    && let Ok(style) = self.tree.taffy.style(taffy_id)
-                {
-                    let mut style = style.clone();
-                    apply_empty_block_line_floor(node, &mut style);
-                    let _ = self.tree.taffy.set_style(taffy_id, style);
-                }
             }
         }
 
@@ -4489,6 +4379,8 @@ impl RinchDocument {
                                 height: known_dims.height.unwrap_or(est_h),
                             };
                         }
+                        // Sized by its `rows`, not its text child (#297).
+                        let rows_h = crate::form_control::inline_root_override(nodes, root_id);
                         perf.bump(crate::perf::Counter::ShapeAtomicInline);
                         let inline_layout = Self::build_inline_layout(
                             nodes, root_id, max_width, 1.0, font_cx, layout_cx,
@@ -4496,7 +4388,9 @@ impl RinchDocument {
                         inline_layout.hang.record(perf);
                         taffy::Size {
                             width: known_dims.width.unwrap_or(inline_layout.measured_width()),
-                            height: known_dims.height.unwrap_or(inline_layout.layout.height()),
+                            height: known_dims
+                                .height
+                                .unwrap_or(rows_h.unwrap_or(inline_layout.layout.height())),
                         }
                     }
                     Some(NodeContext::Text(text)) => {
@@ -4571,6 +4465,9 @@ impl RinchDocument {
                                 }
                             }),
                         }
+                    }
+                    Some(NodeContext::FormControl { content_height }) => {
+                        crate::form_control::measure(*content_height, known_dims)
                     }
                     _ => taffy::Size::ZERO,
                 }

@@ -110,6 +110,16 @@ pub enum NodeContext {
     /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
     /// invariant after every setup pass.
     InlineRoot(usize), // stores the RawNodeId of the IFC root
+    /// A text-entry form control — `<textarea>`, or an `<input>` of a
+    /// text-like type — whose value is an attribute rather than a child, so
+    /// nothing in the tree gives it a content height (#297). The measure
+    /// answers `content_height` (its rows times its line height; Taffy adds
+    /// the padding and border) and a width of zero. Written and kept current by
+    /// [`crate::form_control::sync_form_control_measure`].
+    FormControl {
+        /// Content-box height: `rows × line-height` (one row for an `<input>`).
+        content_height: f32,
+    },
 }
 
 /// Text measurement context for Parley.
@@ -288,7 +298,7 @@ impl DisplayMode {
     /// Adding `inline-grid` here (#607) is **half** of its flow fix — the half
     /// those five passes read. The other half is that `DisplayMode::InlineGrid`
     /// is not `Block`, so [`Self::is_block_container`] answers `false` and the
-    /// anonymous-box generation — that predicate's only four readers, all in
+    /// anonymous-box generation — that predicate's only readers, all in
     /// `ifc.rs`; grep it — stops treating the box as a container. The two
     /// predicates are **independently** load-bearing: a mutant that admits
     /// `InlineGrid` into `is_block_container` while leaving this function alone
@@ -303,10 +313,11 @@ impl DisplayMode {
     /// **Nor the complement of [`Self::is_block_container`] any more** (#592).
     /// `inline-block` answers `true` to both: atomic on the outside, a block
     /// container on the inside. The two predicates ask about opposite halves of
-    /// the box and the intersection is exactly that one variant, which is why
-    /// `apply_empty_block_line_floor` — the one caller that means "block-level
-    /// block container" — has to say `is_block_container() && !is_atomic_inline()`
-    /// rather than either alone.
+    /// the box and the intersection is exactly that one variant, so a caller
+    /// that means "block-level block container" has to say
+    /// `is_block_container() && !is_atomic_inline()` rather than either alone.
+    /// (The one-line floor for childless blocks was such a caller until #296
+    /// removed it.)
     pub fn is_atomic_inline(self) -> bool {
         matches!(
             self,
@@ -324,7 +335,7 @@ impl DisplayMode {
     /// [`DisplayMode::InlineFlex`] / [`DisplayMode::InlineGrid`] are not: all
     /// three are inline-level boxes, and only the first is a block container
     /// inside (css-display-3 §2.5). It used to be spelled as the complement of
-    /// "inline-level or a flex container" at the four IFC sites that ask it,
+    /// "inline-level or a flex container" at the IFC sites that ask it,
     /// which is how `inline-block` came to be excluded: an
     /// `inline-block` with mixed content laid its children out in a row and
     /// generated no anonymous boxes at all, and — because it was therefore
@@ -334,11 +345,11 @@ impl DisplayMode {
     ///
     /// **`is_block_container` and [`Self::is_atomic_inline`] are not
     /// complements.** They intersect at `inline-block`. A caller that means
-    /// "block-level block container" — `apply_empty_block_line_floor`, the one
-    /// site of the four that is a rinch divergence rather than a CSS rule —
-    /// must say `is_block_container() && !is_atomic_inline()`; the floor
-    /// applied to a childless `inline-block` made every source-less `<img>` one
-    /// line tall, `<img>` being an `inline-block` in the UA sheet.
+    /// "block-level block container" must say
+    /// `is_block_container() && !is_atomic_inline()`: the one-line floor for
+    /// childless blocks (removed in #296) once asked the bare question and made
+    /// every source-less `<img>` one line tall, `<img>` being an `inline-block`
+    /// in the UA sheet.
     ///
     /// It answers from this enum alone, so it inherits the coarsening in the
     /// type's doc: block-level `display: grid` arrives as

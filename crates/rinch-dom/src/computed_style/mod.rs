@@ -463,7 +463,8 @@ impl ComputedStyle {
     /// Resolve `line-height` to pixels against this style's `font-size`.
     ///
     /// `normal` is the 1.2 factor rinch uses everywhere a line box has to be
-    /// sized without Parley metrics (the empty-block floor, `<textarea rows>`).
+    /// sized without Parley metrics (a text-entry form control's content
+    /// height, `form_control.rs`).
     pub fn line_height_px(&self) -> f32 {
         match self.line_height {
             LineHeightValue::Normal => self.font_size * 1.2,

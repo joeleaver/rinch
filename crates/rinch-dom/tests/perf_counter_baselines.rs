@@ -620,9 +620,9 @@ fn container_class_a_descendant_rule_depends_on() {
 /// style root and left `styles_dirty` set, and `resolve_styles` read an empty
 /// root list as "walk everything". It now walks everything only when a
 /// whole-document restyle asked it to (`NodeTree::full_style_walk`).
-/// `taffy_style_syncs` is 2, not 1: the new row was childless when its text
-/// went in, so its Taffy style is re-synced to drop the empty-block line floor
-/// (`note_first_child`).
+/// `taffy_style_syncs` is 1: the row's own cascade. It was 2 while a childless
+/// block carried a one-line floor, which a second sync (`note_first_child`)
+/// took off when the row's text went in; #296 removed both.
 #[test]
 fn append_one_row() {
     let mut f = build(true);
@@ -641,7 +641,7 @@ fn append_one_row() {
             (StyleResolves, 2),
             (ElementsCascaded, 1),
             (StyleNodesVisited, 1),
-            (TaffyStyleSyncs, 2),
+            (TaffyStyleSyncs, 1),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
@@ -691,7 +691,7 @@ fn append_one_row_without_wrappers() {
             (StyleResolves, 2),
             (ElementsCascaded, 1),
             (StyleNodesVisited, 1),
-            (TaffyStyleSyncs, 2),
+            (TaffyStyleSyncs, 1),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
@@ -806,6 +806,10 @@ fn build_table(n: usize, rows: bool) -> Fixture {
 /// Taffy style sync (`taffy_style_syncs` 0): each move owes the table one
 /// direction check, deduplicated and answered once for the frame. The review
 /// of #1097 measured 200 syncs here — one per move — before the owed set.
+/// And no Taffy measure call (`taffy_measure_calls` 0, was 200): each row's
+/// cell holds an empty `.blk`, and the structural pass used to `set_style`
+/// every childless block it set up (to apply the one-line floor, #296), which
+/// dirtied all 200 leaves and made Taffy ask each of them again.
 #[test]
 fn table_reverse_200_rows() {
     let mut f = build_table(200, true);
@@ -826,7 +830,6 @@ fn table_reverse_200_rows() {
             (IfcScopeContainers, 601),
             (IfcScopeNodes, 602),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 200),
             (PaintNodesVisited, 105),
             (StackingOrderBuilds, 1),
         ],

@@ -730,11 +730,12 @@ fn a_percentage_min_width_that_cannot_bind_changes_nothing() {
 /// border.
 ///
 /// Chrome 150 in a `line-height: 20px` container: `0x0`, and `2x2` with
-/// `border: 1px solid black`. This is the pin on the one place the four
-/// block-container sites deliberately disagree — `apply_empty_block_line_floor`
-/// is a rinch divergence for blockified form controls and must not reach an
-/// atomic inline, or every childless `inline-block` (an `<img>` with no `src`
-/// included, since the UA sheet makes it one) becomes one line tall.
+/// `border: 1px solid black`. This was the pin on the one place the four
+/// block-container sites deliberately disagreed — the one-line floor for
+/// childless blocks, a rinch divergence for blockified form controls that must
+/// not reach an atomic inline. The floor is gone (#296), and an empty block is 0
+/// tall too; the fixture stays, since an empty inline-block is still owed a
+/// zero box.
 #[test]
 fn an_empty_inline_block_is_zero_sized() {
     for (style, want) in [
@@ -942,8 +943,7 @@ fn an_image_with_no_source_has_no_box() {
     assert_eq!(
         (lay(&doc, img).2, lay(&doc, img).3),
         (0.0, 0.0),
-        "Chrome gives a source-less <img> no box; a one-line floor would make \
-         it 19 tall",
+        "Chrome gives a source-less <img> no box",
     );
 }
 

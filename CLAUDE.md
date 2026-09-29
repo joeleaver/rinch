@@ -2313,11 +2313,11 @@ ones whose last cascade resolved a viewport unit — Stylo's
 (`viewport_unit_restyles`). Two rinch-side inputs ride along without a cascade:
 every `position: fixed`/`absolute` box is queued for a Taffy re-sync, because
 `out_of_flow` bakes the viewport size into its Taffy style. The first layout no
-longer re-cascades everything either, which is what used to hide two other
-non-cascade inputs of `apply_stylo_styles_to_taffy`: a childless block's
-one-line floor (`note_first_child` re-syncs a block when its first child
-arrives) and an unstyled `<select>`'s widest-option width
-(`note_select_content_changed`). `resolve_styles` walks the whole document
+longer re-cascades everything either, which is what used to hide another
+non-cascade input of `apply_stylo_styles_to_taffy`: an unstyled `<select>`'s
+widest-option width (`note_select_content_changed`). (A childless block's
+one-line floor was a second, re-synced by `note_first_child`; both are gone
+since #296 — see **An empty `<div>` is 0 tall** under Common Issues.) `resolve_styles` walks the whole document
 only when a whole-document restyle asks (`NodeTree::full_style_walk`) — an
 empty `style_roots` means nothing to do, not "walk everything".
 `crates/rinch-dom/tests/viewport_restyle_tests.rs` is the twin oracle.
@@ -4757,6 +4757,30 @@ Make changes, rebuild, launch again. The full cycle:
 - **A CSS table (`display: table` and its parts) lays out only approximately**: rinch has no table formatting context. A `table-cell` / `table-caption` is a block container (#1072); a `table-row` is a flex row, so its cells sit side by side; a `table` / `inline-table` and a row group (`table-row-group` / `-header-group` / `-footer-group`) are a flex **column** when any of their layout children — read through `display: contents` wrappers — is a row or row group, and a flex **row** otherwise, so rows stack and a table of bare cells keeps them side by side (#1083, `RinchDocument::table_flex_direction`). The direction is not a computed value, so two things carry it. **Every** rebuild of a node's Taffy style from `computed_style` goes through `taffy_style_from_computed`, which applies it — the cascade's sync and both tick re-syncs (`tick_transitions` / `tick_animations`); a new rebuild site that calls `to_taffy_style` directly puts a table's rows back side by side on its first frame. And a child inserted, moved in, removed, or restyled into or out of being a row owes its container a check in `NodeTree::table_direction_owed`, deduplicated and drained once per layout by `resolve_table_directions`, which writes only `flex_direction` and only when it moved — so a keyed reorder or a bulk removal under a table costs no Taffy style sync (`perf_counter_baselines::table_*`). What is still not Chrome's, measured in 153: **columns do not align across rows** (each cell is its own width, where Chrome sizes a column to its widest cell); a table fills its container's width where Chrome shrink-wraps it; a table mixing bare cells and rows stacks every child, where Chrome puts each run of bare cells in one anonymous row; a `table-header-group` / `table-footer-group` stays in DOM order, where Chrome moves them first / last; a caption beside bare cells sits in their row; and an `inline-table` is block-level — it maps to `DisplayValue::Flex` like `table`, so it starts its own line where Chrome lays it out inline. HTML `<table>` / `<tr>` / `<td>` are unaffected: the UA sheet gives them no table display at all (`table` is `display: block`)
 - **A stylesheet rule that matches nothing**: desktop's **selector** surface is narrower than a browser's and every gap is silent — the rule parses, then matches nothing, with no warning. `#id` works as of **#675**: `TElement::id()` now hands Stylo a stored, interned `Atom` (`Node::id_atom`, written by `Node::write_attribute` / `erase_attribute`), where it returned a hard `None` before, so `SelectorMap::get_all_matching_rules` never consulted the id bucket and `has_id` — correct all along — never ran **for a rule whose rightmost compound carries the id**. An ancestor-side id (`#a > p`, bucketed by `p`) always worked, which is the asymmetry that hid it. An UPPERCASE attribute name — `<div ID="up">`, `[DATA-X]` — works as of **#688**: the store folds the name in HTML content and Stylo already hands `attr_matches` a lowercased selector name, so both ends meet. The `[attr=v i]` case-insensitive flag works too, since `attr_matches` delegates to the selectors crate's `AttrSelectorOperation::eval_str` — the evaluator Stylo's invalidation snapshots use, so an element and its snapshot cannot disagree. Still silently dropped, measured in the same sweep: `:has()`, camelCase SVG type selectors (`linearGradient`), presentational attributes (`<img width=100>`), and the whole `:required` / `:optional` / `:read-only` / `:read-write` / `:placeholder-shown` / `:indeterminate` / `:valid` / `:default` / `:defined` / `:target` / `:focus-within` / `:fullscreen` / `:lang()` family, which falls through a catch-all `_ => false` in `match_non_ts_pseudo_class`. `docs/src/guide/theming.md` has the measured table. All of them work on `rinch-web` (the browser matches), so a rule that works in the browser and not on desktop is probably one of these; a class selector is the spelling with no gap on either backend
 - **`width: max-content` filled the container instead of shrink-wrapping**: rinch implements **no** intrinsic sizing keyword on a box's own size (#626). `max-content`, `min-content`, `fit-content`, `fit-content(<length-percentage>)`, `stretch` and `-webkit-fill-available` all parse — stylo's `static_prefs::pref!` is a *compile-time* macro in `stylo_static_prefs` that hard-codes those gates to `true`, and is unrelated to the runtime `stylo_config` store `RinchDocument::new` pokes — and are then laid out as `auto`, on `width`, `height`, `min-width`, `min-height`, `max-width`, `max-height` and `flex-basis` alike. This is **not** a missing match arm. `taffy::Dimension` is a newtype over `CompactLength`, and while that type carries `MIN_CONTENT_TAG`/`MAX_CONTENT_TAG`/`FIT_CONTENT_*_TAG`, only the **grid track sizing** functions read them — `Dimension` implements `TaffyAuto` but not `TaffyMaxContent`, so there is no safe constructor; its resolver ends `_ => unreachable!()`, so a `size`/`min_size`/`max_size` carrying one **panics** in layout. So **`grid-template-columns: max-content` works** and a box's own `width: max-content` cannot, and implementing the latter needs a rinch-side measurement pass. What the substitution costs depends on the box, and the two halves are **mirror images** (measured, Chrome 150): the three intrinsic keywords are already correct wherever `auto` is content-sized — a block's `height`, an `inline-block`'s or a flex-row item's `width` — and wrong wherever `auto` fills — a block's `width`, any `min-width`/`max-width`, a flex-column or grid item's `width`; `stretch` is correct exactly where `auto` fills and wrong where `auto` is content-sized. The declaration is no longer *discarded*, only unimplemented: `DimensionValue::Intrinsic` carries it, so `get_computed_styles` reports what the author wrote, and style conversion prints one line per property and keyword per process instead of dropping it in silence. The measured table and the Taffy pin live in `crates/rinch-dom/tests/intrinsic_sizing_tests.rs`
+- **An empty `<div>` is 0 tall** (#296): a block with no in-flow content has
+  no line box, so its auto height is its padding and border — CSS 2.1 §10.6.3,
+  Chrome 153, and `rinch-web`. rinch used to floor every childless block at one
+  line, a divergence written for `<input>`/`<textarea>`, which had no content
+  height, and which was quietly also giving a blockified `<br>` and every
+  non-text `<input>` type their line. It over-applied (it ate padding, reached
+  `display: grid`, inflated block images and overrode `min-height: 0`) and is
+  gone. An empty block that should hold a line says so: `min-height: 1lh`, as
+  the editor's empty paragraphs do. **Line-sized controls are measured** (#297,
+  `crates/rinch-dom/src/form_control.rs`), through a Taffy measure
+  (`NodeContext::FormControl`) with the padding and border on top: a
+  `<textarea>` is `rows` lines (default 2; `rows` parsing is #1153), a `<br>`
+  one line, and an `<input>` one line for every `type` but `checkbox`,
+  `radio`, `range`, `color`, `image` and `hidden` — an invalid `type` is a text
+  field, as in HTML. It is a measure, not a `min-height`, so `min-height: 0`
+  lets the control shrink in a flex column and `max-height` caps it, as in
+  Chrome. A `<textarea>` whose value is a text *child* is still an IFC root;
+  its `InlineRoot` measure answers the `rows` height
+  (`form_control::inline_root_override`), and the form-control sync never
+  overwrites that context. Not modelled: a control's *width* (Chrome's comes
+  from `size`/`cols`), the six excluded types' own sizes (13x13 checkbox, 16px
+  range, …), the date/time family's extra 2px, and a `line-height` below the
+  font's normal line (Chrome clamps up). Line boxes rinch still gets wrong
+  around empty content: #1154
 - **Text not updating**: Verify signal/effect wiring in the component
 - **No display (headless)**: Use Xvfb with `DISPLAY=:99` when running without a monitor
 - **MCP tools not available**: Ensure `rinch-mcp-server` is built (`cargo build -p rinch-mcp-server`) and `.mcp.json` points to the binary

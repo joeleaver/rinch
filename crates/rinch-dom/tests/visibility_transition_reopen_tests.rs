@@ -263,8 +263,11 @@ fn p7_nested_inner_open_and_inner_closed() {
 }
 
 /// Ordering hazard: an inheriting node queued in style_dirty_nodes *before* its parent
-/// (note_first_child) on the pass that re-opens a fully closed root, while an unrelated
-/// transition runs (so the substitution is armed).
+/// on the pass that re-opens a fully closed root, while an unrelated transition runs
+/// (so the substitution is armed). The queueing came from `note_first_child`, which
+/// re-synced a block when its first child arrived to take off the one-line floor for
+/// childless blocks; both are gone since #296, and the fixture stays as a pin on the
+/// order-independence it was written for.
 #[test]
 fn p8_reopen_with_child_queued_before_parent() {
     let (mut doc, root, kid, _) = setup("kid");
