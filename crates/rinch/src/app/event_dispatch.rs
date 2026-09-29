@@ -884,14 +884,28 @@ impl RinchApp {
                 // focuses the nearest focusable ancestor of what it lands on
                 // whatever the button, and before `contextmenu` fires — so the
                 // claim runs ahead of both the app's `data-oncontextmenu` and
-                // the built-in text menu. A press on an editor is the editor's
-                // to place, exactly as the left arm hands it to
-                // `try_new_editor_click` before its own claim runs.
+                // the built-in text menu. Two presses are someone else's to
+                // place, and the claim stays out of both:
+                // - a press on an editor, whatever the button, as the left arm
+                //   hands it to `try_new_editor_click` before its own claim
+                //   runs. Asked of the hit rather than of `editor_press`, which
+                //   is resolved for a right press only: a middle press in a
+                //   focused editor inside a `tabindex` wrapper handed the
+                //   keyboard to the wrapper (review of #1140). Chrome keeps it
+                //   on the contenteditable;
+                // - a press while a `<select>` popup is open, which is modal
+                //   (`handle_click_with_button`'s phase -1): the claim would
+                //   move `:focus` into the popup while the arbiter stays on
+                //   the select.
                 #[cfg(feature = "desktop")]
-                let editor_owns_press = editor_press.is_some();
+                let editor_owns_press = editor_press.is_some()
+                    || matches!(
+                        self.text_target_at(x, y),
+                        Some(super::text_context_menu::TextTarget::Editor(_))
+                    );
                 #[cfg(not(feature = "desktop"))]
                 let editor_owns_press = false;
-                if !editor_owns_press {
+                if !editor_owns_press && !self.is_select_open() {
                     self.claim_press_focus(x, y, false);
                 }
                 if button == MouseButton::Right {
