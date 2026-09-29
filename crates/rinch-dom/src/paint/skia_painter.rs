@@ -1466,33 +1466,16 @@ impl TinySkiaPainter {
     }
 }
 
-impl Painter for TinySkiaPainter {
-    fn reset(&mut self) {
-        self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
-        // Anything still open is dropped, not pooled: no longer live.
-        self.clip_mask = None;
-        self.layer_stack.clear();
-        self.touched = None;
-        self.mask_use.live = 0;
-        self.layer_use.live = 0;
-    }
-
-    fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
-        // A fully transparent solid fill writes no pixel — `SourceOver` at
-        // alpha 0 leaves the destination exactly as it found it — so
-        // rasterising it is cost with no output, and the cost is proportional
-        // to the shape. The guard belongs here rather than at any one caller:
-        // `transparent` is `background-color`'s initial value, so it arrives
-        // from every element on every page, and it arrives the same way from
-        // border colours, text-decoration and the render-surface backdrop.
-        if let Brush::Solid(color) = brush
-            && color.components[3] <= 0.0
-        {
-            return;
-        }
-        let Some(paint) = brush_to_paint(brush) else {
-            return;
-        };
+impl TinySkiaPainter {
+    /// `Painter::fill` once the brush is a tiny-skia paint: the shared tail
+    /// of `fill` and `fill_repeating` (#468).
+    fn fill_with_paint(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        paint: &Paint<'_>,
+        shape: &PaintShape,
+    ) {
         let Some(path) = shape_to_path(shape) else {
             return;
         };
@@ -1531,7 +1514,63 @@ impl Painter for TinySkiaPainter {
             pad,
         );
         let mask = self.clip_mask.as_ref().filter(|_| masked).map(|m| &m.mask);
-        self.pixmap.fill_path(&path, &paint, fill_rule, ts, mask);
+        self.pixmap.fill_path(&path, paint, fill_rule, ts, mask);
+    }
+}
+
+impl Painter for TinySkiaPainter {
+    fn reset(&mut self) {
+        self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+        // Anything still open is dropped, not pooled: no longer live.
+        self.clip_mask = None;
+        self.layer_stack.clear();
+        self.touched = None;
+        self.mask_use.live = 0;
+        self.layer_use.live = 0;
+    }
+
+    fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
+        // A fully transparent solid fill writes no pixel — `SourceOver` at
+        // alpha 0 leaves the destination exactly as it found it — so
+        // rasterising it is cost with no output, and the cost is proportional
+        // to the shape. The guard belongs here rather than at any one caller:
+        // `transparent` is `background-color`'s initial value, so it arrives
+        // from every element on every page, and it arrives the same way from
+        // border colours, text-decoration and the render-surface backdrop.
+        if let Brush::Solid(color) = brush
+            && color.components[3] <= 0.0
+        {
+            return;
+        }
+        let Some(paint) = brush_to_paint(brush) else {
+            return;
+        };
+        self.fill_with_paint(fill, transform, &paint, shape);
+    }
+
+    fn fill_repeating(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        tile: &crate::paint::painter::RepeatTile<'_>,
+        shape: &PaintShape,
+    ) {
+        let Some(pixmap) = tiny_skia::PixmapRef::from_bytes(tile.data, tile.width, tile.height)
+        else {
+            return;
+        };
+        let paint = Paint {
+            shader: tiny_skia::Pattern::new(
+                pixmap,
+                tiny_skia::SpreadMode::Repeat,
+                tiny_skia::FilterQuality::Nearest,
+                1.0,
+                tiny_skia::Transform::from_translate(tile.origin.0 as f32, tile.origin.1 as f32),
+            ),
+            anti_alias: true,
+            ..Paint::default()
+        };
+        self.fill_with_paint(fill, transform, &paint, shape);
     }
 
     fn stroke(

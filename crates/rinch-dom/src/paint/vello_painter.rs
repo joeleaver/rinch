@@ -151,6 +151,36 @@ impl Painter for VelloPainter {
         self.scene.draw_image(&image_data, transform);
     }
 
+    fn fill_repeating(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        tile: &crate::paint::painter::RepeatTile<'_>,
+        shape: &PaintShape,
+    ) {
+        let image = ImageData {
+            data: Blob::from(tile.data.to_vec()),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: tile.width,
+            height: tile.height,
+        };
+        let brush: Brush = peniko::ImageBrush::new(image)
+            .with_extend(peniko::Extend::Repeat)
+            .with_quality(peniko::ImageQuality::Low)
+            .into();
+        let brush_transform = Some(Affine::translate(tile.origin));
+        match shape {
+            PaintShape::Rect(r) => self.scene.fill(fill, transform, &brush, brush_transform, r),
+            PaintShape::RoundedRect(r) => {
+                self.scene.fill(fill, transform, &brush, brush_transform, r)
+            }
+            PaintShape::BezPath(p) => self.scene.fill(fill, transform, &brush, brush_transform, p),
+            PaintShape::Circle(c) => self.scene.fill(fill, transform, &brush, brush_transform, c),
+            PaintShape::Line(l) => self.scene.fill(fill, transform, &brush, brush_transform, l),
+        }
+    }
+
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
         dispatch_clip!(self.scene, fill, transform, shape);
     }

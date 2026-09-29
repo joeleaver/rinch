@@ -146,6 +146,18 @@ pub struct PaintImage<'a> {
     pub opaque: bool,
 }
 
+/// A premultiplied RGBA8 image tiled edge to edge by
+/// [`Painter::fill_repeating`] (#468): tile `(0, 0)` has its top-left corner
+/// at `origin`, in the shape's own space (before the fill's transform).
+#[derive(Clone, Copy, Debug)]
+pub struct RepeatTile<'a> {
+    /// `width * height * 4` bytes, premultiplied RGBA8, rows top to bottom.
+    pub data: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+    pub origin: (f64, f64),
+}
+
 // ── Glyph run ───────────────────────────────────────────────────────────────
 
 /// A single positioned glyph for text rendering.
@@ -248,6 +260,51 @@ pub trait Painter {
             },
             transform,
         );
+    }
+
+    /// Fill `shape` with `tile` repeated in both directions, sampled nearest
+    /// (#468). One call however many repetitions the shape covers, which is
+    /// what keeps an `8px` tiled background on a large box from costing one
+    /// fill per tile.
+    ///
+    /// The default draws one `draw_image` per repetition the shape's bounding
+    /// box touches, under a clip of `shape` — correct, and linear in the
+    /// count; both shipped painters override it with a repeating image
+    /// brush / pattern.
+    fn fill_repeating(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        tile: &RepeatTile<'_>,
+        shape: &PaintShape,
+    ) {
+        let (w, h) = (tile.width as f64, tile.height as f64);
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let straight = crate::image_cache::unpremultiply_rgba(tile.data);
+        let image = PaintImage {
+            data: &straight,
+            width: tile.width,
+            height: tile.height,
+            decoded: None,
+            opaque: false,
+        };
+        let bb = shape.bounding_box();
+        let (ox, oy) = tile.origin;
+        let x0 = ox + ((bb.x0 - ox) / w).floor() * w;
+        let y0 = oy + ((bb.y0 - oy) / h).floor() * h;
+        self.push_clip(fill, transform, shape);
+        let mut y = y0;
+        while y < bb.y1 {
+            let mut x = x0;
+            while x < bb.x1 {
+                self.draw_image(&image, transform * Affine::translate((x, y)));
+                x += w;
+            }
+            y += h;
+        }
+        self.pop_layer();
     }
 
     /// Push a clip layer — all subsequent drawing is clipped to the shape.

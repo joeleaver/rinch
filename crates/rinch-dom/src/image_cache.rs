@@ -53,6 +53,25 @@ impl DecodedImage {
 /// Straight-alpha RGBA8 to premultiplied, rounding to nearest: the
 /// arithmetic the software painter's `draw_image` has always used, so a
 /// cached copy draws exactly the pixels a per-draw premultiply would.
+/// The inverse of [`premultiply_rgba`], for a painter that takes straight
+/// alpha (the default [`Painter::fill_repeating`](crate::paint::painter::Painter::fill_repeating)).
+pub fn unpremultiply_rgba(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    for chunk in data.chunks(4) {
+        let a = chunk[3];
+        if a == 255 || a == 0 {
+            out.extend_from_slice(if a == 0 { &[0, 0, 0, 0] } else { chunk });
+        } else {
+            let f = 255.0 / a as f32;
+            for &c in &chunk[..3] {
+                out.push((c as f32 * f + 0.5).min(255.0) as u8);
+            }
+            out.push(a);
+        }
+    }
+    out
+}
+
 pub fn premultiply_rgba(data: &[u8]) -> Vec<u8> {
     let mut premul = Vec::with_capacity(data.len());
     for chunk in data.chunks(4) {

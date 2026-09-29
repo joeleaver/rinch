@@ -940,6 +940,15 @@ impl Painter for ClipTrackingPainter<'_> {
     fn draw_image(&mut self, image: &painter::PaintImage<'_>, transform: Affine) {
         self.inner.draw_image(image, transform);
     }
+    fn fill_repeating(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        tile: &painter::RepeatTile<'_>,
+        shape: &PaintShape,
+    ) {
+        self.inner.fill_repeating(fill, transform, tile, shape);
+    }
     fn draw_alpha_mask(
         &mut self,
         mask: &[u8],
