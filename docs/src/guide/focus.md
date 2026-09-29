@@ -118,11 +118,16 @@ Focus arrives three ways, and all three go through the same arbiter:
   opening dialog focuses is still its first control in DOM order, not the
   first in Tab order — HTML picks it that way.
 - **A mouse press** — claims the *nearest focusable ancestor-or-self* of
-  whatever was hit, exactly as a browser does. Pointer focus does **not** paint
-  the `:focus-visible` ring. A press that resolves to something *other* than
-  the current claim holder takes the keyboard away from it, and a press that
-  resolves to nothing releases it — a nested focusable inside a focused node
-  counts as "somewhere else", for every mouse button alike.
+  whatever was hit, exactly as a browser does, and with **any** button: a
+  right or middle press focuses too, as a browser's `mousedown` does (measured
+  in Chrome 153), and it does so before a `data-oncontextmenu` handler or the
+  built-in text menu runs. Only `:active` is the primary button's alone, and
+  a press inside a focused rich-text editor leaves the keyboard with the editor
+  whatever the button.
+  Pointer focus does **not** paint the `:focus-visible` ring. A press that
+  resolves to something *other* than the current claim holder moves the
+  keyboard there — a nested focusable inside a focused node counts as
+  "somewhere else" — and a press that resolves to nothing releases it.
 
   This applies to `tabindex="-1"` too — it keeps an element out of the Tab
   order, but it does not keep a click from focusing it, in rinch or in a

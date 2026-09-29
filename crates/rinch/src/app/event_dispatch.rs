@@ -719,92 +719,10 @@ impl RinchApp {
                     return actions;
                 }
 
-                // Update :active and :focus pseudo-class state.
-                // Don't request redraw here — AboutToWait will pick up the
-                // dirty styles and batch them into a single repaint.
-                if let Some(doc) = self.doc.clone() {
-                    // The hit and the focus target it resolves to, in one
-                    // borrow: the walk starts where the hit test lands, so
-                    // re-borrowing between them buys nothing. The policy is
-                    // `resolve_click_focus`, which `handle_click`'s release
-                    // check also asks — one press, one answer (issue #316).
-                    let (hit, press_focus, focus_dom_target) = {
-                        let d = doc.borrow();
-                        let hit = self.shared_hit(&d, x, y);
-                        let press_focus = Self::resolve_click_focus(&d.tree, hit);
-                        // Where the DOM `:focus` state goes. The outer
-                        // `Option` is *whether to touch it at all*: a
-                        // `data-nofocus` press moves no focus, so it must not
-                        // clear the ring either (issue #312). The inner one is
-                        // where it lands — and a **disabled** control is never
-                        // it (issue #315): it takes no keyboard claim, so a
-                        // focus ring on it would be the style lying about who
-                        // owns the keyboard. `PressFocus::Node` is already
-                        // disabled-filtered by `resolve_click_focus`.
-                        let dom_target = match press_focus {
-                            PressFocus::Preserve => None,
-                            PressFocus::Node(nid) => Some(Some(nid)),
-                            PressFocus::Release => Some(
-                                hit.filter(|&nid| !Self::node_is_disabled_in_tree(&d.tree, nid)),
-                            ),
-                        };
-                        (hit, press_focus, dom_target)
-                    };
-                    // The arbiter-held generic node (issue #228). A press that
-                    // resolves anywhere other than it moves or releases the
-                    // claim right here, so paths that return before
-                    // `handle_click` (pending drag, scrollbar, no hit) can't
-                    // strand an invisible, still-Enter-activatable claim.
-                    let node_claim = match self.focus_target {
-                        FocusTarget::Node(fid) => Some(fid),
-                        _ => None,
-                    };
-                    // Any mousedown drops the keyboard focus ring wherever it
-                    // is (it only ever lives on the focused node): pointer
-                    // interaction never shows :focus-visible, and `update_focus`
-                    // below is a no-op when the hit node already holds
-                    // (Tab-driven) focus.
-                    {
-                        let mut d = doc.borrow_mut();
-                        if let Some(prev) = d.tree.focused_node {
-                            d.set_focus_visible(prev, false);
-                        }
-                        // :active applies while mouse is pressed
-                        d.update_active(hit);
-                        // :focus applies to the clicked element (persists after
-                        // release); anchored on the focusable ancestor for a
-                        // press inside one, nowhere at all for a disabled
-                        // one, and left exactly where it was for a
-                        // `data-nofocus` press.
-                        if let Some(target) = focus_dom_target {
-                            d.update_focus(target);
-                        }
-                    }
-                    // No outstanding doc borrow from here on: the arbiter's
-                    // teardown re-borrows, and the callbacks it defers are user
-                    // code that may mutate the DOM.
-                    match press_focus {
-                        // The press declined to move focus (issue #312): the
-                        // current owner keeps the keyboard — editor, input,
-                        // surface or node alike — and the click still fires from
-                        // `handle_click` below. This is the
-                        // `preventDefault()`-on-mousedown escape hatch, which
-                        // desktop had no equivalent of.
-                        PressFocus::Preserve => {}
-                        // Re-press inside the already-focused node: nothing to
-                        // do, the claim and its state stay put.
-                        PressFocus::Node(nid) if node_claim == Some(nid) => {}
-                        PressFocus::Node(nid) => {
-                            let (_, work) = self.set_focus_target_deferred(FocusTarget::Node(nid));
-                            Self::fire_focus_work(work);
-                            self.notify_node_focus_gained(nid);
-                        }
-                        PressFocus::Release if node_claim.is_some() => {
-                            self.set_focus_target(FocusTarget::None);
-                        }
-                        PressFocus::Release => {}
-                    }
-                }
+                // Update :active and :focus pseudo-class state, and move the
+                // keyboard claim. Don't request redraw here — AboutToWait will
+                // pick up the dirty styles and batch them into a single repaint.
+                self.claim_press_focus(x, y, true);
 
                 // Check for draggable element — enter pending drag instead of
                 // immediate click handling
@@ -965,6 +883,34 @@ impl RinchApp {
                 } else {
                     None
                 };
+                // Focus, for every button (issue #452): a browser's mousedown
+                // focuses the nearest focusable ancestor of what it lands on
+                // whatever the button, and before `contextmenu` fires — so the
+                // claim runs ahead of both the app's `data-oncontextmenu` and
+                // the built-in text menu. Two presses are someone else's to
+                // place, and the claim stays out of both:
+                // - a press on an editor, whatever the button, as the left arm
+                //   hands it to `try_new_editor_click` before its own claim
+                //   runs. Asked of the hit rather than of `editor_press`, which
+                //   is resolved for a right press only: a middle press in a
+                //   focused editor inside a `tabindex` wrapper handed the
+                //   keyboard to the wrapper (review of #1140). Chrome keeps it
+                //   on the contenteditable;
+                // - a press while a `<select>` popup is open, which is modal
+                //   (`handle_click_with_button`'s phase -1): the claim would
+                //   move `:focus` into the popup while the arbiter stays on
+                //   the select.
+                #[cfg(feature = "desktop")]
+                let editor_owns_press = editor_press.is_some()
+                    || matches!(
+                        self.text_target_at(x, y),
+                        Some(super::text_context_menu::TextTarget::Editor(_))
+                    );
+                #[cfg(not(feature = "desktop"))]
+                let editor_owns_press = false;
+                if !editor_owns_press && !self.is_select_open() {
+                    self.claim_press_focus(x, y, false);
+                }
                 if button == MouseButton::Right {
                     let mods = self.modifier_state();
                     let claim = self.doc.as_ref().and_then(|doc| {
@@ -2229,6 +2175,109 @@ impl RinchApp {
         };
         if let Some(id) = handler_id {
             events::dispatch_event(events::EventHandlerId(id));
+        }
+    }
+
+    /// The focus half of a pointer press, for **every** button: drop the
+    /// keyboard focus ring, move `:focus`, and move or release the arbiter's
+    /// generic-node claim — the answer [`Self::resolve_click_focus`] gives.
+    /// `primary` also sets `:active`, which is the primary button's alone.
+    ///
+    /// A browser's mousedown focuses the nearest focusable ancestor of the hit
+    /// node whatever the button (Chrome 153, measured: a right or middle press
+    /// on a `tabindex="-1"` item inside a focused `tabindex="0"` listbox
+    /// focuses the item). The right/middle path used to run none of this, so
+    /// its release check in `handle_click_with_button` let go of the listbox
+    /// and nothing took the keyboard (issue #452). Running the one claim on
+    /// both paths is what makes that check agree with the press by
+    /// construction.
+    pub(super) fn claim_press_focus(&mut self, x: f32, y: f32, primary: bool) {
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        // The hit and the focus target it resolves to, in one
+        // borrow: the walk starts where the hit test lands, so
+        // re-borrowing between them buys nothing. The policy is
+        // `resolve_click_focus`, which `handle_click`'s release
+        // check also asks — one press, one answer (issue #316).
+        let (hit, press_focus, focus_dom_target) = {
+            let d = doc.borrow();
+            let hit = self.shared_hit(&d, x, y);
+            let press_focus = Self::resolve_click_focus(&d.tree, hit);
+            // Where the DOM `:focus` state goes. The outer
+            // `Option` is *whether to touch it at all*: a
+            // `data-nofocus` press moves no focus, so it must not
+            // clear the ring either (issue #312). The inner one is
+            // where it lands — and a **disabled** control is never
+            // it (issue #315): it takes no keyboard claim, so a
+            // focus ring on it would be the style lying about who
+            // owns the keyboard. `PressFocus::Node` is already
+            // disabled-filtered by `resolve_click_focus`.
+            let dom_target = match press_focus {
+                PressFocus::Preserve => None,
+                PressFocus::Node(nid) => Some(Some(nid)),
+                PressFocus::Release => {
+                    Some(hit.filter(|&nid| !Self::node_is_disabled_in_tree(&d.tree, nid)))
+                }
+            };
+            (hit, press_focus, dom_target)
+        };
+        // The arbiter-held generic node (issue #228). A press that
+        // resolves anywhere other than it moves or releases the
+        // claim right here, so paths that return before
+        // `handle_click` (pending drag, scrollbar, no hit) can't
+        // strand an invisible, still-Enter-activatable claim.
+        let node_claim = match self.focus_target {
+            FocusTarget::Node(fid) => Some(fid),
+            _ => None,
+        };
+        // Any mousedown drops the keyboard focus ring wherever it
+        // is (it only ever lives on the focused node): pointer
+        // interaction never shows :focus-visible, and `update_focus`
+        // below is a no-op when the hit node already holds
+        // (Tab-driven) focus.
+        {
+            let mut d = doc.borrow_mut();
+            if let Some(prev) = d.tree.focused_node {
+                d.set_focus_visible(prev, false);
+            }
+            // :active applies while the primary button is pressed —
+            // and only that button, as in a browser.
+            if primary {
+                d.update_active(hit);
+            }
+            // :focus applies to the clicked element (persists after
+            // release); anchored on the focusable ancestor for a
+            // press inside one, nowhere at all for a disabled
+            // one, and left exactly where it was for a
+            // `data-nofocus` press.
+            if let Some(target) = focus_dom_target {
+                d.update_focus(target);
+            }
+        }
+        // No outstanding doc borrow from here on: the arbiter's
+        // teardown re-borrows, and the callbacks it defers are user
+        // code that may mutate the DOM.
+        match press_focus {
+            // The press declined to move focus (issue #312): the
+            // current owner keeps the keyboard — editor, input,
+            // surface or node alike — and the click still fires from
+            // `handle_click` below. This is the
+            // `preventDefault()`-on-mousedown escape hatch, which
+            // desktop had no equivalent of.
+            PressFocus::Preserve => {}
+            // Re-press inside the already-focused node: nothing to
+            // do, the claim and its state stay put.
+            PressFocus::Node(nid) if node_claim == Some(nid) => {}
+            PressFocus::Node(nid) => {
+                let (_, work) = self.set_focus_target_deferred(FocusTarget::Node(nid));
+                Self::fire_focus_work(work);
+                self.notify_node_focus_gained(nid);
+            }
+            PressFocus::Release if node_claim.is_some() => {
+                self.set_focus_target(FocusTarget::None);
+            }
+            PressFocus::Release => {}
         }
     }
 

@@ -322,11 +322,11 @@ impl RinchApp {
         // (issue #316, item 3). This used to accept *any* ancestor, so a press
         // on a nested focusable — or on an `<input>` — inside the focused node
         // read as "still inside it" and the outer node kept the keyboard while
-        // the user interacted with something else. For a left button the claim
-        // has already run and installed its answer, so the two agree by
-        // construction and this branch does nothing; the right/middle path
-        // (`handle_click_with_button` straight off `MouseDown`) never runs the
-        // claim, and is where the disagreement was observable.
+        // the user interacted with something else. Every button's press has
+        // already run that claim (`claim_press_focus`, issue #452 for the
+        // right/middle path, which used to run none and so released the outer
+        // node to nobody) and installed its answer, so the two agree by
+        // construction and this branch does nothing on a fresh tree.
         //
         // Deliberately re-resolved rather than threaded down from the claim:
         // between the two, `fire_focus_work` runs user code that may re-render

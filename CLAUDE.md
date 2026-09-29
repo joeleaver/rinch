@@ -1670,7 +1670,14 @@ A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
 only the node from the Tab order, not its subtree. A **mouse press claims
 the nearest focusable ancestor** of the hit node, browser-style, so a clicked
-`tabindex` div owns Enter/Space immediately.
+`tabindex` div owns Enter/Space immediately — with **any** button
+(`RinchApp::claim_press_focus`, issue #452): a right or middle press focuses
+before `data-oncontextmenu` or the text menu runs, as a browser's `mousedown`
+does, and only `:active` is left to the primary button. A press on an editor
+(any button) is the editor's to place and an open `<select>` popup is modal,
+so the claim stays out of both. The right/middle path
+used to run no claim, so a right press on a nested focusable released the
+outer claim and nothing took the keyboard.
 
 A focused **`<select>` is closed**, like a browser's — Enter/Space/Alt+Down
 opens its popup, which then owns the keyboard (issue #314). A pointer opens and
