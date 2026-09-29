@@ -166,7 +166,7 @@ pub(crate) struct TextMenuRow {
 
 /// A text target under a press.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TextTarget {
+pub(super) enum TextTarget {
     /// A text-like `<input>` or a `<textarea>`.
     Input(usize),
     /// A rich-text editor, by container node id.
@@ -554,7 +554,7 @@ impl RinchApp {
 
     /// The text target under `(x, y)`: the nearest text-like field or editor
     /// container on the hit node's ancestor chain.
-    fn text_target_at(&self, x: f32, y: f32) -> Option<TextTarget> {
+    pub(super) fn text_target_at(&self, x: f32, y: f32) -> Option<TextTarget> {
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
         let mut cur = self.shared_hit(&d, x, y);

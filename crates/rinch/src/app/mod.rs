@@ -118,6 +118,8 @@ mod named_damage_tests;
 #[cfg(test)]
 mod native_select_button_1111_tests;
 #[cfg(test)]
+mod no_write_handler_234_tests;
+#[cfg(test)]
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;
@@ -147,6 +149,10 @@ mod perf_stats_tests;
 mod repaint_old_rect_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
+#[cfg(test)]
+mod right_press_focus_452_review_tests;
+#[cfg(test)]
+mod right_press_focus_452_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]

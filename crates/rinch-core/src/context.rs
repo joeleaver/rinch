@@ -35,6 +35,7 @@
 //! To opt out and keep an entry for the life of the thread, create it under
 //! [`unowned`](crate::reactive::unowned).
 
+use crate::reactive::restore::{RestoreCell, Slot, restore_slot};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -141,14 +142,10 @@ pub fn current_context_root() -> u64 {
 /// RAII guard returned by [`push_context_root`]; restores the previous root
 /// when dropped.
 pub struct ContextRootGuard {
-    prev: u64,
+    _restore: RestoreCell<AmbientRoot>,
 }
 
-impl Drop for ContextRootGuard {
-    fn drop(&mut self) {
-        AMBIENT.with(|a| a.root.set(self.prev));
-    }
-}
+restore_slot!(AmbientRoot: u64 = AMBIENT.root);
 
 /// Make `root` the current context root until the returned guard drops.
 ///
@@ -157,8 +154,9 @@ impl Drop for ContextRootGuard {
 /// resolve that root's namespace. Closures that run with no root pushed
 /// resolve the thread-global root `0`.
 pub fn push_context_root(root: u64) -> ContextRootGuard {
-    let prev = AMBIENT.with(|a| a.root.replace(root));
-    ContextRootGuard { prev }
+    ContextRootGuard {
+        _restore: RestoreCell::replace(root),
+    }
 }
 
 /// The document whose events are being dispatched on this thread right now, or
@@ -245,14 +243,10 @@ pub fn doc_matches(owner: Option<u64>, caller: Option<u64>) -> bool {
 /// mis-attribution is invisible until two documents share a thread.
 #[must_use = "the marker is only live while the guard is held — bind it, e.g. `let _d = …`"]
 pub struct DispatchDocGuard {
-    prev: u64,
+    _restore: RestoreCell<AmbientDoc>,
 }
 
-impl Drop for DispatchDocGuard {
-    fn drop(&mut self) {
-        AMBIENT.with(|a| a.doc.set(self.prev));
-    }
-}
+restore_slot!(AmbientDoc: u64 = AMBIENT.doc);
 
 /// Mark `doc_key` as the document being dispatched until the returned guard
 /// drops (issue #139).
@@ -265,22 +259,32 @@ impl Drop for DispatchDocGuard {
 /// A `doc_key` of `0` pushes `None`, not `Some(0)` — see [`doc_identity`].
 pub fn push_dispatching_doc(doc_key: u64) -> DispatchDocGuard {
     // Stored raw: `0` reads back as `None` through `doc_identity`.
-    let prev = AMBIENT.with(|a| a.doc.replace(doc_key));
-    DispatchDocGuard { prev }
+    DispatchDocGuard {
+        _restore: RestoreCell::replace(doc_key),
+    }
 }
 
 /// RAII guard returned by [`enter_reactive_frame`]; restores both the root and
 /// the document it displaced.
 pub(crate) struct ReactiveFrameGuard {
-    prev_root: u64,
-    prev_doc: u64,
+    _restore: RestoreCell<AmbientFrame>,
 }
 
-impl Drop for ReactiveFrameGuard {
-    fn drop(&mut self) {
-        AMBIENT.with(|a| {
-            a.root.set(self.prev_root);
-            a.doc.set(self.prev_doc);
+/// The root and the document together: one TLS access each way, on the path
+/// every effect run and memo recompute takes.
+struct AmbientFrame;
+
+impl Slot for AmbientFrame {
+    type Value = (u64, u64);
+    #[inline]
+    fn swap((root, doc): (u64, u64)) -> (u64, u64) {
+        AMBIENT.with(|a| (a.root.replace(root), a.doc.replace(doc)))
+    }
+    #[inline]
+    fn put_back((root, doc): (u64, u64)) {
+        let _ = AMBIENT.try_with(|a| {
+            a.root.set(root);
+            a.doc.set(doc);
         });
     }
 }
@@ -303,10 +307,9 @@ pub(crate) fn current_reactive_frame() -> (u64, u64) {
 /// raw key [`current_reactive_frame`] captured at creation; `0` (no document)
 /// is re-entered as `0` — "nobody's", never a borrowed document.
 pub(crate) fn enter_reactive_frame(root: u64, doc: u64) -> ReactiveFrameGuard {
-    AMBIENT.with(|a| ReactiveFrameGuard {
-        prev_root: a.root.replace(root),
-        prev_doc: a.doc.replace(doc),
-    })
+    ReactiveFrameGuard {
+        _restore: RestoreCell::replace((root, doc)),
+    }
 }
 
 /// Create a context value accessible by any component.
