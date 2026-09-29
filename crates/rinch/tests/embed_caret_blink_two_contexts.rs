@@ -40,7 +40,21 @@ fn caret_hidden(ctx: &RinchContext) -> Option<bool> {
     Some(style.contains("visibility: hidden"))
 }
 
-fn editor_context(text: &str) -> (RinchContext, EditorHandle) {
+/// The editor container's node id.
+fn editor_id(ctx: &RinchContext) -> usize {
+    let doc = ctx.app().doc().expect("mounted").borrow();
+    doc.query_selector_all("[data-pm-editor]")
+        .into_iter()
+        .next()
+        .expect("an editor container")
+        .0
+}
+
+/// `lead` empty elements go in front of the editor, so the two contexts'
+/// editors get different container ids. With equal ids a clock that ignored
+/// the document still looked right: each document read the other's target as
+/// its own.
+fn editor_context(text: &str, lead: usize) -> (RinchContext, EditorHandle) {
     let slot: Rc<RefCell<Option<EditorHandle>>> = Rc::default();
     let slot_in = slot.clone();
     let html = format!("<p>{text}</p>");
@@ -54,6 +68,9 @@ fn editor_context(text: &str) -> (RinchContext, EditorHandle) {
         },
         move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
+            for _ in 0..lead {
+                root.append_child(&scope.create_element("span"));
+            }
             let (container, handle) = rinch::editor::mount_editor(scope);
             handle.load_html(&html);
             container.set_attribute(
@@ -72,8 +89,8 @@ fn editor_context(text: &str) -> (RinchContext, EditorHandle) {
 
 #[test]
 fn two_contexts_with_focused_editors_both_blink() {
-    let (mut a, ha) = editor_context("alpha");
-    let (mut b, hb) = editor_context("beta");
+    let (mut a, ha) = editor_context("alpha", 0);
+    let (mut b, hb) = editor_context("beta", 3);
     // One focus request at a time: each lands in its own context's update.
     ha.focus();
     a.update(&[]);
@@ -84,6 +101,11 @@ fn two_contexts_with_focused_editors_both_blink() {
         b.update(&[]);
     }
     assert!(a.app().has_focused_contenteditable(), "precondition: a");
+    assert_ne!(
+        editor_id(&a),
+        editor_id(&b),
+        "precondition: the two editors' container ids differ"
+    );
     assert!(b.app().has_focused_contenteditable(), "precondition: b");
     assert_eq!(caret_hidden(&a), Some(false), "a's caret starts solid");
     assert_eq!(caret_hidden(&b), Some(false), "b's caret starts solid");
