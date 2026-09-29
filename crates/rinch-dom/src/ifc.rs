@@ -571,25 +571,19 @@ impl RinchDocument {
             // would have missed it) — over 67 constructed shapes and all of
             // `-p rinch-dom -p rinch`. **Zero.**
             //
-            // Kept rather than deleted: the four sites asking this question are
-            // one authority since #614, and a redundant fourth agreement costs a
+            // Kept rather than deleted: the three sites asking this question are
+            // one authority since #614, and a redundant agreement costs a
             // `matches!` while a site that has stopped asking is how #518, #476
-            // and #568 happened. (Three of the four ask it bare; the fourth,
-            // `apply_empty_block_line_floor`, subtracts the atomic inlines —
-            // #592, and stated at that site.)
+            // and #568 happened. (There were four until #296 removed the
+            // one-line floor for childless blocks, `apply_empty_block_line_floor`,
+            // the one site that subtracted the atomic inlines.)
             //
-            // **"Redundant" means something different at each of the other three,
-            // and lumping them together was this comment's own error.** Two are
-            // load-bearing with witnesses: the same mutation fails 9 tests at
-            // `create_anonymous_block_boxes`' phase-1 scan and 7 at
-            // `setup_inline_formatting_contexts`' root scan, six and four of them
-            // pre-dating this change. The third,
-            // `apply_empty_block_line_floor`, is a *third* category rather than a
-            // second redundancy — its mutant is green like this one's, but for an
-            // unrelated reason: its arm is **reached constantly** and what is
-            // unobserved is the consequence (see that function's own doc). So this
-            // site is the only one of the four whose arm nothing can reach in a way
-            // that matters.
+            // **"Redundant" means something different at each site.** The other
+            // two are load-bearing with witnesses: the same mutation fails 9
+            // tests at `create_anonymous_block_boxes`' phase-1 scan and 7 at
+            // `setup_inline_formatting_contexts`' root scan (counts from when
+            // this comment was written, before #296). So this site is the only
+            // one whose arm nothing can reach in a way that matters.
             if !node.display_mode.is_block_container() {
                 stale.push(id);
                 continue;

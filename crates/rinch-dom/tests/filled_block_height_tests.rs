@@ -25,7 +25,10 @@ fn a_block_filled_after_the_first_layout_loses_its_floor() {
     let c = block(&mut doc, "line-height: 20px");
     doc.append_child(body, c);
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(doc.tree.nodes[c.0].layout.height, 0.0, "empty: Chrome 153: 0");
+    assert_eq!(
+        doc.tree.nodes[c.0].layout.height, 0.0,
+        "empty: Chrome 153: 0"
+    );
     let child = block(&mut doc, "height: 10px");
     doc.append_child(c, child);
     doc.resolve_layout(800.0, 600.0);

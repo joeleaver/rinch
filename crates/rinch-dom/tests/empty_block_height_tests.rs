@@ -95,7 +95,10 @@ fn a_block_image_keeps_a_natural_height_under_one_line() {
 #[test]
 fn a_min_height_of_zero_lets_an_empty_flex_item_collapse() {
     let mut doc = RinchDocument::new();
-    let col = container(&mut doc, "display: flex; flex-direction: column; height: 100px");
+    let col = container(
+        &mut doc,
+        "display: flex; flex-direction: column; height: 100px",
+    );
     let collapsible = el(&mut doc, col, "div", "flex: 1; min-height: 0");
     el(&mut doc, col, "div", "height: 100px");
     doc.resolve_layout(800.0, 600.0);

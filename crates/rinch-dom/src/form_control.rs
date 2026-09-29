@@ -97,10 +97,7 @@ pub(crate) fn sync_form_control_measure(tree: &mut NodeTree, node_id: usize) -> 
 
 /// The measure answer for [`NodeContext::FormControl`], shared by the root
 /// compute and the atomic-inline sizer.
-pub(crate) fn measure(
-    content_height: f32,
-    known: taffy::Size<Option<f32>>,
-) -> taffy::Size<f32> {
+pub(crate) fn measure(content_height: f32, known: taffy::Size<Option<f32>>) -> taffy::Size<f32> {
     taffy::Size {
         width: known.width.unwrap_or(0.0),
         height: known.height.unwrap_or(content_height),

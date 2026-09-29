@@ -455,9 +455,12 @@ rsx! {
 }
 ```
 
-`min-height` and an explicit `height` both work as usual: `height` overrides the
-`rows` height outright, and `min-height` acts as a floor, so the taller of the
-two wins. The `Textarea` component exposes the same thing as `min_rows`.
+`min-height`, `max-height` and an explicit `height` all work as usual: `height`
+overrides the `rows` height outright, `min-height` acts as a floor so the taller
+of the two wins, and `max-height` caps it. The `rows` height is the textarea's
+*content* height, as in a browser, so a `min-height: 0` textarea in a flex
+column can shrink below it. An `<input>` is sized the same way from one line.
+The `Textarea` component exposes the same thing as `min_rows`.
 
 ## Components
 

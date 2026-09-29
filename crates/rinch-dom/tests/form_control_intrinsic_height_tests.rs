@@ -20,7 +20,8 @@ use rinch_dom::RinchDocument;
 /// A 10px-font, 20px-line field with 6px/10px padding and a 1px border: a
 /// content box of one line (20) plus 12 + 2 — Chrome 153: 34px, in every
 /// formatting context below.
-const PADDED: &str = "font-size: 10px; line-height: 20px; padding: 6px 10px; border: 1px solid black";
+const PADDED: &str =
+    "font-size: 10px; line-height: 20px; padding: 6px 10px; border: 1px solid black";
 /// The same field with no padding or border: the content box alone.
 const BARE: &str = "font-size: 10px; line-height: 20px; padding: 0; border: 0";
 
@@ -115,12 +116,26 @@ fn an_author_min_height_is_a_floor_under_the_control_not_over_it() {
 #[test]
 fn a_column_flex_item_with_min_height_zero_shrinks_below_its_line() {
     let mut doc = RinchDocument::new();
-    let col = container(&mut doc, "display: flex; flex-direction: column; height: 10px");
+    let col = container(
+        &mut doc,
+        "display: flex; flex-direction: column; height: 10px",
+    );
     let shrink = el(&mut doc, col, "input", &format!("min-height: 0; {BARE}"));
-    let col2 = container(&mut doc, "display: flex; flex-direction: column; height: 10px");
+    let col2 = container(
+        &mut doc,
+        "display: flex; flex-direction: column; height: 10px",
+    );
     let keep = el(&mut doc, col2, "input", BARE);
-    let col3 = container(&mut doc, "display: flex; flex-direction: column; height: 10px");
-    let ta = el(&mut doc, col3, "textarea", &format!("min-height: 0; {BARE}"));
+    let col3 = container(
+        &mut doc,
+        "display: flex; flex-direction: column; height: 10px",
+    );
+    let ta = el(
+        &mut doc,
+        col3,
+        "textarea",
+        &format!("min-height: 0; {BARE}"),
+    );
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(height(&doc, shrink), 10.0, "Chrome 153: 10");
     assert_eq!(height(&doc, keep), 20.0, "Chrome 153: 20");
@@ -161,7 +176,12 @@ fn a_max_height_caps_the_control() {
 fn a_textarea_is_rows_lines_tall() {
     let mut doc = RinchDocument::new();
     let c = container(&mut doc, "");
-    let three = el(&mut doc, c, "textarea", &format!("display: block; {PADDED}"));
+    let three = el(
+        &mut doc,
+        c,
+        "textarea",
+        &format!("display: block; {PADDED}"),
+    );
     doc.set_attribute(three, "rows", "3");
     let fractional = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
     doc.set_attribute(fractional, "rows", "2.5");

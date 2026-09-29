@@ -193,7 +193,7 @@ and no stylesheet in the workspace matches that class.
 | `required` | `bool` | `false` | |
 | `autosize` | `bool` | `false` | Auto-resize textarea |
 | `min_rows` | `Option<u32>` | `None` | Visible rows; sizes the control to that many lines. Defaults to 2 (HTML default) when unset. A larger CSS `min-height` wins |
-| `max_rows` | `Option<u32>` | `None` | **Declared and inert on desktop (#715).** A textarea has no content height, so its used height is exactly the `min-height` its `rows` and the sheet's 60–120px floor give it — and `min-height` beats `max-height`, so no cap can bind at any value. On the allowlist in `no_dead_props.rs` until a textarea's height can follow its content |
+| `max_rows` | `Option<u32>` | `None` | **Declared and inert on desktop (#715).** A textarea's content height is its `rows` lines, not its text (#297), and the sheet's 60–120px `min-height` beats any `max-height`, so no cap can bind at any value. On the allowlist in `no_dead_props.rs` until a textarea's height can follow its content |
 | `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |

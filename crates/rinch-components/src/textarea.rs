@@ -37,13 +37,13 @@ pub struct Textarea {
     ///
     /// **Declared and inert on desktop** (issue #715). It is not that nothing
     /// reads it — a `max-height` cannot *bind* on a rinch `<textarea>` at all.
-    /// The control has no content height (it holds its value in an attribute,
-    /// not as a text child), so `style_resolution` gives it a `min-height` from
-    /// its `rows`, and the stylesheet declares a 60–120px floor besides. Its
-    /// used height is therefore exactly its `min-height`, and `min-height` beats
-    /// `max-height` in CSS. Measured: `min_rows: 20` with `max_rows: 2` lays out
-    /// at 446px either way, and a textarea holding 40 lines is the same 80px as
-    /// an empty one.
+    /// The control holds its value in an attribute, not as a text child, so its
+    /// content height is its `rows` lines and never its text (#297 measures the
+    /// `rows`; it does not follow the value), and the stylesheet declares a
+    /// 60–120px `min-height` floor, which beats `max-height` in CSS. Measured
+    /// before #297, when `rows` was a `min-height` too: `min_rows: 20` with
+    /// `max_rows: 2` laid out at 446px either way, and a textarea holding 40
+    /// lines is the same 80px as an empty one.
     ///
     /// This is the reason `tests/no_dead_props.rs` still allowlists it. Wiring
     /// it is #715's job, not a component's: the control's height has to be able

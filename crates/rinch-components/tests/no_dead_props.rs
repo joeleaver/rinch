@@ -72,17 +72,16 @@ use std::path::PathBuf;
 /// worth reading as the exception it is. Every earlier entry was *missing
 /// wiring* — a `render` that never looked at a field, curable inside the
 /// component. `Textarea::max_rows` was wired during #707 and **reverted**,
-/// because a `max-height` cannot bind on a rinch `<textarea>` at any value: the
-/// control has no content height, so its used height is exactly the `min-height`
-/// that `rows` and the sheet's floor give it, and `min-height` beats
-/// `max-height`. Reading the prop was easy and would have been a lie. The
+/// because a `max-height` cannot do what the prop means on a rinch `<textarea>`:
+/// the control's content height is its `rows` lines, never its text (#297), and
+/// the sheet's `min-height` floor beats `max-height`. Reading the prop was easy and would have been a lie. The
 /// ratchet's whole purpose is to keep that visible rather than let an empty list
 /// assert something untrue, which is why the prop is here rather than read.
 const ALLOWLIST: &[(&str, &str)] = &[
     // #474 category D — blocked below the component, on #715.
     (
         "Textarea::max_rows",
-        "#715: no max-height can bind on a textarea whose height is its min-height",
+        "#715: no max-height can follow the text of a textarea whose height is its rows",
     ),
 ];
 
