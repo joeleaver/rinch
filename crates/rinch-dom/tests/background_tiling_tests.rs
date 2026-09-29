@@ -127,13 +127,7 @@ fn the_default_fill_repeating_agrees_with_the_software_pattern() {
         fn fill(&mut self, f: Fill, t: Affine, b: &Brush, s: &PaintShape) {
             self.0.fill(f, t, b, s)
         }
-        fn stroke(
-            &mut self,
-            st: &peniko::kurbo::Stroke,
-            t: Affine,
-            b: &Brush,
-            s: &PaintShape,
-        ) {
+        fn stroke(&mut self, st: &peniko::kurbo::Stroke, t: Affine, b: &Brush, s: &PaintShape) {
             self.0.stroke(st, t, b, s)
         }
         #[allow(clippy::too_many_arguments)]
@@ -148,7 +142,8 @@ fn the_default_fill_repeating_agrees_with_the_software_pattern() {
             coords: &[i16],
             glyphs: &[rinch_dom::paint::painter::PaintGlyph],
         ) {
-            self.0.draw_glyphs(font, size, t, gt, b, hint, coords, glyphs)
+            self.0
+                .draw_glyphs(font, size, t, gt, b, hint, coords, glyphs)
         }
         fn draw_image(&mut self, i: &rinch_dom::paint::painter::PaintImage<'_>, t: Affine) {
             self.0.draw_image(i, t)
@@ -193,14 +188,20 @@ fn the_default_fill_repeating_agrees_with_the_software_pattern() {
     plain.fill_repeating(Fill::NonZero, t, &tile, &shape);
 
     let (a, b) = (pattern.pixels(), plain.0.pixels());
-    assert!(a.iter().any(|&v| v != 0), "positive control: the pattern drew");
+    assert!(
+        a.iter().any(|&v| v != 0),
+        "positive control: the pattern drew"
+    );
     let worst = a
         .iter()
         .zip(b)
         .map(|(x, y)| (*x as i16 - *y as i16).abs())
         .max()
         .unwrap();
-    assert!(worst <= 1, "the two paths differ by up to {worst} per channel");
+    assert!(
+        worst <= 1,
+        "the two paths differ by up to {worst} per channel"
+    );
 }
 
 /// A solid 10px tile at DPR 1.25 (12.5 device px) at an integer CSS position.
