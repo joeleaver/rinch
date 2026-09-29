@@ -1,8 +1,7 @@
 //! With both bars up, every thumb pixel paint draws is a pixel a press grabs,
 //! and the bottom-right corner belongs to neither bar — in paint as well as in
-//! hit testing (#444). Not on a track shorter than `MIN_THUMB`, where the
-//! clamped thumb is drawn past the track's end: #1141, pinned below by an
-//! `#[ignore]`d fixture.
+//! hit testing (#444) — on a track shorter than `MIN_THUMB` too, where the
+//! thumb fills the track rather than being drawn past its end (#1141).
 //!
 //! Paint used to reserve `THICKNESS + MARGIN` (8px) at each track's far end
 //! while the hit strips stopped `SCROLLBAR_HIT_THICKNESS` (16px) short, so at
@@ -435,34 +434,91 @@ fn review_the_hit_strip_is_hit_thickness_wide_across_each_bar() {
     assert_eq!(axis_at(hx, H - 16.5), None);
 }
 
-/// Counter-case for "no thumb pixel is ever drawn where a press cannot grab
-/// it": a scroller too short for a `MIN_THUMB` thumb plus the corner. At 30px
-/// tall the vertical track is 30 - 4 - 16 = 10px, the thumb is clamped up to
-/// 20px and painted y 2..22, and the strip stops at y 14.
+/// A scroller too short for a `MIN_THUMB` thumb plus the corner (#1141). At
+/// 30px tall the vertical track is 30 - 4 - 16 = 10px; the thumb used to be
+/// clamped up to 20px and painted y 2..22 while the strip stops at y 14, so
+/// its last 8 rows sat in the corner neither bar claims. Now a thumb never
+/// outgrows its track: it fills the 10px track and cannot travel. The same on
+/// the horizontal axis (30px wide), on both at once, and at the far end.
 #[cfg(software_shell)]
 #[test]
-#[ignore = "#1141: a MIN_THUMB-clamped thumb paints past a track shorter than MIN_THUMB"]
-fn review_a_short_scroller_paints_its_min_thumb_into_the_corner() {
-    let (mut app, id) = mount("height: 30px", (0.0, 0.0), None);
-    let px = painted_pixels(&mut app, 204);
-    let d = app.doc.as_ref().unwrap().borrow();
-    let b = rinch_dom::paint::scrollbar::scrollbars(&d.tree, id, 1.0);
-    assert!(
-        b.vertical.is_some() && b.horizontal.is_some(),
-        "premise: both bars"
-    );
-    let bad: Vec<_> = px
-        .iter()
-        .filter(|&&(x, y)| {
-            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
-            !(find_scrollbar_hit(&d.tree, cx, cy).is_some()
-                && pointer_on_scrollbar_thumb(&d.tree, cx, cy))
-        })
-        .collect();
-    assert!(
-        bad.is_empty(),
-        "{} painted px not grabbable, e.g. {:?}",
-        bad.len(),
-        &bad[..bad.len().min(6)]
-    );
+fn a_short_scroller_paints_its_thumb_only_where_it_can_be_grabbed() {
+    for style in ["height: 30px", "width: 30px", "width: 34px; height: 27px"] {
+        for wheel in [(0.0, 0.0), (5000.0, 5000.0)] {
+            let (mut app, id) = mount(style, wheel, None);
+            let px = painted_pixels(&mut app, 204);
+            let d = app.doc.as_ref().unwrap().borrow();
+            let b = rinch_dom::paint::scrollbar::scrollbars(&d.tree, id, 1.0);
+            assert!(
+                b.vertical.is_some() && b.horizontal.is_some(),
+                "premise: both bars ({style})"
+            );
+            // Premise: each short thumb is still drawn — a fix that hid it
+            // would pass the check below vacuously.
+            let (bw, bh) = (b.box_width as u32, b.box_height as u32);
+            assert!(
+                px.iter().any(|&(x, y)| x >= bw - 8 && y < bh - 16),
+                "premise: a vertical thumb is painted ({style}, {wheel:?})"
+            );
+            assert!(
+                px.iter().any(|&(x, y)| y >= bh - 8 && x < bw - 16),
+                "premise: a horizontal thumb is painted ({style}, {wheel:?})"
+            );
+            let bad: Vec<_> = px
+                .iter()
+                .filter(|&&(x, y)| {
+                    let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+                    !(find_scrollbar_hit(&d.tree, cx, cy).is_some_and(|h| h.node_id == id)
+                        && pointer_on_scrollbar_thumb(&d.tree, cx, cy))
+                })
+                .collect();
+            assert!(
+                bad.is_empty(),
+                "{style} {wheel:?}: {} painted px not grabbable, e.g. {:?}",
+                bad.len(),
+                &bad[..bad.len().min(6)]
+            );
+        }
+    }
+}
+
+/// The geometry behind the pixels (#1141), on every box length that crosses
+/// `MIN_THUMB`: a thumb is never longer than its track, so at every scroll it
+/// ends at or before the track's end. Where the track is at least `MIN_THUMB`
+/// the thumb is clamped up to it as before; where it is shorter the thumb
+/// fills the track exactly and has no travel. A vertical-only scroller is
+/// included — its thumb used to run past the track into the bottom margin.
+#[test]
+fn a_thumb_is_never_longer_than_its_track() {
+    use rinch_dom::paint::scrollbar::MIN_THUMB;
+    for h in [4.0f64, 11.0, 18.0, 23.0, 27.0, 30.0, 37.0, 41.0, 53.0] {
+        for extra in ["", "overflow-x: hidden; "] {
+            let (app, id) = mount(&format!("{extra}height: {h}px"), (0.0, 0.0), None);
+            let b = bars(&app, id);
+            let v = b.vertical.expect("premise: a vertical bar");
+            let both = b.horizontal.is_some();
+            assert_eq!(both, extra.is_empty(), "premise: horizontal bar ({extra})");
+            let track = (h - 4.0 - if both { 16.0 } else { 0.0 }).max(0.0);
+            assert!((v.track_len - track).abs() < 1e-6, "h={h} {extra}");
+            let want = if track >= MIN_THUMB {
+                v.thumb_len.max(MIN_THUMB)
+            } else {
+                track
+            };
+            assert!(
+                (v.thumb_len - want).abs() < 1e-6,
+                "h={h} {extra}: thumb {} on a {track}px track",
+                v.thumb_len
+            );
+            assert!((v.thumb_travel - (track - v.thumb_len)).abs() < 1e-6);
+            for s in [0.0, v.max_scroll * 0.37, v.max_scroll] {
+                assert!(
+                    v.thumb_start(s) + v.thumb_len <= v.track_start + v.track_len + 1e-6,
+                    "h={h} {extra} scroll {s}: thumb ends at {} past track end {}",
+                    v.thumb_start(s) + v.thumb_len,
+                    v.track_start + v.track_len
+                );
+            }
+        }
+    }
 }
