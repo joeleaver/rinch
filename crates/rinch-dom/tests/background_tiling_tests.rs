@@ -173,11 +173,13 @@ fn the_default_fill_repeating_agrees_with_the_software_pattern() {
             data.extend_from_slice(&[(x * 30).min(a), (y * 50).min(a), 20.min(a), a]);
         }
     }
+    let pixels = peniko::Blob::from(data);
     let tile = RepeatTile {
-        data: &data,
+        pixels: &pixels,
         width: 7,
         height: 5,
-        origin: (3.0, -2.0),
+        transform: Affine::translate((3.0, -2.0)),
+        smooth: false,
     };
     let shape = PaintShape::Rect(Rect::new(4.0, 6.0, 57.0, 38.0));
     let t = Affine::translate((5.0, 1.0));
