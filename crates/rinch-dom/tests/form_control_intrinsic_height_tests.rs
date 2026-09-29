@@ -167,11 +167,12 @@ fn a_max_height_caps_the_control() {
     assert_eq!(height(&doc, ta), 30.0, "Chrome 153: 30");
 }
 
-/// `rows` lines, parsed as HTML's non-negative integer with 2 as the default
-/// for an absent, zero or unparsable value. Chrome 153: `rows=3` padded is
-/// 3 × 20 + 14 = 74; `rows="2.5"` is 40 (2 rows); `rows="0"` is 40 (the
-/// default). 3 and 2.5 are off the default on purpose: a fixture at `rows=2`
-/// cannot tell a parsed `rows` from the default.
+/// `rows` lines, 2 when `rows` is absent, below 1 or unparsable. Chrome 153:
+/// `rows=3` padded is 3 × 20 + 14 = 74; `rows="2.5"` is 40 (2 rows);
+/// `rows="0"` and `rows="0.5"` are 40 (the default). 3 and 2.5 are off the
+/// default on purpose: a fixture at `rows=2` cannot tell a parsed `rows` from
+/// the default. `rows` is read as a float, not by HTML's integer rules, so
+/// `"3abc"` and `"1e1"` still disagree with Chrome — #1153.
 #[test]
 fn a_textarea_is_rows_lines_tall() {
     let mut doc = RinchDocument::new();
@@ -187,7 +188,10 @@ fn a_textarea_is_rows_lines_tall() {
     doc.set_attribute(fractional, "rows", "2.5");
     let zero = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
     doc.set_attribute(zero, "rows", "0");
+    let half = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
+    doc.set_attribute(half, "rows", "0.5");
     doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, half), 40.0, "Chrome 153: 40");
     assert_eq!(height(&doc, three), 74.0, "Chrome 153: 74");
     assert_eq!(height(&doc, fractional), 40.0, "Chrome 153: 40");
     assert_eq!(height(&doc, zero), 40.0, "Chrome 153: 40");
@@ -324,4 +328,132 @@ fn the_text_like_types_are_measured_and_a_checkbox_is_not() {
     doc.set_attribute(text, "type", "checkbox");
     doc.resolve_layout(800.0, 600.0);
     assert!(!measured(&doc, text), "a checkbox is not a text control");
+}
+
+/// A `<textarea>` whose value arrives as a text **child** — `textarea { "hi" }`
+/// in rsx, `set_text_content`, a parsed `<textarea>hi</textarea>` — is still
+/// `rows` lines (Chrome 153: 40 for 2 rows, 60 for 3), and stays so across a
+/// restyle. Such a textarea is an IFC root; its measure used to trade places
+/// with the form-control measure, so it was one line (20) after the structural
+/// pass and `rows` lines after the next restyle — it grew when clicked into
+/// (PR #1152 review, F1). The restyle is at a new viewport so it is laid out
+/// again.
+#[test]
+fn a_textarea_with_a_text_child_is_rows_lines_across_a_restyle() {
+    let mut doc = RinchDocument::new();
+    let c = container(&mut doc, "");
+    let two = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
+    doc.set_text_content(two, "abc");
+    let three = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
+    doc.set_attribute(three, "rows", "3");
+    doc.set_text_content(three, "abc");
+    // And one that stays inline, sized by the atomic-inline compute.
+    let c2 = container(&mut doc, "");
+    let inline = el(&mut doc, c2, "textarea", BARE);
+    doc.set_text_content(inline, "abc");
+    doc.resolve_layout(800.0, 600.0);
+    let first = (height(&doc, two), height(&doc, three), height(&doc, inline));
+    for t in [two, three, inline] {
+        doc.set_style(t, "color", "red");
+    }
+    doc.resolve_layout(801.0, 600.0);
+    let second = (height(&doc, two), height(&doc, three), height(&doc, inline));
+    assert_eq!(first, (40.0, 60.0, 40.0), "Chrome 153: 40 / 60 / 40");
+    assert_eq!(second, (40.0, 60.0, 40.0), "and the same after a restyle");
+
+    // A `rows` change reaches it too, though its measure context is the IFC's.
+    doc.set_attribute(three, "rows", "4");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(height(&doc, three), 80.0, "4 rows of 20px");
+}
+
+/// Chrome 153: a `<br>` that is a flex item, or `display: block`, is one line
+/// (20). The removed empty-block floor gave it that; the measure does now
+/// (PR #1152 review, F2).
+#[test]
+fn a_blockified_br_is_one_line() {
+    let mut doc = RinchDocument::new();
+    let flex = container(&mut doc, "display: flex");
+    el(&mut doc, flex, "br", "");
+    let block = container(&mut doc, "");
+    el(&mut doc, block, "br", "display: block");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, flex), 20.0, "Chrome 153: 20");
+    assert_eq!(height(&doc, block), 20.0, "Chrome 153: 20");
+}
+
+/// Every `<input>` type is a one-line field except the six with a size of
+/// their own. Chrome 153 at `line-height: 20px`: an invalid `type="foo"` is 20
+/// (HTML's invalid-value default is Text), `TEXT` is 20 (the attribute is
+/// case-insensitive), the button types and `file` are 20, and the date/time
+/// family 22 — rinch gives those the 20px line, leaving Chrome's 2px of
+/// internal padding unmodelled (PR #1152 review, F3).
+#[test]
+fn every_input_type_but_six_is_a_line() {
+    let mut doc = RinchDocument::new();
+    let c = container(&mut doc, "");
+    let mut ids = Vec::new();
+    for t in [
+        "foo", "TEXT", "submit", "button", "reset", "file", "date", "time",
+    ] {
+        let i = el(
+            &mut doc,
+            c,
+            "input",
+            &format!("display: block; {BARE}; width: 100px"),
+        );
+        doc.set_attribute(i, "type", t);
+        ids.push((t, i));
+    }
+    let mut none = Vec::new();
+    for t in ["checkbox", "Radio", "range", "color", "image"] {
+        let i = el(
+            &mut doc,
+            c,
+            "input",
+            &format!("display: block; {BARE}; width: 100px"),
+        );
+        doc.set_attribute(i, "type", t);
+        none.push((t, i));
+    }
+    doc.resolve_layout(800.0, 600.0);
+    for (t, i) in ids {
+        let h = height(&doc, i);
+        if matches!(t, "date" | "time") {
+            // Chrome 153: 22. rinch gives the one line and not Chrome's 2px of
+            // internal padding; the pin is that it is a line, not 0.
+            assert!((20.0..=22.0).contains(&h), "type={t}: one line, got {h}");
+        } else {
+            assert_eq!(h, 20.0, "type={t}: Chrome 153: 20");
+        }
+    }
+    // Chrome sizes these itself (13, 16, 27, the image's); rinch models none of
+    // it, and must not hand them a text line instead.
+    for (t, i) in none {
+        assert_eq!(height(&doc, i), 0.0, "type={t}: not a text line");
+    }
+}
+
+/// A `type` change alone re-sizes the control — same viewport, no other style
+/// change — so the cascade's re-sync has to owe a layout, not just rewrite the
+/// context (PR #1152 review, F5; it asserted the context before).
+#[test]
+fn a_type_change_alone_resizes_the_control() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let i = el(
+        &mut doc,
+        body,
+        "input",
+        &format!("display: block; {BARE}; width: 100px"),
+    );
+    doc.set_attribute(i, "type", "checkbox");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, i), 0.0);
+    doc.set_attribute(i, "type", "text");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, i), 20.0, "checkbox -> text");
+    doc.set_attribute(i, "type", "checkbox");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, i), 0.0, "text -> checkbox");
 }
