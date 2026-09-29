@@ -11,49 +11,95 @@
 //! The phase is anchored at the last [`reset`] (a caret move or edit), so the
 //! caret is always solid immediately after an interaction — standard text-editor
 //! behaviour — then alternates every [`BLINK_INTERVAL`].
+//!
+//! There is one clock **per document** (keyed by
+//! [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)), not one per
+//! thread: a desktop window and its DevTools panel, or several embedded
+//! `RinchContext`s, share a thread and each has a keyboard of its own. A single
+//! thread-wide clock was retargeted by every document that ticked it, so two
+//! documents that each had a focused editor restored each other's caret to
+//! solid on every tick and neither blinked (issue #1149, the #134 rule).
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 /// Caret blink half-period (solid for this long, then hidden for this long).
 /// 530 ms is the long-standing platform default (Win32 `GetCaretBlinkTime`).
 pub(crate) const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
-thread_local! {
-    /// The instant the caret phase last reset to "solid". `None` until the first
-    /// [`tick`] anchors it.
-    static ANCHOR: Cell<Option<Instant>> = const { Cell::new(None) };
-    /// The `(doc_key, container id)` of the editor currently being blinked, so a
+/// One document's blink clock.
+struct Clock {
+    doc_key: u64,
+    /// The container id of the editor being blinked in this document, so a
     /// focus change can restore the previously-blinked caret to solid (never
-    /// leave a blurred editor frozen mid-blink with a hidden caret). Doc-scoped:
-    /// container ids collide across documents on one thread (issue #134).
-    static TARGET: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
+    /// leave a blurred editor frozen mid-blink with a hidden caret).
+    target: usize,
+    /// The instant the caret phase last reset to "solid". `None` until the
+    /// first [`tick`] anchors it.
+    anchor: Option<Instant>,
 }
 
-/// Reset the blink phase to "solid". Called whenever the caret moves or the
-/// document is edited so the caret is solid right after the interaction.
-pub(crate) fn reset() {
-    ANCHOR.with(|a| a.set(Some(Instant::now())));
+thread_local! {
+    /// One entry per document that is blinking a caret. A document with no
+    /// blink target has no entry, so the list is as long as the number of
+    /// documents on the thread with a focused editor — one or two in practice,
+    /// which is why it is a `Vec` and not a map.
+    static CLOCKS: RefCell<Vec<Clock>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The `(doc_key, container id)` currently being blinked, if any.
-pub(crate) fn target() -> Option<(u64, usize)> {
-    TARGET.with(|t| t.get())
+fn with_clock<R>(doc_key: u64, f: impl FnOnce(Option<&mut Clock>) -> R) -> R {
+    CLOCKS.with(|c| f(c.borrow_mut().iter_mut().find(|c| c.doc_key == doc_key)))
 }
 
-/// Record which editor is being blinked (`None` = none).
-pub(crate) fn set_target(key: Option<(u64, usize)>) {
-    TARGET.with(|t| t.set(key));
+/// Reset `doc_key`'s blink phase to "solid". Called whenever its blinking
+/// caret moves or its document is edited, so the caret is solid right after
+/// the interaction. A document with no blink target has no phase to reset.
+pub(crate) fn reset(doc_key: u64) {
+    with_clock(doc_key, |c| {
+        if let Some(c) = c {
+            c.anchor = Some(Instant::now());
+        }
+    });
 }
 
-/// The current blink phase and the time until the next toggle. Lazily anchors
-/// the phase to "now" on first call after a [`reset`]/cold start.
-pub(crate) fn tick() -> (bool, Duration) {
+/// The container id of the editor `doc_key` is blinking, if any.
+pub(crate) fn target(doc_key: u64) -> Option<usize> {
+    with_clock(doc_key, |c| c.map(|c| c.target))
+}
+
+/// Record which editor `doc_key` is blinking (`None` = none), with its phase
+/// restarted at "solid".
+pub(crate) fn set_target(doc_key: u64, target: Option<usize>) {
+    CLOCKS.with(|c| {
+        let mut c = c.borrow_mut();
+        c.retain(|c| c.doc_key != doc_key);
+        if let Some(target) = target {
+            c.push(Clock {
+                doc_key,
+                target,
+                anchor: Some(Instant::now()),
+            });
+        }
+    });
+}
+
+/// Drop `doc_key`'s clock if it is blinking `container_id` — the editor
+/// unmounted, so nothing is left to blink or restore.
+pub(crate) fn forget(doc_key: u64, container_id: usize) {
+    CLOCKS.with(|c| {
+        c.borrow_mut()
+            .retain(|c| !(c.doc_key == doc_key && c.target == container_id));
+    });
+}
+
+/// `doc_key`'s current blink phase and the time until its next toggle. Lazily
+/// anchors the phase to "now" if it has none yet. A document with no blink
+/// target is at the start of a phase.
+pub(crate) fn tick(doc_key: u64) -> (bool, Duration) {
     let now = Instant::now();
-    let anchor = ANCHOR.with(|a| {
-        let cur = a.get().unwrap_or(now);
-        a.set(Some(cur));
-        cur
+    let anchor = with_clock(doc_key, |c| match c {
+        Some(c) => *c.anchor.get_or_insert(now),
+        None => now,
     });
     phase_at(anchor, now)
 }
@@ -71,11 +117,11 @@ fn phase_at(anchor: Instant, now: Instant) -> (bool, Duration) {
     (visible, Duration::from_millis(remaining))
 }
 
-/// The current phase anchor — test-only, so view tests can assert which editor's
-/// caret move actually re-anchored the (global) blink clock.
+/// `doc_key`'s phase anchor — test-only, so view tests can assert which
+/// editor's caret move actually re-anchored which document's blink clock.
 #[cfg(test)]
-pub(crate) fn anchor_for_test() -> Option<Instant> {
-    ANCHOR.with(|a| a.get())
+pub(crate) fn anchor_for_test(doc_key: u64) -> Option<Instant> {
+    with_clock(doc_key, |c| c.and_then(|c| c.anchor))
 }
 
 #[cfg(test)]
@@ -103,6 +149,40 @@ mod tests {
         // Second boundary: visible again.
         let (v4, _) = phase_at(a, a + Duration::from_millis(1060));
         assert!(v4);
+    }
+
+    /// Two documents keep two clocks (#1149): setting, resetting or forgetting
+    /// one document's target leaves the other's alone, even when both name the
+    /// same container id (ids collide across documents, #134).
+    #[test]
+    fn each_document_keeps_its_own_clock() {
+        set_target(101, Some(7));
+        let a0 = anchor_for_test(101).expect("a target anchors its phase");
+        std::thread::sleep(Duration::from_millis(2));
+        set_target(102, Some(7));
+        assert_eq!(target(101), Some(7), "b's target displaced a's");
+        assert_eq!(target(102), Some(7));
+        assert_eq!(anchor_for_test(101), Some(a0), "b's target reset a's phase");
+
+        reset(102);
+        assert_eq!(
+            anchor_for_test(101),
+            Some(a0),
+            "b's reset reached a's phase"
+        );
+
+        set_target(102, None);
+        assert_eq!(target(101), Some(7), "clearing b cleared a");
+        assert_eq!(target(102), None);
+
+        forget(101, 8);
+        assert_eq!(
+            target(101),
+            Some(7),
+            "forgot an editor that is not the target"
+        );
+        forget(101, 7);
+        assert_eq!(target(101), None);
     }
 
     #[test]

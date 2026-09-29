@@ -325,6 +325,9 @@ pub fn register_editor(doc_key: u64, container_id: usize, handle: EditorHandle) 
 ///
 /// Last, it tells the [`set_unregister_listener`], if one is registered.
 pub fn unregister_editor(doc_key: u64, container_id: usize) {
+    // Its document's blink clock goes with it (#1149): nothing is left to blink
+    // or restore, and the clock would otherwise outlive a dropped context.
+    crate::blink::forget(doc_key, container_id);
     let removed: Vec<EditorHandle> = EDITORS.with(|e| {
         let mut e = e.borrow_mut();
         let mut removed = Vec::new();

@@ -108,8 +108,14 @@ fn two_contexts_with_focused_editors_both_blink() {
             None => panic!("b's caret went away"),
         }
     }
-    assert!(a_off && a_back, "a's caret never blinked (off {a_off}, back {a_back})");
-    assert!(b_off && b_back, "b's caret never blinked (off {b_off}, back {b_back})");
+    assert!(
+        a_off && a_back,
+        "a's caret never blinked (off {a_off}, back {a_back})"
+    );
+    assert!(
+        b_off && b_back,
+        "b's caret never blinked (off {b_off}, back {b_back})"
+    );
 
     // Each context arms its own wake while its caret blinks.
     assert!(a.next_wake().is_some(), "a arms a wake");
