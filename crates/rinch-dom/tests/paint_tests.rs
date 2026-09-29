@@ -2311,10 +2311,15 @@ mod scrollbar_paint {
     }
 
     /// The corner, on the paint side: with both bars up each track gives up the
-    /// other bar's footprint, so the bottom-right square stays empty — the same
-    /// square hit-testing gives to neither bar.
+    /// `HIT_THICKNESS` square at the bottom-right, so that square stays empty —
+    /// the same square hit-testing gives to neither bar (#444). It used to give
+    /// up only the other bar's drawn footprint, an 8px square, and paint the
+    /// last ~6px of each thumb into the 16px one no press can grab.
     #[test]
     fn neither_thumb_paints_into_the_corner() {
+        use rinch_dom::paint::scrollbar::HIT_THICKNESS;
+        let c = (200.0 - HIT_THICKNESS) as u32;
+        let r = (100.0 - HIT_THICKNESS) as u32;
         // Both scrolled hard to the end, which is when the two thumbs would
         // otherwise pile into the same square.
         let p = paint_scroller(
@@ -2323,15 +2328,15 @@ mod scrollbar_paint {
             (600.0, 700.0),
         );
         assert!(
-            any_thumb(&p, 150, 92, 190, 98),
+            any_thumb(&p, c - 8, 92, c, 98),
             "the horizontal thumb reaches the end of its shortened track"
         );
         assert!(
-            any_thumb(&p, 192, 50, 198, 90),
+            any_thumb(&p, 192, r - 8, 198, r),
             "the vertical thumb reaches the end of its shortened track"
         );
         assert!(
-            !any_thumb(&p, 192, 92, 200, 100),
+            !any_thumb(&p, c, r, 200, 100),
             "and the corner square is bare"
         );
     }
