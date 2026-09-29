@@ -6,14 +6,16 @@
 //! - `r1`, `r2` — **seams** (review F1). Each tile used to be filled as its own
 //!   antialiased rect; two tiles meeting mid device pixel each covered it by
 //!   half and composited to 75%, a page-coloured line at every boundary.
-//!   Chrome draws none. Fixed by snapping tile edges to device pixels
-//!   (`LayerGeometry::tiles`). Both red before that, green after.
+//!   Chrome draws none. Fixed by placing tiles on whole device pixels (the
+//!   pattern's origin, and `LayerGeometry::tiles` on the tile-by-tile path).
+//!   Both red before that, green after. (Chrome keeps a fractional phase and
+//!   blends the edge pixel instead; rinch rounds it — #1151.)
 //! - `r4` — **many tiles** (review F2). An 8px tile on a 600x600 box is 5625
 //!   tiles; past the old 4096 cap the layer was painted as one stretched tile
 //!   (left half red, right half blue). It is now one repeating pattern
 //!   (`Painter::fill_repeating`), whatever the count. Red before, green after.
 //! - `r3`, `r5`, `r6` — rounded clip, the underlay while an image loads, a
-//!   transformed box (which takes the tile-by-tile path). Pass at both.
+//!   transformed box. Pass at both.
 //! - `f1`–`f5` — `content-box` origin, `cover`, `contain`, an image with one
 //!   `auto` axis keeping its ratio, keyframe `right 10px` and `center`. Each
 //!   kills a mutant the first round's fixtures let survive (content-box

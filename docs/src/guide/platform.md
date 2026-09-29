@@ -52,14 +52,23 @@ of the list (#468):
 it moves paint only, never layout. This is what makes the striped `Progress`
 bar's stripes move and the `Skeleton` pulse.
 
-Tile edges are snapped to device pixels, as Chrome does, so neighbouring
-tiles meet without a seam at any position or scale factor. A layer that repeats
-on both axes, on an untransformed box, with a tile a whole number of device
-pixels in each axis, is painted as **one repeating pattern**, whatever its
-tile count. Any other layer is painted tile by tile, and past 4096 tiles such a
-layer is not drawn at all (the `background-color` under it still is). That
-covers a transformed box, a tile that is not a whole number of device pixels,
-and `repeat-x`/`repeat-y`.
+A layer that repeats (on either axis) is painted as **one repeating
+pattern**, whatever its tile count: its tile is rasterised once, at the size it
+covers on the device, and cached until the image, gradient or tile size
+changes. A tile that is a fractional number of device pixels (10px at 125%
+scaling) is rasterised at the next whole size and sampled back down smoothly;
+an axis that does not repeat clips the pattern to its one-tile strip. A build
+without the software painter (`embed`) has nothing to rasterise a tile with and
+draws one fill per visible tile instead. No layer is ever dropped for having too
+many tiles.
+
+**One known difference from browsers** (tracked separately as #1151): rinch
+places a tile on whole device pixels, rounding a fractional
+`background-position` (and a fractional translate) to the nearest one. Chrome
+keeps the fraction and blends the pixel on the tile's edge. The result is within
+one device pixel of Chrome's, but a `background-position` animation — the
+striped `Progress` bar — moves in one-device-pixel steps in rinch where Chrome's
+moves smoothly.
 
 An image used to be stretched over the element's border box whatever its
 `background-size`; one that relied on that now tiles at its natural size.
