@@ -146,6 +146,8 @@ mod repaint_old_rect_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
+mod right_press_focus_452_review_tests;
+#[cfg(test)]
 mod right_press_focus_452_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
