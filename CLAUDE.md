@@ -3013,9 +3013,14 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 a painting area that is always the border box (`background-clip` is not read),
 with `background-color` painted under it (`ComputedStyle::background_underlay` —
 `BackgroundValue` holds one value, so the colour and the image used to be one or
-the other). `space`/`round` paint as `repeat`; past `MAX_BACKGROUND_TILES`
-(4096) the layer is one tile over its area. The common case — one tile covering
-the box — is one fill and no clip, as before. `background-position-x`/`-y` are
+the other). `space`/`round` paint as `repeat`. Tile edges are snapped to device
+pixels (`LayerGeometry::tiles`; two antialiased tiles meeting mid-pixel left a
+75% seam). A layer repeating on both axes, on a translation-only transform, with
+a whole-pixel tile, is **one** `Painter::fill_repeating` (a tile rasterised by
+`TinySkiaPainter`, then a tiny-skia `Pattern` / a Vello `Extend::Repeat` image
+brush — both sample the same pixels); anything else is tile by tile, and past
+`MAX_BACKGROUND_TILES` (4096) that layer is not drawn. The common case — one
+tile covering the box — is one fill and no clip, as before. `background-position-x`/`-y` are
 `TransitionProperty`s (paint-only: `affects_layout` is `false`), and
 `transition: background-position` expands to both. An image's `auto` size is
 its intrinsic size now; it used to be stretched over the border box.

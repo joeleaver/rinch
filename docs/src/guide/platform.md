@@ -52,9 +52,20 @@ of the list (#468):
 it moves paint only, never layout. This is what makes the striped `Progress`
 bar's stripes move and the `Skeleton` pulse.
 
+Tile edges are snapped to device pixels, as Chrome does, so neighbouring
+tiles meet without a seam at any position or scale factor. A layer that repeats
+on both axes, on an untransformed box, with a tile a whole number of device
+pixels in each axis, is painted as **one repeating pattern**, whatever its
+tile count. Any other layer is painted tile by tile, and past 4096 tiles such a
+layer is not drawn at all (the `background-color` under it still is). That
+covers a transformed box, a tile that is not a whole number of device pixels,
+and `repeat-x`/`repeat-y`.
+
 An image used to be stretched over the element's border box whatever its
-`background-size`; one that relied on that now tiles at its natural size —
-say `background-size: 100% 100%` to keep the stretch.
+`background-size`; one that relied on that now tiles at its natural size.
+`background-size: 100% 100%` keeps the stretch on a box without a border; on a
+bordered box add `background-origin: border-box`, since `100%` is otherwise the
+padding box, and the tile repeats under the border.
 
 ### Network Images (optional)
 
