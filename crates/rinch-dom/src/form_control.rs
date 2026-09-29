@@ -1,8 +1,10 @@
-//! The intrinsic content height of a text-entry form control (#297).
+//! The intrinsic content height of a line-sized control (#297): `<input>`,
+//! `<textarea>`, and a blockified `<br>`.
 //!
 //! An `<input>` and a `<textarea>` hold their value in an **attribute**, not in
 //! a child, so they are childless however much text they show and nothing in
-//! the box tree gives them a height. A browser sizes them from their own
+//! the box tree gives them a height. (A textarea's text *child* is its default
+//! value, and does not size it either — [`inline_root_override`].) A browser sizes them from their own
 //! metrics: one line box for a single-line `<input>`, `rows` line boxes for a
 //! `<textarea>` (2 when `rows` is absent or invalid), plus padding and border.
 //! Measured in Chrome 153 with `line-height: 20px; padding: 6px 10px; border:

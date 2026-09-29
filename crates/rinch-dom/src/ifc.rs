@@ -2352,8 +2352,9 @@ impl RinchDocument {
             // A childless block container is **not** floored at a line (#296):
             // with no in-flow content it has no line box, so its auto height is
             // 0 (CSS 2.1 §10.6.3), as in every browser. The floor that used to
-            // be written here existed only because `<input>`/`<textarea>` had no
-            // content height of their own; they are measured now (#297,
+            // be written here was written for `<input>`/`<textarea>`, which had
+            // no content height, and also carried a blockified `<br>` and the
+            // non-text input types; the line-sized ones are measured now (#297,
             // `form_control.rs`).
             if has_non_comment_inline || all_children_are_comments {
                 ifc_roots.push(id);

@@ -4730,18 +4730,27 @@ Make changes, rebuild, launch again. The full cycle:
 - **An empty `<div>` is 0 tall** (#296): a block with no in-flow content has
   no line box, so its auto height is its padding and border — CSS 2.1 §10.6.3,
   Chrome 153, and `rinch-web`. rinch used to floor every childless block at one
-  line, a divergence that existed only because `<input>`/`<textarea>` had no
-  content height; that floor over-applied (it ate padding, reached
+  line, a divergence written for `<input>`/`<textarea>`, which had no content
+  height, and which was quietly also giving a blockified `<br>` and every
+  non-text `<input>` type their line. It over-applied (it ate padding, reached
   `display: grid`, inflated block images and overrode `min-height: 0`) and is
   gone. An empty block that should hold a line says so: `min-height: 1lh`, as
-  the editor's empty paragraphs do. **A text-entry form control is measured**
-  (#297, `crates/rinch-dom/src/form_control.rs`): `<textarea>` is `rows` lines
-  (default 2) and an `<input>` of a text-like type one line, through a Taffy
-  measure (`NodeContext::FormControl`) with the padding and border on top —
-  a measure, not a `min-height`, so `min-height: 0` lets it shrink in a flex
-  column and `max-height` caps it, as in Chrome. Its *width* is not measured
-  (Chrome's comes from `size`/`cols`), and `checkbox`/`radio`/`range` have no
-  intrinsic size at all
+  the editor's empty paragraphs do. **Line-sized controls are measured** (#297,
+  `crates/rinch-dom/src/form_control.rs`), through a Taffy measure
+  (`NodeContext::FormControl`) with the padding and border on top: a
+  `<textarea>` is `rows` lines (default 2; `rows` parsing is #1153), a `<br>`
+  one line, and an `<input>` one line for every `type` but `checkbox`,
+  `radio`, `range`, `color`, `image` and `hidden` — an invalid `type` is a text
+  field, as in HTML. It is a measure, not a `min-height`, so `min-height: 0`
+  lets the control shrink in a flex column and `max-height` caps it, as in
+  Chrome. A `<textarea>` whose value is a text *child* is still an IFC root;
+  its `InlineRoot` measure answers the `rows` height
+  (`form_control::inline_root_override`), and the form-control sync never
+  overwrites that context. Not modelled: a control's *width* (Chrome's comes
+  from `size`/`cols`), the six excluded types' own sizes (13x13 checkbox, 16px
+  range, …), the date/time family's extra 2px, and a `line-height` below the
+  font's normal line (Chrome clamps up). Line boxes rinch still gets wrong
+  around empty content: #1154
 - **Text not updating**: Verify signal/effect wiring in the component
 - **No display (headless)**: Use Xvfb with `DISPLAY=:99` when running without a monitor
 - **MCP tools not available**: Ensure `rinch-mcp-server` is built (`cargo build -p rinch-mcp-server`) and `.mcp.json` points to the binary

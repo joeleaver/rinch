@@ -863,8 +863,8 @@ fn test_display_contents_block_parent_nested_inline() {
 //
 // An empty block container is 0 tall (CSS 2.1 §10.6.3; Chrome 153), so an
 // author `min-height` is its height outright. rinch used to floor it at one
-// line box — a divergence that existed only because `<input>`/`<textarea>` had
-// no content height of their own, and that once silently discarded the
+// line box — a divergence written for `<input>`/`<textarea>`, which had no
+// content height of their own, and that once silently discarded the
 // author's `min-height` altogether. #297 measured the controls; #296 removed
 // the floor.
 

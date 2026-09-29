@@ -3,10 +3,11 @@
 //! CSS 2.1 §10.6.3 computes a block container's auto height from its line
 //! boxes and in-flow children, and an empty one has neither: `<div></div>` is
 //! 0px in every browser. rinch used to floor every childless block at one line
-//! box (`ifc::apply_empty_block_line_floor`), a deliberate divergence that
-//! existed only because `<input>`/`<textarea>` — childless however much text
-//! they show — had no content height of their own. They are measured now
-//! (#297, `form_control_intrinsic_height_tests.rs`), and the floor is gone, and
+//! box (`ifc::apply_empty_block_line_floor`), a deliberate divergence written
+//! for `<input>`/`<textarea>` — childless however much text they show — which
+//! had no content height of their own (it also carried a blockified `<br>`).
+//! Those are measured now (#297, `form_control_intrinsic_height_tests.rs`),
+//! and the floor is gone, and
 //! with it the four places it over-applied: a padded block (a border-box floor
 //! the padding ate), a `display: grid` container, a block `<img>`, and an
 //! author `min-height: 0`.
