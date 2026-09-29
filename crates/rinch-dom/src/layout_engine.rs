@@ -773,6 +773,14 @@ impl RinchDocument {
                                 };
                             }
 
+                            // A `<textarea>` whose value arrived as a text child is
+                            // sized by its `rows`, not by that text (#297).
+                            if let Some(size) =
+                                crate::form_control::inline_root_override(nodes, root_id, known_dims)
+                            {
+                                return size;
+                            }
+
                             // Use wrap_width bits as cache key
                             let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
 

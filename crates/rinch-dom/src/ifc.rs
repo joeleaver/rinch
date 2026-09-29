@@ -4378,6 +4378,12 @@ impl RinchDocument {
                                 height: known_dims.height.unwrap_or(est_h),
                             };
                         }
+                        // Sized by its `rows`, not its text child (#297).
+                        if let Some(size) =
+                            crate::form_control::inline_root_override(nodes, root_id, known_dims)
+                        {
+                            return size;
+                        }
                         perf.bump(crate::perf::Counter::ShapeAtomicInline);
                         let inline_layout = Self::build_inline_layout(
                             nodes, root_id, max_width, 1.0, font_cx, layout_cx,
