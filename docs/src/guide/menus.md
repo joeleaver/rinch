@@ -178,6 +178,23 @@ Shortcuts are specified as strings combining modifiers and a key, separated by `
 **Symbols:**
 - `=`, `Equal`, `Plus`
 - `-`, `Minus`
+- `/`, `Slash` · `,`, `Comma` · `.`, `Period` · `;`, `Semicolon` · `'`, `Quote`
+- `[`, `BracketLeft` · `]`, `BracketRight` · `\`, `Backslash` · `` ` ``, `Backquote`
+
+**A shortcut names a key, not the character it types.** Chords are matched by
+the physical key and the modifiers held — the desktop by winit's `KeyCode`, the
+browser by `KeyboardEvent.code` — so a character that needs Shift is spelled as
+its key plus `Shift`: `"Ctrl+Shift+/"`, not `"Ctrl+?"`. (Chrome 153 reports that
+keystroke as `key: "?"`, `code: "Slash"`, `shiftKey: true`; `code` is what
+rinch reads.) The same holds for `Plus`, which is the `=` key *without* Shift.
+Punctuation is named by where it sits on a US layout, and so are letters: on
+another layout the chord follows the key, not the printed character.
+
+A shortcut string that names no key (`"Ctrl+?"`, a typo) registers no chord and
+logs one `tracing` warning per distinct string. The DOM menu bar (Linux, the
+browser) still prints the string beside the item; the native menu on macOS and
+Windows derives its accelerator from the same parse as the chord, so it shows
+one exactly when a chord is armed.
 
 ### Examples
 

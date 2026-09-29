@@ -1011,9 +1011,10 @@ thread_local! {
 /// [`parse_shortcut_for_matching`], logging a warning the first time a string
 /// does not parse.
 ///
-/// A shortcut that names no key registers no chord, and the item still shows
-/// the string as its label — so without the warning the keystroke simply does
-/// nothing and nothing says why. Once per distinct string per thread.
+/// A shortcut that names no key registers no chord, and the DOM menu bar still
+/// prints the string beside its item — so without the warning the keystroke
+/// simply does nothing and nothing says why. Once per distinct string per
+/// thread.
 fn parse_shortcut_or_warn(shortcut: &str) -> Option<ParsedShortcut> {
     let parsed = parse_shortcut_for_matching(shortcut);
     if parsed.is_none() {

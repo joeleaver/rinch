@@ -1074,6 +1074,18 @@ values a desktop build hands `App::menu` — see `docs/src/guide/wasm.md`. CI's
 `cargo test -p rinch --no-default-features --features components,theme` is the
 decoupling gate; the tests it runs also run under `--workspace`.
 
+**A shortcut string names a key, never a character** (#1160). Chords match the
+physical key — winit's `KeyCode` on the desktop, `KeyboardEvent.code` in the
+browser — plus modifiers, so punctuation is spelled by its unshifted US-layout
+character or code name (`"Ctrl+/"`, `"Ctrl+Comma"`) and a shifted character by its
+key and Shift (`"Ctrl+Shift+/"`; Chrome 153 reports that keystroke as `key: "?"`,
+`code: "Slash"`). `"Ctrl+?"` names no key: it arms nothing and
+`parse_shortcut_or_warn` logs one `tracing::warn!` per distinct string. The muda
+accelerator is built from the same `ParsedShortcut`, not from muda's own string
+parser, so a native label appears exactly when a chord is armed. The forward
+table (`parse_shortcut_for_matching`) and `key_code_name` must name the same codes;
+`the_two_key_tables_name_the_same_codes` reads both out of the source.
+
 A **shortcut consumes the keystroke only when a callback actually runs.** A chord
 whose item is disabled, has no `on_click`, or belongs to an unmounted component
 falls through to the app rather than being swallowed, and every chord matching
