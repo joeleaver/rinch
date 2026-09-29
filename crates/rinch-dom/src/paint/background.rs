@@ -118,15 +118,23 @@ pub(super) fn paint_background(
             // the shape is the clip. A gradient is filled *into the shape*,
             // so a tile that covers it is enough; an image is drawn into its
             // tile rect, so only a tile that *is* the shape (a plain rect).
-            if let Some(tile) = layer.covering_tile(rect, snap)
-                && match image {
+            if let Some(tile) = layer.covering_tile(rect, snap) {
+                let direct = match image {
                     BackgroundValue::Image { .. } => {
                         matches!(shape, PaintShape::Rect(_)) && same_rect(tile, rect)
                     }
                     _ => true,
+                };
+                if direct {
+                    draw_tile(painter, tree, image, scale, fill, transform, tile, shape);
+                } else {
+                    // One image tile covering the box (`cover`): one clipped
+                    // draw, no raster (the pattern path resamples it into a
+                    // device-size copy first).
+                    painter.push_clip(fill, transform, shape);
+                    draw_tile(painter, tree, image, scale, fill, transform, tile, shape);
+                    painter.pop_layer();
                 }
-            {
-                draw_tile(painter, tree, image, scale, fill, transform, tile, shape);
                 return;
             }
 
@@ -316,7 +324,7 @@ fn image_key(tree: &NodeTree, image: &BackgroundValue) -> u64 {
             3u8.hash(&mut h);
             url.hash(&mut h);
             if let Some(d) = tree.image_cache.get(url) {
-                (d.data.as_ptr() as usize, d.width, d.height).hash(&mut h);
+                d.id().hash(&mut h);
             }
         }
         BackgroundValue::None | BackgroundValue::Color(_) => 0u8.hash(&mut h),
@@ -367,14 +375,14 @@ fn fill_as_pattern(
             None => {
                 tree.perf.bump(Counter::BackgroundTileRasters);
                 let mut raster = TinySkiaPainter::new(w, h);
-                let unit = Rect::new(0.0, 0.0, w as f64, h as f64);
+                let unit = Rect::new(0.0, 0.0, tw, th);
                 draw_tile(
                     &mut raster,
                     tree,
                     image,
                     scale,
                     Fill::NonZero,
-                    Affine::IDENTITY,
+                    Affine::scale_non_uniform(w as f64 / tw, h as f64 / th),
                     unit,
                     &PaintShape::Rect(unit),
                 );
