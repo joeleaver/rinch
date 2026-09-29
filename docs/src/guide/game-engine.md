@@ -353,9 +353,9 @@ the caret next toggles (what desktop arms its `ControlFlow::WaitUntil` with), or
 only when some unrelated event happens to arrive. `needs_update()` answers
 `true` once that instant has passed. A blurred host window
 (`PlatformEvent::WindowFocus(false)`) stops the blink with the caret solid and
-arms no wake. The blink clock is one per thread, because one caret has the
-keyboard: a context with no focused editor leaves another context's blink alone,
-but two contexts that *each* have a focused editor keep both carets solid.
+arms no wake. Each context has its own blink clock (issue #1149): two contexts
+on one thread that each have a focused editor both blink, each on its own
+phase, and blurring or typing in one leaves the other's blink alone.
 
 **RenderSurface in an embedded context.** A `RenderSurface` works inside a
 `RinchContext` the way it does on desktop: `scene()` tells each surface in
