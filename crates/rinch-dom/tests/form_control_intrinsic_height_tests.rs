@@ -189,9 +189,14 @@ fn a_restyle_or_a_rows_change_re_measures_the_control() {
         &format!("display: block; {BARE}; width: 100px"),
     );
     let ta = el(&mut doc, c, "textarea", &format!("display: block; {BARE}"));
+    // An inline one is an atomic inline, sized by its own compute outside the
+    // root's (#661), so the re-measure has to reach that sizer as well.
+    let c2 = container(&mut doc, "");
+    let inline = el(&mut doc, c2, "input", &format!("{BARE}; width: 100px"));
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(height(&doc, input), 20.0);
     assert_eq!(height(&doc, ta), 40.0);
+    assert_eq!(height(&doc, inline), 20.0);
 
     doc.set_attribute(
         input,
@@ -199,9 +204,11 @@ fn a_restyle_or_a_rows_change_re_measures_the_control() {
         "display: block; font-size: 15px; line-height: 2; padding: 0; border: 0; width: 100px",
     );
     doc.set_attribute(ta, "rows", "5");
+    doc.set_style(inline, "line-height", "30px");
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(height(&doc, input), 30.0, "Chrome 153: 30");
     assert_eq!(height(&doc, ta), 100.0, "5 rows of 20px");
+    assert_eq!(height(&doc, inline), 30.0, "a 30px line");
 }
 
 /// A `font-size` transition frame writes `computed_style` directly and rebuilds
