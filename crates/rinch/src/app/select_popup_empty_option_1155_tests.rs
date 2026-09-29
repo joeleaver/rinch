@@ -48,20 +48,30 @@ fn row_heights(labels: &[&'static str]) -> Vec<f32> {
         .collect()
 }
 
-#[test]
-fn an_empty_option_row_is_as_tall_as_a_labelled_one() {
-    let h = row_heights(&["", "One", ""]);
-    assert_eq!(h.len(), 3, "one row per option: {h:?}");
+/// Rows are 31.6px (12px of padding and a 19.6px line), and laid-out boxes are
+/// pixel-snapped, so a row's rounded height depends on where it starts: 32, 31,
+/// 32, ... The exact comparison is therefore row for row against a popup of
+/// the same length whose every option is labelled.
+fn assert_rows_match_labelled(labels: &[&'static str]) {
+    let h = row_heights(labels);
+    let labelled = row_heights(&vec!["One"; labels.len()]);
+    assert_eq!(h.len(), labels.len(), "one row per option: {h:?}");
     // Positive control: a labelled row is its line plus its 12px of padding.
-    assert!(h[1] > 12.0 + 10.0, "a labelled row has a line box: {h:?}");
-    assert_eq!(h[0], h[1], "the leading empty row: {h:?}");
-    assert_eq!(h[2], h[1], "the trailing empty row: {h:?}");
+    assert!(
+        labelled.iter().all(|&r| r > 12.0 + 10.0),
+        "a labelled row has a line box: {labelled:?}"
+    );
+    assert_eq!(h, labelled, "{labels:?} against all-labelled rows");
 }
 
-/// A label of spaces collapses to nothing, like an empty one (`white-space:
-/// nowrap` collapses spaces), and is given the same full row.
+#[test]
+fn an_empty_option_row_is_as_tall_as_a_labelled_one() {
+    assert_rows_match_labelled(&["", "One", ""]);
+}
+
+/// A label of spaces is trimmed to nothing, like an empty one, and is given the
+/// same full row.
 #[test]
 fn a_whitespace_only_option_row_is_as_tall_as_a_labelled_one() {
-    let h = row_heights(&["   ", "One"]);
-    assert_eq!(h[0], h[1], "{h:?}");
+    assert_rows_match_labelled(&["   ", "One"]);
 }
