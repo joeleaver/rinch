@@ -358,16 +358,21 @@ keyboard: a context with no focused editor leaves another context's blink alone,
 but two contexts that *each* have a focused editor keep both carets solid.
 
 **RenderSurface in an embedded context.** A `RenderSurface` works inside a
-`RinchContext` the way it does on desktop: `scene()` tells each surface its
-physical layout size, runs its render callback, and paints its latest frame
-inline at the surface's box (issue #331). A frame submitted from another thread
-makes `needs_update()` true and the next `update()` answer `RequestRedraw`.
+`RinchContext` the way it does on desktop: `scene()` tells each surface in
+that context's document its physical layout size, runs its render callback, and
+paints its latest frame inline at the surface's box (issue #331). Call `scene()`
+once per frame — every call runs the render callbacks again. A frame submitted
+from another thread makes `needs_update()` true and the next `update()` answer
+`RequestRedraw`. Several contexts on one thread each drive only their own
+surfaces, and a thread with no `RenderSurface` at all pays nothing for this in
+`scene()`.
 Three things are **not** composited by rinch in an embedded context, because
 the host owns compositing there: a surface registered under a `data-viewport`
 name (`create_render_surface_with_name`), a `<video>` / `VideoViewport` (whose
 frame sink is installed only by the desktop runtime), and a
 `GpuTextureRegistrar` texture on a `RenderSurface` (read back only through the
-desktop runtime's own device). Treat them like a [`GameViewport`](#split-layout-viewport-hole)
+desktop runtime's own device, so in an embedded context it draws nothing, and
+its `notify_frame_ready` asks for no redraw). Treat them like a [`GameViewport`](#split-layout-viewport-hole)
 hole: render into your own target and composite it under rinch's overlay.
 
 ### Input Routing
