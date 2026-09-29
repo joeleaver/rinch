@@ -52,8 +52,9 @@ of the list (#468):
 it moves paint only, never layout. This is what makes the striped `Progress`
 bar's stripes move and the `Skeleton` pulse.
 
-A layer that repeats (on either axis) is painted as **one repeating
-pattern**, whatever its tile count: its tile is rasterised once, at the size it
+A single tile that covers the whole box (`background-size: cover`, or a
+gradient at `auto`) is one draw. Any other layer that repeats (on either axis)
+is painted as **one repeating pattern**, whatever its tile count: its tile is rasterised once, at the size it
 covers on the device, and cached until the image, gradient or tile size
 changes. A tile that is a fractional number of device pixels (10px at 125%
 scaling) is rasterised at the next whole size and sampled back down smoothly;

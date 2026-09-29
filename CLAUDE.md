@@ -3041,11 +3041,15 @@ a painting area that is always the border box (`background-clip` is not read),
 with `background-color` painted under it (`ComputedStyle::background_underlay` —
 `BackgroundValue` holds one value, so the colour and the image used to be one or
 the other). `space`/`round` paint as `repeat`. **No layer is ever dropped**
-(#1143's second review): a layer that repeats on either axis is **one**
+(#1143's second review): a layer whose one tile covers the box is one fill (a
+gradient) or one clipped image draw (`cover`), never rasterised; any other
+layer that repeats on either axis is **one**
 `Painter::fill_repeating` — its tile rasterised by a `TinySkiaPainter` at the
-device size it covers (`ceil`, then a scaling pattern transform, bilinear when
+device size it covers (`ceil`; the tile is laid out in CSS space under `scale(w/tw, h/th)` so an angled
+gradient keeps its slope under `scaleX`/skew; then a scaling pattern transform, bilinear when
 that is not exact; a `scale()`d box rasterises bigger), cached per thread by
-image + raster size (`background_tile_rasters` / `background_tile_cache_hits`),
+image (gradient angle + resolved stops, or url + `DecodedImage::id()` — never a
+data pointer, which the allocator reuses) + raster size (`background_tile_rasters` / `background_tile_cache_hits`),
 filled as a tiny-skia `Pattern` or a Vello `Extend::Repeat` image brush from the
 same pixels (the brush's parameters are pinned; no test renders it on a GPU), and clipped to the one-tile strip on an axis that does not repeat.
 Only a build without the software painter (`embed`), a `no-repeat` tile, or a
