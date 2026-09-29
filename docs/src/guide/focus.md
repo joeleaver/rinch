@@ -121,7 +121,9 @@ Focus arrives three ways, and all three go through the same arbiter:
   whatever was hit, exactly as a browser does, and with **any** button: a
   right or middle press focuses too, as a browser's `mousedown` does (measured
   in Chrome 153), and it does so before a `data-oncontextmenu` handler or the
-  built-in text menu runs. Only `:active` is the primary button's alone.
+  built-in text menu runs. Only `:active` is the primary button's alone, and
+  a press inside a focused rich-text editor leaves the keyboard with the editor
+  whatever the button.
   Pointer focus does **not** paint the `:focus-visible` ring. A press that
   resolves to something *other* than the current claim holder moves the
   keyboard there — a nested focusable inside a focused node counts as
