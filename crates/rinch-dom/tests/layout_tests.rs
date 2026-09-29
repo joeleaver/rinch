@@ -861,11 +861,12 @@ fn test_display_contents_block_parent_nested_inline() {
 
 // --- min-height on childless block containers -------------------------------
 //
-// An empty block container is inflated to one line-height so an empty `<p></p>`
-// doesn't collapse. That floor used to be written as an unconditional
-// assignment, which silently discarded the author's `min-height` for ANY
-// childless block — most visibly a `<textarea>` (its value is an attribute, not
-// a text child, so it is always childless) once blockified by a flex parent.
+// An empty block container is 0 tall (CSS 2.1 §10.6.3; Chrome 153), so an
+// author `min-height` is its height outright. rinch used to floor it at one
+// line box — a divergence that existed only because `<input>`/`<textarea>` had
+// no content height of their own, and that once silently discarded the
+// author's `min-height` altogether. #297 measured the controls; #296 removed
+// the floor.
 
 #[test]
 fn test_empty_block_honors_author_min_height() {
@@ -880,28 +881,25 @@ fn test_empty_block_honors_author_min_height() {
     let layout = doc.tree.get(div.0).unwrap().layout;
     assert_eq!(
         layout.height, 200.0,
-        "an author min-height must survive the empty-block line-height floor"
+        "an author min-height is an empty block's height"
     );
 }
 
 #[test]
-fn test_empty_block_min_height_below_line_height_keeps_floor() {
+fn test_empty_block_min_height_below_line_height_is_its_height() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let div = doc.create_element("div");
-    // 5px is far below one line — the line-height floor must still win, so an
-    // empty <p> keeps its line box.
+    // 5px is far below one line, and it is the height: an empty block has no
+    // line box to keep (Chrome 153: 5). The one-line floor this used to pin made
+    // it a line tall (#296).
     doc.set_attribute(div, "style", "min-height: 5px; width: 100px");
     doc.append_child(body, div);
 
     doc.resolve_layout(800.0, 600.0);
 
     let layout = doc.tree.get(div.0).unwrap().layout;
-    assert!(
-        layout.height > 5.0,
-        "line-height floor must still apply when min-height is smaller, got {}",
-        layout.height
-    );
+    assert_eq!(layout.height, 5.0, "Chrome 153: 5");
 }
 
 #[test]
@@ -951,42 +949,6 @@ fn test_blockified_textarea_honors_min_height() {
 }
 
 #[test]
-fn test_empty_block_line_floor_survives_a_restyle() {
-    // The floor is written onto the Taffy style by the IFC pass, which only runs
-    // on a structural change; `apply_stylo_styles_to_taffy` rebuilds that style
-    // from the computed values on *every* restyle. Applied in the IFC pass
-    // alone, the floor was discarded the first time anything re-resolved the
-    // node's style, and nothing put it back.
-    let mut doc = RinchDocument::new();
-    let body = doc.body();
-    let div = doc.create_element("div");
-    doc.set_attribute(
-        div,
-        "style",
-        "width: 100px; font-size: 10px; line-height: 20px",
-    );
-    doc.append_child(body, div);
-
-    doc.resolve_layout(800.0, 600.0);
-    assert_eq!(
-        doc.tree.get(div.0).unwrap().layout.height,
-        20.0,
-        "an empty block starts one line tall"
-    );
-
-    // A style-only change: no child added or removed, so the IFC pass does not
-    // re-run.
-    doc.set_attribute(div, "data-state", "open");
-    doc.resolve_layout(800.0, 600.0);
-
-    assert_eq!(
-        doc.tree.get(div.0).unwrap().layout.height,
-        20.0,
-        "the line-height floor must survive a restyle"
-    );
-}
-
-#[test]
 fn test_blockified_input_keeps_its_height_when_focused() {
     // The shipped case: a search field is a flex item, so it blockifies and
     // takes the childless-block path — an `<input>` holds its value in an
@@ -1032,71 +994,75 @@ fn test_blockified_input_keeps_its_height_when_focused() {
     );
 }
 
-/// A childless block whose only height is the one-line floor, laid out once so
-/// the floor is already on its Taffy style.
+/// A blockified `<input>` — childless, so its height is its form-control
+/// measure (#297) — laid out once.
 ///
 /// `apply_stylo_styles_to_taffy` is not the only pass that rebuilds a node's
 /// Taffy style from the computed values: `tick_transitions` and
 /// `tick_animations` do the same for every node with an active
 /// transition/animation or sitting in `dirty_nodes`, and they run on the event
-/// loop's idle tick *before* the next layout. Each must re-apply the floor.
+/// loop's idle tick *before* the next layout. Neither may cost the control its
+/// height. (This used to be the one-line floor for childless blocks, which the
+/// ticks had to re-apply by hand; the measure lives on the Taffy node's context,
+/// which rebuilding the style does not touch.)
 ///
 /// The two ticks get a test apiece rather than one test that calls both: both
 /// rebuild the *whole* style, so whichever runs last decides the outcome, and a
 /// combined test passes with the earlier tick's call deleted.
-fn empty_block_floored_at_one_line() -> (RinchDocument, usize) {
+fn blockified_input_one_line_tall() -> (RinchDocument, usize) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
-    let div = doc.create_element("div");
+    let input = doc.create_element("input");
     doc.set_attribute(
-        div,
+        input,
         "style",
-        "width: 100px; font-size: 10px; line-height: 20px",
+        "display: block; width: 100px; font-size: 10px; line-height: 20px; padding: 0; border: 0",
     );
-    doc.append_child(body, div);
+    doc.append_child(body, input);
 
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(doc.tree.get(div.0).unwrap().layout.height, 20.0);
+    assert_eq!(doc.tree.get(input.0).unwrap().layout.height, 20.0);
 
-    (doc, div.0)
+    (doc, input.0)
 }
 
-/// The next layout after a tick must not find a floorless style.
-fn assert_floor_survived_relayout(doc: &mut RinchDocument, div: usize, what: &str) {
+/// The next layout after a tick must not find the control collapsed.
+fn assert_height_survived_relayout(doc: &mut RinchDocument, input: usize, what: &str) {
     doc.tree.layout_dirty = true;
     doc.resolve_layout(800.0, 600.0);
 
     assert_eq!(
-        doc.tree.get(div).unwrap().layout.height,
+        doc.tree.get(input).unwrap().layout.height,
         20.0,
-        "{what} must not discard the line-height floor"
+        "{what} must not collapse a blockified input"
     );
 }
 
 #[test]
-fn test_empty_block_line_floor_survives_a_transition_tick() {
+fn test_blockified_input_height_survives_a_transition_tick() {
     // A `<input class="rinch-number-input">` carries
     // `transition: border-color 150ms`, so focusing one puts it on exactly this
     // path — with no animation tick behind it to rebuild the style again.
-    let (mut doc, div) = empty_block_floored_at_one_line();
+    let (mut doc, input) = blockified_input_one_line_tall();
 
-    doc.tree.dirty_nodes.insert(div);
+    doc.tree.dirty_nodes.insert(input);
     doc.tick_transitions();
 
-    assert_floor_survived_relayout(&mut doc, div, "a transition tick");
+    assert_height_survived_relayout(&mut doc, input, "a transition tick");
 }
 
 #[test]
-fn test_empty_block_line_floor_survives_an_animation_tick() {
-    let (mut doc, div) = empty_block_floored_at_one_line();
+fn test_blockified_input_height_survives_an_animation_tick() {
+    let (mut doc, input) = blockified_input_one_line_tall();
 
-    doc.tree.dirty_nodes.insert(div);
+    doc.tree.dirty_nodes.insert(input);
     doc.tick_animations();
 
-    assert_floor_survived_relayout(&mut doc, div, "an animation tick");
+    assert_height_survived_relayout(&mut doc, input, "an animation tick");
 }
 
-/// The line floor is not the only override those two ticks used to drop: an
+/// The line floor for childless blocks (gone since #296) was not the only
+/// override those two ticks used to drop: an
 /// out-of-flow box whose containing block is not its Taffy parent has its
 /// *size* baked from that containing block, and rebuilding the style from the
 /// computed values discards the bake just as thoroughly. `tick_transitions` and
@@ -1105,7 +1071,7 @@ fn test_empty_block_line_floor_survives_an_animation_tick() {
 /// absolute of #204 rides the same helper and would have inherited the drift.
 ///
 /// One document holds both cases; the split is by tick, for the reason
-/// `empty_block_floored_at_one_line` records — whichever tick runs last decides.
+/// `blockified_input_one_line_tall` records — whichever tick runs last decides.
 fn out_of_flow_boxes_sized_from_the_viewport() -> (RinchDocument, usize, usize) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
@@ -1219,8 +1185,9 @@ fn test_out_of_flow_viewport_size_survives_an_animation_tick() {
 
 #[test]
 fn test_empty_block_author_min_height_survives_a_restyle() {
-    // The floor is a floor on both passes: re-applying it on restyle must not
-    // start stomping an author `min-height` that is larger.
+    // Written for the one-line floor for childless blocks (removed in #296),
+    // which was re-applied on every restyle and must not have stomped a larger
+    // author `min-height`. Kept: a restyle still must not lose it.
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let div = doc.create_element("div");
@@ -1244,8 +1211,8 @@ fn test_empty_block_author_min_height_survives_a_restyle() {
 
 #[test]
 fn test_explicit_height_survives_a_restyle_uninflated() {
-    // The mirror of the above: a `height: 1px` separator must not be inflated to
-    // a line by the floor's new call site either.
+    // The mirror of the above: a `height: 1px` separator must not be inflated
+    // on a restyle (the old line floor's restyle call site was the risk).
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let sep = doc.create_element("div");
@@ -1268,7 +1235,7 @@ fn test_empty_block_percentage_min_height_resolves() {
     // Percentage min-height on a childless block used to be flattened to the
     // line-height floor, because Taffy 0.9 could not resolve a percentage
     // min-height against a block containing block at all. Since the 0.12
-    // upgrade it resolves, so the floor must no longer stomp it.
+    // upgrade it resolves (and the floor itself is gone since #296).
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let outer = doc.create_element("div");
@@ -1564,19 +1531,16 @@ fn test_percentage_min_height_block_inside_flex_column() {
 }
 
 #[test]
-fn test_empty_block_line_height_floor_survives_percentage_work() {
-    // The floor must still apply when the author asked for nothing...
+fn test_empty_block_height_survives_percentage_work() {
+    // An empty block with nothing asked of it is 0 tall (Chrome 153: 0)...
     let bare = pct_doc(DEFINITE_PARENT, "width: 10px", None);
-    assert!(bare > 0.0 && bare < 30.0, "expected one line, got {bare}");
+    assert_eq!(bare, 0.0, "Chrome 153: 0");
 
-    // ...and when the author's min-height is smaller than a line.
+    // ...its min-height is its height (Chrome 153: 5)...
     let tiny = pct_doc(DEFINITE_PARENT, "min-height: 5px; width: 10px", None);
-    assert_eq!(
-        tiny, bare,
-        "a sub-line min-height must not shrink the floor"
-    );
+    assert_eq!(tiny, 5.0, "Chrome 153: 5");
 
-    // ...but an explicit height still wins outright (separators).
+    // ...and an explicit height wins outright (separators).
     let sep = pct_doc(DEFINITE_PARENT, "height: 1px; width: 10px", None);
     assert_eq!(sep, 1.0);
 }

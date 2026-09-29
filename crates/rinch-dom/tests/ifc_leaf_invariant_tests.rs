@@ -488,17 +488,16 @@ fn contents_wrapped_text_beside_a_comment_matches_its_comment_free_twin() {
     );
 }
 
-/// An empty container is not a marked root — it takes the empty-block line
-/// floor path instead, and its height comes from that floor, not from a
-/// measure over nothing (which answers 0).
+/// An empty container is not a marked root, and is 0 tall — no line box, no
+/// in-flow child (CSS 2.1 §10.6.3; Chrome 153: 0). It used to take a one-line
+/// floor instead, which #296 removed.
 ///
 /// Kills: mutating `all_children_are_comments`'s initializer from
 /// `!children.is_empty()` to `true`, which would mark every empty container
-/// — the natural-identity value where mutants hide. Near-equivalent today
-/// only because the line floor is applied redundantly at two other sites;
-/// this pins the discovery path itself.
+/// — the natural-identity value where mutants hide. Its height does not tell
+/// (a measure over nothing also answers 0), so the context is what is pinned.
 #[test]
-fn an_empty_container_is_not_a_marked_root_and_keeps_the_line_floor() {
+fn an_empty_container_is_not_a_marked_root_and_is_zero_tall() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = child_of(
@@ -514,11 +513,7 @@ fn an_empty_container_is_not_a_marked_root_and_keeps_the_line_floor() {
         "an empty div establishes no IFC"
     );
     assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
-    let h = height_of(&doc, container);
-    assert!(
-        (h - 20.0).abs() < 2.0,
-        "the empty-block line floor gives one line box, got {h}"
-    );
+    assert_eq!(height_of(&doc, container), 0.0, "Chrome 153: 0");
 }
 
 // ── display:none children of an IFC root (#466's fifth shape) ───────────────
