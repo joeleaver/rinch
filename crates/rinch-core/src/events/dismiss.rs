@@ -594,4 +594,77 @@ mod tests {
         drop(slot);
         assert_eq!(dismiss_handler_count(), 0);
     }
+
+    // ------------------------------------------------ key handlers (#434)
+
+    use crate::events::{KeyEventData, KeyEventKind, dispatch_keyboard_event};
+
+    fn press(key: &str) -> KeyEventData {
+        KeyEventData::new(key, key)
+    }
+
+    /// A key handler hears presses — any key, not just Escape — and never a
+    /// release; a dismiss entry never hears a non-Escape key.
+    #[test]
+    fn a_key_handler_is_offered_every_press_and_no_release() {
+        clear_stack();
+        let seen = Rc::new(RefCell::new(Vec::<String>::new()));
+        let s = seen.clone();
+        let (dismiss_hits, dismiss) = recorder(true);
+        let _d = push_dismiss_handler(0, dismiss);
+        let _k = push_key_handler(0, move |k| {
+            s.borrow_mut().push(k.key.clone());
+            k.key == "ArrowDown"
+        });
+
+        assert!(dispatch_keyboard_event(&press("ArrowDown")));
+        assert!(!dispatch_keyboard_event(&press("x")), "declined: not consumed");
+        assert!(!dispatch_keyboard_event(
+            &press("ArrowDown").with_kind(KeyEventKind::Up)
+        ));
+        assert_eq!(*seen.borrow(), ["ArrowDown", "x"], "no release reached it");
+        assert_eq!(dismiss_hits.get(), 0, "a dismiss entry hears only Escape");
+
+        // Escape: offered to the key handler, declined, then dismissed.
+        assert!(dispatch_keyboard_event(&press("Escape")));
+        assert_eq!(seen.borrow().last().map(String::as_str), Some("Escape"));
+        assert_eq!(dismiss_hits.get(), 1);
+    }
+
+    /// LIFO among key handlers, and a released one is asked nothing.
+    #[test]
+    fn key_handlers_are_topmost_first_and_released_on_drop() {
+        clear_stack();
+        let below = Rc::new(StdCell::new(0u32));
+        let b = below.clone();
+        let _below = push_key_handler(0, move |_| {
+            b.set(b.get() + 1);
+            true
+        });
+        let above = push_key_handler(0, |_| true);
+        assert!(dispatch_keyboard_event(&press("ArrowUp")));
+        assert_eq!(below.get(), 0, "the topmost consumed first");
+        drop(above);
+        assert!(dispatch_keyboard_event(&press("ArrowUp")));
+        assert_eq!(below.get(), 1);
+    }
+
+    /// A key handler whose component was disposed is never run.
+    #[test]
+    fn a_dead_owners_key_handler_is_not_run() {
+        clear_stack();
+        let ran = Rc::new(StdCell::new(false));
+        let r = ran.clone();
+        let scope = Scope::new();
+        let handle = scope.run(|| {
+            push_key_handler(0, move |_| {
+                r.set(true);
+                true
+            })
+        });
+        scope.dispose();
+        assert!(!dispatch_keyboard_event(&press("ArrowDown")));
+        assert!(!ran.get());
+        drop(handle);
+    }
 }
