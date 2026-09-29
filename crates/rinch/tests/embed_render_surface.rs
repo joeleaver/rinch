@@ -49,7 +49,9 @@ fn a_render_surface_in_an_embedded_context_is_sized_driven_and_painted() {
     let mut ctx = RinchContext::new(
         RinchContextConfig {
             // Scale 1.5, off the identity: the surface's size is PHYSICAL
-            // pixels, so a size taken from the logical box would read 120x60.
+            // pixels, so a size taken from the logical box would read 101x33.
+            // And a fractional product (151.5 x 49.5), off the point where
+            // truncating and rounding agree: desktop truncates.
             width: 600,
             height: 450,
             scale_factor: 1.5,
@@ -59,7 +61,7 @@ fn a_render_surface_in_an_embedded_context_is_sized_driven_and_painted() {
         move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
             let wrap = scope.create_element("div");
-            wrap.set_attribute("style", "width: 120px; height: 60px;");
+            wrap.set_attribute("style", "width: 101px; height: 33px;");
             let rs = RenderSurface {
                 surface: Some(mounted),
             }
@@ -74,7 +76,7 @@ fn a_render_surface_in_an_embedded_context_is_sized_driven_and_painted() {
     let _ = ctx.scene();
     assert_eq!(
         surface.layout_size(),
-        (180, 90),
+        (151, 49),
         "the surface is told its physical layout size"
     );
     // The first scene measured the surface; its callback runs from then on.
@@ -85,7 +87,7 @@ fn a_render_surface_in_an_embedded_context_is_sized_driven_and_painted() {
         calls.get() > before,
         "the render callback runs once the surface is measured"
     );
-    assert_eq!(seen.get(), (180, 90), "the callback is handed that size");
+    assert_eq!(seen.get(), (151, 49), "the callback is handed that size");
     assert!(
         patches > 0,
         "the submitted frame is drawn into the scene (no image in it)"
@@ -114,8 +116,8 @@ fn a_render_surface_in_an_embedded_context_is_sized_driven_and_painted() {
         !ctx.needs_update(),
         "control: nothing pending after a scene"
     );
-    let px = [0u8, 0, 255, 255].repeat(180 * 90);
-    surface.writer().submit_frame(&px, 180, 90);
+    let px = [0u8, 0, 255, 255].repeat(151 * 49);
+    surface.writer().submit_frame(&px, 151, 49);
     assert!(ctx.needs_update(), "a submitted frame needs an update");
     let actions = ctx.update(&[]);
     assert!(

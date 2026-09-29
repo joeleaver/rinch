@@ -85,6 +85,14 @@ fn the_focused_editors_caret_blinks_in_an_embedded_context() {
         wake <= Instant::now() + Duration::from_millis(530),
         "the wake is at most one half-period away"
     );
+    assert!(
+        wake > Instant::now() + Duration::from_millis(200),
+        "and a real half-period, not already due"
+    );
+    assert!(
+        !ctx.needs_update(),
+        "nothing is due right after the blink restarts"
+    );
 
     // Call `update` the way an event-driven host would: only when the wake it
     // was handed comes due. The caret must go off, then on again.
@@ -116,7 +124,14 @@ fn the_focused_editors_caret_blinks_in_an_embedded_context() {
     assert!(came_back, "the caret never blinked back on");
 
     // A blurred host window stops the blink with the caret solid, and arms no
-    // wake — desktop's #316 rule.
+    // wake — desktop's #316 rule. Blurred while the caret is OFF: blurring
+    // while it is on cannot tell "restored to solid" from "left alone".
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && caret_hidden(&ctx) != Some(true) {
+        std::thread::sleep(Duration::from_millis(20));
+        ctx.update(&[]);
+    }
+    assert_eq!(caret_hidden(&ctx), Some(true), "control: the caret is off");
     ctx.update(&[PlatformEvent::WindowFocus(false)]);
     assert_eq!(ctx.next_wake(), None, "a blurred window arms no wake");
     assert_eq!(
