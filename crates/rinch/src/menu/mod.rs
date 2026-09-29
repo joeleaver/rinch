@@ -2266,7 +2266,19 @@ mod tests {
                 "{alias} arms a chord, so it must label one"
             );
         }
-        assert_eq!(parse_shortcut("Ctrl+?"), None, "no chord, no label");
+        // Keys muda's own parser knows and the chord table does not: with the
+        // label taken from muda, each of these labelled a dead chord.
+        for unchorded in ["Ctrl+?", "Ctrl+Insert", "F13", "Ctrl+NumpadAdd"] {
+            assert!(
+                parse_shortcut_for_matching(unchorded).is_none(),
+                "control: {unchorded} arms no chord"
+            );
+            assert_eq!(
+                parse_shortcut(unchorded),
+                None,
+                "{unchorded}: no chord, no label"
+            );
+        }
     }
 
     /// The two tables name the **same set** of codes — the other direction, and
