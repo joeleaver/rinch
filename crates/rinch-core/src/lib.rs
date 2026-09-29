@@ -109,7 +109,7 @@ pub use events::{
     dispatch_keyboard_event, dispatch_paste_event, dispatch_selection, find_click_ancestor,
     finish_drag, finish_drag_for_button, fire_selection_sync, get_click_context, get_input_context,
     get_modifier_state, get_saved_selection, has_paste_interceptor, heal_missed_release,
-    is_drag_ghost_visible, note_pointer_press, post_focus_request, push_dismiss_handler,
+    is_drag_ghost_visible, note_pointer_press, post_focus_request, push_dismiss_handler, push_key_handler,
     query_selection_ranges, register_file_drop_handler, register_handler, register_input_handler,
     request_focus, reset_drag_ghost_visibility, restore_drag_ghost, save_selection_snapshot,
     set_click_ancestors, set_click_context, set_configuration_change_handler, set_input_context,

@@ -134,3 +134,45 @@ pub fn arm_close_on_escape_while_open(
         drop(released);
     });
 }
+
+/// Hand every key press to `on_key` **while `is_open`**, pushing a
+/// [`rinch_core::push_key_handler`] entry when the popup opens and releasing it
+/// when it closes — [`arm_close_on_escape_while_open`]'s policy, for a popup
+/// that owns the whole keyboard while it is open rather than only Escape
+/// (issue #434, the `Select` option list).
+///
+/// The open-time push is the whole safety argument: the entry exists only
+/// while the popup is on screen, so a closed popup can never swallow the page's
+/// keys. `on_key` answers `true` to consume. It should decline Escape and leave
+/// it to an [`arm_close_on_escape_while_open`] entry, so that "which overlay is
+/// on top" stays one question for the dismiss stack.
+pub fn arm_keys_while_open(
+    scope: &mut RenderScope,
+    root: &NodeHandle,
+    is_open: ReactiveBool,
+    on_key: Rc<dyn Fn(&rinch_core::KeyEventData) -> bool>,
+) {
+    let doc_key = root.doc_key();
+    let slot: Rc<RefCell<Option<DismissHandle>>> = Rc::new(RefCell::new(None));
+
+    let slot_effect = slot.clone();
+    scope.create_effect(move || {
+        let open = is_open();
+        let held = slot_effect.borrow().is_some();
+        // Every borrow ends on its own line — see
+        // `arm_close_on_escape_while_open`.
+        if open && !held {
+            let f = on_key.clone();
+            let handle = rinch_core::push_key_handler(doc_key, move |k| f(k));
+            *slot_effect.borrow_mut() = Some(handle);
+        } else if !open && held {
+            let released = slot_effect.borrow_mut().take();
+            drop(released);
+        }
+    });
+
+    scope.on_cleanup(move || {
+        let released = slot.borrow_mut().take();
+        drop(released);
+    });
+}

@@ -176,8 +176,9 @@ pub fn clear_keyboard_interceptor() {
 }
 
 /// Dispatch a keyboard event to the dispatching document's interceptor (or the
-/// thread-global fallback), then — for an **Escape press** only — to the
-/// [dismiss stack](super::dispatch_dismiss). Returns true if the event was
+/// thread-global fallback), then — for a **press** — to any open popup's
+/// [key handler](super::push_key_handler), then — for an **Escape press**
+/// only — to the [dismiss stack](super::dispatch_dismiss). Returns true if the event was
 /// handled and should not reach the runtime.
 ///
 /// The `Rc` is cloned out before the call so the handler may re-enter (install a
@@ -210,6 +211,10 @@ fn dispatch_keyboard_event_unbatched(data: &KeyEventData) -> bool {
         None => false,
     };
     if intercepted {
+        return true;
+    }
+    // An open popup that owns the keyboard (#434) — see `push_key_handler`.
+    if data.is_down() && super::dismiss::dispatch_key_handlers(data) {
         return true;
     }
     if data.key == "Escape" && data.is_down() {

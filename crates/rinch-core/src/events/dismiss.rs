@@ -42,6 +42,23 @@
 //! interceptor and only for an Escape **press**. That placement is what makes
 //! this backend-agnostic: desktop and rinch-web both already call that function,
 //! and neither needed a line changed.
+//!
+//! ## Key handlers: a popup that owns the keyboard while it is open (#434)
+//!
+//! [`push_key_handler`] puts a second kind of entry on the **same** stack: one
+//! offered *every* key press, not only Escape. It is for a popup that owns the
+//! keyboard while it is open — the `Select` component's option list, whose
+//! arrows, Home/End, Enter and type-ahead have no focused element of their own
+//! to arrive at (the trigger keeps the focus, as a combobox does). It is pushed
+//! when the popup opens and released when it closes, so an entry is only ever
+//! on the stack while its popup is on screen.
+//!
+//! One stack rather than two because the two kinds share every rule above —
+//! liveness, the document check, LIFO — and a popup's own Escape is still a
+//! dismiss entry pushed beside it, so "which popup is on top" is answered once.
+//! Key handlers are asked **before** the dismiss scan, for presses only, and a
+//! key one declines goes on to the dismiss scan (for Escape) and then to the
+//! backend exactly as before.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -52,6 +69,17 @@ use crate::reactive::{Owner, current_owner};
 /// A registered dismiss handler: `true` means "I consumed the key".
 type DismissFn = Rc<dyn Fn() -> bool>;
 
+/// A registered key handler ([`push_key_handler`]): `true` means "I consumed
+/// the key".
+type KeyFn = Rc<dyn Fn(&super::KeyEventData) -> bool>;
+
+/// What an entry answers: Escape alone, or every key press.
+#[derive(Clone)]
+enum Handler {
+    Dismiss(DismissFn),
+    Keys(KeyFn),
+}
+
 struct Entry {
     id: u64,
     /// The document this handler belongs to, or `None` for one registered
@@ -59,7 +87,7 @@ struct Entry {
     doc: Option<u64>,
     /// The scope that was rendering when this was registered, if any.
     owner: Option<Owner>,
-    handler: DismissFn,
+    handler: Handler,
 }
 
 thread_local! {
@@ -113,6 +141,32 @@ impl Drop for DismissHandle {
 /// runs *inside* that scope (so a signal it creates belongs to the component)
 /// and stops being offered the key once the scope is disposed.
 pub fn push_dismiss_handler(doc_key: u64, f: impl Fn() -> bool + 'static) -> DismissHandle {
+    push(doc_key, Handler::Dismiss(Rc::new(f)))
+}
+
+/// Push a **key** handler onto the top of the stack for `doc_key`'s document:
+/// one offered every key *press* (auto-repeat included, releases never) while
+/// it is registered, ahead of the dismiss scan and of the backend's own key
+/// handling. `true` consumes the key — on rinch-web that also
+/// `preventDefault`s it, so a consumed ArrowDown does not scroll the page.
+///
+/// This is for a popup that owns the keyboard **while it is open** (issue
+/// #434, the `Select` option list), and the policy that makes it safe is the
+/// caller's: push it when the popup opens and drop the handle when it closes
+/// (and on unmount). An entry left registered while its popup is closed would
+/// swallow the page's keys. It does *not* see Escape first in any sense that
+/// matters — it is offered Escape, and a popup whose Escape is a dismiss entry
+/// should decline it and let the dismiss scan run.
+///
+/// Document, owner and liveness rules are exactly [`push_dismiss_handler`]'s.
+pub fn push_key_handler(
+    doc_key: u64,
+    f: impl Fn(&super::KeyEventData) -> bool + 'static,
+) -> DismissHandle {
+    push(doc_key, Handler::Keys(Rc::new(f)))
+}
+
+fn push(doc_key: u64, handler: Handler) -> DismissHandle {
     let id = NEXT_ID.with(|n| {
         let id = n.get();
         n.set(id + 1);
@@ -122,7 +176,7 @@ pub fn push_dismiss_handler(doc_key: u64, f: impl Fn() -> bool + 'static) -> Dis
         id,
         doc: doc_identity(doc_key),
         owner: current_owner(),
-        handler: Rc::new(f),
+        handler,
     };
     STACK.with(|s| s.borrow_mut().push(entry));
     DismissHandle(id)
@@ -155,12 +209,30 @@ pub fn push_dismiss_handler(doc_key: u64, f: impl Fn() -> bool + 'static) -> Dis
 /// the scan — but a handler that does real work on its `false` path should know
 /// the snapshot is not revalidated.
 pub fn dispatch_dismiss() -> bool {
+    scan(false, |handler| match handler {
+        Handler::Dismiss(f) => f(),
+        Handler::Keys(_) => false,
+    })
+}
+
+/// Offer a key press to the key handlers ([`push_key_handler`]), topmost first.
+/// Returns whether one consumed it. Dismiss entries are passed over.
+pub(crate) fn dispatch_key_handlers(key: &super::KeyEventData) -> bool {
+    scan(true, |handler| match handler {
+        Handler::Keys(f) => f(key),
+        Handler::Dismiss(_) => false,
+    })
+}
+
+/// The scan both dispatches share: topmost first, dead owners pruned, other
+/// documents skipped, and only entries of one kind (`keys`) asked.
+fn scan(keys: bool, ask: impl Fn(&Handler) -> bool) -> bool {
     let caller = current_dispatching_doc();
 
     // Snapshot topmost-first. Cloning the `Rc`s is what lets user code run
     // outside the borrow; the ids let us prune afterwards even though the stack
     // may have been rearranged in the meantime.
-    let candidates: Vec<(u64, Option<u64>, Option<Owner>, DismissFn)> = STACK.with(|s| {
+    let candidates: Vec<(u64, Option<u64>, Option<Owner>, Handler)> = STACK.with(|s| {
         s.borrow()
             .iter()
             .rev()
@@ -179,6 +251,10 @@ pub fn dispatch_dismiss() -> bool {
         if !doc_matches(doc, caller) {
             continue;
         }
+        // An entry of the other kind is not asked.
+        if matches!(handler, Handler::Keys(_)) != keys {
+            continue;
+        }
         // A transaction for the handler (`crate::reactive::batch`). From the
         // Escape path this joins the one `dispatch_keyboard_event` opened; it
         // is a transaction of its own only for a direct `dispatch_dismiss`
@@ -187,8 +263,8 @@ pub fn dispatch_dismiss() -> bool {
         // overlay's `opened_fn`) must not subscribe that effect.
         let took = crate::reactive::batch(|| {
             crate::reactive::untracked_handler(|| match &owner {
-                Some(o) => o.run(|| handler()),
-                None => handler(),
+                Some(o) => o.run(|| ask(&handler)),
+                None => ask(&handler),
             })
         });
         if took {
