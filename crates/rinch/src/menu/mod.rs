@@ -420,7 +420,7 @@ fn register_callback_owned(
 /// meantime: [`match_shortcut`] answers `true` only when a callback actually
 /// ran, and [`dispatch_menu_event`] takes a dead item's chords out with it.
 fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
-    let parsed = parse_shortcut_for_matching(shortcut_str)?;
+    let parsed = parse_shortcut_or_warn(shortcut_str)?;
     let serial = NEXT_SHORTCUT_SERIAL.with(|next| {
         let serial = next.get();
         next.set(serial + 1);
@@ -968,15 +968,110 @@ pub(crate) struct ParsedShortcut {
     pub code: &'static str,
 }
 
-/// Parse a shortcut string like "Cmd+N" or "Ctrl+Shift+S" into a muda Accelerator.
+/// The muda accelerator a shortcut string labels its native menu item with.
+///
+/// Derived from [`parse_shortcut_for_matching`] — the parse the chord itself is
+/// registered from — rather than handed to muda's own string parser, so the
+/// label and the chord cannot disagree. They used to: muda accepted `"Ctrl+/"`
+/// and labelled an item whose chord no keystroke could fire (#1160), and refused
+/// rinch's own `Plus`, `Return` and `Del` spellings, leaving a live chord with
+/// no label. `Ctrl`, `Cmd` and `Meta` all fold into one modifier on both sides,
+/// which muda spells `CmdOrCtrl`: Cmd on macOS, Ctrl elsewhere.
 #[cfg(feature = "desktop")]
 fn parse_shortcut(shortcut: &str) -> Option<Accelerator> {
-    let normalized = shortcut
-        .replace("Cmd+", "CmdOrCtrl+")
-        .replace("Ctrl+", "CmdOrCtrl+")
-        .replace("Meta+", "CmdOrCtrl+");
+    use muda::accelerator::{Code, Modifiers};
+    let parsed = parse_shortcut_or_warn(shortcut)?;
+    let mut mods = Modifiers::empty();
+    if parsed.ctrl_or_cmd {
+        mods |= if cfg!(target_os = "macos") {
+            Modifiers::SUPER
+        } else {
+            Modifiers::CONTROL
+        };
+    }
+    if parsed.alt {
+        mods |= Modifiers::ALT;
+    }
+    if parsed.shift {
+        mods |= Modifiers::SHIFT;
+    }
+    // Every code the table produces is a W3C `code` name, which is what
+    // `Code`'s `FromStr` reads; `the_native_accelerator_names_the_key_the_chord_matches`
+    // walks all of them.
+    let key = Code::from_str(parsed.code).ok()?;
+    Some(Accelerator::new(Some(mods), key))
+}
 
-    Accelerator::from_str(&normalized).ok()
+thread_local! {
+    /// The shortcut strings [`parse_shortcut_or_warn`] has already warned
+    /// about, so a menu rebuilt on every render warns once, not once a frame.
+    static WARNED_SHORTCUTS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// [`parse_shortcut_for_matching`], logging a warning the first time a string
+/// does not parse.
+///
+/// A shortcut that names no key registers no chord, and the item still shows
+/// the string as its label — so without the warning the keystroke simply does
+/// nothing and nothing says why. Once per distinct string per thread.
+fn parse_shortcut_or_warn(shortcut: &str) -> Option<ParsedShortcut> {
+    let parsed = parse_shortcut_for_matching(shortcut);
+    if parsed.is_none() {
+        let first = WARNED_SHORTCUTS
+            .try_with(|warned| warned.borrow_mut().insert(shortcut.to_string()))
+            .unwrap_or(false);
+        if first {
+            let key = shortcut.rsplit('+').next().unwrap_or(shortcut);
+            match shifted_key_hint(key) {
+                Some(base) => tracing::warn!(
+                    "menu shortcut {shortcut:?} registers no chord: {key:?} is a character, \
+                     not a key — spell it as the key and Shift (\"Shift+{base}\" on a US layout)"
+                ),
+                None => tracing::warn!(
+                    "menu shortcut {shortcut:?} registers no chord: it names no key rinch \
+                     can match (see the Menus guide for the accepted keys)"
+                ),
+            }
+        }
+    }
+    parsed
+}
+
+/// The unshifted key a US layout makes a shifted character with — `"?"` →
+/// `"/"` — for the warning [`parse_shortcut_or_warn`] gives when a shortcut is
+/// spelled with the character. A hint only: nothing *matches* through it,
+/// because which key makes `?` depends on the layout, and a chord is a key.
+///
+/// A slice of pairs rather than a `match`: `the_two_key_tables_name_the_same_codes`
+/// reads the key table out of this file by the shape of its arms, and this table
+/// must not look like it.
+fn shifted_key_hint(key: &str) -> Option<&'static str> {
+    const SHIFTED_ON_US_LAYOUT: [(&str, &str); 20] = [
+        ("~", "`"),
+        ("!", "1"),
+        ("@", "2"),
+        ("#", "3"),
+        ("$", "4"),
+        ("%", "5"),
+        ("^", "6"),
+        ("&", "7"),
+        ("*", "8"),
+        ("(", "9"),
+        (")", "0"),
+        ("_", "-"),
+        ("{", "["),
+        ("}", "]"),
+        ("|", "\\"),
+        (":", ";"),
+        ("\"", "'"),
+        ("<", ","),
+        (">", "."),
+        ("?", "/"),
+    ];
+    SHIFTED_ON_US_LAYOUT
+        .iter()
+        .find(|(shifted, _)| *shifted == key)
+        .map(|(_, base)| *base)
 }
 
 /// Parse a shortcut string into a ParsedShortcut for keyboard event matching.
@@ -1040,6 +1135,19 @@ fn parse_shortcut_for_matching(shortcut: &str) -> Option<ParsedShortcut> {
         "9" => "Digit9",
         "=" | "EQUAL" | "PLUS" => "Equal",
         "-" | "MINUS" => "Minus",
+        // Punctuation, by the key's unshifted character on a US layout or by
+        // its code name (#1160). A shifted character (`?`, `<`, `:` …) is not
+        // here on purpose: a chord is a key and modifiers, so `?` is spelled
+        // `Shift+/` — see `shifted_key_hint`.
+        "`" | "BACKQUOTE" => "Backquote",
+        "\\" | "BACKSLASH" => "Backslash",
+        "[" | "BRACKETLEFT" => "BracketLeft",
+        "]" | "BRACKETRIGHT" => "BracketRight",
+        "," | "COMMA" => "Comma",
+        "." | "PERIOD" => "Period",
+        "'" | "QUOTE" => "Quote",
+        ";" | "SEMICOLON" => "Semicolon",
+        "/" | "SLASH" => "Slash",
         "F1" => "F1",
         "F2" => "F2",
         "F3" => "F3",
@@ -1137,6 +1245,15 @@ fn key_code_name(key: KeyCode) -> Option<&'static str> {
         KeyCode::F12 => "F12",
         KeyCode::Equal => "Equal",
         KeyCode::Minus => "Minus",
+        KeyCode::Backquote => "Backquote",
+        KeyCode::Backslash => "Backslash",
+        KeyCode::BracketLeft => "BracketLeft",
+        KeyCode::BracketRight => "BracketRight",
+        KeyCode::Comma => "Comma",
+        KeyCode::Period => "Period",
+        KeyCode::Quote => "Quote",
+        KeyCode::Semicolon => "Semicolon",
+        KeyCode::Slash => "Slash",
         KeyCode::Enter => "Enter",
         KeyCode::Escape => "Escape",
         KeyCode::Backspace => "Backspace",
@@ -1165,6 +1282,12 @@ fn key_code_name(key: KeyCode) -> Option<&'static str> {
 #[cfg(test)]
 pub(crate) fn callback_count() -> usize {
     MENU_CALLBACKS.with(|map| map.borrow().len())
+}
+
+/// How many distinct shortcut strings have been warned about on this thread.
+#[cfg(test)]
+fn warned_shortcut_count() -> usize {
+    WARNED_SHORTCUTS.with(|warned| warned.borrow().len())
 }
 
 /// How many shortcuts the registry currently holds. See [`callback_count`].
