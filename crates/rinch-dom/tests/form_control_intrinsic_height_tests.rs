@@ -193,7 +193,12 @@ fn a_restyle_or_a_rows_change_re_measures_the_control() {
     // root's (#661), so the re-measure has to reach that sizer as well.
     let c2 = container(&mut doc, "");
     let inline = el(&mut doc, c2, "input", &format!("{BARE}; width: 100px"));
+    // A `rows` change moves no style at all, so nothing but the measure's own
+    // re-sync tells that sizer the box changed.
+    let c3 = container(&mut doc, "");
+    let inline_ta = el(&mut doc, c3, "textarea", BARE);
     doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, inline_ta), 40.0);
     assert_eq!(height(&doc, input), 20.0);
     assert_eq!(height(&doc, ta), 40.0);
     assert_eq!(height(&doc, inline), 20.0);
@@ -205,7 +210,9 @@ fn a_restyle_or_a_rows_change_re_measures_the_control() {
     );
     doc.set_attribute(ta, "rows", "5");
     doc.set_style(inline, "line-height", "30px");
+    doc.set_attribute(inline_ta, "rows", "3");
     doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, inline_ta), 60.0, "3 rows of 20px");
     assert_eq!(height(&doc, input), 30.0, "Chrome 153: 30");
     assert_eq!(height(&doc, ta), 100.0, "5 rows of 20px");
     assert_eq!(height(&doc, inline), 30.0, "a 30px line");
