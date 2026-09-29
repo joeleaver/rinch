@@ -790,6 +790,92 @@ pub fn any_surface_dirty() -> bool {
     })
 }
 
+/// Whether the thread's registry holds any **inline** surface (a
+/// `RenderSurface` component). When it holds none, an embedded context's
+/// surface pass has nothing to size, drive or collect, and skips the document
+/// walk that finds its surfaces (issue #331).
+#[cfg(any(feature = "desktop", feature = "embed"))]
+pub fn any_inline_surface_registered() -> bool {
+    SURFACE_REGISTRY.with(|reg| reg.borrow().iter().any(is_inline_surface))
+}
+
+/// Whether a surface draws inline from its CPU buffer **in an embedded
+/// context**: a `RenderSurface` component whose frames arrive as pixels. A
+/// `GpuTextureRegistrar` texture is read back only by the desktop runtime's
+/// own device, so in an embedded context it draws nothing, and its
+/// `notify_frame_ready` must not be read as a frame to draw.
+#[cfg(any(feature = "desktop", feature = "embed"))]
+fn draws_cpu_frames_inline(surface: &RenderSurfaceHandle) -> bool {
+    #[cfg(feature = "gpu")]
+    if surface.texture_source.lock().unwrap().is_some() {
+        return false;
+    }
+    is_inline_surface(surface)
+}
+
+/// Whether one of the surfaces `ids` — one embedded context's own — has a new
+/// CPU frame waiting (issue #331). Scoped to the ids because the registry is
+/// thread-global and several contexts may share the thread; scoped to inline
+/// CPU surfaces because nothing in an embedded context clears a compositor
+/// surface's flag.
+#[cfg(any(feature = "desktop", feature = "embed"))]
+pub fn inline_surfaces_dirty(ids: &[usize]) -> bool {
+    if ids.is_empty() {
+        return false;
+    }
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow().iter().any(|s| {
+            ids.contains(&s.id)
+                && draws_cpu_frames_inline(s)
+                && s.needs_redraw.load(Ordering::Acquire)
+        })
+    })
+}
+
+/// [`collect_surface_pixels_by_id`] for the surfaces `ids` only, clearing only
+/// their new-frame flags — one embedded context's own surfaces, so a context
+/// sharing the thread keeps its fresh frame for its own scene (issue #331).
+/// Returns the pixels and the ids whose frame was new.
+#[cfg(any(feature = "desktop", feature = "embed"))]
+pub fn collect_surface_pixels_for(
+    ids: &[usize],
+) -> (
+    std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData>,
+    Vec<usize>,
+) {
+    use std::collections::HashMap;
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        let mut map = HashMap::new();
+        let mut fresh = Vec::new();
+        for surface in reg.iter() {
+            if !ids.contains(&surface.id) || !is_inline_surface(surface) {
+                continue;
+            }
+            let was_dirty = surface.needs_redraw.swap(false, Ordering::AcqRel);
+            if !draws_cpu_frames_inline(surface) {
+                continue;
+            }
+            let buf = surface.buffer.lock().unwrap();
+            if !buf.pixels.is_empty() {
+                if was_dirty {
+                    fresh.push(surface.id);
+                }
+                map.insert(
+                    surface.id,
+                    rinch_dom::paint::SurfacePixelData {
+                        data: Arc::clone(&buf.pixels),
+                        width: buf.width,
+                        height: buf.height,
+                        opaque: buf.opaque,
+                    },
+                );
+            }
+        }
+        (map, fresh)
+    })
+}
+
 /// Check if a surface uses inline painting (RenderSurface component)
 /// vs compositor/hole-punch (video, GameViewport).
 ///
@@ -797,9 +883,10 @@ pub fn any_surface_dirty() -> bool {
 /// starting with `__render_surface_` and paint inline. Surfaces created by
 /// `create_render_surface_with_name()` have custom names and use the compositor.
 ///
-/// Every caller is behind `desktop` or `gpu` (which implies `desktop`), so this is
-/// dead code on a wasm build — gate it the same way rather than warn there.
-#[cfg(feature = "desktop")]
+/// Every caller is behind `desktop`, `gpu` (which implies `desktop`) or `embed`,
+/// so this is dead code on a wasm build without `embed` — gate it the same way
+/// rather than warn there.
+#[cfg(any(feature = "desktop", feature = "embed"))]
 fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
     surface.viewport_name.starts_with("__render_surface_")
 }
@@ -903,7 +990,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
 /// For GPU texture surfaces, call [`readback_gpu_textures`] first to
 /// populate the CPU buffers.
 /// Clears dirty flags as a side effect.
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "embed"))]
 pub fn collect_surface_pixels_by_id()
 -> std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData> {
     use std::collections::HashMap;
@@ -1250,6 +1337,19 @@ pub fn registered_viewport_names() -> Vec<String> {
 /// Called once per frame on desktop (before `collect_surface_frames`).
 /// On web, each surface with a callback drives its own `requestAnimationFrame` loop instead.
 pub fn invoke_render_callbacks() {
+    invoke_render_callbacks_where(|_| true);
+}
+
+/// [`invoke_render_callbacks`] for the surfaces `ids` only — one embedded
+/// context's own, so a context sharing the thread does not run another's
+/// callbacks from its `scene()` (issue #331).
+pub fn invoke_render_callbacks_for(ids: &[usize]) {
+    if !ids.is_empty() {
+        invoke_render_callbacks_where(|id| ids.contains(&id));
+    }
+}
+
+fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool) {
     // Set guard so submit_frame() inside callbacks won't call request_repaint()
     // — we're already inside a paint cycle.
     #[cfg(feature = "desktop")]
@@ -1258,6 +1358,9 @@ pub fn invoke_render_callbacks() {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         for surface in reg.iter() {
+            if !wanted(surface.id) {
+                continue;
+            }
             let mut cb = surface.render_callback.borrow_mut();
             if let Some(ref mut callback) = *cb {
                 let (w, h) = *surface.layout_size.lock().unwrap();

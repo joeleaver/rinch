@@ -94,14 +94,20 @@ pub struct CaretBlink {
 }
 
 /// Advance the caret blink for the focused editor (`focused` = its container id,
-/// `None` if no editor is focused). Toggles the caret's `display` for the current
-/// half-period and reports when the next toggle is due.
+/// `None` if no editor is focused). Toggles the caret's `visibility` for the
+/// current half-period and reports when the next toggle is due.
 ///
 /// Returns `None` when nothing is blinking — no editor focused, the editor has no
 /// caret (a non-collapsed selection), or it unmounted — in which case the runtime
 /// should idle until the next input. The desktop runtime calls this from
-/// `about_to_wait` every iteration (design A3 phase 2 is for *geometry*; this is the
-/// standalone animation tick). The clock uses `std::time::Instant`, so a web runtime
+/// `about_to_wait` every iteration, and an embedded `RinchContext` from every
+/// `update` (design A3 phase 2 is for *geometry*; this is the standalone
+/// animation tick).
+///
+/// There is **one** clock per thread, because one caret has the keyboard. A
+/// document that has no focused editor leaves another document's blink alone;
+/// two documents that *each* report a focused editor retarget it on every tick,
+/// which keeps both carets solid rather than blinking. The clock uses `std::time::Instant`, so a web runtime
 /// drives blink with its own timer (`setInterval` → [`EditorHandle::set_caret_blink`])
 /// rather than calling this.
 /// `doc_key` is the calling runtime's document (see
@@ -110,9 +116,18 @@ pub struct CaretBlink {
 /// collide across documents on one thread (issue #134).
 pub fn caret_blink_tick(doc_key: u64, focused: Option<usize>) -> Option<CaretBlink> {
     let target = focused.map(|id| (doc_key, id));
+    let prev = blink::target();
+    // The clock is one per thread, and every document on the thread ticks it:
+    // a desktop window and each embedded `RinchContext` alike (issue #331). A
+    // document with no focused editor has nothing to say about another
+    // document's caret. Retargeting to `None` here restored that caret to solid
+    // and reset its phase on every tick, so with two documents ticked in turn it
+    // never went off.
+    if focused.is_none() && prev.is_some_and(|(dk, _)| dk != doc_key) {
+        return None;
+    }
     // On a focus change, restore the previously-blinked caret to solid so a
     // blurred editor never freezes mid-blink with a hidden caret.
-    let prev = blink::target();
     if prev != target {
         if let Some((prev_dk, prev_id)) = prev
             && let Some(h) = registry::editor_for_doc(prev_dk, prev_id)
