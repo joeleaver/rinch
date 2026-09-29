@@ -406,7 +406,7 @@ fn every_input_type_but_six_is_a_line() {
         ids.push((t, i));
     }
     let mut none = Vec::new();
-    for t in ["checkbox", "Radio", "range", "color", "image"] {
+    for t in ["checkbox", "Radio", "range", "color", "image", "hidden"] {
         let i = el(
             &mut doc,
             c,
@@ -427,8 +427,9 @@ fn every_input_type_but_six_is_a_line() {
             assert_eq!(h, 20.0, "type={t}: Chrome 153: 20");
         }
     }
-    // Chrome sizes these itself (13, 16, 27, the image's); rinch models none of
-    // it, and must not hand them a text line instead.
+    // Chrome sizes these itself (13, 16, 27, the image's; `hidden` is
+    // `display: none` there); rinch models none of it, and must not hand them a
+    // text line instead — `hidden` here is forced to `display: block`.
     for (t, i) in none {
         assert_eq!(height(&doc, i), 0.0, "type={t}: not a text line");
     }
@@ -456,4 +457,93 @@ fn a_type_change_alone_resizes_the_control() {
     doc.set_attribute(i, "type", "checkbox");
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(height(&doc, i), 0.0, "text -> checkbox");
+}
+
+/// A control whose value is a text child keeps the **width** that text shapes
+/// to wherever its width is intrinsic — inline, a flex-row item, inside an
+/// `inline-block` (the atomic sizer) — and only its height is the `rows` one.
+/// PR #1152's second round answered width 0 there, so the box collapsed and the
+/// text was painted spilling out of it (review round 2, R2-1). The width is
+/// compared with the text's own shaped width, not a pixel count, so it pins no
+/// font. (Chrome takes the width from `cols`/`size` instead, which rinch does
+/// not model; the child-as-content problems are #1159.)
+#[test]
+fn a_text_child_control_keeps_its_shaped_width() {
+    let mut doc = RinchDocument::new();
+    let c = container(&mut doc, "");
+    let inline = el(&mut doc, c, "textarea", BARE);
+    doc.set_text_content(inline, "hello world foo");
+    let row = container(&mut doc, "display: flex; align-items: flex-start");
+    let item = el(&mut doc, row, "textarea", BARE);
+    doc.set_text_content(item, "hello world");
+    let c2 = container(&mut doc, "");
+    let input = el(&mut doc, c2, "input", BARE);
+    doc.set_text_content(input, "hello world");
+    let c3 = container(&mut doc, "");
+    let ib = el(&mut doc, c3, "span", "display: inline-block");
+    let nested = el(&mut doc, ib, "textarea", BARE);
+    doc.set_text_content(nested, "abc");
+    doc.resolve_layout(800.0, 600.0);
+
+    let check = |doc: &RinchDocument, id: NodeId, rows_h: f32, what: &str| {
+        let n = doc.tree.get(id.0).unwrap();
+        let shaped = n
+            .text_layout
+            .as_ref()
+            .unwrap_or_else(|| panic!("{what}: an IFC root"))
+            .layout
+            .width();
+        assert!(shaped > 5.0, "{what}: positive control, shaped {shaped}");
+        assert!(
+            (n.layout.width - shaped).abs() <= 1.0,
+            "{what}: box {} wide, its text {shaped}",
+            n.layout.width
+        );
+        assert_eq!(n.layout.height, rows_h, "{what}: the rows height");
+    };
+    check(&doc, inline, 40.0, "inline textarea");
+    check(&doc, item, 40.0, "flex-item textarea");
+    check(&doc, input, 20.0, "inline input");
+    check(&doc, nested, 40.0, "textarea in an inline-block");
+    assert!(
+        doc.tree.get(ib.0).unwrap().layout.width >= 5.0,
+        "the inline-block around it is not collapsed"
+    );
+
+    // And after a restyle, which goes through the measure cache.
+    for t in [inline, item, input, nested] {
+        doc.set_style(t, "color", "red");
+    }
+    doc.resolve_layout(801.0, 600.0);
+    check(&doc, inline, 40.0, "inline textarea, restyled");
+    check(&doc, item, 40.0, "flex-item textarea, restyled");
+    check(&doc, input, 20.0, "inline input, restyled");
+    check(&doc, nested, 40.0, "textarea in an inline-block, restyled");
+}
+
+/// An `<input>` whose value is a text child, and whose `type` leaves the line
+/// types, stops being measured as a line and gets its shaped height back at
+/// the same viewport — the restyle has to owe a layout even though it now
+/// wants no form-control measure (review round 2, R2-2).
+#[test]
+fn a_text_child_input_that_becomes_a_checkbox_gets_its_shaped_height_back() {
+    let mut doc = RinchDocument::new();
+    let c = container(&mut doc, "");
+    let i = el(
+        &mut doc,
+        c,
+        "input",
+        &format!("display: block; width: 30px; {BARE}"),
+    );
+    doc.set_text_content(i, "aaa bbb ccc");
+    doc.set_attribute(i, "type", "checkbox");
+    doc.resolve_layout(800.0, 600.0);
+    let shaped = height(&doc, i);
+    assert!(shaped > 20.0, "positive control: the text wraps, got {shaped}");
+    doc.set_attribute(i, "type", "text");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, i), 20.0, "a text field is one line");
+    doc.set_attribute(i, "type", "checkbox");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, i), shaped, "back to the shaped height");
 }
