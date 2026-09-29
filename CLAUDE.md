@@ -3748,6 +3748,20 @@ loop {
 }
 ```
 
+**`update()` runs the desktop loop's per-frame housekeeping** (#172, #141, #331):
+the cross-thread queue, `drain_polls`, the deferred-work inbox, the events, the
+**caret blink** (the one timed wake — `RinchContext::next_wake()` hands an
+event-driven host the instant desktop would arm `WaitUntil` with; the clock is
+one per thread and `caret_blink_tick` leaves another document's target alone
+when its own caller has no focused editor), layout, then `AboutToWait`
+(transitions, animations, images, the editor overlay pass, focus requests).
+`scene()` drives the inline `RenderSurface`s **in its own document** as
+desktop's paint does — physical layout size, render callbacks, frames painted
+inline — and skips the pass (a document walk) while the thread has no inline
+surface registered, so an unchanged `scene()` stays a cache hit. The compositor path
+(named `data-viewport` surfaces, video, a `GpuTextureRegistrar` texture) is the
+host's to composite, and IME state is not surfaced to the host at all (#1147).
+
 **Source files:**
 - `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`
 - `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`
