@@ -78,6 +78,7 @@ impl ComputedStyle {
         let inherited_box = cv.get_inherited_box();
         let outline_style = cv.get_outline();
         let inherited_ui = cv.get_inherited_ui();
+        let background_repeat = background_repeat_from_stylo(background);
 
         Self {
             // Display/position
@@ -176,6 +177,17 @@ impl ComputedStyle {
 
             // Background (color or gradient)
             background: background_from_stylo(background, &text.color),
+            background_underlay: background_underlay_from_stylo(background, &text.color),
+            background_size: background_size_from_stylo(background),
+            background_position_x: background_position_from_stylo(
+                &background.background_position_x.0,
+            ),
+            background_position_y: background_position_from_stylo(
+                &background.background_position_y.0,
+            ),
+            background_repeat_x: background_repeat.0,
+            background_repeat_y: background_repeat.1,
+            background_origin: background_origin_from_stylo(background),
             color: color_from_absolute(&text.color),
 
             // Visual

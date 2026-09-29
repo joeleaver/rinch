@@ -94,6 +94,20 @@ pub fn diff_animatable(old: &ComputedStyle, new: &ComputedStyle) -> Vec<Property
         &new.height,
     );
 
+    // Background position (#468)
+    diff_lp_exact(
+        &mut changes,
+        TransitionProperty::BackgroundPositionX,
+        &old.background_position_x,
+        &new.background_position_x,
+    );
+    diff_lp_exact(
+        &mut changes,
+        TransitionProperty::BackgroundPositionY,
+        &old.background_position_y,
+        &new.background_position_y,
+    );
+
     // Padding
     diff_lp(
         &mut changes,
@@ -283,6 +297,27 @@ fn diff_lp(
             property: prop,
             old_value: AnimatableValue::LengthPercentage(*old),
             new_value: AnimatableValue::LengthPercentage(*new),
+        });
+    }
+}
+
+/// `diff_lp` compares `to_px()`, which reads every percentage as 0 — so a
+/// `background-position` change from `0%` to `100%` would be no change at
+/// all. A position is as often a percentage as a length, so it is compared
+/// as the computed value it is (#468).
+fn diff_lp_exact(
+    changes: &mut Vec<PropertyChange>,
+    prop: TransitionProperty,
+    old: &LengthPercentageValue,
+    new: &LengthPercentageValue,
+) {
+    let old_value = AnimatableValue::LengthPercentage(*old);
+    let new_value = AnimatableValue::LengthPercentage(*new);
+    if !old_value.same_computed_value(&new_value) {
+        changes.push(PropertyChange {
+            property: prop,
+            old_value,
+            new_value,
         });
     }
 }

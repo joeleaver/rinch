@@ -1124,6 +1124,49 @@ pub enum BackgroundValue {
     },
 }
 
+/// `background-size` of the first background layer (#468).
+///
+/// `Explicit` carries `auto` per axis as `LengthPercentageAutoValue::Auto`,
+/// so the initial value `auto auto` is `Explicit { Auto, Auto }`.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub enum BackgroundSizeValue {
+    Explicit {
+        width: LengthPercentageAutoValue,
+        height: LengthPercentageAutoValue,
+    },
+    Cover,
+    Contain,
+}
+
+impl Default for BackgroundSizeValue {
+    fn default() -> Self {
+        Self::Explicit {
+            width: LengthPercentageAutoValue::Auto,
+            height: LengthPercentageAutoValue::Auto,
+        }
+    }
+}
+
+/// One axis of `background-repeat` (#468). `space` and `round` are carried
+/// but painted as `repeat` — see `paint::background`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum BackgroundRepeatValue {
+    #[default]
+    Repeat,
+    Space,
+    Round,
+    NoRepeat,
+}
+
+/// `background-origin`: the box the image is positioned and sized in (#468).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum BackgroundOriginValue {
+    BorderBox,
+    #[default]
+    PaddingBox,
+    ContentBox,
+}
+
 /// A gradient color stop.
 #[derive(Debug, Clone, Serialize)]
 pub struct GradientStop {

@@ -10,6 +10,10 @@
 mod animation_theme_change_tests;
 #[cfg(test)]
 mod backdrop_any_button_1093_tests;
+#[cfg(all(test, software_shell))]
+mod background_animation_component_tests;
+#[cfg(all(test, software_shell))]
+mod background_tile_phase_tests;
 #[cfg(test)]
 mod batched_handler_focus_tests;
 #[cfg(test)]

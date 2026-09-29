@@ -1283,3 +1283,52 @@ fn queued_rerender_events_are_folded_into_the_frame() {
     let s = app.end_perf_frame().unwrap();
     assert_eq!(s.get(RerenderEventsQueued), 3, "{s:?}");
 }
+
+/// Review of #1143: a striped, animated `Progress` in a closed `Drawer` —
+/// the animation #468 made visible must still be paused by the drawer's
+/// closed rule (#912), and must still run when the drawer is open.
+#[test]
+fn review_1143_a_striped_progress_in_a_closed_drawer_idles() {
+    for closed in [true, false] {
+        let mut app = new_app(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let style = scope.create_element("style");
+            let text = scope.create_text(&rinch_components::generate_component_css());
+            style.append_child(&text);
+            root.append_child(&style);
+            let progress = rinch_components::Progress {
+                value: Some(60.0),
+                striped: true,
+                animated: true,
+                ..Default::default()
+            }
+            .render(scope, &[]);
+            let drawer = Drawer {
+                opened_fn: Some(std::rc::Rc::new(move || !closed)),
+                position: "left".to_string(),
+                ..Default::default()
+            }
+            .render(scope, &[progress]);
+            root.append_child(&drawer);
+            root
+        });
+        app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+        settle(&mut app);
+        {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let all: Vec<_> = d.tree.active_animations.values().flatten().collect();
+            assert!(!all.is_empty(), "positive control: registered");
+            let paused = all
+                .iter()
+                .all(|a| a.play_state == rinch_dom::animation::AnimationPlayState::Paused);
+            assert_eq!(paused, closed, "closed={closed}: paused iff closed");
+        }
+        let turns = ticking_turns(&mut app, IDLE_TURNS);
+        let asked = turns.iter().filter(|(a, _)| *a).count();
+        if closed {
+            assert_eq!(asked, 0, "a closed drawer asks for no frame");
+        } else {
+            assert!(asked > 0, "an open drawer's stripes run");
+        }
+    }
+}

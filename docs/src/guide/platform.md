@@ -30,6 +30,53 @@ fn app() -> NodeHandle {
 
 Supported formats: PNG, JPEG, GIF, WebP.
 
+### Background layers
+
+A background image — a `url(...)` or a `linear-gradient`/`radial-gradient` —
+is sized, placed and tiled the way a browser does it, for the **first** layer
+of the list (#468):
+
+- `background-size`: lengths, percentages, `auto`, `cover`, `contain`. An
+  image's `auto` is its intrinsic size; a gradient's is the positioning area.
+- `background-position` (and `-x`/`-y`): lengths, percentages, keywords and
+  edge offsets (`right 10px top 0`). A percentage is a share of the area
+  *less* the tile, so `100%` puts the tile's far edge on the area's.
+- `background-repeat`: `repeat`, `no-repeat`, `repeat-x`, `repeat-y`. `space`
+  and `round` are painted as `repeat`.
+- `background-origin`: `padding-box` (the default), `border-box`,
+  `content-box`. `background-clip` is not read, so the painting area is always
+  the border box.
+- `background-color` is painted under the image.
+
+`background-position` is animatable, by `transition` and `@keyframes` alike;
+it moves paint only, never layout. This is what makes the striped `Progress`
+bar's stripes move and the `Skeleton` pulse.
+
+A single tile that covers the whole box (`background-size: cover`, or a
+gradient at `auto`) is one draw. Any other layer that repeats (on either axis)
+is painted as **one repeating pattern**, whatever its tile count: its tile is rasterised once, at the size it
+covers on the device, and cached until the image, gradient or tile size
+changes. A tile that is a fractional number of device pixels (10px at 125%
+scaling) is rasterised at the next whole size and sampled back down smoothly;
+an axis that does not repeat clips the pattern to its one-tile strip. A build
+without the software painter (`embed`) has nothing to rasterise a tile with and
+draws one fill per visible tile instead. No layer is ever dropped for having too
+many tiles.
+
+**One known difference from browsers** (tracked separately as #1151): rinch
+places a tile on whole device pixels, rounding a fractional
+`background-position` (and a fractional translate) to the nearest one. Chrome
+keeps the fraction and blends the pixel on the tile's edge. The result is within
+one device pixel of Chrome's, but a `background-position` animation — the
+striped `Progress` bar — moves in one-device-pixel steps in rinch where Chrome's
+moves smoothly.
+
+An image used to be stretched over the element's border box whatever its
+`background-size`; one that relied on that now tiles at its natural size.
+`background-size: 100% 100%` keeps the stretch on a box without a border; on a
+bordered box add `background-origin: border-box`, since `100%` is otherwise the
+padding box, and the tile repeats under the border.
+
 ### Network Images (optional)
 
 Enable with: `features = ["image-network"]`

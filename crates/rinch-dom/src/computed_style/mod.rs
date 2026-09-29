@@ -103,6 +103,23 @@ pub struct ComputedStyle {
 
     // Colors
     pub background: BackgroundValue,
+    /// `background-color` painted **under** an image layer (#468). `None`
+    /// when `background` is itself the colour, or the colour is transparent.
+    /// An image layer and the colour below it used to be one or the other:
+    /// `BackgroundValue` holds a single value, so a striped `Progress` bar
+    /// (`background-color` + a stripe gradient) lost its fill.
+    #[serde(serialize_with = "values::color_serde::serialize")]
+    pub background_underlay: Option<peniko::Color>,
+    /// The first background layer's `background-size` (#468).
+    pub background_size: BackgroundSizeValue,
+    /// The first layer's `background-position-x`, from the positioning
+    /// area's left edge; a percentage is a share of the area less the tile.
+    pub background_position_x: LengthPercentageValue,
+    /// The first layer's `background-position-y`, as `_x` from the top.
+    pub background_position_y: LengthPercentageValue,
+    pub background_repeat_x: BackgroundRepeatValue,
+    pub background_repeat_y: BackgroundRepeatValue,
+    pub background_origin: BackgroundOriginValue,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,
 
@@ -287,6 +304,13 @@ impl Default for ComputedStyle {
             border_left_color: None,
 
             background: BackgroundValue::None,
+            background_underlay: None,
+            background_size: BackgroundSizeValue::default(),
+            background_position_x: LengthPercentageValue::Zero,
+            background_position_y: LengthPercentageValue::Zero,
+            background_repeat_x: BackgroundRepeatValue::Repeat,
+            background_repeat_y: BackgroundRepeatValue::Repeat,
+            background_origin: BackgroundOriginValue::PaddingBox,
             color: None,
 
             opacity: 1.0,

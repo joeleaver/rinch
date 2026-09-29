@@ -223,8 +223,59 @@ fn convert_declaration(
             }),
         )),
 
+        // `background-position-x`/`-y` (#468): the first layer's component.
+        // The `background-position` shorthand in a stop arrives as these two.
+        PropertyDeclaration::BackgroundPositionX(list) => Some((
+            TransitionProperty::BackgroundPositionX,
+            AnimatableValue::LengthPercentage(position_component(
+                list.0.first()?,
+                fs,
+                root_font_size,
+            )?),
+        )),
+        PropertyDeclaration::BackgroundPositionY(list) => Some((
+            TransitionProperty::BackgroundPositionY,
+            AnimatableValue::LengthPercentage(position_component(
+                list.0.first()?,
+                fs,
+                root_font_size,
+            )?),
+        )),
+
         _ => None, // Unsupported property — silently skip
     }
+}
+
+/// One `<position>` component as a `LengthPercentageValue`, the way stylo
+/// computes it: `center` is `50%`, a bare side is `0%`/`100%`, a start side
+/// with an offset is the offset, and an end side with an offset is
+/// `calc(100% - offset)`. That last one is a `Calc`, which interpolates
+/// against nothing and snaps — the same as every other mixed pair.
+fn position_component<S: style::values::specified::position::Side>(
+    c: &style::values::specified::position::PositionComponent<S>,
+    font_size: f32,
+    root_font_size: f32,
+) -> Option<LengthPercentageValue> {
+    use style::values::specified::position::PositionComponent;
+    Some(match c {
+        PositionComponent::Center => LengthPercentageValue::Percent(0.5),
+        PositionComponent::Side(side, None) => {
+            if side.is_start() {
+                LengthPercentageValue::Zero
+            } else {
+                LengthPercentageValue::Percent(1.0)
+            }
+        }
+        PositionComponent::Side(side, Some(lp)) if !side.is_start() => {
+            match StopLength::resolve(lp, font_size, root_font_size)? {
+                StopLength::Px(px) => LengthPercentageValue::Calc { px: -px, pct: 1.0 },
+                StopLength::Percent(p) => LengthPercentageValue::Percent(1.0 - p),
+            }
+        }
+        PositionComponent::Side(_, Some(lp)) | PositionComponent::Length(lp) => {
+            StopLength::resolve(lp, font_size, root_font_size)?.length_percentage()
+        }
+    })
 }
 
 /// `width`/`height`: `auto`, a length or a percentage. `min-content` and its
@@ -282,6 +333,15 @@ fn extract_base_style_values(style: &ComputedStyle) -> Vec<(TransitionProperty, 
     if let Some(c) = style.color {
         values.push((TransitionProperty::Color, AnimatableValue::Color(c)));
     }
+
+    values.push((
+        TransitionProperty::BackgroundPositionX,
+        AnimatableValue::LengthPercentage(style.background_position_x),
+    ));
+    values.push((
+        TransitionProperty::BackgroundPositionY,
+        AnimatableValue::LengthPercentage(style.background_position_y),
+    ));
 
     // The whole function list, percentage translates included — carrying only
     // the matrix dropped those for the whole animation (#403), and carrying it

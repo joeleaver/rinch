@@ -3034,6 +3034,36 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
 6. `paint_image()` renders via `scene.draw_image()` with proper affine transforms
 
+**Background layers** (#468, `crates/rinch-dom/src/paint/background.rs`): the
+**first** layer of `background-image` is sized, positioned and tiled by
+`background-size`/`-position`/`-repeat`/`-origin` (all in `ComputedStyle`), over
+a painting area that is always the border box (`background-clip` is not read),
+with `background-color` painted under it (`ComputedStyle::background_underlay` —
+`BackgroundValue` holds one value, so the colour and the image used to be one or
+the other). `space`/`round` paint as `repeat`. **No layer is ever dropped**
+(#1143's second review): a layer whose one tile covers the box is one fill (a
+gradient) or one clipped image draw (`cover`), never rasterised; any other
+layer that repeats on either axis is **one**
+`Painter::fill_repeating` — its tile rasterised by a `TinySkiaPainter` at the
+device size it covers (`ceil`; the tile is laid out in CSS space under `scale(w/tw, h/th)` so an angled
+gradient keeps its slope under `scaleX`/skew; then a scaling pattern transform, bilinear when
+that is not exact; a `scale()`d box rasterises bigger), cached per thread by
+image (gradient angle + resolved stops, or url + `DecodedImage::id()` — never a
+data pointer, which the allocator reuses) + raster size (`background_tile_rasters` / `background_tile_cache_hits`),
+filled as a tiny-skia `Pattern` or a Vello `Extend::Repeat` image brush from the
+same pixels (the brush's parameters are pinned; no test renders it on a GPU), and clipped to the one-tile strip on an axis that does not repeat.
+Only a build without the software painter (`embed`), a `no-repeat` tile, or a
+tile over 4M device px goes tile by tile, over the **visible** tiles only
+(`visible_paint_rect`), uncapped. Positions are **rounded to device pixels**,
+in device space under a plain translation (`DeviceSnap`; snapping in shape space
+seamed under a fractional translate) — Chrome keeps the fraction and blends the
+edge pixel, so rinch's `background-position` animations step by a device pixel:
+tracked separately as #1151. The common case — one
+tile covering the box — is one fill and no clip, as before. `background-position-x`/`-y` are
+`TransitionProperty`s (paint-only: `affects_layout` is `false`), and
+`transition: background-position` expands to both. An image's `auto` size is
+its intrinsic size now; it used to be stretched over the border box.
+
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 
 **Circular avatars:** a clipping ancestor with `border-radius` clips to a

@@ -95,6 +95,12 @@ pub fn apply_value_to_style(
         (TransitionProperty::Visibility, AnimatableValue::Visibility(v)) => {
             style.visibility = *v;
         }
+        (TransitionProperty::BackgroundPositionX, AnimatableValue::LengthPercentage(lp)) => {
+            style.background_position_x = *lp;
+        }
+        (TransitionProperty::BackgroundPositionY, AnimatableValue::LengthPercentage(lp)) => {
+            style.background_position_y = *lp;
+        }
         _ => {}
     }
 }

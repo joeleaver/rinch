@@ -146,6 +146,24 @@ pub struct PaintImage<'a> {
     pub opaque: bool,
 }
 
+/// A premultiplied RGBA8 image tiled edge to edge by
+/// [`Painter::fill_repeating`] (#468).
+#[derive(Clone, Copy, Debug)]
+pub struct RepeatTile<'a> {
+    /// `width * height * 4` bytes, premultiplied RGBA8, rows top to bottom.
+    /// A `Blob` so a painter that keeps images (Vello) shares it, not copies.
+    pub pixels: &'a peniko::Blob<u8>,
+    pub width: u32,
+    pub height: u32,
+    /// Maps the tile's pixel grid (tile `(0, 0)` covering `0..width`,
+    /// `0..height`) into the shape's own space, before the fill's transform.
+    pub transform: Affine,
+    /// Sample bilinearly (a tile scaled to a fractional size, or under a
+    /// transform); otherwise nearest, which is exact for a whole-pixel tile
+    /// on the device grid.
+    pub smooth: bool,
+}
+
 // ── Glyph run ───────────────────────────────────────────────────────────────
 
 /// A single positioned glyph for text rendering.
@@ -248,6 +266,51 @@ pub trait Painter {
             },
             transform,
         );
+    }
+
+    /// Fill `shape` with `tile` repeated in both directions, sampled nearest
+    /// (#468). One call however many repetitions the shape covers, which is
+    /// what keeps an `8px` tiled background on a large box from costing one
+    /// fill per tile.
+    ///
+    /// The default draws one `draw_image` per repetition the shape's bounding
+    /// box touches, under a clip of `shape` — correct, and linear in the
+    /// count; both shipped painters override it with a repeating image
+    /// brush / pattern.
+    fn fill_repeating(
+        &mut self,
+        fill: Fill,
+        transform: Affine,
+        tile: &RepeatTile<'_>,
+        shape: &PaintShape,
+    ) {
+        let (w, h) = (tile.width as f64, tile.height as f64);
+        if w <= 0.0 || h <= 0.0 || tile.transform.determinant().abs() < 1e-12 {
+            return;
+        }
+        let straight = crate::image_cache::unpremultiply_rgba(tile.pixels.data());
+        let image = PaintImage {
+            data: &straight,
+            width: tile.width,
+            height: tile.height,
+            decoded: None,
+            opaque: false,
+        };
+        // The shape's bounds in tile-grid space: which repetitions touch it.
+        let bb = tile
+            .transform
+            .inverse()
+            .transform_rect_bbox(shape.bounding_box());
+        let (i0, i1) = ((bb.x0 / w).floor() as i64, (bb.x1 / w).ceil() as i64);
+        let (j0, j1) = ((bb.y0 / h).floor() as i64, (bb.y1 / h).ceil() as i64);
+        self.push_clip(fill, transform, shape);
+        for j in j0..j1 {
+            for i in i0..i1 {
+                let at = Affine::translate((i as f64 * w, j as f64 * h));
+                self.draw_image(&image, transform * tile.transform * at);
+            }
+        }
+        self.pop_layer();
     }
 
     /// Push a clip layer — all subsequent drawing is clipped to the shape.

@@ -479,7 +479,11 @@ fn images() {
     assert_eq!(painter.stats().image_premultiplies, 0);
     let mut reference = reference_painter();
     full_paint(&mut doc, &mut reference);
-    assert!(reference.stats().image_premultiplies >= 8);
+    // Seven `<img>` draws. The eighth image, the `background-image`, is a
+    // repeating layer since #468: its tile is rasterised once by a painter
+    // of its own and filled as one pattern, so the reference painter draws
+    // no image for it (its pixels are still compared by `check` above).
+    assert!(reference.stats().image_premultiplies >= 7);
 }
 
 #[test]

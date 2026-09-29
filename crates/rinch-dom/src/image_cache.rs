@@ -23,6 +23,9 @@ pub struct DecodedImage {
     /// opaque, so the premultiplied pixels *are* `data` and no copy is kept.
     /// Never filled on the GPU path, which takes straight alpha.
     premultiplied: std::sync::OnceLock<Option<Vec<u8>>>,
+    /// Process-unique, never reused: what a cache of pixels derived from this
+    /// image keys on (a data pointer can be reused by the next image).
+    id: u64,
 }
 
 impl DecodedImage {
@@ -33,7 +36,16 @@ impl DecodedImage {
             width,
             height,
             premultiplied: std::sync::OnceLock::new(),
+            id: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
         }
+    }
+
+    /// This image's process-unique identity.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// The pixels premultiplied, as the software painter draws them. Computed
@@ -48,6 +60,25 @@ impl DecodedImage {
         });
         cached.as_deref().unwrap_or(&self.data)
     }
+}
+
+/// The inverse of [`premultiply_rgba`], for a painter that takes straight
+/// alpha (the default [`Painter::fill_repeating`](crate::paint::painter::Painter::fill_repeating)).
+pub fn unpremultiply_rgba(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    for chunk in data.chunks(4) {
+        let a = chunk[3];
+        if a == 255 || a == 0 {
+            out.extend_from_slice(if a == 0 { &[0, 0, 0, 0] } else { chunk });
+        } else {
+            let f = 255.0 / a as f32;
+            for &c in &chunk[..3] {
+                out.push((c as f32 * f + 0.5).min(255.0) as u8);
+            }
+            out.push(a);
+        }
+    }
+    out
 }
 
 /// Straight-alpha RGBA8 to premultiplied, rounding to nearest: the

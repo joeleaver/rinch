@@ -321,6 +321,108 @@ pub(super) fn background_from_stylo(
     }
 }
 
+/// The `background-color` painted under the first image layer, when there is
+/// one `background_from_stylo` turned into an image (#468). `None` whenever
+/// `background` is already the colour, and for a transparent colour, which
+/// would fill nothing.
+pub(super) fn background_underlay_from_stylo(
+    bg: &style::properties::style_structs::Background,
+    text_color: &style::color::AbsoluteColor,
+) -> Option<peniko::Color> {
+    use style::values::computed::image::Image;
+    // Cheap exit for the common case — no image — before rebuilding anything.
+    if !matches!(
+        bg.background_image.0.first(),
+        Some(Image::Gradient(_) | Image::Url(_))
+    ) {
+        return None;
+    }
+    match background_from_stylo(bg, text_color) {
+        BackgroundValue::None | BackgroundValue::Color(_) => None,
+        _ => {
+            color_from_computed(&bg.background_color, text_color).filter(|c| c.components[3] > 0.0)
+        }
+    }
+}
+
+/// The first layer's `background-size` (#468). A `NonNegativeLengthPercentage`
+/// that is a genuine mixed `calc()` keeps its affine pair.
+pub(super) fn background_size_from_stylo(
+    bg: &style::properties::style_structs::Background,
+) -> BackgroundSizeValue {
+    use style::values::generics::background::BackgroundSize;
+    use style::values::generics::length::LengthPercentageOrAuto;
+    let axis = |v: &LengthPercentageOrAuto<
+        style::values::computed::NonNegativeLengthPercentage,
+    >| {
+        match v {
+            LengthPercentageOrAuto::Auto => LengthPercentageAutoValue::Auto,
+            LengthPercentageOrAuto::LengthPercentage(lp) => {
+                match super::calc::split_length_percentage(&lp.0) {
+                    (px, 0.0) => LengthPercentageAutoValue::Length(px),
+                    (0.0, pct) => LengthPercentageAutoValue::Percent(pct),
+                    (px, pct) => LengthPercentageAutoValue::Calc { px, pct },
+                }
+            }
+        }
+    };
+    match bg.background_size.0.first() {
+        Some(BackgroundSize::ExplicitSize { width, height }) => BackgroundSizeValue::Explicit {
+            width: axis(width),
+            height: axis(height),
+        },
+        Some(BackgroundSize::Cover) => BackgroundSizeValue::Cover,
+        Some(BackgroundSize::Contain) => BackgroundSizeValue::Contain,
+        None => BackgroundSizeValue::default(),
+    }
+}
+
+/// The first layer's `background-position-x` or `-y` (#468). A zero length is
+/// `Zero`, the unitless value that interpolates against a percentage as well
+/// as a length, so an animation from `0 0` to `-200% 0` does not snap.
+pub(super) fn background_position_from_stylo(
+    list: &[style::values::computed::LengthPercentage],
+) -> LengthPercentageValue {
+    let Some(lp) = list.first() else {
+        return LengthPercentageValue::Zero;
+    };
+    match super::calc::split_length_percentage(lp) {
+        (0.0, 0.0) => LengthPercentageValue::Zero,
+        (px, 0.0) => LengthPercentageValue::Length(px),
+        (0.0, pct) => LengthPercentageValue::Percent(pct),
+        (px, pct) => LengthPercentageValue::Calc { px, pct },
+    }
+}
+
+/// The first layer's `background-repeat`, per axis (#468).
+pub(super) fn background_repeat_from_stylo(
+    bg: &style::properties::style_structs::Background,
+) -> (BackgroundRepeatValue, BackgroundRepeatValue) {
+    use style::values::specified::background::BackgroundRepeatKeyword as K;
+    let one = |k: K| match k {
+        K::Repeat => BackgroundRepeatValue::Repeat,
+        K::Space => BackgroundRepeatValue::Space,
+        K::Round => BackgroundRepeatValue::Round,
+        K::NoRepeat => BackgroundRepeatValue::NoRepeat,
+    };
+    match bg.background_repeat.0.first() {
+        Some(r) => (one(r.0), one(r.1)),
+        None => (BackgroundRepeatValue::Repeat, BackgroundRepeatValue::Repeat),
+    }
+}
+
+/// The first layer's `background-origin` (#468).
+pub(super) fn background_origin_from_stylo(
+    bg: &style::properties::style_structs::Background,
+) -> BackgroundOriginValue {
+    use style::properties::longhands::background_origin::single_value::computed_value::T;
+    match bg.background_origin.0.first() {
+        Some(T::BorderBox) => BackgroundOriginValue::BorderBox,
+        Some(T::ContentBox) => BackgroundOriginValue::ContentBox,
+        _ => BackgroundOriginValue::PaddingBox,
+    }
+}
+
 fn gradient_direction_to_angle(direction: &style::values::computed::image::LineDirection) -> f32 {
     use style::values::computed::image::LineDirection;
     use style::values::specified::position::{HorizontalPositionKeyword, VerticalPositionKeyword};
