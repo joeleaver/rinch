@@ -1653,9 +1653,11 @@ fn trap_root(browser_doc: &web_sys::Document) -> Option<web_sys::Element> {
 /// `node_is_disabled` is tag-agnostic and would also take a `tabindex` div out;
 /// rinch's own `data-disabled` is honoured here explicitly because no browser
 /// knows the attribute; `<a href="">` is a stop here (matched by presence) and
-/// not on desktop, which trims the href; and desktop does *not* trim a
-/// `tabindex` before parsing it, so `" -1 "` is a stop there and not here. That
-/// list is open rather than closed, which is the point of the next paragraph.
+/// not on desktop, which trims the href. (`tabindex` is read by one parser on
+/// both, `rinch_core::dom::parse_html_integer` — HTML's rules, as the browser's
+/// own `tabIndex` reads it (#1138); this used `trim().parse::<i32>()`, which
+/// kept `"-1.5"` here while the browser answered `-1`.) That list is open
+/// rather than closed, which is the point of the next paragraph.
 ///
 /// **The set is not the authority — the browser is**, and
 /// [`handle_trapped_tab`] is written that way. This filter is best-effort: no
@@ -1689,7 +1691,7 @@ pub(crate) fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlEleme
                 .is_some_and(|v| rinch_core::dom::data_attr_is_on(&v))
             || el
                 .get_attribute("tabindex")
-                .is_some_and(|v| v.trim().parse::<i32>().is_ok_and(|n| n < 0))
+                .is_some_and(|v| rinch_core::dom::parse_html_integer(&v).is_some_and(|n| n < 0))
             || !element_is_visible(&el)
         {
             return;

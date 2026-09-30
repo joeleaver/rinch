@@ -1632,7 +1632,12 @@ the browser rule (issue #252). Focusable by tag: `<button>`, `<select>`,
 `<textarea>`, `<input>`, and `<a>` with a non-empty `href`. **Not** `<summary>`
 (rinch has no `<details>` behaviour) and **not** `data-rid` (the DropdownMenu
 backdrop carries one). `tabindex="-1"` is focusable by click and
-programmatically but not tabbable;
+programmatically but not tabbable. An HTML integer attribute — `tabindex`,
+`<textarea rows>`, `<ol start>`, `<li value>` — is read by HTML's rules for
+parsing integers (`rinch_core::dom::parse_html_integer` /
+`parse_html_non_negative_integer`, #1138/#1153), never by Rust's `parse`:
+`" 3"`, `"2.5"` and `"3abc"` are 3, 2 and 3, and a value past `i32` is an error,
+as in Chrome 153;
 `disabled` and `data-disabled` are both honoured (issue #315) as **boolean
 attributes**, take no focus by any route, and are re-checked at edit time: a
 field that goes disabled *while focused* stops accepting keys **and releases the
@@ -4768,7 +4773,9 @@ Make changes, rebuild, launch again. The full cycle:
   the editor's empty paragraphs do. **Line-sized controls are measured** (#297,
   `crates/rinch-dom/src/form_control.rs`), through a Taffy measure
   (`NodeContext::FormControl`) with the padding and border on top: a
-  `<textarea>` is `rows` lines (default 2; `rows` parsing is #1153), a `<br>`
+  `<textarea>` is `rows` lines (default 2; `rows` is read by HTML's rules for
+  parsing non-negative integers, #1153 — `"3abc"` is 3, `"1e1"` is 1, `"inf"`
+  is 2), a `<br>`
   one line, and an `<input>` one line for every `type` but `checkbox`,
   `radio`, `range`, `color`, `image` and `hidden` — an invalid `type` is a text
   field, as in HTML. It is a measure, not a `min-height`, so `min-height: 0`

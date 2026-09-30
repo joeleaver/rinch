@@ -3279,10 +3279,14 @@ impl RinchApp {
     /// Tab collector, the mousedown claim, the programmatic-focus path and the
     /// arbiter's liveness probe — they must agree, and four hand-rolled copies
     /// of `get("tabindex").and_then(parse)` could not be relied on to.
+    ///
+    /// Read by HTML's rules for parsing integers (#1138), as a browser reads
+    /// it: `" 3"`, `"2.5"` and `"3abc"` are 3, 2 and 3, and a value past `i32`
+    /// is not a `tabindex` at all. `i32::from_str` rejected the first three.
     pub(crate) fn node_tabindex(node: &rinch_dom::Node) -> Option<i32> {
         node.attributes
             .get("tabindex")
-            .and_then(|v| v.parse::<i32>().ok())
+            .and_then(|v| rinch_core::dom::parse_html_integer(v))
     }
 
     /// The `tabindex` a node **behaves as** — explicit, or implied by its tag
