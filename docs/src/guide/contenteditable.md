@@ -151,7 +151,8 @@ Command names are case-sensitive. The full catalogue:
 > after it, where the caret after the break sits: a browser lays `<p>a<br></p>`
 > out as one line (a line after the last forced break needs something after
 > it), and so does rinch-dom, so the view renders a second `<br
-> data-pm-trailing-break>` after the break, as ProseMirror does. It is not part
+> data-pm-trailing-break>` after the break, as ProseMirror does — and after a
+> code block's text that ends in a newline, for the same reason. It is not part
 > of the document and never reaches `doc()`, the HTML or the markdown. Set it yourself with `EditorHandle::set_selection_with_affinity`;
 > read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
 >

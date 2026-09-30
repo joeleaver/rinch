@@ -675,8 +675,8 @@ pub trait DomDocument {
     /// inline layout; the caller then asks by byte. Default `None`, so a host
     /// that does not implement it (the mock) is asked by byte as before. The
     /// browser backend answers it for a `<br>` only, which has no bytes there
-    /// either (the start of the line it ends, #1172), and asks an image by
-    /// byte.
+    /// either (the start of the line it ends, when text or another `<br>`
+    /// follows, #1172), and asks an image by byte.
     fn query_inline_box_caret(
         &self,
         _node_id: u64,
