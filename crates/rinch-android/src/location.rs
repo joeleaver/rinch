@@ -15,6 +15,8 @@ use jni::objects::JValue;
 
 #[cfg(target_os = "android")]
 use crate::bridge;
+#[cfg(target_os = "android")]
+use crate::jni_exception::jni_ok;
 
 #[derive(Clone, Debug)]
 pub struct LocationData {
@@ -73,17 +75,17 @@ fn arm_updates(_min_time_ms: u64, _min_distance_m: f32) {}
 #[cfg(target_os = "android")]
 fn start_updates(min_time_ms: u64, min_distance_m: f32) {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(
-            activity,
-            "startLocationUpdates",
-            "(JF)V",
-            &[
-                JValue::Long(min_time_ms as i64),
-                JValue::Float(min_distance_m),
-            ],
-        ) {
-            log::warn!("startLocationUpdates JNI call failed: {e}");
-        }
+        jni_ok(env, "startLocationUpdates", |env| {
+            env.call_method(
+                activity,
+                "startLocationUpdates",
+                "(JF)V",
+                &[
+                    JValue::Long(min_time_ms as i64),
+                    JValue::Float(min_distance_m),
+                ],
+            )
+        });
     });
 }
 
@@ -97,9 +99,9 @@ pub fn stop() {
 #[cfg(target_os = "android")]
 fn disarm_updates() {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(activity, "stopLocationUpdates", "()V", &[]) {
-            log::warn!("stopLocationUpdates JNI call failed: {e}");
-        }
+        jni_ok(env, "stopLocationUpdates", |env| {
+            env.call_method(activity, "stopLocationUpdates", "()V", &[])
+        });
     });
 }
 
@@ -185,12 +187,15 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnLocationChanged(
     timestamp: jni::sys::jlong,
     provider: jni::objects::JString,
 ) {
+    let _scope = crate::jni_exception::native_scope(&env, "nativeOnLocationChanged");
     let provider_str = if provider.is_null() {
         "unknown".into()
     } else {
-        env.get_string(&provider)
-            .map(String::from)
-            .unwrap_or_else(|_| "unknown".into())
+        crate::jni_exception::jni_ok(&mut env, "location provider", |env| {
+            env.get_string(&provider)
+        })
+        .map(String::from)
+        .unwrap_or_else(|| "unknown".into())
     };
 
     record_fix(LocationData {

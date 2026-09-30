@@ -6,6 +6,7 @@
 use jni::objects::JValue;
 
 use crate::bridge;
+use crate::jni_exception::jni_ok;
 
 /// Notification priority level.
 #[derive(Clone, Copy, Debug, Default)]
@@ -54,31 +55,27 @@ fn post_notification(title: &str, body: &str, priority: Priority) {
     let body = body.to_string();
     let importance = priority.to_importance();
     bridge::with_activity(|env, activity| {
-        let jtitle = match env.new_string(&title) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("notification: failed to create title string: {e}");
-                return;
-            }
+        let Some(jtitle) = jni_ok(env, "notification: failed to create title string", |env| {
+            env.new_string(&title)
+        }) else {
+            return;
         };
-        let jbody = match env.new_string(&body) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("notification: failed to create body string: {e}");
-                return;
-            }
+        let Some(jbody) = jni_ok(env, "notification: failed to create body string", |env| {
+            env.new_string(&body)
+        }) else {
+            return;
         };
-        if let Err(e) = env.call_method(
-            activity,
-            "showNotification",
-            "(Ljava/lang/String;Ljava/lang/String;I)V",
-            &[
-                JValue::Object(&jtitle),
-                JValue::Object(&jbody),
-                JValue::Int(importance),
-            ],
-        ) {
-            log::warn!("showNotification JNI call failed: {e}");
-        }
+        jni_ok(env, "showNotification", |env| {
+            env.call_method(
+                activity,
+                "showNotification",
+                "(Ljava/lang/String;Ljava/lang/String;I)V",
+                &[
+                    JValue::Object(&jtitle),
+                    JValue::Object(&jbody),
+                    JValue::Int(importance),
+                ],
+            )
+        });
     });
 }

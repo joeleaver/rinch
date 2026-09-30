@@ -80,6 +80,10 @@ pub mod ime;
 // everywhere is what lets `cargo test -p rinch-android` exercise the real code
 // on a laptop rather than a copy of it written out again for the test.
 pub mod intent;
+// Host-compiled for the same reason as `scoped`: the rule that settles a
+// failed JNI call's pending exception (#419) is unit-tested off-device against
+// a fake `JNIEnv`; only its `jni::JNIEnv` impl is Android-only.
+pub(crate) mod jni_exception;
 pub mod lifecycle;
 pub mod location;
 #[cfg(target_os = "android")]

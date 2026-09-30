@@ -46,6 +46,8 @@
 //! queue as `Escape`, and it is the loop's own press arm that finishes the
 //! mode — measured in the PR #819 review.)
 
+#[cfg(target_os = "android")]
+use crate::jni_exception::jni_ok;
 use std::sync::Mutex;
 
 /// One of the four platform text actions.
@@ -190,24 +192,24 @@ pub extern "C" fn Java_com_rinch_RinchInputConnection_nativeContextMenuAction(
 pub fn show_toolbar(rect: PhysicalRect, items: TextActionItems, start: bool) {
     use jni::objects::JValue;
     crate::bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(
-            activity,
-            "showTextActionMode",
-            "(IIIIZZZZZ)V",
-            &[
-                JValue::Int(rect.left),
-                JValue::Int(rect.top),
-                JValue::Int(rect.right),
-                JValue::Int(rect.bottom),
-                JValue::Bool(items.cut as jni::sys::jboolean),
-                JValue::Bool(items.copy as jni::sys::jboolean),
-                JValue::Bool(items.paste as jni::sys::jboolean),
-                JValue::Bool(items.select_all as jni::sys::jboolean),
-                JValue::Bool(start as jni::sys::jboolean),
-            ],
-        ) {
-            log::warn!("showTextActionMode failed: {e}");
-        }
+        jni_ok(env, "showTextActionMode", |env| {
+            env.call_method(
+                activity,
+                "showTextActionMode",
+                "(IIIIZZZZZ)V",
+                &[
+                    JValue::Int(rect.left),
+                    JValue::Int(rect.top),
+                    JValue::Int(rect.right),
+                    JValue::Int(rect.bottom),
+                    JValue::Bool(items.cut as jni::sys::jboolean),
+                    JValue::Bool(items.copy as jni::sys::jboolean),
+                    JValue::Bool(items.paste as jni::sys::jboolean),
+                    JValue::Bool(items.select_all as jni::sys::jboolean),
+                    JValue::Bool(start as jni::sys::jboolean),
+                ],
+            )
+        });
     });
 }
 
@@ -215,9 +217,9 @@ pub fn show_toolbar(rect: PhysicalRect, items: TextActionItems, start: bool) {
 #[cfg(target_os = "android")]
 pub fn finish_toolbar() {
     crate::bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(activity, "finishTextActionMode", "()V", &[]) {
-            log::warn!("finishTextActionMode failed: {e}");
-        }
+        jni_ok(env, "finishTextActionMode", |env| {
+            env.call_method(activity, "finishTextActionMode", "()V", &[])
+        });
     });
 }
 

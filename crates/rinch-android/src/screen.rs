@@ -83,6 +83,8 @@ use rinch_core::reactive::Effect;
 
 #[cfg(target_os = "android")]
 use crate::bridge;
+#[cfg(target_os = "android")]
+use crate::jni_exception::jni_ok;
 
 thread_local! {
     /// How many [`KeepScreenOn`] guards are alive. `thread_local!` like every
@@ -200,14 +202,14 @@ pub fn keep_screen_on_while(enabled: impl Fn() -> bool + 'static) {
 #[cfg(target_os = "android")]
 fn apply_keep_screen_on(on: bool) {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(
-            activity,
-            "setKeepScreenOn",
-            "(Z)V",
-            &[jni::objects::JValue::Bool(on as jni::sys::jboolean)],
-        ) {
-            log::warn!("setKeepScreenOn({on}) failed: {e}");
-        }
+        jni_ok(env, &format!("setKeepScreenOn({on})"), |env| {
+            env.call_method(
+                activity,
+                "setKeepScreenOn",
+                "(Z)V",
+                &[jni::objects::JValue::Bool(on as jni::sys::jboolean)],
+            )
+        });
     });
 }
 
