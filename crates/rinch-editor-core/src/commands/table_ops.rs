@@ -637,7 +637,7 @@ pub fn merge_cells() -> Command {
 /// and 1.6 GB. A tall cell costs more per slot than a wide one, because each
 /// per-row step keeps its own copy of the table's row list: 62 × 16,000 is
 /// 1.0 M cells in 8.1 s and 2.4 GB, which is what `addColumnBefore` on a
-/// 16,000-row table costs too (16,000 steps, 6.4 s, 2.1 GB).
+/// 16,000-row table costs too (16,000 steps, 6.4 s, 2.1 GB; #1200).
 pub fn split_cell() -> Command {
     command_tr(|state| {
         // The single target cell: a 1-cell cell selection, or the cell at the cursor.
