@@ -807,18 +807,24 @@ fn nth_cell(t: &Node, k: usize) -> (usize, usize) {
 }
 
 // ------------------------------------------------------------------
-// #1185: a split, a row insert and a column insert take one step per row
-// they touch, not one per grid slot.
+// #1185: a split, a row insert and a column insert make one edit per row
+// they touch, not one per grid slot — and since #1200 they are one step.
 // ------------------------------------------------------------------
 
-/// Runs the registered `cmd` on `st` and returns its transaction's step count
-/// and the state it leads to.
+/// Runs the registered `cmd` on `st` and returns the number of edits its
+/// transaction makes — since #1200 one [`BatchStep`] holding them, so the
+/// count is the step's edits — and the state it leads to.
 fn steps_of(st: &EditorState, cmd: Command) -> Option<(usize, EditorState)> {
     let mut out = None;
     let applied = cmd(
         st,
         Some(&mut |tr: state::Transaction| {
-            out = Some((tr.steps().len(), st.apply(tr)));
+            assert_eq!(tr.steps().len(), 1, "one step (#1200)");
+            let batch = tr.steps()[0]
+                .as_any()
+                .downcast_ref::<BatchStep>()
+                .expect("a batch step");
+            out = Some((batch.len(), st.apply(tr)));
         }),
     );
     assert_eq!(applied, out.is_some());
@@ -932,8 +938,9 @@ fn table_with_merged(s: &Schema, w: i64, h: i64) -> Node {
     table(s, &rows)
 }
 
-/// A 7 × 5 split: two attribute steps and one insert per row, 7 steps, where
-/// one per vacated slot was 36. Undo takes the table back in one step.
+/// A 7 × 5 split: two attribute edits and one insert per row, 7 edits in one
+/// step, where one step per vacated slot was 36. Undo takes the table back in
+/// one step.
 #[test]
 fn split_cell_takes_one_step_per_row() {
     let s = Schema::starter_kit();
@@ -947,7 +954,7 @@ fn split_cell_takes_one_step_per_row() {
     assert!(undone.doc == st.doc);
 }
 
-/// A one-column cell vacates nothing in its own row: no step there.
+/// A one-column cell vacates nothing in its own row: no edit there.
 #[test]
 fn a_one_column_split_inserts_nothing_in_its_top_row() {
     let s = Schema::starter_kit();
@@ -960,8 +967,9 @@ fn a_one_column_split_inserts_nothing_in_its_top_row() {
 }
 
 /// The issue's pin: a 1000 × 1000 merged cell (a pasted `<td colspan=1000
-/// rowspan=1000>` imports whole) splits into 10^6 cells in 1002 steps, and
-/// one undo takes them back. Timing-free: the bound is the step count.
+/// rowspan=1000>` imports whole) splits into 10^6 cells in 1002 edits (one
+/// step since #1200), and one undo takes them back. Timing-free: the bound is
+/// the edit count.
 #[test]
 fn a_1000_by_1000_split_is_one_step_per_row() {
     let s = Schema::starter_kit();
@@ -979,8 +987,8 @@ fn a_1000_by_1000_split_is_one_step_per_row() {
     assert!(undone.doc == st.doc);
 }
 
-/// A row inserted beside a wide cell is one step however wide the row, and a
-/// row under a tall cell costs one attribute step more; a column is one step
+/// A row inserted beside a wide cell is one edit however wide the row, and a
+/// row under a tall cell costs one attribute edit more; a column is one edit
 /// per row.
 #[test]
 fn add_row_and_add_column_take_one_step_per_row() {

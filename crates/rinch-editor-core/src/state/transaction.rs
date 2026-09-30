@@ -267,6 +267,17 @@ impl Transaction {
         Ok(self)
     }
 
+    /// Apply disjoint `edits`, stated in the current document's coordinates,
+    /// as one [`BatchStep`](crate::transform::BatchStep): one step however many
+    /// edits (#1200). Nothing is recorded for an empty list.
+    pub fn batch(
+        &mut self,
+        edits: Vec<crate::transform::BatchEdit>,
+    ) -> Result<&mut Self, StepError> {
+        self.with_transform(|tf| tf.batch(edits).map(|_| ()))?;
+        Ok(self)
+    }
+
     /// Set the attribute `attr` of the node at `pos`.
     pub fn set_node_attr(
         &mut self,

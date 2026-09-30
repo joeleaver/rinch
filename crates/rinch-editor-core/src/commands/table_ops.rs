@@ -20,6 +20,8 @@ use crate::schema::Schema;
 use crate::selection::Selection;
 use crate::state::{EditorState, Transaction};
 use crate::tables::{self, Rect, TableMap};
+use crate::transform::BatchEdit;
+use std::collections::{HashMap, HashSet};
 
 /// The table, its map, content-start position, and the rectangle a command should
 /// operate over (the selected cells, or the single cell under a text cursor).
@@ -95,26 +97,51 @@ fn span_value(extent: usize) -> AttrValue {
     AttrValue::Int(i64::try_from(extent.max(1)).unwrap_or(i64::MAX))
 }
 
-/// `pos` mapped through the steps `tr` took since it had `start` of them — the
-/// steps of one row or column removal. A removal after the first works on a map
-/// recomputed from the transaction's current document, whose positions already
-/// reflect the earlier removals; mapping them through the whole transaction
-/// moved them a second time (PM maps through `tr.mapping.slice(mapStart)`).
-fn map_since(tr: &Transaction, start: usize, pos: usize) -> usize {
-    tr.mapping().maps()[start..]
-        .iter()
-        .fold(pos, |pos, map| map.map(pos, 1))
+/// Every cell of the table by its document position, so a command finds the
+/// cell a grid slot names without walking the rows (`Node::node_at` walks
+/// the table's row list: one call per row was quadratic, #1200).
+struct Cells {
+    /// Cell positions, ascending (document order).
+    starts: Vec<usize>,
+    /// `(row, index in row)` of each entry of `starts`.
+    at: Vec<(usize, usize)>,
 }
 
-/// The cell node at `pos` (an absolute cell position from the map). `None` for a
-/// hole or a position outside the table.
-fn cell_node(info: &TableRect, pos: usize) -> Option<Node> {
-    let offset = pos.checked_sub(info.table_start)?;
-    if pos == HOLE || offset >= info.table.content_size() {
-        return None;
+impl Cells {
+    fn new(info: &TableRect) -> Cells {
+        let mut starts = Vec::new();
+        let mut at = Vec::new();
+        let mut pos = info.table_start;
+        for r in 0..info.table.child_count() {
+            let row = info.table.child(r);
+            pos += 1;
+            for i in 0..row.child_count() {
+                starts.push(pos);
+                at.push((r, i));
+                pos += row.child(i).node_size();
+            }
+            pos += 1;
+        }
+        Cells { starts, at }
     }
-    info.table.node_at(offset)
+
+    /// The cell node at `pos` (a cell position from the map). `None` for a
+    /// hole or a position that starts no cell.
+    fn node<'a>(&self, info: &'a TableRect, pos: usize) -> Option<&'a Node> {
+        let k = self.starts.binary_search(&pos).ok()?;
+        let (r, i) = self.at[k];
+        Some(info.table.child(r).child(i))
+    }
 }
+
+// Every command below states its edits in the coordinates of the document it
+// starts from and applies them as one [`crate::transform::BatchStep`] (#1200).
+// ProseMirror's port took one step per row (a column insert) or per cell (a
+// merge), each mapped through the ones before it; each of those steps rebuilt
+// the table's row list and the transaction kept the document from before
+// every one, which made a column into 16,000 rows 6.4 s and 2.1 GB. The batch
+// maps a position exactly as those steps did, so a caret in a cell the
+// command did not touch stays where it was.
 
 // ===================================================================
 // Column operations
@@ -122,11 +149,11 @@ fn cell_node(info: &TableRect, pos: usize) -> Option<Node> {
 
 /// Insert a column at grid index `col` (`0..=width`). Where an existing cell spans
 /// across the insertion line its colspan grows; otherwise an empty cell is spliced
-/// into each row. Port of `addColumn`. Multiple inserts shift later positions, so
-/// every target position is mapped through the transaction's accumulated mapping.
-fn add_column(tr: &mut Transaction, info: &TableRect, col: usize, schema: &Schema) -> Option<()> {
+/// into each row. Port of `addColumn`.
+fn add_column(info: &TableRect, col: usize, schema: &Schema) -> Option<Vec<BatchEdit>> {
     let map = &info.map;
     let width = map.width();
+    let mut edits = Vec::new();
     let mut row = 0;
     while row < map.height() {
         let index = row * width + col;
@@ -139,51 +166,78 @@ fn add_column(tr: &mut Transaction, info: &TableRect, col: usize, schema: &Schem
             // Inside a horizontally-spanning cell → widen it.
             let pos = map.map()[index];
             let rect = map.cell_rect(index)?;
-            let mapped = tr.mapping().map(pos, 1);
-            tr.set_node_attr(mapped, "colspan", span_value(rect.right - rect.left + 1))
-                .ok()?;
+            edits.push(BatchEdit::set_attr(
+                pos,
+                "colspan",
+                span_value(rect.right - rect.left + 1),
+            ));
             row = rect.bottom.max(row + 1);
         } else {
             let at = map.position_at(row, col);
-            let mapped = tr.mapping().map(at, 1);
-            let cell = make_empty_cell(schema)?;
-            tr.replace_with(mapped, mapped, Fragment::from_node(cell))
-                .ok()?;
+            edits.push(BatchEdit::insert(
+                at,
+                Fragment::from_node(make_empty_cell(schema)?),
+            ));
             row += 1;
         }
     }
-    Some(())
+    Some(edits)
 }
 
-/// Remove the column at grid index `col`. A cell that spans more than this column
-/// shrinks (colspan−1); a cell wholly in the column is deleted. Port of
-/// `removeColumn`.
-fn remove_column(tr: &mut Transaction, info: &TableRect, col: usize) -> Option<()> {
-    let start = tr.mapping().len();
+/// Remove the grid columns `left..right` (`right <= width`). A cell that spans
+/// columns outside them shrinks by the columns it loses; a cell wholly inside
+/// them is deleted. Ports `removeColumn`, which ProseMirror's `deleteColumn`
+/// runs once per column from the right, recomputing the map in between: a
+/// column's removal leaves the columns to its left where they were, so every
+/// column's cells can be read off the one map.
+fn remove_columns(
+    info: &TableRect,
+    cells: &Cells,
+    left: usize,
+    right: usize,
+) -> Option<Vec<BatchEdit>> {
     let map = &info.map;
     let width = map.width();
-    let mut row = 0;
-    while row < map.height() {
-        let index = row * width + col;
-        let pos = map.map()[index];
-        // A hole: this row has nothing in the column.
-        let Some(rect) = map.cell_rect(index) else {
-            row += 1;
-            continue;
-        };
-        let cell = cell_node(info, pos)?;
-        let spans_more = (col > 0 && map.map()[index - 1] == pos)
-            || (col < width - 1 && map.map()[index + 1] == pos);
-        let mapped = map_since(tr, start, pos);
-        if spans_more {
-            tr.set_node_attr(mapped, "colspan", span_value(rect.right - rect.left - 1))
-                .ok()?;
-        } else {
-            tr.delete(mapped, mapped + cell.node_size()).ok()?;
+    // Each cell once, with its rectangle and the columns of `left..right` it
+    // was found in (each column's walk steps over a cell's rows, as
+    // `removeColumn` does).
+    let mut found: HashMap<usize, (Rect, usize)> = HashMap::new();
+    let mut order = Vec::new();
+    for col in left..right.min(width) {
+        let mut row = 0;
+        while row < map.height() {
+            let index = row * width + col;
+            let pos = map.map()[index];
+            // A hole: this row has nothing in the column.
+            let Some(rect) = map.cell_rect(index) else {
+                row += 1;
+                continue;
+            };
+            found
+                .entry(pos)
+                .and_modify(|e| e.1 += 1)
+                .or_insert_with(|| {
+                    order.push(pos);
+                    (rect, 1)
+                });
+            row = rect.bottom.max(row + 1);
         }
-        row = rect.bottom.max(row + 1);
     }
-    Some(())
+    let mut edits = Vec::with_capacity(order.len());
+    for pos in order {
+        let (rect, lost) = found[&pos];
+        let cell = cells.node(info, pos)?;
+        // A column whose removal finds the cell spanning a column the
+        // command keeps shrinks it; the last one it covers deletes it.
+        let kept = rect.left < left || rect.right > right;
+        if kept {
+            let width = (rect.right - rect.left).saturating_sub(lost);
+            edits.push(BatchEdit::set_attr(pos, "colspan", span_value(width)));
+        } else {
+            edits.push(BatchEdit::delete(pos, pos + cell.node_size()));
+        }
+    }
+    Some(edits)
 }
 
 // ===================================================================
@@ -192,12 +246,12 @@ fn remove_column(tr: &mut Transaction, info: &TableRect, col: usize) -> Option<(
 
 /// Insert a row at grid index `row` (`0..=height`). A cell that spans across the
 /// insertion line grows its rowspan; otherwise the new row gets an empty cell in
-/// that column. Port of `addRow`. The single row insert is the only position-
-/// shifting step and comes last, so the rowspan edits need no mapping.
-fn add_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schema) -> Option<()> {
+/// that column. Port of `addRow`.
+fn add_row(info: &TableRect, row: usize, schema: &Schema) -> Option<Vec<BatchEdit>> {
     let map = &info.map;
     let width = map.width();
     let row_pos = map.row_start(row)?;
+    let mut edits = Vec::new();
     let mut cells: Vec<Node> = Vec::new();
     let mut col = 0;
     while col < width {
@@ -210,8 +264,11 @@ fn add_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schema) 
         if from_above {
             let pos = map.map()[index];
             let rect = map.cell_rect(index)?;
-            tr.set_node_attr(pos, "rowspan", span_value(rect.bottom - rect.top + 1))
-                .ok()?;
+            edits.push(BatchEdit::set_attr(
+                pos,
+                "rowspan",
+                span_value(rect.bottom - rect.top + 1),
+            ));
             col = rect.right.max(col + 1);
         } else {
             cells.push(make_empty_cell(schema)?);
@@ -221,24 +278,183 @@ fn add_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schema) 
     let new_row = schema
         .create_node("table_row", Attrs::new(), Fragment::from_children(cells))
         .ok()?;
-    tr.replace_with(row_pos, row_pos, Fragment::from_node(new_row))
-        .ok()?;
-    Some(())
+    edits.push(BatchEdit::insert(row_pos, Fragment::from_node(new_row)));
+    Some(edits)
 }
 
-/// Remove the row at grid index `row`. Cells spanning into the row from above lose
-/// a rowspan; a cell starting in the row but continuing below is re-created one row
-/// down with rowspan−1; plain cells go with the row. Port of `removeRow`.
-fn remove_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schema) -> Option<()> {
+/// Remove the grid rows `top..bottom` (not all of them). A cell spanning into
+/// them from above loses the rows it had there; a cell starting in them and
+/// continuing below is re-created in row `bottom` with the rows it has left;
+/// the rest go with their rows. Ports `removeRow`, which ProseMirror's
+/// `deleteRow` runs once per row from the bottom: a row's removal moves a
+/// cell that continues below it into the row below, which is row `bottom`
+/// once the rows between are gone, and a copy lands before the first cell
+/// of that row to its right — in column order, whichever row it came from.
+fn remove_rows(
+    info: &TableRect,
+    cells: &Cells,
+    top: usize,
+    bottom: usize,
+    schema: &Schema,
+) -> Option<Vec<BatchEdit>> {
+    let map = &info.map;
+    let width = map.width();
+    let mut edits = vec![BatchEdit::delete(
+        map.row_start(top)?,
+        map.row_start(bottom)?,
+    )];
+    // Each cell once: its rectangle and the column it was found in on the
+    // topmost of the rows (the row whose removal moves it down).
+    let mut found: HashMap<usize, (Rect, usize)> = HashMap::new();
+    let mut order = Vec::new();
+    for row in (top..bottom).rev() {
+        let mut col = 0;
+        while col < width {
+            let index = row * width + col;
+            let pos = map.map()[index];
+            // A hole: this row has nothing in the column.
+            let Some(rect) = map.cell_rect(index) else {
+                col += 1;
+                continue;
+            };
+            found
+                .entry(pos)
+                .and_modify(|e| e.1 = col)
+                .or_insert_with(|| {
+                    order.push(pos);
+                    (rect, col)
+                });
+            col = rect.right.max(col + 1);
+        }
+    }
+    let mut moved: Vec<(usize, usize, Node)> = Vec::new();
+    for pos in order {
+        let (rect, col) = found[&pos];
+        if rect.top < top {
+            // Spans into the rows from above → it loses those rows.
+            let lost = rect.bottom.min(bottom) - top;
+            let height = (rect.bottom - rect.top).saturating_sub(lost);
+            edits.push(BatchEdit::set_attr(pos, "rowspan", span_value(height)));
+        } else if bottom < map.height() && rect.bottom > bottom {
+            // Starts in them and continues below → re-create it in row
+            // `bottom`, with the rows it has there.
+            let cell = cells.node(info, pos)?;
+            let new_attrs = cell
+                .attrs()
+                .with("rowspan", span_value(rect.bottom - bottom));
+            let copy = schema
+                .create_node(cell.type_name(), new_attrs, cell.content().clone())
+                .ok()?;
+            moved.push((map.position_at(bottom, col), col, copy));
+        }
+    }
+    moved.sort_by_key(|&(at, col, _)| (at, col));
+    for (at, _, copy) in moved {
+        edits.push(BatchEdit::insert(at, Fragment::from_node(copy)));
+    }
+    Some(edits)
+}
+
+/// Whether the grid is the table's cells as they say they are: every cell has
+/// slots, they form a rectangle, and its spans are that rectangle's, cut only
+/// at the grid's edges. Holes are allowed; cells that overlap (a span the map
+/// resolved by giving the slots to the cell that claimed them first) and cells
+/// in no slot are not. Only on such a grid do the one-pass [`remove_columns`]
+/// and [`remove_rows`] do what ProseMirror's one-at-a-time removal does,
+/// recomputing the map in between: overlapping cells re-resolve differently
+/// once a column or row is gone.
+fn plain_grid(info: &TableRect, cells: &Cells) -> bool {
+    let map = &info.map;
+    let (width, height) = (map.width(), map.height());
+    let m = map.map();
+    // Each cell's first slot in row-major order, and its slot count.
+    let mut slots: HashMap<usize, (usize, usize)> = HashMap::new();
+    for (index, &pos) in m.iter().enumerate() {
+        if pos != HOLE {
+            slots.entry(pos).or_insert((index, 0)).1 += 1;
+        }
+    }
+    if slots.len() != cells.starts.len() {
+        return false;
+    }
+    cells.starts.iter().all(|pos| {
+        let Some(&(index, count)) = slots.get(pos) else {
+            return false;
+        };
+        let Some(rect) = map.cell_rect(index) else {
+            return false;
+        };
+        let cell = cells.node(info, *pos).expect("a cell of the table");
+        let span = |name: &str| usize::try_from(cell.attrs().get_int(name).unwrap_or(1).max(1));
+        let (cols, rows) = (rect.right - rect.left, rect.bottom - rect.top);
+        (rect.top, rect.left) == (index / width, index % width)
+            && cols * rows == count
+            && span("colspan").map_or(cols == width - rect.left, |c| {
+                c.min(width - rect.left) == cols
+            })
+            && span("rowspan").map_or(rows == height - rect.top, |r| {
+                r.min(height - rect.top) == rows
+            })
+    })
+}
+
+/// Whether grid row `row` has a slot no cell covers (`false` past the last
+/// row). A cell [`remove_rows`] moves down lands before the first cell of row
+/// `bottom` right of it, which puts the moved cells in column order — unless
+/// that row has a hole, where `positionAt` answers the row's end and the
+/// cells moved one row at a time land in the order they were moved.
+fn has_hole(map: &TableMap, row: usize) -> bool {
+    let width = map.width();
+    row < map.height() && map.map()[row * width..(row + 1) * width].contains(&HOLE)
+}
+
+/// Remove grid column `col`, as `removeColumn` does, for a grid
+/// [`plain_grid`] does not accept: [`delete_column`] runs it once per
+/// column, on a map recomputed in between.
+fn remove_column_on(info: &TableRect, cells: &Cells, col: usize) -> Option<Vec<BatchEdit>> {
+    let map = &info.map;
+    let width = map.width();
+    let mut edits = Vec::new();
+    let mut row = 0;
+    while row < map.height() {
+        let index = row * width + col;
+        let pos = map.map()[index];
+        // A hole: this row has nothing in the column.
+        let Some(rect) = map.cell_rect(index) else {
+            row += 1;
+            continue;
+        };
+        let cell = cells.node(info, pos)?;
+        let spans_more = (col > 0 && map.map()[index - 1] == pos)
+            || (col < width - 1 && map.map()[index + 1] == pos);
+        if spans_more {
+            edits.push(BatchEdit::set_attr(
+                pos,
+                "colspan",
+                span_value(rect.right - rect.left - 1),
+            ));
+        } else {
+            edits.push(BatchEdit::delete(pos, pos + cell.node_size()));
+        }
+        row = rect.bottom.max(row + 1);
+    }
+    Some(edits)
+}
+
+/// Remove grid row `row`, as `removeRow` does, for a grid [`rectangular`]
+/// does not accept (see [`remove_column_on`]).
+fn remove_row_on(
+    info: &TableRect,
+    cells: &Cells,
+    row: usize,
+    schema: &Schema,
+) -> Option<Vec<BatchEdit>> {
     let map = &info.map;
     let width = map.width();
     let row_pos = map.row_start(row)?;
     let next_row = map.row_start(row + 1)?;
-    let start = tr.mapping().len();
-    // Delete the whole row first (the one position-shifting step besides the
-    // move-down inserts, which are mapped below).
-    tr.delete(row_pos, next_row).ok()?;
-    let mut seen: Vec<usize> = Vec::new();
+    let mut edits = vec![BatchEdit::delete(row_pos, next_row)];
+    let mut seen: HashSet<usize> = HashSet::new();
     let mut col = 0;
     while col < width {
         let index = row * width + col;
@@ -252,31 +468,27 @@ fn remove_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schem
             col += 1;
             continue;
         };
-        seen.push(pos);
-        let cell = cell_node(info, pos)?;
+        seen.insert(pos);
+        let cell = cells.node(info, pos)?;
         let next_col = rect.right.max(col + 1);
         let shorter = span_value(rect.bottom - rect.top - 1);
         if row > 0 && pos == map.map()[index - width] {
             // Spans into this row from above → reduce its rowspan.
-            let mapped = map_since(tr, start, pos);
-            tr.set_node_attr(mapped, "rowspan", shorter).ok()?;
-            col = next_col;
+            edits.push(BatchEdit::set_attr(pos, "rowspan", shorter));
         } else if row + 1 < map.height() && pos == map.map()[index + width] {
             // Starts here and continues below → recreate it one row down.
             let new_attrs = cell.attrs().with("rowspan", shorter);
             let copy = schema
                 .create_node(cell.type_name(), new_attrs, cell.content().clone())
                 .ok()?;
-            let new_pos = map.position_at(row + 1, col);
-            let mapped = map_since(tr, start, new_pos);
-            tr.replace_with(mapped, mapped, Fragment::from_node(copy))
-                .ok()?;
-            col = next_col;
-        } else {
-            col = next_col;
+            edits.push(BatchEdit::insert(
+                map.position_at(row + 1, col),
+                Fragment::from_node(copy),
+            ));
         }
+        col = next_col;
     }
-    Some(())
+    Some(edits)
 }
 
 /// Recompute the table rectangle (map + table node) from the transaction's current
@@ -299,13 +511,18 @@ fn recompute(tr: &Transaction, table_start: usize, rect: Rect) -> Option<TableRe
 // Registered commands
 // ===================================================================
 
+/// One-step transaction applying `edits` (`None` when there are none).
+fn batch_tr(state: &EditorState, edits: Vec<BatchEdit>) -> Option<Transaction> {
+    let mut tr = state.tr();
+    tr.batch(edits).ok()?;
+    tr.doc_changed().then_some(tr)
+}
+
 /// `addRowBefore` — insert an empty row above the selection's top row.
 pub fn add_row_before() -> Command {
     command_tr(|state| {
         let info = selected_rect(state)?;
-        let mut tr = state.tr();
-        add_row(&mut tr, &info, info.rect.top, state.schema())?;
-        tr.doc_changed().then_some(tr)
+        batch_tr(state, add_row(&info, info.rect.top, state.schema())?)
     })
 }
 
@@ -313,9 +530,7 @@ pub fn add_row_before() -> Command {
 pub fn add_row_after() -> Command {
     command_tr(|state| {
         let info = selected_rect(state)?;
-        let mut tr = state.tr();
-        add_row(&mut tr, &info, info.rect.bottom, state.schema())?;
-        tr.doc_changed().then_some(tr)
+        batch_tr(state, add_row(&info, info.rect.bottom, state.schema())?)
     })
 }
 
@@ -323,9 +538,7 @@ pub fn add_row_after() -> Command {
 pub fn add_column_before() -> Command {
     command_tr(|state| {
         let info = selected_rect(state)?;
-        let mut tr = state.tr();
-        add_column(&mut tr, &info, info.rect.left, state.schema())?;
-        tr.doc_changed().then_some(tr)
+        batch_tr(state, add_column(&info, info.rect.left, state.schema())?)
     })
 }
 
@@ -333,9 +546,7 @@ pub fn add_column_before() -> Command {
 pub fn add_column_after() -> Command {
     command_tr(|state| {
         let info = selected_rect(state)?;
-        let mut tr = state.tr();
-        add_column(&mut tr, &info, info.rect.right, state.schema())?;
-        tr.doc_changed().then_some(tr)
+        batch_tr(state, add_column(&info, info.rect.right, state.schema())?)
     })
 }
 
@@ -347,18 +558,29 @@ pub fn delete_row() -> Command {
         if info.rect.top == 0 && info.rect.bottom == info.map.height() {
             return delete_table_tr(state, info.table_start);
         }
+        let cells = Cells::new(&info);
+        if plain_grid(&info, &cells) && !has_hole(&info.map, info.rect.bottom) {
+            let (top, bottom) = (info.rect.top, info.rect.bottom);
+            return batch_tr(
+                state,
+                remove_rows(&info, &cells, top, bottom, state.schema())?,
+            );
+        }
+        // Overlapping cells: a row at a time from the bottom, one step each.
         let mut tr = state.tr();
-        let table_start = info.table_start;
-        let rect = info.rect;
+        let (table_start, rect) = (info.table_start, info.rect);
         let mut cur = info;
+        let mut cells = cells;
         let mut i = rect.bottom;
         loop {
             i -= 1;
-            remove_row(&mut tr, &cur, i, state.schema())?;
+            tr.batch(remove_row_on(&cur, &cells, i, state.schema())?)
+                .ok()?;
             if i == rect.top {
                 break;
             }
             cur = recompute(&tr, table_start, rect)?;
+            cells = Cells::new(&cur);
         }
         tr.doc_changed().then_some(tr)
     })
@@ -372,10 +594,16 @@ pub fn delete_column() -> Command {
         if info.rect.left == 0 && info.rect.right == info.map.width() {
             return delete_table_tr(state, info.table_start);
         }
+        let cells = Cells::new(&info);
+        if plain_grid(&info, &cells) {
+            let (left, right) = (info.rect.left, info.rect.right);
+            return batch_tr(state, remove_columns(&info, &cells, left, right)?);
+        }
+        // Overlapping cells: a column at a time from the right, one step each.
         let mut tr = state.tr();
-        let table_start = info.table_start;
-        let rect = info.rect;
+        let (table_start, rect) = (info.table_start, info.rect);
         let mut cur = info;
+        let mut cells = cells;
         let mut i = rect.right;
         loop {
             i -= 1;
@@ -383,12 +611,13 @@ pub fn delete_column() -> Command {
             // column from a ragged table can narrow the grid by more than one
             // (its widest row may be the one that lost a cell).
             if i < cur.map.width() {
-                remove_column(&mut tr, &cur, i)?;
+                tr.batch(remove_column_on(&cur, &cells, i)?).ok()?;
             }
             if i == rect.left {
                 break;
             }
             cur = recompute(&tr, table_start, rect)?;
+            cells = Cells::new(&cur);
         }
         tr.doc_changed().then_some(tr)
     })
@@ -470,17 +699,13 @@ pub(crate) fn clear_cells(state: &EditorState) -> Option<Transaction> {
     }
     let info = selected_rect(state)?;
     let schema = state.schema();
-    let mut tr = state.tr();
-    // Blank cells in DESCENDING document order so each in-place content replace only
-    // shifts positions after it (already processed) — the remaining lower cells keep
-    // their original positions, so no mapping is needed.
-    let mut cells = info.map.cells_in_rect(info.rect);
-    cells.sort_unstable_by(|a, b| b.cmp(a));
-    for cell_pos in cells {
-        let Some(cell) = info.table.node_at(cell_pos - info.table_start) else {
+    let cells = Cells::new(&info);
+    let mut edits = Vec::new();
+    for cell_pos in info.map.cells_in_rect(info.rect) {
+        let Some(cell) = cells.node(&info, cell_pos) else {
             continue;
         };
-        if cell_is_empty(&cell) {
+        if cell_is_empty(cell) {
             continue;
         }
         let para = schema
@@ -488,10 +713,12 @@ pub(crate) fn clear_cells(state: &EditorState) -> Option<Transaction> {
             .ok()?;
         let from = cell_pos + 1;
         let to = from + cell.content_size();
-        tr.replace_with(from, to, Fragment::from_node(para)).ok()?;
+        edits.push(BatchEdit::replace(from, to, Fragment::from_node(para)));
     }
-    // Collapse into the top-left cell (its position is unchanged — all edits were at
-    // higher positions).
+    let mut tr = state.tr();
+    tr.batch(edits).ok()?;
+    // Collapse into the top-left cell (its position is unchanged — every edit
+    // is inside a cell, and none is before it).
     let top_left = info.map.cell_at(info.rect.top, info.rect.left)?;
     let sel = Selection::near(tr.doc(), Pos(top_left + 1), 1);
     tr.set_selection(sel);
@@ -522,61 +749,59 @@ pub fn merge_cells() -> Command {
         let map = &info.map;
         let width = map.width();
         let rect = info.rect;
+        let cells = Cells::new(&info);
         // The master is the rectangle's top-left cell, which grows over the rest,
         // holes included: they are no cell to delete. The top-left slot is never
         // a hole: a row's own cells all lie left of its holes (a hole can be
         // followed by a slot a rowspan from above covers, never by one of the
         // row's own cells), and the rectangle's top row holds a selected cell at
-        // or right of its left edge.
-        let mut tr = state.tr();
-        let mut seen: Vec<usize> = Vec::new();
+        // or right of its left edge. Every other cell comes after it in the
+        // document.
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut edits = Vec::new();
         let mut content = Fragment::empty();
-        let mut master: Option<(usize, Node)> = None;
+        let mut master: Option<(usize, &Node)> = None;
         for row in rect.top..rect.bottom {
             for col in rect.left..rect.right {
                 let pos = map.map()[row * width + col];
-                if pos == HOLE || seen.contains(&pos) {
+                if pos == HOLE || !seen.insert(pos) {
                     continue;
                 }
-                seen.push(pos);
-                let cell = cell_node(&info, pos)?;
+                let cell = cells.node(&info, pos)?;
                 match &master {
                     None => master = Some((pos, cell)),
                     Some(_) => {
-                        if !cell_is_empty(&cell) {
+                        if !cell_is_empty(cell) {
                             content = content.append(cell.content());
                         }
-                        let mapped = tr.mapping().map(pos, 1);
-                        tr.delete(mapped, mapped + cell.node_size()).ok()?;
+                        edits.push(BatchEdit::delete(pos, pos + cell.node_size()));
                     }
                 }
             }
         }
         let (master_pos, master_cell) = master?;
         // Grow the master to cover the rectangle.
-        tr.set_node_attr(
+        edits.push(BatchEdit::set_attr(
             master_pos,
             "colspan",
             AttrValue::Int((rect.right - rect.left) as i64),
-        )
-        .ok()?;
-        tr.set_node_attr(
+        ));
+        edits.push(BatchEdit::set_attr(
             master_pos,
             "rowspan",
             AttrValue::Int((rect.bottom - rect.top) as i64),
-        )
-        .ok()?;
+        ));
         if content.size() > 0 {
             let content_end = master_pos + 1 + master_cell.content_size();
-            let start = if cell_is_empty(&master_cell) {
+            let start = if cell_is_empty(master_cell) {
                 master_pos + 1
             } else {
                 content_end
             };
-            let from = tr.mapping().map(start, 1);
-            let to = tr.mapping().map(content_end, 1);
-            tr.replace_with(from, to, content).ok()?;
+            edits.push(BatchEdit::replace(start, content_end, content));
         }
+        let mut tr = state.tr();
+        tr.batch(edits).ok()?;
         tr.set_selection(Selection::cell(Pos(master_pos), Pos(master_pos)));
         Some(tr)
     })
@@ -586,18 +811,13 @@ pub fn merge_cells() -> Command {
 /// back into 1×1 cells, filling the freed grid slots with empty cells. No-op on a
 /// 1×1 cell or a multi-cell selection. Port of `splitCell` (plain-cell type).
 ///
-/// **Cost** (#1185): two attribute steps plus one insert per row the cell
-/// spans, not one per vacated slot, so a 1000×1000 cell is 1002 steps. The
+/// **Cost**: one step (#1200), holding one insert per row the cell spans (#1185
+/// made it one step per row, where ProseMirror inserts a cell per slot). The
 /// cells it creates are as many as the slots it vacates, and there is no cap
 /// (PM has none): the slots come from the [`TableMap`], which holds at most
 /// [`tables::grid_slot_budget`] of them, so a split creates at most
 /// `grid_slot_budget` cells: 2^22 (about 4.2 M) for a table of fewer than
-/// 2^21 cells, twice its cell count beyond that. Measured in a release
-/// build: 1000×1000 is 1.0 M cells in 0.23 s and 390 MB peak; a pasted
-/// 1000 × 4000 cell is 4.0 M cells in 1.1 s and 1.6 GB. A tall cell costs more per slot than a wide one, because each
-/// per-row step keeps its own copy of the table's row list: 62 × 16,000 is
-/// 1.0 M cells in 8.1 s and 2.4 GB, which is what `addColumnBefore` on a
-/// 16,000-row table costs too (16,000 steps, 6.4 s, 2.1 GB; #1200).
+/// 2^21 cells, twice its cell count beyond that.
 pub fn split_cell() -> Command {
     command_tr(|state| {
         // The single target cell: a 1-cell cell selection, or the cell at the cursor.
@@ -618,17 +838,12 @@ pub fn split_cell() -> Command {
         let rect = info.map.find_cell(cell_pos)?;
         let cell_size = cell.node_size();
         let schema = state.schema();
-        let mut tr = state.tr();
-        // Reset the master to 1×1 (attr-only: no position shift).
-        tr.set_node_attr(cell_pos, "colspan", AttrValue::Int(1))
-            .ok()?;
-        tr.set_node_attr(cell_pos, "rowspan", AttrValue::Int(1))
-            .ok()?;
-        // Fill the vacated grid slots with empty cells: one insert per row
-        // holding all of that row's new cells (#1185). PM inserts a cell per
-        // slot, each mapped through the steps before it, which is 10^6 steps
-        // for a pasted 1000×1000 cell; the document is the same, since each
-        // of those inserts landed right after the one before it.
+        // Reset the master to 1×1, and fill the vacated grid slots with empty
+        // cells: one insert per row holding all of that row's new cells.
+        let mut edits = vec![
+            BatchEdit::set_attr(cell_pos, "colspan", AttrValue::Int(1)),
+            BatchEdit::set_attr(cell_pos, "rowspan", AttrValue::Int(1)),
+        ];
         let width = rect.right - rect.left;
         for row in rect.top..rect.bottom {
             let mut at = info.map.position_at(row, rect.left);
@@ -643,10 +858,10 @@ pub fn split_cell() -> Command {
             let cells = (0..count)
                 .map(|_| make_empty_cell(schema))
                 .collect::<Option<Vec<_>>>()?;
-            let mapped = tr.mapping().map(at, 1);
-            tr.replace_with(mapped, mapped, Fragment::from_children(cells))
-                .ok()?;
+            edits.push(BatchEdit::insert(at, Fragment::from_children(cells)));
         }
+        let mut tr = state.tr();
+        tr.batch(edits).ok()?;
         // Collapse the selection into the (now 1×1) master cell.
         let sel = Selection::near(tr.doc(), Pos(cell_pos + 1), 1);
         tr.set_selection(sel);
