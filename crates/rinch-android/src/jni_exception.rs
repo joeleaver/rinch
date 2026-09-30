@@ -64,7 +64,8 @@ pub(crate) trait PendingException {
     fn clear_exception(&mut self);
     /// `throwable.toString()`: the class name and message. A Java method
     /// call, so **illegal while any exception is pending**, and it may
-    /// itself throw — the caller settles what it leaves.
+    /// itself throw: then it answers `None`, makes no further call, and the
+    /// caller settles what it leaves.
     fn throwable_text(&mut self, throwable: &Self::Throwable) -> Option<String>;
     /// `DeleteLocalRef` on a reference [`take_throwable`](Self::take_throwable)
     /// answered.
@@ -119,7 +120,7 @@ where
 /// illegal while the exception is pending, so it must come after the
 /// clear. And it may throw in turn: that exception is cleared at once —
 /// the stack trace printed is the one the caller's failure threw — so it
-/// cannot leak into the next call, and the text is given up.
+/// cannot leak into the next call, and there is no text.
 pub(crate) fn settle_pending_with_text<E: PendingException + ?Sized>(
     env: &mut E,
 ) -> Option<String> {
@@ -130,10 +131,9 @@ pub(crate) fn settle_pending_with_text<E: PendingException + ?Sized>(
     env.describe_exception();
     env.clear_exception();
     let throwable = throwable?;
-    let mut text = env.throwable_text(&throwable);
+    let text = env.throwable_text(&throwable);
     if env.exception_pending() {
         env.clear_exception();
-        text = None;
     }
     env.release_throwable(throwable);
     text
