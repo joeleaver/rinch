@@ -2067,24 +2067,87 @@ mod tests {
         }
     }
 
-    /// `rowspan` is Chrome 153's `td.rowSpan`: clamped to 0..=65534, an
-    /// overflow the maximum. (`0` is covered by the section tests below: the
+    /// `rowspan` is Chrome 153's `td.rowSpan` (clamped to 0..=65534, an
+    /// overflow the maximum), cut to the rows left in the cell's row group,
+    /// which is the span Chrome 153 lays out (#1176). Seven rows here, so a
+    /// value past them is 7. (`0` is covered by the section tests below: the
     /// model has no "to the end" value, so it is resolved at import.)
     #[test]
-    fn rowspan_is_read_and_clamped_as_chrome_reads_it() {
+    fn rowspan_is_read_as_chrome_reads_it_and_cut_to_its_row_group() {
         let rows: &[(&str, i64)] = &[
             ("3abc", 3),
             (" 2", 2),
             ("-3", 1),
             ("abc", 1),
-            ("65534", 65534),
-            ("65535", 65534),
-            ("99999999999", 65534),
+            ("6", 6),
+            ("7", 7),
+            ("8", 7),
+            ("65534", 7),
+            ("99999999999", 7),
         ];
         for &(v, want) in rows {
-            let attrs = format!("rowspan=\"{v}\"");
-            assert_eq!(imported_first_cell_spans(&attrs).1, want, "rowspan={v:?}");
+            let html = format!(
+                "<table><tr><td rowspan=\"{v}\"><p>a</p></td></tr>{}</table>",
+                "<tr><td><p>b</p></td></tr>".repeat(6)
+            );
+            assert_eq!(imported_rowspans(&html)[0][0], want, "rowspan={v:?}");
         }
+    }
+
+    /// A rowspan does not reach past the end of its row group: Chrome 153
+    /// cuts it there (measured: a `rowspan="3"` cell in a one-row `<tbody>`
+    /// leaves the next `<tbody>`'s first cell in column 0). The import writes
+    /// the cut span, so the model grid is the one Chrome drew (#1176).
+    #[test]
+    fn a_rowspan_is_cut_at_the_end_of_its_row_group() {
+        let html = "<table><tbody>\
+                    <tr><td rowspan=\"3\"><p>a</p></td><td><p>b</p></td></tr>\
+                    </tbody><tbody>\
+                    <tr><td><p>c</p></td><td><p>d</p></td></tr>\
+                    </tbody></table>";
+        assert_eq!(imported_rowspans(html), vec![vec![1, 1], vec![1, 1]]);
+        let html = "<table>\
+                    <tr><td rowspan=\"5\"><p>a</p></td><td rowspan=\"2\"><p>b</p></td></tr>\
+                    <tr><td><p>c</p></td></tr>\
+                    <tr><td><p>d</p></td><td><p>e</p></td></tr>\
+                    </table>";
+        assert_eq!(imported_rowspans(html), vec![vec![3, 2], vec![1], vec![1, 1]]);
+    }
+
+    /// Every cell's `colspan`, row by row, of the first table in `html`.
+    fn imported_colspans(html: &str) -> Vec<Vec<i64>> {
+        let slice = slice_from_html(&s(), html).unwrap();
+        let table = slice.content.child(0);
+        (0..table.child_count())
+            .map(|r| {
+                let row = table.child(r);
+                (0..row.child_count())
+                    .map(|c| row.child(c).attrs().get_int("colspan").unwrap())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A pasted row is at most 1000 columns wide, counting the columns that
+    /// rowspans from the rows above carry into it: a colspan is cut to what
+    /// is left, and never below 1 (#1176). 1000 is Chrome's largest colspan;
+    /// Chrome has no limit on a row's width (it lays out 3001 columns), so
+    /// this one is rinch's, and it is what keeps a pasted grid linear in the
+    /// paste.
+    #[test]
+    fn a_pasted_row_is_at_most_1000_columns_wide() {
+        let html = "<table><tr><td colspan=\"600\"><p>a</p></td>\
+                    <td colspan=\"600\"><p>b</p></td><td colspan=\"7\"><p>c</p></td></tr></table>";
+        assert_eq!(imported_colspans(html), vec![vec![600, 400, 1]]);
+        // Columns carried down by a rowspan count against the row below.
+        let html = "<table><tr><td colspan=\"700\" rowspan=\"2\"><p>a</p></td></tr>\
+                    <tr><td colspan=\"500\"><p>b</p></td></tr>\
+                    <tr><td colspan=\"500\"><p>c</p></td></tr></table>";
+        assert_eq!(imported_colspans(html), vec![vec![700], vec![300], vec![500]]);
+        // ...but not across a row group, which the rowspan does not reach.
+        let html = "<table><tbody><tr><td colspan=\"700\" rowspan=\"2\"><p>a</p></td></tr></tbody>\
+                    <tbody><tr><td colspan=\"500\"><p>b</p></td></tr></tbody></table>";
+        assert_eq!(imported_colspans(html), vec![vec![700], vec![500]]);
     }
 
     /// Every cell's `rowspan`, row by row, of the first table in `html`.

@@ -743,3 +743,263 @@ mod tests {
         assert_eq!(ts, table_start);
     }
 }
+
+/// #1176: the grid a [`TableMap`] allocates is bounded, whatever the table's
+/// `colspan`/`rowspan` attributes say. A table reaches the model by paste, by
+/// `load_doc`, by an app's own transaction and by the table commands, and only
+/// the paste route normalises spans, so the map has to hold the line itself.
+#[cfg(test)]
+mod grid_bound_tests {
+    use super::*;
+    use crate::model::{Attrs, Fragment};
+    use crate::{AttrValue, Schema};
+
+    /// The slot budget's floor: a map may always hold this many slots.
+    const FLOOR: usize = 1 << 20;
+
+    fn cell(s: &Schema, colspan: i64, rowspan: i64) -> Node {
+        let p = s
+            .create_node("paragraph", Attrs::new(), Fragment::empty())
+            .unwrap();
+        s.create_node(
+            "table_cell",
+            Attrs::from_iter([
+                ("colspan", AttrValue::Int(colspan)),
+                ("rowspan", AttrValue::Int(rowspan)),
+            ]),
+            Fragment::from_node(p),
+        )
+        .unwrap()
+    }
+
+    fn row(s: &Schema, cells: Vec<Node>) -> Node {
+        s.create_node("table_row", Attrs::new(), Fragment::from_children(cells))
+            .unwrap()
+    }
+
+    fn table(s: &Schema, rows: Vec<Node>) -> Node {
+        s.create_node("table", Attrs::new(), Fragment::from_children(rows))
+            .unwrap()
+    }
+
+    /// Build a table from `(colspan, rowspan)` pairs, row by row.
+    fn spans_table(s: &Schema, rows: &[Vec<(i64, i64)>]) -> Node {
+        let rows = rows
+            .iter()
+            .map(|r| row(s, r.iter().map(|&(c, h)| cell(s, c, h)).collect()))
+            .collect();
+        table(s, rows)
+    }
+
+    /// The document position before row `r`'s `i`th cell (the table's content
+    /// starting at 1, as in every fixture here).
+    fn cell_pos(t: &Node, r: usize, i: usize) -> usize {
+        let mut pos = 1;
+        for j in 0..r {
+            pos += t.child(j).node_size();
+        }
+        pos += 1;
+        let row = t.child(r);
+        for k in 0..i {
+            pos += row.child(k).node_size();
+        }
+        pos
+    }
+
+    /// The issue's staircase, built in the model rather than pasted (so the
+    /// import's clamps do not apply): 1000 rows of one cell each,
+    /// `colspan=1000 rowspan=65534`. Row k is 1000·(k+1) wide, so the uncapped
+    /// map is 1000 × 1,000,000 slots (8 GB). The width is capped at
+    /// `FLOOR / height` = 1048 and every cell keeps to its own row.
+    ///
+    /// Run it against an unbounded map only under `ulimit -v`.
+    #[test]
+    fn a_staircase_built_in_the_model_is_capped_at_the_slot_budget() {
+        let s = Schema::starter_kit();
+        let t = spans_table(&s, &vec![vec![(1000, 65534)]; 1000]);
+        // Asked first: it allocates nothing, so an unbounded width fails here.
+        assert_eq!(column_count(&t), FLOOR / 1000);
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.width(), 1048);
+        assert_eq!(map.height(), 1000);
+        assert_eq!(map.map().len(), 1048 * 1000);
+        let (r0, r1, r2) = (cell_pos(&t, 0, 0), cell_pos(&t, 1, 0), cell_pos(&t, 2, 0));
+        // Row 0's cell covers columns 0..1000 of every row.
+        assert_eq!(map.cell_at(0, 999), Some(r0));
+        assert_eq!(map.cell_at(999, 999), Some(r0));
+        // Row 1's cell starts at column 1000 and is cut at the grid's edge,
+        // in its own rows only.
+        assert_eq!(map.cell_at(0, 1000), None, "row 0 has a hole past its cell");
+        assert_eq!(map.cell_at(1, 1000), Some(r1));
+        assert_eq!(map.cell_at(1, 1047), Some(r1));
+        assert_eq!(map.cell_at(2, 1047), Some(r1));
+        assert_eq!(
+            map.find_cell(r1),
+            Some(Rect {
+                left: 1000,
+                top: 1,
+                right: 1048,
+                bottom: 1000
+            })
+        );
+        // Row 2's cell would start at column 2000: it is off the grid.
+        assert_eq!(map.find_cell(r2), None);
+    }
+
+    /// A row wider than the capped grid is cut at the row's end; it does not
+    /// run on into the next row's slots.
+    #[test]
+    fn an_overwide_row_does_not_spill_into_the_next_row() {
+        let s = Schema::starter_kit();
+        let t = spans_table(&s, &[vec![(3_000_000, 1)], vec![(1, 1), (1, 1)]]);
+        let width = FLOOR / 2;
+        assert_eq!(column_count(&t), width);
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.width(), width);
+        assert_eq!(map.map().len(), 2 * width);
+        let wide = cell_pos(&t, 0, 0);
+        assert_eq!(map.cell_at(0, width - 1), Some(wide));
+        assert_eq!(map.cell_at(1, 0), Some(cell_pos(&t, 1, 0)));
+        assert_eq!(map.cell_at(1, 1), Some(cell_pos(&t, 1, 1)));
+        assert_eq!(map.cell_at(1, 2), None);
+    }
+
+    /// An attribute no import would write (`i64::MAX`, from `load_doc` or an
+    /// app's transaction) is bounded, not trusted, and does not overflow.
+    #[test]
+    fn a_span_of_i64_max_is_bounded_not_trusted() {
+        let s = Schema::starter_kit();
+        let t = spans_table(&s, &[vec![(i64::MAX, i64::MAX)], vec![(1, 1)]]);
+        let width = FLOOR / 2;
+        assert_eq!(column_count(&t), width);
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.map().len(), 2 * width);
+        let big = cell_pos(&t, 0, 0);
+        assert_eq!(map.cell_at(1, 0), Some(big), "its rowspan covers row 1");
+        assert_eq!(map.cell_at(1, width - 1), Some(big));
+        // Row 1's own cell is pushed off the grid by the carried span.
+        assert_eq!(map.find_cell(cell_pos(&t, 1, 0)), None);
+    }
+
+    /// A plain rectangular table larger than the floor is never cut: the budget
+    /// grows with the number of cells (twice it), so it is linear in the
+    /// document and every well-formed table fits.
+    #[test]
+    fn a_rectangular_table_past_the_floor_is_not_cut() {
+        let s = Schema::starter_kit();
+        let one = cell(&s, 1, 1);
+        let r = row(&s, vec![one; 1000]);
+        let t = table(&s, vec![r; 1100]);
+        assert!(1000 * 1100 > FLOOR, "the fixture is past the floor");
+        assert_eq!(column_count(&t), 1000);
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.width(), 1000);
+        assert_eq!(map.height(), 1100);
+        assert_eq!(map.cell_at(1099, 999), Some(cell_pos(&t, 1099, 999)));
+    }
+
+    // ── The port as it was before #1176, verbatim: the oracle for tables
+    //    the budget does not touch. ──────────────────────────────────────────
+
+    fn old_find_width(table: &Node) -> usize {
+        let mut width = 0usize;
+        let mut has_row_span = false;
+        let height = table.child_count();
+        for row in 0..height {
+            let row_node = table.child(row);
+            let mut row_width = 0usize;
+            if has_row_span {
+                for j in 0..row {
+                    let prev = table.child(j);
+                    for i in 0..prev.child_count() {
+                        let cell = prev.child(i);
+                        if j + span_attr(cell, "rowspan") > row {
+                            row_width += span_attr(cell, "colspan");
+                        }
+                    }
+                }
+            }
+            for i in 0..row_node.child_count() {
+                let cell = row_node.child(i);
+                row_width += span_attr(cell, "colspan");
+                if span_attr(cell, "rowspan") > 1 {
+                    has_row_span = true;
+                }
+            }
+            width = width.max(row_width);
+        }
+        width.max(1)
+    }
+
+    fn old_map(table: &Node, table_start: usize) -> Vec<usize> {
+        let height = table.child_count();
+        let width = old_find_width(table);
+        let mut map = vec![UNSET; width * height];
+        let mut pos = table_start;
+        let mut map_pos = 0usize;
+        for row in 0..height {
+            let row_node = table.child(row);
+            pos += 1;
+            let mut i = 0usize;
+            loop {
+                while map_pos < map.len() && map[map_pos] != UNSET {
+                    map_pos += 1;
+                }
+                if i == row_node.child_count() {
+                    break;
+                }
+                let cell = row_node.child(i);
+                let colspan = span_attr(cell, "colspan");
+                let rowspan = span_attr(cell, "rowspan");
+                for h in 0..rowspan {
+                    if row + h >= height {
+                        break;
+                    }
+                    let start = map_pos + h * width;
+                    for w in 0..colspan {
+                        let idx = start + w;
+                        if idx < map.len() && map[idx] == UNSET {
+                            map[idx] = pos;
+                        }
+                    }
+                }
+                map_pos += colspan;
+                pos += cell.node_size();
+                i += 1;
+            }
+            map_pos = (row + 1) * width;
+            pos += 1;
+        }
+        map
+    }
+
+    /// Under the budget nothing changes: width and grid agree with the old
+    /// port on random ragged tables with spans (0 and negatives included,
+    /// which read as 1), empty rows, and rowspans past the table's end.
+    #[test]
+    fn under_the_budget_the_grid_is_the_old_ports() {
+        let s = Schema::starter_kit();
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for _ in 0..3000 {
+            let rows = 1 + next(7) as usize;
+            let spec: Vec<Vec<(i64, i64)>> = (0..rows)
+                .map(|_| {
+                    (0..next(5))
+                        .map(|_| (next(6) as i64 - 1, next(6) as i64 - 1))
+                        .collect()
+                })
+                .collect();
+            let t = spans_table(&s, &spec);
+            let map = TableMap::compute(&t, 1);
+            assert_eq!(column_count(&t), old_find_width(&t), "width of {spec:?}");
+            assert_eq!(map.width(), old_find_width(&t), "{spec:?}");
+            assert_eq!(map.map(), old_map(&t, 1).as_slice(), "grid of {spec:?}");
+        }
+    }
+}
