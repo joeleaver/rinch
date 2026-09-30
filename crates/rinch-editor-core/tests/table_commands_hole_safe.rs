@@ -240,10 +240,7 @@ fn add_column_after_under_an_i64_max_colspan_does_not_overflow() {
     let s = Schema::starter_kit();
     let t = table(&s, &[vec![(i64::MAX, 1)], vec![(1, 1), (1, 1)]]);
     let width = TableMap::compute(&t, 1).width();
-    assert!(
-        width > 2 && width < 1 << 22,
-        "the grid cut the span: {width}"
-    );
+    assert_eq!(width, 1 << 21, "the grid cut the span: 2^22 slots / 2 rows");
     let mut st = state_with(t.clone());
     st.selection = caret_in(&t, 1, 0);
     let next = st.run("addColumnAfter").expect("addColumnAfter applies");
