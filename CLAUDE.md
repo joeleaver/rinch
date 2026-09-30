@@ -4883,7 +4883,15 @@ Make changes, rebuild, launch again. The full cycle:
   and a `<textarea>`'s direct text children are its default value
   (`form_control::control_value`: the `value` attribute if present, even `""`,
   else those children), which `paint_input_value` draws and the desktop shell
-  edits from. An `<input>`'s children are not drawn. A block-level element
+  edits from. The attribute's presence is the textarea's **dirty value flag**
+  (#1186): the shell writes it at the first edit (even one that leaves the text
+  unchanged — anything the command pushed on the undo stack) and at a
+  composition's first preedit (Chrome's `.value` holds it), never at a focus,
+  a blur or a caret move (`sync_input_cursor_to_dom` skips `value` for a
+  pristine textarea still showing its children), so a child change shows until
+  then — while focused too, with the caret kept at its UTF-16 offset, clamped
+  (`replace_keeping_offsets`, Chrome 153). `rinch-web` re-syncs `.value` from
+  the children on every change, dirty or not. An `<input>`'s children are not drawn. A block-level element
   child is still laid out as content (#1178). **Its width comes from `size`
   / `cols`** (#1177), as in Chrome 153 at a device scale factor of 1 (Chrome
   computes in device px, so at 1.5 it can differ by several px): the primary

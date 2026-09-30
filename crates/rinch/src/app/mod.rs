@@ -2390,8 +2390,16 @@ impl RinchApp {
             let _ = text;
         }
 
+        // Anything the command put on the undo stack is the user's edit, and
+        // sets the dirty value flag even when the text came out unchanged
+        // (#1186); a changed text sets it through the sync below.
+        let edited = state.undo_stack.mark() != group;
+
         // Sync value to our buffer
         self.focused_input_value = new_text.clone();
+        if edited {
+            self.mark_focused_input_edited();
+        }
         self.sync_input_cursor_to_dom();
 
         // Fire oninput if text changed
@@ -3049,7 +3057,18 @@ impl RinchApp {
 
     // ── Input cursor DOM sync ─────────────────────────────────────────
 
-    /// Write cursor/selection attributes to the focused input's DOM node.
+    /// Write cursor/selection attributes to the focused input's DOM node, and
+    /// its text to `value`.
+    ///
+    /// Except for a **pristine** `<textarea>` (no `value` attribute — its
+    /// dirty value flag is clear) whose text is still its children's: writing
+    /// `value` there would set the flag, and a focus or a caret move is not an
+    /// edit (#1186). Every edit and every composition sets the flag first
+    /// ([`Self::mark_focused_input_edited`]), so the text compare here is a
+    /// net rather than the mechanism: a pristine field whose engine text
+    /// differs from its children gets `value` written, because paint would
+    /// otherwise draw the children while the caret attributes index the
+    /// engine text. No path is known to reach it; no fixture pins it.
     fn sync_input_cursor_to_dom(&self) {
         // Any caret/text change invalidates a vertical move's goal x (#307).
         self.input_caret_generation
@@ -3063,9 +3082,16 @@ impl RinchApp {
         let Some(doc) = &self.doc else { return };
 
         let mut d = doc.borrow_mut();
+        let text = state.document.to_text();
+        let keeps_default = d.tree.nodes.get(node_id).is_some_and(|node| {
+            rinch_dom::form_control::is_pristine_textarea(node)
+                && rinch_dom::form_control::control_value(&d.tree.nodes, node_id).as_deref()
+                    == Some(text.as_str())
+        });
         if let Some(node) = d.tree.nodes.get_mut(node_id) {
-            node.attributes
-                .insert("value".to_string(), state.document.to_text());
+            if !keeps_default {
+                node.attributes.insert("value".to_string(), text);
+            }
             node.attributes
                 .insert("data-focused".to_string(), "true".to_string());
             node.attributes.insert(
@@ -3080,6 +3106,27 @@ impl RinchApp {
             d.tree.paint_dirty_nodes.push(node_id);
         }
         d.tree.dirty_nodes.insert(node_id);
+    }
+
+    /// Set the focused field's dirty value flag: write its text to `value`,
+    /// for an edit that left the text as it was (retyping a selected
+    /// character over itself), which [`Self::sync_input_cursor_to_dom`] cannot
+    /// tell from no edit. Chrome sets the flag for it (#1186).
+    fn mark_focused_input_edited(&self) {
+        let (Some(node_id), Some(state), Some(doc)) = (
+            self.focused_input_node_id,
+            self.focused_input_state.as_ref(),
+            self.doc.as_ref(),
+        ) else {
+            return;
+        };
+        let mut d = doc.borrow_mut();
+        if let Some(node) = d.tree.nodes.get_mut(node_id)
+            && !node.attributes.contains_key("value")
+        {
+            node.attributes
+                .insert("value".to_string(), state.document.to_text());
+        }
     }
 
     /// Clear focus-related attributes from the previously focused input node.
@@ -4348,10 +4395,25 @@ impl RinchApp {
         if value == self.focused_input_value {
             return;
         }
+        let pristine_textarea = self.doc.as_ref().is_some_and(|doc| {
+            doc.borrow()
+                .tree
+                .get(node_id)
+                .is_some_and(rinch_dom::form_control::is_pristine_textarea)
+        });
         let Some(state) = self.focused_input_state.as_mut() else {
             return;
         };
-        state.adopt_text(&value);
+        if pristine_textarea {
+            // The children changed under a field nobody has edited: its
+            // default value moved, and with it the value. Chrome 153 keeps
+            // the selection's offsets (in UTF-16 units), clamped to the new
+            // text, where a `value` write maps them through the rewrite
+            // (#1186).
+            replace_keeping_offsets(state, &value);
+        } else {
+            state.adopt_text(&value);
+        }
         if !keeps_history {
             state.undo_stack.clear();
         }
@@ -4736,6 +4798,36 @@ impl RinchApp {
             }
         }
     }
+}
+
+/// Replace `state`'s text with `new`, keeping each selection end at the same
+/// UTF-16 offset (a browser's `selectionStart`), clamped to `new` — how Chrome
+/// 153 moves the caret when a pristine textarea's default value changes
+/// (#1186). An offset that falls inside a surrogate pair lands before it.
+fn replace_keeping_offsets(state: &mut EditableState<StringDocument>, new: &str) {
+    let old = state.document.to_text();
+    let utf16_at = |byte: usize| -> usize {
+        let byte = byte.min(old.len());
+        let byte = (0..=byte)
+            .rev()
+            .find(|&b| old.is_char_boundary(b))
+            .unwrap_or(0);
+        old[..byte].encode_utf16().count()
+    };
+    let byte_at = |units: usize| -> usize {
+        let mut seen = 0;
+        for (b, ch) in new.char_indices() {
+            if seen + ch.len_utf16() > units {
+                return b;
+            }
+            seen += ch.len_utf16();
+        }
+        new.len()
+    };
+    let anchor = byte_at(utf16_at(state.selection.anchor.0));
+    let head = byte_at(utf16_at(state.selection.head.0));
+    state.document = StringDocument::with_text(new);
+    state.selection = Selection::new(anchor, head);
 }
 
 /// The word around a caret, as `(start, end)` byte offsets, or `None` when
