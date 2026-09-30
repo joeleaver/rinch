@@ -377,9 +377,24 @@ fn the_caret_in_an_empty_text_node_is_where_what_follows_starts() {
         d.native_height(0, 0) <= 0.0,
         "positive control: no rect in an empty text node"
     );
-    let (x, t, h) = d.caret(0);
-    assert!(x.abs() < 0.5 && t < 5.0, "the start of `ab`: ({x}, {t})");
-    assert!(h > 0.0 && h < 25.0, "one line tall, not the block: {h}");
+    // The browser's own caret at the start of `ab`: the block's box is one
+    // line here, so only this tells the two answers apart.
+    let t = d.el().child_nodes().item(1).unwrap();
+    let r = document().create_range().unwrap();
+    r.set_start(&t, 0).unwrap();
+    r.set_end(&t, 0).unwrap();
+    let own = r.get_bounding_client_rect();
+    let o = d.el().get_bounding_client_rect();
+    let (x, top, h) = d.caret(0);
+    assert!(
+        (x - (own.x() - o.x())).abs() < 0.5
+            && (top - (own.y() - o.y())).abs() < 0.5
+            && (h - own.height()).abs() < 0.5,
+        "the start of `ab`: ({x}, {top}, {h}) vs ({}, {}, {})",
+        own.x() - o.x(),
+        own.y() - o.y(),
+        own.height()
+    );
     d.done();
 }
 
