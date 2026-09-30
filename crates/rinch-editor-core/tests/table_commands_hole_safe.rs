@@ -947,6 +947,18 @@ fn split_cell_takes_one_step_per_row() {
     assert!(undone.doc == st.doc);
 }
 
+/// A one-column cell vacates nothing in its own row: no step there.
+#[test]
+fn a_one_column_split_inserts_nothing_in_its_top_row() {
+    let s = Schema::starter_kit();
+    let t = table_with_merged(&s, 1, 3);
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 0, 1);
+    let (steps, next) = steps_of(&st, commands::table_ops::split_cell()).expect("splits");
+    assert_eq!(steps, 2 + 2);
+    assert_eq!(cell_count(&next.doc.child(0)), vec![3, 3, 3]);
+}
+
 /// The issue's pin: a 1000 × 1000 merged cell (a pasted `<td colspan=1000
 /// rowspan=1000>` imports whole) splits into 10^6 cells in 1002 steps, and
 /// one undo takes them back. Timing-free: the bound is the step count.
