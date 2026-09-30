@@ -143,7 +143,8 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    The <table> is a grid; the view sets `grid-template-columns: repeat(N, …)`
    inline (N = column count). <tr> is `display: contents`, so its cells become
    the grid's direct items, and a merged cell carries an inline
-   `grid-column`/`grid-row` span — that is how colspan/rowspan render. */
+   `grid-column`/`grid-row` span — its rectangle in the table's TableMap,
+   which is how colspan/rowspan render (#1182). */
 [data-pm-editor] table {
   display: grid; margin: 0.85em 0;
   grid-template-columns: minmax(0, 1fr);

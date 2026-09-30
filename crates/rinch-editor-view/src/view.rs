@@ -365,8 +365,8 @@ enum GridPlacement {
     Span(usize, usize),
     /// A cell no grid slot holds (past the capped width, or in a row the
     /// rowspans from above fill). No table command treats it as a cell; it is
-    /// laid out as a band across the whole grid (`grid-column: 1 / -1`) so its
-    /// content stays visible without adding a track.
+    /// laid out as a band across the whole grid (`grid-column: 1 / -1`) on a
+    /// row of its own, so its content stays visible without adding a column.
     Outside,
 }
 
@@ -456,10 +456,10 @@ impl ViewDesc {
     /// asked the host for that many implicit grid tracks, and on the desktop a
     /// few such cells stacked past the `i16` lines Taffy numbers a grid with,
     /// and layout panicked. The map cuts a span at the grid's edge and has no
-    /// slot for a cell past its capped width, so the grid laid out is at most
-    /// the map's columns and, with the [`GridPlacement::Outside`] bands, its
-    /// rows plus one per such cell. A cell whose placement did not change is
-    /// not written.
+    /// slot for a cell past its capped width, so no cell asks for more columns
+    /// than the map has or more rows than the table has, and a cell with no
+    /// slot is a [`GridPlacement::Outside`] band. A cell whose placement did
+    /// not change is not written.
     ///
     /// [`TableMap`]: rinch_editor_core::tables::TableMap
     fn sync_table_spans(&mut self) {
