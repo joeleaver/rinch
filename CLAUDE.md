@@ -4881,7 +4881,8 @@ Make changes, rebuild, launch again. The full cycle:
   else those children), which `paint_input_value` draws and the desktop shell
   edits from. The attribute's presence is the textarea's **dirty value flag**
   (#1186): the shell writes it at the first edit (even one that leaves the text
-  unchanged — anything the command pushed on the undo stack), never at a focus,
+  unchanged — anything the command pushed on the undo stack) and at a
+  composition's first preedit (Chrome's `.value` holds it), never at a focus,
   a blur or a caret move (`sync_input_cursor_to_dom` skips `value` for a
   pristine textarea still showing its children), so a child change shows until
   then — while focused too, with the caret kept at its UTF-16 offset, clamped

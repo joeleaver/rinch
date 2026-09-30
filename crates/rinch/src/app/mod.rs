@@ -3063,9 +3063,12 @@ impl RinchApp {
     /// Except for a **pristine** `<textarea>` (no `value` attribute — its
     /// dirty value flag is clear) whose text is still its children's: writing
     /// `value` there would set the flag, and a focus or a caret move is not an
-    /// edit (#1186). The first sync after an edit finds the text changed and
-    /// writes it; [`Self::mark_focused_input_edited`] covers an edit that left
-    /// the text as it was.
+    /// edit (#1186). Every edit and every composition sets the flag first
+    /// ([`Self::mark_focused_input_edited`]), so the text compare here is a
+    /// net rather than the mechanism: a pristine field whose engine text
+    /// differs from its children gets `value` written, because paint would
+    /// otherwise draw the children while the caret attributes index the
+    /// engine text. No path is known to reach it; no fixture pins it.
     fn sync_input_cursor_to_dom(&self) {
         // Any caret/text change invalidates a vertical move's goal x (#307).
         self.input_caret_generation

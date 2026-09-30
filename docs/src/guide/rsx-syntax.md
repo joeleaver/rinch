@@ -448,10 +448,13 @@ A `<textarea>` holds its value in its `value` attribute, and has no content to
 size against. Text written as its child — `textarea { "hi" }`, or a parsed
 `<textarea>hi</textarea>` — is its *default* value, as in HTML: the field shows
 and edits it, and follows it when it changes (a reactive
-`textarea { {|| draft.get()} }`), until the user edits the field or something
-sets its `value` — HTML's dirty value flag, which focusing and blurring do not
-set (#1186). A change while the field is focused and unedited keeps the caret
-at its offset, clamped to the new text, as in Chrome. It sizes the field no
+`textarea { {|| draft.get()} }`). On the desktop it follows it until the user
+edits the field or something sets its `value` — HTML's dirty value flag, which
+focusing and blurring do not set (#1186) — and a change while the field is
+focused and unedited keeps the caret at its offset, clamped to the new text, as
+in Chrome. On rinch-web a child change always replaces the value, even one the
+user typed (#100's rule that an app's reactive write reaches the field); which
+way the two backends converge is #1206. It sizes the field no
 more than a value does. An `<input>`'s
 children are not shown at all. A control with no `width` is as wide as its
 `cols` (a textarea, default 20) or `size` (a text `<input>`, default 20)
