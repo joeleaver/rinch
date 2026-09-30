@@ -114,8 +114,18 @@ fn a_space_at_an_inline_elements_edge_is_kept() {
             "a\u{fffc} b",
             33.28,
         ),
-        ("tab at a span's edge", ib("a\t<span>\tb</span>"), "a b", 23.28),
-        ("newline at a span's edge", ib("a\n<span>\n b</span>"), "a b", 23.28),
+        (
+            "tab at a span's edge",
+            ib("a\t<span>\tb</span>"),
+            "a b",
+            23.28,
+        ),
+        (
+            "newline at a span's edge",
+            ib("a\n<span>\n b</span>"),
+            "a b",
+            23.28,
+        ),
         ("a b (control)", ib("a b"), "a b", 23.28),
     ];
     for (name, html, text, w) in cases {
@@ -176,7 +186,13 @@ fn a_space_at_a_lines_start_or_end_is_still_removed() {
         ("<span> a</span>", ib("<span> a</span>"), "a", 8.98, 25.0),
         ("<span>a </span>", ib("<span>a </span>"), "a", 8.98, 25.0),
         ("a <br> b", ib("a <br> b"), "a\nb", 9.8, 50.0),
-        ("a<span> <br></span> b", ib("a<span> <br></span> b"), "a\nb", 9.8, 50.0),
+        (
+            "a<span> <br></span> b",
+            ib("a<span> <br></span> b"),
+            "a\nb",
+            9.8,
+            50.0,
+        ),
         (
             "a <abs> (end)",
             ib("a <span style=\"position:absolute\"></span>"),
@@ -191,7 +207,13 @@ fn a_space_at_a_lines_start_or_end_is_still_removed() {
             8.98,
             25.0,
         ),
-        ("a <ib>", ib(&format!("a {IB10}")), "a \u{fffc}", 23.48, 25.0),
+        (
+            "a <ib>",
+            ib(&format!("a {IB10}")),
+            "a \u{fffc}",
+            23.48,
+            25.0,
+        ),
         (
             "a <ib> b",
             ib(&format!("a {IB10} b")),
@@ -296,7 +318,10 @@ fn other_white_space_values() {
     assert_eq!(t, "a b", "pre-line");
     assert_width("pre-line", w, 23.28);
     let (t, _, _) = measure("white-space:pre-wrap", &ib("a  <span> b\t</span>"));
-    assert_eq!(t, "a   b    ", "pre-wrap is verbatim (a tab is four spaces)");
+    assert_eq!(
+        t, "a   b    ",
+        "pre-wrap is verbatim (a tab is four spaces)"
+    );
 }
 
 /// `rsx! { p { "Hello" b { " world" } } }`, built node by node as the macro
@@ -349,11 +374,23 @@ fn flat_offsets_are_offsets_into_the_collapsed_text() {
     let third = il.text_ranges[2].node_id;
     let fourth = il.text_ranges[3].node_id;
     assert_eq!(dom_cursor_to_ifc_offset(&il.text_ranges, third, 2), Some(4));
-    assert_eq!(ifc_offset_to_dom_cursor(&il.text_ranges, 4, false), Some((third, 2)));
-    assert_eq!(dom_cursor_to_ifc_offset(&il.text_ranges, fourth, 2), Some(6));
-    assert_eq!(ifc_offset_to_dom_cursor(&il.text_ranges, 6, false), Some((fourth, 2)));
+    assert_eq!(
+        ifc_offset_to_dom_cursor(&il.text_ranges, 4, false),
+        Some((third, 2))
+    );
+    assert_eq!(
+        dom_cursor_to_ifc_offset(&il.text_ranges, fourth, 2),
+        Some(6)
+    );
+    assert_eq!(
+        ifc_offset_to_dom_cursor(&il.text_ranges, 6, false),
+        Some((fourth, 2))
+    );
     // After `d`: DOM byte 3, flat byte 7 (the end; the trailing space went).
-    assert_eq!(dom_cursor_to_ifc_offset(&il.text_ranges, fourth, 3), Some(7));
+    assert_eq!(
+        dom_cursor_to_ifc_offset(&il.text_ranges, fourth, 3),
+        Some(7)
+    );
     // A DOM offset inside a removed run maps to where the run was.
     assert_eq!(dom_cursor_to_ifc_offset(&il.text_ranges, third, 1), Some(4));
 }
