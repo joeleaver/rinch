@@ -1003,3 +1003,96 @@ fn add_row_and_add_column_take_one_step_per_row() {
     let (steps, _) = steps_of(&st, commands::table_ops::add_column_before()).expect("adds");
     assert_eq!(steps, 40);
 }
+
+// REVIEW-1201 probe: the split's mapping answers every position exactly as the
+// per-slot split's did, and undo + redo round-trips.
+fn split_per_slot_tr(st: &EditorState, cell_pos: usize) -> Option<state::Transaction> {
+    let t = st.doc.child(0);
+    let map = TableMap::compute(t, 1);
+    let cell = t.node_at(cell_pos - 1)?;
+    if span(&cell, "colspan").max(1) == 1 && span(&cell, "rowspan").max(1) == 1 {
+        return None;
+    }
+    let rect = map.find_cell(cell_pos)?;
+    let mut tr = st.tr();
+    tr.set_node_attr(cell_pos, "colspan", AttrValue::Int(1))
+        .ok()?;
+    tr.set_node_attr(cell_pos, "rowspan", AttrValue::Int(1))
+        .ok()?;
+    for row in rect.top..rect.bottom {
+        let mut at = map.position_at(row, rect.left);
+        if row == rect.top {
+            at += cell.node_size();
+        }
+        for col in rect.left..rect.right {
+            if row == rect.top && col == rect.left {
+                continue;
+            }
+            let mapped = tr.mapping().map(at, 1);
+            tr.replace_with(mapped, mapped, Fragment::from_node(empty_cell(st.schema())))
+                .ok()?;
+        }
+    }
+    tr.doc_changed().then_some(tr)
+}
+
+#[test]
+fn review_1201_split_mapping_matches_per_slot_and_redo_round_trips() {
+    let s = Schema::starter_kit();
+    let mut rng = Rng(0x1201_0000_beef_0002);
+    const SPANS: &[i64] = &[1, 1, 2, 3, 0, -1, 40];
+    let (mut compared, mut redo) = (0, 0);
+    for case in 0..300 {
+        let t = if case % 2 == 0 {
+            random_tiled(&mut rng, &s).0
+        } else {
+            let h = 1 + rng.below(5);
+            let rows: Vec<Vec<(i64, i64)>> = (0..h)
+                .map(|_| {
+                    (0..rng.below(5))
+                        .map(|_| (SPANS[rng.below(SPANS.len())], SPANS[rng.below(SPANS.len())]))
+                        .collect()
+                })
+                .collect();
+            table(&s, &rows)
+        };
+        for r in 0..t.child_count() {
+            for i in 0..t.child(r).child_count() {
+                let mut st = state_with(t.clone());
+                st.selection = caret_in(&t, r, i);
+                let mut got = None;
+                commands::table_ops::split_cell()(
+                    &st,
+                    Some(&mut |tr: state::Transaction| got = Some(tr)),
+                );
+                let want = split_per_slot_tr(&st, cell_pos(&t, r, i));
+                match (got, want) {
+                    (None, None) => {}
+                    (Some(g), Some(w)) => {
+                        for p in 0..=st.doc.content_size() {
+                            for a in [-1, 1] {
+                                let (gm, wm) =
+                                    (g.mapping().map_result(p, a), w.mapping().map_result(p, a));
+                                assert_eq!(
+                                    (gm.pos, gm.deleted()),
+                                    (wm.pos, wm.deleted()),
+                                    "case {case} ({r},{i}) p {p} a {a}"
+                                );
+                            }
+                        }
+                        compared += 1;
+                        let next = st.apply(g);
+                        let back = next.run("undo").expect("undo");
+                        assert!(back.doc == st.doc);
+                        let again = back.run("redo").expect("redo");
+                        assert!(again.doc == next.doc, "redo case {case}");
+                        redo += 1;
+                    }
+                    (g, w) => panic!("case {case}: {:?} {:?}", g.is_some(), w.is_some()),
+                }
+            }
+        }
+    }
+    eprintln!("review-1201 mapping compared {compared}, redo {redo}");
+    assert!(compared > 300);
+}

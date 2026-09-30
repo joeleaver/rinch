@@ -631,10 +631,11 @@ pub fn merge_cells() -> Command {
 /// spans, not one per vacated slot, so a 1000×1000 cell is 1002 steps. The
 /// cells it creates are as many as the slots it vacates, and there is no cap
 /// (PM has none): the slots come from the [`TableMap`], which holds at most
-/// [`tables::grid_slot_budget`] of them, so a split creates at most about
-/// 4.2 M cells. Measured in a release build: 1000×1000 is 1.0 M cells in
-/// 0.23 s and 390 MB peak; a pasted 1000 × 4000 cell is 4.0 M cells in 1.1 s
-/// and 1.6 GB. A tall cell costs more per slot than a wide one, because each
+/// [`tables::grid_slot_budget`] of them, so a split creates at most
+/// `grid_slot_budget` cells: 2^22 (about 4.2 M) for a table of fewer than
+/// 2^21 cells, twice its cell count beyond that. Measured in a release
+/// build: 1000×1000 is 1.0 M cells in 0.23 s and 390 MB peak; a pasted
+/// 1000 × 4000 cell is 4.0 M cells in 1.1 s and 1.6 GB. A tall cell costs more per slot than a wide one, because each
 /// per-row step keeps its own copy of the table's row list: 62 × 16,000 is
 /// 1.0 M cells in 8.1 s and 2.4 GB, which is what `addColumnBefore` on a
 /// 16,000-row table costs too (16,000 steps, 6.4 s, 2.1 GB; #1200).
