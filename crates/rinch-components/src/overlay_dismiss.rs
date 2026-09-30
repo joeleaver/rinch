@@ -142,18 +142,22 @@ pub fn arm_close_on_escape_while_open(
 /// that owns the whole keyboard while it is open rather than only Escape
 /// (issue #434, the `Select` option list).
 ///
-/// The open-time push is the whole safety argument: the entry exists only
-/// while the popup is on screen, so a closed popup can never swallow the page's
-/// keys. `on_key` answers `true` to consume. It should decline Escape and leave
-/// it to an [`arm_close_on_escape_while_open`] entry, so that "which overlay is
-/// on top" stays one question for the dismiss stack.
+/// Two things keep the entry from swallowing keys that are not its own: it
+/// exists only while the popup is on screen, and it is offered a key only while
+/// the focus is inside `owner` (see [`rinch_core::push_key_handler`]). When
+/// focus leaves `owner`, `on_focus_leave` runs — a listbox closes there.
+///
+/// `on_key` answers `true` to consume. It should decline Escape and leave it
+/// to an [`arm_close_on_escape_while_open`] entry, so that "which overlay is on
+/// top" stays one question for the dismiss stack.
 pub fn arm_keys_while_open(
     scope: &mut RenderScope,
-    root: &NodeHandle,
+    owner: &NodeHandle,
     is_open: ReactiveBool,
     on_key: Rc<dyn Fn(&rinch_core::KeyEventData) -> bool>,
+    on_focus_leave: Rc<dyn Fn()>,
 ) {
-    let doc_key = root.doc_key();
+    let owner = owner.clone();
     let slot: Rc<RefCell<Option<DismissHandle>>> = Rc::new(RefCell::new(None));
 
     let slot_effect = slot.clone();
@@ -164,7 +168,8 @@ pub fn arm_keys_while_open(
         // `arm_close_on_escape_while_open`.
         if open && !held {
             let f = on_key.clone();
-            let handle = rinch_core::push_key_handler(doc_key, move |k| f(k));
+            let leave = on_focus_leave.clone();
+            let handle = rinch_core::push_key_handler(&owner, move |k| f(k), move || leave());
             *slot_effect.borrow_mut() = Some(handle);
         } else if !open && held {
             let released = slot_effect.borrow_mut().take();

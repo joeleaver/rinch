@@ -15,15 +15,18 @@
 //! |---|---|
 //! | ArrowDown / ArrowUp | move the highlight one option, wrapping at the ends |
 //! | Home / End | highlight the first / last option |
-//! | Enter / Space | commit the highlighted option and close |
+//! | Enter | commit the highlighted option and close |
+//! | Space | the same — unless a type-ahead prefix is live, which it extends ("new y") |
 //! | Escape | close without committing |
 //! | Tab | close without committing, and let focus move on |
 //! | a printable character | type-ahead: highlight the first option whose label starts with what was typed |
 //!
 //! Opening highlights the selected option (or the first, with none selected).
 //! The keys reach the component through [`rinch_core::push_key_handler`],
-//! pushed when the list opens and released when it closes, so a closed
-//! `Select` consumes nothing; Escape is a dismiss-stack entry pushed at open
+//! pushed when the list opens and released when it closes, and offered a key
+//! only while the focus is inside the `Select` — so a closed `Select`
+//! consumes nothing, a field focused while the list is open keeps its own
+//! keys, and focus leaving the `Select` closes the list; Escape is a dismiss-stack entry pushed at open
 //! (the #465 policy), so a `Select` open inside a `Modal` closes before the
 //! modal does. Both are dispatched from `dispatch_keyboard_event`, which the
 //! desktop runtime and rinch-web both call, so the behaviour is one code path
@@ -478,10 +481,29 @@ impl Component for Select {
                 highlighted.set(Some(next));
                 return true;
             }
-            match k.key.as_str() {
-                // Desktop spells Space by name, the browser as the character
-                // (a pinned divergence, #1161).
-                "Enter" | " " | "Space" => {
+            // Desktop spells Space by name, the browser as the character
+            // (a pinned divergence, #1161).
+            let key = if k.key == "Space" {
+                " "
+            } else {
+                k.key.as_str()
+            };
+            // A space typed while a type-ahead prefix is live extends it
+            // ("new y" → New York), as the native popup does; otherwise Space
+            // commits like Enter.
+            let prefix_live = {
+                let t = typed.borrow();
+                !t.0.is_empty()
+                    && t.1
+                        .is_some_and(|at| Instant::now().duration_since(at) <= TYPEAHEAD_RESET)
+            };
+            let key = if key == " " && !prefix_live {
+                "Enter"
+            } else {
+                key
+            };
+            match key {
+                "Enter" => {
                     match current {
                         Some(i) => pick_k(i),
                         None => opened.set(false),
@@ -515,11 +537,15 @@ impl Component for Select {
                 _ => false,
             }
         });
+        // Keys are the list's only while the focus is in this `Select` — the
+        // trigger, in practice — and focus leaving it closes the list, as it
+        // closes a native `<select>`'s popup (review of #1165).
         crate::overlay_dismiss::arm_keys_while_open(
             __scope,
-            &trigger,
+            &container,
             Rc::new(move || opened.get()),
             on_key,
+            Rc::new(move || opened.set(false)),
         );
         crate::overlay_dismiss::arm_close_on_escape_while_open(
             __scope,

@@ -182,6 +182,10 @@ pub mod prelude {
     // should — a lone `set_keyboard_interceptor` is one slot per document, so
     // two overlays registering there silently disable each other.
     pub use rinch_core::{DismissHandle, dispatch_dismiss, push_dismiss_handler};
+    // A popup that owns the keyboard while it is open and focused (issue #434,
+    // the `Select` list): a key entry on the same stack, offered keys only
+    // while focus is inside its owner node.
+    pub use rinch_core::push_key_handler;
     // The platform saying that something the app read at mount is now stale —
     // dark mode, the accent colour, the font scale, the insets. Deliberately
     // *not* behind a `#[cfg]`: the Android shell is the only thing that

@@ -48,10 +48,23 @@
 //! [`push_key_handler`] puts a second kind of entry on the **same** stack: one
 //! offered *every* key press, not only Escape. It is for a popup that owns the
 //! keyboard while it is open — the `Select` component's option list, whose
-//! arrows, Home/End, Enter and type-ahead have no focused element of their own
-//! to arrive at (the trigger keeps the focus, as a combobox does). It is pushed
-//! when the popup opens and released when it closes, so an entry is only ever
-//! on the stack while its popup is on screen.
+//! arrows, Home/End, Enter and type-ahead arrive while the focus stays on the
+//! combobox trigger rather than moving into the list. It is pushed when the
+//! popup opens and released when it closes, so an entry is only ever on the
+//! stack while its popup is on screen.
+//!
+//! **Focus is part of the contract.** An entry names an *owner* node, and is
+//! offered a key only while the document's focused element
+//! ([`NodeHandle::active_element`]) is the owner or inside it. Focus can move
+//! while a popup is open — a "/" shortcut focusing a search box, a script, an
+//! `autofocus` — and the keys typed there belong to that field, not to the
+//! popup. An unknown focus (`None`: nothing focused, a backend that does not
+//! model focus, or, on rinch-web, an element outside the mounted root) is
+//! *not* inside any owner, so a key typed into a page `<input>` around a rinch
+//! island is never touched. And each backend calls [`notify_focus_moved`]
+//! after focus moves, which calls an entry's `on_focus_leave` once focus is
+//! no longer inside its owner — so the popup closes when focus leaves it, as a
+//! native `<select>` does, rather than at the next key.
 //!
 //! One stack rather than two because the two kinds share every rule above —
 //! liveness, the document check, LIFO — and a popup's own Escape is still a
@@ -64,6 +77,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::context::{current_dispatching_doc, doc_identity, doc_matches};
+use crate::dom::NodeHandle;
 use crate::reactive::{Owner, current_owner};
 
 /// A registered dismiss handler: `true` means "I consumed the key".
@@ -73,11 +87,18 @@ type DismissFn = Rc<dyn Fn() -> bool>;
 /// the key".
 type KeyFn = Rc<dyn Fn(&super::KeyEventData) -> bool>;
 
+/// A key entry's focus-leave callback ([`push_key_handler`]).
+type LeaveFn = Rc<dyn Fn()>;
+
 /// What an entry answers: Escape alone, or every key press.
 #[derive(Clone)]
 enum Handler {
     Dismiss(DismissFn),
-    Keys(KeyFn),
+    Keys {
+        owner: NodeHandle,
+        on_key: KeyFn,
+        on_focus_leave: LeaveFn,
+    },
 }
 
 struct Entry {
@@ -144,26 +165,58 @@ pub fn push_dismiss_handler(doc_key: u64, f: impl Fn() -> bool + 'static) -> Dis
     push(doc_key, Handler::Dismiss(Rc::new(f)))
 }
 
-/// Push a **key** handler onto the top of the stack for `doc_key`'s document:
-/// one offered every key *press* (auto-repeat included, releases never) while
-/// it is registered, ahead of the dismiss scan and of the backend's own key
-/// handling. `true` consumes the key — on rinch-web that also
-/// `preventDefault`s it, so a consumed ArrowDown does not scroll the page.
+/// Push a **key** handler onto the top of the stack, for the document `owner`
+/// belongs to: one offered every key *press* (auto-repeat included, releases
+/// never) **while the focused element is `owner` or inside it**, ahead of the
+/// dismiss scan and of the backend's own key handling. `on_key` answers `true`
+/// to consume the key — on rinch-web that also `preventDefault`s it, so a
+/// consumed ArrowDown does not scroll the page.
 ///
 /// This is for a popup that owns the keyboard **while it is open** (issue
-/// #434, the `Select` option list), and the policy that makes it safe is the
-/// caller's: push it when the popup opens and drop the handle when it closes
-/// (and on unmount). An entry left registered while its popup is closed would
-/// swallow the page's keys. It does *not* see Escape first in any sense that
-/// matters — it is offered Escape, and a popup whose Escape is a dismiss entry
+/// #434, the `Select` option list, whose focus stays on its trigger). Push it
+/// when the popup opens and drop the handle when it closes (and on unmount); an
+/// entry is never offered a key while focus is outside `owner`, so a key typed
+/// into another field goes to that field.
+///
+/// `on_focus_leave` is called when focus moves and is no longer inside
+/// `owner` — see [`notify_focus_moved`]. A popup that should close when focus
+/// leaves it (a listbox) closes there; pass `|| {}` for one that should not.
+///
+/// It is offered Escape like any key; a popup whose Escape is a dismiss entry
 /// should decline it and let the dismiss scan run.
 ///
-/// Document, owner and liveness rules are exactly [`push_dismiss_handler`]'s.
+/// Document, owner-scope and liveness rules are exactly
+/// [`push_dismiss_handler`]'s; the document is `owner`'s.
 pub fn push_key_handler(
-    doc_key: u64,
-    f: impl Fn(&super::KeyEventData) -> bool + 'static,
+    owner: &NodeHandle,
+    on_key: impl Fn(&super::KeyEventData) -> bool + 'static,
+    on_focus_leave: impl Fn() + 'static,
 ) -> DismissHandle {
-    push(doc_key, Handler::Keys(Rc::new(f)))
+    push(
+        owner.doc_key(),
+        Handler::Keys {
+            owner: owner.clone(),
+            on_key: Rc::new(on_key),
+            on_focus_leave: Rc::new(on_focus_leave),
+        },
+    )
+}
+
+/// Whether the focused element of `owner`'s document is `owner` or inside it.
+/// An unknown focus (`None`) is inside nothing.
+fn focus_within(owner: &NodeHandle) -> bool {
+    let Some(mut node) = owner.active_element() else {
+        return false;
+    };
+    loop {
+        if node.node_id() == owner.node_id() {
+            return true;
+        }
+        match node.parent_node() {
+            Some(parent) => node = parent,
+            None => return false,
+        }
+    }
 }
 
 fn push(doc_key: u64, handler: Handler) -> DismissHandle {
@@ -209,25 +262,52 @@ fn push(doc_key: u64, handler: Handler) -> DismissHandle {
 /// the scan — but a handler that does real work on its `false` path should know
 /// the snapshot is not revalidated.
 pub fn dispatch_dismiss() -> bool {
-    scan(false, |handler| match handler {
+    scan(false, None, |handler| match handler {
         Handler::Dismiss(f) => f(),
-        Handler::Keys(_) => false,
+        Handler::Keys { .. } => false,
     })
 }
 
 /// Offer a key press to the key handlers ([`push_key_handler`]), topmost first.
-/// Returns whether one consumed it. Dismiss entries are passed over.
+/// Returns whether one consumed it. Dismiss entries, and key entries whose
+/// owner does not hold the focus, are passed over.
 pub(crate) fn dispatch_key_handlers(key: &super::KeyEventData) -> bool {
-    scan(true, |handler| match handler {
-        Handler::Keys(f) => f(key),
+    scan(true, None, |handler| match handler {
+        Handler::Keys { owner, on_key, .. } => focus_within(owner) && on_key(key),
         Handler::Dismiss(_) => false,
     })
 }
 
+/// Tell the key handlers ([`push_key_handler`]) that focus has moved in the
+/// document `doc_key` names: every live key entry of that document whose owner
+/// no longer holds the focus has its `on_focus_leave` called.
+///
+/// Called by each backend after a focus transition has completed — the
+/// desktop runtime after the focus arbiter's transition (with its blur work),
+/// rinch-web from its document `focusin`/`focusout` listeners — so that a popup
+/// closes when focus leaves it rather than at the next key. Every entry is
+/// visited (it is not a consume-and-stop scan), with no borrow of the stack
+/// held, since a callback typically closes its popup and so releases its entry.
+pub fn notify_focus_moved(doc_key: u64) {
+    scan(true, Some(doc_identity(doc_key)), |handler| {
+        if let Handler::Keys {
+            owner,
+            on_focus_leave,
+            ..
+        } = handler
+            && !focus_within(owner)
+        {
+            on_focus_leave();
+        }
+        false
+    });
+}
+
 /// The scan both dispatches share: topmost first, dead owners pruned, other
-/// documents skipped, and only entries of one kind (`keys`) asked.
-fn scan(keys: bool, ask: impl Fn(&Handler) -> bool) -> bool {
-    let caller = current_dispatching_doc();
+/// documents skipped, and only entries of one kind (`keys`) asked. `doc`
+/// overrides the dispatching document the entries are matched against.
+fn scan(keys: bool, doc: Option<Option<u64>>, ask: impl Fn(&Handler) -> bool) -> bool {
+    let caller = doc.unwrap_or_else(current_dispatching_doc);
 
     // Snapshot topmost-first. Cloning the `Rc`s is what lets user code run
     // outside the borrow; the ids let us prune afterwards even though the stack
@@ -252,7 +332,7 @@ fn scan(keys: bool, ask: impl Fn(&Handler) -> bool) -> bool {
             continue;
         }
         // An entry of the other kind is not asked.
-        if matches!(handler, Handler::Keys(_)) != keys {
+        if matches!(handler, Handler::Keys { .. }) != keys {
             continue;
         }
         // A transaction for the handler (`crate::reactive::batch`). From the
@@ -597,10 +677,48 @@ mod tests {
 
     // ------------------------------------------------ key handlers (#434)
 
+    use crate::dom::mock::MockDomDocument;
+    use crate::dom::{DomDocument, NodeHandle};
     use crate::events::{KeyEventData, KeyEventKind, dispatch_keyboard_event};
 
     fn press(key: &str) -> KeyEventData {
         KeyEventData::new(key, key)
+    }
+
+    /// A mock document holding `body > owner > inner` and `body > other`, with
+    /// `inner` focused — the shape of a combobox (owner = the component root,
+    /// inner = its trigger) beside another field.
+    struct Doc {
+        _doc: Rc<RefCell<MockDomDocument>>,
+        owner: NodeHandle,
+        inner: NodeHandle,
+        other: NodeHandle,
+    }
+
+    fn doc() -> Doc {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let dyn_doc: Rc<RefCell<dyn DomDocument>> = doc.clone();
+        let weak = Rc::downgrade(&dyn_doc);
+        let (owner, inner, other) = {
+            let mut d = doc.borrow_mut();
+            let body = d.body();
+            let owner = d.create_element("div");
+            let inner = d.create_element("div");
+            let other = d.create_element("input");
+            d.append_child(body, owner);
+            d.append_child(owner, inner);
+            d.append_child(body, other);
+            (owner, inner, other)
+        };
+        let h = |id| NodeHandle::new(id, weak.clone());
+        let doc_out = Doc {
+            owner: h(owner),
+            inner: h(inner),
+            other: h(other),
+            _doc: doc,
+        };
+        doc_out.inner.focus();
+        doc_out
     }
 
     /// A key handler hears presses — any key, not just Escape — and never a
@@ -608,14 +726,19 @@ mod tests {
     #[test]
     fn a_key_handler_is_offered_every_press_and_no_release() {
         clear_stack();
+        let d = doc();
         let seen = Rc::new(RefCell::new(Vec::<String>::new()));
         let s = seen.clone();
         let (dismiss_hits, dismiss) = recorder(true);
         let _d = push_dismiss_handler(0, dismiss);
-        let _k = push_key_handler(0, move |k| {
-            s.borrow_mut().push(k.key.clone());
-            k.key == "ArrowDown"
-        });
+        let _k = push_key_handler(
+            &d.owner,
+            move |k| {
+                s.borrow_mut().push(k.key.clone());
+                k.key == "ArrowDown"
+            },
+            || {},
+        );
 
         assert!(dispatch_keyboard_event(&press("ArrowDown")));
         assert!(
@@ -638,13 +761,18 @@ mod tests {
     #[test]
     fn key_handlers_are_topmost_first_and_released_on_drop() {
         clear_stack();
+        let d = doc();
         let below = Rc::new(StdCell::new(0u32));
         let b = below.clone();
-        let _below = push_key_handler(0, move |_| {
-            b.set(b.get() + 1);
-            true
-        });
-        let above = push_key_handler(0, |_| true);
+        let _below = push_key_handler(
+            &d.owner,
+            move |_| {
+                b.set(b.get() + 1);
+                true
+            },
+            || {},
+        );
+        let above = push_key_handler(&d.owner, |_| true, || {});
         assert!(dispatch_keyboard_event(&press("ArrowUp")));
         assert_eq!(below.get(), 0, "the topmost consumed first");
         drop(above);
@@ -656,18 +784,77 @@ mod tests {
     #[test]
     fn a_dead_owners_key_handler_is_not_run() {
         clear_stack();
+        let d = doc();
         let ran = Rc::new(StdCell::new(false));
         let r = ran.clone();
         let scope = Scope::new();
         let handle = scope.run(|| {
-            push_key_handler(0, move |_| {
-                r.set(true);
-                true
-            })
+            push_key_handler(
+                &d.owner,
+                move |_| {
+                    r.set(true);
+                    true
+                },
+                || {},
+            )
         });
         scope.dispose();
         assert!(!dispatch_keyboard_event(&press("ArrowDown")));
         assert!(!ran.get());
         drop(handle);
+    }
+
+    /// The review of PR #1165: an open popup took every key in the document.
+    /// A key entry is offered keys only while the focus is inside its owner —
+    /// the owner itself or a descendant — and never while focus is elsewhere
+    /// or unknown.
+    #[test]
+    fn a_key_handler_is_offered_keys_only_while_focus_is_inside_its_owner() {
+        clear_stack();
+        let d = doc();
+        let hits = Rc::new(StdCell::new(0u32));
+        let h = hits.clone();
+        let _k = push_key_handler(
+            &d.owner,
+            move |_| {
+                h.set(h.get() + 1);
+                true
+            },
+            || {},
+        );
+
+        assert!(
+            dispatch_keyboard_event(&press("a")),
+            "focus on a descendant"
+        );
+        d.owner.focus();
+        assert!(dispatch_keyboard_event(&press("a")), "focus on the owner");
+        assert_eq!(hits.get(), 2);
+
+        d.other.focus();
+        assert!(
+            !dispatch_keyboard_event(&press("a")),
+            "focus on another field: its key is not the popup's"
+        );
+        assert_eq!(hits.get(), 2, "and the handler is not even asked");
+    }
+
+    /// `notify_focus_moved` calls `on_focus_leave` for an entry whose owner no
+    /// longer holds the focus, and not for one whose owner still does.
+    #[test]
+    fn notify_focus_moved_calls_on_focus_leave_only_when_focus_left() {
+        clear_stack();
+        let d = doc();
+        let left = Rc::new(StdCell::new(0u32));
+        let l = left.clone();
+        let _k = push_key_handler(&d.owner, |_| true, move || l.set(l.get() + 1));
+
+        d.owner.focus();
+        notify_focus_moved(d.owner.doc_key());
+        assert_eq!(left.get(), 0, "focus moved within the owner");
+
+        d.other.focus();
+        notify_focus_moved(d.owner.doc_key());
+        assert_eq!(left.get(), 1, "focus left the owner");
     }
 }

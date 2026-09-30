@@ -49,6 +49,10 @@ pub(crate) struct PendingFocusWork {
     /// A blurred registered focus target's `on_focus_lost`, as its
     /// `(doc_key, node id)` (issue #147).
     focus_lost: Option<(u64, usize)>,
+    /// The document whose focus moved, for the key-handler entries' focus
+    /// check (`rinch_core::notify_focus_moved`, issue #434). Set on every
+    /// transition.
+    focus_moved: Option<u64>,
 }
 
 impl RinchApp {
@@ -114,6 +118,12 @@ impl RinchApp {
         }
         if let Some((doc_key, node_id)) = work.focus_lost {
             crate::focus_registry::notify_focus_lost(doc_key, node_id);
+        }
+        // Last: a popup that owns the keyboard closes once focus has left it
+        // (issue #434). Callers fire this work after installing the new owner,
+        // so the document's focused node is the new one by now.
+        if let Some(doc_key) = work.focus_moved {
+            rinch_core::notify_focus_moved(doc_key);
         }
         committed
     }
@@ -185,6 +195,7 @@ impl RinchApp {
         let mut pending = PendingFocusWork {
             input_commit: None,
             focus_lost: None,
+            focus_moved: Some(self.doc_key()),
         };
         match self.focus_target {
             FocusTarget::None => {}
@@ -313,7 +324,9 @@ impl RinchApp {
         self.focus_target = target;
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
         self.scene_dirty = true;
-        let has_work = pending.input_commit.is_some() || pending.focus_lost.is_some();
+        let has_work = pending.input_commit.is_some()
+            || pending.focus_lost.is_some()
+            || pending.focus_moved.is_some();
         (true, has_work.then_some(pending))
     }
 
