@@ -838,7 +838,7 @@ fn empty_cell(s: &Schema) -> Node {
 /// at doc position 0 and `cell_pos` is the position before the cell.
 fn split_per_slot(st: &EditorState, cell_pos: usize) -> Option<EditorState> {
     let t = st.doc.child(0);
-    let map = TableMap::compute(&t, 1);
+    let map = TableMap::compute(t, 1);
     let cell = t.node_at(cell_pos - 1)?;
     if span(&cell, "colspan").max(1) == 1 && span(&cell, "rowspan").max(1) == 1 {
         return None;
@@ -942,7 +942,7 @@ fn split_cell_takes_one_step_per_row() {
     st.selection = caret_in(&t, 0, 1);
     let (steps, next) = steps_of(&st, commands::table_ops::split_cell()).expect("splits");
     assert_eq!(steps, 2 + 5);
-    assert_eq!(cell_count(&next.doc.child(0)), vec![9, 9, 9, 9, 9]);
+    assert_eq!(cell_count(next.doc.child(0)), vec![9, 9, 9, 9, 9]);
     let undone = next.run("undo").expect("undo");
     assert!(undone.doc == st.doc);
 }
@@ -956,7 +956,7 @@ fn a_one_column_split_inserts_nothing_in_its_top_row() {
     st.selection = caret_in(&t, 0, 1);
     let (steps, next) = steps_of(&st, commands::table_ops::split_cell()).expect("splits");
     assert_eq!(steps, 2 + 2);
-    assert_eq!(cell_count(&next.doc.child(0)), vec![3, 3, 3]);
+    assert_eq!(cell_count(next.doc.child(0)), vec![3, 3, 3]);
 }
 
 /// The issue's pin: a 1000 × 1000 merged cell (a pasted `<td colspan=1000
@@ -970,10 +970,10 @@ fn a_1000_by_1000_split_is_one_step_per_row() {
     st.selection = caret_in(&t, 0, 1);
     let (steps, next) = steps_of(&st, commands::table_ops::split_cell()).expect("splits");
     assert_eq!(steps, 2 + 1000);
-    let counts = cell_count(&next.doc.child(0));
+    let counts = cell_count(next.doc.child(0));
     assert_eq!(counts.len(), 1000);
     assert!(counts.iter().all(|&n| n == 1002), "{:?}", &counts[..3]);
-    let map = TableMap::compute(&next.doc.child(0), 1);
+    let map = TableMap::compute(next.doc.child(0), 1);
     assert_eq!((map.width(), map.height()), (1002, 1000));
     let undone = next.run("undo").expect("undo");
     assert!(undone.doc == st.doc);
@@ -998,7 +998,7 @@ fn add_row_and_add_column_take_one_step_per_row() {
     let (steps, next) = steps_of(&below, commands::table_ops::add_row_after()).expect("adds");
     assert_eq!(steps, 2);
     assert_eq!(next.doc.child(0).child(2).child_count(), 2);
-    assert_eq!(span(&next.doc.child(0).child(0).child(1), "rowspan"), 41);
+    assert_eq!(span(next.doc.child(0).child(0).child(1), "rowspan"), 41);
     // Left of the merged cell: one insert per row of the 40.
     let (steps, _) = steps_of(&st, commands::table_ops::add_column_before()).expect("adds");
     assert_eq!(steps, 40);
