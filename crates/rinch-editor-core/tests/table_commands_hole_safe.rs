@@ -1,0 +1,478 @@
+//! #1184: the table commands on a ragged table, on a table whose spans the
+//! grid cut (#1176), and on spans the document states as `i64::MAX`.
+//!
+//! A grid slot no cell covers (a hole) is no cell: a command reading one used
+//! to hand `usize::MAX` to `Node::node_at` (a `debug_assert` in
+//! `Fragment::find_index`), and a span was widened with `+ 1` on the raw
+//! attribute (overflow at `i64::MAX`). Such tables reach the model through
+//! `load_doc` or an app's own transaction; the HTML import clamps spans.
+//!
+//! Every map here is small: the largest is an `i64::MAX` span, whose grid is
+//! capped at `GRID_SLOT_FLOOR` (2^22 slots, 32 MB).
+
+use rinch_editor_core::schema::validation::validate_content;
+use rinch_editor_core::tables::{TableMap, is_cell, is_table};
+use rinch_editor_core::*;
+use std::rc::Rc;
+
+const CMDS: &[&str] = &[
+    "addRowBefore",
+    "addRowAfter",
+    "addColumnBefore",
+    "addColumnAfter",
+    "deleteRow",
+    "deleteColumn",
+    "mergeCells",
+    "splitCell",
+    "deleteTable",
+    "deleteCellSelection",
+];
+
+fn cell(s: &Schema, colspan: i64, rowspan: i64, text: &str) -> Node {
+    let p = s
+        .branch("paragraph", Fragment::from_node(s.text(text).unwrap()))
+        .unwrap();
+    s.create_node(
+        "table_cell",
+        Attrs::from_iter([
+            ("colspan", AttrValue::Int(colspan)),
+            ("rowspan", AttrValue::Int(rowspan)),
+        ]),
+        Fragment::from_node(p),
+    )
+    .unwrap()
+}
+
+/// A table from rows of `(colspan, rowspan)`.
+fn table(s: &Schema, rows: &[Vec<(i64, i64)>]) -> Node {
+    let mut n = 0;
+    let rows = rows
+        .iter()
+        .map(|r| {
+            let cells = r
+                .iter()
+                .map(|&(c, h)| {
+                    n += 1;
+                    cell(s, c, h, &format!("c{n}"))
+                })
+                .collect();
+            s.create_node("table_row", Attrs::new(), Fragment::from_children(cells))
+                .unwrap()
+        })
+        .collect();
+    s.create_node("table", Attrs::new(), Fragment::from_children(rows))
+        .unwrap()
+}
+
+/// The table at doc position 0, then an empty paragraph.
+fn state_with(t: Node) -> EditorState {
+    let s = Schema::starter_kit();
+    let tail = s
+        .create_node("paragraph", Attrs::new(), Fragment::empty())
+        .unwrap();
+    let doc = s
+        .branch("doc", Fragment::from_children(vec![t, tail]))
+        .unwrap();
+    EditorState::create(Rc::new(s), doc, default_plugins())
+}
+
+/// The position before row `r`'s cell `i` (the table is at doc position 0).
+fn cell_pos(t: &Node, r: usize, i: usize) -> usize {
+    let mut pos = 1;
+    for j in 0..r {
+        pos += t.child(j).node_size();
+    }
+    pos += 1;
+    let row = t.child(r);
+    for k in 0..i {
+        pos += row.child(k).node_size();
+    }
+    pos
+}
+
+/// A caret inside row `r`'s cell `i`.
+fn caret_in(t: &Node, r: usize, i: usize) -> Selection {
+    Selection::cursor(Pos(cell_pos(t, r, i) + 2))
+}
+
+/// Every node's children match its content expression.
+fn assert_schema_valid(schema: &Schema, node: &Node, what: &str) {
+    if node.is_text() {
+        return;
+    }
+    let children: Vec<Node> = node.content().children().to_vec();
+    let types: Vec<&str> = children.iter().map(|c| c.type_name()).collect();
+    if let Err(e) = validate_content(schema, node.type_name(), &types) {
+        panic!("{what}: {e}");
+    }
+    for c in &children {
+        assert_schema_valid(schema, c, what);
+    }
+}
+
+/// Every table cell's spans in `node`.
+fn spans(node: &Node, out: &mut Vec<i64>) {
+    if is_cell(node) {
+        for name in ["colspan", "rowspan"] {
+            out.push(node.attrs().get_int(name).unwrap_or(1));
+        }
+    }
+    for c in node.content().children() {
+        spans(c, out);
+    }
+}
+
+fn span(cell: &Node, name: &str) -> i64 {
+    cell.attrs().get_int(name).unwrap_or(1)
+}
+
+fn cell_count(t: &Node) -> Vec<usize> {
+    (0..t.child_count())
+        .map(|r| t.child(r).child_count())
+        .collect()
+}
+
+// ------------------------------------------------------------------
+// The issue's three shapes, and the other sites that read a hole.
+// ------------------------------------------------------------------
+
+/// A 3/2/3-cell table: row 1's slot at column 2 is a hole.
+fn ragged() -> Node {
+    table(
+        &Schema::starter_kit(),
+        &[
+            vec![(1, 1), (1, 1), (1, 1)],
+            vec![(1, 1), (1, 1)],
+            vec![(1, 1), (1, 1), (1, 1)],
+        ],
+    )
+}
+
+#[test]
+fn delete_row_in_the_short_row_of_a_ragged_table_removes_that_row() {
+    let t = ragged();
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 1, 0);
+    let next = st.run("deleteRow").expect("deleteRow applies");
+    let nt = next.doc.child(0).clone();
+    assert_eq!(cell_count(&nt), vec![3, 3]);
+    assert_eq!(nt.child(1).child(0).child(0).child(0).text(), Some("c6"));
+}
+
+#[test]
+fn delete_row_across_a_hole_in_a_cell_selection() {
+    // Rows 0..2 selected through column 2: the rect covers row 1's hole.
+    let t = ragged();
+    let mut st = state_with(t.clone());
+    st.selection = Selection::cell(Pos(cell_pos(&t, 0, 2)), Pos(cell_pos(&t, 1, 0)));
+    let next = st.run("deleteRow").expect("deleteRow applies");
+    assert_eq!(cell_count(&next.doc.child(0)), vec![3]);
+}
+
+#[test]
+fn delete_column_through_a_hole_skips_the_short_row() {
+    // Column 2 from row 0: row 1 has no cell there, and keeps both of its own.
+    let t = ragged();
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 0, 2);
+    let next = st.run("deleteColumn").expect("deleteColumn applies");
+    assert_eq!(cell_count(&next.doc.child(0)), vec![2, 2, 2]);
+}
+
+#[test]
+fn add_column_before_a_hole_gives_the_short_row_a_cell() {
+    // Column 2 from row 0: row 1's hole at column 2 is no spanning cell, so
+    // the row gets a new cell at its end.
+    let t = ragged();
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 0, 2);
+    let next = st.run("addColumnBefore").expect("addColumnBefore applies");
+    assert_eq!(cell_count(&next.doc.child(0)), vec![4, 3, 4]);
+}
+
+#[test]
+fn add_row_under_a_hole_is_full_width() {
+    // Below row 1 (the short one): the new row has a cell in every column,
+    // the hole's column included.
+    let t = ragged();
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 2, 0);
+    let next = st.run("addRowBefore").expect("addRowBefore applies");
+    assert_eq!(cell_count(&next.doc.child(0)), vec![3, 2, 3, 3]);
+}
+
+#[test]
+fn add_row_between_two_holes_is_full_width() {
+    // Rows 0 and 1 both end in a hole at column 2 (2/2/3 cells). A new row
+    // between them read the two holes as one cell spanning into it.
+    let s = Schema::starter_kit();
+    let t = table(
+        &s,
+        &[
+            vec![(1, 1), (1, 1)],
+            vec![(1, 1), (1, 1)],
+            vec![(1, 1), (1, 1), (1, 1)],
+        ],
+    );
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 1, 0);
+    let next = st.run("addRowBefore").expect("addRowBefore applies");
+    assert_eq!(cell_count(&next.doc.child(0)), vec![2, 3, 2, 3]);
+}
+
+#[test]
+fn add_column_between_two_holes_gives_the_row_a_cell() {
+    // Row 1 is one cell in a 3-wide grid: its columns 1 and 2 are holes.
+    // A column inserted between them read the two holes as one spanning cell.
+    let s = Schema::starter_kit();
+    let t = table(&s, &[vec![(1, 1), (1, 1), (1, 1)], vec![(1, 1)]]);
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 0, 1);
+    let next = st.run("addColumnAfter").expect("addColumnAfter applies");
+    assert_eq!(cell_count(&next.doc.child(0)), vec![4, 2]);
+}
+
+#[test]
+fn add_column_after_under_an_i64_max_colspan_does_not_overflow() {
+    // Row 0 is one cell of colspan i64::MAX; the grid cuts it (#1176). A
+    // column inserted after row 1's first cell widens it by one column of
+    // the grid it covers, not by one past i64::MAX.
+    let s = Schema::starter_kit();
+    let t = table(&s, &[vec![(i64::MAX, 1)], vec![(1, 1), (1, 1)]]);
+    let width = TableMap::compute(&t, 1).width();
+    assert!(
+        width > 2 && width < 1 << 22,
+        "the grid cut the span: {width}"
+    );
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 1, 0);
+    let next = st.run("addColumnAfter").expect("addColumnAfter applies");
+    let nt = next.doc.child(0).clone();
+    assert_eq!(cell_count(&nt), vec![1, 3]);
+    let wide = span(&nt.child(0).child(0), "colspan");
+    assert_eq!(wide, width as i64 + 1, "the grid's span, widened by one");
+}
+
+#[test]
+fn add_row_before_under_an_i64_max_rowspan_does_not_overflow() {
+    let s = Schema::starter_kit();
+    let t = table(&s, &[vec![(1, i64::MAX), (1, 1)], vec![(1, 1)]]);
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 1, 0);
+    let next = st.run("addRowBefore").expect("addRowBefore applies");
+    let nt = next.doc.child(0).clone();
+    assert_eq!(cell_count(&nt), vec![2, 1, 1]);
+    // The span covered both rows of the grid; it now covers all three.
+    assert_eq!(span(&nt.child(0).child(0), "rowspan"), 3);
+}
+
+#[test]
+fn every_command_in_every_cell_of_the_issues_tables_is_safe() {
+    let s = Schema::starter_kit();
+    let tables = [
+        ragged(),
+        table(&s, &[vec![(i64::MAX, 1)], vec![(1, 1), (1, 1)]]),
+        table(&s, &[vec![(1, i64::MAX), (1, 1)], vec![(1, 1)]]),
+        table(&s, &[vec![(3, 1)], vec![(1, 1)]]),
+        table(&s, &[vec![(1, 5), (1, 1)], vec![(1, 1)], vec![]]),
+    ];
+    for t in tables {
+        for r in 0..t.child_count() {
+            for i in 0..t.child(r).child_count() {
+                for c in CMDS {
+                    // #1185: splitCell steps once per slot of a 2^22-slot span.
+                    if *c == "splitCell" && span(&t.child(r).child(i), "colspan") > 1000 {
+                        continue;
+                    }
+                    let mut st = state_with(t.clone());
+                    st.selection = caret_in(&t, r, i);
+                    check_command(&st, c, &format!("{c} in row {r} cell {i} of {t:?}"));
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// Property: random tables × every command.
+// ------------------------------------------------------------------
+
+/// xorshift64*: deterministic, no dependency.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// Runs `c` on `st` and checks the result: `can_run` agrees with `run`, the
+/// document is schema-valid, no span went below what the input held (no
+/// wraparound), and every table in it maps. Returns the new state, if any.
+fn check_command(st: &EditorState, c: &str, what: &str) -> Option<EditorState> {
+    let can = st.can_run(c);
+    let next = st.run(c);
+    assert_eq!(can, next.is_some(), "{what}: can_run disagrees with run");
+    let next = next?;
+    assert_schema_valid(next.schema(), &next.doc, what);
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    spans(&st.doc, &mut before);
+    spans(&next.doc, &mut after);
+    let floor = before.iter().copied().min().unwrap_or(1).min(1);
+    assert!(
+        after.iter().all(|&v| v >= floor),
+        "{what}: a span below {floor}: {after:?}"
+    );
+    for (i, n) in next.doc.content().children().iter().enumerate() {
+        if is_table(n) {
+            let _ = TableMap::compute(n, 1 + i);
+        }
+    }
+    Some(next)
+}
+
+/// A random selection in `t` (at doc position 0): a caret in a cell, or a
+/// cell selection between two cells of the grid.
+fn random_selection(rng: &mut Rng, t: &Node) -> Option<Selection> {
+    let cells: Vec<(usize, usize)> = (0..t.child_count())
+        .flat_map(|r| (0..t.child(r).child_count()).map(move |i| (r, i)))
+        .collect();
+    if cells.is_empty() {
+        return None;
+    }
+    let (r, i) = cells[rng.below(cells.len())];
+    if rng.below(2) == 0 {
+        return Some(caret_in(t, r, i));
+    }
+    let (r2, i2) = cells[rng.below(cells.len())];
+    Some(Selection::cell(
+        Pos(cell_pos(t, r, i)),
+        Pos(cell_pos(t, r2, i2)),
+    ))
+}
+
+/// Ragged rows of random spans, holes and overlaps included.
+#[test]
+fn random_ragged_tables_x_every_command_are_safe() {
+    let s = Schema::starter_kit();
+    let mut rng = Rng(0x1184_1184_dead_beef);
+    const SPANS: &[i64] = &[1, 1, 1, 1, 2, 3, 0, -1, 40];
+    let mut applied = 0;
+    for case in 0..600 {
+        let h = 1 + rng.below(5);
+        let rows: Vec<Vec<(i64, i64)>> = (0..h)
+            .map(|_| {
+                let n = rng.below(5);
+                (0..n)
+                    .map(|_| (SPANS[rng.below(SPANS.len())], SPANS[rng.below(SPANS.len())]))
+                    .collect()
+            })
+            .collect();
+        let t = table(&s, &rows);
+        let Some(sel) = random_selection(&mut rng, &t) else {
+            continue;
+        };
+        let mut st = state_with(t);
+        st.selection = sel;
+        for c in CMDS {
+            let what = format!("case {case}: {c} at {:?} in {rows:?}", st.selection);
+            if check_command(&st, c, &what).is_some() {
+                applied += 1;
+            }
+        }
+    }
+    // The positive control: the property saw commands apply, not only refuse.
+    assert!(applied > 1500, "only {applied} commands applied");
+}
+
+/// A random well-formed table: a `w × h` grid tiled with rectangles.
+fn random_tiled(rng: &mut Rng, s: &Schema) -> (Node, usize, usize) {
+    let w = 1 + rng.below(5);
+    let h = 1 + rng.below(5);
+    let mut owner = vec![false; w * h];
+    let mut rows: Vec<Vec<(i64, i64)>> = vec![Vec::new(); h];
+    for r in 0..h {
+        for c in 0..w {
+            if owner[r * w + c] {
+                continue;
+            }
+            let mut cs = 1 + rng.below(3);
+            let mut rs = 1 + rng.below(3);
+            cs = cs.min(w - c);
+            rs = rs.min(h - r);
+            // Shrink to the free run to the right.
+            let mut free = 0;
+            while c + free < w && !owner[r * w + c + free] && free < cs {
+                free += 1;
+            }
+            cs = free;
+            for rr in r..r + rs {
+                for cc in c..c + cs {
+                    owner[rr * w + cc] = true;
+                }
+            }
+            rows[r].push((cs as i64, rs as i64));
+        }
+    }
+    (table(s, &rows), w, h)
+}
+
+/// Whether `t` is a well-formed grid: every slot covered, no two cells
+/// overlapping, every span exactly the grid it covers.
+fn well_formed(t: &Node) -> Result<(), String> {
+    let map = TableMap::compute(t, 1);
+    if map.map().contains(&usize::MAX) {
+        return Err("a hole".into());
+    }
+    let mut area = 0;
+    for r in 0..t.child_count() {
+        for i in 0..t.child(r).child_count() {
+            let pos = cell_pos(t, r, i);
+            let rect = map
+                .find_cell(pos)
+                .ok_or_else(|| format!("row {r} cell {i} is off the grid"))?;
+            let c = t.child(r).child(i);
+            let (cs, rs) = (span(&c, "colspan"), span(&c, "rowspan"));
+            if cs != (rect.right - rect.left) as i64 || rs != (rect.bottom - rect.top) as i64 {
+                return Err(format!("row {r} cell {i}: {cs}x{rs} covers {rect:?}"));
+            }
+            area += (cs * rs) as usize;
+        }
+    }
+    if area != map.map().len() {
+        return Err(format!("cells cover {area} of {} slots", map.map().len()));
+    }
+    Ok(())
+}
+
+/// A well-formed table stays well-formed under every command, and the
+/// commands that always make sense on one apply.
+#[test]
+fn random_well_formed_tables_stay_well_formed_under_every_command() {
+    let s = Schema::starter_kit();
+    let mut rng = Rng(0x0929_1184_c0ff_ee00);
+    for case in 0..400 {
+        let (t, _, _) = random_tiled(&mut rng, &s);
+        well_formed(&t).unwrap_or_else(|e| panic!("case {case}: the generator: {e}"));
+        let sel = random_selection(&mut rng, &t).expect("a cell");
+        let mut st = state_with(t);
+        st.selection = sel;
+        for c in CMDS {
+            let what = format!("case {case}: {c} at {:?} in {:?}", st.selection, st.doc);
+            let next = check_command(&st, c, &what);
+            if c.starts_with("add") {
+                assert!(next.is_some(), "{what}: refused");
+            }
+            if let Some(next) = next {
+                if let Some(nt) = next.doc.content().children().iter().find(|n| is_table(n)) {
+                    well_formed(nt).unwrap_or_else(|e| panic!("{what}: {e}"));
+                }
+            }
+        }
+    }
+}
