@@ -357,3 +357,28 @@ fn flat_offsets_are_offsets_into_the_collapsed_text() {
     // A DOM offset inside a removed run maps to where the run was.
     assert_eq!(dom_cursor_to_ifc_offset(&il.text_ranges, third, 1), Some(4));
 }
+
+/// A space removed at a `<br>` is found only when the walk reaches the
+/// `<br>`, after the offsets of everything before it were recorded; the
+/// offsets after it must still land on the text they name.
+#[test]
+fn offsets_after_a_space_removed_at_a_br_are_not_late() {
+    let (d, c) = lay_out(
+        "",
+        "<span style=\"background:red\">a </span><br><span style=\"background:blue\">b</span> c<br>",
+    );
+    let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+    assert_eq!(il.text_content, "a\nb c\n");
+    let bgs: Vec<&str> = il
+        .background_spans
+        .iter()
+        .map(|b| &il.text_content[b.start..b.end])
+        .collect();
+    assert_eq!(bgs, ["a", "b"]);
+    let got: Vec<&str> = il
+        .text_ranges
+        .iter()
+        .map(|r| &il.text_content[r.flat_start..r.flat_end])
+        .collect();
+    assert_eq!(got, ["a", "\n", "b", " c", "\n"]);
+}
