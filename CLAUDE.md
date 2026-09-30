@@ -3536,6 +3536,29 @@ glyph or a tap lands on the wrong character. The repair fills `monospace`,
 empty; `ui-rounded` and `fangsong` are deliberately left alone (Android has no
 face for either).
 
+**A font stack that resolves to nothing ends in the primary `sans-serif` face**
+(`rinch_dom::fonts::parley_font_family`, #1198). parley queries a cluster with
+the Unicode `Emoji` property — the ASCII digits, `#` and `*` have it, as keycap
+bases — against the stack and then the `emoji` generic, *ahead of* the script
+fallback. So in a stack whose every family is missing (`font-family:
+Helvetica` on Linux, which fontique cannot alias to Nimbus Sans as Chrome's
+fontconfig does, or any typo), digits were drawn from Noto Color Emoji at
+1.245em while the letters took the script fallback. **Every** parley layout
+rinch builds takes its family from `parley_font_family` (twelve sites across
+`rinch-dom` and `rinch`; `missing_family_fallback_tests::no_source_builds_a_parley_font_family_by_hand`
+fails on a new site that builds a `FontFamily::Source` itself): an empty stack is
+`sans-serif`, and a stack that resolves to no family *in that font context* gets
+the slot's first family appended **by name** — the face, not the generic,
+because the generic expands to the platform's whole list, whose text faces
+(DejaVu Sans, FreeSans) cover emoji and would win them ahead of the `emoji`
+generic. A stack that resolves to anything is untouched, emoji included, and a
+context with no `sans-serif` face (wasm/embed before any font is registered)
+appends nothing. **Accepted consequence:** on a host whose primary sans is
+DejaVu Sans, an emoji in a missing-only stack is DejaVu's monochrome glyph —
+what every `sans-serif` stack already draws there (#1204 tracks colour emoji,
+which the theme's default stack also loses on this host). Cached per thread by
+(primary `sans-serif` family id, stack).
+
 **Window chrome inset (not ThemeProvider-generated).** `--rinch-window-top-inset`
 is published at runtime by whatever chrome rinch draws above your content — the
 DOM menu bar (28px, on Linux and in the browser alike: `render_with_menu_bar`

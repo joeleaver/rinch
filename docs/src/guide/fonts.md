@@ -126,6 +126,18 @@ The repair runs at context construction, before any app font can register, so
 an appended claim would sit behind the repair's platform face and silently
 lose — on Android only, which is the platform nobody would test it on.
 
+## A stack that names nothing installed
+
+CSS falls back to the browser's default font when every family in a
+`font-family` list is missing. rinch finishes such a stack with the first face
+of `sans-serif` — so `font-family: Helvetica` on a Linux machine without it
+draws its letters *and digits* in the default sans face. (Chrome resolves
+`Helvetica`, `Times` and `Courier` through fontconfig aliases, and an unknown
+name in its serif default; rinch knows only the families actually installed or
+registered.) A stack that finds any family, or names a generic that has one, is
+used exactly as written — end your stacks in a generic to choose the fallback
+yourself.
+
 ## Platforms with no fonts at all
 
 Wasm has no system font source: an unregistered app renders **zero glyphs**, not

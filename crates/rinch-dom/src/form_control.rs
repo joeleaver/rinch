@@ -455,11 +455,12 @@ fn cached_char_metrics(
 /// The text-control metrics of `style`'s **primary font**: the face its stack
 /// resolves a Latin `x` to, at its weight and style.
 ///
-/// An `x`, not the `0` a control's width is about, because fontique's script
-/// fallback for a lone digit under a family that is not installed can land on
-/// a colour-emoji face (whose `0` is an emoji-width glyph), while text in that
-/// stack falls back to the default face. An `x` is in no emoji face. The `0`
-/// advance is then read from the chosen face itself.
+/// An `x`, not the `0` a control's width is about: parley sends a digit (it
+/// has the Unicode `Emoji` property) to the `emoji` generic whenever nothing
+/// in the stack covers it, which `fonts::parley_font_family` now prevents for
+/// a stack that resolves to nothing (#1198) but not for one whose only face
+/// lacks digits. An `x` is in no emoji face. The `0` advance is then read from
+/// the chosen face itself.
 pub(crate) fn char_metrics(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,

@@ -1,27 +1,25 @@
-//! A font stack whose every family is missing falls back to `sans-serif` for
-//! every character, digits included (#1198).
+//! A font stack that resolves to no family ends in the primary `sans-serif`
+//! face, so its digits are drawn where its letters are (#1198).
 //!
 //! parley puts a cluster that has the Unicode `Emoji` property through a
 //! different query from the rest of the text: the stack's own families and
 //! then the `emoji` generic, **ahead of** the script fallback. The ASCII
 //! digits, `#` and `*` have that property (they are keycap bases), so in a
 //! stack that names only a family the host does not have — `font-family:
-//! Helvetica` on Linux, or any typo — a digit's query is `[emoji]` and it is
+//! Helvetica` on Linux, or any typo — a digit's query was `[emoji]` and it was
 //! drawn from the colour-emoji face, 1.245em wide, while the letters beside
-//! it reach the script fallback. Measured on this host at 16px:
+//! it reached the script fallback. Measured on this host at 16px:
 //! `0000000000` was 199px under `Helvetica` and 92px under `sans-serif`.
 //!
-//! A stack that ends in a generic is not affected: the generic's face covers
-//! the digit and the emoji face is never asked. So rinch finishes every stack
-//! that names no generic with `sans-serif`, which is the face the letters
-//! already reached; Chrome 153 does the same with its default font, which on
-//! Linux is serif — see `fonts::finish_font_stack` for why rinch keeps
-//! `sans-serif`.
+//! `fonts::parley_font_family` appends the slot's first **face** by name, not
+//! the `sans-serif` generic, whose platform list holds text faces that cover
+//! emoji; see its doc for the accepted consequence on a DejaVu-primary host.
 //!
-//! The fixtures are host-independent: `sans-serif` is set to the bundled
-//! Space Grotesk alone and the `emoji` generic to the bundled Inter alone,
-//! whose digits are a different width, so the pre-fix routing is visible on a host with no
-//! emoji font at all (CI).
+//! The stand-in fixtures are host-independent: `sans-serif` is headed by the
+//! bundled Space Grotesk and the `emoji` generic by the bundled Inter, whose
+//! digits are a different width, so the pre-fix routing is visible on a host
+//! with no emoji font at all (CI). The fixtures built on `block_on_host` use the host's
+//! own fonts and say what they could check.
 
 use parley::fontique::{Blob, FontInfoOverride, GenericFamily};
 use rinch_core::dom::{DomDocument, NodeId};
