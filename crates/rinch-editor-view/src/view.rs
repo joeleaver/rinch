@@ -360,6 +360,11 @@ pub(crate) struct ViewDesc {
     /// decoration, so a per-keystroke pass costs one range test per top-level
     /// block rather than a walk of the whole document.
     has_deco: bool,
+    /// The trailing-break placeholder — a `<br>` after a textblock's last
+    /// child when that child is a hard break or text ending in a newline —
+    /// while shown
+    /// ([`Self::sync_trailing_break`]). Always the element's last child.
+    trailing_break: Option<NodeHandle>,
 }
 
 impl ViewDesc {
@@ -394,7 +399,56 @@ impl ViewDesc {
             decos: Vec::new(),
             segments: Vec::new(),
             has_deco: false,
+            trailing_break: None,
         })
+        .map(|mut desc| {
+            desc.sync_trailing_break(doc);
+            desc
+        })
+    }
+
+    /// Show or drop the **trailing-break placeholder**: a `<br
+    /// data-pm-trailing-break>` after a textblock whose last child is a hard
+    /// break or text ending in a newline, which is ProseMirror's rule for its
+    /// `ProseMirror-trailingBreak`.
+    ///
+    /// A line box after a block's last forced break exists in CSS only when
+    /// something comes after the break: `<p>a<br></p>` and a code block's
+    /// `<pre>a\n</pre>` are one line, in every browser and on rinch-dom
+    /// (#1172). So a paragraph ending in a hard break (Shift+Enter at its end),
+    /// or a code block whose text ends in a newline (a load, a peer's edit),
+    /// would show no line for the caret after the break to sit on. The second
+    /// `<br>` is that something; the line it ends is the empty one.
+    ///
+    /// It is outside the model, after every model position, and outside the
+    /// descriptors (`children` stays 1:1 with the node's): it carries no
+    /// `data-pm-type`, so the web's DOM-point and mirror walks count nothing for
+    /// it, and it is after the textblock's last position, so the caret map
+    /// never reaches its byte — past the model's end, [`ifc_byte_to_char`]
+    /// answers the block's end.
+    fn sync_trailing_break(&mut self, doc: &DocRef) {
+        let last = (!self.is_text && self.node.is_textblock() && self.node.child_count() > 0)
+            .then(|| self.node.child(self.node.child_count() - 1));
+        let wanted = last.is_some_and(|last| match last.text() {
+            Some(text) => text.ends_with('\n'),
+            None => node_dom_tag(last) == "br",
+        });
+        match (wanted, self.trailing_break.is_some()) {
+            (true, false) => {
+                if let Some(br) = create_element(doc, "br") {
+                    br.set_attribute(TRAILING_BREAK_ATTR, "");
+                    self.dom.append_child(&br);
+                    self.trailing_break = Some(br);
+                }
+            }
+            (false, true) => {
+                // Gone for good — `discard`, not `remove` (issue #719).
+                if let Some(br) = self.trailing_break.take() {
+                    br.discard();
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Patch this descriptor in place to project `new`. Returns `false` if the
@@ -444,6 +498,7 @@ impl ViewDesc {
         }
         self.diff_children(new, doc);
         self.node = new.clone();
+        self.sync_trailing_break(doc);
         true
     }
 
@@ -508,8 +563,15 @@ impl ViewDesc {
             let mut built = Vec::with_capacity(new_end - at);
             for i in at..new_end {
                 if let Some(new_desc) = ViewDesc::build(new.child(i), doc) {
-                    match self.children.get(old_end) {
-                        Some(next) => self.dom.insert_before(&new_desc.outer, &next.outer),
+                    // At the end, still before the trailing-break placeholder,
+                    // which stays last until `sync_trailing_break` drops it.
+                    match self
+                        .children
+                        .get(old_end)
+                        .map(|c| &c.outer)
+                        .or(self.trailing_break.as_ref())
+                    {
+                        Some(next) => self.dom.insert_before(&new_desc.outer, next),
                         None => self.dom.append_child(&new_desc.outer),
                     }
                     built.push(new_desc);
@@ -530,6 +592,10 @@ impl ViewDesc {
         self.children.first().map(|c| &c.outer)
     }
 }
+
+/// The attribute marking a textblock's trailing-break placeholder
+/// ([`ViewDesc::sync_trailing_break`], #1172).
+pub(crate) const TRAILING_BREAK_ATTR: &str = "data-pm-trailing-break";
 
 /// The desktop editor view: projects [`EditorState`] onto rinch-dom and keeps the
 /// host in sync as transactions are applied (design §6). Implements the
@@ -659,6 +725,7 @@ impl RinchDomEditorView {
             decos: Vec::new(),
             segments: Vec::new(),
             has_deco: false,
+            trailing_break: None,
         };
         let flat = doc
             .upgrade()
@@ -3849,5 +3916,227 @@ mod tests {
         assert_eq!(back, [0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5]);
         let back_web: Vec<usize> = (0..=6).map(|b| ifc_byte_to_char(&p, b, WEB)).collect();
         assert_eq!(back_web, [0, 1, 2, 3, 3, 4, 5]);
+    }
+
+    // ── The trailing-break placeholder (#1172) ─────────────────────────────
+
+    fn hard_break(s: &Schema) -> Node {
+        s.create_node(
+            "hard_break",
+            rinch_editor_core::Attrs::new(),
+            Fragment::empty(),
+        )
+        .unwrap()
+    }
+
+    fn para_of(s: &Schema, kids: Vec<Node>) -> Node {
+        s.branch("paragraph", Fragment::from_children(kids))
+            .unwrap()
+    }
+
+    /// `(tag, data-pm-type, is the placeholder)` for each child of `id`.
+    fn shape(h: &Harness, id: NodeId) -> Vec<(String, Option<String>, bool)> {
+        children(h, id)
+            .into_iter()
+            .map(|c| {
+                let d = h.doc.borrow();
+                (
+                    d.tag_name(c).unwrap_or_else(|| "#text".into()),
+                    d.get_attribute(c, "data-pm-type"),
+                    d.get_attribute(c, TRAILING_BREAK_ATTR).is_some(),
+                )
+            })
+            .collect()
+    }
+
+    fn placeholders(h: &Harness, id: NodeId) -> usize {
+        shape(h, id).iter().filter(|c| c.2).count()
+    }
+
+    fn is_last_child_placeholder(h: &Harness, id: NodeId) -> bool {
+        shape(h, id).last().is_some_and(|c| c.2)
+    }
+
+    /// A paragraph ending in a hard break gets a second, unmodelled `<br>`
+    /// after it; one with anything after its break does not.
+    #[test]
+    fn a_trailing_hard_break_gets_a_placeholder_after_it() {
+        let h = harness();
+        let s = schema();
+        let st = state(
+            s.clone(),
+            doc_node(
+                &s,
+                vec![
+                    para_of(&s, vec![s.text("ab").unwrap(), hard_break(&s)]),
+                    para_of(
+                        &s,
+                        vec![s.text("ab").unwrap(), hard_break(&s), s.text("cd").unwrap()],
+                    ),
+                    para_of(&s, vec![hard_break(&s)]),
+                ],
+            ),
+        );
+        let _view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let blocks = children(&h, h.container_id);
+        let br = |ph: bool| {
+            (
+                "br".to_string(),
+                (!ph).then(|| "hard_break".to_string()),
+                ph,
+            )
+        };
+        let t = ("#text".to_string(), None, false);
+        assert_eq!(shape(&h, blocks[0]), vec![t.clone(), br(false), br(true)]);
+        assert_eq!(shape(&h, blocks[1]), vec![t.clone(), br(false), t.clone()]);
+        assert_eq!(shape(&h, blocks[2]), vec![br(false), br(true)]);
+    }
+
+    /// Every edit that makes or unmakes a trailing break shows or drops the
+    /// placeholder, which is always the last child; a dropped one is
+    /// discarded (#719), not merely removed.
+    #[test]
+    fn the_placeholder_follows_edits_and_stays_last() {
+        let h = harness();
+        let s = schema();
+        let mut st = state(s.clone(), doc_node(&s, vec![para(&s, "ab")]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let p = children(&h, h.container_id)[0];
+        assert_eq!(placeholders(&h, p), 0, "no break, no placeholder");
+
+        let mut step = |st: &mut EditorState, f: &dyn Fn(&mut rinch_editor_core::Transaction)| {
+            let mut tr = st.tr();
+            f(&mut tr);
+            let next = st.apply(tr);
+            view.update_dom(st, &next);
+            *st = next;
+        };
+
+        // Shift+Enter at the end: a trailing break.
+        step(&mut st, &|tr| {
+            tr.set_selection(Selection::cursor(rinch_editor_core::Pos(3)));
+            tr.replace_selection_with(hard_break(&s)).unwrap();
+        });
+        assert_eq!(placeholders(&h, p), 1);
+        assert!(is_last_child_placeholder(&h, p));
+        let first = *children(&h, p).last().unwrap();
+
+        // Typing before the break keeps it trailing: the same placeholder.
+        step(&mut st, &|tr| {
+            tr.set_selection(Selection::cursor(rinch_editor_core::Pos(3)));
+            tr.insert_text("X").unwrap();
+        });
+        assert_eq!(placeholders(&h, p), 1);
+        assert_eq!(*children(&h, p).last().unwrap(), first, "kept, not rebuilt");
+
+        // A second break at the end: still one placeholder, still last — the
+        // new break goes in before it.
+        step(&mut st, &|tr| {
+            tr.set_selection(Selection::cursor(rinch_editor_core::Pos(5)));
+            tr.replace_selection_with(hard_break(&s)).unwrap();
+        });
+        assert_eq!(placeholders(&h, p), 1);
+        assert!(is_last_child_placeholder(&h, p));
+        assert_eq!(children(&h, p).len(), 4, "abX, br, br, placeholder");
+
+        // Typing after the last break: it is no longer trailing.
+        step(&mut st, &|tr| {
+            tr.set_selection(Selection::cursor(rinch_editor_core::Pos(6)));
+            tr.insert_text("y").unwrap();
+        });
+        assert_eq!(placeholders(&h, p), 0);
+        assert_eq!(
+            tag(&h, NodeId(first.0)),
+            None,
+            "#719: the dropped placeholder is discarded"
+        );
+
+        // Deleting the text after it makes it trailing again.
+        step(&mut st, &|tr| {
+            tr.delete(6, 7).unwrap();
+        });
+        assert_eq!(placeholders(&h, p), 1);
+        assert!(is_last_child_placeholder(&h, p));
+
+        // Deleting the trailing break: the block ends in a break still (the
+        // first one), so one placeholder, last.
+        step(&mut st, &|tr| {
+            tr.delete(5, 6).unwrap();
+        });
+        assert_eq!(placeholders(&h, p), 1);
+        assert!(is_last_child_placeholder(&h, p));
+        // And the last break: none.
+        step(&mut st, &|tr| {
+            tr.delete(4, 5).unwrap();
+        });
+        assert_eq!(placeholders(&h, p), 0);
+        assert_eq!(text(&h, p).as_deref(), Some("abX"));
+    }
+
+    /// A marked hard break is wrapped in its mark; the placeholder is the
+    /// block's own child, after the wrapper.
+    #[test]
+    fn a_marked_trailing_break_puts_the_placeholder_after_its_wrapper() {
+        let h = harness();
+        let s = schema();
+        let bold = mk(&s, "bold", Default::default());
+        let br = s
+            .create_node(
+                "hard_break",
+                rinch_editor_core::Attrs::new(),
+                Fragment::empty(),
+            )
+            .unwrap()
+            .with_marks(vec![bold.clone()]);
+        let st = state(
+            s.clone(),
+            doc_node(
+                &s,
+                vec![para_of(
+                    &s,
+                    vec![s.text_with_marks("ab", vec![bold]).unwrap(), br],
+                )],
+            ),
+        );
+        let _view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let p = children(&h, h.container_id)[0];
+        assert!(is_last_child_placeholder(&h, p), "{:?}", shape(&h, p));
+        assert_eq!(placeholders(&h, p), 1);
+    }
+
+    /// A code block whose text ends in a newline gets the placeholder too
+    /// (ProseMirror's rule), after the text; text that stops ending in one
+    /// drops it.
+    #[test]
+    fn a_code_block_ending_in_a_newline_gets_a_placeholder() {
+        let h = harness();
+        let s = schema();
+        let code = |t: &str| {
+            s.branch("code_block", Fragment::from_node(s.text(t).unwrap()))
+                .unwrap()
+        };
+        let mut st = state(s.clone(), doc_node(&s, vec![code("ab\n"), code("cd")]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let blocks = children(&h, h.container_id);
+        assert_eq!(placeholders(&h, blocks[0]), 1);
+        assert!(is_last_child_placeholder(&h, blocks[0]));
+        assert_eq!(placeholders(&h, blocks[1]), 0, "no final newline");
+        // Typing after the newline patches the text in place; it no longer
+        // ends in one.
+        let mut tr = st.tr();
+        tr.set_selection(Selection::cursor(rinch_editor_core::Pos(4)));
+        tr.insert_text("x").unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        st = next;
+        assert_eq!(placeholders(&h, blocks[0]), 0);
+        // And a newline at the end of the second block's text.
+        let mut tr = st.tr();
+        tr.set_selection(Selection::cursor(rinch_editor_core::Pos(9)));
+        tr.insert_text("\n").unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        assert_eq!(placeholders(&h, blocks[1]), 1, "{:?}", shape(&h, blocks[1]));
+        assert!(is_last_child_placeholder(&h, blocks[1]));
     }
 }

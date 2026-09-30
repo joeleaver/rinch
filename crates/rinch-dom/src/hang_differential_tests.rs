@@ -201,7 +201,7 @@ fn the_linear_pass_commits_the_lines_the_restarting_loop_did() {
     );
     let mut lcx = parley::LayoutContext::new();
     let mut rng = Rng(0x1018_f1f1_dead_beef);
-    let (mut fixed, mut lines_fixed) = (0u32, 0u32);
+    let (mut fixed, mut lines_fixed, mut dropped) = (0u32, 0u32, 0u32);
     for case in 0..1200 {
         let (text, boxes) = paragraph(&mut rng, false);
         let max = 8.0 + rng.below(160) as f32 + rng.below(100) as f32 / 100.0;
@@ -212,12 +212,22 @@ fn the_linear_pass_commits_the_lines_the_restarting_loop_did() {
         fixed += stats.passes;
         lines_fixed += stats.lines;
         assert!(stats.passes <= 1, "case {case}: {stats:?}");
+        // The restarting loop never dropped parley's empty line after a
+        // final newline; the linear pass does (#1172, `phantom_last_line`).
+        // Everything before it is the oracle's.
+        let mut want_lines = lines(&want);
+        let mut want_height = want.height();
+        if let Some(keep) = super::phantom_last_line(&want) {
+            want_height -= want.get(keep).unwrap().metrics().line_height;
+            want_lines.truncate(keep);
+            dropped += 1;
+        }
         assert_eq!(
             lines(&got),
-            lines(&want),
+            want_lines,
             "case {case}: {text:?} with boxes {boxes:?} at {max}px"
         );
-        assert_eq!(got.height(), want.height(), "case {case}");
+        assert_eq!(got.height(), want_height, "case {case}");
     }
     // Positive control: the sample reaches the fix, and fixes several lines of
     // one paragraph in one pass.
@@ -225,6 +235,9 @@ fn the_linear_pass_commits_the_lines_the_restarting_loop_did() {
         fixed > 350 && lines_fixed > 2 * fixed,
         "{fixed} passes, {lines_fixed} lines"
     );
+    // And it reaches paragraphs ending in a newline, whose last line the two
+    // are compared without.
+    assert!(dropped > 50, "{dropped} paragraphs ended in a newline");
 }
 
 /// With inline boxes the restarting loop is no oracle: a line holding only a
