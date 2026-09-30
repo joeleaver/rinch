@@ -121,8 +121,7 @@ impl DomCodegenContext {
     /// `caps` is what the site's closure captures; `shared` is what sibling
     /// sites of the same construct also capture. A name is cloned when it is
     /// contested either way, and left alone otherwise — see [`captures`] for
-    /// why both cases are provably `Copy` today, and the one site (a
-    /// re-rendering component's root bindings) where a contested name is not.
+    /// why both cases are provably `Copy` today.
     pub(crate) fn site_shadows(
         &self,
         caps: &[syn::Ident],
