@@ -1210,4 +1210,37 @@ mod grid_bound_tests {
             assert_eq!(map.map(), old_map(&t, 1).as_slice(), "grid of {spec:?}");
         }
     }
+
+    fn rect(left: usize, top: usize, right: usize, bottom: usize) -> Option<Rect> {
+        Some(Rect {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
+    /// `cell_rects` (#1182): each cell's rectangle in document order, a
+    /// rowspan cut at the last row, and `None` for a cell the capped grid has
+    /// no slot for. Off the fixed point: the cut colspan and the cut rowspan
+    /// are different numbers, and the second row's cell starts past column 0.
+    #[test]
+    fn cell_rects_are_the_maps_rectangles_in_document_order() {
+        let s = Schema::starter_kit();
+        let t = spans_table(&s, &[vec![(2, i64::MAX), (1, 1)], vec![(1, 1)]]);
+        assert_eq!(
+            cell_rects(&t),
+            vec![
+                vec![rect(0, 0, 2, 2), rect(2, 0, 3, 1)],
+                vec![rect(2, 1, 3, 2)]
+            ]
+        );
+        let t = spans_table(&s, &[vec![(3_000_000, i64::MAX)], vec![(1, 1), (1, 1)]]);
+        let w = column_count(&t);
+        assert_eq!(w, FLOOR / 2, "control: the grid is capped");
+        assert_eq!(
+            cell_rects(&t),
+            vec![vec![rect(0, 0, w, 2)], vec![None, None]]
+        );
+    }
 }
