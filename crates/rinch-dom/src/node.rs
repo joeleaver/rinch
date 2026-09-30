@@ -520,10 +520,16 @@ impl InlineLayout {
     /// but only as far as the available width reaches: past it they hang
     /// (CSS Text 4 §4.3, "conditionally hang"), so a width the text fits in is
     /// never exceeded because of its spaces.
+    ///
+    /// Collapsible spaces at a line's end hang, but an NBSP there does not
+    /// (#1154): parley counts U+00A0 in a line's `trailing_whitespace`, and
+    /// so leaves it out of `Layout::width`, where CSS Text 3 §4.1.3 hangs
+    /// only spaces and tabs. `x&nbsp;` is as wide as `x` and its NBSP in
+    /// Chrome. See [`Self::width_keeping_nbsp`].
     pub fn measured_width(&self) -> f32 {
         let width = self.layout.width();
         if !self.preserves_spaces {
-            return width;
+            return self.width_keeping_nbsp(width);
         }
         use parley::layout::BreakReason;
         let mut extent = width;
@@ -537,6 +543,54 @@ impl InlineLayout {
             let m = line.metrics();
             extent = extent.max(m.inline_min_coord + m.advance);
         }
+        extent.min(self.max_width.max(width))
+    }
+
+    /// `width` (parley's, which drops every line's trailing white space)
+    /// widened to the lines whose trailing white space holds an NBSP: such a
+    /// line keeps everything up to and including its last NBSP, and drops
+    /// only the spaces, tabs and newline after it — as far as the available
+    /// width reaches. A text with no NBSP (every ordinary one) returns `width`
+    /// after one scan of its bytes.
+    fn width_keeping_nbsp(&self, width: f32) -> f32 {
+        if !self.text_content.contains('\u{a0}') {
+            return width;
+        }
+        let mut extent = width;
+        for line in self.layout.lines() {
+            let m = line.metrics();
+            if m.trailing_whitespace <= 0.0 {
+                continue;
+            }
+            // The line's clusters in logical order, last first: the trailing
+            // end is logical whatever the direction.
+            let mut clusters: Vec<(usize, f32, bool)> = Vec::new();
+            for run in line.runs() {
+                for c in run.clusters() {
+                    let range = c.text_range();
+                    let nbsp = self.text_content.get(range.clone()) == Some("\u{a0}");
+                    clusters.push((range.start, c.advance(), nbsp));
+                }
+            }
+            clusters.sort_by_key(|&(start, _, _)| start);
+            let mut hung = 0.0;
+            let mut kept_nbsp = false;
+            for &(start, advance, nbsp) in clusters.iter().rev() {
+                if nbsp {
+                    kept_nbsp = true;
+                    break;
+                }
+                let t = self.text_content.get(start..).unwrap_or("");
+                if !t.starts_with([' ', '\t', '\n', '\r']) {
+                    break;
+                }
+                hung += advance;
+            }
+            if kept_nbsp {
+                extent = extent.max(m.inline_min_coord + m.advance - hung);
+            }
+        }
+        // As the preserved-space branch: never past the available width.
         extent.min(self.max_width.max(width))
     }
 }

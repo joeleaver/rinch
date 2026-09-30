@@ -273,6 +273,79 @@ fn phantom_last_line(layout: &parley::Layout<Brush>) -> Option<usize> {
     .then_some(n - 1)
 }
 
+/// A character parley's `WhiteSpaceCollapse::Collapse` trims at a span's edge
+/// and CSS keeps (#1154): Unicode `White_Space` that is not document white
+/// space. CSS Text 3 §4.1.1 collapses and removes only spaces, tabs and segment
+/// breaks — ASCII — while parley trims with `str::trim_start`/`trim_end`, which
+/// take all of `White_Space`: U+00A0 NO-BREAK SPACE, U+2009 THIN SPACE, U+3000
+/// IDEOGRAPHIC SPACE and the rest.
+fn parley_trims_but_css_keeps(c: char) -> bool {
+    c.is_whitespace() && !c.is_ascii_whitespace()
+}
+
+/// Push one text node's `text` into an IFC's tree builder, keeping what CSS
+/// keeps (#1154).
+///
+/// Under `Collapse`, parley commits a span's text with its start trimmed (at
+/// the span's start, or after committed text ending in an ASCII space) and its
+/// end trimmed (at the span's end), and both trims take every `White_Space`
+/// character, so an NBSP there was lost: `<div>&nbsp;</div>` had no text and
+/// no line box, and `x&nbsp;` measured as `x`. A trim can reach only the
+/// white space at an edge of the node's text — anything else has a
+/// non-white-space character between it and the edge — so each run of
+/// [`parley_trims_but_css_keeps`] characters in the leading or trailing white
+/// space is committed on its own under `Preserve`, through an empty style span
+/// as the `<br>` arm commits its newline. Parley reads the mode when it
+/// commits, not when text is pushed: the span push commits what came before
+/// under `collapse` (not trimming its end, since the span continues), the pop
+/// commits the run untouched. The collapsible spaces beside the run are still
+/// parley's to collapse, and a space after it is not trimmed as a span start:
+/// the pop leaves parley's "first in span" flag cleared, and the committed
+/// text ends in a character that is not ASCII white space.
+///
+/// A node with none of those characters at an edge — every ordinary node —
+/// is pushed whole, as before.
+fn push_collapsible_text(
+    builder: &mut parley::TreeBuilder<'_, Brush>,
+    text: &str,
+    collapse: parley::style::WhiteSpaceCollapse,
+) {
+    if !matches!(collapse, parley::style::WhiteSpaceCollapse::Collapse)
+        || !text.chars().any(parley_trims_but_css_keeps)
+    {
+        builder.push_text(text);
+        return;
+    }
+    // Byte bounds of the leading and trailing `White_Space` — what parley's
+    // trims could reach. All white space: both cover the whole text.
+    let lead_end = text.len() - text.trim_start().len();
+    let trail_start = text.trim_end().len();
+    let mut plain_start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if !parley_trims_but_css_keeps(c) || (i >= lead_end && i < trail_start) {
+            continue;
+        }
+        let mut end = i + c.len_utf8();
+        while let Some(&(j, d)) = chars.peek() {
+            if !parley_trims_but_css_keeps(d) {
+                break;
+            }
+            end = j + d.len_utf8();
+            chars.next();
+        }
+        builder.push_text(&text[plain_start..i]);
+        let no_props: [parley::style::StyleProperty<'_, Brush>; 0] = [];
+        builder.push_style_modification_span(no_props.iter());
+        builder.push_text(&text[i..end]);
+        builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        builder.pop_style_span();
+        builder.set_white_space_mode(collapse);
+        plain_start = end;
+    }
+    builder.push_text(&text[plain_start..]);
+}
+
 /// Break `layout` at `max_width` as `break_all_lines` does, but commit only its
 /// first `keep` lines — what [`phantom_last_line`] leaves.
 fn break_lines_up_to(layout: &mut parley::Layout<Brush>, max_width: Option<f32>, keep: usize) {
@@ -5650,7 +5723,7 @@ impl RinchDocument {
                         } else {
                             raw
                         };
-                        builder.push_text(&display);
+                        push_collapsible_text(builder, &display, collapse);
                         *flat_pos += display.len();
                         text_ranges.push(crate::node::IfcTextRange {
                             flat_start: start,
