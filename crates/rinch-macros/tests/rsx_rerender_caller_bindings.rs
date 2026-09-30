@@ -168,7 +168,11 @@ fn a_binding_change_does_not_re_render(build: fn(&mut RenderScope, Knobs) -> Nod
     let first = find_probe(&root).expect("rendered");
     let renders0 = renders();
     local().set(5);
-    assert_eq!(text(&first), "5", "positive control: the local signal drives the text");
+    assert_eq!(
+        text(&first),
+        "5",
+        "positive control: the local signal drives the text"
+    );
 
     let steps: [(&str, Box<dyn Fn()>); 4] = [
         ("style", Box::new(move || k.css.set("color: blue".into()))),
@@ -185,16 +189,36 @@ fn a_binding_change_does_not_re_render(build: fn(&mut RenderScope, Knobs) -> Nod
             first.node_id(),
             "a {what}-only change must not rebuild the component"
         );
-        assert_eq!(renders(), renders0, "a {what}-only change must not re-render");
-        assert_eq!(evals(), before + 1, "a {what}-only change evaluates that binding once");
-        assert_eq!(text(&now), "5", "a {what}-only change must not reset local state");
+        assert_eq!(
+            renders(),
+            renders0,
+            "a {what}-only change must not re-render"
+        );
+        assert_eq!(
+            evals(),
+            before + 1,
+            "a {what}-only change evaluates that binding once"
+        );
+        assert_eq!(
+            text(&now),
+            "5",
+            "a {what}-only change must not reset local state"
+        );
     }
 
     assert_eq!(decl(&first, "color").as_deref(), Some("blue"));
-    assert_eq!(decl(&first, "padding"), None, "the style memory took padding back");
+    assert_eq!(
+        decl(&first, "padding"),
+        None,
+        "the style memory took padding back"
+    );
     assert_eq!(decl(&first, "--probe").as_deref(), Some("1"));
     assert_eq!(decl(&first, "margin-top").as_deref(), Some("9px"));
-    assert_eq!(classes(&first), ["probe", "beta"], "the class memory took alpha back");
+    assert_eq!(
+        classes(&first),
+        ["probe", "beta"],
+        "the class memory took alpha back"
+    );
     assert_eq!(first.get_attribute("data-state").as_deref(), Some("b"));
 }
 
@@ -261,7 +285,11 @@ fn a_struct_prop_change_re_renders_and_re_applies(
 
     let before = evals();
     k.state.set("z".into());
-    assert_eq!(evals(), before + 1, "one live attribute effect, none leaked");
+    assert_eq!(
+        evals(),
+        before + 1,
+        "one live attribute effect, none leaked"
+    );
     assert_eq!(current.get_attribute("data-state").as_deref(), Some("z"));
     assert_eq!(
         find_probe(&root).unwrap().node_id(),
