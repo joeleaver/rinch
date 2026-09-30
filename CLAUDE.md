@@ -51,19 +51,22 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     line after "text "). Not for `pre-line`, which removes spaces at a line's end (though rinch
     still keeps them in its text, #1043).
     `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
-  - **rinch collapses white space itself; parley is always handed `Preserve`.**
+  - **rinch collapses an IFC's white space itself; the IFC's tree builder always hands parley
+    `Preserve`.** (The ranged builders — form controls, text leaves — are separate and unchanged.)
     `WhiteSpaceCollapse::Collapse` collapses and trims per *style span*, and rinch pushes one span
     per inline element: it trimmed every inline element's edges, so `a<span> b</span>` laid out
     `ab` and `rsx! { p { "Hello" b { " world" } } }` `Helloworld` (#1180); and its trims take every
     Unicode `White_Space` char, so `<div>&nbsp;</div>` had no line box (#1154). CSS collapses
     across the whole inline formatting context and removes spaces only at a *line's* start and
     end. `ifc::IfcText` does that: `walk_inline_children` records its builder ops into it, it
-    collapses each run of ASCII white space to one space across element boundaries, removes a
+    collapses each run of spaces, tabs and segment breaks (not U+000C FORM FEED, which Chrome
+    draws — #1181) to one space across element boundaries, removes a
     space at the IFC's start or after a `<br>`, holds the last kept space until content (a
     character, an atomic inline) confirms it or a `<br>` / the IFC's end removes it, and replays
     the ops under `Preserve`. A space at a soft wrap is still parley's to hang. U+2028/U+2029,
-    which parley reads as forced newlines, are laid out as a non-collapsing space (Chrome draws an
-    ordinary character). **The flat offsets index that collapsed text** — the caret maps,
+    which parley reads as forced newlines, are laid out under a collapsing root as a non-collapsing
+    space (Chrome draws an ordinary character; under `pre*` they are still forced breaks, #1181).
+    **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
     one byte late per collapsed byte — and `IfcTextRange::offset_map` is each text node's
     DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,

@@ -419,3 +419,26 @@ fn offsets_after_a_space_removed_at_a_br_are_not_late() {
         .collect();
     assert_eq!(got, ["a", "\n", "b", " c", "\n"]);
 }
+
+/// U+000C FORM FEED is not collapsible white space (CSS Text 3 §4.1.1 names
+/// spaces, tabs and segment breaks), though Rust's `is_ascii_whitespace`
+/// includes it. Chrome 153 draws it as a character: `x\fx` is 31.25 wide and
+/// `a\f b` 37.06, where collapsed to a space they were 21.97 and 23.28. What
+/// it draws is a missing-glyph box whose width is the font stack's business
+/// (rinch: about 10.5px, Chrome 13.79), so this pins that it is laid out and
+/// is well wider than a space, not the box's exact width.
+#[test]
+fn a_form_feed_is_not_collapsed() {
+    for (name, html, collapsed) in [
+        ("x ff x", ib("x\u{c}x"), 21.97),
+        ("a ff space b", ib("a\u{c} b"), 23.28),
+    ] {
+        let (text, gw, gh) = measure("", &html);
+        assert!(text.contains('\u{c}'), "{name}: the form feed is laid out");
+        assert!(
+            gw >= collapsed + 4.0,
+            "{name}: wider than the collapsed {collapsed} (Chrome 153: about 9-14 wider), rinch {gw}"
+        );
+        assert_eq!(gh, 25.0, "{name}: one 25px line");
+    }
+}

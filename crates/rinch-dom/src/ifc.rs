@@ -300,17 +300,19 @@ enum IfcOp<'a> {
 ///
 /// **What this does instead.** Under a collapsing `white-space` the walk
 /// hands every text node to [`Self::push_text_node`], which applies both
-/// phases in document order across element boundaries: each run of ASCII
-/// white space becomes one space, a space after another collapsible space is
+/// phases in document order across element boundaries: each run of spaces,
+/// tabs and segment breaks (LF, CR) becomes one space — not U+000C FORM FEED,
+/// which Chrome draws as a character (#1181) — a space after another collapsible space is
 /// removed wherever an element boundary falls between them, and a space at
 /// the start of the IFC or after a `<br>` is removed. A space at the *end*
 /// of the IFC or before a `<br>` cannot be known to be one until the walk
 /// gets there, so the last kept space is held as `pending` and removed then
 /// ([`Self::push_forced_break`], [`Self::finish`]); anything that is
-/// content — a character that is not ASCII white space, an atomic inline —
+/// content — any other character, an atomic inline —
 /// confirms it. An out-of-flow box or an empty element is not content. A
-/// space at a *soft* wrap is left to parley, which hangs it (one space is all
-/// there ever is now). The walk's ops are recorded rather than pushed,
+/// space at a *soft* wrap is left to parley, which hangs it (a collapsible
+/// space is never next to another now, though the non-collapsing space a
+/// U+2028/U+2029 becomes can be). The walk's ops are recorded rather than pushed,
 /// because a removed trailing space may sit in a span that has already been
 /// closed, and every op is replayed under `Preserve`, so parley trims
 /// nothing: what it lays out is exactly this text.
@@ -445,7 +447,10 @@ impl<'a> IfcText<'a> {
         // until then the kept text is `raw[..i]`.
         let mut out: Option<String> = None;
         for (i, c) in raw.char_indices() {
-            let space = c.is_ascii_whitespace();
+            // CSS Text 3 §4.1.1 collapses spaces, tabs and segment breaks (LF,
+            // and CR, which HTML folds into one). Not U+000C FORM FEED, which
+            // `is_ascii_whitespace` includes: Chrome 153 draws it (#1181).
+            let space = matches!(c, ' ' | '\t' | '\n' | '\r');
             let kept = if space {
                 if self.line_start || self.prev_space {
                     None
