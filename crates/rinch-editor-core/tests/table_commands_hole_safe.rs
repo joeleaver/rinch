@@ -166,7 +166,7 @@ fn delete_row_across_a_hole_in_a_cell_selection() {
     let mut st = state_with(t.clone());
     st.selection = Selection::cell(Pos(cell_pos(&t, 0, 2)), Pos(cell_pos(&t, 1, 0)));
     let next = st.run("deleteRow").expect("deleteRow applies");
-    assert_eq!(cell_count(&next.doc.child(0)), vec![3]);
+    assert_eq!(cell_count(next.doc.child(0)), vec![3]);
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn delete_column_through_a_hole_skips_the_short_row() {
     let mut st = state_with(t.clone());
     st.selection = caret_in(&t, 0, 2);
     let next = st.run("deleteColumn").expect("deleteColumn applies");
-    assert_eq!(cell_count(&next.doc.child(0)), vec![2, 2, 2]);
+    assert_eq!(cell_count(next.doc.child(0)), vec![2, 2, 2]);
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn add_column_before_a_hole_gives_the_short_row_a_cell() {
     let mut st = state_with(t.clone());
     st.selection = caret_in(&t, 0, 2);
     let next = st.run("addColumnBefore").expect("addColumnBefore applies");
-    assert_eq!(cell_count(&next.doc.child(0)), vec![4, 3, 4]);
+    assert_eq!(cell_count(next.doc.child(0)), vec![4, 3, 4]);
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn add_row_under_a_hole_is_full_width() {
     let mut st = state_with(t.clone());
     st.selection = caret_in(&t, 2, 0);
     let next = st.run("addRowBefore").expect("addRowBefore applies");
-    assert_eq!(cell_count(&next.doc.child(0)), vec![3, 2, 3, 3]);
+    assert_eq!(cell_count(next.doc.child(0)), vec![3, 2, 3, 3]);
 }
 
 #[test]
@@ -217,7 +217,7 @@ fn add_row_between_two_holes_is_full_width() {
     let mut st = state_with(t.clone());
     st.selection = caret_in(&t, 1, 0);
     let next = st.run("addRowBefore").expect("addRowBefore applies");
-    assert_eq!(cell_count(&next.doc.child(0)), vec![2, 3, 2, 3]);
+    assert_eq!(cell_count(next.doc.child(0)), vec![2, 3, 2, 3]);
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn add_column_between_two_holes_gives_the_row_a_cell() {
     let mut st = state_with(t.clone());
     st.selection = caret_in(&t, 0, 1);
     let next = st.run("addColumnAfter").expect("addColumnAfter applies");
-    assert_eq!(cell_count(&next.doc.child(0)), vec![4, 2]);
+    assert_eq!(cell_count(next.doc.child(0)), vec![4, 2]);
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn add_column_after_under_an_i64_max_colspan_does_not_overflow() {
     let next = st.run("addColumnAfter").expect("addColumnAfter applies");
     let nt = next.doc.child(0).clone();
     assert_eq!(cell_count(&nt), vec![1, 3]);
-    let wide = span(&nt.child(0).child(0), "colspan");
+    let wide = span(nt.child(0).child(0), "colspan");
     assert_eq!(wide, width as i64 + 1, "the grid's span, widened by one");
 }
 
@@ -260,7 +260,7 @@ fn add_row_before_under_an_i64_max_rowspan_does_not_overflow() {
     let nt = next.doc.child(0).clone();
     assert_eq!(cell_count(&nt), vec![2, 1, 1]);
     // The span covered both rows of the grid; it now covers all three.
-    assert_eq!(span(&nt.child(0).child(0), "rowspan"), 3);
+    assert_eq!(span(nt.child(0).child(0), "rowspan"), 3);
 }
 
 #[test]
@@ -279,7 +279,7 @@ fn merge_cells_grows_over_a_hole() {
     let nt = next.doc.child(0).clone();
     assert_eq!(cell_count(&nt), vec![2, 0, 1]);
     let master = nt.child(0).child(0);
-    assert_eq!((span(&master, "colspan"), span(&master, "rowspan")), (2, 2));
+    assert_eq!((span(master, "colspan"), span(master, "rowspan")), (2, 2));
     assert_eq!(master.child_count(), 3, "c1, c2 and c4's paragraphs");
 }
 
@@ -304,7 +304,7 @@ fn merge_cells_is_not_refused_for_holes_beside_its_left_or_top_edge() {
     let nt = next.doc.child(0).clone();
     assert_eq!(cell_count(&nt), vec![2, 0, 1]);
     let master = nt.child(0).child(1);
-    assert_eq!((span(&master, "colspan"), span(&master, "rowspan")), (2, 3));
+    assert_eq!((span(master, "colspan"), span(master, "rowspan")), (2, 3));
 
     // 1/1/3: the rectangle (1,0)..(2,2) starts in row 1, whose holes at
     // columns 1 and 2 sit under row 0's, across its top edge.
@@ -318,7 +318,7 @@ fn merge_cells_is_not_refused_for_holes_beside_its_left_or_top_edge() {
     let nt = next.doc.child(0).clone();
     assert_eq!(cell_count(&nt), vec![1, 1, 0]);
     let master = nt.child(1).child(0);
-    assert_eq!((span(&master, "colspan"), span(&master, "rowspan")), (3, 2));
+    assert_eq!((span(master, "colspan"), span(master, "rowspan")), (3, 2));
 }
 
 #[test]
@@ -338,7 +338,7 @@ fn every_command_in_every_cell_of_the_issues_tables_is_safe() {
                 // there maps 2^22 slots, so it is run from one cell (the issue's
                 // row), not every one, to keep a debug build's run short.
                 let huge = (0..t.child(0).child_count())
-                    .any(|k| span(&t.child(0).child(k), "colspan") > 1000);
+                    .any(|k| span(t.child(0).child(k), "colspan") > 1000);
                 if huge && r == 0 {
                     continue;
                 }
@@ -460,12 +460,7 @@ fn table_spans(t: &Node) -> Vec<Vec<(i64, i64)>> {
         .map(|r| {
             let row = t.child(r);
             (0..row.child_count())
-                .map(|i| {
-                    (
-                        span(&row.child(i), "colspan"),
-                        span(&row.child(i), "rowspan"),
-                    )
-                })
+                .map(|i| (span(row.child(i), "colspan"), span(row.child(i), "rowspan")))
                 .collect()
         })
         .collect()
@@ -518,7 +513,7 @@ fn well_formed(t: &Node) -> Result<(), String> {
                 .find_cell(pos)
                 .ok_or_else(|| format!("row {r} cell {i} is off the grid"))?;
             let c = t.child(r).child(i);
-            let (cs, rs) = (span(&c, "colspan"), span(&c, "rowspan"));
+            let (cs, rs) = (span(c, "colspan"), span(c, "rowspan"));
             if cs != (rect.right - rect.left) as i64 || rs != (rect.bottom - rect.top) as i64 {
                 return Err(format!("row {r} cell {i}: {cs}x{rs} covers {rect:?}"));
             }
@@ -547,16 +542,16 @@ fn random_well_formed_tables_stay_well_formed_under_every_command() {
             let what = format!(
                 "case {case}: {c} at {:?} in {:?}",
                 st.selection,
-                table_spans(&st.doc.child(0))
+                table_spans(st.doc.child(0))
             );
             let next = check_command(&st, c, &what);
             if c.starts_with("add") {
                 assert!(next.is_some(), "{what}: refused");
             }
-            if let Some(next) = next {
-                if let Some(nt) = next.doc.content().children().iter().find(|n| is_table(n)) {
-                    well_formed(nt).unwrap_or_else(|e| panic!("{what}: {e}"));
-                }
+            if let Some(next) = next
+                && let Some(nt) = next.doc.content().children().iter().find(|n| is_table(n))
+            {
+                well_formed(nt).unwrap_or_else(|e| panic!("{what}: {e}"));
             }
         }
     }
