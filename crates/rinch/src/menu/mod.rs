@@ -1022,6 +1022,8 @@ fn parse_shortcut_or_warn(shortcut: &str) -> Option<ParsedShortcut> {
             .try_with(|warned| warned.borrow_mut().insert(shortcut.to_string()))
             .unwrap_or(false);
         if first {
+            #[cfg(test)]
+            WARNINGS_EMITTED.with(|n| n.set(n.get() + 1));
             let key = shortcut.rsplit('+').next().unwrap_or(shortcut);
             match shifted_key_hint(key) {
                 Some(base) => tracing::warn!(
@@ -1088,9 +1090,23 @@ fn parse_shortcut_for_matching(shortcut: &str) -> Option<ParsedShortcut> {
     let mut key_str = "";
 
     for part in &parts {
+        // The key is the last token. Anything after it — a second key
+        // (`Ctrl+Shift+C+A`), a modifier written late (`Ctrl+N+Shift`), or an
+        // unknown modifier taken as a key (`Hyper+N`) — is not a shortcut, and
+        // [`parse_shortcut_or_warn`] says so. Taking the last key token instead
+        // made `Hyper+N` a *bare* N, which swallowed every n typed while the
+        // item was live.
+        if !key_str.is_empty() {
+            return None;
+        }
         let part_lower = part.to_lowercase();
         match part_lower.as_str() {
-            "cmd" | "ctrl" | "control" | "meta" | "cmdorctrl" => ctrl_or_cmd = true,
+            // One modifier on every platform: Ctrl or Command, whichever is held
+            // (`match_shortcut_code` folds `meta` into `ctrl`). Every spelling
+            // muda and Electron accept for either is taken here, so none of them
+            // falls through to be read as the key.
+            "cmd" | "command" | "ctrl" | "control" | "meta" | "super" | "cmdorctrl"
+            | "cmdorcontrol" | "commandorctrl" | "commandorcontrol" => ctrl_or_cmd = true,
             "alt" | "option" => alt = true,
             "shift" => shift = true,
             _ => key_str = part,
@@ -1283,6 +1299,19 @@ fn key_code_name(key: KeyCode) -> Option<&'static str> {
 #[cfg(test)]
 pub(crate) fn callback_count() -> usize {
     MENU_CALLBACKS.with(|map| map.borrow().len())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many shortcut warnings this thread has actually emitted — what
+    /// "warns once" is a claim about, as opposed to the dedupe set's size.
+    static WARNINGS_EMITTED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many shortcut warnings this thread has emitted. See [`WARNINGS_EMITTED`].
+#[cfg(test)]
+fn warnings_emitted() -> usize {
+    WARNINGS_EMITTED.with(Cell::get)
 }
 
 /// How many distinct shortcut strings have been warned about on this thread.
@@ -2420,19 +2449,22 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "desktop"))]
-mod review_1166_fixtures {
+mod modifier_spelling_tests {
     use super::*;
     fn probe() -> (Rc<Cell<u32>>, Rc<dyn Fn()>) {
         let fired = Rc::new(Cell::new(0));
         let f = fired.clone();
         (fired, Rc::new(move || f.set(f.get() + 1)))
     }
-    /// muda's (and Electron's) modifier spellings are not rinch modifiers: the
-    /// chord parser takes each as a key, the real key overwrites it, and the
-    /// chord is the bare key. Since #1166 the native accelerator is built from
-    /// that parse, so the macOS/Windows label is the bare key as well.
+    /// muda's (and Electron's) modifier spellings used to be read as the key,
+    /// which the real key then overwrote: `CommandOrControl+S` was a *bare* S
+    /// chord that swallowed every s typed while the item was live, and — once
+    /// the native label came from the same parse (#1166) — a bare S label too.
+    /// They are the Ctrl-or-Cmd modifier now; an unknown one (`Hyper`) makes
+    /// the string unparseable. Neither fires on a plain S, and the known ones
+    /// fire on Ctrl+S.
     #[test]
-    fn review_muda_modifier_spellings_arm_a_bare_key() {
+    fn muda_modifier_spellings_are_the_ctrl_or_cmd_modifier_not_a_bare_key() {
         for s in ["CommandOrControl+S", "Command+S", "Super+S", "Hyper+S"] {
             let (fired, cb) = probe();
             let mut reg = MenuRegistration::default();
@@ -2440,7 +2472,9 @@ mod review_1166_fixtures {
             reg.register_callback(&id, cb, None);
             reg.register_shortcut(s, &id);
             let bare = match_shortcut_code(false, false, false, false, "KeyS");
+            let with_ctrl = match_shortcut_code(true, false, false, false, "KeyS");
             drop(reg);
+            assert_eq!(with_ctrl, s != "Hyper+S", "{s}: Ctrl+S");
             assert!(
                 !bare,
                 "{s}: a plain S keystroke fired the item ({})",
@@ -2449,7 +2483,7 @@ mod review_1166_fixtures {
         }
     }
     #[test]
-    fn review_two_keys_are_not_a_shortcut() {
+    fn two_keys_are_not_a_shortcut() {
         assert!(
             parse_shortcut_for_matching("Ctrl+Shift+C+A").is_none(),
             "two keys"

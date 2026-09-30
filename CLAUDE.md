@@ -1082,7 +1082,10 @@ key and Shift (`"Ctrl+Shift+/"`; Chrome 153 reports that keystroke as `key: "?"`
 `code: "Slash"`). `"Ctrl+?"` names no key: it arms nothing and
 `parse_shortcut_or_warn` logs one `tracing::warn!` per distinct string. The muda
 accelerator is built from the same `ParsedShortcut`, not from muda's own string
-parser, so a native label appears exactly when a chord is armed. The forward
+parser, so a native label appears exactly when a chord is armed. Every Ctrl/Cmd spelling muda and Electron accept (`Command`, `Super`,
+`CommandOrControl`, …) is the one `ctrl_or_cmd` modifier, and anything after the key — a
+second key, a late modifier, an unknown modifier read as a key (`Hyper+N`) — makes the
+string unparseable (it used to arm a *bare*-key chord). The forward
 table (`parse_shortcut_for_matching`) and `key_code_name` must name the same codes;
 `the_two_key_tables_name_the_same_codes` reads both out of the source.
 
