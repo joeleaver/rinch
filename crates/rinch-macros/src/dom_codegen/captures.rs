@@ -39,6 +39,15 @@
 //! the code that does compile without it is left alone: a value named by a
 //! single branch is still moved, not cloned, and a value bound *inside* the
 //! repeatable body is a fresh local on every run and is never touched.
+//!
+//! **One site departs from this.** A component that re-renders for a reactive
+//! struct prop builds each caller root binding (`style:`, `class:`, a
+//! shorthand, a hyphenated attribute) as a closure of its own beside the render
+//! closure (issue #1190, `component_codegen::RootBindings`). Before #1190 both
+//! lived in the one render closure, so a name a binding and a struct prop (or a
+//! child) both named was captured once and needed nothing; now it is contested
+//! between the two, and its shadow asks for `Clone` where the code compiled
+//! without it.
 
 use std::collections::HashSet;
 
@@ -110,7 +119,8 @@ pub(crate) fn collect_body_captures(body: &TokenStream2) -> Vec<syn::Ident> {
 /// Each site is one `move` closure of a single construct, and every one of them
 /// is constructed — an `if`'s condition/then/else, a `match`'s discriminant and
 /// every arm, a `for`'s collection/key/view. A name in two of those lists is
-/// moved twice today, so it is `Copy` or the code does not compile.
+/// moved twice, so it is `Copy` or the code does not compile — except at a
+/// re-rendering component's root bindings, see the module doc.
 pub(crate) fn contested_names(sites: &[&[syn::Ident]]) -> HashSet<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut shared: HashSet<String> = HashSet::new();

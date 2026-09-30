@@ -371,11 +371,9 @@ pub fn generate_shorthand_code(
 
 /// Generate style application code for a `style:` prop on a **stable** node.
 ///
-/// Used for a component's root after `Component::render` and for a plain HTML
-/// element. On a component that re-renders for a reactive struct prop, the root
-/// is stable for the lifetime of one render: the binding is emitted inside the
-/// render closure, owned by that render's scope, and a re-render gets a new one
-/// (issue #1190). Both are laid *over* whatever the node
+/// Used for a component's root after `Component::render` (the static component
+/// path; a re-rendering component's root takes `component_codegen::RootBindings`,
+/// issue #1190) and for a plain HTML element. Both are laid *over* whatever the node
 /// already carries rather than replacing it (issue #647): a component publishes
 /// its props as inline declarations on its root — every overlay's `z_index` is
 /// a custom property written there — and a style shorthand (`p:`, `mt:` …) is a
