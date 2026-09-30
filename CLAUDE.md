@@ -1709,8 +1709,39 @@ still dismisses it. It is never handed
 to the text engine, whatever handlers it carries: branching on `data-oninput`
 without a tag guard used to install an `EditableState` over a select's `value`
 and make it a typable text field (issue #424). `Select`'s trigger `<div>`
-carries `tabindex="0"` + combobox ARIA (issue #251); arrow/Enter/Escape
-navigation of its **open** option list is issue #434.
+carries `tabindex="0"` + combobox ARIA (issue #251), and its **open** option
+list answers the keyboard on both backends (issue #434): ArrowUp/Down (wrapping),
+Home/End, Enter to commit (Space too, unless a type-ahead prefix is live, which
+it extends), Escape and Tab to close without committing, and type-ahead, with
+`aria-activedescendant` naming the highlighted option. The trigger keeps the
+focus; Escape arrives through `arm_close_on_escape_while_open`, the other keys
+through a **key entry** on the dismiss stack. A closed `Select` consumes no key.
+
+**The dismiss stack holds two kinds of entry.** `push_dismiss_handler(doc_key,
+|| bool)` hears Escape only; `push_key_handler(owner: &NodeHandle, on_key:
+|&KeyEventData| -> bool, on_focus_leave: || ())` (in `rinch_core` and the
+`rinch` prelude, #434) hears **every key press** (never a release), ahead of the
+Escape scan, from `dispatch_keyboard_event` — so both backends, no backend
+branch; a consumed key is `preventDefault`ed on the web. **Focus is part of the
+contract** (the review of #1165, where an open `Select` ate every key in the
+document — a field focused by a "/" shortcut got none, Enter there committed the
+`Select`, and on the web a page `<input>` outside the mount was prevented): an
+entry is offered a key only while `owner.active_element()` is the owner or
+inside it, and an unknown focus (`None` — nothing focused, a backend that does
+not model focus, or on the web an element outside the mounted root) is inside
+nothing. `rinch_core::notify_focus_moved(doc_key)` calls `on_focus_leave` for
+each entry whose owner lost the focus: desktop calls it from
+`RinchApp::fire_focus_work` after every arbiter transition (callers fire that
+work after installing the new owner, so `focused_node` is already the new one),
+rinch-web from a document `focusin` and from a `focusout` with no
+`relatedTarget` (with key 0, which reaches every island). A window blur closes
+nothing on either backend: desktop keeps the claim, and on the web the
+`focusout` it fires has no `relatedTarget` but `activeElement` is still the
+trigger while it runs (measured, Chrome 153). A native `<select>` and Mantine
+both close on window blur; that is #1171. Push a key entry at **open** and release it at close
+and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
+records `focus_element` and answers it from `active_element`, so a component
+test has to focus the owner before its keys reach an entry.
 
 **Tab is contained by an open overlay** (`trap_focus`, #474). `Modal`, `Drawer`
 and `Popover` stamp **`data-trap-focus`** on their root while open and **remove**

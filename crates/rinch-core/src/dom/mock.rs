@@ -22,6 +22,11 @@ pub struct MockDomDocument {
     /// Pending [`DomDocument::request_scroll_to_fraction`] requests, queued the
     /// same way.
     scroll_to_fraction_requests: Vec<(NodeId, f32, f32)>,
+    /// The node [`DomDocument::focus_element`] last focused, which is what
+    /// [`DomDocument::active_element`] answers (issue #434: a key handler is
+    /// offered keys only while focus is inside its owner, so a component test
+    /// needs a focus to put somewhere). Nothing moves it but `focus_element`.
+    focused: Option<NodeId>,
 }
 
 struct MockNode {
@@ -109,6 +114,7 @@ impl MockDomDocument {
             layout: std::collections::HashMap::new(),
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
+            focused: None,
         };
 
         // Create root and body
@@ -522,8 +528,12 @@ impl DomDocument for MockDomDocument {
         None // Mock returns None
     }
 
-    fn focus_element(&mut self, _node_id: NodeId) {
-        // Mock does nothing
+    fn focus_element(&mut self, node_id: NodeId) {
+        self.focused = Some(node_id);
+    }
+
+    fn active_element(&self) -> Option<NodeId> {
+        self.focused
     }
 
     fn resolve_layout(&mut self, _width: f32, _height: f32) {

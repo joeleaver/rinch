@@ -131,6 +131,12 @@ pub fn styles() -> String {
     background-color: var(--rinch-color-option-hover);
 }
 
+/* The keyboard highlight (#434): the option Enter would commit. The hover
+   colour, so the pointer and the keyboard show one kind of "here". */
+.rinch-select__option--highlighted {
+    background-color: var(--rinch-color-option-hover);
+}
+
 .rinch-select__option--selected {
     background-color: var(--rinch-color-option-selected);
     color: var(--rinch-primary-color);

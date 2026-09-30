@@ -1,4 +1,5 @@
-//! Escape-to-dismiss, shared by `Modal`, `Drawer` and `Popover` (issue #474).
+//! Escape-to-dismiss, shared by `Modal`, `Drawer` and `Popover` (issue #474),
+//! plus the open-time policies `ColorInput` (#465) and `Select` (#434) use.
 //!
 //! The three declared `close_on_escape` and did nothing with it. They all need
 //! the same wiring, and getting any of them subtly different is the bug this
@@ -122,6 +123,53 @@ pub fn arm_close_on_escape_while_open(
                 cb.invoke();
                 true
             });
+            *slot_effect.borrow_mut() = Some(handle);
+        } else if !open && held {
+            let released = slot_effect.borrow_mut().take();
+            drop(released);
+        }
+    });
+
+    scope.on_cleanup(move || {
+        let released = slot.borrow_mut().take();
+        drop(released);
+    });
+}
+
+/// Hand every key press to `on_key` **while `is_open`**, pushing a
+/// [`rinch_core::push_key_handler`] entry when the popup opens and releasing it
+/// when it closes — [`arm_close_on_escape_while_open`]'s policy, for a popup
+/// that owns the whole keyboard while it is open rather than only Escape
+/// (issue #434, the `Select` option list).
+///
+/// Two things keep the entry from swallowing keys that are not its own: it
+/// exists only while the popup is on screen, and it is offered a key only while
+/// the focus is inside `owner` (see [`rinch_core::push_key_handler`]). When
+/// focus leaves `owner`, `on_focus_leave` runs — a listbox closes there.
+///
+/// `on_key` answers `true` to consume. It should decline Escape and leave it
+/// to an [`arm_close_on_escape_while_open`] entry, so that "which overlay is on
+/// top" stays one question for the dismiss stack.
+pub fn arm_keys_while_open(
+    scope: &mut RenderScope,
+    owner: &NodeHandle,
+    is_open: ReactiveBool,
+    on_key: Rc<dyn Fn(&rinch_core::KeyEventData) -> bool>,
+    on_focus_leave: Rc<dyn Fn()>,
+) {
+    let owner = owner.clone();
+    let slot: Rc<RefCell<Option<DismissHandle>>> = Rc::new(RefCell::new(None));
+
+    let slot_effect = slot.clone();
+    scope.create_effect(move || {
+        let open = is_open();
+        let held = slot_effect.borrow().is_some();
+        // Every borrow ends on its own line — see
+        // `arm_close_on_escape_while_open`.
+        if open && !held {
+            let f = on_key.clone();
+            let leave = on_focus_leave.clone();
+            let handle = rinch_core::push_key_handler(&owner, move |k| f(k), move || leave());
             *slot_effect.borrow_mut() = Some(handle);
         } else if !open && held {
             let released = slot_effect.borrow_mut().take();

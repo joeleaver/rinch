@@ -10,6 +10,9 @@ rinch-core.workspace = true
 rinch-theme.workspace = true
 rinch-macros.workspace = true
 rinch-tabler-icons.workspace = true
+# The Select's type-ahead reset clock; `web_time` so it is `std::time` on
+# native and `performance.now()` on wasm (a bare `Instant::now` panics there).
+web-time = "1"
 
 [dev-dependencies]
 # The MockDomDocument the ColorPicker tests render onto — a component's effect
