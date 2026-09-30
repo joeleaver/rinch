@@ -1948,4 +1948,143 @@ mod tests {
         assert!(html.contains(r#"target="_blank""#), "{html}");
         assert!(html.contains(r#"rel="noopener noreferrer""#), "{html}");
     }
+
+    // ── HTML integer attributes (#1164) ──────────────────────────────────────
+
+    /// The first `ordered_list`'s `start` after importing `<ol start="{v}">`.
+    fn imported_ol_start(v: &str) -> Option<i64> {
+        let html = format!("<ol start=\"{v}\"><li><p>x</p></li></ol>");
+        let slice = slice_from_html(&s(), &html).unwrap();
+        slice.content.child(0).attrs().get_int("start")
+    }
+
+    /// `(colspan, rowspan)` of the first cell after importing a one-row table
+    /// whose first cell carries `attrs`.
+    fn imported_first_cell_spans(attrs: &str) -> (i64, i64) {
+        let html = format!("<table><tr><td {attrs}><p>a</p></td></tr></table>");
+        let slice = slice_from_html(&s(), &html).unwrap();
+        let cell = slice.content.child(0).child(0).child(0);
+        (
+            cell.attrs().get_int("colspan").unwrap(),
+            cell.attrs().get_int("rowspan").unwrap(),
+        )
+    }
+
+    /// `<ol start>` is read by HTML's rules for parsing integers, as Chrome
+    /// 153's `ol.start` reads it — not by `str::parse`, which refused a leading
+    /// space or trailing junk and accepted values past `i32`.
+    #[test]
+    fn ol_start_is_read_by_the_html_integer_rules() {
+        let rows: &[(&str, i64)] = &[
+            (" 3", 3),
+            ("3abc", 3),
+            ("2.5", 2),
+            ("+4", 4),
+            ("-2", -2),
+            ("7", 7),
+            // Errors read as the default, 1.
+            ("abc", 1),
+            ("", 1),
+            ("99999999999", 1),
+            ("2147483648", 1),
+        ];
+        for &(v, want) in rows {
+            assert_eq!(imported_ol_start(v), Some(want), "start={v:?}");
+        }
+    }
+
+    /// `colspan` is Chrome 153's `td.colSpan`: HTML's non-negative integer,
+    /// clamped to 1..=1000; an overflow is the maximum, an error or a negative
+    /// value is the default 1.
+    #[test]
+    fn colspan_is_read_and_clamped_as_chrome_reads_it() {
+        let rows: &[(&str, i64)] = &[
+            ("3abc", 3),
+            (" 2", 2),
+            ("4.9", 4),
+            ("0", 1),
+            ("-3", 1),
+            ("abc", 1),
+            ("1000", 1000),
+            ("1001", 1000),
+            ("99999999999", 1000),
+            ("99999999999999999999999", 1000),
+        ];
+        for &(v, want) in rows {
+            let attrs = format!("colspan=\"{v}\"");
+            assert_eq!(imported_first_cell_spans(&attrs).0, want, "colspan={v:?}");
+        }
+    }
+
+    /// `rowspan` is Chrome 153's `td.rowSpan`: clamped to 0..=65534, an
+    /// overflow the maximum. (`0` is covered by the section tests below: the
+    /// model has no "to the end" value, so it is resolved at import.)
+    #[test]
+    fn rowspan_is_read_and_clamped_as_chrome_reads_it() {
+        let rows: &[(&str, i64)] = &[
+            ("3abc", 3),
+            (" 2", 2),
+            ("-3", 1),
+            ("abc", 1),
+            ("65534", 65534),
+            ("65535", 65534),
+            ("99999999999", 65534),
+        ];
+        for &(v, want) in rows {
+            let attrs = format!("rowspan=\"{v}\"");
+            assert_eq!(imported_first_cell_spans(&attrs).1, want, "rowspan={v:?}");
+        }
+    }
+
+    /// Every cell's `rowspan`, row by row, of the first table in `html`.
+    fn imported_rowspans(html: &str) -> Vec<Vec<i64>> {
+        let slice = slice_from_html(&s(), html).unwrap();
+        let table = slice.content.child(0);
+        (0..table.child_count())
+            .map(|r| {
+                let row = table.child(r);
+                (0..row.child_count())
+                    .map(|c| row.child(c).attrs().get_int("rowspan").unwrap())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// `rowspan="0"` spans to the end of the cell's row group, which is what
+    /// Chrome 153 lays out. The model has no such value (a span is at least
+    /// 1), so the import writes the number of rows left in the group — two
+    /// explicit `<tbody>`s here, so the first cell spans its own three rows
+    /// and not the table's four.
+    #[test]
+    fn rowspan_zero_spans_to_the_end_of_its_row_group() {
+        let html = "<table><tbody>\
+                    <tr><td rowspan=\"0\"><p>a</p></td><td><p>b</p></td></tr>\
+                    <tr><td><p>c</p></td></tr>\
+                    <tr><td><p>d</p></td></tr>\
+                    </tbody><tbody>\
+                    <tr><td><p>e</p></td></tr>\
+                    </tbody></table>";
+        assert_eq!(
+            imported_rowspans(html),
+            vec![vec![3, 1], vec![1], vec![1], vec![1]]
+        );
+    }
+
+    /// A run of bare `<tr>`s is one row group (the HTML parser wraps it in an
+    /// implicit `<tbody>`), and one that follows an explicit group starts a new
+    /// one. A `rowspan="0"` in a group's last row spans that row alone.
+    #[test]
+    fn rowspan_zero_in_bare_rows_and_a_groups_last_row() {
+        let html = "<table><thead>\
+                    <tr><th rowspan=\"0\"><p>h</p></th></tr>\
+                    </thead>\
+                    <tr><td rowspan=\"0\"><p>a</p></td></tr>\
+                    <tr><td><p>b</p></td></tr>\
+                    <tr><td><p>c</p></td><td rowspan=\"0\"><p>d</p></td></tr>\
+                    </table>";
+        assert_eq!(
+            imported_rowspans(html),
+            vec![vec![1], vec![3], vec![1], vec![1, 1]]
+        );
+    }
 }
