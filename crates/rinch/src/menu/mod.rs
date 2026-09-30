@@ -2191,6 +2191,7 @@ mod tests {
     fn an_unparseable_shortcut_warns_once_and_registers_nothing() {
         let shortcuts = shortcut_count();
         let warned = warned_shortcut_count();
+        let emitted = warnings_emitted();
         let mut registration = MenuRegistration::default();
         registration.register_shortcut("Ctrl+?", "unparseable-1");
         registration.register_shortcut("Ctrl+?", "unparseable-2");
@@ -2200,6 +2201,11 @@ mod tests {
             warned_shortcut_count(),
             warned + 2,
             "one warning per distinct string, not per registration"
+        );
+        assert_eq!(
+            warnings_emitted(),
+            emitted + 2,
+            "and one warning *emitted* per distinct string: three registrations, two strings"
         );
         assert_eq!(
             shifted_key_hint("?"),
@@ -2212,6 +2218,7 @@ mod tests {
         registration.register_shortcut("Ctrl+Alt+/", "parseable");
         assert_eq!(shortcut_count(), shortcuts + 1);
         assert_eq!(warned_shortcut_count(), warned + 2);
+        assert_eq!(warnings_emitted(), emitted + 2);
     }
 
     /// The native menu's accelerator is derived from the **same** parse the
@@ -2278,6 +2285,25 @@ mod tests {
                 None,
                 "{unchorded}: no chord, no label"
             );
+        }
+        // muda's and Electron's modifier spellings are the one Ctrl-or-Cmd
+        // modifier too, on the label and on the chord alike.
+        for spelling in [
+            "Command",
+            "CommandOrControl",
+            "CommandOrCtrl",
+            "CmdOrControl",
+            "Super",
+        ] {
+            assert_eq!(
+                parse_shortcut(&format!("{spelling}+N")),
+                Some(Accelerator::new(Some(ctrl), Code::KeyN)),
+                "{spelling}+N"
+            );
+        }
+        // A second key, or anything after the key, is not a shortcut: no label.
+        for malformed in ["Hyper+N", "Ctrl+Shift+C+A", "Ctrl+N+Shift"] {
+            assert_eq!(parse_shortcut(malformed), None, "{malformed}");
         }
     }
 
@@ -2389,6 +2415,44 @@ mod tests {
             second_fired.get(),
             1,
             "the later build still owns the id it registered"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod review_1166_fixtures {
+    use super::*;
+    fn probe() -> (Rc<Cell<u32>>, Rc<dyn Fn()>) {
+        let fired = Rc::new(Cell::new(0));
+        let f = fired.clone();
+        (fired, Rc::new(move || f.set(f.get() + 1)))
+    }
+    /// muda's (and Electron's) modifier spellings are not rinch modifiers: the
+    /// chord parser takes each as a key, the real key overwrites it, and the
+    /// chord is the bare key. Since #1166 the native accelerator is built from
+    /// that parse, so the macOS/Windows label is the bare key as well.
+    #[test]
+    fn review_muda_modifier_spellings_arm_a_bare_key() {
+        for s in ["CommandOrControl+S", "Command+S", "Super+S", "Hyper+S"] {
+            let (fired, cb) = probe();
+            let mut reg = MenuRegistration::default();
+            let id = format!("r1166-{s}");
+            reg.register_callback(&id, cb, None);
+            reg.register_shortcut(s, &id);
+            let bare = match_shortcut_code(false, false, false, false, "KeyS");
+            drop(reg);
+            assert!(
+                !bare,
+                "{s}: a plain S keystroke fired the item ({})",
+                fired.get()
+            );
+        }
+    }
+    #[test]
+    fn review_two_keys_are_not_a_shortcut() {
+        assert!(
+            parse_shortcut_for_matching("Ctrl+Shift+C+A").is_none(),
+            "two keys"
         );
     }
 }
