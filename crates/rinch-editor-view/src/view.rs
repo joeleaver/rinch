@@ -4465,7 +4465,8 @@ mod table_span_tests {
         assert_eq!(placement(&r, c[1]), p("span 2", "auto"));
         // And its rowspan: the second row's one cell then sits beside the two.
         let mut tr = st3.tr();
-        tr.set_node_attr(second, "rowspan", AttrValue::Int(2)).unwrap();
+        tr.set_node_attr(second, "rowspan", AttrValue::Int(2))
+            .unwrap();
         let st4 = st3.apply(tr);
         view.update_dom(&st3, &st4);
         assert_eq!(cells(&r), c2, "control: no cell host rebuilt");
