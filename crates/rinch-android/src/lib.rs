@@ -52,6 +52,17 @@
 //! Add to it sparingly, and only where a compile error and a device would both
 //! stay quiet.
 
+//! # A failed JNI call
+//!
+//! Every wrapper here gives up on a failed call — logs it and returns a
+//! default — and none of them may leave the Java exception behind, because
+//! `jni` 0.21 does not clear it and the next JNI call on the thread, made by
+//! somebody else, aborts under CheckJNI (issue #419). A call that gives up goes
+//! through `jni_exception::jni_ok` / `jni_try`, which describe the exception to
+//! logcat and clear it on the spot, and `bridge::with_activity` (and every
+//! `extern "C"` entry point) holds a scope that clears whatever is still
+//! pending when it ends.
+
 // See the identical attribute (and its rationale) in `rinch-core/src/lib.rs`
 // (#598): Android's target spec has no native ELF thread-local support, so
 // `std::sys::thread_local` erases the const/non-const distinction

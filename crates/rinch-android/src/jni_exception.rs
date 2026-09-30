@@ -30,7 +30,11 @@
 //! The scope is the net, not the rule: it runs only when the scope ends, so a
 //! closure that swallows one failure and then makes *another* JNI call would
 //! still make it with the exception pending. That is what `jni_try`/`jni_ok`
-//! are for, and every call site in this crate goes through one of them.
+//! are for. In this crate a JNI call either goes through one of them or
+//! carries its error straight out of its scope with `?` (`display`'s
+//! `night_mode`, `wallpaper_primary`, `system_accent`), where the scope settles
+//! it before anything else runs; `bridge::init` panics on a failure instead,
+//! and `DeleteLocalRef` cannot throw.
 //!
 //! The logic is generic over [`PendingException`] so it is unit-tested on the
 //! host against a recording fake; the one real implementation, for
