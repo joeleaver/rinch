@@ -361,7 +361,7 @@ pub fn column_count(table: &Node) -> usize {
 /// The most slots a [`TableMap`] over `table` may hold: twice the number of
 /// cells, and never less than [`GRID_SLOT_FLOOR`]. A rectangular table with
 /// no spans fills `width × rows` slots with as many cells, so it always fits;
-/// only a grid past 2^20 slots and past twice its cells (spans, ragged rows)
+/// only a grid past 2^22 slots and past twice its cells (spans, ragged rows)
 /// can be cut.
 /// The map stays linear in the document whatever its spans claim.
 pub fn grid_slot_budget(table: &Node) -> usize {
@@ -371,13 +371,19 @@ pub fn grid_slot_budget(table: &Node) -> usize {
     cells.saturating_mul(2).max(GRID_SLOT_FLOOR)
 }
 
-/// The floor of [`grid_slot_budget`]: 2^20 slots (8 MB of map), which any
-/// table may use whatever its cell count.
-pub const GRID_SLOT_FLOOR: usize = 1 << 20;
+/// The floor of [`grid_slot_budget`]: 2^22 slots (32 MB of map on a 64-bit
+/// target), which any table may use whatever its cell count. It is the most a
+/// table of fewer than 2^21 cells can make a [`TableMap`] allocate, however its
+/// spans or ragged rows are shaped. It is sized so that a sparse ragged table
+/// of modest size keeps every cell: a 1000-cell header over 1500 one-cell rows
+/// (1.5 M slots for 2500 cells) is mapped whole, as Chrome draws it.
+pub const GRID_SLOT_FLOOR: usize = 1 << 22;
 
-/// The widest a pasted row may be, in grid columns, counting the columns that
-/// rowspans from the rows above carry into it: the HTML import cuts a colspan
-/// to what is left, and never below 1 (#1176). 1000 is Chrome's largest
+/// How far a pasted row's spans may reach, in grid columns, counting the
+/// columns that rowspans from the rows above carry into it: the HTML import
+/// cuts a colspan to what is left, never below 1, and gives a cell that finds
+/// its row full a rowspan of 1 (#1176). A row is therefore at most this wide
+/// plus one column per cell that found it full. 1000 is Chrome's largest
 /// `colspan`; Chrome itself has no limit on a row's width.
 pub const MAX_IMPORTED_ROW_WIDTH: usize = 1000;
 

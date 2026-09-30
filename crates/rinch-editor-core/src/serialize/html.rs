@@ -585,11 +585,14 @@ impl<'a> HtmlParser<'a> {
     ///   is exactly that (the model has no "to the end" span; every span is
     ///   at least 1). Chrome cuts a span at the end of its row group, so a
     ///   `rowspan="3"` in a one-row `<tbody>` spans one row there too.
-    /// - A row is at most [`tables::MAX_IMPORTED_ROW_WIDTH`] columns wide,
-    ///   counting the columns carried into it by rowspans from the rows above:
-    ///   a `colspan` is cut to what is left, and never below 1. That one is
-    ///   rinch's, not Chrome's, and is what keeps the grid of a paste linear in
-    ///   the paste: a row's width used to grow with every rowspan above it.
+    /// - A row's spans reach at most [`tables::MAX_IMPORTED_ROW_WIDTH`]
+    ///   columns, counting the columns carried into it by rowspans from the
+    ///   rows above: a `colspan` is cut to what is left, never below 1, and a
+    ///   cell that starts in a row already that wide spans that row alone, so
+    ///   it carries nothing down. Each such cell adds one column, so a row is
+    ///   at most 1000 columns plus one per cell that found it full. That limit
+    ///   is rinch's, not Chrome's: a row's width used to grow with every
+    ///   rowspan above it, and a 57 KB paste made a 1,000,000-column table.
     fn build_row_group(&self, group: Vec<Vec<PendingCell<'a>>>) -> Result<Vec<Node>, EditorError> {
         let row_type = self.table_node_type("table_row")?;
         let len = group.len();
@@ -605,7 +608,12 @@ impl<'a> HtmlParser<'a> {
             let cells = cells
                 .into_iter()
                 .map(|cell| {
+                    // A cell that finds its row full spans that row alone,
+                    // so it carries nothing down: otherwise every cell past
+                    // the 1000th column would widen every row below it.
+                    let full = row_width >= tables::MAX_IMPORTED_ROW_WIDTH;
                     let rowspan = match cell.rowspan as usize {
+                        _ if full => 1,
                         0 => rows_left,
                         n => n.min(rows_left),
                     };
