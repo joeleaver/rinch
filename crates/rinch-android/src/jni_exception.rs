@@ -56,16 +56,15 @@ pub(crate) trait PendingException {
 /// Describe comes first because it needs the exception to print, and clear
 /// comes after it unconditionally: the JNI specification says describe clears
 /// as a side effect, but that is one more thing to rely on for no saving.
-pub(crate) fn settle_pending<E: PendingException + ?Sized>(
-    env: &mut E,
-    context: impl Display,
-) -> bool {
+///
+/// Logs nothing itself: [`jni_ok`] and a `jni_try` caller report the failure
+/// they settled, and [`ExceptionScope`] reports one that reached it.
+pub(crate) fn settle_pending<E: PendingException + ?Sized>(env: &mut E) -> bool {
     if !env.exception_pending() {
         return false;
     }
     env.describe_exception();
     env.clear_exception();
-    log::warn!("{context}: cleared a pending Java exception (stack trace above)");
     true
 }
 
@@ -82,7 +81,7 @@ where
     Er: Display,
 {
     step(env).map_err(|e| {
-        settle_pending(env, context);
+        settle_pending(env);
         format!("{context}: {e}")
     })
 }
@@ -128,7 +127,14 @@ impl<E: PendingException, C: Display> ExceptionScope<E, C> {
 
 impl<E: PendingException, C: Display> Drop for ExceptionScope<E, C> {
     fn drop(&mut self) {
-        settle_pending(&mut self.env, &self.context);
+        if settle_pending(&mut self.env) {
+            // Reaching here means a failure left its scope unsettled: a `?`
+            // carried it out, or a site skipped `jni_ok`/`jni_try`.
+            log::warn!(
+                "{}: cleared a Java exception left pending (stack trace above)",
+                self.context
+            );
+        }
     }
 }
 
