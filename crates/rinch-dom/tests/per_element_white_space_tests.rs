@@ -266,6 +266,22 @@ fn pre_line_collapses_spaces_and_keeps_newlines() {
             25.0,
         ),
         (
+            "spaces after a final newline make no line (#1199's pre-line row)",
+            PRE_LINE,
+            "a\n  ".into(),
+            "a\n",
+            8.98,
+            25.0,
+        ),
+        (
+            "spaces before a final newline",
+            PRE_LINE,
+            "a  \n".into(),
+            "a\n",
+            8.98,
+            25.0,
+        ),
+        (
             "pre-line span in a normal root",
             "",
             format!("a{}", span(PRE_LINE, "x\ny")),
