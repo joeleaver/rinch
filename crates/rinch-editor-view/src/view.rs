@@ -4429,8 +4429,8 @@ mod table_span_tests {
     }
 
     /// A row removed from under an overlong rowspan shortens it, and a cell's
-    /// own colspan changed in place re-places it: neither builds a cell host,
-    /// so only the table's span comparison can see them.
+    /// own colspan or rowspan changed in place re-places it: none of them builds
+    /// a cell host, so only the table's span comparison can see them.
     #[test]
     fn a_removed_row_and_a_changed_colspan_re_place_cells_patched_in_place() {
         let r = rig();
@@ -4463,6 +4463,13 @@ mod table_span_tests {
         view.update_dom(&st2, &st3);
         assert_eq!(cells(&r), c2, "control: no cell host rebuilt");
         assert_eq!(placement(&r, c[1]), p("span 2", "auto"));
+        // And its rowspan: the second row's one cell then sits beside the two.
+        let mut tr = st3.tr();
+        tr.set_node_attr(second, "rowspan", AttrValue::Int(2)).unwrap();
+        let st4 = st3.apply(tr);
+        view.update_dom(&st3, &st4);
+        assert_eq!(cells(&r), c2, "control: no cell host rebuilt");
+        assert_eq!(placement(&r, c[1]), p("span 2", "span 2"));
     }
 
     /// A cell whose host is rebuilt — `td` to `th`, the same spans — gets its
