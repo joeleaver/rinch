@@ -1713,9 +1713,11 @@ each entry whose owner lost the focus: desktop calls it from
 `RinchApp::fire_focus_work` after every arbiter transition (callers fire that
 work after installing the new owner, so `focused_node` is already the new one),
 rinch-web from a document `focusin` and from a `focusout` with no
-`relatedTarget` (with key 0, which reaches every island). A window blur on
-desktop keeps the claim and so closes nothing; on the web it is a focusout to
-nowhere and closes the list. Push a key entry at **open** and release it at close
+`relatedTarget` (with key 0, which reaches every island). A window blur closes
+nothing on either backend: desktop keeps the claim, and on the web the
+`focusout` it fires has no `relatedTarget` but `activeElement` is still the
+trigger while it runs (measured, Chrome 153). A native `<select>` and Mantine
+both close on window blur; that is #1171. Push a key entry at **open** and release it at close
 and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
 records `focus_element` and answers it from `active_element`, so a component
 test has to focus the owner before its keys reach an entry.

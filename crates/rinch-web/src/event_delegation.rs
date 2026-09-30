@@ -2618,8 +2618,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // Focus moved (issue #434): a popup that owns the keyboard while focus is
     // inside it (`push_key_handler`, the `Select` list) closes once focus has
     // left it. `focusin` names the new focus; a `focusout` with no
-    // `relatedTarget` is focus going nowhere (a click on the page background,
-    // the window losing focus), for which no `focusin` follows. A `focusout`
+    // `relatedTarget` is focus going nowhere (a click on the page background),
+    // for which no `focusin` follows. The window losing focus fires one too, but
+    // `activeElement` is unchanged while it runs, so it closes nothing (#1171).
+    // A `focusout`
     // that does have one is followed by that element's `focusin`, and asking
     // then would see the transient `<body>` in between. Document key 0: this
     // listener serves every island on the page, and an unmarked key reaches
