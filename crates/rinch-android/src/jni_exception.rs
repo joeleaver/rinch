@@ -187,6 +187,8 @@ mod tests {
     struct State {
         pending: bool,
         calls: Vec<&'static str>,
+        /// What the pending exception's `toString()` answers.
+        text: Option<&'static str>,
     }
 
     /// A `JNIEnv` stand-in that records every call. Cloneable (the state is
@@ -211,6 +213,11 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+        /// A JNI call that throws an exception whose `toString()` is `text`.
+        fn throw(&mut self, name: &'static str, text: &'static str) -> Result<(), &'static str> {
+            self.0.borrow_mut().text = Some(text);
+            self.call(name, true)
         }
         fn calls(&self) -> Vec<&'static str> {
             self.0.borrow().calls.clone()
@@ -257,6 +264,26 @@ mod tests {
                 "getResources",
             ]
         );
+    }
+
+    #[test]
+    fn jni_try_names_the_exception_in_its_error() {
+        // Issue #1205: the app's `Err` must say which exception was thrown
+        // and why, not only jni's "Java exception was thrown".
+        let mut env = FakeEnv::default();
+        let r: Result<(), String> = jni_try(&mut env, "readContentUri", |e| {
+            e.throw(
+                "readContentUri",
+                "java.lang.SecurityException: Permission Denial: reading uri",
+            )
+        });
+        assert_eq!(
+            r,
+            Err("readContentUri: java exception: \
+                 java.lang.SecurityException: Permission Denial: reading uri"
+                .to_string())
+        );
+        assert!(!env.pending());
     }
 
     #[test]
