@@ -326,3 +326,59 @@ fn live_value_is_the_value_else_a_textareas_text_children() {
     text(&mut doc, i, "child");
     assert_eq!(doc.live_value(i), None, "an input's children are no value");
 }
+
+/// Only **direct** text children are the default value (HTML's "child text
+/// content"): text behind a `display: contents` element child is neither the
+/// value nor drawn (review of #1179).
+#[test]
+fn text_behind_an_element_child_is_not_the_value() {
+    let mut doc = doc();
+    let c = container(&mut doc, "");
+    let t = el(
+        &mut doc,
+        c,
+        "textarea",
+        &format!("display: block; width: 200px; {BARE}"),
+    );
+    let w = el(&mut doc, t, "div", "display: contents");
+    text(&mut doc, w, "WRAPPED");
+    let px = pixels(&mut doc);
+    assert_eq!(doc.live_value(t).as_deref(), Some(""));
+    assert_eq!(ink(&px), 0);
+}
+
+/// The children follow every change while no `value` is set: removed `value`,
+/// changed text, appended and removed children (review of #1179).
+#[test]
+fn the_drawn_value_follows_the_children_until_a_value_is_set() {
+    let reference = |v: &str| one_textarea(|d, t| d.set_attribute(t, "value", v));
+
+    // `value` removed after it was set: the children show again.
+    let mut d = doc();
+    let c = container(&mut d, "");
+    let t = el(
+        &mut d,
+        c,
+        "textarea",
+        &format!("display: block; width: 200px; {BARE}"),
+    );
+    let tx = d.create_text("CHILD");
+    d.append_child(t, tx);
+    d.set_attribute(t, "value", "typed");
+    let _ = pixels(&mut d);
+    d.remove_attribute(t, "value");
+    assert!(pixels(&mut d) == reference("CHILD"), "value removed");
+
+    // The child's text changed (the reactive `{|| s}` shape).
+    d.set_text_content(tx, "second second");
+    assert_eq!(d.live_value(t).as_deref(), Some("second second"));
+    assert!(pixels(&mut d) == reference("second second"), "text changed");
+
+    // Removed, then one appended after layout.
+    d.remove_node(tx);
+    assert_eq!(ink(&pixels(&mut d)), 0, "no children, nothing drawn");
+    text(&mut d, t, "late");
+    let px = pixels(&mut d);
+    assert!(px == reference("late"), "appended child drawn");
+    assert_eq!(wh(&d, t).1, 40.0, "still rows lines");
+}

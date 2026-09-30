@@ -90,3 +90,52 @@ fn typing_into_a_text_child_textarea_edits_its_text() {
     assert_eq!(value_attr(&app, id).as_deref(), Some("helloX"));
     assert_eq!(log.borrow().last().map(String::as_str), Some("helloX"));
 }
+
+/// The first click into a text-child textarea places the caret from the child
+/// text: a click right of "hello" lands at its end (review of #1179 — the
+/// click→caret map reads `control_value` too).
+#[test]
+fn the_first_click_places_the_caret_in_the_child_text() {
+    let (mut app, id, _log) = mount("hello");
+    let (x, y) = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let (ax, ay, w, _h) = painted_element_box(&d.tree, id);
+        (ax + w - 10.0, ay + 6.0)
+    };
+    for ev in [
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    ] {
+        app.handle_event(ev, (800, 600), 1.0);
+    }
+    press(&mut app, KeyCode::KeyX, Some("X"));
+    assert_eq!(value_attr(&app, id).as_deref(), Some("helloX"));
+}
+
+/// A `value` attribute removed while the field is focused leaves it holding
+/// its text children, as removing the attribute leaves a browser's `.value`
+/// alone — not "" (review of #1179: the per-frame adoption reads
+/// `control_value`).
+#[test]
+fn a_value_removed_while_focused_falls_back_to_the_child_text() {
+    let (mut app, id, _log) = mount("hello");
+    click_into(&mut app, id);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .remove_attribute(rinch_core::dom::NodeId(id), "value");
+    app.resolve_and_repaint(800.0, 600.0);
+    press(&mut app, KeyCode::End, None);
+    press(&mut app, KeyCode::KeyX, Some("X"));
+    assert_eq!(value_attr(&app, id).as_deref(), Some("helloX"));
+}

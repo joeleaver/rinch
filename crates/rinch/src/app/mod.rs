@@ -4299,14 +4299,15 @@ impl RinchApp {
         // field holds focus, and the common case is "nothing was written".
         let dom_value = {
             let d = doc.borrow();
-            let Some(node) = d.tree.get(node_id) else {
+            if d.tree.get(node_id).is_none() {
                 return;
-            };
-            let dom = node
-                .attributes
-                .get("value")
-                .map(String::as_str)
-                .unwrap_or("");
+            }
+            // Through `control_value`, as focus read it (#1159): a textarea
+            // whose `value` attribute is removed while focused holds its text
+            // children again, as the web's `.value` does — not "".
+            let dom =
+                rinch_dom::form_control::control_value(&d.tree.nodes, node_id).unwrap_or_default();
+            let dom: &str = dom.as_ref();
             if dom == self.focused_input_value && self.focused_input_deferred_value.is_none() {
                 return;
             }
