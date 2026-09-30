@@ -105,6 +105,11 @@ mod tests {
             ("99999999999", None),
             ("2147483648", None),
             ("-2147483649", None),
+            // review #1167: an overflow whose last digit is 0 (a clamping
+            // `saturating_mul` answered i32::MAX / MIN here).
+            ("2147483650", None),
+            ("-2147483650", None),
+            ("21474836470", None),
             // NBSP is not ASCII whitespace; fullwidth digits are not ASCII digits.
             ("\u{a0}5", None),
             ("\u{ff10}\u{ff13}", None),

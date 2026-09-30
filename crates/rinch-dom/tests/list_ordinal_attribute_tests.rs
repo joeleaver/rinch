@@ -85,3 +85,24 @@ fn ol_start_and_li_value_parse_like_html() {
         "value=\"2.5\" is 2, \"abc\" is ignored, \"\\t7x\" is 7"
     );
 }
+
+/// review #1167: the ordinal saturates at `i32::MAX` rather than overflowing
+/// (a debug-build panic at 0707b561 for any `<li>` after one numbered
+/// `i32::MAX`). Chrome 153, `list-style-position: inside` in monospace: every
+/// marker after `2147483646` is 12 characters wide ("2147483647. "), never the
+/// 13 of a wrapped "-2147483648. ".
+#[test]
+fn an_ordinal_at_i32_max_saturates_instead_of_overflowing() {
+    let mut doc = RinchDocument::new();
+    let from_start = list(&mut doc, Some("2147483646"), &[None, None, None]);
+    let from_value = list(&mut doc, None, &[Some("2147483647"), None]);
+    let from_min = list(&mut doc, Some("-2147483648"), &[None, None]);
+    doc.resolve_layout(800.0, 600.0);
+    let read = |ids: &[NodeId]| ids.iter().map(|&li| marker(&doc, li)).collect::<Vec<_>>();
+    assert_eq!(
+        read(&from_start),
+        ["2147483646", "2147483647", "2147483647"]
+    );
+    assert_eq!(read(&from_value), ["2147483647", "2147483647"]);
+    assert_eq!(read(&from_min), ["-2147483648", "-2147483647"]);
+}
