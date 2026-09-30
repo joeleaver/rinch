@@ -24,8 +24,11 @@
 //! the font size) times `size` (an `<input>`, default 20) or `cols` (a
 //! `<textarea>`, default 20), plus, for an `<input>`, its widest glyph extent
 //! less one average character and, for a `<textarea>`, a 15px scrollbar
-//! gutter. See [`form_control_content_width`] for the formula and what it does
-//! not model. The measure answers it as the content-box width wherever the
+//! gutter — at a device scale factor of 1, where Chrome's device-px arithmetic
+//! and rinch's CSS-px arithmetic agree. See [`form_control_content_width`] for
+//! the formula, the averages Chrome does not trust, and what it does not
+//! model. A face registered after layout re-sizes the controls
+//! (`RinchDocument::note_fonts_registered`). The measure answers it as the content-box width wherever the
 //! width is intrinsic — inline, a flex-row item, inside an `inline-block` —
 //! and an author `width` (or `max-width`) wins as for any box. A control's
 //! value never sizes it. One difference is left: a `display: block` control

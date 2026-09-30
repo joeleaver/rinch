@@ -72,6 +72,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,
     `measured_width` keeps it for a collapsing root (`width_keeping_nbsp`).
     `crates/rinch-dom/tests/inline_edge_space_tests.rs` and `nbsp_line_box_tests.rs` are the pins.
+- **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on; parley does not re-export it, so a parley bump that moves skrifa silently builds a second copy unless this pin moves with it.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)
@@ -4862,14 +4863,23 @@ Make changes, rebuild, launch again. The full cycle:
   else those children), which `paint_input_value` draws and the desktop shell
   edits from. An `<input>`'s children are not drawn. A block-level element
   child is still laid out as content (#1178). **Its width comes from `size`
-  / `cols`** (#1177), as in Chrome 153: the primary font's OS/2
+  / `cols`** (#1177), as in Chrome 153 at a device scale factor of 1 (Chrome
+  computes in device px, so at 1.5 it can differ by several px): the primary
+  font — the face the stack resolves a Latin `x` to, never a lone digit, which
+  fontique can send to a colour-emoji face — and its OS/2
   `xAvgCharWidth` scaled to the font size (`avg`, used as `max(avg,
   round(avg))`, read off Chrome's output) times `size` for a text-like
   `<input>` (default 20; `number` is always 20) plus the font's `head` extent
   `round(xMax - xMin)` less one `avg`, or times `cols` for a `<textarea>`
   (default 20) plus a 15px scrollbar gutter unless `overflow-y` is
   `hidden`/`clip`; both read by HTML's non-negative integer rules, 0 or invalid
-  meaning 20, and cached per node against the font (`shape_form_control_metrics`).
+  meaning 20, and cached per node against the font and the document's
+  `font_generation` (`shape_form_control_metrics`; `RinchApp::register_app_font`
+  calls `RinchDocument::note_fonts_registered` for a live document, which
+  re-sizes every control). An average above 1.7 × the face's `0` advance — a
+  CJK face's full-width one — is not trusted: Chrome then uses `ceil(zero ×
+  size)` (textarea `+ 15`), unrounded and with no extent term (measured by
+  rewriting only the OS/2 value, on Noto Sans CJK and Inter).
   It is the measure's answer at every available width, so an author `width` or
   `max-width` wins and a narrow container overflows rather than shrinks it. Not
   modelled: the other `<input>` types' widths (the date/time family, the
