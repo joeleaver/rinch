@@ -1360,26 +1360,17 @@ impl DomDocument for WebDocument {
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
         if let Some(n) = self.nodes.get(&node.0) {
+            // A <textarea>'s child text is its *default value*, and nothing
+            // more (issue #1206): the browser shows it until the textarea's
+            // dirty value flag is set — by a user edit or a `value` write — and
+            // from then on a child change reaches `defaultValue` only. That is
+            // HTML's rule and desktop's (#1186), so it is left to the browser.
+            // This used to write `.value` from the children on every change
+            // (#100), which made `textarea { {|| draft.get()} }` a controlled
+            // field on the web alone; a controlled textarea is spelled
+            // `value_fn` or a reactive `value:`, which `set_attribute("value")`
+            // mirrors onto the property.
             n.set_text_content(Some(text));
-            // A <textarea>'s child text is its *default value*, which the browser
-            // stops mirroring onto the live `value` property once the control is
-            // user-edited — the same dirty-flag asymmetry `set_attribute("value")`
-            // handles for other controls (issue #100). So when a textarea's text
-            // changes — set directly on it, or (the reactive `textarea { {|| … } }`
-            // case) on one of its child text nodes — re-sync its value property.
-            let textarea = if let Some(ta) = n.dyn_ref::<web_sys::HtmlTextAreaElement>() {
-                Some(ta.clone())
-            } else if let Some(parent) = n.parent_node() {
-                parent.dyn_into::<web_sys::HtmlTextAreaElement>().ok()
-            } else {
-                None
-            };
-            if let Some(ta) = textarea {
-                let content = ta.text_content().unwrap_or_default();
-                if ta.value() != content {
-                    ta.set_value(&content);
-                }
-            }
         }
     }
 
