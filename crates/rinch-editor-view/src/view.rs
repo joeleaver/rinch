@@ -395,12 +395,15 @@ fn same_table_spans(a: &Node, b: &Node) -> bool {
     a.child_count() == b.child_count()
         && (0..a.child_count()).all(|r| {
             let (ra, rb) = (a.child(r), b.child(r));
-            ra.child_count() == rb.child_count()
-                && (0..ra.child_count()).all(|i| {
-                    let (ca, cb) = (ra.child(i), rb.child(i));
-                    span(ca, "colspan") == span(cb, "colspan")
-                        && span(ca, "rowspan") == span(cb, "rowspan")
-                })
+            // An edit shares every row it did not touch by reference, so a
+            // keystroke in a cell compares one row's cells, not the table's.
+            ra.same_ref(rb)
+                || ra.child_count() == rb.child_count()
+                    && (0..ra.child_count()).all(|i| {
+                        let (ca, cb) = (ra.child(i), rb.child(i));
+                        span(ca, "colspan") == span(cb, "colspan")
+                            && span(ca, "rowspan") == span(cb, "rowspan")
+                    })
         })
 }
 
@@ -463,6 +466,8 @@ impl ViewDesc {
     ///
     /// [`TableMap`]: rinch_editor_core::tables::TableMap
     fn sync_table_spans(&mut self) {
+        #[cfg(test)]
+        table_span_tests::SYNCS.with(|n| n.set(n.get() + 1));
         let rects = rinch_editor_core::tables::cell_rects(&self.node);
         for (row, row_rects) in self.children.iter_mut().zip(&rects) {
             for (cell, rect) in row.children.iter_mut().zip(row_rects) {
@@ -4242,6 +4247,11 @@ mod tests {
 #[cfg(test)]
 mod table_span_tests {
     use super::*;
+
+    thread_local! {
+        /// How many times a table computed its map and placed its cells.
+        pub(super) static SYNCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
     use rinch_core::dom::NodeId;
     use rinch_core::dom::mock::MockDomDocument;
     use rinch_editor_core::model::{Attrs, Fragment};
@@ -4473,6 +4483,55 @@ mod table_span_tests {
         assert_eq!(placement(&r, c[1]), p("span 2", "span 2"));
     }
 
+    /// Typing in a cell computes no map and places no cell: only a change to
+    /// what the map is computed from does. (A table computing its whole map on
+    /// every keystroke would give each placement the same answer, so no
+    /// placement assertion can see it; the count does.)
+    #[test]
+    fn typing_in_a_cell_places_no_cell() {
+        let r = rig();
+        let s = Rc::new(Schema::starter_kit());
+        let t = table(&s, &[vec![(2, 1)], vec![(1, 1), (1, 1)]]);
+        let st = state_with(&s, t.clone());
+        SYNCS.with(|n| n.set(0));
+        let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        assert_eq!(
+            SYNCS.with(|n| n.get()),
+            1,
+            "control: the build placed the cells"
+        );
+        // Inside the second row's first cell's paragraph: table open 0, row 1,
+        // the first row, then row open, cell open, paragraph open.
+        let inside = 1 + t.child(0).node_size() + 3;
+        let mut tr = st.tr();
+        tr.set_selection(rinch_editor_core::Selection::cursor(
+            rinch_editor_core::Pos(inside),
+        ));
+        tr.insert_text("x").unwrap();
+        let st2 = st.apply(tr);
+        view.update_dom(&st, &st2);
+        assert_eq!(
+            st2.doc.child(0).child(1).child(0).child(0).child(0).text(),
+            Some("xc0"),
+            "control: the text landed in the cell"
+        );
+        assert_eq!(
+            SYNCS.with(|n| n.get()),
+            1,
+            "a keystroke re-placed the cells"
+        );
+        // Control: a span change does place them.
+        let mut tr = st2.tr();
+        tr.set_node_attr(2, "colspan", AttrValue::Int(1)).unwrap();
+        let st3 = st2.apply(tr);
+        view.update_dom(&st2, &st3);
+        assert_eq!(
+            SYNCS.with(|n| n.get()),
+            2,
+            "control: a span change re-placed them"
+        );
+    }
+
     /// A cell whose host is rebuilt — `td` to `th`, the same spans — gets its
     /// placement written on the new host, though nothing about the table's
     /// spans changed.
@@ -4496,5 +4555,330 @@ mod table_span_tests {
         let after = cells(&r)[0];
         assert_ne!(after, before, "control: the host was rebuilt");
         assert_eq!(placement(&r, after), p("span 2", "auto"));
+    }
+}
+
+/// #1182, from its review: every cell's placement after an incremental update
+/// equals a fresh render of the same state, after random table commands,
+/// undo/redo, in-place span edits, row replacements and whole-document swaps;
+/// and a text edit inside a cell rewrites no placement. A row replaced by one
+/// of another width changes a row's cell count while the row count stays put,
+/// which `same_table_spans` must see and no named fixture covers.
+#[cfg(test)]
+mod table_span_differential {
+    use super::*;
+    use rinch_core::dom::NodeId;
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_editor_core::model::{Attrs, Fragment};
+    use rinch_editor_core::{AttrValue, EditorState, Schema, Selection, default_plugins};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct Rig {
+        doc: Rc<RefCell<dyn DomDocument>>,
+        container: NodeHandle,
+        container_id: NodeId,
+    }
+    fn rig() -> Rig {
+        let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+        let doc: Rc<RefCell<dyn DomDocument>> = mock;
+        let container_id = doc.borrow_mut().create_element("div");
+        let container = NodeHandle::new(container_id, Rc::downgrade(&doc));
+        Rig {
+            doc,
+            container,
+            container_id,
+        }
+    }
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+    fn span(rng: &mut Rng, big: bool) -> i64 {
+        match rng.below(10) {
+            0..=5 => 1,
+            6 => 2,
+            7 => 3,
+            8 if big => i64::MAX,
+            8 => 2,
+            _ if big => 3_000_000,
+            _ => 1,
+        }
+    }
+    fn cell(s: &Schema, c: i64, r: i64, text: &str) -> Node {
+        let p = s
+            .create_node(
+                "paragraph",
+                Attrs::new(),
+                Fragment::from_node(s.text(text).unwrap()),
+            )
+            .unwrap();
+        s.create_node(
+            "table_cell",
+            Attrs::from_iter([
+                ("colspan", AttrValue::Int(c)),
+                ("rowspan", AttrValue::Int(r)),
+            ]),
+            Fragment::from_node(p),
+        )
+        .unwrap()
+    }
+    fn random_table(s: &Schema, rng: &mut Rng, big: bool) -> Node {
+        let nrows = 1 + rng.below(4) as usize;
+        let rows = (0..nrows)
+            .map(|ri| {
+                let n = 1 + rng.below(4) as usize;
+                let cells = (0..n)
+                    .map(|ci| cell(s, span(rng, big), span(rng, big), &format!("r{ri}c{ci}")))
+                    .collect();
+                s.create_node("table_row", Attrs::new(), Fragment::from_children(cells))
+                    .unwrap()
+            })
+            .collect();
+        s.create_node("table", Attrs::new(), Fragment::from_children(rows))
+            .unwrap()
+    }
+    fn state_with(s: &Rc<Schema>, t: Node) -> EditorState {
+        let para = s
+            .create_node(
+                "paragraph",
+                Attrs::new(),
+                Fragment::from_node(s.text("after").unwrap()),
+            )
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_children(vec![t, para]))
+            .unwrap();
+        EditorState::create(s.clone(), doc, default_plugins())
+    }
+    fn cells(r: &Rig) -> Vec<NodeId> {
+        fn walk(d: &dyn DomDocument, id: NodeId, out: &mut Vec<NodeId>) {
+            if matches!(
+                d.get_attribute(id, "data-pm-type").as_deref(),
+                Some("table_cell" | "table_header_cell")
+            ) {
+                out.push(id);
+            }
+            for c in d.get_children(id) {
+                walk(d, c, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&*r.doc.borrow(), r.container_id, &mut out);
+        out
+    }
+    fn placements(r: &Rig) -> Vec<(String, String)> {
+        cells(r)
+            .into_iter()
+            .map(|id| {
+                let style = r
+                    .doc
+                    .borrow()
+                    .get_attribute(id, "style")
+                    .unwrap_or_default();
+                let decls = rinch_core::dom::split_declarations(&style);
+                let get = |p: &str| {
+                    decls
+                        .iter()
+                        .find(|(k, _)| k == p)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_else(|| format!("<no {p}>"))
+                };
+                (get("grid-column"), get("grid-row"))
+            })
+            .collect()
+    }
+    /// Positions of every cell (the position before it).
+    fn cell_positions(doc: &Node) -> Vec<usize> {
+        let mut out = Vec::new();
+        doc.nodes_between(0, doc.content_size(), &mut |n, pos, _| {
+            if n.type_name() == "table_cell" || n.type_name() == "table_header_cell" {
+                out.push(pos);
+            }
+            true
+        });
+        out
+    }
+    fn fresh(st: &EditorState) -> Vec<(String, String)> {
+        let r = rig();
+        let _v = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), st);
+        placements(&r)
+    }
+    const CMDS: &[&str] = &[
+        "addRowAfter",
+        "addRowBefore",
+        "addColumnAfter",
+        "addColumnBefore",
+        "deleteRow",
+        "deleteColumn",
+        "mergeCells",
+        "splitCell",
+        "undo",
+        "redo",
+    ];
+
+    fn run(seed: u64, big: bool, steps: usize) -> (usize, usize) {
+        let mut rng = Rng(seed * 2654435761 + 7);
+        let s = Rc::new(Schema::starter_kit());
+        let r = rig();
+        let mut st = state_with(&s, random_table(&s, &mut rng, big));
+        let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        assert_eq!(placements(&r), fresh(&st), "seed {seed} initial");
+        let (mut applied, mut textprobe) = (0, 0);
+        for step in 0..steps {
+            let cps = cell_positions(&st.doc);
+            if cps.is_empty() {
+                break;
+            }
+            let kind = rng.below(10);
+            let next: Option<EditorState> = if kind <= 5 {
+                let a = cps[rng.below(cps.len() as u64) as usize];
+                let sel = if rng.below(2) == 0 {
+                    Selection::text(rinch_editor_core::Pos(a + 2), rinch_editor_core::Pos(a + 2))
+                } else {
+                    let b = cps[rng.below(cps.len() as u64) as usize];
+                    Selection::cell(rinch_editor_core::Pos(a), rinch_editor_core::Pos(b))
+                };
+                let mut tr = st.tr();
+                tr.set_selection(sel);
+                let st1 = st.apply(tr);
+                let name = CMDS[rng.below(CMDS.len() as u64) as usize];
+                let cmd = st1.command(name).unwrap_or_else(|| panic!("no {name}"));
+                if big
+                    && (name.starts_with("add") || name == "splitCell")
+                    && rinch_editor_core::tables::column_count(st1.doc.child(0)) > 4096
+                {
+                    st = st1;
+                    continue;
+                }
+                let out = st1.run_command(&cmd);
+                // Also feed the selection-only step through the view.
+                view.update_dom(&st, &st1);
+                st = st1;
+                out
+            } else if kind == 6 {
+                // Attr edit in place.
+                let a = cps[rng.below(cps.len() as u64) as usize];
+                let mut tr = st.tr();
+                let attr = if rng.below(2) == 0 {
+                    "colspan"
+                } else {
+                    "rowspan"
+                };
+                {
+                    let ok = tr
+                        .set_node_attr(a, attr, AttrValue::Int(span(&mut rng, big)))
+                        .is_ok();
+                    if ok { Some(st.apply(tr)) } else { None }
+                }
+            } else if kind == 7 {
+                // Text edit inside a cell: must not rewrite placements.
+                let a = cps[rng.below(cps.len() as u64) as usize];
+                // Tamper every cell's grid-column with a sentinel; a text edit must leave it.
+                let ids = cells(&r);
+                let saved = placements(&r);
+                for id in &ids {
+                    let h = NodeHandle::new(*id, Rc::downgrade(&r.doc));
+                    h.set_style("grid-column", "7 / 8");
+                }
+                let mut tr = st.tr();
+                tr.set_selection(Selection::text(
+                    rinch_editor_core::Pos(a + 2),
+                    rinch_editor_core::Pos(a + 2),
+                ));
+                tr.insert_text("x").unwrap();
+                let st2 = st.apply(tr);
+                view.update_dom(&st, &st2);
+                let after = placements(&r);
+                assert!(
+                    after.iter().all(|(c, _)| c == "7 / 8"),
+                    "seed {seed} step {step}: a text edit rewrote placements: {after:?}"
+                );
+                for (id, (c, _)) in ids.iter().zip(&saved) {
+                    NodeHandle::new(*id, Rc::downgrade(&r.doc)).set_style("grid-column", c);
+                }
+                textprobe += 1;
+                st = st2;
+                None
+            } else if kind == 8 {
+                // Collab-like whole-doc replacement with a fresh random table.
+                let t = random_table(&s, &mut rng, big);
+                let size = st.doc.content_size();
+                let para = s
+                    .create_node(
+                        "paragraph",
+                        Attrs::new(),
+                        Fragment::from_node(s.text("after").unwrap()),
+                    )
+                    .unwrap();
+                let mut tr = st.tr();
+                tr.replace_with(0, size, Fragment::from_children(vec![t, para]))
+                    .unwrap();
+                Some(st.apply(tr))
+            } else {
+                // Replace one row with a random row (same or different cell count).
+                let t = &st.doc.child(0);
+                let ri = rng.below(t.child_count() as u64) as usize;
+                let mut pos = 1;
+                for i in 0..ri {
+                    pos += t.child(i).node_size();
+                }
+                let old = t.child(ri).node_size();
+                let n = 1 + rng.below(3) as usize;
+                let cellsv = (0..n)
+                    .map(|ci| {
+                        cell(
+                            &s,
+                            span(&mut rng, big),
+                            span(&mut rng, big),
+                            &format!("n{ci}"),
+                        )
+                    })
+                    .collect();
+                let row = s
+                    .create_node("table_row", Attrs::new(), Fragment::from_children(cellsv))
+                    .unwrap();
+                let mut tr = st.tr();
+                {
+                    let ok = tr
+                        .replace_with(pos, pos + old, Fragment::from_node(row))
+                        .is_ok();
+                    if ok { Some(st.apply(tr)) } else { None }
+                }
+            };
+            if let Some(n) = next {
+                if !rinch_editor_core::tables::is_table(n.doc.child(0)) {
+                    break;
+                }
+                view.update_dom(&st, &n);
+                st = n;
+                applied += 1;
+            }
+            assert_eq!(
+                placements(&r),
+                fresh(&st),
+                "seed {seed} step {step} kind {kind}"
+            );
+        }
+        (applied, textprobe)
+    }
+
+    #[test]
+    fn incremental_placements_match_a_fresh_render() {
+        let (mut a, mut t) = (0, 0);
+        for seed in 1..=300 {
+            let (x, y) = run(seed, false, 40);
+            a += x;
+            t += y;
+        }
+        assert!(a > 1000 && t > 500);
     }
 }

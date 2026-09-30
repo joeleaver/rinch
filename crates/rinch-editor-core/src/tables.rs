@@ -1243,4 +1243,34 @@ mod grid_bound_tests {
             vec![vec![rect(0, 0, w, 2)], vec![None, None]]
         );
     }
+
+    /// `TableMap::cell_rect` from any slot of a cell answers the cell's whole
+    /// rectangle: from a slot in a merged cell's second row and second column
+    /// it walks up and left to the origin. Off the fixed point: the cell does
+    /// not start at column 0 or row 0.
+    #[test]
+    fn cell_rect_from_any_slot_walks_to_the_cells_origin() {
+        let s = Schema::starter_kit();
+        let t = spans_table(
+            &s,
+            &[
+                vec![(1, 1), (1, 1), (1, 1)],
+                vec![(1, 1), (2, 2)],
+                vec![(1, 1)],
+            ],
+        );
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.width(), 3, "control");
+        let whole = rect(1, 1, 3, 3);
+        // Slots (row 1, col 1) .. (row 2, col 2) all belong to the merged cell.
+        for (row, col) in [(1, 1), (1, 2), (2, 1), (2, 2)] {
+            assert_eq!(map.cell_rect(row * 3 + col), whole, "slot ({row}, {col})");
+        }
+        assert_eq!(
+            map.cell_rect(2 * 3),
+            rect(0, 2, 1, 3),
+            "control: a plain cell"
+        );
+        assert_eq!(map.cell_rect(9), None, "past the grid");
+    }
 }
