@@ -248,13 +248,18 @@ pub(crate) fn break_lines_hanging_spaces(
 /// Break a text **leaf**'s layout — a flex or grid item's own text, measured
 /// through `NodeContext::Text` rather than an IFC — at `max_width`, without
 /// the empty line parley commits after a final newline ([`phantom_last_line`],
-/// #1172). A leaf hangs no spaces (it never has), so this is
-/// [`break_lines_hanging_spaces`] with that half off.
+/// #1172). A leaf hangs no spaces (it never has), so this is the phantom half of [`break_lines_hanging_spaces`] alone.
 pub(crate) fn break_leaf_lines(
     layout: &mut parley::Layout<Brush>,
     max_width: Option<f32>,
 ) -> HangStats {
-    break_lines_hanging_spaces(layout, "", max_width, false)
+    layout.break_all_lines(max_width);
+    let mut stats = HangStats::default();
+    if let Some(keep) = phantom_last_line(layout) {
+        break_lines_up_to(layout, max_width, keep);
+        stats.phantom_rebreaks = 1;
+    }
+    stats
 }
 
 /// The line count to keep when `layout` ends in an empty line parley 0.11.1

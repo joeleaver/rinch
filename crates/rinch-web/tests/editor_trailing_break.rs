@@ -234,3 +234,107 @@ fn the_caret_after_a_break_before_text_is_at_the_texts_start() {
     );
     f.done();
 }
+
+impl F {
+    fn key(&self, key: &str, shift: bool) {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_key(key);
+        init.set_code(key);
+        init.set_shift_key(shift);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        document()
+            .query_selector("textarea[data-pm-capture]")
+            .unwrap()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+    }
+}
+
+#[wasm_bindgen_test]
+fn arrows_home_end_and_backspace_across_a_trailing_break() {
+    let f = F::new("<p>ab<br></p><p>cd</p>");
+    f.at(2);
+    f.key("ArrowDown", false);
+    assert_eq!(f.head(), 3, "down onto the empty line");
+    f.key("ArrowDown", false);
+    assert!(
+        f.handle.selection().head().0 >= 6,
+        "into the next paragraph"
+    );
+    f.key("ArrowUp", false);
+    assert_eq!(f.head(), 3, "up onto the empty line");
+    f.key("ArrowUp", false);
+    assert!(f.head() <= 2, "up to line 1");
+    f.at(3);
+    f.key("Home", false);
+    assert_eq!(f.head(), 3, "home on the empty line");
+    f.key("End", false);
+    assert_eq!(f.head(), 3, "end on the empty line");
+    f.at(0);
+    f.key("End", false);
+    assert_eq!(f.head(), 2, "end on line 1: before the break");
+    f.at(3);
+    f.key("Backspace", false);
+    assert_eq!(
+        f.placeholders(),
+        0,
+        "the break and its placeholder are gone"
+    );
+    f.done();
+}
+
+#[wasm_bindgen_test]
+fn the_caret_after_a_break_before_marked_text_is_on_line_two() {
+    let f = F::new("<p>ab<br><strong>cd</strong></p>");
+    let line = f.line();
+    let top = f.caret_top(3);
+    assert!((line..2.0 * line).contains(&top), "line 2, got {top}");
+    f.done();
+}
+
+/// A code block whose text ends in a newline: the browser lays `<pre>ab\n</pre>`
+/// out as one line, so the caret after the newline had no line (the web had
+/// this before #1172; it was a caret rect the size of the whole block). The
+/// placeholder covers a text child ending in `\n` as ProseMirror's does, and
+/// the caret is drawn on the line it makes.
+#[wasm_bindgen_test]
+fn a_code_block_ending_in_a_newline_has_a_line_for_the_caret() {
+    let f = F::new("<p>x</p><pre>ab\n</pre>");
+    let pre = document()
+        .query_selector("[data-pm-editor] pre")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        pre.query_selector_all("br[data-pm-trailing-break]")
+            .unwrap()
+            .length(),
+        1
+    );
+    let cs = web_sys::window()
+        .unwrap()
+        .get_computed_style(&pre)
+        .unwrap()
+        .unwrap();
+    let line: f64 = cs
+        .get_property_value("line-height")
+        .unwrap()
+        .trim_end_matches("px")
+        .parse()
+        .expect("a px line-height");
+    let r = pre.get_bounding_client_rect();
+    // `x` is Pos 1..2, the paragraph closes at 3, the code block's text
+    // starts at 4: after `ab\n` is Pos 7.
+    let cr = f.handle.caret_rect(Pos(7)).expect("caret");
+    let top = cr.y as f64 - r.y();
+    assert!(
+        top >= line - 1.0 && (cr.height as f64) < line + 1.0,
+        "the caret after the final newline is on line 2: top {top}, height {}, line {line}, block {}",
+        cr.height,
+        r.height()
+    );
+    f.done();
+}

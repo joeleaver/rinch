@@ -360,8 +360,9 @@ pub(crate) struct ViewDesc {
     /// decoration, so a per-keystroke pass costs one range test per top-level
     /// block rather than a walk of the whole document.
     has_deco: bool,
-    /// The trailing-break placeholder — a second `<br>` after a textblock's
-    /// last child when that child is a hard break — while shown
+    /// The trailing-break placeholder — a `<br>` after a textblock's last
+    /// child when that child is a hard break or text ending in a newline —
+    /// while shown
     /// ([`Self::sync_trailing_break`]). Always the element's last child.
     trailing_break: Option<NodeHandle>,
 }
@@ -408,14 +409,16 @@ impl ViewDesc {
 
     /// Show or drop the **trailing-break placeholder**: a `<br
     /// data-pm-trailing-break>` after a textblock whose last child is a hard
-    /// break, which is ProseMirror's `ProseMirror-trailingBreak`.
+    /// break or text ending in a newline, which is ProseMirror's rule for its
+    /// `ProseMirror-trailingBreak`.
     ///
     /// A line box after a block's last forced break exists in CSS only when
-    /// something comes after the break: `<p>a<br></p>` is one line, in every
-    /// browser and on rinch-dom (#1172). So a paragraph ending in a hard break
-    /// (Shift+Enter at its end) would show no line for the caret after the
-    /// break to sit on. The second `<br>` is that something; the line it ends
-    /// is the empty one.
+    /// something comes after the break: `<p>a<br></p>` and a code block's
+    /// `<pre>a\n</pre>` are one line, in every browser and on rinch-dom
+    /// (#1172). So a paragraph ending in a hard break (Shift+Enter at its end),
+    /// or a code block whose text ends in a newline (a load, a peer's edit),
+    /// would show no line for the caret after the break to sit on. The second
+    /// `<br>` is that something; the line it ends is the empty one.
     ///
     /// It is outside the model, after every model position, and outside the
     /// descriptors (`children` stays 1:1 with the node's): it carries no
@@ -424,10 +427,12 @@ impl ViewDesc {
     /// never reaches its byte — past the model's end, [`ifc_byte_to_char`]
     /// answers the block's end.
     fn sync_trailing_break(&mut self, doc: &DocRef) {
-        let wanted = !self.is_text
-            && self.node.is_textblock()
-            && self.node.child_count() > 0
-            && node_dom_tag(self.node.child(self.node.child_count() - 1)) == "br";
+        let last = (!self.is_text && self.node.is_textblock() && self.node.child_count() > 0)
+            .then(|| self.node.child(self.node.child_count() - 1));
+        let wanted = last.is_some_and(|last| match last.text() {
+            Some(text) => text.ends_with('\n'),
+            None => node_dom_tag(last) == "br",
+        });
         match (wanted, self.trailing_break.is_some()) {
             (true, false) => {
                 if let Some(br) = create_element(doc, "br") {
@@ -4097,5 +4102,41 @@ mod tests {
         let p = children(&h, h.container_id)[0];
         assert!(is_last_child_placeholder(&h, p), "{:?}", shape(&h, p));
         assert_eq!(placeholders(&h, p), 1);
+    }
+
+    /// A code block whose text ends in a newline gets the placeholder too
+    /// (ProseMirror's rule), after the text; text that stops ending in one
+    /// drops it.
+    #[test]
+    fn a_code_block_ending_in_a_newline_gets_a_placeholder() {
+        let h = harness();
+        let s = schema();
+        let code = |t: &str| {
+            s.branch("code_block", Fragment::from_node(s.text(t).unwrap()))
+                .unwrap()
+        };
+        let mut st = state(s.clone(), doc_node(&s, vec![code("ab\n"), code("cd")]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let blocks = children(&h, h.container_id);
+        assert_eq!(placeholders(&h, blocks[0]), 1);
+        assert!(is_last_child_placeholder(&h, blocks[0]));
+        assert_eq!(placeholders(&h, blocks[1]), 0, "no final newline");
+        // Typing after the newline patches the text in place; it no longer
+        // ends in one.
+        let mut tr = st.tr();
+        tr.set_selection(Selection::cursor(rinch_editor_core::Pos(4)));
+        tr.insert_text("x").unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        st = next;
+        assert_eq!(placeholders(&h, blocks[0]), 0);
+        // And a newline at the end of the second block's text.
+        let mut tr = st.tr();
+        tr.set_selection(Selection::cursor(rinch_editor_core::Pos(9)));
+        tr.insert_text("\n").unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        assert_eq!(placeholders(&h, blocks[1]), 1, "{:?}", shape(&h, blocks[1]));
+        assert!(is_last_child_placeholder(&h, blocks[1]));
     }
 }

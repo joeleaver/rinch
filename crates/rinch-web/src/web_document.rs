@@ -809,6 +809,14 @@ impl WebDocument {
         range.set_end(&text_node, off).ok()?;
         let collapsed = range.get_bounding_client_rect();
         if collapsed.height() <= 0.0 {
+            // Right after a preserved newline that ends its text node (a code
+            // block's `ab\n`), Chrome gives the collapsed range no rect: the
+            // position starts the next line, where whatever follows starts —
+            // the editor's trailing-break placeholder, at a block's end (#1172).
+            let text = text_node.text_content().unwrap_or_default();
+            if text.ends_with('\n') && off as usize == text.encode_utf16().count() {
+                return self.caret_where_next_starts(&text_node, block);
+            }
             return None;
         }
         let upstream = (
@@ -881,7 +889,22 @@ impl WebDocument {
         if !after {
             return rect_of(el.get_bounding_client_rect());
         }
-        let mut next = next_leaf_in(br, block);
+        self.caret_where_next_starts(br, block)
+    }
+
+    /// The caret at the start of whatever comes after `node` in `block` —
+    /// the first position of the next text, or the next `<br>`'s box — as a
+    /// viewport `(x, y, height)`. `None` when that is neither (an image), or
+    /// when nothing follows.
+    fn caret_where_next_starts(
+        &self,
+        node: &web_sys::Node,
+        block: &web_sys::Node,
+    ) -> Option<(f32, f32, f32)> {
+        let rect_of = |r: web_sys::DomRect| {
+            (r.height() > 0.0).then(|| (r.x() as f32, r.y() as f32, r.height() as f32))
+        };
+        let mut next = next_leaf_in(node, block);
         while let Some(node) = next {
             if node.node_type() == web_sys::Node::TEXT_NODE {
                 if !node.text_content().unwrap_or_default().is_empty() {

@@ -120,6 +120,13 @@ fn a_trailing_br_inside_an_inline_element() {
         20.0,
         "a<span><br></span>",
     );
+    check(
+        "div",
+        "",
+        &[Text("a"), Br, El("b", "", &[Text("b"), Br])],
+        40.0,
+        "a<br><b>b<br></b>",
+    );
 }
 
 #[test]
@@ -244,13 +251,6 @@ fn content_after_the_last_break_keeps_its_line() {
     );
     check(
         "div",
-        "",
-        &[Text("a"), Br, El("b", "", &[Text("b"), Br])],
-        40.0,
-        "a<br><b>b<br></b>",
-    );
-    check(
-        "div",
         "white-space: pre-wrap",
         &[Text("a\n ")],
         40.0,
@@ -345,4 +345,74 @@ fn an_inline_flexs_own_text_ending_in_a_newline() {
         (h - 20.0).abs() < 0.5,
         "inline-flex pre-wrap a\\n: Chrome 20, rinch {h}"
     );
+}
+
+/// More shapes, from the review of PR #1197, each Chrome 153's number on the
+/// same markup: a trailing break reached through a `display: contents`
+/// wrapper, an `inline-block`'s own IFC, a newline inside a span, and things
+/// after the break that are not content (a collapsed space in a positioned
+/// span, empty spans and wrappers, a float).
+#[test]
+fn more_shapes_of_a_final_forced_break() {
+    let cases: Vec<(&str, &str, Vec<P>, f32)> = vec![
+        (
+            "a<span contents>b<br></span>",
+            "",
+            vec![Text("a"), El("span", "display: contents", &[Text("b"), Br])],
+            20.0,
+        ),
+        (
+            "x<span ib>a<br></span>y",
+            "",
+            vec![
+                Text("x"),
+                El("span", "display: inline-block", &[Text("a"), Br]),
+                Text("y"),
+            ],
+            20.0,
+        ),
+        (
+            "a<br><span relative>  </span>",
+            "",
+            vec![
+                Text("a"),
+                Br,
+                El("span", "position: relative", &[Text("  ")]),
+            ],
+            20.0,
+        ),
+        (
+            "<span>a<br></span><span></span>",
+            "",
+            vec![El("span", "", &[Text("a"), Br]), El("span", "", &[])],
+            20.0,
+        ),
+        (
+            "a<br><span contents></span>",
+            "",
+            vec![Text("a"), Br, El("span", "display: contents", &[])],
+            20.0,
+        ),
+        (
+            "a<br><span float></span>",
+            "",
+            vec![Text("a"), Br, El("span", "float: left", &[])],
+            20.0,
+        ),
+        (
+            "pre-wrap a<span>\\n</span>",
+            "white-space: pre-wrap",
+            vec![Text("a"), El("span", "", &[Text("\n")])],
+            20.0,
+        ),
+        (
+            "pre-wrap a\\n  (control)",
+            "white-space: pre-wrap",
+            vec![Text("a\n  ")],
+            40.0,
+        ),
+    ];
+    for (what, extra, pieces, chrome) in &cases {
+        check("div", extra, pieces, *chrome, what);
+    }
 }
