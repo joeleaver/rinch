@@ -75,7 +75,7 @@ fn make_empty_cell(schema: &Schema) -> Option<Node> {
 
 /// The colspan attribute of `cell`, clamped to ≥1. The document's word, not the
 /// grid's: only [`split_cell`] reads it, to tell a merged cell from a plain one.
-/// Span arithmetic reads [`cell_rect`] instead.
+/// Span arithmetic reads [`TableMap::cell_rect`] instead.
 fn colspan(cell: &Node) -> i64 {
     cell.attrs().get_int("colspan").unwrap_or(1).max(1)
 }
