@@ -447,14 +447,18 @@ Tab navigation, no Enter/Space activation, no DevTools shortcut. Returning
 exactly as it would for an unregistered node, so registering costs you nothing
 you did not ask for.
 
-`k.key` is spelled the way the browser spells `KeyboardEvent.key` — with one
-long-standing exception, the spacebar, which rinch names `"Space"` where a
-browser reports `" "` (so `rinch-web`, which forwards `event.key()`
-unchanged, reports `" "` there). It is resolved in four steps:
+`k.key` is spelled the way the browser spells `KeyboardEvent.key`, on desktop
+as on `rinch-web` (which forwards `event.key()` unchanged), and `k.code` the
+way it spells `KeyboardEvent.code`. That includes the **spacebar: `k.key` is
+`" "` and `k.code` is `"Space"`**, and `k.is_space()` answers it on every
+backend. (Desktop reported `k.key == "Space"` until issue #1161; code that
+matched that should match `k.code == "Space"` or `k.is_space()` instead.) The
+key is resolved in four steps:
 
-1. **A named key wins over the text it would insert** — `"ArrowLeft"`,
-   `"Enter"`, `"Escape"`, `"Tab"`, `"PageUp"`, `"F1"`…`"F12"`, `"Shift"`, and
-   `"Space"` (not `" "`).
+1. **A key with a fixed spelling wins over the text it would insert** —
+   `"ArrowLeft"`, `"Enter"`, `"Escape"`, `"Tab"`, `"PageUp"`, `"F1"`…`"F12"`,
+   `"Shift"`, and the spacebar's `" "`, so a release (no text) and a chord
+   (text suppressed) spell it like a plain press.
 2. **Otherwise the inserted text wins**, so a non-QWERTY layout reports the
    letter actually typed rather than the physical QWERTY position: the AZERTY
    key at the QWERTY-Q position is `k.key == "a"`, and Shift+A is `"A"`.

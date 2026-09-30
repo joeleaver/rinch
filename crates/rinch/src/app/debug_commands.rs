@@ -38,8 +38,9 @@ fn pointer_modifiers(names: &Option<Vec<String>>) -> Result<Option<Modifiers>, D
 /// delivers punctuation (`shell/rinch_runtime.rs` translates unlisted winit
 /// keys to `Other`) — so the keyboard hook's key string falls through to the
 /// `text` field instead of masquerading as a named key. Space keeps its
-/// explicit arm: an injected `' '` must still read as `key = "Space"`, matching
-/// a physical spacebar press (issue #151).
+/// explicit arm: an injected `' '` must still read as the spacebar —
+/// `code = "Space"`, `key = " "` — matching a physical spacebar press (issue
+/// #151; the `key` spelling is #1161's).
 fn char_to_keycode(c: char) -> KeyCode {
     match c.to_ascii_lowercase() {
         ' ' => KeyCode::Space,
@@ -803,8 +804,8 @@ mod keycode_mapping_tests {
 
     #[test]
     fn space_char_keeps_its_named_keycode() {
-        // Space-parity gotcha: an injected ' ' must still read as
-        // `key = "Space"`, exactly like a physical spacebar press.
+        // Space-parity gotcha: an injected ' ' must still read as the
+        // spacebar (`code = "Space"`), exactly like a physical press.
         assert_eq!(char_to_keycode(' '), KeyCode::Space);
     }
 

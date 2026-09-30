@@ -461,7 +461,8 @@ fn a_registered_target_still_receives_its_own_keys() {
     key(&mut f.app, KeyCode::Space, Some(" "));
 
     let log = log_of(&f);
-    for expected in ["a:key:ArrowDown", "a:key:x", "a:key:Enter", "a:key:Space"] {
+    // The spacebar is spelled `" "`, as `KeyboardEvent.key` is (#1161).
+    for expected in ["a:key:ArrowDown", "a:key:x", "a:key:Enter", "a:key: "] {
         assert!(
             log.contains(&expected.to_string()),
             "missing {expected}: {log:?}"

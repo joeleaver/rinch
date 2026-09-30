@@ -481,13 +481,8 @@ impl Component for Select {
                 highlighted.set(Some(next));
                 return true;
             }
-            // Desktop spells Space by name, the browser as the character
-            // (a pinned divergence, #1161).
-            let key = if k.key == "Space" {
-                " "
-            } else {
-                k.key.as_str()
-            };
+            // The spacebar is `" "` on both backends (#1161).
+            let key = if k.is_space() { " " } else { k.key.as_str() };
             // A space typed while a type-ahead prefix is live extends it
             // ("new y" → New York), as the native popup does; otherwise Space
             // commits like Enter.
