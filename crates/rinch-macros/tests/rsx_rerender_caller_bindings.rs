@@ -458,3 +458,82 @@ fn a_value_shared_by_a_prop_and_a_binding_compiles() {
     assert_eq!(p.get_attribute("aria-label").as_deref(), Some("nm-b"));
     assert_eq!(p.get_attribute("data-name").as_deref(), Some("nm"));
 }
+
+// ── a value shared by the render and a binding (review of PR #1193, round 2) ─
+
+// Each of these compiled on main, where the bindings were evaluated inside the
+// render closure: whatever a struct prop, a child and a binding name is
+// captured once. The site bundle keeps that — one closure per site renders and
+// evaluates the bindings — so neither `Clone` nor the capture analysis seeing
+// the name (it cannot see inside `format!`) is needed.
+
+#[component]
+fn r2_e(sig: Signal<String>, s: String) -> NodeHandle {
+    rsx! { Probe { label: {move || { let _ = sig.get(); s.clone() }}, data-s: {|| s.clone()} } }
+}
+
+#[component]
+fn r2_g(sig: Signal<String>, s: String) -> NodeHandle {
+    rsx! { Probe { label: {move || { let _ = sig.get(); s.clone() }}, data-s: {|| format!("x-{s}")} } }
+}
+
+#[component]
+fn r2_i(sig: Signal<String>, s: String) -> NodeHandle {
+    rsx! { div { Probe { label: {move || sig.get()}, class: {|| format!("k-{}", s)}, {s.clone()} } } }
+}
+
+#[component]
+fn r2_j(sig: Signal<String>, s: String) -> NodeHandle {
+    rsx! { Probe { label: {move || sig.get()}, style: s.clone() } }
+}
+
+#[component]
+fn r2_k(sig: Signal<String>, s: NoClone) -> NodeHandle {
+    rsx! { Probe { label: {|| { let _ = sig.get(); s.css() }}, data-s: {|| s.css()} } }
+}
+
+#[component]
+fn r2_l(sig: Signal<String>, s: String) -> NodeHandle {
+    rsx! { Probe { label: {|| format!("{}{s}", sig.get())}, data-s: {|| s.clone()} } }
+}
+
+#[test]
+fn a_value_shared_by_the_render_and_a_binding_compiles_as_on_main() {
+    let sig = Signal::new("a".to_string());
+    let s = || "v".to_string();
+    let (_d1, _s1, e) = mount(|sc| r2_e(sc, sig, s()));
+    let (_d2, _s2, g) = mount(|sc| r2_g(sc, sig, s()));
+    let (_d3, _s3, i) = mount(|sc| r2_i(sc, sig, s()));
+    let (_d4, _s4, j) = mount(|sc| r2_j(sc, sig, "color: plum".into()));
+    let (_d5, _s5, k) = mount(|sc| r2_k(sc, sig, NoClone("nc".into())));
+    let (_d6, _s6, l) = mount(|sc| r2_l(sc, sig, s()));
+    sig.set("b".to_string());
+    let p = |r: &NodeHandle| find_probe(r).expect("rendered");
+    assert_eq!(p(&e).get_attribute("data-s").as_deref(), Some("v"));
+    assert_eq!(p(&g).get_attribute("data-s").as_deref(), Some("x-v"));
+    assert_eq!(classes(&p(&i)), ["probe", "k-v"]);
+    assert_eq!(decl(&p(&j), "color").as_deref(), Some("plum"));
+    assert_eq!(p(&k).get_attribute("data-s").as_deref(), Some("nc"));
+    assert_eq!(p(&l).get_attribute("aria-label").as_deref(), Some("bv"));
+    assert_eq!(p(&l).get_attribute("data-s").as_deref(), Some("v"));
+}
+
+#[component]
+fn spacing_token(label: Signal<String>, margin: Signal<String>) -> NodeHandle {
+    rsx! { Probe { label: {move || label.get()}, mt: {move || margin.get()} } }
+}
+
+/// A reactive shorthand resolves a spacing token at runtime on this path too,
+/// at mount, on its own change and after a re-render.
+#[test]
+fn a_reactive_shorthand_resolves_a_spacing_token_across_re_renders() {
+    let label = Signal::new("a".to_string());
+    let margin = Signal::new("md".to_string());
+    let (_d, _s, root) = mount(|s| spacing_token(s, label, margin));
+    let mt = || decl(&find_probe(&root).unwrap(), "margin-top");
+    assert_eq!(mt().as_deref(), Some("var(--rinch-spacing-md)"));
+    label.set("b".into());
+    assert_eq!(mt().as_deref(), Some("var(--rinch-spacing-md)"));
+    margin.set("xl".into());
+    assert_eq!(mt().as_deref(), Some("var(--rinch-spacing-xl)"));
+}
