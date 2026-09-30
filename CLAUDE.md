@@ -51,6 +51,15 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     line after "text "). Not for `pre-line`, which removes spaces at a line's end (though rinch
     still keeps them in its text, #1043).
     `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
+  - **Collapsing trims NBSP in 0.11.1.** `WhiteSpaceCollapse::Collapse` trims a span's start
+    and end with `str::trim_start`/`trim_end`, which take every Unicode `White_Space` char —
+    U+00A0, U+2009, U+3000 — where CSS collapses and removes only spaces, tabs and segment
+    breaks. So `<div>&nbsp;</div>` had no text and no line box (0 tall; Chrome: one line), and
+    `x&nbsp;` measured as `x` (#1154). `ifc::push_collapsible_text` commits each such run (not U+2028/U+2029, which parley reads as newlines) at the
+    edge of a text node on its own under `Preserve`, through an empty style span as the `<br>`
+    arm does; and since parley also counts a trailing NBSP in `trailing_whitespace`,
+    `measured_width` keeps it for a collapsing root too (`width_keeping_nbsp`).
+    `crates/rinch-dom/tests/nbsp_line_box_tests.rs` is the pin.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)
