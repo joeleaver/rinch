@@ -92,9 +92,16 @@ impl TableMap {
     /// `table_start` (i.e. `table_pos + 1`, the open-token position of its first
     /// row). Total: a structurally-odd table yields a best-effort grid with
     /// [`UNSET`] holes rather than panicking.
+    ///
+    /// The grid is **bounded** (#1176): its width is [`column_count`], which
+    /// caps `width × height` at [`grid_slot_budget`]. A cell is cut at the
+    /// grid's right edge (and at its bottom, for a rowspan past the last row),
+    /// and a cell that starts past the right edge is in no slot, so
+    /// [`Self::find_cell`] answers `None` for it and a command there does
+    /// nothing. No well-formed table is cut: see [`grid_slot_budget`].
     pub fn compute(table: &Node, table_start: usize) -> TableMap {
         let height = table.child_count();
-        let width = find_width(table);
+        let width = column_count(table);
         let mut map = vec![UNSET; width * height];
         let mut row_starts = Vec::with_capacity(height + 1);
 
@@ -107,30 +114,34 @@ impl TableMap {
             let row_node = table.child(row);
             row_starts.push(pos);
             pos += 1; // step past the row's open token → first cell's position
+            // The grid cursor never leaves this row: a cell that would start
+            // past the row's end (a row wider than the capped grid) is in no
+            // slot, and a colspan is cut at the row's end rather than running
+            // on into the next row's slots.
+            let row_end = (row + 1) * width;
             let mut i = 0usize;
             loop {
-                while map_pos < map.len() && map[map_pos] != UNSET {
+                while map_pos < row_end && map[map_pos] != UNSET {
                     map_pos += 1;
                 }
                 if i == row_node.child_count() {
                     break;
                 }
                 let cell = row_node.child(i);
-                let colspan = span_attr(cell, "colspan");
-                let rowspan = span_attr(cell, "rowspan");
-                for h in 0..rowspan {
-                    if row + h >= height {
-                        break; // overlong rowspan — clamp rather than write OOB
-                    }
-                    let start = map_pos + h * width;
-                    for w in 0..colspan {
-                        let idx = start + w;
-                        if idx < map.len() && map[idx] == UNSET {
-                            map[idx] = pos;
+                if map_pos < row_end {
+                    let colspan = span_attr(cell, "colspan").min(row_end - map_pos);
+                    // An overlong rowspan is cut at the last row.
+                    let rowspan = span_attr(cell, "rowspan").min(height - row);
+                    for h in 0..rowspan {
+                        let start = map_pos + h * width;
+                        for slot in &mut map[start..start + colspan] {
+                            if *slot == UNSET {
+                                *slot = pos;
+                            }
                         }
                     }
+                    map_pos += colspan;
                 }
-                map_pos += colspan;
                 pos += cell.node_size();
                 i += 1;
             }
@@ -334,42 +345,71 @@ impl TableMap {
 /// The number of columns in `table` (its grid width), honoring colspan/rowspan —
 /// the value a CSS-grid view needs for `grid-template-columns`. Computable from the
 /// table node alone (no document position required).
+///
+/// Capped so that `width × rows` is at most [`grid_slot_budget`] (#1176): a
+/// table's width grows with the colspans that rowspans carry down, so without
+/// the cap 1000 pasted rows of `colspan=1000 rowspan=65534` made a
+/// 1,000,000-column grid, and the [`TableMap`] over it asked for 8 GB.
 pub fn column_count(table: &Node) -> usize {
-    find_width(table)
+    let rows = table.child_count().max(1);
+    find_width(table).min((grid_slot_budget(table) / rows).max(1))
 }
+
+/// The most slots a [`TableMap`] over `table` may hold: twice the number of
+/// cells, and never less than [`GRID_SLOT_FLOOR`]. A table with no spans
+/// fills `width × rows` slots with that many cells, so every well-formed table
+/// fits, and the map stays linear in the document whatever its spans claim.
+pub fn grid_slot_budget(table: &Node) -> usize {
+    let cells: usize = (0..table.child_count())
+        .map(|r| table.child(r).child_count())
+        .sum();
+    cells.saturating_mul(2).max(GRID_SLOT_FLOOR)
+}
+
+/// The floor of [`grid_slot_budget`]: 2^20 slots (8 MB of map), which any
+/// table may use whatever its cell count.
+pub const GRID_SLOT_FLOOR: usize = 1 << 20;
+
+/// The widest a pasted row may be, in grid columns, counting the columns that
+/// rowspans from the rows above carry into it: the HTML import cuts a colspan
+/// to what is left, and never below 1 (#1176). 1000 is Chrome's largest
+/// `colspan`; Chrome itself has no limit on a row's width.
+pub const MAX_IMPORTED_ROW_WIDTH: usize = 1000;
 
 /// Read a span attribute (`colspan`/`rowspan`), clamped to a minimum of 1.
 fn span_attr(cell: &Node, name: &str) -> usize {
-    cell.attrs().get_int(name).unwrap_or(1).max(1) as usize
+    usize::try_from(cell.attrs().get_int(name).unwrap_or(1).max(1)).unwrap_or(usize::MAX)
 }
 
 /// The number of columns in `table` — the maximum row width once colspans are
-/// summed and rowspans from earlier rows are carried down. Port of `findWidth`.
+/// summed and rowspans from earlier rows are carried down. Port of `findWidth`,
+/// linear rather than quadratic in the rows: the columns a rowspan carries are
+/// added to the rows below through a difference array (`ends[r]` holds what
+/// stops being carried at row `r`). A span is the document's word and the
+/// document can say `i64::MAX`, so each colspan is first cut to `u32::MAX`,
+/// which no [`column_count`] reaches and no sum of them overflows.
 fn find_width(table: &Node) -> usize {
-    let mut width = 0usize;
-    let mut has_row_span = false;
+    const SPAN_CAP: usize = u32::MAX as usize;
     let height = table.child_count();
+    let mut ends = vec![0usize; height + 1];
+    let mut carried = 0usize;
+    let mut width = 0usize;
     for row in 0..height {
+        carried -= ends[row];
         let row_node = table.child(row);
-        let mut row_width = 0usize;
-        if has_row_span {
-            for j in 0..row {
-                let prev = table.child(j);
-                for i in 0..prev.child_count() {
-                    let cell = prev.child(i);
-                    if j + span_attr(cell, "rowspan") > row {
-                        row_width += span_attr(cell, "colspan");
-                    }
-                }
-            }
-        }
+        let mut row_width = carried;
+        let mut starts = 0usize;
         for i in 0..row_node.child_count() {
             let cell = row_node.child(i);
-            row_width += span_attr(cell, "colspan");
-            if span_attr(cell, "rowspan") > 1 {
-                has_row_span = true;
+            let colspan = span_attr(cell, "colspan").min(SPAN_CAP);
+            row_width += colspan;
+            let rowspan = span_attr(cell, "rowspan");
+            if rowspan > 1 && row + 1 < height {
+                starts += colspan;
+                ends[row.saturating_add(rowspan).min(height)] += colspan;
             }
         }
+        carried += starts;
         width = width.max(row_width);
     }
     width.max(1)

@@ -34,7 +34,11 @@ fn a_pasted_staircase_has_a_bounded_grid() {
     assert_eq!(map.map().len(), 1048 * 1000);
     let first = t.child(0).child(0);
     assert_eq!(first.attrs().get_int("colspan"), Some(1000));
-    assert_eq!(first.attrs().get_int("rowspan"), Some(1000), "cut to the table");
+    assert_eq!(
+        first.attrs().get_int("rowspan"),
+        Some(1000),
+        "cut to the table"
+    );
     let second = t.child(1).child(0);
     assert_eq!(second.attrs().get_int("colspan"), Some(1));
     assert_eq!(second.attrs().get_int("rowspan"), Some(999));

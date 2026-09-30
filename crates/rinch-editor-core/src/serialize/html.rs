@@ -19,6 +19,7 @@ use super::html_integer::{parse_html_clamped_non_negative_integer, parse_html_in
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::schema::Schema;
+use crate::tables;
 use std::collections::HashMap;
 
 // ─── Copy-out: model → HTML ──────────────────────────────────────────────────
@@ -577,31 +578,54 @@ impl<'a> HtmlParser<'a> {
         Ok(rows)
     }
 
-    /// Build one row group's `table_row`s, resolving each `rowspan="0"` to the
-    /// number of rows left in the group, counting its own. The model has no
-    /// "to the end" span (every span is at least 1), and this is the span
-    /// Chrome 153 lays such a cell out with.
+    /// Build one row group's `table_row`s, cutting each cell to the grid
+    /// Chrome 153 lays out (#1164, #1176):
+    ///
+    /// - A `rowspan` reaches at most the group's last row, and `rowspan="0"`
+    ///   is exactly that (the model has no "to the end" span; every span is
+    ///   at least 1). Chrome cuts a span at the end of its row group, so a
+    ///   `rowspan="3"` in a one-row `<tbody>` spans one row there too.
+    /// - A row is at most [`tables::MAX_IMPORTED_ROW_WIDTH`] columns wide,
+    ///   counting the columns carried into it by rowspans from the rows above:
+    ///   a `colspan` is cut to what is left, and never below 1. That one is
+    ///   rinch's, not Chrome's, and is what keeps the grid of a paste linear in
+    ///   the paste: a row's width used to grow with every rowspan above it.
     fn build_row_group(&self, group: Vec<Vec<PendingCell<'a>>>) -> Result<Vec<Node>, EditorError> {
         let row_type = self.table_node_type("table_row")?;
         let len = group.len();
         let mut rows = Vec::with_capacity(len);
+        // `ends[r]`: the columns that stop being carried down at row `r`.
+        let mut ends = vec![0usize; len + 1];
+        let mut carried = 0usize;
         for (r, cells) in group.into_iter().enumerate() {
-            let rows_left = (len - r) as i64;
+            carried -= ends[r];
+            let rows_left = len - r;
+            let mut row_width = carried;
+            let mut starts = 0usize;
             let cells = cells
                 .into_iter()
                 .map(|cell| {
-                    let rowspan = if cell.rowspan == 0 {
-                        rows_left
-                    } else {
-                        i64::from(cell.rowspan)
+                    let rowspan = match cell.rowspan as usize {
+                        0 => rows_left,
+                        n => n.min(rows_left),
                     };
+                    let room = tables::MAX_IMPORTED_ROW_WIDTH
+                        .saturating_sub(row_width)
+                        .max(1);
+                    let colspan = (cell.colspan as usize).min(room);
+                    row_width += colspan;
+                    if rowspan > 1 {
+                        starts += colspan;
+                        ends[r + rowspan] += colspan;
+                    }
                     let attrs = Attrs::from_iter([
-                        ("colspan", AttrValue::Int(i64::from(cell.colspan))),
-                        ("rowspan", AttrValue::Int(rowspan)),
+                        ("colspan", AttrValue::Int(colspan as i64)),
+                        ("rowspan", AttrValue::Int(rowspan as i64)),
                     ]);
                     self.make_node(cell.node_type, attrs, cell.content)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            carried += starts;
             rows.push(self.make_node(row_type, Attrs::new(), Fragment::from_children(cells))?);
         }
         Ok(rows)
@@ -1480,8 +1504,11 @@ mod tests {
         // whitelist) and serialize (`block_tags`) — without them a merged cell
         // silently un-merges, which the CSS-grid view then can't render.
         let schema = s();
+        // (The rowspan needs a row to span into: one past the table's last
+        // row is cut at import, as Chrome cuts it — #1176.)
         let html = "<table><tr><th colspan=\"2\"><p>h</p></th></tr>\
-                    <tr><td rowspan=\"2\"><p>a</p></td><td><p>b</p></td></tr></table>";
+                    <tr><td rowspan=\"2\"><p>a</p></td><td><p>b</p></td></tr>\
+                    <tr><td><p>c</p></td></tr></table>";
         assert_eq!(reserialize_via_slice(&schema, html), html);
         // And the parsed model actually carries the spans.
         let slice = slice_from_html(&schema, html).unwrap();
@@ -2111,7 +2138,10 @@ mod tests {
                     <tr><td><p>c</p></td></tr>\
                     <tr><td><p>d</p></td><td><p>e</p></td></tr>\
                     </table>";
-        assert_eq!(imported_rowspans(html), vec![vec![3, 2], vec![1], vec![1, 1]]);
+        assert_eq!(
+            imported_rowspans(html),
+            vec![vec![3, 2], vec![1], vec![1, 1]]
+        );
     }
 
     /// Every cell's `colspan`, row by row, of the first table in `html`.
@@ -2143,7 +2173,10 @@ mod tests {
         let html = "<table><tr><td colspan=\"700\" rowspan=\"2\"><p>a</p></td></tr>\
                     <tr><td colspan=\"500\"><p>b</p></td></tr>\
                     <tr><td colspan=\"500\"><p>c</p></td></tr></table>";
-        assert_eq!(imported_colspans(html), vec![vec![700], vec![300], vec![500]]);
+        assert_eq!(
+            imported_colspans(html),
+            vec![vec![700], vec![300], vec![500]]
+        );
         // ...but not across a row group, which the rowspan does not reach.
         let html = "<table><tbody><tr><td colspan=\"700\" rowspan=\"2\"><p>a</p></td></tr></tbody>\
                     <tbody><tr><td colspan=\"500\"><p>b</p></td></tr></tbody></table>";
