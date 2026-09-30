@@ -796,7 +796,9 @@ impl WebDocument {
     /// on the lower line. A wrap point is recognised by that character sitting
     /// on a later line than the collapsed range; its start edge is its left for
     /// a left-to-right run and its right for a right-to-left one, told apart by
-    /// where a caret just after it draws. `None` for a block with no text.
+    /// where a caret just after it draws. A caret the browser gives no rect
+    /// (beside a preserved `"\n"`) is drawn where what follows it starts
+    /// ([`Self::caret_where_next_starts_at`]). `None` for a block with no text.
     fn text_caret_viewport_rect(
         &self,
         block: &web_sys::Node,
@@ -809,15 +811,12 @@ impl WebDocument {
         range.set_end(&text_node, off).ok()?;
         let collapsed = range.get_bounding_client_rect();
         if collapsed.height() <= 0.0 {
-            // Right after a preserved newline that ends its text node (a code
-            // block's `ab\n`), Chrome gives the collapsed range no rect: the
-            // position starts the next line, where whatever follows starts —
-            // the editor's trailing-break placeholder, at a block's end (#1172).
-            let text = text_node.text_content().unwrap_or_default();
-            if text.ends_with('\n') && off as usize == text.encode_utf16().count() {
-                return self.caret_where_next_starts(&text_node, block);
-            }
-            return None;
+            // Chrome gives no rect to a collapsed range in preserved-newline
+            // text right before a `"\n"` (the empty line of a code block's
+            // `ab\n\ncd`, the start of `\nab`) and at the end of a text node
+            // ending in one (`ab\n`, #1172). The caret is drawn where what
+            // follows it starts (#1202).
+            return self.caret_where_next_starts_at(&text_node, off, block);
         }
         let upstream = (
             collapsed.x() as f32,
@@ -830,8 +829,26 @@ impl WebDocument {
         let Some((next_node, start, len)) = find_char_at_byte_offset(block, byte_offset) else {
             return Some(upstream);
         };
-        range.set_start(&next_node, start).ok()?;
-        range.set_end(&next_node, start + len).ok()?;
+        match self.char_start_edge(&next_node, start, len) {
+            Some(ch) if ch.1 as f64 >= collapsed.y() + collapsed.height() * 0.5 => Some(ch),
+            _ => Some(upstream),
+        }
+    }
+
+    /// The start edge of the character at UTF-16 `start..start + len` of
+    /// `text_node`, as a viewport `(x, y, height)`: its left for a
+    /// left-to-right run and its right for a right-to-left one, told apart by
+    /// where a caret just after it draws. `None` when the character has no
+    /// box.
+    fn char_start_edge(
+        &self,
+        text_node: &web_sys::Node,
+        start: u32,
+        len: u32,
+    ) -> Option<(f32, f32, f32)> {
+        let range = self.browser_doc.create_range().ok()?;
+        range.set_start(text_node, start).ok()?;
+        range.set_end(text_node, start + len).ok()?;
         // The glyph's own box: the LAST client rect. After a hyphenated
         // soft-hyphen break the character's range also covers the break, so its
         // bounding rect spans both lines and starts on the upper one — which
@@ -840,11 +857,11 @@ impl WebDocument {
             Some(list) if list.length() > 0 => list.item(list.length() - 1)?,
             _ => range.get_bounding_client_rect(),
         };
-        if ch.height() <= 0.0 || ch.y() < collapsed.y() + collapsed.height() * 0.5 {
-            return Some(upstream);
+        if ch.height() <= 0.0 {
+            return None;
         }
         // A caret just after the character is at its end edge; the start edge
-        // is the other one.
+        // is the other one. (A `"\n"`'s box has no width: either edge.)
         range.collapse_with_to_start(false);
         let after = range.get_bounding_client_rect().x();
         let x = if (after - ch.left()).abs() < (after - ch.right()).abs() {
@@ -853,6 +870,38 @@ impl WebDocument {
             ch.left()
         };
         Some((x as f32, ch.y() as f32, ch.height() as f32))
+    }
+
+    /// Where whatever follows UTF-16 offset `off` of `text_node` in `block`
+    /// starts, as a viewport `(x, y, height)`: the start edge of the
+    /// character at `off`, else (at the node's end) the start of the next
+    /// text or `<br>` in `block` ([`Self::caret_where_next_starts`]).
+    ///
+    /// This is the caret the browser gives no rect (#1202). Measured in
+    /// Chrome 153, a collapsed range has none right before a preserved
+    /// segment break (`"\n"`, `"\r"`), at the end of a text node ending in
+    /// `"\n"`, and in an empty text node — though not at every such position
+    /// (`pre`'s `a\n \nb` has one after the space, `pre-wrap`'s does not).
+    /// The range over the character that follows does have one: for a
+    /// newline, a zero-width box at its start, on the line the caret is on.
+    fn caret_where_next_starts_at(
+        &self,
+        text_node: &web_sys::Node,
+        off: u32,
+        block: &web_sys::Node,
+    ) -> Option<(f32, f32, f32)> {
+        let text = text_node.text_content().unwrap_or_default();
+        let units: Vec<u16> = text.encode_utf16().collect();
+        if let Some(&unit) = units.get(off as usize) {
+            // A surrogate pair is one character.
+            let len = if (0xD800..0xDC00).contains(&unit) {
+                2
+            } else {
+                1
+            };
+            return self.char_start_edge(text_node, off, len);
+        }
+        self.caret_where_next_starts(text_node, block)
     }
 
     /// The caret beside the `<br>` `br` inside `block`, as a viewport
@@ -911,7 +960,10 @@ impl WebDocument {
                     let range = self.browser_doc.create_range().ok()?;
                     range.set_start(&node, 0).ok()?;
                     range.set_end(&node, 0).ok()?;
-                    return rect_of(range.get_bounding_client_rect());
+                    // A text beginning with a `"\n"` has no rect at its
+                    // start either: that newline's own box (#1202).
+                    return rect_of(range.get_bounding_client_rect())
+                        .or_else(|| self.caret_where_next_starts_at(&node, 0, block));
                 }
             } else if let Some(e) = node.dyn_ref::<web_sys::Element>() {
                 if e.tag_name().eq_ignore_ascii_case("br") {
