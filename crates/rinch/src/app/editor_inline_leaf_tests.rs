@@ -479,3 +479,59 @@ fn consecutive_hard_breaks_each_start_a_line() {
     assert_eq!(press(1.5), 3, "the empty line 2: between the breaks");
     assert_eq!(press(2.5), 6, "past line 3's end: the paragraph end");
 }
+
+/// #1172: a paragraph ending in a hard break shows the empty line after it,
+/// and the caret after the break sits on it. rinch-dom now lays out
+/// `<p>ab<br></p>` as one line, as Chrome does; the view's trailing-break
+/// placeholder — a second, unmodelled `<br>` — is what makes the line.
+#[test]
+fn a_paragraph_ending_in_a_hard_break_shows_its_empty_line() {
+    let mut p = page("<p>ab<br></p>");
+    assert_eq!(
+        p.handle.doc().child(0).child_count(),
+        2,
+        "positive control: `ab` and the break, no third node in the model"
+    );
+    assert_eq!(
+        p.block_box().3,
+        2.0 * LINE,
+        "the empty line after the break"
+    );
+    assert_eq!(p.local(2).1, 0.0, "before the break: line 1");
+    assert_eq!(p.local(3), (0.0, LINE), "after the break: line 2's start");
+    let (bx, by, _, _) = p.block_box();
+    let (cx, cy) = p.caret_drawn(3);
+    assert!(
+        (cx - bx).abs() < 1.5 && cy >= by + LINE - 1.0,
+        "the drawn caret is at line 2's start: ({cx}, {cy}) in a block at ({bx}, {by})"
+    );
+    // A press on the empty line lands after the break.
+    p.handle.set_selection(Selection::cursor(Pos(1)));
+    idle(&mut p.app);
+    p.click(bx + 100.0, by + 1.5 * LINE);
+    assert_eq!(p.head(), 3, "the empty line: the paragraph's end");
+    // Control: without the break, one line.
+    let q = page("<p>ab</p>");
+    assert_eq!(q.block_box().3, LINE);
+}
+
+/// Shift+Enter at a paragraph's end makes the line; Backspace takes it away.
+#[test]
+fn shift_enter_at_the_end_makes_the_line_and_backspace_removes_it() {
+    let mut p = page("<p>ab</p>");
+    p.handle.set_selection(Selection::cursor(Pos(3)));
+    assert!(p.handle.command("insertHardBreak"));
+    idle(&mut p.app);
+    assert_eq!(p.head(), 3, "after the break");
+    assert_eq!(p.block_box().3, 2.0 * LINE);
+    assert_eq!(p.local(3), (0.0, LINE));
+    assert!(p.handle.command("deleteCharBackward"));
+    idle(&mut p.app);
+    assert_eq!(p.block_box().3, LINE, "the break and its line are gone");
+    let doc = p.app.doc.as_ref().unwrap().borrow();
+    assert!(
+        doc.query_selector_all("[data-pm-trailing-break]")
+            .is_empty(),
+        "and so is the placeholder"
+    );
+}

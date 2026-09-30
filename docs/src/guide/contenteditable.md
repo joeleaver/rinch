@@ -147,7 +147,12 @@ Command names are case-sensitive. The full catalogue:
 > up to the caret — in an earlier paragraph, a collaborator typing above or after
 > the caret — carries the hint along, so the caret stays at the end of its line.
 > A caret right before a hard break (Shift+Enter) is always drawn at the end of
-> its own line. Set it yourself with `EditorHandle::set_selection_with_affinity`;
+> its own line. A paragraph that *ends* in a hard break shows the empty line
+> after it, where the caret after the break sits: a browser lays `<p>a<br></p>`
+> out as one line (a line after the last forced break needs something after
+> it), and so does rinch-dom, so the view renders a second `<br
+> data-pm-trailing-break>` after the break, as ProseMirror does. It is not part
+> of the document and never reaches `doc()`, the HTML or the markdown. Set it yourself with `EditorHandle::set_selection_with_affinity`;
 > read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
 >
 > Neither backend hit-tests points on the line (the web uses collapsed `Range`

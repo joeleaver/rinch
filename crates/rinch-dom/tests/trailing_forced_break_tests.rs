@@ -139,7 +139,11 @@ fn an_out_of_flow_box_after_it_is_not_content() {
     check(
         "div",
         "",
-        &[Text("a"), Br, El("span", "position: absolute", &[Text("x")])],
+        &[
+            Text("a"),
+            Br,
+            El("span", "position: absolute", &[Text("x")]),
+        ],
         20.0,
         "a<br><span abs>x</span>",
     );
@@ -147,11 +151,41 @@ fn an_out_of_flow_box_after_it_is_not_content() {
 
 #[test]
 fn a_final_preserved_newline_makes_no_line_after_it() {
-    check("div", "white-space: pre-wrap", &[Text("a\n")], 20.0, "pre-wrap a\\n");
-    check("div", "white-space: pre-wrap", &[Text("\n")], 20.0, "pre-wrap \\n");
-    check("div", "white-space: pre-wrap", &[Text("a"), Br], 20.0, "pre-wrap a<br>");
-    check("div", "white-space: pre-line", &[Text("a\n")], 20.0, "pre-line a\\n");
-    check("div", "white-space: pre-line", &[Text("a \n")], 20.0, "pre-line a \\n");
+    check(
+        "div",
+        "white-space: pre-wrap",
+        &[Text("a\n")],
+        20.0,
+        "pre-wrap a\\n",
+    );
+    check(
+        "div",
+        "white-space: pre-wrap",
+        &[Text("\n")],
+        20.0,
+        "pre-wrap \\n",
+    );
+    check(
+        "div",
+        "white-space: pre-wrap",
+        &[Text("a"), Br],
+        20.0,
+        "pre-wrap a<br>",
+    );
+    check(
+        "div",
+        "white-space: pre-line",
+        &[Text("a\n")],
+        20.0,
+        "pre-line a\\n",
+    );
+    check(
+        "div",
+        "white-space: pre-line",
+        &[Text("a \n")],
+        20.0,
+        "pre-line a \\n",
+    );
     check(
         "div",
         "white-space: break-spaces",
@@ -194,7 +228,13 @@ fn a_flex_items_ifc_ending_in_a_br() {
 #[test]
 fn content_after_the_last_break_keeps_its_line() {
     check("div", "", &[Text("a"), Br, Text("b")], 40.0, "a<br>b");
-    check("div", "", &[Text("a"), Br, Text("\u{a0}")], 40.0, "a<br>&nbsp;");
+    check(
+        "div",
+        "",
+        &[Text("a"), Br, Text("\u{a0}")],
+        40.0,
+        "a<br>&nbsp;",
+    );
     check(
         "div",
         "",
@@ -209,7 +249,13 @@ fn content_after_the_last_break_keeps_its_line() {
         40.0,
         "a<br><b>b<br></b>",
     );
-    check("div", "white-space: pre-wrap", &[Text("a\n ")], 40.0, "pre-wrap `a\\n `");
+    check(
+        "div",
+        "white-space: pre-wrap",
+        &[Text("a\n ")],
+        40.0,
+        "pre-wrap `a\\n `",
+    );
 }
 
 /// An atomic inline after the break is content even when it is 0x0: Chrome
@@ -244,4 +290,59 @@ fn an_empty_inline_block_after_the_break_keeps_its_line() {
         .layout
         .len();
     assert_eq!(lines, 2, "a line for `a`, a line for the 0x0 box");
+}
+
+/// A flex or grid container's own text is an anonymous item measured as a
+/// text leaf, not an IFC — a second route to the same parley behaviour.
+#[test]
+fn a_flex_or_grid_containers_own_text_ending_in_a_newline() {
+    check(
+        "div",
+        "display: flex; white-space: pre-wrap",
+        &[Text("a\n")],
+        20.0,
+        "flex pre-wrap a\\n",
+    );
+    check(
+        "div",
+        "display: flex; white-space: pre",
+        &[Text("a\n\n")],
+        40.0,
+        "flex pre a\\n\\n",
+    );
+    check(
+        "div",
+        "display: grid; white-space: pre-wrap",
+        &[Text("a\n")],
+        20.0,
+        "grid pre-wrap a\\n",
+    );
+}
+
+/// The same inside an `inline-flex`, whose text leaf is measured by the
+/// detached atomic-inline compute rather than the root compute — the third
+/// route. Chrome 153: 20.
+#[test]
+fn an_inline_flexs_own_text_ending_in_a_newline() {
+    let mut d = doc();
+    let body = d.body();
+    let c = d.create_element("div");
+    d.set_attribute(c, "style", CONTAINER);
+    d.append_child(body, c);
+    build(
+        &mut d,
+        c,
+        &[El(
+            "span",
+            "display: inline-flex; white-space: pre-wrap",
+            &[Text("a\n")],
+        )],
+    );
+    d.resolve_layout(800.0, 600.0);
+    let chip = d.tree.get(c.0).unwrap().children[0];
+    let h = d.tree.get(chip).unwrap().layout.height;
+    assert!(
+        (h - 20.0).abs() < 0.5,
+        "inline-flex pre-wrap a\\n: Chrome 20, rinch {h}"
+    );
 }

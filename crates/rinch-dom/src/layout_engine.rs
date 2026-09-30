@@ -701,7 +701,10 @@ impl RinchDocument {
                             } else {
                                 known_dims.width.or(max_width)
                             };
-                            layout.break_all_lines(wrap_width);
+                            let leaf = crate::ifc::break_leaf_lines(&mut layout, wrap_width);
+                            let mut h = hang.get();
+                            h.add(leaf);
+                            hang.set(h);
 
                             // Cache the layout for use during paint
                             // Use wrap_width bits as part of the key since layout depends on it

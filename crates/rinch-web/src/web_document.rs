@@ -847,6 +847,60 @@ impl WebDocument {
         Some((x as f32, ch.y() as f32, ch.height() as f32))
     }
 
+    /// The caret beside the `<br>` `br` inside `block`, as a viewport
+    /// `(x, y, height)`: before it (its own box: the end of its line), or
+    /// after it — the start of the line it ends, which is where whatever comes
+    /// next in `block` is drawn: the first character of the next text, or the
+    /// next `<br>` when that line is empty (#1172).
+    ///
+    /// A `<br>` has no text bytes in the browser, so the byte offsets on its two
+    /// sides are one number, and so are those around two in a row: the byte
+    /// query drew the caret after a break at the next *character*, a line too
+    /// far down after `a<br><br>b`'s first break, and at the end of line 1
+    /// after a trailing one, where nothing follows but the editor's
+    /// trailing-break placeholder. The rich-text view names the break instead
+    /// ([`DomDocument::query_inline_box_caret_rect`]).
+    ///
+    /// `None` when `br` is not a `<br>` in `block`, or when what follows it is
+    /// neither text nor a `<br>` (an image: the byte query answers that).
+    fn br_caret_viewport_rect(
+        &self,
+        block_id: u64,
+        br_id: u64,
+        after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        let block = self.nodes.get(&(block_id as usize))?;
+        let br = self.nodes.get(&(br_id as usize))?;
+        let el = br.dyn_ref::<web_sys::Element>()?;
+        if !el.tag_name().eq_ignore_ascii_case("br") || !block.contains(Some(br)) {
+            return None;
+        }
+        let rect_of = |r: web_sys::DomRect| {
+            (r.height() > 0.0).then(|| (r.x() as f32, r.y() as f32, r.height() as f32))
+        };
+        if !after {
+            return rect_of(el.get_bounding_client_rect());
+        }
+        let mut next = next_leaf_in(br, block);
+        while let Some(node) = next {
+            if node.node_type() == web_sys::Node::TEXT_NODE {
+                if !node.text_content().unwrap_or_default().is_empty() {
+                    let range = self.browser_doc.create_range().ok()?;
+                    range.set_start(&node, 0).ok()?;
+                    range.set_end(&node, 0).ok()?;
+                    return rect_of(range.get_bounding_client_rect());
+                }
+            } else if let Some(e) = node.dyn_ref::<web_sys::Element>() {
+                if e.tag_name().eq_ignore_ascii_case("br") {
+                    return rect_of(e.get_bounding_client_rect());
+                }
+                return None;
+            }
+            next = next_leaf_in(&node, block);
+        }
+        None
+    }
+
     /// Create a new WebDocument backed by the browser's document.
     ///
     /// Creates a `<div id="rinch-root">` as root and `<div id="rinch-body">`
@@ -1038,6 +1092,25 @@ fn find_text_node_recursive(
         }
     }
     None
+}
+
+/// The next node after `node` in document order that has no children — a
+/// text node, or an empty element — without leaving `root`.
+fn next_leaf_in(node: &web_sys::Node, root: &web_sys::Node) -> Option<web_sys::Node> {
+    let mut cur = node.clone();
+    let mut sibling = loop {
+        if cur.is_same_node(Some(root)) {
+            return None;
+        }
+        if let Some(s) = cur.next_sibling() {
+            break s;
+        }
+        cur = cur.parent_node()?;
+    };
+    while let Some(first) = sibling.first_child() {
+        sibling = first;
+    }
+    Some(sibling)
 }
 
 /// The text node holding the character that STARTS at flat UTF-8 `byte_offset`
@@ -1640,6 +1713,31 @@ impl DomDocument for WebDocument {
                 }
             }
         }
+    }
+
+    /// A `<br>` only ([`WebDocument::br_caret_viewport_rect`]); an image is
+    /// still asked by byte.
+    fn query_inline_box_caret(
+        &self,
+        node_id: u64,
+        box_id: u64,
+        after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        let (x, y, h) = self.br_caret_viewport_rect(node_id, box_id, after)?;
+        let block = self.nodes.get(&(node_id as usize))?;
+        let r = block
+            .dyn_ref::<web_sys::Element>()?
+            .get_bounding_client_rect();
+        Some((x - r.x() as f32, y - r.y() as f32, h))
+    }
+
+    fn query_inline_box_caret_rect(
+        &self,
+        node_id: u64,
+        box_id: u64,
+        after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        self.br_caret_viewport_rect(node_id, box_id, after)
     }
 
     /// Downstream at a soft wrap, as on desktop — see

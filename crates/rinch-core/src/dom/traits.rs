@@ -673,8 +673,10 @@ pub trait DomDocument {
     /// which box a caret is beside (the rich-text editor's view, for an image)
     /// asks this instead (#1104). `None` when the box is not in `node_id`'s
     /// inline layout; the caller then asks by byte. Default `None`, so a host
-    /// that does not implement it (the browser backend, the mock) is asked by
-    /// byte as before.
+    /// that does not implement it (the mock) is asked by byte as before. The
+    /// browser backend answers it for a `<br>` only, which has no bytes there
+    /// either (the start of the line it ends, #1172), and asks an image by
+    /// byte.
     fn query_inline_box_caret(
         &self,
         _node_id: u64,

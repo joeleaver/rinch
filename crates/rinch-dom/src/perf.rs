@@ -166,10 +166,12 @@ define_counters! {
     /// spaces and tabs on the line they hang from.
     IfcHangLines = "ifc_hang_lines",
     /// Parley layouts broken once more to drop the empty line parley commits
-    /// after an inline box placed by an emergency break (#1050,
-    /// `ifc::phantom_last_line`). Every min-content measure of a paragraph
+    /// after an inline box placed by an emergency break (#1050), or after a
+    /// forced break (`<br>`, a preserved newline) that ends the text (#1172)
+    /// (`ifc::phantom_last_line`). Every min-content measure of a paragraph
     /// that ends in an atomic inline pays one: at width 0 every box takes the
-    /// emergency branch. On the `pre-wrap` route it is the second hanging
+    /// emergency branch; so does every measure and build of a paragraph
+    /// ending in a forced break. On the `pre-wrap` route it is the second hanging
     /// pass, which `ifc_hang_passes` does not count again.
     IfcPhantomRebreaks = "ifc_phantom_rebreaks",
 

@@ -36,6 +36,20 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     finds it and `break_lines_hanging_spaces` breaks the paragraph again without it (#1050),
     counted as `ifc_phantom_rebreaks`;
     `crates/rinch-dom/tests/atomic_inline_line_box_tests.rs` is the pin.
+  - **A text-final newline gets an empty line after it**, and it is counted: a `<br>` is pushed
+    as `"\n"`, so `<div>a<br></div>` and `<pre>a\n</pre>` were two lines where CSS makes one (a
+    line after the last forced break exists only when something follows it). `phantom_last_line`
+    drops that line too — last line, empty text range, no inline box, after an `Explicit`
+    break — for an IFC and for a text leaf (`ifc::break_leaf_lines`, both leaf measure sites)
+    (#1172); `crates/rinch-dom/tests/trailing_forced_break_tests.rs` is the pin. **Not** a
+    `<textarea>`, which is laid out by the form-control path and keeps its empty last line, as
+    Chrome does (that is where its caret goes). The rich-text editor needs the line after a
+    paragraph's trailing hard break, so its view renders a second, unmodelled
+    `<br data-pm-trailing-break>` there (`ViewDesc::sync_trailing_break`, ProseMirror's
+    `ProseMirror-trailingBreak`) on both backends; the web draws the caret after any `<br>` from
+    what follows it (`WebDocument::br_caret_viewport_rect`, its `query_inline_box_caret*`), which
+    also put the caret after the first of two breaks on the empty line between them, not the
+    line after.
   - **Preserved spaces do not hang in 0.11.1.** At a width a `pre-wrap` space overflows, parley
     hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
     is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC
