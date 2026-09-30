@@ -68,8 +68,9 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `ifc::hang_differential_tests` holds the old loop as the oracle. Likewise an IFC's measure is `InlineLayout::measured_width`, not
     `Layout::width`: the latter drops a preserved trailing space that Chrome counts, and a box
     sized without it wraps the space onto a line of its own (the editor's list bullet dropping a
-    line after "text "). Not for `pre-line`, which removes spaces at a line's end (though rinch
-    still keeps them in its text, #1043).
+    line after "text "). Only when the IFC holds preserved text (`pre`, `pre-wrap`, a
+    contenteditable root): collapsible spaces, `pre-line`'s included, are gone at a line's end
+    before parley sees them.
     `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
   - **rinch collapses an IFC's white space itself; the IFC's tree builder always hands parley
     `Preserve`.** (The ranged builders — form controls, text leaves — are separate and unchanged.)
@@ -81,16 +82,23 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     end. `ifc::IfcText` does that: `walk_inline_children` records its builder ops into it, it
     collapses each run of spaces, tabs and segment breaks (not U+000C FORM FEED, which Chrome
     draws — #1181) to one space across element boundaries, removes a
-    space at the IFC's start or after a `<br>`, holds the last kept space until content (a
-    character, an atomic inline) confirms it or a `<br>` / the IFC's end removes it, and replays
-    the ops under `Preserve`. A space at a soft wrap is still parley's to hang. U+2028/U+2029,
-    which parley reads as forced newlines, are laid out under a collapsing root as a non-collapsing
-    space (Chrome draws an ordinary character; under `pre*` they are still forced breaks, #1181).
+    space at the IFC's start or after a forced break, holds the last kept space until content (a
+    character, an atomic inline) confirms it or a forced break / the IFC's end removes it, and replays
+    the ops under `Preserve`. **Each text node is collapsed by its own element's `white-space`**
+    (its DOM parent's, `ifc::SpaceCollapse`; #1192), not the root's: `normal`/`nowrap` collapse,
+    `pre`/`pre-wrap` keep everything, `pre-line` collapses spaces and tabs and keeps a newline as a
+    forced break. A preserved space is content, so a collapsible space after one is kept and one
+    before it is not at a line's end; a preserved newline is a forced break like a `<br>`. A
+    `contenteditable` root keeps every node's text verbatim. (Chrome 153 counts a collapsible
+    space before a preserved newline in the max-content width while laying it out removed; rinch
+    removes it from both.) A space at a soft wrap is still parley's to hang. U+2028/U+2029,
+    which parley reads as forced newlines, are laid out in collapsing text as a non-collapsing
+    space (Chrome draws an ordinary character; in preserved text they are still forced breaks, #1181).
     **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
     one byte late per collapsed byte — and `IfcTextRange::offset_map` is each text node's
     DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,
-    `measured_width` keeps it for a collapsing root (`width_keeping_nbsp`).
+    `measured_width` keeps it in an IFC with no preserved text (`width_keeping_nbsp`).
     `crates/rinch-dom/tests/inline_edge_space_tests.rs` and `nbsp_line_box_tests.rs` are the pins.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on; parley does not re-export it, so a parley bump that moves skrifa silently builds a second copy unless this pin moves with it.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)

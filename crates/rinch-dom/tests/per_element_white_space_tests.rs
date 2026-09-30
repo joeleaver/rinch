@@ -241,7 +241,14 @@ fn a_preserved_newline_ends_the_line_for_collapsible_spaces() {
 #[test]
 fn pre_line_collapses_spaces_and_keeps_newlines() {
     check(&[
-        ("a run of spaces", PRE_LINE, "a    b".into(), "a b", 23.28, 25.0),
+        (
+            "a run of spaces",
+            PRE_LINE,
+            "a    b".into(),
+            "a b",
+            23.28,
+            25.0,
+        ),
         (
             "spaces around a newline",
             PRE_LINE,
@@ -250,7 +257,14 @@ fn pre_line_collapses_spaces_and_keeps_newlines() {
             9.8,
             50.0,
         ),
-        ("trailing spaces", PRE_LINE, "abc   ".into(), "abc", 27.92, 25.0),
+        (
+            "trailing spaces",
+            PRE_LINE,
+            "abc   ".into(),
+            "abc",
+            27.92,
+            25.0,
+        ),
         (
             "pre-line span in a normal root",
             "",
@@ -323,9 +337,16 @@ fn offsets_across_mixed_modes_round_trip() {
     assert_eq!(f2d[10], (t3.0, 3));
 }
 
-/// Restyling a span's `white-space` re-collapses its text on the next layout.
+/// Restyling a span's `white-space` re-collapses its text on the next layout
+/// — a plain span's, and a `display: contents` wrapper's (what `rsx!` puts
+/// around a reactive text).
 #[test]
 fn restyling_a_spans_white_space_relays_its_text() {
+    restyle_relays("");
+    restyle_relays("display:contents;");
+}
+
+fn restyle_relays(extra: &str) {
     let mut d = doc();
     let body = d.body();
     let p = d.create_element("div");
@@ -334,6 +355,7 @@ fn restyling_a_spans_white_space_relays_its_text() {
     let a = d.create_text("a");
     d.append_child(p, a);
     let s = d.create_element("span");
+    d.set_attribute(s, "style", extra);
     let t = d.create_text("   b");
     d.append_child(s, t);
     d.append_child(p, s);
@@ -349,10 +371,10 @@ fn restyling_a_spans_white_space_relays_its_text() {
             .clone()
     };
     assert_eq!(text(&d), "a b");
-    d.set_attribute(s, "style", PRE);
+    d.set_attribute(s, "style", &format!("{extra}{PRE}"));
     d.resolve_layout(800.0, 600.0);
-    assert_eq!(text(&d), "a   b");
-    d.set_attribute(s, "style", "white-space:normal");
+    assert_eq!(text(&d), "a   b", "{extra}");
+    d.set_attribute(s, "style", &format!("{extra}white-space:normal"));
     d.resolve_layout(800.0, 600.0);
     assert_eq!(text(&d), "a b");
 }

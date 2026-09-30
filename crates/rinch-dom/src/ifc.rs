@@ -350,9 +350,11 @@ enum IfcOp<'a> {
 /// where CSS collapses only spaces, tabs and segment breaks — an NBSP at an
 /// edge went too (#1154).
 ///
-/// **What this does instead.** Under a collapsing `white-space` the walk
-/// hands every text node to [`Self::push_text_node`], which applies both
-/// phases in document order across element boundaries: each run of spaces,
+/// **What this does instead.** The walk hands every text node to
+/// [`Self::push_text_node`] with the collapse mode of the element the text is
+/// in ([`SpaceCollapse`], #1192 — not the root's: CSS applies
+/// `white-space-collapse` per character), which applies both phases in
+/// document order across element boundaries: each run of spaces,
 /// tabs and segment breaks (LF, CR) becomes one space — not U+000C FORM FEED,
 /// which Chrome draws as a character (#1181) — a space after another collapsible space is
 /// removed wherever an element boundary falls between them, and a space at
@@ -383,15 +385,22 @@ enum IfcOp<'a> {
 /// where Chrome 153 draws an ordinary 4.5px character with a break
 /// opportunity after it (#1154's review; `x&#x2028;y` is one line).
 ///
-/// Under a preserving `white-space` (`pre`, `pre-wrap`, `pre-line`, and every
-/// `contenteditable` root) the text is pushed verbatim, a tab as
-/// [`TAB_SPACES`], as it always was.
+/// Text under `pre` or `pre-wrap`, and all the text of a `contenteditable`
+/// root, is pushed verbatim, a tab as [`TAB_SPACES`]. It is content to the
+/// collapsible text around it: a preserved space confirms a held space before
+/// it and is not collapsible, so a collapsible space right after it is kept,
+/// and a preserved newline is a forced break, as a `<br>` is. `pre-line`
+/// collapses spaces and tabs and keeps each segment break as a forced break.
 pub(crate) struct IfcText<'a> {
-    collapse: bool,
+    /// Every text node is pushed verbatim, whatever its own `white-space`: a
+    /// `contenteditable` root, whose caret mapping needs the DOM text.
+    preserve_all: bool,
+    /// Some text was pushed with its spaces preserved ([`SpaceCollapse::Preserve`]).
+    preserved: bool,
     ops: Vec<IfcOp<'a>>,
     len: usize,
     /// Nothing has been kept on this line yet: the IFC's start, or after a
-    /// `<br>`.
+    /// forced break (a `<br>`, a preserved newline).
     line_start: bool,
     /// The last thing kept was a collapsible space.
     prev_space: bool,
@@ -403,10 +412,37 @@ pub(crate) struct IfcText<'a> {
     dropped: Vec<usize>,
 }
 
+/// How a text node's white space is processed: CSS Text 3
+/// `white-space-collapse`, read from the text's own element (#1192).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpaceCollapse {
+    /// `normal`, `nowrap`: spaces, tabs and segment breaks collapse.
+    Collapse,
+    /// `pre-line`: spaces and tabs collapse, a segment break is a forced
+    /// break and removes the collapsible spaces on both sides of it.
+    PreserveBreaks,
+    /// `pre`, `pre-wrap`: everything is kept.
+    Preserve,
+}
+
+impl SpaceCollapse {
+    pub(crate) fn of(white_space: crate::computed_style::WhiteSpaceValue) -> Self {
+        use crate::computed_style::WhiteSpaceValue;
+        match white_space {
+            WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => Self::Collapse,
+            WhiteSpaceValue::PreLine => Self::PreserveBreaks,
+            WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap => Self::Preserve,
+        }
+    }
+}
+
 impl<'a> IfcText<'a> {
-    pub(crate) fn new(collapse: parley::style::WhiteSpaceCollapse) -> Self {
+    /// `preserve_all`: push every text node verbatim (a `contenteditable`
+    /// root); otherwise each is collapsed by the mode it is pushed with.
+    pub(crate) fn new(preserve_all: bool) -> Self {
         Self {
-            collapse: matches!(collapse, parley::style::WhiteSpaceCollapse::Collapse),
+            preserve_all,
+            preserved: preserve_all,
             ops: Vec::new(),
             len: 0,
             line_start: true,
@@ -414,6 +450,13 @@ impl<'a> IfcText<'a> {
             pending: None,
             dropped: Vec::new(),
         }
+    }
+
+    /// Whether any text was pushed with its spaces preserved: only then can a
+    /// line end in spaces that are content ([`InlineLayout::measured_width`],
+    /// [`break_lines_hanging_spaces`]).
+    pub(crate) fn preserved(&self) -> bool {
+        self.preserved
     }
 
     /// The flat length so far, a held space included.
@@ -438,16 +481,20 @@ impl<'a> IfcText<'a> {
         self.ops.push(IfcOp::InlineBox(inline_box));
     }
 
-    /// A `<br>`: one `"\n"`, a forced break. Under collapse the held space
-    /// before it ends a line and goes, and the next line starts afresh.
+    /// A `<br>`: one `"\n"`, a forced break. The held space before it ends
+    /// a line and goes, and the next line starts afresh.
     pub(crate) fn push_forced_break(&mut self) {
-        if self.collapse {
-            self.drop_pending();
-            self.line_start = true;
-            self.prev_space = false;
-        }
+        self.break_line();
         self.ops.push(IfcOp::Text("\n".into()));
         self.len += 1;
+    }
+
+    /// A forced break: the held space before it ends a line and goes, and
+    /// the next line starts afresh.
+    fn break_line(&mut self) {
+        self.drop_pending();
+        self.line_start = true;
+        self.prev_space = false;
     }
 
     fn drop_pending(&mut self) {
@@ -459,12 +506,22 @@ impl<'a> IfcText<'a> {
         }
     }
 
-    /// Push one text node's text (after `text-transform`). Returns its flat
+    /// Push one text node's text (after `text-transform`), white space
+    /// processed by `mode` — its own element's (#1192). Returns its flat
     /// length — the held space included — and its DOM↔flat `offset_map`
     /// (empty when the text is pushed byte for byte).
+    ///
+    /// Modes meet at the boundaries CSS Text 3 §4.1 draws. A preserved space
+    /// is not collapsible, so a collapsible space right after one is kept
+    /// (phase I removes a collapsible space only after another *collapsible*
+    /// one), and a collapsible space held before preserved text is not at a
+    /// line's end. A preserved newline, and a `pre-line` one, is a forced
+    /// break, exactly as a `<br>` is: the held space before it goes and the
+    /// collapsible spaces after it start a line.
     pub(crate) fn push_text_node(
         &mut self,
         raw: std::borrow::Cow<'a, str>,
+        mode: SpaceCollapse,
     ) -> (usize, Vec<(usize, usize)>) {
         fn note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
             let (f, d) = map.last().copied().unwrap_or((0, 0));
@@ -473,7 +530,28 @@ impl<'a> IfcText<'a> {
             }
         }
         let mut map = Vec::new();
-        if !self.collapse {
+        let mode = if self.preserve_all {
+            SpaceCollapse::Preserve
+        } else {
+            mode
+        };
+        if mode == SpaceCollapse::Preserve {
+            if raw.is_empty() {
+                return (0, map);
+            }
+            self.preserved = true;
+            if !self.preserve_all {
+                // Preserved text is content, a space included: it confirms a
+                // held space before it — unless it starts with a newline,
+                // which ends that space's line — and leaves nothing
+                // collapsible behind it. Each newline starts a line.
+                if raw.starts_with('\n') {
+                    self.drop_pending();
+                }
+                self.pending = None;
+                self.prev_space = false;
+                self.line_start = raw.ends_with('\n');
+            }
             if !raw.contains('\t') {
                 let n = raw.len();
                 self.ops.push(IfcOp::Text(raw));
@@ -494,11 +572,37 @@ impl<'a> IfcText<'a> {
             self.len += n;
             return (n, map);
         }
+        let keep_breaks = mode == SpaceCollapse::PreserveBreaks;
         let op = self.ops.len();
         // Allocated at the first byte the kept text differs from `raw` in;
         // until then the kept text is `raw[..i]`.
         let mut out: Option<String> = None;
         for (i, c) in raw.char_indices() {
+            if keep_breaks && c == '\n' {
+                // `pre-line`: a segment break is kept, as a forced break.
+                match self.pending {
+                    // The held space is this node's own last kept byte:
+                    // removed here, so no later offset counts it.
+                    Some((pop, byte, _)) if pop == op => {
+                        let o = out.get_or_insert_with(|| raw[..i].to_string());
+                        debug_assert_eq!(o.len(), byte + 1);
+                        o.truncate(byte);
+                        if map.last().is_some_and(|&(f, _)| f == byte) {
+                            map.pop();
+                        }
+                        self.pending = None;
+                        self.line_start = true;
+                        self.prev_space = false;
+                    }
+                    _ => self.break_line(),
+                }
+                let flat = out.as_ref().map_or(i, String::len);
+                note(&mut map, flat, i);
+                if let Some(o) = out.as_mut() {
+                    o.push('\n');
+                }
+                continue;
+            }
             // CSS Text 3 §4.1.1 collapses spaces, tabs and segment breaks (LF,
             // and CR, which HTML folds into one). Not U+000C FORM FEED, which
             // `is_ascii_whitespace` includes: Chrome 153 draws it (#1181).
@@ -551,9 +655,7 @@ impl<'a> IfcText<'a> {
     /// Remove a space held at the IFC's end and replay the ops into
     /// `builder`, all under `Preserve`: the text is already collapsed.
     pub(crate) fn finish(&mut self, builder: &mut parley::TreeBuilder<'_, Brush>) {
-        if self.collapse {
-            self.drop_pending();
-        }
+        self.drop_pending();
         builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
         for op in self.ops.drain(..) {
             match op {
@@ -5197,17 +5299,6 @@ impl RinchDocument {
             }
             found
         };
-        let collapse = if is_contenteditable {
-            parley::style::WhiteSpaceCollapse::Preserve
-        } else {
-            match root_computed.white_space {
-                WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap | WhiteSpaceValue::PreLine => {
-                    parley::style::WhiteSpaceCollapse::Preserve
-                }
-                _ => parley::style::WhiteSpaceCollapse::Collapse,
-            }
-        };
-
         let mut child_positions = Vec::new();
         let mut text_ranges = Vec::new();
         let mut background_spans = Vec::new();
@@ -5215,8 +5306,9 @@ impl RinchDocument {
         let mut flat_pos = 0usize;
 
         // Walk children into an `IfcText`, which collapses white space across
-        // the whole IFC (#1180), then replay it into the Parley tree.
-        let mut ifc_text = IfcText::new(collapse);
+        // the whole IFC (#1180), each text node by its own element's
+        // `white-space` (#1192), then replay it into the Parley tree.
+        let mut ifc_text = IfcText::new(is_contenteditable);
         Self::walk_inline_children(
             nodes,
             root_id,
@@ -5266,7 +5358,9 @@ impl RinchDocument {
             WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre => None,
             _ => max_width,
         };
-        let preserves_spaces = matches!(collapse, parley::style::WhiteSpaceCollapse::Preserve);
+        // Only preserved spaces can hang past a soft wrap or end a line as
+        // content; collapsible ones are single, and gone at a forced break.
+        let preserves_spaces = ifc_text.preserved();
         let hang = break_lines_hanging_spaces(
             &mut text_layout,
             &text_content,
@@ -5286,12 +5380,7 @@ impl RinchDocument {
             background_spans,
             decoration_spans,
             max_width: max_width.unwrap_or(f32::INFINITY),
-            // `pre-line` removes spaces at the end of a line (CSS Text 3
-            // §4.1.3); rinch keeps them in the text (#1043), so they must at
-            // least not widen the box. A contenteditable root is `pre-wrap`.
-            preserves_spaces: preserves_spaces
-                && (is_contenteditable
-                    || !matches!(root_computed.white_space, WhiteSpaceValue::PreLine)),
+            preserves_spaces,
             hang,
         }
     }
@@ -5996,8 +6085,19 @@ impl RinchDocument {
                             };
                         let dom_text_len = raw.len();
                         // Collapsed (#1180), or verbatim with a tab as
-                        // `TAB_SPACES` (Parley has no tab stops).
-                        let (flat_len, offset_map) = builder.push_text_node(raw);
+                        // `TAB_SPACES` (Parley has no tab stops), by the
+                        // `white-space` of the element the text is in: its
+                        // DOM parent, which inside an anonymous box is not
+                        // `parent_id` (#1192).
+                        let mode = SpaceCollapse::of(
+                            child
+                                .parent
+                                .and_then(|dom_parent| nodes.get(dom_parent))
+                                .unwrap_or(&nodes[parent_id])
+                                .computed_style
+                                .white_space,
+                        );
+                        let (flat_len, offset_map) = builder.push_text_node(raw, mode);
                         *flat_pos += flat_len;
                         debug_assert_eq!(*flat_pos, builder.len());
                         text_ranges.push(crate::node::IfcTextRange {
