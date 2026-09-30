@@ -61,7 +61,10 @@
 //! through `jni_exception::jni_ok` / `jni_try`, which describe the exception to
 //! logcat and clear it on the spot, and `bridge::with_activity` (and every
 //! `extern "C"` entry point) holds a scope that clears whatever is still
-//! pending when it ends.
+//! pending when it ends. A wrapper that returns `Result` carries the
+//! exception's `toString()` in its `Err` (issue #1205), so an app sees
+//! `…: java.lang.SecurityException: Permission Denial: …`, not only that some
+//! Java exception was thrown.
 
 // See the identical attribute (and its rationale) in `rinch-core/src/lib.rs`
 // (#598): Android's target spec has no native ELF thread-local support, so

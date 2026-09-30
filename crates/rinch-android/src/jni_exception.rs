@@ -18,7 +18,11 @@
 //! least specific:
 //!
 //! - [`jni_try`] runs one JNI step and settles on `Err`, handing the error on
-//!   as a `String` for the caller to `?` or report.
+//!   as a `String` for the caller to `?` or report. When the failure was a
+//!   Java exception the string ends with its `toString()` — the class and
+//!   message, e.g. `java.lang.SecurityException: Permission Denial: …` —
+//!   which `jni`'s own error ("Java exception was thrown") never says
+//!   (issue #1205).
 //! - [`jni_ok`] is `jni_try` for a step whose failure the caller swallows: it
 //!   also logs the failure and answers `None`.
 //! - [`ExceptionScope`] settles whatever is still pending when it is dropped.
@@ -42,16 +46,29 @@
 
 use std::fmt::Display;
 
-/// The three JNI functions that are legal to call while an exception is
-/// pending, and that settling one needs.
+/// The JNI functions settling an exception needs. All but
+/// [`throwable_text`](Self::throwable_text) are legal while one is pending.
 pub(crate) trait PendingException {
+    /// A local reference to a thrown `java.lang.Throwable`.
+    type Throwable;
     /// `ExceptionCheck`. An error from the check itself reads as "nothing
     /// pending": there is nothing more useful to do with it.
     fn exception_pending(&mut self) -> bool;
+    /// `ExceptionOccurred`: a new local reference to the pending exception,
+    /// or `None` when there is none.
+    fn take_throwable(&mut self) -> Option<Self::Throwable>;
     /// `ExceptionDescribe`: print the exception and its Java stack trace.
+    /// The JNI specification says it also clears the exception.
     fn describe_exception(&mut self);
     /// `ExceptionClear`.
     fn clear_exception(&mut self);
+    /// `throwable.toString()`: the class name and message. A Java method
+    /// call, so **illegal while any exception is pending**, and it may
+    /// itself throw — the caller settles what it leaves.
+    fn throwable_text(&mut self, throwable: &Self::Throwable) -> Option<String>;
+    /// `DeleteLocalRef` on a reference [`take_throwable`](Self::take_throwable)
+    /// answered.
+    fn release_throwable(&mut self, throwable: Self::Throwable);
 }
 
 /// Describe and clear a pending exception, if there is one. Answers whether
@@ -73,7 +90,9 @@ pub(crate) fn settle_pending<E: PendingException + ?Sized>(env: &mut E) -> bool 
 }
 
 /// Run one JNI step; on failure settle any exception it left pending before
-/// answering the error as a `String` prefixed with `context`.
+/// answering the error as a `String` prefixed with `context` and, for a Java
+/// exception, followed by that exception's `toString()`
+/// ([`settle_pending_with_text`]).
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn jni_try<E, T, Er>(
     env: &mut E,
@@ -84,10 +103,40 @@ where
     E: PendingException + ?Sized,
     Er: Display,
 {
-    step(env).map_err(|e| {
-        settle_pending(env);
-        format!("{context}: {e}")
+    step(env).map_err(|e| match settle_pending_with_text(env) {
+        Some(text) => format!("{context}: {e}: {text}"),
+        None => format!("{context}: {e}"),
     })
+}
+
+/// [`settle_pending`], and answer the settled exception's `toString()` —
+/// its class and message — so a caller's error can say which exception it
+/// was (issue #1205). `None` when nothing was pending, or when the text
+/// could not be had.
+///
+/// The order is forced. `ExceptionOccurred` must come before describe,
+/// which clears the exception as it prints it. `toString` is a Java call,
+/// illegal while the exception is pending, so it must come after the
+/// clear. And it may throw in turn: that exception is cleared at once —
+/// the stack trace printed is the one the caller's failure threw — so it
+/// cannot leak into the next call, and the text is given up.
+pub(crate) fn settle_pending_with_text<E: PendingException + ?Sized>(
+    env: &mut E,
+) -> Option<String> {
+    if !env.exception_pending() {
+        return None;
+    }
+    let throwable = env.take_throwable();
+    env.describe_exception();
+    env.clear_exception();
+    let throwable = throwable?;
+    let mut text = env.throwable_text(&throwable);
+    if env.exception_pending() {
+        env.clear_exception();
+        text = None;
+    }
+    env.release_throwable(throwable);
+    text
 }
 
 /// [`jni_try`] for a step whose failure the caller gives up on: the failure
@@ -143,15 +192,39 @@ impl<E: PendingException, C: Display> Drop for ExceptionScope<E, C> {
 }
 
 #[cfg(target_os = "android")]
-impl PendingException for jni::JNIEnv<'_> {
+impl<'local> PendingException for jni::JNIEnv<'local> {
+    type Throwable = jni::objects::JThrowable<'local>;
     fn exception_pending(&mut self) -> bool {
         self.exception_check().unwrap_or(false)
+    }
+    fn take_throwable(&mut self) -> Option<Self::Throwable> {
+        self.exception_occurred().ok().filter(|t| !t.is_null())
     }
     fn describe_exception(&mut self) {
         let _ = self.exception_describe();
     }
     fn clear_exception(&mut self) {
         let _ = self.exception_clear();
+    }
+    fn throwable_text(&mut self, throwable: &Self::Throwable) -> Option<String> {
+        // Each `?` leaves on an error, which may be a pending exception:
+        // no further call is made here, and the caller settles it.
+        let obj = self
+            .call_method(throwable, "toString", "()Ljava/lang/String;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if obj.is_null() {
+            return None;
+        }
+        let jstr = jni::objects::JString::from(obj);
+        let text = self.get_string(&jstr).ok().map(String::from);
+        // DeleteLocalRef is legal with an exception pending.
+        let _ = self.delete_local_ref(jstr);
+        text
+    }
+    fn release_throwable(&mut self, throwable: Self::Throwable) {
+        let _ = self.delete_local_ref(throwable);
     }
 }
 
@@ -189,6 +262,10 @@ mod tests {
         calls: Vec<&'static str>,
         /// What the pending exception's `toString()` answers.
         text: Option<&'static str>,
+        /// Whether `toString()` itself throws.
+        to_string_throws: bool,
+        /// Local references `take_throwable` made and nobody released.
+        live_refs: usize,
     }
 
     /// A `JNIEnv` stand-in that records every call. Cloneable (the state is
@@ -228,20 +305,52 @@ mod tests {
     }
 
     impl PendingException for FakeEnv {
+        type Throwable = &'static str;
         fn exception_pending(&mut self) -> bool {
             self.0.borrow_mut().calls.push("ExceptionCheck");
             self.0.borrow().pending
         }
+        fn take_throwable(&mut self) -> Option<&'static str> {
+            let mut s = self.0.borrow_mut();
+            s.calls.push("ExceptionOccurred");
+            // ExceptionOccurred answers null once nothing is pending — which
+            // is what it answers after a describe, since describe clears.
+            if !s.pending {
+                return None;
+            }
+            s.live_refs += 1;
+            Some(s.text.unwrap_or("java.lang.RuntimeException"))
+        }
         fn describe_exception(&mut self) {
             let mut s = self.0.borrow_mut();
-            // Describe needs the exception it prints.
+            // Describe needs the exception it prints...
             assert!(s.pending, "ExceptionDescribe with nothing pending");
             s.calls.push("ExceptionDescribe");
+            // ...and, per the JNI specification, clears it as it prints it.
+            s.pending = false;
         }
         fn clear_exception(&mut self) {
             let mut s = self.0.borrow_mut();
             s.calls.push("ExceptionClear");
             s.pending = false;
+        }
+        fn throwable_text(&mut self, throwable: &&'static str) -> Option<String> {
+            let mut s = self.0.borrow_mut();
+            assert!(
+                !s.pending,
+                "toString() called with an exception pending (CheckJNI would abort)"
+            );
+            s.calls.push("toString");
+            if s.to_string_throws {
+                s.pending = true;
+                return None;
+            }
+            Some(throwable.to_string())
+        }
+        fn release_throwable(&mut self, _: &'static str) {
+            let mut s = self.0.borrow_mut();
+            s.calls.push("DeleteLocalRef");
+            s.live_refs -= 1;
         }
     }
 
@@ -259,8 +368,12 @@ mod tests {
             [
                 "startSensor",
                 "ExceptionCheck",
+                "ExceptionOccurred",
                 "ExceptionDescribe",
                 "ExceptionClear",
+                "toString",
+                "ExceptionCheck",
+                "DeleteLocalRef",
                 "getResources",
             ]
         );
@@ -290,8 +403,77 @@ mod tests {
     fn jni_try_settles_then_hands_the_error_on() {
         let mut env = FakeEnv::default();
         let r: Result<(), String> = jni_try(&mut env, "readContentUri", |e| e.call("x", true));
-        assert_eq!(r, Err("readContentUri: java exception".to_string()));
+        assert_eq!(
+            r,
+            Err("readContentUri: java exception: java.lang.RuntimeException".to_string())
+        );
         assert!(!env.pending());
+    }
+
+    #[test]
+    fn the_throwable_is_taken_before_describe_and_read_after_the_clear() {
+        // Issue #1205's ordering. `ExceptionOccurred` before describe, which
+        // clears as it prints (so the fake would answer null after it);
+        // `toString` after the clear, since a Java call with an exception
+        // pending is illegal (the fake panics); the reference released.
+        let mut env = FakeEnv::default();
+        let r: Result<(), String> = jni_try(&mut env, "copyToClipboard", |e| {
+            e.throw("copyToClipboard", "java.lang.IllegalStateException: gone")
+        });
+        assert_eq!(
+            r,
+            Err("copyToClipboard: java exception: java.lang.IllegalStateException: gone".into())
+        );
+        assert_eq!(
+            env.calls(),
+            [
+                "copyToClipboard",
+                "ExceptionCheck",
+                "ExceptionOccurred",
+                "ExceptionDescribe",
+                "ExceptionClear",
+                "toString",
+                "ExceptionCheck",
+                "DeleteLocalRef",
+            ]
+        );
+        assert_eq!(
+            env.0.borrow().live_refs,
+            0,
+            "the throwable's local ref leaked"
+        );
+    }
+
+    #[test]
+    fn a_to_string_that_throws_is_settled_and_the_text_given_up() {
+        let mut env = FakeEnv::default();
+        env.0.borrow_mut().to_string_throws = true;
+        let r: Result<(), String> = jni_try(&mut env, "readImageUri", |e| {
+            e.throw("readImageUri", "java.io.FileNotFoundException: x")
+        });
+        assert_eq!(r, Err("readImageUri: java exception".into()));
+        assert!(!env.pending(), "toString's own exception must not leak");
+        assert_eq!(env.0.borrow().live_refs, 0);
+        // And the thread is usable: the fake panics on a call made pending.
+        assert_eq!(
+            jni_ok(&mut env, "next", |e| e.call("next", false)),
+            Some(())
+        );
+        assert_eq!(
+            env.calls(),
+            [
+                "readImageUri",
+                "ExceptionCheck",
+                "ExceptionOccurred",
+                "ExceptionDescribe",
+                "ExceptionClear",
+                "toString",
+                "ExceptionCheck",
+                "ExceptionClear",
+                "DeleteLocalRef",
+                "next",
+            ]
+        );
     }
 
     #[test]
