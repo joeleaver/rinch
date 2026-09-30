@@ -125,6 +125,8 @@ mod no_write_handler_234_tests;
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod component_attrs_433_tests;
 #[cfg(test)]
 mod overlay_animation_audit_tests;
 #[cfg(test)]

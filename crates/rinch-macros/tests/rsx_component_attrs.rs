@@ -249,6 +249,7 @@ fn rerendering_child(label: Signal<String>, state: Signal<String>) -> NodeHandle
                 label: {move || label.get()},
                 data-role: "outer",
                 data-state: {move || state.get()},
+                data-nofocus: false,
             }
         }
     }
@@ -271,10 +272,45 @@ fn a_re_rendered_child_component_gets_its_attributes_back() {
     assert_eq!(second.get_attribute("aria-label").as_deref(), Some("two"));
     assert_eq!(second.get_attribute("data-role").as_deref(), Some("outer"));
     assert_eq!(second.get_attribute("data-state").as_deref(), Some("a"));
+    assert_eq!(
+        second.get_attribute("data-nofocus"),
+        None,
+        "a boolean attribute goes through write_attribute on the re-render path too"
+    );
 
     state.set("b".to_string());
     let third = find_tagged(&root).expect("still rendered");
     assert_eq!(third.get_attribute("data-state").as_deref(), Some("b"));
+}
+
+#[component]
+fn reactive_attr_on_a_child(state: Signal<String>) -> NodeHandle {
+    rsx! {
+        div {
+            Tagged { label: "x", data-state: {move || state.get()} }
+        }
+    }
+}
+
+/// A child component whose only reactive prop is a hyphenated attribute is not
+/// a re-rendering component: the attribute is an effect on its stable root, so
+/// the root (and any state inside it) survives the change.
+#[test]
+fn a_reactive_attribute_on_a_child_does_not_re_render_it() {
+    let state = Signal::new("idle".to_string());
+    let (_doc, _scope, root) = mount(|s| reactive_attr_on_a_child(s, state));
+
+    let first = find_tagged(&root).expect("rendered");
+    assert_eq!(first.get_attribute("data-state").as_deref(), Some("idle"));
+
+    state.set("busy".to_string());
+    let second = find_tagged(&root).expect("still rendered");
+    assert_eq!(second.get_attribute("data-state").as_deref(), Some("busy"));
+    assert_eq!(
+        first.node_id(),
+        second.node_id(),
+        "an attribute change must not rebuild the component"
+    );
 }
 
 // ── 5. a real library component ─────────────────────────────────────────────
