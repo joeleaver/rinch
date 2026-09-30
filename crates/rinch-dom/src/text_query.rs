@@ -476,27 +476,10 @@ pub fn ifc_offset_to_dom_cursor(
                 }
                 // All ranges are <br> — return it as last resort
             }
-            let flat_len = r.flat_end - r.flat_start;
-            if flat_len == r.dom_text_len {
-                // No tab expansion — fast path
-                let local = ifc_offset - r.flat_start + r.node_offset;
-                return Some((r.node_id, local));
-            }
-            // Tab expansion — walk original DOM text to find the DOM offset
-            // corresponding to this flat offset
-            let target_flat = ifc_offset - r.flat_start;
-            let mut flat = 0usize;
-            for (i, ch) in r.dom_text.char_indices() {
-                if flat >= target_flat {
-                    return Some((r.node_id, i + r.node_offset));
-                }
-                flat += if ch == '\t' {
-                    crate::ifc::TAB_SPACES.len()
-                } else {
-                    ch.len_utf8()
-                };
-            }
-            return Some((r.node_id, r.dom_text.len() + r.node_offset));
+            // A collapsed run or an expanded tab puts the flat and DOM
+            // offsets out of step; the range's `offset_map` says where.
+            let local = r.dom_for_flat(ifc_offset - r.flat_start);
+            return Some((r.node_id, local + r.node_offset));
         }
     }
 
@@ -522,26 +505,8 @@ pub fn dom_cursor_to_ifc_offset(
 ) -> Option<usize> {
     for r in ranges {
         if r.node_id == node_id {
-            let flat_len = r.flat_end - r.flat_start;
-            if flat_len == r.dom_text_len {
-                // No tab expansion — fast path (existing logic)
-                let clamped = node_offset.saturating_sub(r.node_offset).min(flat_len);
-                return Some(r.flat_start + clamped);
-            }
-            // Tab expansion — walk original DOM text to compute flat offset
-            let local_offset = node_offset.saturating_sub(r.node_offset);
-            let mut flat = 0usize;
-            for (i, ch) in r.dom_text.char_indices() {
-                if i >= local_offset {
-                    break;
-                }
-                flat += if ch == '\t' {
-                    crate::ifc::TAB_SPACES.len()
-                } else {
-                    ch.len_utf8()
-                };
-            }
-            return Some(r.flat_start + flat.min(flat_len));
+            let local = node_offset.saturating_sub(r.node_offset);
+            return Some(r.flat_start + r.flat_for_dom(local));
         }
     }
     None

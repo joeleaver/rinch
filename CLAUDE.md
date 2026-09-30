@@ -51,15 +51,27 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     line after "text "). Not for `pre-line`, which removes spaces at a line's end (though rinch
     still keeps them in its text, #1043).
     `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
-  - **Collapsing trims NBSP in 0.11.1.** `WhiteSpaceCollapse::Collapse` trims a span's start
-    and end with `str::trim_start`/`trim_end`, which take every Unicode `White_Space` char —
-    U+00A0, U+2009, U+3000 — where CSS collapses and removes only spaces, tabs and segment
-    breaks. So `<div>&nbsp;</div>` had no text and no line box (0 tall; Chrome: one line), and
-    `x&nbsp;` measured as `x` (#1154). `ifc::push_collapsible_text` commits each such run (not U+2028/U+2029, which parley reads as newlines) at the
-    edge of a text node on its own under `Preserve`, through an empty style span as the `<br>`
-    arm does; and since parley also counts a trailing NBSP in `trailing_whitespace`,
-    `measured_width` keeps it for a collapsing root too (`width_keeping_nbsp`).
-    `crates/rinch-dom/tests/nbsp_line_box_tests.rs` is the pin.
+  - **rinch collapses an IFC's white space itself; the IFC's tree builder always hands parley
+    `Preserve`.** (The ranged builders — form controls, text leaves — are separate and unchanged.)
+    `WhiteSpaceCollapse::Collapse` collapses and trims per *style span*, and rinch pushes one span
+    per inline element: it trimmed every inline element's edges, so `a<span> b</span>` laid out
+    `ab` and `rsx! { p { "Hello" b { " world" } } }` `Helloworld` (#1180); and its trims take every
+    Unicode `White_Space` char, so `<div>&nbsp;</div>` had no line box (#1154). CSS collapses
+    across the whole inline formatting context and removes spaces only at a *line's* start and
+    end. `ifc::IfcText` does that: `walk_inline_children` records its builder ops into it, it
+    collapses each run of spaces, tabs and segment breaks (not U+000C FORM FEED, which Chrome
+    draws — #1181) to one space across element boundaries, removes a
+    space at the IFC's start or after a `<br>`, holds the last kept space until content (a
+    character, an atomic inline) confirms it or a `<br>` / the IFC's end removes it, and replays
+    the ops under `Preserve`. A space at a soft wrap is still parley's to hang. U+2028/U+2029,
+    which parley reads as forced newlines, are laid out under a collapsing root as a non-collapsing
+    space (Chrome draws an ordinary character; under `pre*` they are still forced breaks, #1181).
+    **The flat offsets index that collapsed text** — the caret maps,
+    inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
+    one byte late per collapsed byte — and `IfcTextRange::offset_map` is each text node's
+    DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,
+    `measured_width` keeps it for a collapsing root (`width_keeping_nbsp`).
+    `crates/rinch-dom/tests/inline_edge_space_tests.rs` and `nbsp_line_box_tests.rs` are the pins.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)
