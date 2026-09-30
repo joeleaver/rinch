@@ -224,39 +224,54 @@ pub fn is_value_control(node: &Node) -> bool {
 /// attribute answers it, so the desktop shell reads every field through this,
 /// custom `data-oninput` controls included.
 ///
-/// rinch keeps a control's live value in its `value` attribute (typing writes
-/// it, and so does `value_fn`), so an attribute that is present wins even when
-/// it is empty — the web's dirty value flag, read from the other end: once a
-/// field has been typed into or written, its children no longer show. An
+/// rinch keeps a control's live value in its `value` attribute, and for a
+/// `<textarea>` the attribute's **presence is the dirty value flag**: the
+/// shell writes it at the user's first edit, an app writes it with
+/// `value_fn`, and focusing or blurring the field writes nothing (#1186). So
+/// an attribute that is present wins even when it is empty — once a field has
+/// been edited or written, its children no longer show — and while it is
+/// absent the field follows its children, as a browser's `.value` does. An
 /// `<input>` has no default value in its children, so it answers only its
 /// attribute. `None` for any other element.
 pub fn control_value(
     nodes: &slab::Slab<Node>,
     node_id: usize,
 ) -> Option<std::borrow::Cow<'_, str>> {
-    use std::borrow::Cow;
     let node = nodes.get(node_id)?;
     if let Some(v) = node.attributes.get("value") {
-        return Some(Cow::Borrowed(v.as_str()));
+        return Some(std::borrow::Cow::Borrowed(v.as_str()));
     }
     if node.tag() != Some("textarea") {
         return None;
     }
+    Some(textarea_child_text(nodes, node))
+}
+
+/// Whether `node` is a `<textarea>` whose value is still its default value —
+/// no `value` attribute, so its dirty value flag is clear (#1186).
+pub fn is_pristine_textarea(node: &Node) -> bool {
+    node.tag() == Some("textarea") && !node.attributes.contains_key("value")
+}
+
+/// A `<textarea>`'s child text content: its direct `Text` children,
+/// concatenated.
+fn textarea_child_text<'a>(nodes: &'a slab::Slab<Node>, node: &Node) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
     let mut texts = node
         .children
         .iter()
         .filter_map(|&c| nodes.get(c))
         .filter_map(|c| c.text_content());
     let Some(first) = texts.next() else {
-        return Some(Cow::Borrowed(""));
+        return Cow::Borrowed("");
     };
     match texts.next() {
-        None => Some(Cow::Borrowed(first)),
+        None => Cow::Borrowed(first),
         Some(second) => {
             let mut all = String::from(first);
             all.push_str(second);
             texts.for_each(|t| all.push_str(t));
-            Some(Cow::Owned(all))
+            Cow::Owned(all)
         }
     }
 }
