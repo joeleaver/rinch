@@ -310,47 +310,6 @@ pub fn generate_attr_code(
         .collect()
 }
 
-/// Generate attribute-writing code for a component root **inside** a
-/// re-rendering component's render closure (issue #433).
-///
-/// Like [`generate_shorthand_code_reactive`]: the closure re-renders into a
-/// fresh root every time, so a reactive attribute is invoked directly there
-/// (its signal reads schedule the re-render) rather than given an effect of its
-/// own on a root that the next render discards.
-pub fn generate_attr_code_reactive(
-    attr_props: &[&RsxProp],
-    result_var: &syn::Ident,
-) -> TokenStream2 {
-    let code: Vec<TokenStream2> = attr_props
-        .iter()
-        .map(|prop| {
-            let name = prop.name.to_string();
-            let value = &prop.value;
-            if is_literal_expr(value) {
-                let value_str = crate::helpers::expr_to_string(value);
-                quote! { #result_var.write_attribute(#name, #value_str); }
-            } else if let Some(closure) = get_closure_expr(value) {
-                let fire = if is_move_closure(closure) {
-                    shadow_clones(collect_capture_idents(closure).iter())
-                } else {
-                    quote! {}
-                };
-                quote! {
-                    {
-                        #fire
-                        #result_var.write_attribute(#name, &::std::string::ToString::to_string(&(#closure)()));
-                    }
-                }
-            } else {
-                quote! {
-                    #result_var.write_attribute(#name, &::std::string::ToString::to_string(&#value));
-                }
-            }
-        })
-        .collect();
-    quote! { #(#code)* }
-}
-
 /// Generate `set_style()` calls for style shorthand props.
 ///
 /// Handles both static values (compile-time spacing resolution) and reactive
@@ -410,64 +369,13 @@ pub fn generate_shorthand_code(
     quote! { #(#code)* }
 }
 
-/// Generate `set_style()` calls for shorthand props inside a reactive component closure.
-///
-/// Similar to `generate_shorthand_code` but closures are invoked directly (tracking
-/// signals) rather than creating separate effects, since the entire component re-renders.
-pub fn generate_shorthand_code_reactive(
-    shorthand_props: &[&RsxProp],
-    result_var: &syn::Ident,
-) -> TokenStream2 {
-    let code: Vec<TokenStream2> = shorthand_props
-        .iter()
-        .flat_map(|prop| {
-            let name_str = prop.name.to_string();
-            let css_props = expand_style_shorthand(&name_str).unwrap();
-            let value = &prop.value;
-
-            css_props
-                .iter()
-                .map(|css_prop| {
-                    if is_literal_expr(value) {
-                        let raw_value = crate::helpers::expr_to_string(value);
-                        let resolved = resolve_spacing_value(&raw_value);
-                        quote! {
-                            #result_var.set_style(#css_prop, #resolved);
-                        }
-                    } else if let Some(closure) = get_closure_expr(value) {
-                        // Inside reactive component, invoke closure directly (tracks signals)
-                        let fire = if is_move_closure(closure) {
-                            shadow_clones(collect_capture_idents(closure).iter())
-                        } else {
-                            quote! {}
-                        };
-                        quote! {
-                            {
-                                #fire
-                                let __val = ::std::string::ToString::to_string(&(#closure)());
-                                let __resolved = rinch::core::resolve_spacing(&__val);
-                                #result_var.set_style(#css_prop, &__resolved);
-                            }
-                        }
-                    } else {
-                        let resolved_val = crate::helpers::expr_to_string(value);
-                        let resolved = resolve_spacing_value(&resolved_val);
-                        quote! {
-                            #result_var.set_style(#css_prop, #resolved);
-                        }
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
-    quote! { #(#code)* }
-}
-
 /// Generate style application code for a `style:` prop on a **stable** node.
 ///
-/// Used for a component's root after `Component::render` (the static component
-/// path) and for a plain HTML element. Both are laid *over* whatever the node
+/// Used for a component's root after `Component::render` and for a plain HTML
+/// element. On a component that re-renders for a reactive struct prop, the root
+/// is stable for the lifetime of one render: the binding is emitted inside the
+/// render closure, owned by that render's scope, and a re-render gets a new one
+/// (issue #1190). Both are laid *over* whatever the node
 /// already carries rather than replacing it (issue #647): a component publishes
 /// its props as inline declarations on its root — every overlay's `z_index` is
 /// a custom property written there — and a style shorthand (`p:`, `mt:` …) is a

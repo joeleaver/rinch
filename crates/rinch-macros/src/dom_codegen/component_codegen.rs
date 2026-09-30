@@ -9,15 +9,14 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
 use crate::element::RsxElement;
-use crate::helpers::{expand_style_shorthand, get_closure_expr, is_literal_expr};
+use crate::helpers::{expand_style_shorthand, get_closure_expr};
 use crate::prop::RsxProp;
 
 use super::captures::{
     collect_body_captures, collect_capture_idents, is_move_closure, shadow_clones, wrap_site,
 };
 use super::html::{
-    generate_attr_code, generate_attr_code_reactive, generate_class_code, generate_shorthand_code,
-    generate_shorthand_code_reactive, generate_style_code,
+    generate_attr_code, generate_class_code, generate_shorthand_code, generate_style_code,
 };
 use super::{DomCodegenContext, no_siblings};
 
@@ -114,48 +113,14 @@ pub fn generate_reactive_component_stmt(
         .collect();
     ctx.pop_closure_frame();
 
-    // Style/class inside the reactive closure use simple set (no separate
-    // effects needed). `merge_style`, not `set_attribute`: the declarations
-    // `Component::render` just wrote are how a component publishes its props
-    // (issue #647), and the caller's `style:` goes *over* them. No `StyleProp`
-    // memory here — this closure re-renders into a **fresh** element every
-    // time, so there is nothing of the caller's left on it to take off.
-    let style_code = if let Some(prop) = style_prop {
-        let value = &prop.value;
-        if is_literal_expr(value) {
-            let value_str = crate::helpers::expr_to_string(value);
-            quote! { #result_var.merge_style(#value_str); }
-        } else if let Some(closure) = get_closure_expr(value) {
-            quote! { #result_var.merge_style(&::std::string::ToString::to_string(&(#closure)())); }
-        } else {
-            quote! { #result_var.merge_style(&::std::string::ToString::to_string(&#value)); }
-        }
-    } else {
-        quote! {}
-    };
-
-    let class_code = if let Some(prop) = class_prop {
-        let value = &prop.value;
-        if is_literal_expr(value) {
-            let value_str = crate::helpers::expr_to_string(value);
-            quote! { #result_var.add_class(#value_str); }
-        } else if let Some(closure) = get_closure_expr(value) {
-            quote! {
-                let __cls = ::std::string::ToString::to_string(&(#closure)());
-                if !__cls.is_empty() { for __c in __cls.split_whitespace() { #result_var.add_class(__c); } }
-            }
-        } else {
-            quote! {
-                let __cls = ::std::string::ToString::to_string(&#value);
-                if !__cls.is_empty() { for __c in __cls.split_whitespace() { #result_var.add_class(__c); } }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let shorthand_code = generate_shorthand_code_reactive(&shorthand_props, &result_var);
-    let attr_code = generate_attr_code_reactive(&attr_props, &result_var);
+    let root_bindings = generate_root_binding_code(
+        ctx,
+        &attr_props,
+        style_prop,
+        class_prop,
+        &shorthand_props,
+        &result_var,
+    );
 
     // Pass the actual parent directly to reactive_component_dom — no wrapper div needed.
     // This is the statement path: no return value, the function handles insertion.
@@ -174,9 +139,9 @@ pub fn generate_reactive_component_stmt(
         // the re-render effect — nested control flow and `{|| expr}` closures
         // create their own effects for that, and a subscription here would
         // rebuild the whole subtree (resetting its component-local state) on
-        // every inner change. The prop closures above and the
-        // style/class/shorthand closures below stay in the tracked region:
-        // their signal reads are what schedule a re-render.
+        // every inner change. The prop closures above stay in the tracked
+        // region: their signal reads are what schedule a re-render. The
+        // caller's root bindings below are effects of their own (issue #1190).
         //
         // `untracked` pops exactly ONE observer, so a read inside it
         // subscribes the next observer down the stack. The leak worked
@@ -197,10 +162,7 @@ pub fn generate_reactive_component_stmt(
             rinch::core::dom::release_scratch_container(__scope, &#temp_var);
             __rendered
         });
-        #attr_code
-        #style_code
-        #class_code
-        #shorthand_code
+        #root_bindings
         #result_var
     };
     let shadows = ctx.site_shadows(&collect_body_captures(&body), &no_siblings());
@@ -361,49 +323,14 @@ pub fn element_to_dom_component_reactive(
         .collect();
     ctx.pop_closure_frame();
 
-    // Style/class inside the reactive closure use simple set (no separate
-    // effects needed). `merge_style`, not `set_attribute`: the declarations
-    // `Component::render` just wrote are how a component publishes its props
-    // (issue #647), and the caller's `style:` goes *over* them. No `StyleProp`
-    // memory here — this closure re-renders into a **fresh** element every
-    // time, so there is nothing of the caller's left on it to take off.
-    let style_code = if let Some(prop) = style_prop {
-        let value = &prop.value;
-        if is_literal_expr(value) {
-            let value_str = crate::helpers::expr_to_string(value);
-            quote! { #result_var.merge_style(#value_str); }
-        } else if let Some(closure) = get_closure_expr(value) {
-            quote! { #result_var.merge_style(&::std::string::ToString::to_string(&(#closure)())); }
-        } else {
-            quote! { #result_var.merge_style(&::std::string::ToString::to_string(&#value)); }
-        }
-    } else {
-        quote! {}
-    };
-
-    let class_code = if let Some(prop) = class_prop {
-        let value = &prop.value;
-        if is_literal_expr(value) {
-            let value_str = crate::helpers::expr_to_string(value);
-            quote! { #result_var.add_class(#value_str); }
-        } else if let Some(closure) = get_closure_expr(value) {
-            quote! {
-                let __cls = ::std::string::ToString::to_string(&(#closure)());
-                if !__cls.is_empty() { for __c in __cls.split_whitespace() { #result_var.add_class(__c); } }
-            }
-        } else {
-            quote! {
-                let __cls = ::std::string::ToString::to_string(&#value);
-                if !__cls.is_empty() { for __c in __cls.split_whitespace() { #result_var.add_class(__c); } }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    // Shorthands inside reactive closure invoke closures directly (no separate effects)
-    let shorthand_code = generate_shorthand_code_reactive(shorthand_props, &result_var);
-    let attr_code = generate_attr_code_reactive(attr_props, &result_var);
+    let root_bindings = generate_root_binding_code(
+        ctx,
+        attr_props,
+        style_prop,
+        class_prop,
+        shorthand_props,
+        &result_var,
+    );
 
     // Use a display:contents wrapper div as the parent for reactive_component_dom.
     // This ensures the component content is placed inside the wrapper, which the caller
@@ -423,9 +350,9 @@ pub fn element_to_dom_component_reactive(
         // the re-render effect — nested control flow and `{|| expr}` closures
         // create their own effects for that, and a subscription here would
         // rebuild the whole subtree (resetting its component-local state) on
-        // every inner change. The prop closures above and the
-        // style/class/shorthand closures below stay in the tracked region:
-        // their signal reads are what schedule a re-render.
+        // every inner change. The prop closures above stay in the tracked
+        // region: their signal reads are what schedule a re-render. The
+        // caller's root bindings below are effects of their own (issue #1190).
         //
         // `untracked` pops exactly ONE observer, so a read inside it
         // subscribes the next observer down the stack. The leak worked
@@ -446,10 +373,7 @@ pub fn element_to_dom_component_reactive(
             rinch::core::dom::release_scratch_container(__scope, &#temp_var);
             __rendered
         });
-        #attr_code
-        #style_code
-        #class_code
-        #shorthand_code
+        #root_bindings
         #result_var
     };
     let shadows = ctx.site_shadows(&collect_body_captures(&body), &no_siblings());
@@ -461,6 +385,47 @@ pub fn element_to_dom_component_reactive(
             rinch::core::reactive_component_dom(__scope, &#wrapper_var, #render);
             #wrapper_var
         }
+    }
+}
+
+/// The caller's root bindings — hyphenated attributes, `style:`, `class:` and
+/// style shorthands — for a component that **re-renders** for a reactive struct
+/// prop, emitted inside its render closure after `Component::render`.
+///
+/// Each reactive binding is an effect of its own, exactly as on the static
+/// path, and never a read of the render closure (issue #1190). The render
+/// closure runs tracked — that is how a struct prop re-renders — so a binding
+/// invoked there subscribed the re-render: a change to the signal a
+/// `style: {|| …}` reads rebuilt the whole component and reset its local state.
+/// Created while the render closure's `__scope` is the per-render child scope,
+/// each effect is owned by that scope and disposed with it by
+/// `reactive_component_dom` on the next re-render, so the new root gets fresh
+/// effects — and with them a fresh reactive `style:` / `class:` memory (#647,
+/// #717), since nothing of the caller's is on a root built a moment ago.
+///
+/// The render closure is an `Fn` that builds these `'static` effects on every
+/// run, so everything a binding captures from outside it is shadow-cloned at
+/// the effect's construction site: the frame pushed here is what makes
+/// [`DomCodegenContext::site_shadows`] treat those names as outer captures.
+fn generate_root_binding_code(
+    ctx: &mut DomCodegenContext,
+    attr_props: &[&RsxProp],
+    style_prop: Option<&RsxProp>,
+    class_prop: Option<&RsxProp>,
+    shorthand_props: &[&RsxProp],
+    result_var: &syn::Ident,
+) -> TokenStream2 {
+    ctx.push_closure_frame(HashSet::new());
+    let attr_code = generate_attr_code(attr_props, result_var, ctx);
+    let style_code = generate_style_code(style_prop, result_var, ctx);
+    let class_code = generate_class_code(class_prop, result_var, ctx);
+    let shorthand_code = generate_shorthand_code(shorthand_props, result_var, ctx);
+    ctx.pop_closure_frame();
+    quote! {
+        #(#attr_code)*
+        #style_code
+        #class_code
+        #shorthand_code
     }
 }
 
