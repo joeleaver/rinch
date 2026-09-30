@@ -711,3 +711,118 @@ fn the_key_spelling_matches_the_browser() {
         );
     }
 }
+
+// ── #1161: the spacebar is spelled as the browser spells it ────────────────
+
+/// `KeyboardEvent.key` for the spacebar is `" "` and `KeyboardEvent.code` is
+/// `"Space"` — measured in Chromium, and what `rinch-web` forwards verbatim.
+/// Desktop used to report `key: "Space"` (its `named_key_str` arm), so a
+/// document-level consumer matching `" "` missed the spacebar on desktop and
+/// one matching `"Space"` missed it on the web (issue #1161). Sampled on each
+/// shape a spacebar event reaches `hook_key_str` in: a real press (text and
+/// logical key both `" "`), a chord (no text), and the debug channel's
+/// injected press (text only, no logical key) — and each one's release, which
+/// carries no text at all.
+#[test]
+fn the_spacebar_is_spelled_like_the_browser_and_its_release_pairs() {
+    for (label, text, logical, mods) in [
+        ("plain press", Some(" "), Some(" "), Modifiers::default()),
+        ("ctrl chord", None, Some(" "), ctrl_down()),
+        ("debug channel", Some(" "), None, Modifiers::default()),
+        ("no text, no logical key", None, None, Modifiers::default()),
+    ] {
+        let mut app = bare_app();
+        let seen = recording_interceptor();
+        press_on_layout(&mut app, KeyCode::Space, text, logical, mods);
+        release(&mut app, KeyCode::Space, logical, mods);
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "{label}: one press, one release: {seen:?}");
+        for ev in seen.iter() {
+            assert_eq!(ev.key, " ", "{label}: `key` is the character: {ev:?}");
+            assert_eq!(ev.code, "Space", "{label}: `code` names it: {ev:?}");
+        }
+        assert!(seen[0].is_down() && seen[1].is_up(), "{label}");
+    }
+}
+
+/// The same spelling reaches a focused node's `on_key` (#147) and a focused
+/// render surface — the other two payloads the `KeyDown`/`KeyUp` arms build
+/// from `hook_key_str`.
+#[test]
+fn the_spacebar_reaches_a_focused_node_and_surface_as_the_character() {
+    let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let id: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
+    let id_in = id.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let div = scope.create_element("div");
+        div.set_attribute("style", "width: 200px; height: 40px");
+        div.set_attribute("tabindex", "0");
+        let sink = sink.clone();
+        register_focus_target(
+            &div,
+            FocusEntry::new().on_key(move |k| {
+                sink.borrow_mut().push(k.clone());
+                true
+            }),
+        );
+        id_in.set(div.node_id().0);
+        root.append_child(&div);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.set_focus_target(FocusTarget::Node(id.get()));
+    press_on_layout(
+        &mut app,
+        KeyCode::Space,
+        Some(" "),
+        Some(" "),
+        Modifiers::default(),
+    );
+    release(&mut app, KeyCode::Space, Some(" "), Modifiers::default());
+    {
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        for ev in seen.iter() {
+            assert_eq!((ev.key.as_str(), ev.code.as_str()), (" ", "Space"));
+        }
+    }
+
+    let surface = create_render_surface();
+    let surface_id = surface.id();
+    let got: Rc<RefCell<Vec<SurfaceKeyData>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = got.clone();
+    surface.set_event_handler(move |event| match event {
+        SurfaceEvent::KeyDown(d) | SurfaceEvent::KeyUp(d) => sink.borrow_mut().push(d),
+        _ => {}
+    });
+    let mounted = surface.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let child = crate::render_surface::RenderSurface {
+            surface: Some(mounted.clone()),
+        }
+        .render(scope, &[]);
+        root.append_child(&child);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.focus_target = FocusTarget::Surface(surface_id);
+    press_on_layout(
+        &mut app,
+        KeyCode::Space,
+        Some(" "),
+        Some(" "),
+        Modifiers::default(),
+    );
+    release(&mut app, KeyCode::Space, Some(" "), Modifiers::default());
+    let got = got.borrow();
+    assert_eq!(got.len(), 2, "{got:?}");
+    for ev in got.iter() {
+        assert_eq!((ev.key.as_str(), ev.code.as_str()), (" ", "Space"));
+    }
+}
