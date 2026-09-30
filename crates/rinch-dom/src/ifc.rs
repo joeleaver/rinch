@@ -625,6 +625,12 @@ impl RinchDocument {
                 self.tree.nodes[root_id].text_layout = None;
                 continue;
             }
+            // A hollow control (#1159): its children are its value, which
+            // `paint_input_value` draws; nothing lays them out as content.
+            if crate::form_control::is_value_control(&self.tree.nodes[root_id]) {
+                self.tree.nodes[root_id].text_layout = None;
+                continue;
+            }
 
             let max_width = self.ifc_paint_max_width(root_id);
             let node = &self.tree.nodes[root_id];
@@ -2526,6 +2532,26 @@ impl RinchDocument {
                 {
                     *ctx = NodeContext::Element;
                 }
+            } else if crate::form_control::is_value_control(&self.tree.nodes[root_id]) {
+                // A hollow control (#1159): its children are its value, not
+                // content, so it is measured exactly as a childless control is
+                // — the context `sync_form_control_measure` gives one — and
+                // `build_ifc_layouts` shapes nothing for it. Written only when
+                // it differs, so a pass that finds it already hollow leaves
+                // Taffy's cache alone.
+                let want = crate::form_control::hollow_control_context(&self.tree.nodes[root_id]);
+                let have = self.tree.taffy.get_node_context(root_taffy);
+                let same = match (&want, have) {
+                    (
+                        Some(NodeContext::FormControl { content_height: a }),
+                        Some(NodeContext::FormControl { content_height: b }),
+                    ) => a == b,
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !same {
+                    let _ = self.tree.taffy.set_node_context(root_taffy, want);
+                }
             } else {
                 // Today's path: the root's own (now childless) Taffy node
                 // carries the context so the measure function fires for it.
@@ -4379,8 +4405,6 @@ impl RinchDocument {
                                 height: known_dims.height.unwrap_or(est_h),
                             };
                         }
-                        // Sized by its `rows`, not its text child (#297).
-                        let rows_h = crate::form_control::inline_root_override(nodes, root_id);
                         perf.bump(crate::perf::Counter::ShapeAtomicInline);
                         let inline_layout = Self::build_inline_layout(
                             nodes, root_id, max_width, 1.0, font_cx, layout_cx,
@@ -4388,9 +4412,7 @@ impl RinchDocument {
                         inline_layout.hang.record(perf);
                         taffy::Size {
                             width: known_dims.width.unwrap_or(inline_layout.measured_width()),
-                            height: known_dims
-                                .height
-                                .unwrap_or(rows_h.unwrap_or(inline_layout.layout.height())),
+                            height: known_dims.height.unwrap_or(inline_layout.layout.height()),
                         }
                     }
                     Some(NodeContext::Text(text)) => {

@@ -243,10 +243,8 @@ impl RinchApp {
                         // for "did the user change anything" (a purely
                         // programmatic change never commits, like the
                         // browser's dirty flag).
-                        let payload = d
-                            .tree
-                            .get(prev)
-                            .and_then(|n| n.attributes.get("value").cloned())
+                        let payload = rinch_dom::form_control::control_value(&d.tree.nodes, prev)
+                            .map(|v| v.into_owned())
                             .unwrap_or_else(|| self.focused_input_value.clone());
                         pending.input_commit =
                             Self::input_attr_handler_up(&d.tree, prev, "data-onchange")

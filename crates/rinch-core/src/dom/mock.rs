@@ -391,6 +391,18 @@ impl DomDocument for MockDomDocument {
                 n.live_value
                     .clone()
                     .or_else(|| n.attributes.get("value").cloned())
+                    // A pristine `<textarea>`'s value is its text children,
+                    // its default value (#1159).
+                    .or_else(|| {
+                        (tag == "textarea").then(|| {
+                            n.children
+                                .iter()
+                                .filter_map(|c| self.nodes.get(c))
+                                .filter(|c| matches!(c.kind, MockNodeKind::Text))
+                                .map(|c| c.text.as_str())
+                                .collect()
+                        })
+                    })
                     .unwrap_or_default(),
             ),
             _ => n.attributes.get("value").cloned(),
@@ -928,6 +940,24 @@ mod tests {
 
     /// A form control always has a live value — `""` before anything set one —
     /// and an element that is not a form control answers from its attribute.
+    #[test]
+    fn a_pristine_textareas_live_value_is_its_text_children() {
+        let mut doc = MockDomDocument::new();
+        let textarea = doc.create_element("textarea");
+        let a = doc.create_text("one ");
+        let b = doc.create_text("two");
+        doc.append_child(textarea, a);
+        doc.append_child(textarea, b);
+        assert_eq!(doc.live_value(textarea).as_deref(), Some("one two"));
+        doc.set_attribute(textarea, "value", "");
+        assert_eq!(doc.live_value(textarea).as_deref(), Some(""));
+
+        let input = doc.create_element("input");
+        let c = doc.create_text("child");
+        doc.append_child(input, c);
+        assert_eq!(doc.live_value(input).as_deref(), Some(""));
+    }
+
     #[test]
     fn live_value_of_an_empty_control_and_of_a_non_control() {
         let mut doc = MockDomDocument::new();

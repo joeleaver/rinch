@@ -185,6 +185,8 @@ mod textarea_home_end_tests;
 #[cfg(test)]
 mod textarea_newline_tests;
 #[cfg(test)]
+mod textarea_text_child_tests;
+#[cfg(test)]
 mod textarea_vertical_arrow_tests;
 #[cfg(test)]
 mod trap_focus_tests;
@@ -2499,9 +2501,8 @@ impl RinchApp {
                 let d = doc.borrow();
                 (
                     Self::input_attr_handler_up(&d.tree, nid, "data-onchange"),
-                    d.tree
-                        .get(nid)
-                        .and_then(|n| n.attributes.get("value").cloned()),
+                    rinch_dom::form_control::control_value(&d.tree.nodes, nid)
+                        .map(|v| v.into_owned()),
                     Self::node_is_textarea(&d.tree, nid),
                 )
             }
@@ -4195,7 +4196,9 @@ impl RinchApp {
         let Ok(handler_id) = oninput_str.parse::<usize>() else {
             return;
         };
-        let value = node.attributes.get("value").cloned().unwrap_or_default();
+        let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
+            .map(|v| v.into_owned())
+            .unwrap_or_default();
         drop(d);
 
         // Take input focus through the arbiter (tears down a prior surface / CE /

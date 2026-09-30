@@ -286,7 +286,9 @@ impl RinchApp {
                         if !Self::node_is_disabled_in_tree(&d.tree, nid)
                             && let Ok(handler_id) = oninput_str.parse::<usize>()
                         {
-                            let value = node.attributes.get("value").cloned().unwrap_or_default();
+                            let value = rinch_dom::form_control::control_value(&d.tree.nodes, nid)
+                                .map(|v| v.into_owned())
+                                .unwrap_or_default();
                             found_input_focus = Some((nid, handler_id, value));
                         }
                         break;
@@ -705,11 +707,9 @@ impl RinchApp {
     ) -> Option<InputTextLayout> {
         let node = tree.get(node_id)?;
 
-        let value = node
-            .attributes
-            .get("value")
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        let value =
+            rinch_dom::form_control::control_value(&tree.nodes, node_id).unwrap_or_default();
+        let value = value.as_ref();
         if value.is_empty() {
             return None;
         }

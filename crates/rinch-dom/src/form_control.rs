@@ -4,7 +4,7 @@
 //! An `<input>` and a `<textarea>` hold their value in an **attribute**, not in
 //! a child, so they are childless however much text they show and nothing in
 //! the box tree gives them a height. (A textarea's text *child* is its default
-//! value, and does not size it either — [`inline_root_override`].) A browser sizes them from their own
+//! value, and does not size it either — [`is_value_control`].) A browser sizes them from their own
 //! metrics: one line box for a single-line `<input>`, `rows` line boxes for a
 //! `<textarea>` (2 when `rows` is absent or invalid), plus padding and border.
 //! Measured in Chrome 153 with `line-height: 20px; padding: 6px 10px; border:
@@ -21,7 +21,8 @@
 //!
 //! **Width is not measured** (the measure answers 0, which is what a childless
 //! box had before): Chrome's intrinsic width comes from the `size`/`cols`
-//! attribute and the font's average character width, which is separate work.
+//! attribute and the font's average character width, which is separate work
+//! (#1177).
 
 use crate::node::{Node, NodeContext, NodeTree};
 
@@ -88,33 +89,15 @@ pub(crate) fn sync_form_control_measure(tree: &mut NodeTree, node_id: usize) -> 
         return false;
     };
     let want = form_control_content_height(node);
-    // An `<input>` whose `type` just left the line types still owes a
-    // re-measure: its InlineRoot measure stops answering the rows height.
-    let control_tag = matches!(node.tag(), Some("input" | "textarea"));
     let have = match tree.taffy.get_node_context(taffy_id) {
         Some(NodeContext::FormControl { content_height }) => Some(*content_height),
-        // A context this module did not write is never overwritten. The one
-        // reachable case is a `<textarea>` whose value arrived as a text
-        // **child** (`textarea { "hi" }`, `set_text_content`, parsed HTML): it
-        // is an IFC root, the IFC pass owns its context, and the `InlineRoot`
-        // measure's *height* is `form_control_content_height` for it (see
-        // [`inline_root_override`]). Overwriting it here made the two passes
-        // trade the slot — one line after a structural pass, `rows` lines after
-        // the next restyle (PR #1152 review, F1). What can still change under
-        // it is the `rows`/line height/`type` this restyle read — including a
-        // `type` that leaves the line types, where `want` is `None` and the
-        // shaped height must come back (review round 2, R2-2) — and Taffy
-        // caches that measure, so the node is marked dirty on every restyle of
-        // an `input`/`textarea` carrying one. That is a Taffy compute per
-        // restyle of such a control, colour-only ones included; the shape is
-        // rare, and the cure is to stop its text child forming an IFC (#1159).
-        Some(NodeContext::InlineRoot(_)) | Some(NodeContext::Text(_)) => {
-            if control_tag {
-                let _ = tree.taffy.mark_dirty(taffy_id);
-                return true;
-            }
-            return false;
-        }
+        // A context this module did not write is never overwritten: an IFC
+        // root's `InlineRoot`, or a text leaf's. A control whose children form
+        // an inline formatting context is not one of those — the IFC pass
+        // leaves it hollow, carrying the `FormControl` context this function
+        // compares against (#1159) — so its `rows`, line height and `type` are
+        // tracked here like a childless control's.
+        Some(NodeContext::InlineRoot(_)) | Some(NodeContext::Text(_)) => return false,
         _ => None,
     };
     if want == have {
@@ -145,16 +128,72 @@ pub(crate) fn measure(content_height: f32, known: taffy::Size<Option<f32>>) -> t
     }
 }
 
-/// The **height** an `InlineRoot` measure answers for a root that is a
-/// line-sized control, in place of its shaped height: a `<textarea>`'s text
-/// children are its default **value**, not content it is sized by (Chrome 153:
-/// a two-row textarea holding "abc" as a child is 40px, the same as an empty
-/// one). `None` for every ordinary IFC root. Only the height: the width stays
-/// the shaped text's, so a control whose width is intrinsic (inline, a flex-row
-/// item, in an `inline-block`) does not collapse to 0 under its own text
-/// (review round 2, R2-1). Both measure sites apply it on the cached path too.
-/// Chrome takes that width from `cols`/`size` instead; the text-child shape's
-/// remaining problems are #1159.
-pub(crate) fn inline_root_override(nodes: &slab::Slab<Node>, root_id: usize) -> Option<f32> {
-    form_control_content_height(nodes.get(root_id)?)
+/// Whether `node` is an `<input>` or a `<textarea>`: an element whose children
+/// are not content (#1159).
+///
+/// A browser renders neither element's children. A `<textarea>`'s direct text
+/// children are its **default value** ([`control_value`]); an `<input>` has no
+/// content model and its children are ignored. Measured in Chrome 153: a
+/// textarea holding "hello world foo" as a child is the size of an empty one
+/// and draws the text once, as its value; an `<input>` with a text child draws
+/// nothing. So when such a control's children form an inline formatting
+/// context, the IFC pass leaves it **hollow**: its Taffy node carries
+/// [`NodeContext::FormControl`] (or no context) instead of `InlineRoot`, so it
+/// is measured exactly as a childless control is, and `build_ifc_layouts`
+/// shapes no text for it, so nothing lays its children out or paints them.
+/// `paint_input_value` draws the value. Only inline children reach that: a
+/// block-level element child is still laid out as content (#1178).
+pub fn is_value_control(node: &Node) -> bool {
+    matches!(node.tag(), Some("input" | "textarea"))
+}
+
+/// The text a field holds: its `value` attribute, else a `<textarea>`'s
+/// **child text content** (HTML: the concatenation of its direct `Text`
+/// children — its default value), else `None`. Any element with a `value`
+/// attribute answers it, so the desktop shell reads every field through this,
+/// custom `data-oninput` controls included.
+///
+/// rinch keeps a control's live value in its `value` attribute (typing writes
+/// it, and so does `value_fn`), so an attribute that is present wins even when
+/// it is empty — the web's dirty value flag, read from the other end: once a
+/// field has been typed into or written, its children no longer show. An
+/// `<input>` has no default value in its children, so it answers only its
+/// attribute. `None` for any other element.
+pub fn control_value(
+    nodes: &slab::Slab<Node>,
+    node_id: usize,
+) -> Option<std::borrow::Cow<'_, str>> {
+    use std::borrow::Cow;
+    let node = nodes.get(node_id)?;
+    if let Some(v) = node.attributes.get("value") {
+        return Some(Cow::Borrowed(v.as_str()));
+    }
+    if node.tag() != Some("textarea") {
+        return None;
+    }
+    let mut texts = node
+        .children
+        .iter()
+        .filter_map(|&c| nodes.get(c))
+        .filter_map(|c| c.text_content());
+    let Some(first) = texts.next() else {
+        return Some(Cow::Borrowed(""));
+    };
+    match texts.next() {
+        None => Some(Cow::Borrowed(first)),
+        Some(second) => {
+            let mut all = String::from(first);
+            all.push_str(second);
+            texts.for_each(|t| all.push_str(t));
+            Some(Cow::Owned(all))
+        }
+    }
+}
+
+/// The Taffy context a hollow control root carries in place of `InlineRoot`
+/// ([`is_value_control`]): what [`sync_form_control_measure`] gives a
+/// childless one.
+pub(crate) fn hollow_control_context(node: &Node) -> Option<NodeContext> {
+    form_control_content_height(node)
+        .map(|content_height| NodeContext::FormControl { content_height })
 }

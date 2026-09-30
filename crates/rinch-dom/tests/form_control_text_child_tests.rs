@@ -300,7 +300,10 @@ fn a_colour_restyle_of_a_text_child_textarea_runs_no_layout() {
         .map(|k| f.get(k))
     };
     let empty = frame(false);
-    assert_eq!(empty[0], 0, "positive control: an empty one computes nothing");
+    assert_eq!(
+        empty[0], 0,
+        "positive control: an empty one computes nothing"
+    );
     assert_eq!(frame(true), empty);
 }
 
