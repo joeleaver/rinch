@@ -353,7 +353,9 @@ impl TableMap {
 /// 1,000,000-column grid, and the [`TableMap`] over it asked for 8 GB.
 pub fn column_count(table: &Node) -> usize {
     let rows = table.child_count().max(1);
-    find_width(table).min((grid_slot_budget(table) / rows).max(1))
+    let cap = (grid_slot_budget(table) / rows).max(1);
+    // The cap is a `usize`, so the narrowing cannot truncate.
+    find_width(table).min(cap as u64) as usize
 }
 
 /// The most slots a [`TableMap`] over `table` may hold: twice the number of
@@ -389,22 +391,23 @@ fn span_attr(cell: &Node, name: &str) -> usize {
 /// linear rather than quadratic in the rows: the columns a rowspan carries are
 /// added to the rows below through a difference array (`ends[r]` holds what
 /// stops being carried at row `r`). A span is the document's word and the
-/// document can say `i64::MAX`, so each colspan is first cut to `u32::MAX`,
-/// which no [`column_count`] reaches and no sum of them overflows.
-fn find_width(table: &Node) -> usize {
-    const SPAN_CAP: usize = u32::MAX as usize;
+/// document can say `i64::MAX`, so the sums are `u64` over colspans cut to
+/// `u32::MAX` — more than any [`column_count`], and no sum of them overflows,
+/// on a 32-bit target (wasm) as on a 64-bit one.
+fn find_width(table: &Node) -> u64 {
+    const SPAN_CAP: u64 = u32::MAX as u64;
     let height = table.child_count();
-    let mut ends = vec![0usize; height + 1];
-    let mut carried = 0usize;
-    let mut width = 0usize;
+    let mut ends = vec![0u64; height + 1];
+    let mut carried = 0u64;
+    let mut width = 0u64;
     for row in 0..height {
         carried -= ends[row];
         let row_node = table.child(row);
         let mut row_width = carried;
-        let mut starts = 0usize;
+        let mut starts = 0u64;
         for i in 0..row_node.child_count() {
             let cell = row_node.child(i);
-            let colspan = span_attr(cell, "colspan").min(SPAN_CAP);
+            let colspan = (span_attr(cell, "colspan") as u64).min(SPAN_CAP);
             row_width += colspan;
             let rowspan = span_attr(cell, "rowspan");
             if rowspan > 1 && row + 1 < height {
@@ -1049,6 +1052,7 @@ mod grid_bound_tests {
             let t = spans_table(&s, &spec);
             let map = TableMap::compute(&t, 1);
             assert_eq!(column_count(&t), old_find_width(&t), "width of {spec:?}");
+            assert_eq!(find_width(&t), old_find_width(&t) as u64, "{spec:?}");
             assert_eq!(map.width(), old_find_width(&t), "{spec:?}");
             assert_eq!(map.map(), old_map(&t, 1).as_slice(), "grid of {spec:?}");
         }
