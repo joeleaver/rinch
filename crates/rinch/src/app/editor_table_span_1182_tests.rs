@@ -9,14 +9,21 @@
 //! next is placed below it: four cells of 10000 rows are 40000 grid lines,
 //! past the `i16` Taffy numbers its lines in, and the layout **panicked**
 //! (`OriginZero grid line cannot be more than the number of positive grid
-//! lines`). The map instead gives the first cell the grid's capped width and
-//! all four rows, and finds the other three rows full: those three cells are
-//! in no slot, and are laid out as bands across the grid below it.
+//! lines`). The map's grid is `2^22 / 4 = 1_048_576` columns wide: the first
+//! cell spans 1_000_000 of them and all four rows, the second the 48_576 left
+//! beside it and the three rows below its own, and the last two find their
+//! rows full, are in no slot, and are laid out as bands across the grid.
+//!
+//! What the desktop draws of that is still clamped by Stylo: the template and
+//! every span stop at 10000 tracks, so the second cell does not fit beside the
+//! first and is placed below it. That is Stylo's limit, not the view's; the
+//! browser twin (`rinch-web`'s `editor_table_spans_1182`) sees the map's grid
+//! as it is.
 #![cfg(feature = "desktop")]
 use super::*;
+use rinch_core::dom::NodeId;
 use rinch_editor_core::AttrValue;
 use rinch_editor_core::model::{Attrs, Fragment, Node};
-use rinch_core::dom::NodeId;
 use std::cell::Cell;
 
 fn table_doc(handle: &crate::editor::EditorHandle, rows: &[Vec<(i64, i64)>]) -> Node {
@@ -107,17 +114,26 @@ fn a_table_of_unbounded_spans_lays_out_as_its_table_map() {
     let (_, _, tw, th) = rect(&app, table);
     let rects: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
     let (x0, y0, w0, h0) = rects[0];
-    // Every cell is as wide as the grid: the first by its span, the others as
-    // bands across it. (The table's own 1px border is inside its box.)
+    // Every cell is as wide as the grid: the first two by their spans (which
+    // Stylo clamps to the clamped template), the others as bands across it.
+    // (The table's own 1px border is inside its box.)
     for (i, &(x, _, w, _)) in rects.iter().enumerate() {
-        assert_eq!((x, w), (x0, w0), "cell {i} is not the grid's width: {rects:?}");
+        assert_eq!(
+            (x, w),
+            (x0, w0),
+            "cell {i} is not the grid's width: {rects:?}"
+        );
     }
     assert!(w0 > 0.0 && w0 <= tw, "{rects:?} in a {tw}-wide table");
-    // The bands stack below the first cell, one after another, and the table
-    // is exactly as tall as them: no track of the grid is left over.
+    // The cells stack one after another, and the table is as tall as them:
+    // rows 1-4 hold the first, 5-7 the second, 8 and 9 the bands. (Each box is
+    // rounded to whole pixels on its own, so neighbours may be a pixel apart.)
     let mut y = y0 + h0;
     for (i, &(_, by, _, bh)) in rects.iter().enumerate().skip(1) {
-        assert!((by - y).abs() < 0.5, "band {i} at {by}, expected {y}: {rects:?}");
+        assert!(
+            (by - y).abs() <= 1.0,
+            "cell {i} at {by}, expected {y}: {rects:?}"
+        );
         y = by + bh;
     }
     assert!(

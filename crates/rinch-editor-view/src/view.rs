@@ -50,34 +50,14 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
         // A table is laid out as a CSS grid (the default stylesheet sets
         // `display: grid` on `<table>` and `display: contents` on `<tr>`, so the
         // cells are the grid's items). The column count is data-dependent, so the
-        // view writes it inline; cells carry their colspan/rowspan as a grid span.
+        // view writes it inline. A cell's span is not written here: it is its
+        // rectangle in the table's map, which the table writes for every cell
+        // (`ViewDesc::sync_table_spans`, #1182).
         "table" => {
             let cols = rinch_editor_core::tables::column_count(node).max(1);
             dom.set_style(
                 "grid-template-columns",
                 &format!("repeat({cols}, minmax(0, 1fr))"),
-            );
-        }
-        "table_cell" | "table_header_cell" => {
-            let cspan = node.attrs().get_int("colspan").unwrap_or(1).max(1);
-            let rspan = node.attrs().get_int("rowspan").unwrap_or(1).max(1);
-            // Always write both (resetting to `auto`) so a split/merge that shrinks
-            // a span doesn't leave a stale `span N` behind.
-            dom.set_style(
-                "grid-column",
-                &(if cspan > 1 {
-                    format!("span {cspan}")
-                } else {
-                    "auto".to_string()
-                }),
-            );
-            dom.set_style(
-                "grid-row",
-                &(if rspan > 1 {
-                    format!("span {rspan}")
-                } else {
-                    "auto".to_string()
-                }),
             );
         }
         // A task item carries its checkbox state out as `data-checked` so the default
@@ -365,6 +345,63 @@ pub(crate) struct ViewDesc {
     /// while shown
     /// ([`Self::sync_trailing_break`]). Always the element's last child.
     trailing_break: Option<NodeHandle>,
+    /// A table cell's grid placement as last written to its host, or `None`
+    /// before its table has placed it (a freshly built cell, and every node
+    /// that is not a cell). Written only by the table ([`Self::sync_table_spans`]),
+    /// because a cell's placement is its [`TableMap`] rectangle, which the whole
+    /// table decides (#1182).
+    ///
+    /// [`TableMap`]: rinch_editor_core::tables::TableMap
+    grid_placement: Option<GridPlacement>,
+}
+
+/// Where a table cell sits in its table's CSS grid: the [`TableMap`] rectangle's
+/// extents, or [`Self::Outside`] for a cell the bounded grid has no slot for.
+///
+/// [`TableMap`]: rinch_editor_core::tables::TableMap
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GridPlacement {
+    /// `colspan × rowspan` grid tracks, auto-placed.
+    Span(usize, usize),
+    /// A cell no grid slot holds (past the capped width, or in a row the
+    /// rowspans from above fill). No table command treats it as a cell; it is
+    /// laid out as a band across the whole grid (`grid-column: 1 / -1`) so its
+    /// content stays visible without adding a track.
+    Outside,
+}
+
+impl GridPlacement {
+    /// The `grid-column` / `grid-row` values that place a cell so.
+    fn css(self) -> (String, String) {
+        let span = |n: usize| {
+            if n > 1 {
+                format!("span {n}")
+            } else {
+                "auto".to_string()
+            }
+        };
+        match self {
+            GridPlacement::Span(cols, rows) => (span(cols), span(rows)),
+            GridPlacement::Outside => ("1 / -1".to_string(), "auto".to_string()),
+        }
+    }
+}
+
+/// True when `a` and `b` give every cell the same [`GridPlacement`] because they
+/// agree on everything a `TableMap` is computed from: the rows, each row's
+/// cells, and each cell's `colspan` / `rowspan`.
+fn same_table_spans(a: &Node, b: &Node) -> bool {
+    let span = |c: &Node, name: &str| c.attrs().get_int(name);
+    a.child_count() == b.child_count()
+        && (0..a.child_count()).all(|r| {
+            let (ra, rb) = (a.child(r), b.child(r));
+            ra.child_count() == rb.child_count()
+                && (0..ra.child_count()).all(|i| {
+                    let (ca, cb) = (ra.child(i), rb.child(i));
+                    span(ca, "colspan") == span(cb, "colspan")
+                        && span(ca, "rowspan") == span(cb, "rowspan")
+                })
+        })
 }
 
 impl ViewDesc {
@@ -400,11 +437,48 @@ impl ViewDesc {
             segments: Vec::new(),
             has_deco: false,
             trailing_break: None,
+            grid_placement: None,
         })
         .map(|mut desc| {
             desc.sync_trailing_break(doc);
+            if rinch_editor_core::tables::is_table(&desc.node) {
+                desc.sync_table_spans();
+            }
             desc
         })
+    }
+
+    /// Place every cell of this `table` descriptor in the table's CSS grid by its
+    /// rectangle in the table's [`TableMap`] — the bounded grid every table
+    /// command edits — rather than by its raw `colspan` / `rowspan` (#1182). A
+    /// table reaching the model by `load_doc` or an app's own transaction can
+    /// say `colspan = 3_000_000` or `rowspan = i64::MAX`; written raw, that
+    /// asked the host for that many implicit grid tracks, and on the desktop a
+    /// few such cells stacked past the `i16` lines Taffy numbers a grid with,
+    /// and layout panicked. The map cuts a span at the grid's edge and has no
+    /// slot for a cell past its capped width, so the grid laid out is at most
+    /// the map's columns and, with the [`GridPlacement::Outside`] bands, its
+    /// rows plus one per such cell. A cell whose placement did not change is
+    /// not written.
+    ///
+    /// [`TableMap`]: rinch_editor_core::tables::TableMap
+    fn sync_table_spans(&mut self) {
+        let rects = rinch_editor_core::tables::cell_rects(&self.node);
+        for (row, row_rects) in self.children.iter_mut().zip(&rects) {
+            for (cell, rect) in row.children.iter_mut().zip(row_rects) {
+                let placement = match rect {
+                    Some(r) => GridPlacement::Span(r.right - r.left, r.bottom - r.top),
+                    None => GridPlacement::Outside,
+                };
+                if cell.grid_placement == Some(placement) {
+                    continue;
+                }
+                let (column, grid_row) = placement.css();
+                cell.dom.set_style("grid-column", &column);
+                cell.dom.set_style("grid-row", &grid_row);
+                cell.grid_placement = Some(placement);
+            }
+        }
     }
 
     /// Show or drop the **trailing-break placeholder**: a `<br
@@ -496,8 +570,23 @@ impl ViewDesc {
         if self.node.attrs() != new.attrs() || table_cols_changed {
             apply_element_attrs(&self.dom, new);
         }
+        // A cell's placement is its rectangle in the whole table's map, so a
+        // span or a row anywhere in the table can move it; and a cell host
+        // built by this diff has no placement yet.
+        let replace_spans =
+            rinch_editor_core::tables::is_table(new) && !same_table_spans(&self.node, new);
         self.diff_children(new, doc);
         self.node = new.clone();
+        if rinch_editor_core::tables::is_table(new)
+            && (replace_spans
+                || self
+                    .children
+                    .iter()
+                    .flat_map(|row| &row.children)
+                    .any(|cell| cell.grid_placement.is_none()))
+        {
+            self.sync_table_spans();
+        }
         self.sync_trailing_break(doc);
         true
     }
@@ -726,6 +815,7 @@ impl RinchDomEditorView {
             segments: Vec::new(),
             has_deco: false,
             trailing_break: None,
+            grid_placement: None,
         };
         let flat = doc
             .upgrade()
@@ -4237,7 +4327,11 @@ mod table_span_tests {
 
     /// `(grid-column, grid-row)` as the view wrote them inline.
     fn placement(r: &Rig, id: NodeId) -> (String, String) {
-        let style = r.doc.borrow().get_attribute(id, "style").unwrap_or_default();
+        let style = r
+            .doc
+            .borrow()
+            .get_attribute(id, "style")
+            .unwrap_or_default();
         let decls = rinch_core::dom::split_declarations(&style);
         let get = |p: &str| {
             decls
@@ -4332,6 +4426,43 @@ mod table_span_tests {
         let next = st.apply(tr);
         view.update_dom(&st, &next);
         assert_eq!(placement(&r, cells(&r)[0]), p("auto", "span 3"));
+    }
+
+    /// A row removed from under an overlong rowspan shortens it, and a cell's
+    /// own colspan changed in place re-places it: neither builds a cell host,
+    /// so only the table's span comparison can see them.
+    #[test]
+    fn a_removed_row_and_a_changed_colspan_re_place_cells_patched_in_place() {
+        let r = rig();
+        let s = Rc::new(Schema::starter_kit());
+        let t = table(
+            &s,
+            &[vec![(1, i64::MAX), (1, 1)], vec![(1, 1)], vec![(1, 1)]],
+        );
+        let st = state_with(&s, t.clone());
+        let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        let c = cells(&r);
+        assert_eq!(placement(&r, c[0]), p("auto", "span 3"), "control");
+        assert_eq!(placement(&r, c[1]), p("auto", "auto"), "control");
+        // Remove the last row: it ends one before the table's inner end.
+        let last = t.child(2).node_size();
+        let end = 1 + t.content_size();
+        let mut tr = st.tr();
+        tr.delete(end - last, end).unwrap();
+        let st2 = st.apply(tr);
+        view.update_dom(&st, &st2);
+        let c2 = cells(&r);
+        assert_eq!(&c2[..3], &c[..3], "control: no cell host rebuilt");
+        assert_eq!(placement(&r, c[0]), p("auto", "span 2"));
+        // The second cell of the first row: after the row open and cell one.
+        let second = 2 + t.child(0).child(0).node_size();
+        let mut tr = st2.tr();
+        tr.set_node_attr(second, "colspan", AttrValue::Int(2))
+            .unwrap();
+        let st3 = st2.apply(tr);
+        view.update_dom(&st2, &st3);
+        assert_eq!(cells(&r), c2, "control: no cell host rebuilt");
+        assert_eq!(placement(&r, c[1]), p("span 2", "auto"));
     }
 
     /// A cell whose host is rebuilt — `td` to `th`, the same spans — gets its

@@ -83,7 +83,10 @@ impl Drop for Mounted {
 fn mount(rows: &[Vec<(i64, i64)>]) -> Mounted {
     if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
         for i in 0..stale.length() {
-            if let Some(el) = stale.item(i).and_then(|n| n.dyn_into::<web_sys::Element>().ok()) {
+            if let Some(el) = stale
+                .item(i)
+                .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+            {
                 el.remove();
             }
         }
@@ -139,8 +142,13 @@ fn placement(el: &web_sys::Element) -> [String; 4] {
         .get_computed_style(el)
         .unwrap()
         .unwrap();
-    ["grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end"]
-        .map(|p| cs.get_property_value(p).unwrap())
+    [
+        "grid-column-start",
+        "grid-column-end",
+        "grid-row-start",
+        "grid-row-end",
+    ]
+    .map(|p| cs.get_property_value(p).unwrap())
 }
 
 fn s4(a: &str, b: &str, c: &str, d: &str) -> [String; 4] {
@@ -186,28 +194,55 @@ fn an_overlong_rowspan_is_placed_cut_at_the_last_row() {
     );
 }
 
-/// Four rows of `colspan = 1_000_000, rowspan = i64::MAX`: the map gives the
-/// first cell the grid's capped width and all four rows and finds the other
-/// three rows full, so those cells are bands across the grid below it, and the
-/// table is exactly as tall as the four.
+/// Four rows of `colspan = 1_000_000, rowspan = i64::MAX`. The map's grid is
+/// `2^22 / 4 = 1_048_576` columns wide: the first cell spans 1_000_000 of them
+/// and all four rows, the second the 48_576 left beside it and the three rows
+/// below its own, and the last two find their rows full — no slot, so they are
+/// bands across the grid below. Written raw, every cell asked for 1_000_000
+/// columns and Chrome's clamped `span 1e+07` rows.
 #[wasm_bindgen_test]
 fn a_table_of_unbounded_spans_is_placed_as_its_table_map() {
     let big = (1_000_000, i64::MAX);
     let m = mount(&[vec![big], vec![big], vec![big], vec![big]]);
     let c = cells(&m);
     assert_eq!(c.len(), 4, "control: four cells");
-    assert_eq!(placement(&c[0])[2..], s4("", "", "span 4", "auto")[2..]);
-    for band in &c[1..] {
-        assert_eq!(placement(band), s4("1", "-1", "auto", "auto"));
-    }
+    let got: Vec<_> = c.iter().map(placement).collect();
+    // Chrome serialises `span 1000000` as `span 1e+06`; the other three are exact.
+    assert_eq!(got[0][2..], s4("", "", "span 4", "auto")[2..], "{got:?}");
+    assert_eq!(got[1], s4("span 48576", "auto", "span 3", "auto"));
+    assert_eq!(got[2], s4("1", "-1", "auto", "auto"));
+    assert_eq!(got[3], s4("1", "-1", "auto", "auto"));
     let t = table(&m);
     let r: Vec<_> = c.iter().map(|e| rect(e, &t)).collect();
-    let mut y = r[0].1 + r[0].3;
-    for (i, b) in r.iter().enumerate().skip(1) {
-        assert!((b.0 - r[0].0).abs() < 0.5 && (b.2 - r[0].2).abs() < 0.5, "{i}: {r:?}");
-        assert!((b.1 - y).abs() < 0.5, "band {i} at {}, expected {y}: {r:?}", b.1);
+    // The first cell spans the map's 1_000_000 of 1_048_576 columns — of the
+    // bands' width, which is the grid's — and the second starts where it ends.
+    // (Auto-placement puts the second at the first cell's top, where the map
+    // has it one row down: #1209. Its own padding makes it wider than the
+    // 48_576 columns it spans, so it is not asserted to end at the grid's edge.)
+    let grid_w = r[2].2;
+    assert!(
+        (r[0].2 / grid_w - 1_000_000.0 / 1_048_576.0).abs() < 0.005,
+        "{r:?}"
+    );
+    assert!((r[1].0 - (r[0].0 + r[0].2)).abs() < 1.0, "{r:?}");
+    assert!((r[1].1 - r[0].1).abs() < 0.5, "#1209 moved: {r:?}");
+    // The bands span the grid and stack below both.
+    let mut y = (r[0].1 + r[0].3).max(r[1].1 + r[1].3);
+    for (i, b) in r.iter().enumerate().skip(2) {
+        assert!(
+            (b.0 - r[0].0).abs() < 0.5 && (b.2 - grid_w).abs() < 1.0,
+            "{i}: {r:?}"
+        );
+        assert!(
+            (b.1 - y).abs() < 1.0,
+            "band {i} at {}, expected {y}: {r:?}",
+            b.1
+        );
         y = b.1 + b.3;
     }
     let th = t.get_bounding_client_rect().height();
-    assert!((th - y).abs() <= 2.5, "table {th} tall, cells end at {y}: {r:?}");
+    assert!(
+        (th - y).abs() <= 2.5,
+        "table {th} tall, cells end at {y}: {r:?}"
+    );
 }

@@ -204,6 +204,48 @@ impl TableMap {
         None
     }
 
+    /// The grid rectangle of the cell covering slot `index`: its spans as the
+    /// map resolved them, which is what every span a table command writes is
+    /// computed from (#1184) and what the view places a cell by (#1182). The
+    /// attributes are the document's word and may say `i64::MAX`; the map cuts
+    /// a span at the grid's edge, so a rectangle is at most the grid and `± 1`
+    /// on its sides cannot overflow. `None` for a hole or an index past the
+    /// grid, neither of which is a cell.
+    ///
+    /// The walk goes up and then left to the cell's origin, then right and down
+    /// from it. On a malformed table whose cells overlap, a cell's slots need
+    /// not be a rectangle and the answer is an approximation; callers therefore
+    /// step past a cell by at least one slot.
+    pub fn cell_rect(&self, index: usize) -> Option<Rect> {
+        let m = &self.map;
+        let width = self.width;
+        let pos = *m.get(index)?;
+        if pos == UNSET {
+            return None;
+        }
+        let (mut top, mut left) = (index / width, index % width);
+        while top > 0 && m[(top - 1) * width + left] == pos {
+            top -= 1;
+        }
+        while left > 0 && m[top * width + left - 1] == pos {
+            left -= 1;
+        }
+        let mut right = left + 1;
+        while right < width && m[top * width + right] == pos {
+            right += 1;
+        }
+        let mut bottom = top + 1;
+        while bottom < self.height && m[bottom * width + left] == pos {
+            bottom += 1;
+        }
+        Some(Rect {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
     /// The column index of the cell at document position `pos` (its leftmost
     /// column). `None` if no cell starts at `pos`.
     pub fn col_count(&self, pos: usize) -> Option<usize> {
@@ -425,6 +467,61 @@ fn find_width(table: &Node) -> u64 {
         width = width.max(row_width);
     }
     width.max(1)
+}
+
+/// The grid rectangle of every cell of `table`, row by row and cell by cell in
+/// document order: [`TableMap::cell_rect`] at the cell's first slot, or `None`
+/// for a cell the bounded grid has no slot for (one past a capped width, or in
+/// a row that rowspans from above already fill), which no table command treats
+/// as a cell either. What the view places each cell by (#1182), so the grid a
+/// host lays out is the grid the commands edit.
+///
+/// Linear in the map's slots (a binary search per slot run) plus the cells'
+/// extents; the map is bounded by [`grid_slot_budget`].
+pub fn cell_rects(table: &Node) -> Vec<Vec<Option<Rect>>> {
+    // The map's positions are only compared with each other, so any start
+    // does; 0 keeps them clear of the hole sentinel.
+    let map = TableMap::compute(table, 0);
+    let mut starts = Vec::new();
+    let mut pos = 0usize;
+    for r in 0..table.child_count() {
+        let row = table.child(r);
+        pos += 1;
+        for i in 0..row.child_count() {
+            starts.push(pos);
+            pos += row.child(i).node_size();
+        }
+        pos += 1;
+    }
+    // Each cell's first slot in row-major order is its origin.
+    let mut first = vec![UNSET; starts.len()];
+    let mut last = UNSET;
+    for (index, &p) in map.map().iter().enumerate() {
+        if p == UNSET || p == last {
+            continue;
+        }
+        last = p;
+        if let Ok(k) = starts.binary_search(&p)
+            && first[k] == UNSET
+        {
+            first[k] = index;
+        }
+    }
+    let mut k = 0usize;
+    (0..table.child_count())
+        .map(|r| {
+            (0..table.child(r).child_count())
+                .map(|_| {
+                    let rect = match first[k] {
+                        UNSET => None,
+                        index => map.cell_rect(index),
+                    };
+                    k += 1;
+                    rect
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Walk up from `r` to the nearest enclosing `table`, returning the table node and
