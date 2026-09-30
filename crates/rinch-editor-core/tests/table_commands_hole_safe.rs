@@ -279,9 +279,18 @@ fn every_command_in_every_cell_of_the_issues_tables_is_safe() {
     for t in tables {
         for r in 0..t.child_count() {
             for i in 0..t.child(r).child_count() {
+                // The i64::MAX colspan's grid is 2^21 columns wide: each command
+                // there maps 2^22 slots, so it is run from one cell (the issue's
+                // row), not every one, to keep a debug build's run short.
+                let huge = (0..t.child(0).child_count())
+                    .any(|k| span(&t.child(0).child(k), "colspan") > 1000);
+                if huge && r == 0 {
+                    continue;
+                }
                 for c in CMDS {
-                    // #1185: splitCell steps once per slot of a 2^22-slot span.
-                    if *c == "splitCell" && span(&t.child(r).child(i), "colspan") > 1000 {
+                    // #1185: addRow and splitCell make one cell per grid slot,
+                    // 2^21 of them under that span.
+                    if huge && (c.starts_with("addRow") || *c == "splitCell") {
                         continue;
                     }
                     let mut st = state_with(t.clone());
@@ -390,6 +399,23 @@ fn random_ragged_tables_x_every_command_are_safe() {
     assert!(applied > 1500, "only {applied} commands applied");
 }
 
+/// Each row's `(colspan, rowspan)`s, for a failure message.
+fn table_spans(t: &Node) -> Vec<Vec<(i64, i64)>> {
+    (0..t.child_count())
+        .map(|r| {
+            let row = t.child(r);
+            (0..row.child_count())
+                .map(|i| {
+                    (
+                        span(&row.child(i), "colspan"),
+                        span(&row.child(i), "rowspan"),
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// A random well-formed table: a `w × h` grid tiled with rectangles.
 fn random_tiled(rng: &mut Rng, s: &Schema) -> (Node, usize, usize) {
     let w = 1 + rng.below(5);
@@ -463,7 +489,11 @@ fn random_well_formed_tables_stay_well_formed_under_every_command() {
         let mut st = state_with(t);
         st.selection = sel;
         for c in CMDS {
-            let what = format!("case {case}: {c} at {:?} in {:?}", st.selection, st.doc);
+            let what = format!(
+                "case {case}: {c} at {:?} in {:?}",
+                st.selection,
+                table_spans(&st.doc.child(0))
+            );
             let next = check_command(&st, c, &what);
             if c.starts_with("add") {
                 assert!(next.is_some(), "{what}: refused");

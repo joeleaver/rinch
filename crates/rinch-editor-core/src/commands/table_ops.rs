@@ -73,19 +73,88 @@ fn make_empty_cell(schema: &Schema) -> Option<Node> {
         .ok()
 }
 
-/// The colspan of `cell`, clamped to ≥1.
+/// The colspan attribute of `cell`, clamped to ≥1. The document's word, not the
+/// grid's: only [`split_cell`] reads it, to tell a merged cell from a plain one.
+/// Span arithmetic reads [`cell_rect`] instead.
 fn colspan(cell: &Node) -> i64 {
     cell.attrs().get_int("colspan").unwrap_or(1).max(1)
 }
 
-/// The rowspan of `cell`, clamped to ≥1.
+/// The rowspan attribute of `cell`, clamped to ≥1 (see [`colspan`]).
 fn rowspan(cell: &Node) -> i64 {
     cell.attrs().get_int("rowspan").unwrap_or(1).max(1)
 }
 
-/// The cell node covering grid slot `pos` (an absolute cell position from the map).
+/// A grid slot no cell covers (a ragged row's tail, or a row cut by the bounded
+/// grid, #1176): [`TableMap::map`]'s sentinel.
+const HOLE: usize = usize::MAX;
+
+/// The grid rectangle of the cell covering slot `index`: its spans as the
+/// [`TableMap`] resolved them, which is what every span a command writes is
+/// computed from (#1184). The attributes are the document's word and may say
+/// `i64::MAX`; the map cuts a span at the grid's edge, so a rectangle is at most
+/// the grid and `± 1` on its sides cannot overflow. `None` for a hole, which is
+/// no cell.
+///
+/// The walk goes up and then left to the cell's origin, then right and down from
+/// it. On a malformed table whose cells overlap, a cell's slots need not be a
+/// rectangle and the answer is an approximation; callers therefore step past a
+/// cell by at least one slot.
+fn cell_rect(map: &TableMap, index: usize) -> Option<Rect> {
+    let m = map.map();
+    let width = map.width();
+    let pos = *m.get(index)?;
+    if pos == HOLE {
+        return None;
+    }
+    let (mut top, mut left) = (index / width, index % width);
+    while top > 0 && m[(top - 1) * width + left] == pos {
+        top -= 1;
+    }
+    while left > 0 && m[top * width + left - 1] == pos {
+        left -= 1;
+    }
+    let mut right = left + 1;
+    while right < width && m[top * width + right] == pos {
+        right += 1;
+    }
+    let mut bottom = top + 1;
+    while bottom < map.height() && m[bottom * width + left] == pos {
+        bottom += 1;
+    }
+    Some(Rect {
+        left,
+        top,
+        right,
+        bottom,
+    })
+}
+
+/// A grid extent as a span attribute. An extent is at most the grid's width or
+/// height, so it always fits.
+fn span_value(extent: usize) -> AttrValue {
+    AttrValue::Int(i64::try_from(extent.max(1)).unwrap_or(i64::MAX))
+}
+
+/// `pos` mapped through the steps `tr` took since it had `start` of them — the
+/// steps of one row or column removal. A removal after the first works on a map
+/// recomputed from the transaction's current document, whose positions already
+/// reflect the earlier removals; mapping them through the whole transaction
+/// moved them a second time (PM maps through `tr.mapping.slice(mapStart)`).
+fn map_since(tr: &Transaction, start: usize, pos: usize) -> usize {
+    tr.mapping().maps()[start..]
+        .iter()
+        .fold(pos, |pos, map| map.map(pos, 1))
+}
+
+/// The cell node at `pos` (an absolute cell position from the map). `None` for a
+/// hole or a position outside the table.
 fn cell_node(info: &TableRect, pos: usize) -> Option<Node> {
-    info.table.node_at(pos - info.table_start)
+    let offset = pos.checked_sub(info.table_start)?;
+    if pos == HOLE || offset >= info.table.content_size() {
+        return None;
+    }
+    info.table.node_at(offset)
 }
 
 // ===================================================================
@@ -102,15 +171,19 @@ fn add_column(tr: &mut Transaction, info: &TableRect, col: usize, schema: &Schem
     let mut row = 0;
     while row < map.height() {
         let index = row * width + col;
-        let inside_span = col > 0 && col < width && map.map()[index - 1] == map.map()[index];
+        // Two holes side by side are no cell spanning the line.
+        let inside_span = col > 0
+            && col < width
+            && map.map()[index] != HOLE
+            && map.map()[index - 1] == map.map()[index];
         if inside_span {
             // Inside a horizontally-spanning cell → widen it.
             let pos = map.map()[index];
-            let cell = cell_node(info, pos)?;
+            let rect = cell_rect(map, index)?;
             let mapped = tr.mapping().map(pos, 1);
-            tr.set_node_attr(mapped, "colspan", AttrValue::Int(colspan(&cell) + 1))
+            tr.set_node_attr(mapped, "colspan", span_value(rect.right - rect.left + 1))
                 .ok()?;
-            row += rowspan(&cell).max(1) as usize;
+            row = rect.bottom.max(row + 1);
         } else {
             let at = map.position_at(row, col);
             let mapped = tr.mapping().map(at, 1);
@@ -127,24 +200,29 @@ fn add_column(tr: &mut Transaction, info: &TableRect, col: usize, schema: &Schem
 /// shrinks (colspan−1); a cell wholly in the column is deleted. Port of
 /// `removeColumn`.
 fn remove_column(tr: &mut Transaction, info: &TableRect, col: usize) -> Option<()> {
+    let start = tr.mapping().len();
     let map = &info.map;
     let width = map.width();
     let mut row = 0;
     while row < map.height() {
         let index = row * width + col;
         let pos = map.map()[index];
+        // A hole: this row has nothing in the column.
+        let Some(rect) = cell_rect(map, index) else {
+            row += 1;
+            continue;
+        };
         let cell = cell_node(info, pos)?;
         let spans_more = (col > 0 && map.map()[index - 1] == pos)
             || (col < width - 1 && map.map()[index + 1] == pos);
+        let mapped = map_since(tr, start, pos);
         if spans_more {
-            let mapped = tr.mapping().map(pos, 1);
-            tr.set_node_attr(mapped, "colspan", AttrValue::Int(colspan(&cell) - 1))
+            tr.set_node_attr(mapped, "colspan", span_value(rect.right - rect.left - 1))
                 .ok()?;
         } else {
-            let start = tr.mapping().map(pos, 1);
-            tr.delete(start, start + cell.node_size()).ok()?;
+            tr.delete(mapped, mapped + cell.node_size()).ok()?;
         }
-        row += rowspan(&cell).max(1) as usize;
+        row = rect.bottom.max(row + 1);
     }
     Some(())
 }
@@ -165,14 +243,17 @@ fn add_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schema) 
     let mut col = 0;
     while col < width {
         let index = row * width + col;
-        let from_above =
-            row > 0 && row < map.height() && map.map()[index] == map.map()[index - width];
+        // Two holes one above the other are no cell spanning the line.
+        let from_above = row > 0
+            && row < map.height()
+            && map.map()[index] != HOLE
+            && map.map()[index] == map.map()[index - width];
         if from_above {
             let pos = map.map()[index];
-            let cell = cell_node(info, pos)?;
-            tr.set_node_attr(pos, "rowspan", AttrValue::Int(rowspan(&cell) + 1))
+            let rect = cell_rect(map, index)?;
+            tr.set_node_attr(pos, "rowspan", span_value(rect.bottom - rect.top + 1))
                 .ok()?;
-            col += colspan(&cell).max(1) as usize;
+            col = rect.right.max(col + 1);
         } else {
             cells.push(make_empty_cell(schema)?);
             col += 1;
@@ -194,6 +275,7 @@ fn remove_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schem
     let width = map.width();
     let row_pos = map.row_start(row)?;
     let next_row = map.row_start(row + 1)?;
+    let start = tr.mapping().len();
     // Delete the whole row first (the one position-shifting step besides the
     // move-down inserts, which are mapped below).
     tr.delete(row_pos, next_row).ok()?;
@@ -206,30 +288,33 @@ fn remove_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schem
             col += 1;
             continue;
         }
+        // A hole: this row has nothing in the column.
+        let Some(rect) = cell_rect(map, index) else {
+            col += 1;
+            continue;
+        };
         seen.push(pos);
         let cell = cell_node(info, pos)?;
-        let cspan = colspan(&cell).max(1) as usize;
+        let next_col = rect.right.max(col + 1);
+        let shorter = span_value(rect.bottom - rect.top - 1);
         if row > 0 && pos == map.map()[index - width] {
             // Spans into this row from above → reduce its rowspan.
-            let mapped = tr.mapping().map(pos, 1);
-            tr.set_node_attr(mapped, "rowspan", AttrValue::Int(rowspan(&cell) - 1))
-                .ok()?;
-            col += cspan;
+            let mapped = map_since(tr, start, pos);
+            tr.set_node_attr(mapped, "rowspan", shorter).ok()?;
+            col = next_col;
         } else if row + 1 < map.height() && pos == map.map()[index + width] {
             // Starts here and continues below → recreate it one row down.
-            let new_attrs = cell
-                .attrs()
-                .with("rowspan", AttrValue::Int(rowspan(&cell) - 1));
+            let new_attrs = cell.attrs().with("rowspan", shorter);
             let copy = schema
                 .create_node(cell.type_name(), new_attrs, cell.content().clone())
                 .ok()?;
             let new_pos = map.position_at(row + 1, col);
-            let mapped = tr.mapping().map(new_pos, 1);
+            let mapped = map_since(tr, start, new_pos);
             tr.replace_with(mapped, mapped, Fragment::from_node(copy))
                 .ok()?;
-            col += cspan;
+            col = next_col;
         } else {
-            col += cspan;
+            col = next_col;
         }
     }
     Some(())
@@ -335,7 +420,12 @@ pub fn delete_column() -> Command {
         let mut i = rect.right;
         loop {
             i -= 1;
-            remove_column(&mut tr, &cur, i)?;
+            // A column past the recomputed grid is gone already: removing a
+            // column from a ragged table can narrow the grid by more than one
+            // (its widest row may be the one that lost a cell).
+            if i < cur.map.width() {
+                remove_column(&mut tr, &cur, i)?;
+            }
             if i == rect.left {
                 break;
             }
@@ -389,8 +479,9 @@ fn cells_overlap_rectangle(map: &TableMap, rect: Rect) -> bool {
     for r in rect.top..rect.bottom {
         let il = r * width + rect.left;
         let ir = r * width + (rect.right - 1);
-        let bleed_left = rect.left > 0 && m[il] == m[il - 1];
-        let bleed_right = rect.right < width && m[ir] == m[ir + 1];
+        // Two holes side by side are no cell bleeding across the edge.
+        let bleed_left = rect.left > 0 && m[il] != HOLE && m[il] == m[il - 1];
+        let bleed_right = rect.right < width && m[ir] != HOLE && m[ir] == m[ir + 1];
         if bleed_left || bleed_right {
             return true;
         }
@@ -399,8 +490,8 @@ fn cells_overlap_rectangle(map: &TableMap, rect: Rect) -> bool {
     for c in rect.left..rect.right {
         let it = rect.top * width + c;
         let ib = (rect.bottom - 1) * width + c;
-        let bleed_top = rect.top > 0 && m[it] == m[it - width];
-        let bleed_bottom = rect.bottom < height && m[ib] == m[ib + width];
+        let bleed_top = rect.top > 0 && m[it] != HOLE && m[it] == m[it - width];
+        let bleed_bottom = rect.bottom < height && m[ib] != HOLE && m[ib] == m[ib + width];
         if bleed_top || bleed_bottom {
             return true;
         }
@@ -472,6 +563,12 @@ pub fn merge_cells() -> Command {
         let map = &info.map;
         let width = map.width();
         let rect = info.rect;
+        // The master is the rectangle's top-left cell, which grows over the rest
+        // (holes included: they are no cell to delete). A hole there has no
+        // cell to grow.
+        if map.map()[rect.top * width + rect.left] == HOLE {
+            return None;
+        }
         let mut tr = state.tr();
         let mut seen: Vec<usize> = Vec::new();
         let mut content = Fragment::empty();
@@ -479,7 +576,7 @@ pub fn merge_cells() -> Command {
         for row in rect.top..rect.bottom {
             for col in rect.left..rect.right {
                 let pos = map.map()[row * width + col];
-                if seen.contains(&pos) {
+                if pos == HOLE || seen.contains(&pos) {
                     continue;
                 }
                 seen.push(pos);
