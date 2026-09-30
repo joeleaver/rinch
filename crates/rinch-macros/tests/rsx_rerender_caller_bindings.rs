@@ -353,3 +353,105 @@ fn bindings_capturing_non_copy_values_survive_re_renders() {
     assert_eq!(decl(&p, "margin-top").as_deref(), Some("2px"));
     assert_eq!(p.get_attribute("data-name").as_deref(), Some("nm"));
 }
+
+// ── captures that compile on main (review of PR #1193, F1/F2) ───────────────
+
+/// Not `Clone`: a binding may borrow it, as it could on main, but nothing may
+/// clone it.
+pub struct NoClone(pub String);
+
+impl NoClone {
+    pub fn css(&self) -> String {
+        self.0.clone()
+    }
+}
+
+#[component]
+fn no_clone_style(label: Signal<String>, nc: NoClone) -> NodeHandle {
+    rsx! { Probe { label: {move || label.get()}, style: {|| nc.css()} } }
+}
+
+#[component]
+fn no_clone_class_expr(label: Signal<String>, nc: NoClone) -> NodeHandle {
+    rsx! { Probe { label: {move || label.get()}, class: nc.css() } }
+}
+
+#[component]
+fn no_clone_attr_child(label: Signal<String>, nc: NoClone) -> NodeHandle {
+    rsx! { div { Probe { label: {move || label.get()}, data-x: {|| nc.css()} } } }
+}
+
+#[component]
+fn no_clone_shorthand(label: Signal<String>, nc: NoClone) -> NodeHandle {
+    rsx! { Probe { label: {move || label.get()}, mt: {|| nc.css()} } }
+}
+
+/// A binding that borrows a non-`Clone` value compiled on main (it was
+/// evaluated inside the render closure). It still compiles — the binding
+/// closure is built once, outside the render closure — and still works across
+/// re-renders.
+#[test]
+fn a_binding_borrowing_a_non_clone_value_compiles_and_survives_re_renders() {
+    let label = Signal::new("one".to_string());
+    let nc = || NoClone("4px".to_string());
+    let (_d1, _s1, r1) = mount(|s| no_clone_style(s, label, NoClone("color: navy".into())));
+    let (_d2, _s2, r2) = mount(|s| no_clone_class_expr(s, label, NoClone("kept".into())));
+    let (_d3, _s3, r3) = mount(|s| no_clone_attr_child(s, label, nc()));
+    let (_d4, _s4, r4) = mount(|s| no_clone_shorthand(s, label, nc()));
+    label.set("two".to_string());
+    let p = |r: &NodeHandle| find_probe(r).expect("rendered");
+    assert_eq!(p(&r1).get_attribute("aria-label").as_deref(), Some("two"));
+    assert_eq!(decl(&p(&r1), "color").as_deref(), Some("navy"));
+    assert_eq!(classes(&p(&r2)), ["probe", "kept"]);
+    assert_eq!(p(&r3).get_attribute("data-x").as_deref(), Some("4px"));
+    assert_eq!(decl(&p(&r4), "margin-top").as_deref(), Some("4px"));
+}
+
+#[component]
+fn cell_state(label: Signal<String>) -> NodeHandle {
+    let n = Cell::new(0);
+    rsx! {
+        Probe {
+            label: {move || label.get()},
+            data-n: {|| { n.set(n.get() + 1); n.get().to_string() }},
+        }
+    }
+}
+
+/// State a non-`move` binding keeps in a captured cell lives as long as the
+/// component site, not one render: one binding closure serves every render, as
+/// on main (mount + two re-renders = 3).
+#[test]
+fn a_bindings_captured_state_survives_re_renders() {
+    let label = Signal::new("a".to_string());
+    let (_d, _s, root) = mount(|s| cell_state(s, label));
+    label.set("b".into());
+    label.set("c".into());
+    let p = find_probe(&root).expect("rendered");
+    assert_eq!(p.get_attribute("aria-label").as_deref(), Some("c"));
+    assert_eq!(p.get_attribute("data-n").as_deref(), Some("3"));
+}
+
+#[component]
+fn shared_with_a_prop(label: Signal<String>, name: String) -> NodeHandle {
+    rsx! {
+        div {
+            Probe {
+                label: {|| format!("{}-{}", name, label.get())},
+                data-name: {|| name.clone()},
+            }
+        }
+    }
+}
+
+/// A value named by a struct prop **and** a binding is used by two closures
+/// now, so it is cloned for one of them (it must be `Clone`).
+#[test]
+fn a_value_shared_by_a_prop_and_a_binding_compiles() {
+    let label = Signal::new("a".to_string());
+    let (_d, _s, root) = mount(|s| shared_with_a_prop(s, label, "nm".into()));
+    label.set("b".into());
+    let p = find_probe(&root).expect("rendered");
+    assert_eq!(p.get_attribute("aria-label").as_deref(), Some("nm-b"));
+    assert_eq!(p.get_attribute("data-name").as_deref(), Some("nm"));
+}
