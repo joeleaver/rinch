@@ -437,15 +437,18 @@ fn shared_with_a_prop(label: Signal<String>, name: String) -> NodeHandle {
     rsx! {
         div {
             Probe {
-                label: {|| format!("{}-{}", name, label.get())},
+                label: {|| name.clone() + "-" + &label.get()},
                 data-name: {|| name.clone()},
             }
         }
     }
 }
 
-/// A value named by a struct prop **and** a binding is used by two closures
-/// now, so it is cloned for one of them (it must be `Clone`).
+/// A value named by a struct prop **and** a binding is captured by two
+/// closures now (the render closure and the binding fn), so it is shadow-cloned
+/// for each: it must be `Clone`. The name has to be visible to the capture
+/// analysis — one inside a macro invocation (`format!("{}", name)`) is not, and
+/// is then moved twice (E0382), the limitation every `rsx!` capture site has.
 #[test]
 fn a_value_shared_by_a_prop_and_a_binding_compiles() {
     let label = Signal::new("a".to_string());

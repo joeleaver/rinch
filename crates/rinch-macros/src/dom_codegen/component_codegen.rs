@@ -9,16 +9,19 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
 use crate::element::RsxElement;
-use crate::helpers::{expand_style_shorthand, get_closure_expr};
+use crate::helpers::{
+    expand_style_shorthand, get_closure_expr, is_literal_expr, resolve_spacing_value,
+};
 use crate::prop::RsxProp;
 
+use super::DomCodegenContext;
 use super::captures::{
-    collect_body_captures, collect_capture_idents, is_move_closure, shadow_clones, wrap_site,
+    collect_body_captures, collect_capture_idents, contested_names, is_move_closure, shadow_clones,
+    wrap_site,
 };
 use super::html::{
     generate_attr_code, generate_class_code, generate_shorthand_code, generate_style_code,
 };
-use super::{DomCodegenContext, no_siblings};
 
 /// Whether a prop written on a component is an attribute for the component's
 /// **root DOM element** rather than a field of its struct (issue #433).
@@ -113,7 +116,7 @@ pub fn generate_reactive_component_stmt(
         .collect();
     ctx.pop_closure_frame();
 
-    let root_bindings = generate_root_binding_code(
+    let bindings = RootBindings::plan(
         ctx,
         &attr_props,
         style_prop,
@@ -121,6 +124,7 @@ pub fn generate_reactive_component_stmt(
         &shorthand_props,
         &result_var,
     );
+    let root_bindings = &bindings.per_render;
 
     // Pass the actual parent directly to reactive_component_dom — no wrapper div needed.
     // This is the statement path: no return value, the function handles insertion.
@@ -165,10 +169,12 @@ pub fn generate_reactive_component_stmt(
         #root_bindings
         #result_var
     };
-    let shadows = ctx.site_shadows(&collect_body_captures(&body), &no_siblings());
-    let render = wrap_site(&shadows, quote! { move |__child_scope| { #body } });
+    let (binding_fns, render) = bindings.finish(ctx, &body);
     quote! {
-        rinch::core::reactive_component_dom(__scope, &#parent_var, #render);
+        {
+            #binding_fns
+            rinch::core::reactive_component_dom(__scope, &#parent_var, #render);
+        }
     }
 }
 
@@ -323,7 +329,7 @@ pub fn element_to_dom_component_reactive(
         .collect();
     ctx.pop_closure_frame();
 
-    let root_bindings = generate_root_binding_code(
+    let bindings = RootBindings::plan(
         ctx,
         attr_props,
         style_prop,
@@ -331,6 +337,7 @@ pub fn element_to_dom_component_reactive(
         shorthand_props,
         &result_var,
     );
+    let root_bindings = &bindings.per_render;
 
     // Use a display:contents wrapper div as the parent for reactive_component_dom.
     // This ensures the component content is placed inside the wrapper, which the caller
@@ -376,10 +383,10 @@ pub fn element_to_dom_component_reactive(
         #root_bindings
         #result_var
     };
-    let shadows = ctx.site_shadows(&collect_body_captures(&body), &no_siblings());
-    let render = wrap_site(&shadows, quote! { move |__child_scope| { #body } });
+    let (binding_fns, render) = bindings.finish(ctx, &body);
     quote! {
         {
+            #binding_fns
             let #wrapper_var = __scope.create_element("div");
             #wrapper_var.set_attribute("style", "display:contents");
             rinch::core::reactive_component_dom(__scope, &#wrapper_var, #render);
@@ -389,43 +396,197 @@ pub fn element_to_dom_component_reactive(
 }
 
 /// The caller's root bindings — hyphenated attributes, `style:`, `class:` and
-/// style shorthands — for a component that **re-renders** for a reactive struct
-/// prop, emitted inside its render closure after `Component::render`.
+/// style shorthands — on a component that **re-renders** for a reactive struct
+/// prop (issue #1190).
 ///
-/// Each reactive binding is an effect of its own, exactly as on the static
-/// path, and never a read of the render closure (issue #1190). The render
-/// closure runs tracked — that is how a struct prop re-renders — so a binding
-/// invoked there subscribed the re-render: a change to the signal a
-/// `style: {|| …}` reads rebuilt the whole component and reset its local state.
-/// Created while the render closure's `__scope` is the per-render child scope,
-/// each effect is owned by that scope and disposed with it by
-/// `reactive_component_dom` on the next re-render, so the new root gets fresh
-/// effects — and with them a fresh reactive `style:` / `class:` memory (#647,
-/// #717), since nothing of the caller's is on a root built a moment ago.
+/// Each reactive binding is an effect of its own and never a read of the render
+/// closure. The render closure runs tracked — that is how a struct prop
+/// re-renders — so a binding invoked there subscribed the re-render: a change to
+/// the signal a `style: {|| …}` reads rebuilt the whole component and reset its
+/// local state. The effect is created inside the render closure, where `__scope`
+/// is the per-render child scope, so it is owned by that render and disposed
+/// with it by `reactive_component_dom` on the next re-render; the new root gets
+/// fresh effects, and with them a fresh reactive `style:` / `class:` memory
+/// (#647, #717), since nothing of the caller's is on a root built a moment ago.
 ///
-/// The render closure is an `Fn` that builds these `'static` effects on every
-/// run, so everything a binding captures from outside it is shadow-cloned at
-/// the effect's construction site: the frame pushed here is what makes
-/// [`DomCodegenContext::site_shadows`] treat those names as outer captures.
-fn generate_root_binding_code(
-    ctx: &mut DomCodegenContext,
-    attr_props: &[&RsxProp],
-    style_prop: Option<&RsxProp>,
-    class_prop: Option<&RsxProp>,
-    shorthand_props: &[&RsxProp],
-    result_var: &syn::Ident,
-) -> TokenStream2 {
-    ctx.push_closure_frame(HashSet::new());
-    let attr_code = generate_attr_code(attr_props, result_var, ctx);
-    let style_code = generate_style_code(style_prop, result_var, ctx);
-    let class_code = generate_class_code(class_prop, result_var, ctx);
-    let shorthand_code = generate_shorthand_code(shorthand_props, result_var, ctx);
-    ctx.pop_closure_frame();
-    quote! {
-        #(#attr_code)*
-        #style_code
-        #class_code
-        #shorthand_code
+/// The user's expression is **not** rebuilt per render. It is wrapped once, at
+/// the component site, in an `Rc<dyn Fn() -> String>` (a "binding fn") that the
+/// render closure moves in and each render's effect shares by `Rc::clone`. So a
+/// binding captures what it names exactly once, as it did when it was evaluated
+/// inside the render closure on main: a borrow of a non-`Clone` value still
+/// compiles, and state a binding keeps in a captured cell lives as long as the
+/// site rather than one render. A `move` closure keeps its per-fire shadow
+/// clones (`#fire`), since the binding fn is an `Fn` that rebuilds it on every
+/// call. A name the binding fn and the render closure (a struct prop, a child)
+/// **both** capture is moved into two closures, so it is shadow-cloned — the
+/// one case that asks for `Clone`.
+struct RootBindings {
+    /// `(var, user expression evaluated to a String, captures)` per binding fn.
+    fns: Vec<(syn::Ident, TokenStream2, Vec<syn::Ident>)>,
+    /// What the render closure runs after `Component::render`.
+    per_render: TokenStream2,
+}
+
+impl RootBindings {
+    fn plan(
+        ctx: &mut DomCodegenContext,
+        attr_props: &[&RsxProp],
+        style_prop: Option<&RsxProp>,
+        class_prop: Option<&RsxProp>,
+        shorthand_props: &[&RsxProp],
+        result_var: &syn::Ident,
+    ) -> Self {
+        let mut fns = Vec::new();
+        let mut code = Vec::new();
+
+        // A binding fn for a reactive value (a closure or a non-literal
+        // expression); `None` for a literal, which is written once inline.
+        let mut binding_fn = |ctx: &mut DomCodegenContext, value: &syn::Expr| {
+            if is_literal_expr(value) {
+                return None;
+            }
+            let var = ctx.next_var("binding_fn");
+            let (eval, caps) = if let Some(closure) = get_closure_expr(value) {
+                let caps = collect_capture_idents(closure);
+                let fire = if is_move_closure(closure) {
+                    shadow_clones(caps.iter())
+                } else {
+                    quote! {}
+                };
+                (
+                    quote! { { #fire ::std::string::ToString::to_string(&(#closure)()) } },
+                    caps,
+                )
+            } else {
+                (
+                    quote! { ::std::string::ToString::to_string(&(#value)) },
+                    collect_capture_idents(value),
+                )
+            };
+            fns.push((var.clone(), eval, caps));
+            Some(var)
+        };
+
+        for prop in attr_props {
+            let name = prop.name.to_string();
+            match binding_fn(ctx, &prop.value) {
+                None => {
+                    let v = crate::helpers::expr_to_string(&prop.value);
+                    code.push(quote! { #result_var.write_attribute(#name, #v); });
+                }
+                Some(f) => code.push(quote! {
+                    {
+                        let __h = #result_var.clone();
+                        let __f = ::std::rc::Rc::clone(&#f);
+                        __scope.create_effect(move || {
+                            __h.write_attribute(#name, &__f());
+                        });
+                    }
+                }),
+            }
+        }
+
+        if let Some(prop) = style_prop {
+            match binding_fn(ctx, &prop.value) {
+                None => {
+                    let v = crate::helpers::expr_to_string(&prop.value);
+                    code.push(quote! { #result_var.merge_style(#v); });
+                }
+                Some(f) => code.push(quote! {
+                    {
+                        let __h = #result_var.clone();
+                        let __f = ::std::rc::Rc::clone(&#f);
+                        let mut __sp = rinch::core::StyleProp::default();
+                        __scope.create_effect(move || {
+                            __sp.apply(&__h, &__f());
+                        });
+                    }
+                }),
+            }
+        }
+
+        if let Some(prop) = class_prop {
+            match binding_fn(ctx, &prop.value) {
+                None => {
+                    let v = crate::helpers::expr_to_string(&prop.value);
+                    code.push(quote! { #result_var.add_class(#v); });
+                }
+                Some(f) => code.push(quote! {
+                    {
+                        let __h = #result_var.clone();
+                        let __f = ::std::rc::Rc::clone(&#f);
+                        let __prev = ::std::cell::RefCell::new(String::new());
+                        __scope.create_effect(move || {
+                            let __old = __prev.borrow().clone();
+                            for __c in __old.split_whitespace() {
+                                __h.remove_class(__c);
+                            }
+                            let __new_class = __f();
+                            for __c in __new_class.split_whitespace() {
+                                __h.add_class(__c);
+                            }
+                            *__prev.borrow_mut() = __new_class;
+                        });
+                    }
+                }),
+            }
+        }
+
+        for prop in shorthand_props {
+            let css_props = expand_style_shorthand(&prop.name.to_string()).unwrap();
+            let value = &prop.value;
+            if get_closure_expr(value).is_none() {
+                // A literal or a plain expression: resolved as its source text
+                // at compile time, exactly as the static path does.
+                let resolved = resolve_spacing_value(&crate::helpers::expr_to_string(value));
+                for css_prop in css_props {
+                    code.push(quote! { #result_var.set_style(#css_prop, #resolved); });
+                }
+                continue;
+            }
+            let f = binding_fn(ctx, value).expect("a closure is not a literal");
+            for css_prop in css_props {
+                code.push(quote! {
+                    {
+                        let __h = #result_var.clone();
+                        let __f = ::std::rc::Rc::clone(&#f);
+                        __scope.create_effect(move || {
+                            let __resolved = rinch::core::resolve_spacing(&__f());
+                            __h.set_style(#css_prop, &__resolved);
+                        });
+                    }
+                });
+            }
+        }
+
+        Self {
+            fns,
+            per_render: quote! { #(#code)* },
+        }
+    }
+
+    /// The binding-fn `let`s to emit at the component site, and the render
+    /// closure over `body`, each with the shadow clones it needs: a name two of
+    /// these closures capture ([`contested_names`]), or one captured from
+    /// outside a repeatable body the site sits in.
+    fn finish(self, ctx: &DomCodegenContext, body: &TokenStream2) -> (TokenStream2, TokenStream2) {
+        let body_caps = collect_body_captures(body);
+        let mut sites: Vec<&[syn::Ident]> = vec![&body_caps];
+        sites.extend(self.fns.iter().map(|(_, _, caps)| caps.as_slice()));
+        let shared = contested_names(&sites);
+
+        let lets: Vec<TokenStream2> = self
+            .fns
+            .iter()
+            .map(|(var, eval, caps)| {
+                let shadows = ctx.site_shadows(caps, &shared);
+                let rc = wrap_site(&shadows, quote! { ::std::rc::Rc::new(move || #eval) });
+                quote! { let #var: ::std::rc::Rc<dyn Fn() -> String> = #rc; }
+            })
+            .collect();
+        let shadows = ctx.site_shadows(&body_caps, &shared);
+        let render = wrap_site(&shadows, quote! { move |__child_scope| { #body } });
+        (quote! { #(#lets)* }, render)
     }
 }
 
