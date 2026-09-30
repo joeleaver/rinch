@@ -267,6 +267,26 @@ fn add_row_before_under_an_i64_max_rowspan_does_not_overflow() {
 }
 
 #[test]
+fn merge_cells_grows_over_a_hole() {
+    // A 3/1/1-cell table; the rectangle (0,0)..(1,1) holds c1, c2, c4 and
+    // row 1's hole at column 1. The hole is no cell to delete, and two holes
+    // side by side (row 1, columns 1 and 2) are no cell bleeding out of it.
+    let s = Schema::starter_kit();
+    let t = table(
+        &s,
+        &[vec![(1, 1), (1, 1), (1, 1)], vec![(1, 1)], vec![(1, 1)]],
+    );
+    let mut st = state_with(t.clone());
+    st.selection = Selection::cell(Pos(cell_pos(&t, 0, 1)), Pos(cell_pos(&t, 1, 0)));
+    let next = st.run("mergeCells").expect("mergeCells applies");
+    let nt = next.doc.child(0).clone();
+    assert_eq!(cell_count(&nt), vec![2, 0, 1]);
+    let master = nt.child(0).child(0);
+    assert_eq!((span(&master, "colspan"), span(&master, "rowspan")), (2, 2));
+    assert_eq!(master.child_count(), 3, "c1, c2 and c4's paragraphs");
+}
+
+#[test]
 fn every_command_in_every_cell_of_the_issues_tables_is_safe() {
     let s = Schema::starter_kit();
     let tables = [

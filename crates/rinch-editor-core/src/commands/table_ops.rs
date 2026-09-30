@@ -563,12 +563,10 @@ pub fn merge_cells() -> Command {
         let map = &info.map;
         let width = map.width();
         let rect = info.rect;
-        // The master is the rectangle's top-left cell, which grows over the rest
-        // (holes included: they are no cell to delete). A hole there has no
-        // cell to grow.
-        if map.map()[rect.top * width + rect.left] == HOLE {
-            return None;
-        }
+        // The master is the rectangle's top-left cell, which grows over the rest,
+        // holes included: they are no cell to delete. The top-left slot is never
+        // a hole — a row's holes are its tail, and the rectangle's top row holds
+        // a selected cell at or right of its left edge.
         let mut tr = state.tr();
         let mut seen: Vec<usize> = Vec::new();
         let mut content = Fragment::empty();
