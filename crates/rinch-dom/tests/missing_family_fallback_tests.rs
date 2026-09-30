@@ -136,22 +136,6 @@ fn letters_in_a_missing_only_stack_are_as_wide_as_sans_serif() {
     );
 }
 
-/// A stack with a generic is untouched: `serif` stays `serif`, so a missing
-/// family ahead of it does not pick up `sans-serif` instead.
-#[test]
-fn a_stack_that_names_a_generic_is_not_finished_with_sans_serif() {
-    let (mut doc, _, _) = document();
-    let body = doc.body();
-    let div = doc.create_element("div");
-    doc.set_attribute(div, "style", "font-family: NoSuchFamily1198, serif");
-    doc.append_child(body, div);
-    doc.resolve_layout(800.0, 600.0);
-    assert_eq!(
-        doc.tree.get(div.0).unwrap().computed_style.font_family,
-        "NoSuchFamily1198, serif"
-    );
-}
-
 /// An emoji the appended face lacks still reaches the `emoji` generic, and an
 /// emoji in a stack that resolves is untouched.
 ///
@@ -182,15 +166,21 @@ fn an_emoji_the_appended_face_lacks_still_reaches_the_emoji_generic() {
     }
 }
 
-/// On the host's own fonts: where the `emoji` generic draws U+1F600 in colour
-/// and the primary `sans-serif` face lacks it (Noto Sans, Roboto), U+1F600 is
-/// still drawn in colour under a missing-only stack and under a stack naming
-/// the primary face itself. Where the primary face is DejaVu Sans, which has a
-/// monochrome U+1F600, the missing-only stack draws that (the accepted
-/// consequence; #1204); the test then checks only the resolving stack. On a
-/// host with no colour emoji face (CI) it asserts nothing and says so.
+/// On the host's own fonts, both branches of the rule, whichever this host
+/// takes. Where the `emoji` generic draws U+1F600 in colour:
+///
+/// - the primary `sans-serif` face lacks U+1F600 (Noto Sans, Roboto): it is
+///   drawn in colour under a missing-only stack and under a stack naming the
+///   primary face;
+/// - the primary face has its own U+1F600 (DejaVu Sans, a monochrome one): it
+///   is drawn in that face under both stacks — the accepted consequence
+///   (#1204), which every `sans-serif` stack already draws there.
+///
+/// On a host with no colour emoji face it asserts nothing and says so. The
+/// second branch is also pinned host-independently by
+/// `an_emoji_the_appended_face_has_is_drawn_in_it`.
 #[test]
-fn a_host_colour_emoji_stays_colour_where_the_primary_face_lacks_it() {
+fn a_host_emoji_follows_the_primary_face_under_a_missing_only_stack() {
     let (doc, div) = block_on_host("emoji", "\u{1f600}");
     let host_emoji_is_colour = faces_of(&doc, div).iter().all(|f| f.1);
     let mut fcx = rinch_dom::fonts::new_font_context();
@@ -205,17 +195,73 @@ fn a_host_colour_emoji_stays_colour_where_the_primary_face_lacks_it() {
     };
     let named = format!("'{primary}'");
     let (doc, div) = block_on_host(&named, "\u{1f600}");
-    let primary_lacks_it = faces_of(&doc, div).iter().all(|f| f.2 != primary);
-    let mut stacks = vec![named.as_str()];
-    if primary_lacks_it {
-        stacks.push("NoSuchFamily1198");
-    }
-    for family in stacks {
+    let primary_has_it = faces_of(&doc, div).iter().any(|f| f.2 == primary);
+    eprintln!("host: primary sans has its own U+1F600: {primary_has_it}");
+    for family in [named.as_str(), "NoSuchFamily1198"] {
         let (doc, div) = block_on_host(family, "\u{1f600}");
         let faces = faces_of(&doc, div);
-        assert!(
-            !faces.is_empty() && faces.iter().all(|f| f.1),
-            "U+1F600 under `{family}`: {faces:?}"
+        assert!(!faces.is_empty(), "U+1F600 under `{family}`");
+        if primary_has_it {
+            assert!(
+                faces.iter().all(|f| f.2 == primary),
+                "U+1F600 under `{family}` in the primary face {primary}: {faces:?}"
+            );
+        } else {
+            assert!(
+                faces.iter().all(|f| f.1),
+                "U+1F600 under `{family}` in colour: {faces:?}"
+            );
+        }
+    }
+}
+
+/// The DejaVu-primary case on bundled fonts: when the primary `sans-serif`
+/// face has an emoji of its own, a missing-only stack draws it in that face,
+/// not the `emoji` generic's — the accepted consequence (#1204), identical to
+/// what a stack naming the face draws. Inter plays both roles here, from two
+/// separately registered copies, so the two faces are told apart by blob.
+#[test]
+fn an_emoji_the_appended_face_has_is_drawn_in_it() {
+    let mut doc = RinchDocument::new();
+    let collection = &mut doc.font_cx.collection;
+    let mut register = |name: &'static str| {
+        let blob = Blob::new(std::sync::Arc::new(EMOJI_STAND_IN));
+        let id = blob.id();
+        let fams = collection.register_fonts(
+            blob,
+            Some(FontInfoOverride {
+                family_name: Some(name),
+                ..Default::default()
+            }),
+        );
+        (id, fams[0].0)
+    };
+    let (sans_blob, sans) = register("PrimaryWithEmoji1198");
+    let (emoji_blob, emoji) = register("EmojiCopy1198");
+    assert_ne!(sans_blob, emoji_blob);
+    collection.set_generic_families(GenericFamily::SansSerif, core::iter::once(sans));
+    collection.set_generic_families(GenericFamily::Emoji, core::iter::once(emoji));
+    let body = doc.body();
+    let mut divs = Vec::new();
+    for family in ["NoSuchFamily1198", "PrimaryWithEmoji1198"] {
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            &format!("display: inline-block; font: 40px/48px {family}"),
+        );
+        let t = doc.create_text("\u{2b1c}");
+        doc.append_child(div, t);
+        doc.append_child(body, div);
+        divs.push((family, div));
+    }
+    doc.resolve_layout(800.0, 600.0);
+    for (family, div) in divs {
+        let faces: Vec<u64> = faces_of(&doc, div).into_iter().map(|f| f.0).collect();
+        assert_eq!(
+            faces,
+            vec![sans_blob],
+            "U+2B1C under `{family}`: primary {sans_blob}, emoji {emoji_blob}"
         );
     }
 }

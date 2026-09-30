@@ -75,9 +75,12 @@ pub fn new_font_context() -> parley::FontContext {
 /// Not Chrome's answer for every name: Chrome 153 on Linux resolves
 /// `Helvetica`, `Times` and `Courier` through fontconfig aliases (Nimbus,
 /// Liberation) and draws an unknown family in its serif default. fontique
-/// knows only installed names; `sans-serif` is where rinch's letters already
-/// fell back to, so this moves the digits and emoji-property punctuation and
-/// leaves the letters where they were.
+/// knows only installed names. Where no app font claims `sans-serif`, its
+/// first face is where rinch's letters already fell back to (the platform's
+/// script fallback), so this moves the digits and emoji-property punctuation
+/// and leaves the letters where they were. With a claim
+/// (`AppFont::sans_serif`), the letters of such a stack move to the claimed
+/// face as well — the app's default, as CSS's UA default would be.
 ///
 /// Cached per thread, keyed by the context's primary `sans-serif` family id
 /// (unique per loaded collection, and changed by a claim on the slot) and the

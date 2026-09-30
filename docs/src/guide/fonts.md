@@ -131,7 +131,8 @@ lose — on Android only, which is the platform nobody would test it on.
 CSS falls back to the browser's default font when every family in a
 `font-family` list is missing. rinch finishes such a stack with the first face
 of `sans-serif` — so `font-family: Helvetica` on a Linux machine without it
-draws its letters *and digits* in the default sans face. (Chrome resolves
+draws its letters *and digits* in the default sans face, or in the face your
+app registered for `sans-serif` (`AppFont::sans_serif`) if it did. (Chrome resolves
 `Helvetica`, `Times` and `Courier` through fontconfig aliases, and an unknown
 name in its serif default; rinch knows only the families actually installed or
 registered.) A stack that finds any family, or names a generic that has one, is

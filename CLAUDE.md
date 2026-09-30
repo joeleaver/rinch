@@ -3551,7 +3551,9 @@ fails on a new site that builds a `FontFamily::Source` itself): an empty stack i
 the slot's first family appended **by name** — the face, not the generic,
 because the generic expands to the platform's whole list, whose text faces
 (DejaVu Sans, FreeSans) cover emoji and would win them ahead of the `emoji`
-generic. A stack that resolves to anything is untouched, emoji included, and a
+generic. Where no app font claims `sans-serif` that face is where the letters
+already fell back to; with a claim (`AppFont::sans_serif`) the letters of such a
+stack move to the claimed face too. A stack that resolves to anything is untouched, emoji included, and a
 context with no `sans-serif` face (wasm/embed before any font is registered)
 appends nothing. **Accepted consequence:** on a host whose primary sans is
 DejaVu Sans, an emoji in a missing-only stack is DejaVu's monochrome glyph —
