@@ -582,14 +582,13 @@ impl<'a> IfcText<'a> {
                 // `pre-line`: a segment break is kept, as a forced break.
                 match self.pending {
                     // The held space is this node's own last kept byte:
-                    // removed here, so no later offset counts it.
+                    // removed here, so no later offset counts it. A map
+                    // entry noted for it now starts an empty stretch, which
+                    // maps nothing differently.
                     Some((pop, byte, _)) if pop == op => {
                         let o = out.get_or_insert_with(|| raw[..i].to_string());
                         debug_assert_eq!(o.len(), byte + 1);
                         o.truncate(byte);
-                        if map.last().is_some_and(|&(f, _)| f == byte) {
-                            map.pop();
-                        }
                         self.pending = None;
                         self.line_start = true;
                         self.prev_space = false;
