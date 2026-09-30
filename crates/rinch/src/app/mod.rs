@@ -961,11 +961,10 @@ impl RinchApp {
             let mut d = doc.borrow_mut();
             let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
             let text = "Test";
+            let family = rinch_dom::fonts::parley_font_family(&mut d.font_cx, font_stack);
             let mut builder = layout_cx.ranged_builder(&mut d.font_cx, text, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(16.0));
-            builder.push_default(parley::style::StyleProperty::FontFamily(
-                parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_stack.to_string())),
-            ));
+            builder.push_default(parley::style::StyleProperty::FontFamily(family));
             let mut layout = builder.build(text);
             layout.break_all_lines(None);
             let mut glyph_count = 0;
@@ -7863,11 +7862,10 @@ mod input_caret_hit_tests {
         let pad_t = style.padding_top.to_px();
 
         let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        let family = rinch_dom::fonts::parley_font_family(&mut d.font_cx, &style.font_family);
         let mut builder = layout_cx.ranged_builder(&mut d.font_cx, VALUE, 1.0, true);
         builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
-        builder.push_default(parley::style::StyleProperty::FontFamily(
-            parley::style::FontFamily::Source(std::borrow::Cow::Owned(style.font_family.clone())),
-        ));
+        builder.push_default(parley::style::StyleProperty::FontFamily(family));
         let mut layout = builder.build(VALUE);
         layout.break_all_lines(Some(width - pad_l * 2.0));
 

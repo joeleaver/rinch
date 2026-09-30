@@ -3618,15 +3618,10 @@ fn paint_node(
 
             let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
             let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
-            let font_family = parent_computed
-                .map(|s| {
-                    if s.font_family.is_empty() {
-                        "sans-serif".to_string()
-                    } else {
-                        s.font_family.clone()
-                    }
-                })
-                .unwrap_or_else(|| "sans-serif".to_string());
+            let font_family = crate::fonts::parley_font_family(
+                font_cx,
+                parent_computed.map_or("", |s| s.font_family.as_str()),
+            );
 
             let color = parent_computed
                 .and_then(|s| s.color)
@@ -3644,9 +3639,7 @@ fn paint_node(
             let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-            builder.push_default(parley::style::StyleProperty::FontFamily(
-                parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family)),
-            ));
+            builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
             if (font_weight - 400.0).abs() > 1.0 {
                 builder.push_default(parley::style::StyleProperty::FontWeight(
                     parley::style::FontWeight::new(font_weight),

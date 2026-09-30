@@ -84,13 +84,12 @@ impl EllipsisStyle {
         paint: bool,
     ) -> parley::layout::Layout<Brush> {
         use parley::style::StyleProperty as P;
+        let font_family = crate::fonts::parley_font_family(font_cx, &self.font_family);
         let mut b = layout_cx.ranged_builder(font_cx, text, scale, true);
         b.push_default(P::FontSize(self.font_size));
         b.push_default(P::FontWeight(self.font_weight));
         b.push_default(P::FontStyle(self.font_style));
-        b.push_default(P::FontFamily(parley::style::FontFamily::Source(
-            self.font_family.clone(),
-        )));
+        b.push_default(P::FontFamily(font_family));
         push_spacing(&mut b, self.letter_spacing, self.word_spacing);
         if paint {
             b.push_default(P::Brush(Brush::Solid(self.color)));
@@ -4684,6 +4683,8 @@ impl RinchDocument {
                             return taffy::Size::ZERO;
                         }
                         perf.bump(crate::perf::Counter::ShapeAtomicInline);
+                        let font_family =
+                            crate::fonts::parley_font_family(font_cx, &text.font_family);
                         let mut builder =
                             layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
                         builder
@@ -4696,14 +4697,7 @@ impl RinchDocument {
                         if let Some(lh) = layout::css_line_height_to_parley(&text.line_height_css) {
                             builder.push_default(parley::style::StyleProperty::LineHeight(lh));
                         }
-                        let font_stack = if !text.font_family.is_empty() {
-                            std::borrow::Cow::Owned(text.font_family.clone())
-                        } else {
-                            std::borrow::Cow::Borrowed("sans-serif")
-                        };
-                        builder.push_default(parley::style::StyleProperty::FontFamily(
-                            parley::style::FontFamily::Source(font_stack),
-                        ));
+                        builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
                         // Apply overflow-wrap for emergency line-breaking
                         builder.push_default(parley::style::StyleProperty::OverflowWrap(
                             text.overflow_wrap.to_parley(),
@@ -5046,16 +5040,12 @@ impl RinchDocument {
             peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
         });
 
-        let font_family: std::borrow::Cow<'static, str> = if root_computed.font_family.is_empty() {
-            "sans-serif".into()
-        } else {
-            root_computed.font_family.clone().into()
-        };
+        let font_family = crate::fonts::parley_font_family(font_cx, &root_computed.font_family);
 
         let mut root_text_style = parley::style::TextStyle {
             font_size: root_font_size,
             brush: Brush::Solid(root_color),
-            font_family: parley::style::FontFamily::Source(font_family),
+            font_family,
             ..Default::default()
         };
 

@@ -473,16 +473,10 @@ pub(crate) fn char_metrics(
         max_em: 0.0,
         from_os2: false,
     };
-    let family = if style.font_family.is_empty() {
-        "sans-serif".to_string()
-    } else {
-        style.font_family.clone()
-    };
+    let family = crate::fonts::parley_font_family(font_cx, &style.font_family);
     let mut builder = layout_cx.ranged_builder(font_cx, PROBE, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(16.0));
-    builder.push_default(parley::style::StyleProperty::FontFamily(
-        parley::style::FontFamily::Source(std::borrow::Cow::Owned(family)),
-    ));
+    builder.push_default(parley::style::StyleProperty::FontFamily(family));
     if (style.font_weight - 400.0).abs() > 1.0 {
         builder.push_default(parley::style::StyleProperty::FontWeight(
             parley::style::FontWeight::new(style.font_weight),
