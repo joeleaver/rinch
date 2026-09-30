@@ -1298,7 +1298,7 @@ rsx! {
 | Prop Type | Accepts `{|| ...}` | Update Strategy |
 |---|---|---|
 | HTML element attributes | Yes | Surgical DOM update |
-| Component `style:`/`class:` | Yes | Surgical DOM update |
+| Component `style:`/`class:`, style shorthands, hyphenated attributes | Yes | Surgical DOM update (also on a component that re-renders for a struct prop) |
 | Component `_fn` props | Yes (auto-wrapped) | Surgical DOM update |
 | Component props (all others) | Yes | Full component re-render |
 
