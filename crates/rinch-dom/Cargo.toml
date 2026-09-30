@@ -14,6 +14,9 @@ bitflags = "2"
 web-time = "1"
 tracing = { workspace = true }
 parley = { workspace = true }
+# The primary font's OS/2 `xAvgCharWidth` and `head` bounds, which size a text
+# control (#1177). The version parley itself depends on, so nothing new is built.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 vello = { workspace = true }
 peniko = "0.6"
 serde = { version = "1", features = ["derive"] }

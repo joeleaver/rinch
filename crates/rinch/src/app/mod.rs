@@ -875,7 +875,12 @@ impl RinchApp {
         // is already on screen; without this it would reach only the *next*
         // one, which for a shell app is never.
         if let Some(doc) = &self.doc {
-            Self::register_font_on_context(&mut doc.borrow_mut().font_cx, font);
+            let mut doc = doc.borrow_mut();
+            Self::register_font_on_context(&mut doc.font_cx, font);
+            // A text control is sized from its font's metrics, cached against
+            // the font properties; a new face can change which face that is
+            // (#1177).
+            doc.note_fonts_registered();
         }
     }
 

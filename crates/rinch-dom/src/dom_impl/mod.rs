@@ -955,7 +955,12 @@ impl RinchDocument {
                 // A text-entry control's content height follows its line
                 // height, which a `font-size` or `line-height` frame moves
                 // without moving the Taffy style (#297).
-                if crate::form_control::sync_form_control_measure(&mut self.tree, node_id) {
+                if crate::form_control::sync_form_control_measure(
+                    &mut self.tree,
+                    &mut self.font_cx,
+                    &mut self.layout_cx,
+                    node_id,
+                ) {
                     self.tree.layout_dirty = true;
                     self.mark_atomic_inline_dirty(node_id);
                 }
@@ -1088,7 +1093,12 @@ impl RinchDocument {
                 // A text-entry control's content height follows its line
                 // height, which a `font-size` or `line-height` frame moves
                 // without moving the Taffy style (#297).
-                if crate::form_control::sync_form_control_measure(&mut self.tree, node_id) {
+                if crate::form_control::sync_form_control_measure(
+                    &mut self.tree,
+                    &mut self.font_cx,
+                    &mut self.layout_cx,
+                    node_id,
+                ) {
                     self.tree.layout_dirty = true;
                     self.mark_atomic_inline_dirty(node_id);
                 }

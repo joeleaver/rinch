@@ -564,3 +564,50 @@ fn register_font_data_answers_sans_serif_and_system_ui() {
          to mean instead"
     );
 }
+
+/// A text control sized before a face was registered is re-sized from that
+/// face (#1177): its width is its primary font's average character width, and
+/// the metrics cached on the control are keyed on the document's font
+/// generation, which a late registration moves. As wide as in an app that had
+/// the face before the mount.
+#[test]
+fn a_late_registration_resizes_a_text_control() {
+    fn input_app(fonts: &[AppFont]) -> RinchApp {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let input = scope.create_element("input");
+            input.set_attribute(
+                "style",
+                "font: 16px/20px Inter, sans-serif; padding: 0; border: 0",
+            );
+            root.append_child(&input);
+            root
+        });
+        for font in fonts {
+            app.register_app_font(*font);
+        }
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+    fn input_width(app: &RinchApp) -> f32 {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let (_, n) = d
+            .tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.tag() == Some("input"))
+            .expect("the input");
+        n.layout.width
+    }
+    let early = input_app(&[AppFont::new(OTHER_FACE)]);
+    // Inter at 16px: 20 × 10.2422 + 53 − 10.2422 → 248 (Chrome 153: 248).
+    assert_eq!(input_width(&early), 248.0);
+    let mut late = input_app(&[]);
+    let before = input_width(&late);
+    late.register_app_font(AppFont::new(OTHER_FACE));
+    late.resolve_and_repaint(800.0, 600.0);
+    assert_ne!(before, 248.0, "the fallback face is not Inter");
+    assert_eq!(input_width(&late), 248.0);
+}

@@ -148,6 +148,12 @@ define_counters! {
     /// since it was last sized (#1098). A restyle that moves neither shapes
     /// none.
     ShapeSelectLabel = "shape_select_label",
+    /// Parley layouts built to find a text-entry control's primary font —
+    /// the `<input>` or `<textarea>` whose intrinsic width is its `size` or
+    /// `cols` times that font's average character width (#1177). One per
+    /// control when it is first sized and when its font family, weight or
+    /// style changes; a restyle that moves none of them shapes none.
+    ShapeFormControlMetrics = "shape_form_control_metrics",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",
     /// Per-root invalidations of the IFC measure cache by a restyle or a

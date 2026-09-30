@@ -14,6 +14,7 @@
 //! |---|---|---|
 //! | `shape_paint` | `paint/select.rs` (closed `<select>` label) | [`a_select_label_is_shaped_by_paint`] |
 //! | `shape_select_label` | `select.rs` `widest_select_label` (an auto-width select's size) | [`an_auto_width_select_shapes_its_labels_only_when_they_change`] |
+//! | `shape_form_control_metrics` | `form_control.rs` `cached_char_metrics` (a text control's intrinsic width, #1177) | [`a_text_control_finds_its_font_only_when_the_font_changes`] |
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
@@ -153,6 +154,89 @@ fn a_select_label_is_shaped_by_paint() {
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── shape_form_control_metrics ─────────────────────────────────────────────
+
+/// A text control's intrinsic width is `size` / `cols` times its primary
+/// font's average character width (#1177). Finding that font shapes one `0`
+/// when the control is first sized, and again only when its font family,
+/// weight or style changes: the metrics are cached on the node, so a colour
+/// restyle and a `font-size` change (which scales them) shape none.
+#[test]
+fn a_text_control_finds_its_font_only_when_the_font_changes() {
+    let mut doc = doc_with("");
+    let body = doc.body();
+    let input = el(&mut doc, body, "input", "");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+
+    doc.set_style(input, "color", "rgb(255, 0, 0)");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "input colour restyle",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+        ],
+    );
+
+    doc.set_style(input, "font-size", "20px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "input font-size change",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 2),
+            (IfcMeasureInvalidations, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 3),
+            (InlineBlockComputes, 1),
+        ],
+    );
+
+    doc.set_style(input, "font-weight", "700");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "input font-weight change",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (ShapeFormControlMetrics, 1),
+            (IfcMeasureCacheHits, 2),
+            (IfcMeasureInvalidations, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 3),
+            (InlineBlockComputes, 1),
         ],
     );
 }

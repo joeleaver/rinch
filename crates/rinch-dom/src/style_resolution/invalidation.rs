@@ -206,10 +206,12 @@ impl RinchDocument {
             self.mark_restyle(node, false);
         }
         match (tag.as_deref(), name) {
-            (Some("textarea"), "rows") => self.mark_restyle(node, false),
-            // An `<input>`'s `type` decides whether it is measured as a text
-            // field (#297, `form_control.rs`), which only a restyle re-reads.
-            (Some("input"), "type") => self.mark_restyle(node, false),
+            // A text control's measure reads `rows` and `cols` (a textarea) or
+            // `type` and `size` (an input) — #297, #1177, `form_control.rs` —
+            // and only a restyle re-reads it: no selector has to depend on
+            // them for the write to matter.
+            (Some("textarea"), "rows" | "cols") => self.mark_restyle(node, false),
+            (Some("input"), "type" | "size") => self.mark_restyle(node, false),
             (Some("ol"), "start") => self.mark_element_children(node, false),
             (Some("li"), "value") => {
                 self.mark_restyle(node, false);

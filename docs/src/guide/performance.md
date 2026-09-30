@@ -109,6 +109,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `ellipsis_builds` | `text-overflow: ellipsis` rebuilds, one per root with an overflowing line |
 | | `ellipsis_shapes` | layouts those rebuilds shaped: 2 for a per-line cut (the "…" and the result, however many lines; one more for a hard-break fallback or a step back from a kerning overshoot), plus one per prefix a whole-text cut's binary search tried |
 | | `shape_paint` | Parley layouts built by paint itself: input values, `<select>` labels, the fallback for uncached text |
+| | `shape_form_control_metrics` | Parley layouts built to find an `<input>` / `<textarea>`'s primary font, whose average character width times `size` / `cols` is the control's intrinsic width (#1177): one per control when first sized and when its font family, weight or style changes |
 | | `shape_select_label` | Parley layouts built to size an auto-width `<select>` from its widest option label: one per label, only when its labels or font changed since it was last sized; and, uncached, one per label each time the desktop native popup opens (to size the panel to its widest row) |
 | | `ifc_measure_cache_hits` | IFC measures answered from the per-root measure cache without shaping |
 | | `ifc_measure_invalidations` | Roots whose cached measures a restyle or content change dropped (O(1) each) |
