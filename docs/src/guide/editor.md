@@ -161,6 +161,15 @@ what can be cut is a grid of more than 2^22 slots and more than twice its cells,
 spans or ragged rows make one. Past the cap a cell is cut at the grid's right edge,
 and one that starts past it is in no slot, so the table commands do nothing there.
 
+A slot no cell covers — the tail of a row shorter than the grid, or what the cap cut —
+is a hole, and the table commands treat it as no cell (#1184): `deleteRow` and
+`deleteColumn` pass over it, `addColumnBefore`/`addColumnAfter` give a row with a
+hole at that column a new cell at its end, a row added by `addRowBefore`/`addRowAfter`
+gets a cell in a hole's column, and `mergeCells` grows the top-left cell over the holes
+in its rectangle. Every span a command writes is the cell's extent in the grid ± 1,
+never the attribute's own value ± 1: a `colspan` of `i64::MAX` in a two-row table,
+which the grid cuts to 2^21 columns, is 2^21 + 1 after `addColumnAfter` across it.
+
 ## The transform engine
 
 Every editing operation is a `Transaction` carrying one or more `Step`s. Steps are
