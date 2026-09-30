@@ -805,3 +805,189 @@ fn nth_cell(t: &Node, k: usize) -> (usize, usize) {
     }
     unreachable!()
 }
+
+// ------------------------------------------------------------------
+// #1185: a split, a row insert and a column insert take one step per row
+// they touch, not one per grid slot.
+// ------------------------------------------------------------------
+
+/// Runs the registered `cmd` on `st` and returns its transaction's step count
+/// and the state it leads to.
+fn steps_of(st: &EditorState, cmd: Command) -> Option<(usize, EditorState)> {
+    let mut out = None;
+    let applied = cmd(
+        st,
+        Some(&mut |tr: state::Transaction| {
+            out = Some((tr.steps().len(), st.apply(tr)));
+        }),
+    );
+    assert_eq!(applied, out.is_some());
+    out
+}
+
+fn empty_cell(s: &Schema) -> Node {
+    let p = s
+        .create_node("paragraph", Attrs::new(), Fragment::empty())
+        .unwrap();
+    s.create_node("table_cell", Attrs::new(), Fragment::from_node(p))
+        .unwrap()
+}
+
+/// The split as it was before #1185, one step per vacated slot: the oracle the
+/// row-at-a-time split must agree with, document and selection. The table is
+/// at doc position 0 and `cell_pos` is the position before the cell.
+fn split_per_slot(st: &EditorState, cell_pos: usize) -> Option<EditorState> {
+    let t = st.doc.child(0);
+    let map = TableMap::compute(&t, 1);
+    let cell = t.node_at(cell_pos - 1)?;
+    if span(&cell, "colspan").max(1) == 1 && span(&cell, "rowspan").max(1) == 1 {
+        return None;
+    }
+    let rect = map.find_cell(cell_pos)?;
+    let mut tr = st.tr();
+    tr.set_node_attr(cell_pos, "colspan", AttrValue::Int(1))
+        .ok()?;
+    tr.set_node_attr(cell_pos, "rowspan", AttrValue::Int(1))
+        .ok()?;
+    for row in rect.top..rect.bottom {
+        let mut at = map.position_at(row, rect.left);
+        if row == rect.top {
+            at += cell.node_size();
+        }
+        for col in rect.left..rect.right {
+            if row == rect.top && col == rect.left {
+                continue;
+            }
+            let mapped = tr.mapping().map(at, 1);
+            tr.replace_with(mapped, mapped, Fragment::from_node(empty_cell(st.schema())))
+                .ok()?;
+        }
+    }
+    let sel = Selection::near(tr.doc(), Pos(cell_pos + 1), 1);
+    tr.set_selection(sel);
+    tr.doc_changed().then(|| st.apply(tr))
+}
+
+/// Every caret on random tiled and ragged tables: splitCell leaves the same
+/// document and selection as the per-slot split did.
+#[test]
+fn split_cell_matches_the_per_slot_split() {
+    let s = Schema::starter_kit();
+    let mut rng = Rng(0x1185_5911_c0de_0001);
+    const SPANS: &[i64] = &[1, 1, 2, 3, 0, -1, 40];
+    let mut compared = 0;
+    for case in 0..300 {
+        let t = if case % 2 == 0 {
+            random_tiled(&mut rng, &s).0
+        } else {
+            let h = 1 + rng.below(5);
+            let rows: Vec<Vec<(i64, i64)>> = (0..h)
+                .map(|_| {
+                    (0..rng.below(5))
+                        .map(|_| (SPANS[rng.below(SPANS.len())], SPANS[rng.below(SPANS.len())]))
+                        .collect()
+                })
+                .collect();
+            table(&s, &rows)
+        };
+        for r in 0..t.child_count() {
+            for i in 0..t.child(r).child_count() {
+                let mut st = state_with(t.clone());
+                st.selection = caret_in(&t, r, i);
+                let got = st.run("splitCell");
+                let want = split_per_slot(&st, cell_pos(&t, r, i));
+                let what = format!("case {case} cell ({r},{i}) in {:?}", table_spans(&t));
+                match (got, want) {
+                    (None, None) => {}
+                    (Some(g), Some(w)) => {
+                        assert!(
+                            g.doc == w.doc && g.selection == w.selection,
+                            "{what}\n got {}\n want {}",
+                            canon_state(&g),
+                            canon_state(&w)
+                        );
+                        compared += 1;
+                    }
+                    (g, w) => panic!("{what}: got {:?}, want {:?}", g.is_some(), w.is_some()),
+                }
+            }
+        }
+    }
+    eprintln!("split oracle compared {compared}");
+    assert!(compared > 300, "positive control: {compared}");
+}
+
+/// A `w × h` merged cell in the middle of each row (a cell either side), the
+/// rest of its rows one cell each side of it.
+fn table_with_merged(s: &Schema, w: i64, h: i64) -> Node {
+    let rows: Vec<Vec<(i64, i64)>> = (0..h)
+        .map(|r| {
+            if r == 0 {
+                vec![(1, 1), (w, h), (1, 1)]
+            } else {
+                vec![(1, 1), (1, 1)]
+            }
+        })
+        .collect();
+    table(s, &rows)
+}
+
+/// A 7 × 5 split: two attribute steps and one insert per row, 7 steps, where
+/// one per vacated slot was 36. Undo takes the table back in one step.
+#[test]
+fn split_cell_takes_one_step_per_row() {
+    let s = Schema::starter_kit();
+    let t = table_with_merged(&s, 7, 5);
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 0, 1);
+    let (steps, next) = steps_of(&st, commands::table_ops::split_cell()).expect("splits");
+    assert_eq!(steps, 2 + 5);
+    assert_eq!(cell_count(&next.doc.child(0)), vec![9, 9, 9, 9, 9]);
+    let undone = next.run("undo").expect("undo");
+    assert!(undone.doc == st.doc);
+}
+
+/// The issue's pin: a 1000 × 1000 merged cell (a pasted `<td colspan=1000
+/// rowspan=1000>` imports whole) splits into 10^6 cells in 1002 steps, and
+/// one undo takes them back. Timing-free: the bound is the step count.
+#[test]
+fn a_1000_by_1000_split_is_one_step_per_row() {
+    let s = Schema::starter_kit();
+    let t = table_with_merged(&s, 1000, 1000);
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 0, 1);
+    let (steps, next) = steps_of(&st, commands::table_ops::split_cell()).expect("splits");
+    assert_eq!(steps, 2 + 1000);
+    let counts = cell_count(&next.doc.child(0));
+    assert_eq!(counts.len(), 1000);
+    assert!(counts.iter().all(|&n| n == 1002), "{:?}", &counts[..3]);
+    let map = TableMap::compute(&next.doc.child(0), 1);
+    assert_eq!((map.width(), map.height()), (1002, 1000));
+    let undone = next.run("undo").expect("undo");
+    assert!(undone.doc == st.doc);
+}
+
+/// A row inserted beside a wide cell is one step however wide the row, and a
+/// row under a tall cell costs one attribute step more; a column is one step
+/// per row.
+#[test]
+fn add_row_and_add_column_take_one_step_per_row() {
+    let s = Schema::starter_kit();
+    let t = table_with_merged(&s, 300, 40);
+    let mut st = state_with(t.clone());
+    st.selection = caret_in(&t, 0, 1);
+    // Above the 300-wide cell: one row of 302 cells, one step.
+    let (steps, next) = steps_of(&st, commands::table_ops::add_row_before()).expect("adds");
+    assert_eq!(steps, 1);
+    assert_eq!(next.doc.child(0).child(0).child_count(), 302);
+    // Below row 1, through the tall cell: its rowspan grows, one row of 2 cells.
+    let mut below = st.clone();
+    below.selection = caret_in(&t, 1, 0);
+    let (steps, next) = steps_of(&below, commands::table_ops::add_row_after()).expect("adds");
+    assert_eq!(steps, 2);
+    assert_eq!(next.doc.child(0).child(2).child_count(), 2);
+    assert_eq!(span(&next.doc.child(0).child(0).child(1), "rowspan"), 41);
+    // Left of the merged cell: one insert per row of the 40.
+    let (steps, _) = steps_of(&st, commands::table_ops::add_column_before()).expect("adds");
+    assert_eq!(steps, 40);
+}
