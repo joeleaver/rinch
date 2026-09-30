@@ -941,11 +941,11 @@ mod grid_bound_tests {
         let one = cell(&s, 1, 1);
         let r = row(&s, vec![one; 1000]);
         let t = table(&s, vec![r; 1100]);
-        assert!(1000 * 1100 > FLOOR, "the fixture is past the floor");
         assert_eq!(column_count(&t), 1000);
         let map = TableMap::compute(&t, 1);
         assert_eq!(map.width(), 1000);
         assert_eq!(map.height(), 1100);
+        assert!(map.map().len() > FLOOR, "the fixture is past the floor");
         assert_eq!(map.cell_at(1099, 999), Some(cell_pos(&t, 1099, 999)));
     }
 
