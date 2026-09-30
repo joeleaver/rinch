@@ -912,7 +912,14 @@ mod grid_bound_tests {
     #[test]
     fn a_span_of_i64_max_is_bounded_not_trusted() {
         let s = Schema::starter_kit();
-        let t = spans_table(&s, &[vec![(i64::MAX, i64::MAX)], vec![(1, 1)]]);
+        // Three in one row: their sum is past `usize::MAX`.
+        let t = spans_table(
+            &s,
+            &[
+                vec![(i64::MAX, i64::MAX), (i64::MAX, 1), (i64::MAX, 1)],
+                vec![(1, 1)],
+            ],
+        );
         let width = FLOOR / 2;
         assert_eq!(column_count(&t), width);
         let map = TableMap::compute(&t, 1);
@@ -920,7 +927,8 @@ mod grid_bound_tests {
         let big = cell_pos(&t, 0, 0);
         assert_eq!(map.cell_at(1, 0), Some(big), "its rowspan covers row 1");
         assert_eq!(map.cell_at(1, width - 1), Some(big));
-        // Row 1's own cell is pushed off the grid by the carried span.
+        // Row 0's other cells, and row 1's own, are pushed off the grid.
+        assert_eq!(map.find_cell(cell_pos(&t, 0, 1)), None);
         assert_eq!(map.find_cell(cell_pos(&t, 1, 0)), None);
     }
 
