@@ -4140,3 +4140,222 @@ mod tests {
         assert!(is_last_child_placeholder(&h, blocks[1]));
     }
 }
+
+/// Issue #1182: a cell's grid span is its [`TableMap`] rectangle, not its raw
+/// `colspan` / `rowspan`. A table that reaches the model by `load_doc` or an
+/// app's own transaction can say `colspan = 3_000_000` or `rowspan =
+/// i64::MAX`; written raw, that asked the host's CSS grid for that many
+/// implicit tracks (and on the desktop, four stacked cells of `span 10000` —
+/// Stylo's clamp — made more grid lines than Taffy's `i16` lines hold, and it
+/// panicked). The map cuts a span at the grid's edge, and a cell past the
+/// grid's capped width is in no slot at all.
+#[cfg(test)]
+mod table_span_tests {
+    use super::*;
+    use rinch_core::dom::NodeId;
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_editor_core::model::{Attrs, Fragment};
+    use rinch_editor_core::{AttrValue, EditorState, Schema, default_plugins};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct Rig {
+        doc: Rc<RefCell<dyn DomDocument>>,
+        container: NodeHandle,
+        container_id: NodeId,
+    }
+
+    fn rig() -> Rig {
+        let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+        let doc: Rc<RefCell<dyn DomDocument>> = mock;
+        let container_id = doc.borrow_mut().create_element("div");
+        let container = NodeHandle::new(container_id, Rc::downgrade(&doc));
+        Rig {
+            doc,
+            container,
+            container_id,
+        }
+    }
+
+    fn cell_of(s: &Schema, ty: &str, colspan: i64, rowspan: i64, text: &str) -> Node {
+        let p = s
+            .create_node(
+                "paragraph",
+                Attrs::new(),
+                Fragment::from_node(s.text(text).unwrap()),
+            )
+            .unwrap();
+        s.create_node(
+            ty,
+            Attrs::from_iter([
+                ("colspan", AttrValue::Int(colspan)),
+                ("rowspan", AttrValue::Int(rowspan)),
+            ]),
+            Fragment::from_node(p),
+        )
+        .unwrap()
+    }
+
+    fn row(s: &Schema, cells: &[(i64, i64)]) -> Node {
+        let cells = cells
+            .iter()
+            .enumerate()
+            .map(|(i, &(c, r))| cell_of(s, "table_cell", c, r, &format!("c{i}")))
+            .collect();
+        s.create_node("table_row", Attrs::new(), Fragment::from_children(cells))
+            .unwrap()
+    }
+
+    fn table(s: &Schema, rows: &[Vec<(i64, i64)>]) -> Node {
+        let rows = rows.iter().map(|r| row(s, r)).collect();
+        s.create_node("table", Attrs::new(), Fragment::from_children(rows))
+            .unwrap()
+    }
+
+    fn state_with(s: &Rc<Schema>, t: Node) -> EditorState {
+        let doc = s.branch("doc", Fragment::from_node(t)).unwrap();
+        EditorState::create(s.clone(), doc, default_plugins())
+    }
+
+    /// Every cell host in document order.
+    fn cells(r: &Rig) -> Vec<NodeId> {
+        fn walk(d: &dyn DomDocument, id: NodeId, out: &mut Vec<NodeId>) {
+            if matches!(
+                d.get_attribute(id, "data-pm-type").as_deref(),
+                Some("table_cell" | "table_header_cell")
+            ) {
+                out.push(id);
+            }
+            for c in d.get_children(id) {
+                walk(d, c, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&*r.doc.borrow(), r.container_id, &mut out);
+        out
+    }
+
+    /// `(grid-column, grid-row)` as the view wrote them inline.
+    fn placement(r: &Rig, id: NodeId) -> (String, String) {
+        let style = r.doc.borrow().get_attribute(id, "style").unwrap_or_default();
+        let decls = rinch_core::dom::split_declarations(&style);
+        let get = |p: &str| {
+            decls
+                .iter()
+                .find(|(k, _)| k == p)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| format!("<no {p}>"))
+        };
+        (get("grid-column"), get("grid-row"))
+    }
+
+    fn p(c: &str, r: &str) -> (String, String) {
+        (c.to_string(), r.to_string())
+    }
+
+    /// Control: an ordinary table's spans are written exactly as before —
+    /// `span N` for a span, `auto` for none — because a well-formed table's
+    /// map rectangles are its attributes.
+    #[test]
+    fn an_ordinary_tables_spans_are_its_attributes() {
+        let r = rig();
+        let s = Rc::new(Schema::starter_kit());
+        let st = state_with(&s, table(&s, &[vec![(2, 1), (1, 2)], vec![(1, 1), (1, 1)]]));
+        let _view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        let got: Vec<_> = cells(&r).into_iter().map(|c| placement(&r, c)).collect();
+        assert_eq!(
+            got,
+            vec![
+                p("span 2", "auto"),
+                p("auto", "span 2"),
+                p("auto", "auto"),
+                p("auto", "auto"),
+            ]
+        );
+    }
+
+    /// A rowspan past the last row is cut at it, as the map cuts it: a
+    /// two-row table's `rowspan = i64::MAX` cell spans two grid rows. Off the
+    /// fixed point: the colspan is 2, so a writer that swapped the axes, or
+    /// wrote the raw colspan and the rect's rowspan, is caught too.
+    #[test]
+    fn an_overlong_rowspan_is_written_cut_at_the_last_row() {
+        let r = rig();
+        let s = Rc::new(Schema::starter_kit());
+        let st = state_with(&s, table(&s, &[vec![(2, i64::MAX), (1, 1)], vec![(1, 1)]]));
+        let _view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        let got: Vec<_> = cells(&r).into_iter().map(|c| placement(&r, c)).collect();
+        assert_eq!(
+            got,
+            vec![p("span 2", "span 2"), p("auto", "auto"), p("auto", "auto")]
+        );
+    }
+
+    /// A colspan past the capped grid is cut at the grid's right edge, and a
+    /// cell the capped grid has no slot for is written as a band across the
+    /// whole grid rather than as one more track. Two rows under a 3,000,000-
+    /// column cell whose rowspan carries it down: the map's width is capped at
+    /// `2^22 / 2` columns, the big cell spans all of them and both rows, and
+    /// the second row's own cell finds its row full.
+    #[test]
+    fn a_colspan_past_the_capped_grid_is_cut_and_a_cell_outside_it_is_a_band() {
+        let r = rig();
+        let s = Rc::new(Schema::starter_kit());
+        let t = table(&s, &[vec![(3_000_000, i64::MAX)], vec![(1, 1)]]);
+        let width = rinch_editor_core::tables::column_count(&t);
+        assert_eq!(width, (1 << 22) / 2, "control: the grid is capped");
+        let st = state_with(&s, t);
+        let _view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        let got: Vec<_> = cells(&r).into_iter().map(|c| placement(&r, c)).collect();
+        assert_eq!(
+            got,
+            vec![p(&format!("span {width}"), "span 2"), p("1 / -1", "auto")]
+        );
+    }
+
+    /// The rectangle depends on the whole table, not on the cell: a row added
+    /// below a `rowspan = i64::MAX` cell lengthens it by one though its own
+    /// attributes did not change, and the view re-writes it.
+    #[test]
+    fn a_row_added_under_an_overlong_rowspan_lengthens_it() {
+        let r = rig();
+        let s = Rc::new(Schema::starter_kit());
+        let t = table(&s, &[vec![(1, i64::MAX)], vec![(1, 1)]]);
+        let st = state_with(&s, t.clone());
+        let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        assert_eq!(placement(&r, cells(&r)[0]), p("auto", "span 2"), "control");
+        // The table's inner end: after its open token and its content.
+        let end = 1 + t.content_size();
+        let mut tr = st.tr();
+        tr.replace_with(end, end, Fragment::from_node(row(&s, &[(1, 1)])))
+            .unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        assert_eq!(placement(&r, cells(&r)[0]), p("auto", "span 3"));
+    }
+
+    /// A cell whose host is rebuilt — `td` to `th`, the same spans — gets its
+    /// placement written on the new host, though nothing about the table's
+    /// spans changed.
+    #[test]
+    fn a_rebuilt_cell_host_gets_its_span() {
+        let r = rig();
+        let s = Rc::new(Schema::starter_kit());
+        let t = table(&s, &[vec![(2, 1)], vec![(1, 1), (1, 1)]]);
+        let st = state_with(&s, t.clone());
+        let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        let before = cells(&r)[0];
+        assert_eq!(placement(&r, before), p("span 2", "auto"), "control");
+        // The first cell spans positions 2 .. 2 + its size.
+        let first = t.child(0).child(0).clone();
+        let th = cell_of(&s, "table_header_cell", 2, 1, "c0");
+        let mut tr = st.tr();
+        tr.replace_with(2, 2 + first.node_size(), Fragment::from_node(th))
+            .unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        let after = cells(&r)[0];
+        assert_ne!(after, before, "control: the host was rebuilt");
+        assert_eq!(placement(&r, after), p("span 2", "auto"));
+    }
+}
