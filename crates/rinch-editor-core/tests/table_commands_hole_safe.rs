@@ -287,6 +287,44 @@ fn merge_cells_grows_over_a_hole() {
 }
 
 #[test]
+fn merge_cells_is_not_refused_for_holes_beside_its_left_or_top_edge() {
+    let s = Schema::starter_kit();
+    // 3/0/3: the rectangle (0,1)..(2,2) crosses the empty row 1, whose holes
+    // at columns 0 and 1 sit on both sides of its left edge.
+    let t = table(
+        &s,
+        &[
+            vec![(1, 1), (1, 1), (1, 1)],
+            vec![],
+            vec![(1, 1), (1, 1), (1, 1)],
+        ],
+    );
+    let mut st = state_with(t.clone());
+    st.selection = Selection::cell(Pos(cell_pos(&t, 0, 1)), Pos(cell_pos(&t, 2, 2)));
+    let next = st
+        .run("mergeCells")
+        .expect("mergeCells applies (left edge)");
+    let nt = next.doc.child(0).clone();
+    assert_eq!(cell_count(&nt), vec![2, 0, 1]);
+    let master = nt.child(0).child(1);
+    assert_eq!((span(&master, "colspan"), span(&master, "rowspan")), (2, 3));
+
+    // 1/1/3: the rectangle (1,0)..(2,2) starts in row 1, whose holes at
+    // columns 1 and 2 sit under row 0's, across its top edge.
+    let t = table(
+        &s,
+        &[vec![(1, 1)], vec![(1, 1)], vec![(1, 1), (1, 1), (1, 1)]],
+    );
+    let mut st = state_with(t.clone());
+    st.selection = Selection::cell(Pos(cell_pos(&t, 1, 0)), Pos(cell_pos(&t, 2, 2)));
+    let next = st.run("mergeCells").expect("mergeCells applies (top edge)");
+    let nt = next.doc.child(0).clone();
+    assert_eq!(cell_count(&nt), vec![1, 1, 0]);
+    let master = nt.child(1).child(0);
+    assert_eq!((span(&master, "colspan"), span(&master, "rowspan")), (3, 2));
+}
+
+#[test]
 fn every_command_in_every_cell_of_the_issues_tables_is_safe() {
     let s = Schema::starter_kit();
     let tables = [
