@@ -72,6 +72,9 @@
 /// The HTML boolean-attribute set and the truthiness rule for it (issue #551).
 mod bool_attr;
 
+/// HTML's rules for parsing integers, for integer attributes (#1138, #1153).
+mod html_integer;
+
 /// Declaration-level arithmetic on an inline `style` attribute (issue #647).
 mod inline_style;
 mod late_child;
@@ -86,6 +89,7 @@ pub mod traits;
 pub use bool_attr::{
     attr_is_truthy, data_attr_is_on, is_boolean_attribute, is_presence_reflected_attribute,
 };
+pub use html_integer::{parse_html_integer, parse_html_non_negative_integer};
 pub use inline_style::{
     StyleProp, normalize_property_name, serialize_declarations, split_declarations,
 };

@@ -994,8 +994,8 @@ fn find_scrollbar_hit_node(
     // would overlap in a square at the far end and one would silently win the
     // click, so each stops at it and the corner falls through to ordinary
     // click handling on the container. The paint pass gives up the same
-    // square, so a thumb that fits its track is never drawn where it cannot
-    // be grabbed (a `MIN_THUMB` thumb on a shorter track is #1141).
+    // square, and a thumb is never longer than its track (#1141), so no
+    // thumb is drawn where it cannot be grabbed.
     for (axis, scroll_axis) in [
         (ScrollbarAxis::Vertical, ScrollAxis::Vertical),
         (ScrollbarAxis::Horizontal, ScrollAxis::Horizontal),

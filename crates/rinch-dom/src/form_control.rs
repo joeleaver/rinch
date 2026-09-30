@@ -43,12 +43,16 @@ use crate::node::{Node, NodeContext, NodeTree};
 ///   give it (#296).
 pub(crate) fn form_control_content_height(node: &Node) -> Option<f32> {
     let rows = match node.tag()? {
+        // HTML's rules for parsing non-negative integers, and 2 unless that
+        // gives more than zero (#1153). A float parse took `"1e1"` as 10 rows
+        // and `"inf"` / `"1e30"` as infinite / NaN, which made every box laid
+        // out after the textarea NaN.
         "textarea" => node
             .attributes
             .get("rows")
-            .and_then(|r| r.trim().parse::<f32>().ok())
-            .filter(|r| *r >= 1.0)
-            .map_or(2.0, f32::floor),
+            .and_then(|r| rinch_core::dom::parse_html_non_negative_integer(r))
+            .filter(|&r| r > 0)
+            .map_or(2.0, |r| r as f32),
         "input" => {
             let sized_otherwise = node.attributes.get("type").is_some_and(|t| {
                 matches!(

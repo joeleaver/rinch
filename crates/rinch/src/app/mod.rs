@@ -164,6 +164,8 @@ mod scrollbar_thumb_press_443_tests;
 #[cfg(test)]
 mod select_keyboard_434_tests;
 #[cfg(test)]
+mod select_popup_empty_option_1155_tests;
+#[cfg(test)]
 mod select_popup_width_tests;
 mod select_widget;
 #[cfg(test)]
@@ -3279,10 +3281,14 @@ impl RinchApp {
     /// Tab collector, the mousedown claim, the programmatic-focus path and the
     /// arbiter's liveness probe — they must agree, and four hand-rolled copies
     /// of `get("tabindex").and_then(parse)` could not be relied on to.
+    ///
+    /// Read by HTML's rules for parsing integers (#1138), as a browser reads
+    /// it: `" 3"`, `"2.5"` and `"3abc"` are 3, 2 and 3, and a value past `i32`
+    /// is not a `tabindex` at all. `i32::from_str` rejected the first three.
     pub(crate) fn node_tabindex(node: &rinch_dom::Node) -> Option<i32> {
         node.attributes
             .get("tabindex")
-            .and_then(|v| v.parse::<i32>().ok())
+            .and_then(|v| rinch_core::dom::parse_html_integer(v))
     }
 
     /// The `tabindex` a node **behaves as** — explicit, or implied by its tag
@@ -7559,8 +7565,7 @@ mod horizontal_scrollbar_tests {
     /// the bottom-right and one would silently win every click there. Neither
     /// claims it — which also matches the paint pass, where both tracks give up
     /// the same square so no thumb that fits its track is drawn in it (#444,
-    /// `scrollbar_corner_444_tests`; a `MIN_THUMB` thumb on a shorter track is
-    /// #1141).
+    /// `scrollbar_corner_444_tests`; a thumb never outgrows its track, #1141).
     #[test]
     fn the_corner_between_two_scrollbars_belongs_to_neither() {
         let Bars { app, rect, .. } = mount(BOTH, "width: 800px; height: 800px");

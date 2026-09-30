@@ -1074,6 +1074,22 @@ values a desktop build hands `App::menu` — see `docs/src/guide/wasm.md`. CI's
 `cargo test -p rinch --no-default-features --features components,theme` is the
 decoupling gate; the tests it runs also run under `--workspace`.
 
+**A shortcut string names a key, never a character** (#1160). Chords match the
+physical key — winit's `KeyCode` on the desktop, `KeyboardEvent.code` in the
+browser — plus modifiers, so punctuation is spelled by its unshifted US-layout
+character or code name (`"Ctrl+/"`, `"Ctrl+Comma"`) and a shifted character by its
+key and Shift (`"Ctrl+Shift+/"`; Chrome 153 reports that keystroke as `key: "?"`,
+`code: "Slash"`). `"Ctrl+?"` names no key: it arms nothing and
+`parse_shortcut_or_warn` logs one `tracing::warn!` per distinct string. The muda
+accelerator is built from the same `ParsedShortcut`, not from muda's own string
+parser, so a native label appears exactly when a chord is armed. Every Ctrl/Cmd
+spelling muda and Electron accept (`Command`, `Super`, `CommandOrControl`, …) is the
+one `ctrl_or_cmd` modifier, and anything after the key — a second key, a late
+modifier, an unknown modifier read as a key (`Hyper+N`) — makes the string
+unparseable (`Hyper+N` used to arm a bare N). The forward
+table (`parse_shortcut_for_matching`) and `key_code_name` must name the same codes;
+`the_two_key_tables_name_the_same_codes` reads both out of the source.
+
 A **shortcut consumes the keystroke only when a callback actually runs.** A chord
 whose item is disabled, has no `on_click`, or belongs to an unmounted component
 falls through to the app rather than being swallowed, and every chord matching
@@ -1632,7 +1648,12 @@ the browser rule (issue #252). Focusable by tag: `<button>`, `<select>`,
 `<textarea>`, `<input>`, and `<a>` with a non-empty `href`. **Not** `<summary>`
 (rinch has no `<details>` behaviour) and **not** `data-rid` (the DropdownMenu
 backdrop carries one). `tabindex="-1"` is focusable by click and
-programmatically but not tabbable;
+programmatically but not tabbable. An HTML integer attribute — `tabindex`,
+`<textarea rows>`, `<ol start>`, `<li value>` — is read by HTML's rules for
+parsing integers (`rinch_core::dom::parse_html_integer` /
+`parse_html_non_negative_integer`, #1138/#1153), never by Rust's `parse`:
+`" 3"`, `"2.5"` and `"3abc"` are 3, 2 and 3, and a value past `i32` is an error,
+as in Chrome 153;
 `disabled` and `data-disabled` are both honoured (issue #315) as **boolean
 attributes**, take no focus by any route, and are re-checked at edit time: a
 field that goes disabled *while focused* stops accepting keys **and releases the
@@ -2081,7 +2102,7 @@ The software renderer includes **dirty region caching**: when only a few nodes c
 
 **The software painter's caches.** `TinySkiaPainter` keeps three things across draws and frames (`paint/skia_painter.rs`). **Rasterised glyphs**, keyed by font blob id, face index, exact physical size, hinting and variation coords — and deliberately **no sub-pixel offset**, because swash rasterises each glyph at the origin and the image is placed by nearest-neighbour sampling, so no pixel depends on it; a change that renders at the fractional offset must add a bucketed offset to the key. Bounded by clear-on-threshold at about 16 MB of *accounted* bytes (image bytes plus 128 per entry for the map slot, spare capacity and allocation; measured on small glyphs the real overhead is about 118, so the estimate errs high) or 512 runs; swash also gets one stable `CacheKey` per font file, where `FontRef::from_index` minted a fresh one per call and defeated swash's own scaler cache. **Clip masks and layer pixmaps** stay surface-sized (tiny-skia takes a mask only at the pixmap's size) but come from a pool and carry the rect that can be non-zero: a clip is filled, intersected and later zeroed over its own bounds — and not at all when its shape (a rect or rounded rect, kept axis-aligned by its transform) covers every pixel the enclosing clip can let through, since the intersection would be the enclosing mask byte for byte, and filled but not intersected when the enclosing clip is 255 wherever it can be non-zero: a partial repaint inside a scroller no longer fills the scroller's whole box, and one around a scroller no longer intersects it (#907; the painter tracks each mask's fully covered rect, and debug builds check every such claim against the mask itself) — and a layer composites back — and is cleared — only over the area its draws touched (the painter's own bookkeeping; it still ignores `push_layer`'s bounds, so tiny-skia stays blind to `layer_bounds` bugs). **Premultiplied images** live on `DecodedImage::premultiplied()`, made on the first software paint; a live frame source is still premultiplied per draw — unless `SurfaceWriter::submit_frame` found every pixel opaque (checked on the submitting thread, `SurfacePixelData::opaque` / `PaintImage::opaque`), in which case it is never premultiplied, and a draw with no rotation or skew, a positive scale (scaled draws included), whole-pixel destination edges and no clip partial where it lands is a row copy (`TinySkiaPainter::copy_opaque_image`, #361; byte-identical to `draw_pixmap`, pinned by `opaque_image_copy_tests` and the randomized `opaque_image_copy_differential_tests`; counter `opaque_image_copies`). The frame's pixels are an `Arc` shared between the surface and paint (`SurfacePixelData::data`), so collecting a frame for a paint copies nothing. **What stays resident:** the glyph cache (above); each translucent cached image's premultiplied copy, beside its straight-alpha pixels for as long as the image is cached (an opaque image keeps none); and the pooled surface buffers — at most 8 masks (1 byte/px: 8.3 MB each at 4K, 2.6 MB at 1080x2460) and 8 layer pixmaps (4 bytes/px: 33 MB each at 4K, 10.6 MB at 1080x2460). The pool is trimmed at the end of every software frame (`TinySkiaPainter::end_frame`, called by `build_pixels`) to the most either kind had open at once in the last 8 frames, so a deep nesting is given back 8 frames later; an app that goes idle straight after one keeps what that frame needed until it paints again, is resized, or is dropped (`paint_surface_trims` counts releases). Measured at 1200x800, release, `skia_painter_perf_tests` (before → after): a 40-paragraph text page 116 → 5.4 ms, 40 rounded scrollers 112 → 6.1 ms, 30 opacity layers 205 → 7.9 ms, 60 images 5.6 → 2.4 ms, a 200x40 partial repaint 5.6 → 0.23 ms. What remains of a text frame is the per-glyph `draw_pixmap` (about 0.85 µs a glyph). `TinySkiaPainter::set_reference_mode` turns all of it off, and `skia_painter_oracle_tests` demands byte-identical pixels against it, cold and warm; counters `glyph_cache_*`, `clip_mask*`, `paint_layers`/`layer_px`, `paint_surface_allocs`/`paint_surface_trims`, `image_premultiplies`.
 
-**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, fully rounded, and a neutral 40% that follows the container's palette (see **Styling the bar** below). Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). A press on the **thumb** grabs it where it is and only the motion after it scrolls; a press on the empty **track** jumps, mapping its position along the track linearly onto the scroll range (#443 — it used to jump on the thumb too, so grabbing a thumb moved it before the drag began). `ScrollbarTrack::thumb_contains` is the one "is this on the thumb" question, asked by the press and by the resize-zone rule below. Where both are present the bottom-right **corner belongs to neither**: a 16px square (`scrollbar::HIT_THICKNESS`, the hit strip's width) that each painted track gives up at its far end and each hit strip stops at (`Scrollbars::hit_strip`), so nothing paints there, clicking it falls through to the container, and every thumb pixel is grabbable — except where the 20px minimum thumb is longer than its track (a box under about 38px on an axis with both bars up), when the clamped thumb is drawn past the track into the corner (#1141). Paint used to give up only the other bar's 8px drawn footprint, which left the last ~6px of a thumb at full scroll painted in the square no strip claims (#444). A press that computes no new offset — a grab, or a track press whose jump clamps to where it already is — writes, dirties and fires nothing. Desktop only — on the web the browser draws its own.
+**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb (but never longer than its track: a track shorter than 20px is filled by a thumb that cannot travel, #1141), fully rounded, and a neutral 40% that follows the container's palette (see **Styling the bar** below). Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). A press on the **thumb** grabs it where it is and only the motion after it scrolls; a press on the empty **track** jumps, mapping its position along the track linearly onto the scroll range (#443 — it used to jump on the thumb too, so grabbing a thumb moved it before the drag began). `ScrollbarTrack::thumb_contains` is the one "is this on the thumb" question, asked by the press and by the resize-zone rule below. Where both are present the bottom-right **corner belongs to neither**: a 16px square (`scrollbar::HIT_THICKNESS`, the hit strip's width) that each painted track gives up at its far end and each hit strip stops at (`Scrollbars::hit_strip`), so nothing paints there, clicking it falls through to the container, and every thumb pixel is grabbable, a short track's included (#1141: the minimum thumb used to be drawn past a track shorter than 20px — into the corner on a box under about 38px with both bars up). Paint used to give up only the other bar's 8px drawn footprint, which left the last ~6px of a thumb at full scroll painted in the square no strip claims (#444). A press that computes no new offset — a grab, or a track press whose jump clamps to where it already is — writes, dirties and fires nothing. Desktop only — on the web the browser draws its own.
 
 That geometry lives in **one place**, `crates/rinch-dom/src/paint/scrollbar.rs`
 (`scrollbars(tree, node_id, scale)` → a `Scrollbars` holding an `Option<ScrollbarTrack>` per axis — `None` where that axis has no bar): paint draws
@@ -4799,7 +4820,9 @@ Make changes, rebuild, launch again. The full cycle:
   the editor's empty paragraphs do. **Line-sized controls are measured** (#297,
   `crates/rinch-dom/src/form_control.rs`), through a Taffy measure
   (`NodeContext::FormControl`) with the padding and border on top: a
-  `<textarea>` is `rows` lines (default 2; `rows` parsing is #1153), a `<br>`
+  `<textarea>` is `rows` lines (default 2; `rows` is read by HTML's rules for
+  parsing non-negative integers, #1153 — `"3abc"` is 3, `"1e1"` is 1, `"inf"`
+  is 2), a `<br>`
   one line, and an `<input>` one line for every `type` but `checkbox`,
   `radio`, `range`, `color`, `image` and `hidden` — an invalid `type` is a text
   field, as in HTML. It is a measure, not a `min-height`, so `min-height: 0`

@@ -331,7 +331,7 @@ impl RinchDocument {
             parent
                 .attributes
                 .get("start")
-                .and_then(|s| s.parse::<i32>().ok())
+                .and_then(|s| rinch_core::dom::parse_html_integer(s))
                 .unwrap_or(1)
         } else {
             1
@@ -347,19 +347,19 @@ impl RinchDocument {
                 if sibling.tag() == Some("li") {
                     // Check for value attribute override
                     if let Some(val) = sibling.attributes.get("value") {
-                        if let Ok(v) = val.parse::<i32>() {
-                            count = v + 1;
+                        if let Some(v) = rinch_core::dom::parse_html_integer(val) {
+                            count = v.saturating_add(1);
                             continue;
                         }
                     }
-                    count += 1;
+                    count = count.saturating_add(1);
                 }
             }
         }
 
         // Check if this <li> has a value attribute
         if let Some(val) = node.attributes.get("value") {
-            if let Ok(v) = val.parse::<i32>() {
+            if let Some(v) = rinch_core::dom::parse_html_integer(val) {
                 count = v;
             }
         }

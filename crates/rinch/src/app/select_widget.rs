@@ -264,7 +264,21 @@ impl RinchApp {
             if opt.disabled {
                 d.set_attribute(o, "data-disabled", "");
             }
-            let t = d.create_text(&opt.label);
+            // An empty label (the usual `<option value="">` "choose…"
+            // placeholder) generates no line box, so its row would be only its
+            // padding, a 12px sliver (#1155). A zero-width space gives it the
+            // one line a labelled row has, at whatever height the row's font
+            // and `line-height` make, as Chrome's popup gives it a full row.
+            // Not NBSP or an ideographic space: under `white-space: normal` or
+            // `nowrap` a row of either collapses to zero height, as a plain
+            // space does (#1154). Only the row's text: `labels` below keeps
+            // the real label.
+            let row_text = if opt.label.is_empty() {
+                "\u{200B}"
+            } else {
+                opt.label.as_str()
+            };
+            let t = d.create_text(row_text);
             d.append_child(o, t);
             d.append_child(panel, o);
             option_ids.push(o.0);

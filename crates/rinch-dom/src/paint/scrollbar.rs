@@ -45,7 +45,10 @@ pub const THIN_THICKNESS: f64 = 4.0;
 /// the gap at each end of the track.
 pub const MARGIN: f64 = 2.0;
 /// A thumb is never drawn shorter than this, however little of the content is
-/// visible — otherwise a long document's thumb shrinks to a point.
+/// visible — otherwise a long document's thumb shrinks to a point. The one
+/// exception is a track shorter than this: there the thumb fills the track and
+/// is no longer than it, since a longer one would be drawn past the track's
+/// end (#1141).
 pub const MIN_THUMB: f64 = 20.0;
 /// How wide the strip along a container's edge that answers a press as its
 /// scrollbar is, in logical pixels — deliberately wider than the thumb is
@@ -55,10 +58,9 @@ pub const MIN_THUMB: f64 = 20.0;
 /// `HIT_THICKNESS` square at the bottom-right belongs to neither bar. Each hit
 /// strip stops at it ([`Scrollbars::hit_strip`]), and each painted track gives
 /// it up too ([`ScrollbarTrack::track_len`]), so a thumb that fits its track
-/// is never drawn where a press cannot grab it (#444). A track shorter than
-/// [`MIN_THUMB`] — a box under about 38px on an axis with both bars up — is
-/// the exception: the clamped thumb is drawn past the track's end, into the
-/// corner (#1141). Paint used to reserve only the other
+/// is never drawn where a press cannot grab it (#444) — a thumb is never
+/// longer than its track, including a track shorter than [`MIN_THUMB`], which
+/// it fills (#1141). Paint used to reserve only the other
 /// bar's drawn footprint (`THICKNESS + MARGIN`), which left the last ~6px of a
 /// thumb at full scroll painted inside the square no strip claims.
 pub const HIT_THICKNESS: f64 = 16.0;
@@ -96,7 +98,9 @@ pub struct ScrollbarTrack {
     /// therefore sits a [`MARGIN`] clear of the corner, and so inside its own
     /// bar's hit strip.
     pub track_len: f64,
-    /// How long the thumb is, never below [`MIN_THUMB`].
+    /// How long the thumb is: never below [`MIN_THUMB`] and never above
+    /// [`track_len`](Self::track_len) — a track shorter than `MIN_THUMB` is
+    /// filled by its thumb, which then cannot travel (#1141).
     pub thumb_len: f64,
     /// How far the thumb can travel: `track_len - thumb_len`, clamped at 0.
     ///
@@ -197,8 +201,8 @@ impl Scrollbars {
     /// — except that where both bars are up each strip stops at the corner
     /// square, which belongs to neither: a press there falls through to the
     /// container. The painted track gives up the same square, so every thumb
-    /// pixel lies inside its bar's strip (#444) — unless the thumb is clamped
-    /// to [`MIN_THUMB`] past a shorter track (#1141).
+    /// pixel lies inside its bar's strip (#444), and a thumb never outgrows
+    /// its track (#1141).
     pub fn hit_strip(&self, axis: ScrollbarAxis) -> Option<(f64, f64, f64, f64)> {
         self.axis(axis)?;
         let (w, h, t) = (self.box_width, self.box_height, self.hit_thickness);
@@ -585,13 +589,17 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
     // end so the two thumbs cannot pile into it. The square is the hit strips'
     // corner, not the painted bars' footprint: nothing is painted where
     // hit-testing gives the corner to neither bar, so every thumb pixel is
-    // grabbable (#444) — unless a track shorter than MIN_THUMB leaves the
-    // clamped thumb drawn past its end (#1141).
+    // grabbable (#444). A thumb is never longer than its track: on a track
+    // shorter than MIN_THUMB it fills the track and has no travel, rather than
+    // being drawn past the track's end — into the corner with both bars up,
+    // into the end margin with one (#1141).
     let corner = HIT_THICKNESS;
     let track_of = |box_extent: f64, visible: f64, content: f64, other_bar: bool| {
         let reserved = if other_bar { corner } else { 0.0 };
         let track_len = (box_extent - MARGIN * 2.0 - reserved).max(0.0);
-        let thumb_len = (track_len * (visible / content)).max(MIN_THUMB);
+        let thumb_len = (track_len * (visible / content))
+            .max(MIN_THUMB)
+            .min(track_len);
         ScrollbarTrack {
             content: content * scale,
             visible: visible * scale,

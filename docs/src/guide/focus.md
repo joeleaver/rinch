@@ -21,7 +21,11 @@ rsx! {
 ```
 
 Focusability comes from the **tag** or from an explicit **`tabindex`**, and an
-explicit one always wins — the browser rule.
+explicit one always wins — the browser rule. The value is read the browser's
+way too (HTML's rules for parsing integers): leading whitespace is skipped and
+the number ends at the first non-digit, so `" 3"`, `"2.5"` and `"3abc"` are all
+tab indices (3, 2, 3); a value with no leading digits, or past the 32-bit
+range, is not a `tabindex` at all.
 
 | Focusable by tag | |
 |---|---|

@@ -80,6 +80,23 @@ fn press(code: &str) -> bool {
     event.default_prevented()
 }
 
+/// [`press`] with Shift held too, and the `key` a US layout gives it — the
+/// shape Chrome 153 reports for Ctrl+Alt+Shift+/ (`code: "Slash"`, `key: "?"`).
+fn press_shifted(code: &str, key: &str) -> bool {
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_code(code);
+    init.set_key(key);
+    init.set_ctrl_key(true);
+    init.set_alt_key(true);
+    init.set_shift_key(true);
+    let event =
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    document().body().unwrap().dispatch_event(&event).unwrap();
+    event.default_prevented()
+}
+
 /// An island under a menu bar whose single item carries `chord`, plus the two
 /// counters the test reads: the menu item's callback, and a `data-rid` button
 /// inside the island's content.
@@ -384,5 +401,50 @@ fn a_consumed_chord_still_clears_the_pointer_gesture_flag() {
     );
 
     rinch_web::__reset_activation_state();
+    fixture.teardown();
+}
+
+/// A punctuation chord — `Ctrl+/`, `Ctrl+,`, `Ctrl+[` … — fires its item and is
+/// consumed (#1160). Every row: each used to register no chord at all, so the
+/// keystroke reached the page and the item never ran.
+#[wasm_bindgen_test]
+fn every_punctuation_chord_fires_and_is_consumed() {
+    for (ch, code) in [
+        ("`", "Backquote"),
+        ("\\", "Backslash"),
+        ("[", "BracketLeft"),
+        ("]", "BracketRight"),
+        (",", "Comma"),
+        (".", "Period"),
+        ("'", "Quote"),
+        (";", "Semicolon"),
+        ("/", "Slash"),
+    ] {
+        let fixture = Fixture::mount(&format!("Ctrl+Alt+{ch}"));
+        let prevented = press(code);
+        assert_eq!(fixture.fired.get(), 1, "Ctrl+Alt+{ch}: the item must run");
+        assert!(prevented, "Ctrl+Alt+{ch}: and take the keystroke");
+        fixture.teardown();
+    }
+}
+
+/// A chord is a key plus modifiers, so the character Shift makes is spelled as
+/// its key and Shift: `"Ctrl+Alt+Shift+/"` answers the keystroke a browser
+/// reports as `key: "?"`, and `"Ctrl+Alt+?"` — a character, not a key — arms
+/// nothing and leaves that keystroke to the page.
+#[wasm_bindgen_test]
+fn a_shifted_punctuation_chord_is_spelled_with_its_key() {
+    let fixture = Fixture::mount("Ctrl+Alt+Shift+/");
+    assert!(press_shifted("Slash", "?"), "Ctrl+Alt+Shift+/ is claimed");
+    assert_eq!(fixture.fired.get(), 1);
+    assert!(!press("Slash"), "and Ctrl+Alt+/ is another chord");
+    fixture.teardown();
+
+    let fixture = Fixture::mount("Ctrl+Alt+?");
+    assert!(
+        !press_shifted("Slash", "?"),
+        "\"?\" names no key, so nothing is armed and the page keeps the keystroke"
+    );
+    assert_eq!(fixture.fired.get(), 0);
     fixture.teardown();
 }
