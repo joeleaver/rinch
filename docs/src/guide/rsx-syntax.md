@@ -448,14 +448,37 @@ A `<textarea>` holds its value in its `value` attribute, and has no content to
 size against. Text written as its child — `textarea { "hi" }`, or a parsed
 `<textarea>hi</textarea>` — is its *default* value, as in HTML: the field shows
 and edits it, and follows it when it changes (a reactive
-`textarea { {|| draft.get()} }`). On the desktop it follows it until the user
-edits the field or something sets its `value` — HTML's dirty value flag, which
-focusing and blurring do not set (#1186) — and a change while the field is
-focused and unedited keeps the caret at its offset, clamped to the new text, as
-in Chrome. On rinch-web a child change always replaces the value, even one the
-user typed (#100's rule that an app's reactive write reaches the field); which
-way the two backends converge is #1206. It sizes the field no
-more than a value does. An `<input>`'s
+`textarea { {|| draft.get()} }`) — until the user edits the field or something
+sets its `value`. That is HTML's dirty value flag, which focusing and blurring
+do not set (#1186); from then on a child change updates only the default value
+(`defaultValue` on the web), and the field keeps what the user typed. The rule
+is the same on the desktop and on rinch-web, and a child change while the field
+is focused and unedited keeps the caret at its offset, clamped to the new text,
+as in Chrome.
+
+**A text child is not a controlled value.** Until #1206, rinch-web wrote a
+textarea's `value` from its children on every change (#100), so
+`textarea { {|| draft.get()} }` with `draft.set(String::new())` after a submit
+cleared the field there even after the user had typed — and did not on the
+desktop. It no longer does on either backend. For a field the app keeps in step
+with a signal, bind the value itself — a `value_fn` on the `Textarea`
+component, or a reactive `value:` on the raw element — which reaches the field
+whether or not the user has typed:
+
+```rust
+let draft = Signal::new(String::new());
+rsx! {
+    Textarea {
+        value_fn: move || draft.get(),
+        oninput: move |v: String| draft.set(v),
+    }
+    // or, on the raw element:
+    // textarea { value: {|| draft.get()}, oninput: move |v: String| draft.set(v) }
+    button { onclick: move || { send(draft.get()); draft.set(String::new()); }, "Send" }
+}
+```
+
+It sizes the field no more than a value does. An `<input>`'s
 children are not shown at all. A control with no `width` is as wide as its
 `cols` (a textarea, default 20) or `size` (a text `<input>`, default 20)
 average characters of its font, as in a browser, and a textarea reserves a
