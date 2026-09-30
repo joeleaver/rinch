@@ -2190,6 +2190,24 @@ mod tests {
         }
     }
 
+    /// `Ctrl+Space` is matched on the key's **code**, which is `"Space"` on
+    /// both backends; the spacebar's `key` changing to `" "` on desktop
+    /// (#1161) is invisible here. Pinned so a future move to key-based
+    /// matching has to keep it: Alt rides along so no other test's chord on
+    /// this thread can answer.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_space_chord_fires_on_the_desktop_and_the_web() {
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("space-chord", cb, None);
+        registration.register_shortcut("Ctrl+Alt+Space", "space-chord");
+        assert!(match_shortcut(true, false, true, false, KeyCode::Space));
+        assert!(match_shortcut_code(true, false, true, false, "Space"));
+        assert_eq!(fired.get(), 2);
+        assert!(!match_shortcut_code(true, false, true, false, " "));
+    }
+
     /// A shortcut string's key is a **key**, not the character Shift makes of
     /// it. The browser reports Ctrl+Shift+/ on a US layout as `code: "Slash"`,
     /// `key: "?"`, `shiftKey: true` (measured, Chrome 153), and rinch matches

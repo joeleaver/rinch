@@ -357,8 +357,9 @@ fn two_selects_do_not_share_option_ids() {
 }
 
 /// Tab closes the list without committing and is **not** consumed, so the
-/// backend's own Tab moves focus on; Space commits like Enter (both spellings:
-/// desktop names it `"Space"`, the browser sends `" "`).
+/// backend's own Tab moves focus on; Space commits like Enter. Both backends
+/// report the spacebar as `" "` since #1161; the list asks `is_space()`, so a
+/// payload naming it only by `code` (an embedder's own event) commits too.
 #[test]
 fn tab_closes_and_passes_on_and_space_commits() {
     let m = Mounted::new("banana");

@@ -1370,8 +1370,8 @@ impl RinchApp {
                     editor_key_offered = true;
                     let offered = crate::editor::EditorKey {
                         // The browser's spelling, which `on_key` speaks on
-                        // both platforms.
-                        key: if ks == "Space" { " " } else { ks },
+                        // both platforms (the spacebar is `" "`, #1161).
+                        key: ks,
                         primary: ctrl,
                         ctrl: modifiers.ctrl,
                         meta: modifiers.meta,
@@ -1443,7 +1443,7 @@ impl RinchApp {
                                 .then_some(key_str.as_deref())
                                 .flatten()
                                 .map(|k| crate::editor::EditorKey {
-                                    key: if k == "Space" { " " } else { k },
+                                    key: k,
                                     primary: ctrl,
                                     ctrl: modifiers.ctrl,
                                     meta: modifiers.meta,
@@ -2863,14 +2863,15 @@ pub(crate) enum Motion {
 
 /// Derive the key string handed to the user keyboard hook (and the focus
 /// registry's `on_key`) from a key event's keycode + text + layout-mapped
-/// key value, spelled the way a browser spells `KeyboardEvent.key` — bar the
-/// spacebar, which rinch has always named `"Space"` where a browser reports
-/// `" "` (`rinch-web` forwards `event.key()`, so it reports `" "`; that
-/// divergence predates issue #336 and `spacebar_reports_the_named_key_not_its_text`
-/// pins it deliberately). Four steps, in order:
+/// key value, spelled the way a browser spells `KeyboardEvent.key` — the
+/// spacebar included, which is `" "` (its `code` is `"Space"`), as `rinch-web`
+/// reports it by forwarding `event.key()`. Desktop named it `"Space"` until
+/// issue #1161. Four steps, in order:
 ///
-/// 1. **A named key wins over the text it would insert** — a spacebar press
-///    reports `"Space"`, not `" "`, and Tab reports `"Tab"`, not `"\t"`.
+/// 1. **A named key wins over the text it would insert** — Tab reports
+///    `"Tab"`, not `"\t"`. The spacebar's "name" is its character, `" "`, so a
+///    release (which carries no text) and a chord (whose text a modifier
+///    suppressed) spell it the same as a plain press.
 /// 2. **A printable `text` wins for character keys**, so a non-QWERTY layout
 ///    reports the letter the user actually typed rather than the physical
 ///    QWERTY position — the same rule [`editor_key_binding`] follows. This is
@@ -2928,8 +2929,9 @@ pub(crate) fn hook_key_str(
     character_key_str(key).map(str::to_string)
 }
 
-/// Keys whose *name* is their `KeyboardEvent.key` spelling, so it wins over
-/// whatever text they would insert.
+/// Keys whose `KeyboardEvent.key` spelling is fixed by the key itself, so it
+/// wins over whatever text they would insert. For every key but the spacebar
+/// that is a name; the spacebar's is the space character (#1161).
 fn named_key_str(key: KeyCode) -> Option<&'static str> {
     Some(match key {
         KeyCode::ArrowLeft => "ArrowLeft",
@@ -2945,7 +2947,7 @@ fn named_key_str(key: KeyCode) -> Option<&'static str> {
         KeyCode::Escape => "Escape",
         KeyCode::PageUp => "PageUp",
         KeyCode::PageDown => "PageDown",
-        KeyCode::Space => "Space",
+        KeyCode::Space => " ",
         // Modifier keys (as physical key presses)
         KeyCode::ShiftLeft | KeyCode::ShiftRight => "Shift",
         KeyCode::ControlLeft | KeyCode::ControlRight => "Control",
@@ -4781,10 +4783,14 @@ mod hook_key_str_tests {
     }
 
     #[test]
-    fn spacebar_reports_the_named_key_not_its_text() {
-        // A real (or injected) spacebar press is `KeyCode::Space` with
-        // text=" " — the named-key arm must win so hooks see "Space".
-        assert_eq!(k(KeyCode::Space, Some(" ")), Some("Space".to_string()));
+    fn spacebar_reports_the_browser_key_whatever_the_event_carries() {
+        // `KeyboardEvent.key` for the spacebar is " " (its `code` is "Space"),
+        // and #1161 made desktop agree with rinch-web. The fixed arm must win
+        // on every shape: a press (text " "), a release or chord (no text), an
+        // event whose text is something else entirely.
+        assert_eq!(k(KeyCode::Space, Some(" ")), Some(" ".to_string()));
+        assert_eq!(k(KeyCode::Space, None), Some(" ".to_string()));
+        assert_eq!(k(KeyCode::Space, Some("x")), Some(" ".to_string()));
         // Same for Tab, whose text is a control character anyway.
         assert_eq!(k(KeyCode::Tab, Some("\t")), Some("Tab".to_string()));
     }
@@ -4888,9 +4894,10 @@ mod hook_key_str_tests {
         assert_eq!(kl(KeyCode::KeyA, Some("A"), "A"), Some("A".to_string()));
         // And a named key still outranks both.
         assert_eq!(
-            kl(KeyCode::Space, Some(" "), " "),
-            Some("Space".to_string())
+            kl(KeyCode::Enter, Some("x"), "y"),
+            Some("Enter".to_string())
         );
+        assert_eq!(kl(KeyCode::Space, Some("x"), "y"), Some(" ".to_string()));
     }
 
     #[test]

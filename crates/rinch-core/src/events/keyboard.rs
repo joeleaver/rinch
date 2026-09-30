@@ -42,9 +42,13 @@ pub enum KeyEventKind {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct KeyEventData {
-    /// The logical key value (e.g., "a", "Enter", "Backspace")
+    /// The logical key value, spelled as `KeyboardEvent.key` (e.g. `"a"`,
+    /// `"Enter"`, `"Backspace"`). The spacebar is `" "` on every backend — it
+    /// was `"Space"` on desktop until issue #1161; match it with
+    /// [`Self::is_space`] or `code == "Space"`.
     pub key: String,
-    /// The physical key code (e.g., "KeyA", "Enter")
+    /// The physical key code, spelled as `KeyboardEvent.code` (e.g. `"KeyA"`,
+    /// `"Enter"`, `"Space"`).
     pub code: String,
     /// Whether Ctrl/Cmd is pressed
     pub ctrl: bool,
@@ -110,6 +114,16 @@ impl KeyEventData {
     /// Whether this is a release.
     pub fn is_up(&self) -> bool {
         self.kind == KeyEventKind::Up
+    }
+
+    /// Whether this is the spacebar (issue #1161).
+    ///
+    /// `key` is `" "` for it on desktop and on the web alike, as a browser's
+    /// `KeyboardEvent.key` is; `code` is `"Space"`. Either identifies it, and
+    /// this asks both, so a payload built by hand with only one of them — an
+    /// embedder's own event, a test — still answers.
+    pub fn is_space(&self) -> bool {
+        self.key == " " || self.code == "Space"
     }
 }
 
@@ -232,6 +246,24 @@ mod tests {
 
     fn key(name: &str) -> KeyEventData {
         KeyEventData::new(name.to_string(), name.to_string())
+    }
+
+    /// `is_space` answers the spacebar on either field, and nothing else — not
+    /// a key merely named like it, not a key whose text is some other blank.
+    #[test]
+    fn is_space_answers_the_spacebar_by_key_or_code() {
+        assert!(KeyEventData::new(" ", "Space").is_space(), "every backend");
+        assert!(KeyEventData::new(" ", "").is_space(), "key alone");
+        assert!(KeyEventData::new("", "Space").is_space(), "code alone");
+        for (k, c) in [
+            ("Enter", "Enter"),
+            ("a", "KeyA"),
+            ("\u{a0}", "KeyA"),
+            ("\t", "Tab"),
+            ("Space", "KeyS"),
+        ] {
+            assert!(!KeyEventData::new(k, c).is_space(), "{k:?}/{c:?}");
+        }
     }
 
     /// `with_modifiers` takes four positional bools — the shape whose failure

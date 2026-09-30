@@ -741,6 +741,7 @@ fn the_spacebar_is_spelled_like_the_browser_and_its_release_pairs() {
         for ev in seen.iter() {
             assert_eq!(ev.key, " ", "{label}: `key` is the character: {ev:?}");
             assert_eq!(ev.code, "Space", "{label}: `code` names it: {ev:?}");
+            assert!(ev.is_space(), "{label}");
         }
         assert!(seen[0].is_down() && seen[1].is_up(), "{label}");
     }
