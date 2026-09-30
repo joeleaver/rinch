@@ -273,79 +273,251 @@ fn phantom_last_line(layout: &parley::Layout<Brush>) -> Option<usize> {
     .then_some(n - 1)
 }
 
-/// A character parley's `WhiteSpaceCollapse::Collapse` trims at a span's edge
-/// and CSS keeps (#1154): Unicode `White_Space` that is not document white
-/// space. CSS Text 3 §4.1.1 collapses and removes only spaces, tabs and segment
-/// breaks — ASCII — while parley trims with `str::trim_start`/`trim_end`, which
-/// take all of `White_Space`: U+00A0 NO-BREAK SPACE, U+2009 THIN SPACE, U+3000
-/// IDEOGRAPHIC SPACE and the rest. Not U+2028/U+2029: parley reads both as
-/// forced newlines (`Whitespace::Newline`), so committing one untrimmed would
-/// break the line where Chrome draws an ordinary character.
-fn parley_trims_but_css_keeps(c: char) -> bool {
-    c.is_whitespace() && !c.is_ascii_whitespace() && !matches!(c, '\u{2028}' | '\u{2029}')
+/// One step of an IFC's parley tree-builder program, recorded by
+/// [`IfcText`] and replayed once the whole IFC has been walked (#1180).
+enum IfcOp<'a> {
+    Span(Vec<parley::style::StyleProperty<'a, Brush>>),
+    Pop,
+    Text(std::borrow::Cow<'a, str>),
+    InlineBox(parley::InlineBox),
 }
 
-/// Push one text node's `text` into an IFC's tree builder, keeping what CSS
-/// keeps (#1154).
+/// The text of one inline formatting context on its way to parley, with its
+/// white space collapsed by rinch rather than by parley (#1180).
 ///
-/// Under `Collapse`, parley commits a span's text with its start trimmed (at
-/// the span's start, or after committed text ending in an ASCII space) and its
-/// end trimmed (at the span's end), and both trims take every `White_Space`
-/// character, so an NBSP there was lost: `<div>&nbsp;</div>` had no text and
-/// no line box, and `x&nbsp;` measured as `x`. A trim can reach only the
-/// white space at an edge of the node's text — anything else has a
-/// non-white-space character between it and the edge — so each run of
-/// [`parley_trims_but_css_keeps`] characters in the leading or trailing white
-/// space is committed on its own under `Preserve`, through an empty style span
-/// as the `<br>` arm commits its newline. Parley reads the mode when it
-/// commits, not when text is pushed: the span push commits what came before
-/// under `collapse` (not trimming its end, since the span continues), the pop
-/// commits the run untouched. The collapsible spaces beside the run are still
-/// parley's to collapse, and a space after it is not trimmed as a span start:
-/// the pop leaves parley's "first in span" flag cleared, and the committed
-/// text ends in a character that is not ASCII white space.
+/// **Why rinch collapses.** parley 0.11.1's `WhiteSpaceCollapse::Collapse`
+/// collapses and trims per *style span*: it trims a span's start and its end
+/// (`is_span_first` / `is_span_last` in `resolve/tree.rs`). rinch pushes one
+/// span per inline element, so a collapsible space at an element's edge was
+/// removed — `a<span> b</span>` laid out `ab`, `rsx! { p { "Hello" b { "
+/// world" } } }` `Helloworld`. CSS Text 3 §4.1.1 collapses across the whole
+/// inline formatting context: phase I removes a collapsible space that
+/// follows another one, "even one outside the boundary of the inline
+/// containing that space", and phase II removes the spaces at a *line's*
+/// start and end. And its trims took every Unicode `White_Space` character,
+/// where CSS collapses only spaces, tabs and segment breaks — an NBSP at an
+/// edge went too (#1154).
 ///
-/// A node with none of those characters at an edge — every ordinary node —
-/// is pushed whole, as before.
-fn push_collapsible_text(
-    builder: &mut parley::TreeBuilder<'_, Brush>,
-    text: &str,
-    collapse: parley::style::WhiteSpaceCollapse,
-) {
-    if !matches!(collapse, parley::style::WhiteSpaceCollapse::Collapse)
-        || !text.chars().any(parley_trims_but_css_keeps)
-    {
-        builder.push_text(text);
-        return;
-    }
-    // Byte bounds of the leading and trailing `White_Space` — what parley's
-    // trims could reach. All white space: both cover the whole text.
-    let lead_end = text.len() - text.trim_start().len();
-    let trail_start = text.trim_end().len();
-    let mut plain_start = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if !parley_trims_but_css_keeps(c) || (i >= lead_end && i < trail_start) {
-            continue;
+/// **What this does instead.** Under a collapsing `white-space` the walk
+/// hands every text node to [`Self::push_text_node`], which applies both
+/// phases in document order across element boundaries: each run of ASCII
+/// white space becomes one space, a space after another collapsible space is
+/// removed wherever an element boundary falls between them, and a space at
+/// the start of the IFC or after a `<br>` is removed. A space at the *end*
+/// of the IFC or before a `<br>` cannot be known to be one until the walk
+/// gets there, so the last kept space is held as `pending` and removed then
+/// ([`Self::push_forced_break`], [`Self::finish`]); anything that is
+/// content — a character that is not ASCII white space, an atomic inline —
+/// confirms it. An out-of-flow box or an empty element is not content. A
+/// space at a *soft* wrap is left to parley, which hangs it (one space is all
+/// there ever is now). The walk's ops are recorded rather than pushed,
+/// because a removed trailing space may sit in a span that has already been
+/// closed, and every op is replayed under `Preserve`, so parley trims
+/// nothing: what it lays out is exactly this text.
+///
+/// **The flat offsets are offsets into that text.** They used to count the
+/// text as pushed, so after any collapsed run every recorded offset — the
+/// DOM↔flat caret maps, an inline background's range, the visibility mask —
+/// was late by what parley had removed. [`Self::len`] is the text as kept so
+/// far, with a held space counted; [`Self::remap`] takes such an offset to
+/// the final text once `finish` has removed the held spaces. A text node's
+/// own DOM↔flat correspondence is its `offset_map` (see
+/// [`crate::node::IfcTextRange`]).
+///
+/// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are laid out as a
+/// space that does not collapse: parley reads either as a forced line break,
+/// where Chrome 153 draws an ordinary 4.5px character with a break
+/// opportunity after it (#1154's review; `x&#x2028;y` is one line).
+///
+/// Under a preserving `white-space` (`pre`, `pre-wrap`, `pre-line`, and every
+/// `contenteditable` root) the text is pushed verbatim, a tab as
+/// [`TAB_SPACES`], as it always was.
+pub(crate) struct IfcText<'a> {
+    collapse: bool,
+    ops: Vec<IfcOp<'a>>,
+    len: usize,
+    /// Nothing has been kept on this line yet: the IFC's start, or after a
+    /// `<br>`.
+    line_start: bool,
+    /// The last thing kept was a collapsible space.
+    prev_space: bool,
+    /// That space, while it could still turn out to end a line: `(op, byte
+    /// in the op's text, flat offset)`.
+    pending: Option<(usize, usize, usize)>,
+    /// Flat offsets (in [`Self::len`]'s terms) of the held spaces removed,
+    /// ascending.
+    dropped: Vec<usize>,
+}
+
+impl<'a> IfcText<'a> {
+    pub(crate) fn new(collapse: parley::style::WhiteSpaceCollapse) -> Self {
+        Self {
+            collapse: matches!(collapse, parley::style::WhiteSpaceCollapse::Collapse),
+            ops: Vec::new(),
+            len: 0,
+            line_start: true,
+            prev_space: false,
+            pending: None,
+            dropped: Vec::new(),
         }
-        let mut end = i + c.len_utf8();
-        while let Some(&(j, d)) = chars.peek() {
-            if !parley_trims_but_css_keeps(d) {
-                break;
+    }
+
+    /// The flat length so far, a held space included.
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn push_span(&mut self, props: Vec<parley::style::StyleProperty<'a, Brush>>) {
+        self.ops.push(IfcOp::Span(props));
+    }
+
+    pub(crate) fn pop_span(&mut self) {
+        self.ops.push(IfcOp::Pop);
+    }
+
+    /// An atomic inline is content: a held space before it stays, and a
+    /// space after it is not at a line's start.
+    pub(crate) fn push_inline_box(&mut self, inline_box: parley::InlineBox) {
+        self.pending = None;
+        self.line_start = false;
+        self.prev_space = false;
+        self.ops.push(IfcOp::InlineBox(inline_box));
+    }
+
+    /// A `<br>`: one `"\n"`, a forced break. Under collapse the held space
+    /// before it ends a line and goes, and the next line starts afresh.
+    pub(crate) fn push_forced_break(&mut self) {
+        if self.collapse {
+            self.drop_pending();
+            self.line_start = true;
+            self.prev_space = false;
+        }
+        self.ops.push(IfcOp::Text("\n".into()));
+        self.len += 1;
+    }
+
+    fn drop_pending(&mut self) {
+        if let Some((op, byte, flat)) = self.pending.take() {
+            if let IfcOp::Text(text) = &mut self.ops[op] {
+                text.to_mut().remove(byte);
             }
-            end = j + d.len_utf8();
-            chars.next();
+            self.dropped.push(flat);
         }
-        builder.push_text(&text[plain_start..i]);
-        let no_props: [parley::style::StyleProperty<'_, Brush>; 0] = [];
-        builder.push_style_modification_span(no_props.iter());
-        builder.push_text(&text[i..end]);
-        builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
-        builder.pop_style_span();
-        builder.set_white_space_mode(collapse);
-        plain_start = end;
     }
-    builder.push_text(&text[plain_start..]);
+
+    /// Push one text node's text (after `text-transform`). Returns its flat
+    /// length — the held space included — and its DOM↔flat `offset_map`
+    /// (empty when the text is pushed byte for byte).
+    pub(crate) fn push_text_node(
+        &mut self,
+        raw: std::borrow::Cow<'a, str>,
+    ) -> (usize, Vec<(usize, usize)>) {
+        fn note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
+            let (f, d) = map.last().copied().unwrap_or((0, 0));
+            if d.wrapping_sub(f) != dom.wrapping_sub(flat) {
+                map.push((flat, dom));
+            }
+        }
+        let mut map = Vec::new();
+        if !self.collapse {
+            if !raw.contains('\t') {
+                let n = raw.len();
+                self.ops.push(IfcOp::Text(raw));
+                self.len += n;
+                return (n, map);
+            }
+            let mut out = String::with_capacity(raw.len() + 3 * TAB_SPACES.len());
+            for (i, c) in raw.char_indices() {
+                note(&mut map, out.len(), i);
+                if c == '\t' {
+                    out.push_str(TAB_SPACES);
+                } else {
+                    out.push(c);
+                }
+            }
+            let n = out.len();
+            self.ops.push(IfcOp::Text(out.into()));
+            self.len += n;
+            return (n, map);
+        }
+        let op = self.ops.len();
+        // Allocated at the first byte the kept text differs from `raw` in;
+        // until then the kept text is `raw[..i]`.
+        let mut out: Option<String> = None;
+        for (i, c) in raw.char_indices() {
+            let space = c.is_ascii_whitespace();
+            let kept = if space {
+                if self.line_start || self.prev_space {
+                    None
+                } else {
+                    self.prev_space = true;
+                    Some(' ')
+                }
+            } else {
+                self.prev_space = false;
+                self.line_start = false;
+                self.pending = None;
+                Some(if matches!(c, '\u{2028}' | '\u{2029}') {
+                    ' '
+                } else {
+                    c
+                })
+            };
+            let Some(k) = kept else {
+                out.get_or_insert_with(|| raw[..i].to_string());
+                continue;
+            };
+            if out.is_none() && k != c {
+                out = Some(raw[..i].to_string());
+            }
+            let flat = out.as_ref().map_or(i, String::len);
+            note(&mut map, flat, i);
+            if space {
+                self.pending = Some((op, flat, self.len + flat));
+            }
+            if let Some(o) = out.as_mut() {
+                o.push(k);
+            }
+        }
+        let text: std::borrow::Cow<'a, str> = match out {
+            Some(o) => o.into(),
+            None => raw,
+        };
+        let n = text.len();
+        if n > 0 {
+            self.ops.push(IfcOp::Text(text));
+        }
+        self.len += n;
+        (n, map)
+    }
+
+    /// Remove a space held at the IFC's end and replay the ops into
+    /// `builder`, all under `Preserve`: the text is already collapsed.
+    pub(crate) fn finish(&mut self, builder: &mut parley::TreeBuilder<'_, Brush>) {
+        if self.collapse {
+            self.drop_pending();
+        }
+        builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        for op in self.ops.drain(..) {
+            match op {
+                IfcOp::Span(props) => builder.push_style_modification_span(props.iter()),
+                IfcOp::Pop => builder.pop_style_span(),
+                IfcOp::Text(text) => builder.push_text(&text),
+                IfcOp::InlineBox(b) => builder.push_inline_box(b),
+            }
+        }
+    }
+
+    /// A flat offset recorded during the walk, in the final text: less the
+    /// held spaces [`Self::finish`] removed before it.
+    pub(crate) fn remap(&self, flat: usize) -> usize {
+        flat - self.dropped.partition_point(|&d| d < flat)
+    }
+
+    /// The final length, after [`Self::finish`].
+    pub(crate) fn final_len(&self) -> usize {
+        self.len - self.dropped.len()
+    }
 }
 
 /// Break `layout` at `max_width` as `break_all_lines` does, but commit only its
@@ -4943,7 +5115,6 @@ impl RinchDocument {
                 _ => parley::style::WhiteSpaceCollapse::Collapse,
             }
         };
-        builder.set_white_space_mode(collapse);
 
         let mut child_positions = Vec::new();
         let mut text_ranges = Vec::new();
@@ -4951,26 +5122,43 @@ impl RinchDocument {
         let mut decoration_spans = Vec::new();
         let mut flat_pos = 0usize;
 
-        // Walk children and build the Parley tree
+        // Walk children into an `IfcText`, which collapses white space across
+        // the whole IFC (#1180), then replay it into the Parley tree.
+        let mut ifc_text = IfcText::new(collapse);
         Self::walk_inline_children(
             nodes,
             root_id,
-            &mut builder,
+            &mut ifc_text,
             &mut child_positions,
             &mut text_ranges,
             &mut background_spans,
             &mut decoration_spans,
             &mut flat_pos,
             scale,
-            collapse,
         );
+        ifc_text.finish(&mut builder);
+        // Every offset the walk recorded counted a held space `finish` has
+        // since removed; take them all to the final text.
+        for r in &mut text_ranges {
+            r.flat_start = ifc_text.remap(r.flat_start);
+            r.flat_end = ifc_text.remap(r.flat_end);
+        }
+        for b in &mut background_spans {
+            b.start = ifc_text.remap(b.start);
+            b.end = ifc_text.remap(b.end);
+        }
+        for d in &mut decoration_spans {
+            d.start = ifc_text.remap(d.start);
+            d.end = ifc_text.remap(d.end);
+        }
+        let flat_len = ifc_text.final_len();
 
         // The IFC root's own wavy underline covers everything the walk produced.
         // (An inline element's covers its own range and is pushed by the walk.)
-        if root_computed.text_decoration.is_wavy_underline() && flat_pos > 0 {
+        if root_computed.text_decoration.is_wavy_underline() && flat_len > 0 {
             decoration_spans.push(crate::node::InlineDecorationSpan {
                 start: 0,
-                end: flat_pos,
+                end: flat_len,
                 color: root_computed
                     .text_decoration
                     .color
@@ -5585,17 +5773,16 @@ impl RinchDocument {
 
     /// Recursively walk inline children, pushing text and style spans into the TreeBuilder.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn walk_inline_children(
-        nodes: &slab::Slab<Node>,
+    pub(crate) fn walk_inline_children<'a>(
+        nodes: &'a slab::Slab<Node>,
         parent_id: usize,
-        builder: &mut parley::TreeBuilder<'_, Brush>,
+        builder: &mut IfcText<'a>,
         child_positions: &mut Vec<(usize, LayoutResult)>,
         text_ranges: &mut Vec<crate::node::IfcTextRange>,
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
         flat_pos: &mut usize,
         scale: f32,
-        collapse: parley::style::WhiteSpaceCollapse,
     ) {
         // As in `mark_inline_descendants`: an anonymous box's content is its
         // recorded run, not its (empty) `children` (#566). The two must walk
@@ -5702,8 +5889,7 @@ impl RinchDocument {
             };
             let bridged = bridged_style.is_some();
             if let Some(owner_style) = bridged_style {
-                let props = Self::inline_style_props(owner_style, scale);
-                builder.push_style_modification_span(props.iter());
+                builder.push_span(Self::inline_style_props(owner_style, scale));
             }
             match &child.kind {
                 NodeKind::Text(text_data) => {
@@ -5711,22 +5897,17 @@ impl RinchDocument {
                         let start = *flat_pos;
                         // Apply text-transform from parent's computed style
                         let parent_transform = &nodes[parent_id].computed_style.text_transform;
-                        let raw =
-                            if let Some(transformed) = parent_transform.apply(&text_data.content) {
-                                transformed
-                            } else {
-                                text_data.content.clone()
+                        let raw: std::borrow::Cow<'a, str> =
+                            match parent_transform.apply(&text_data.content) {
+                                Some(transformed) => transformed.into(),
+                                None => text_data.content.as_str().into(),
                             };
                         let dom_text_len = raw.len();
-                        // Expand tabs to 4 spaces for Parley (which has no tab stop support)
-                        let has_tabs = raw.contains('\t');
-                        let display = if has_tabs {
-                            raw.replace('\t', TAB_SPACES)
-                        } else {
-                            raw
-                        };
-                        push_collapsible_text(builder, &display, collapse);
-                        *flat_pos += display.len();
+                        // Collapsed (#1180), or verbatim with a tab as
+                        // `TAB_SPACES` (Parley has no tab stops).
+                        let (flat_len, offset_map) = builder.push_text_node(raw);
+                        *flat_pos += flat_len;
+                        debug_assert_eq!(*flat_pos, builder.len());
                         text_ranges.push(crate::node::IfcTextRange {
                             flat_start: start,
                             flat_end: *flat_pos,
@@ -5734,11 +5915,7 @@ impl RinchDocument {
                             node_offset: 0,
                             is_br: false,
                             dom_text_len,
-                            dom_text: if has_tabs {
-                                text_data.content.clone()
-                            } else {
-                                String::new()
-                            },
+                            offset_map,
                         });
                         // Record position placeholder — actual position comes from layout
                         child_positions.push((child_id, LayoutResult::default()));
@@ -5751,13 +5928,8 @@ impl RinchDocument {
                 {
                     // <br> elements insert a hard line break.
                     let start = *flat_pos;
-                    builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
-                    builder.push_text("\n");
+                    builder.push_forced_break();
                     *flat_pos += 1;
-                    let no_props: [parley::style::StyleProperty<'_, Brush>; 0] = [];
-                    builder.push_style_modification_span(no_props.iter());
-                    builder.pop_style_span();
-                    builder.set_white_space_mode(collapse);
                     text_ranges.push(crate::node::IfcTextRange {
                         flat_start: start,
                         flat_end: *flat_pos,
@@ -5765,7 +5937,7 @@ impl RinchDocument {
                         node_offset: 0,
                         is_br: true,
                         dom_text_len: 1,
-                        dom_text: String::new(),
+                        offset_map: Vec::new(),
                     });
                     child_positions.push((child_id, LayoutResult::default()));
                 }
@@ -5775,13 +5947,12 @@ impl RinchDocument {
                 {
                     // Push style span for inline element using typed ComputedStyle
                     let child_computed = &child.computed_style;
-                    let props = Self::inline_style_props(child_computed, scale);
 
                     // Record background span start position
                     let bg_start = *flat_pos;
                     let has_bg = child_computed.background_color().is_some();
 
-                    builder.push_style_modification_span(props.iter());
+                    builder.push_span(Self::inline_style_props(child_computed, scale));
                     child_positions.push((child_id, LayoutResult::default()));
 
                     // Recurse into inline element's children
@@ -5795,10 +5966,9 @@ impl RinchDocument {
                         decoration_spans,
                         flat_pos,
                         scale,
-                        collapse,
                     );
 
-                    builder.pop_style_span();
+                    builder.pop_span();
 
                     // Record background span if the inline element has a visible
                     // background. Through the shared helper, so this and the
@@ -5854,8 +6024,7 @@ impl RinchDocument {
                         &nodes[parent_id].computed_style,
                     );
                     if styled {
-                        let props = Self::inline_style_props(&child.computed_style, scale);
-                        builder.push_style_modification_span(props.iter());
+                        builder.push_span(Self::inline_style_props(&child.computed_style, scale));
                     }
                     Self::walk_inline_children(
                         nodes,
@@ -5867,10 +6036,9 @@ impl RinchDocument {
                         decoration_spans,
                         flat_pos,
                         scale,
-                        collapse,
                     );
                     if styled {
-                        builder.pop_style_span();
+                        builder.pop_span();
                     }
                 }
                 NodeKind::Element(_)
@@ -5934,7 +6102,7 @@ impl RinchDocument {
                 }
             }
             if bridged {
-                builder.pop_style_span();
+                builder.pop_span();
             }
         }
 

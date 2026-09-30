@@ -345,11 +345,11 @@ fn flat_offsets_are_offsets_into_the_collapsed_text() {
     assert_eq!(got, ["a ", "b", " c ", "d"]);
 
     // Caret maps: in "  c " (the third node) the `c` is DOM byte 2 and flat
-    // byte 5; in "\n d " the `d` is DOM byte 2 and flat byte 6.
+    // byte 4; in "\n d " the `d` is DOM byte 2 and flat byte 6.
     let third = il.text_ranges[2].node_id;
     let fourth = il.text_ranges[3].node_id;
-    assert_eq!(dom_cursor_to_ifc_offset(&il.text_ranges, third, 2), Some(5));
-    assert_eq!(ifc_offset_to_dom_cursor(&il.text_ranges, 5, false), Some((third, 2)));
+    assert_eq!(dom_cursor_to_ifc_offset(&il.text_ranges, third, 2), Some(4));
+    assert_eq!(ifc_offset_to_dom_cursor(&il.text_ranges, 4, false), Some((third, 2)));
     assert_eq!(dom_cursor_to_ifc_offset(&il.text_ranges, fourth, 2), Some(6));
     assert_eq!(ifc_offset_to_dom_cursor(&il.text_ranges, 6, false), Some((fourth, 2)));
     // After `d`: DOM byte 3, flat byte 7 (the end; the trailing space went).

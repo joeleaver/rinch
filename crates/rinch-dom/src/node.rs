@@ -423,12 +423,67 @@ pub struct IfcTextRange {
     pub node_offset: usize,
     /// True for `<br>` entries (which map to `"\n"` in the flat text).
     pub is_br: bool,
-    /// Length of the original DOM text content (before tab expansion).
-    /// When equal to `flat_end - flat_start`, no tabs were expanded.
+    /// Length of the DOM text content (after `text-transform`, before white
+    /// space was collapsed or a tab expanded).
     pub dom_text_len: usize,
-    /// Original DOM text content (before tab expansion). Only set when
-    /// tabs were expanded; empty string when no tabs are present.
-    pub dom_text: String,
+    /// Where this node's laid-out text stops being its DOM text byte for byte
+    /// (#1180): each `(flat, dom)` pair, local to the range, starts a stretch
+    /// in which both advance together. It is pushed where a collapsed run or
+    /// an expanded tab leaves the two out of step, so it is empty for text
+    /// pushed as is. Implicitly the stretches start at `(0, 0)` and end at
+    /// `(flat_end - flat_start, dom_text_len)`; a position inside something
+    /// removed or expanded maps to the end of it. Read it through
+    /// [`Self::dom_for_flat`] and [`Self::flat_for_dom`].
+    pub offset_map: Vec<(usize, usize)>,
+}
+
+impl IfcTextRange {
+    /// The stretch starts, `(0, 0)` first unless the map starts at flat 0.
+    fn stretches(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let implicit = match self.offset_map.first() {
+            Some(&(0, _)) => None,
+            _ => Some((0, 0)),
+        };
+        implicit.into_iter().chain(self.offset_map.iter().copied())
+    }
+
+    /// The DOM byte (local to the node, `node_offset` not added) that the
+    /// range-local flat byte `flat` lays out.
+    pub fn dom_for_flat(&self, flat: usize) -> usize {
+        if self.offset_map.is_empty() && self.flat_end - self.flat_start == self.dom_text_len {
+            return flat;
+        }
+        let end = (self.flat_end - self.flat_start, self.dom_text_len);
+        let mut out = 0;
+        let mut stretches = self.stretches().peekable();
+        while let Some((f, d)) = stretches.next() {
+            if f > flat {
+                break;
+            }
+            let next = stretches.peek().copied().unwrap_or(end);
+            out = (d + (flat - f)).min(next.1);
+        }
+        out
+    }
+
+    /// The range-local flat byte for the DOM byte `dom` (local to the node).
+    pub fn flat_for_dom(&self, dom: usize) -> usize {
+        let flat_len = self.flat_end - self.flat_start;
+        if self.offset_map.is_empty() && flat_len == self.dom_text_len {
+            return dom.min(flat_len);
+        }
+        let end = (flat_len, self.dom_text_len);
+        let mut out = 0;
+        let mut stretches = self.stretches().peekable();
+        while let Some((f, d)) = stretches.next() {
+            if d > dom {
+                break;
+            }
+            let next = stretches.peek().copied().unwrap_or(end);
+            out = (f + (dom - d)).min(next.0);
+        }
+        out
+    }
 }
 
 /// A background span for inline elements within an IFC.
