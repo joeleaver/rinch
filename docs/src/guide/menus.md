@@ -147,12 +147,16 @@ Shortcuts are specified as strings combining modifiers and a key, separated by `
 
 ### Modifiers
 
-| Modifier | macOS | Windows/Linux |
-|----------|-------|---------------|
-| `Cmd` | Command | Ctrl |
-| `Ctrl` | Control | Ctrl |
-| `Alt` | Option | Alt |
+| Spelling | macOS | Windows / Linux |
+|----------|-------|-----------------|
+| `Ctrl`, `Cmd`, `Control`, `Meta`, `CmdOrCtrl`, `Command`, `Super`, `CommandOrControl` (also `CommandOrCtrl`, `CmdOrControl`) | one modifier: the native menu shows ⌘; the chord fires with Command **or** Control held | Ctrl; the chord also fires with the Windows/Super key held |
+| `Alt`, `Option` | Option | Alt |
 | `Shift` | Shift | Shift |
+
+rinch has no way to bind Control and Command separately on macOS: `"Ctrl+K"` and `"Cmd+K"` are the same shortcut.
+
+Modifiers come first and the key last, and a shortcut has exactly one key: `"Ctrl+Shift+C+A"`,
+`"Ctrl+N+Shift"` and an unknown modifier such as `"Hyper+N"` are not shortcuts (they warn, below).
 
 ### Supported Keys
 
@@ -178,6 +182,26 @@ Shortcuts are specified as strings combining modifiers and a key, separated by `
 **Symbols:**
 - `=`, `Equal`, `Plus`
 - `-`, `Minus`
+- `/`, `Slash` · `,`, `Comma` · `.`, `Period` · `;`, `Semicolon` · `'`, `Quote`
+- `[`, `BracketLeft` · `]`, `BracketRight` · `\`, `Backslash` · `` ` ``, `Backquote`
+
+**A shortcut names a key, not the character it types.** Chords are matched by
+the physical key and the modifiers held — the desktop by winit's `KeyCode`, the
+browser by `KeyboardEvent.code` — so a character that needs Shift is spelled as
+its key plus `Shift`: `"Ctrl+Shift+/"`, not `"Ctrl+?"`. (Chrome 153 reports that
+keystroke as `key: "?"`, `code: "Slash"`, `shiftKey: true`; `code` is what
+rinch reads.) The same holds for `Plus`, which is the `=` key *without* Shift.
+Punctuation is named by where it sits on a US layout, and so are letters: on
+another layout the chord follows the key, not the printed character.
+On macOS and Windows the native menu also installs the accelerator, and the OS
+matches it by character (macOS) or virtual key (Windows), so on a non-US layout
+the native accelerator and rinch's chord can sit on different keys.
+
+A shortcut string that names no key (`"Ctrl+?"`, a typo) registers no chord and
+logs one `tracing` warning per distinct string. The DOM menu bar (Linux, the
+browser) still prints the string beside the item; the native menu on macOS and
+Windows derives its accelerator from the same parse as the chord, so it shows
+one exactly when a chord is armed.
 
 ### Examples
 
