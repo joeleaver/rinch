@@ -207,9 +207,10 @@ impl SurfaceMouseButton {
 /// Keyboard event data for render surfaces.
 #[derive(Debug, Clone)]
 pub struct SurfaceKeyData {
-    /// The logical key value (e.g., "a", "Enter", "Backspace").
+    /// The logical key value, spelled like `KeyboardEvent.key` on both
+    /// backends (e.g., "a", "Enter", "Backspace", and `" "` for the space bar).
     pub key: String,
-    /// The physical key code (e.g., "KeyA", "Enter").
+    /// The physical key code (e.g., "KeyA", "Enter", "Space").
     pub code: String,
     /// Whether Ctrl/Cmd is pressed.
     pub ctrl: bool,

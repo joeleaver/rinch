@@ -175,7 +175,7 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 | `FocusGained` | — | Surface received keyboard focus |
 | `FocusLost` | — | Surface lost keyboard focus |
 
-`SurfaceKeyData` contains `key`, `code`, `ctrl`, `shift`, `alt`, `meta`.
+`SurfaceKeyData` contains `key`, `code`, `ctrl`, `shift`, `alt`, `meta`. `key` is spelled like the browser's `KeyboardEvent.key` on both backends, so the space bar is `key == " "` and `code == "Space"`.
 
 ### Web (canvas viewport)
 
