@@ -83,6 +83,8 @@ use rinch_core::reactive::Effect;
 
 #[cfg(target_os = "android")]
 use crate::bridge;
+#[cfg(target_os = "android")]
+use crate::jni_exception::jni_ok;
 
 thread_local! {
     /// How many [`KeepScreenOn`] guards are alive. `thread_local!` like every
@@ -192,22 +194,23 @@ pub fn keep_screen_on_while(enabled: impl Fn() -> bool + 'static) {
 /// The JNI half of the refcount's edges: ask the platform to set or clear
 /// `FLAG_KEEP_SCREEN_ON` on the activity's window.
 ///
-/// A failed call is logged and swallowed, the way every other service wrapper
-/// in this crate handles one. The screen going off early is a disappointment;
+/// A failed call is logged and swallowed — its Java exception settled first,
+/// see `jni_exception` (#419) — the way every other service wrapper in this
+/// crate handles one. The screen going off early is a disappointment;
 /// a panic on the frame thread because the activity happened to be tearing
 /// down is a crash. (`with_activity` itself still panics if the crate was
 /// never initialised — that is a wiring bug, not a runtime condition.)
 #[cfg(target_os = "android")]
 fn apply_keep_screen_on(on: bool) {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(
-            activity,
-            "setKeepScreenOn",
-            "(Z)V",
-            &[jni::objects::JValue::Bool(on as jni::sys::jboolean)],
-        ) {
-            log::warn!("setKeepScreenOn({on}) failed: {e}");
-        }
+        jni_ok(env, &format!("setKeepScreenOn({on})"), |env| {
+            env.call_method(
+                activity,
+                "setKeepScreenOn",
+                "(Z)V",
+                &[jni::objects::JValue::Bool(on as jni::sys::jboolean)],
+            )
+        });
     });
 }
 

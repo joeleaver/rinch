@@ -1,6 +1,7 @@
 //! Display metrics via JNI (accurate hardware DPI, safe area insets).
 
 use crate::bridge;
+use crate::jni_exception::jni_ok;
 
 /// Safe area insets in physical pixels (accounts for status bar, navigation bar, notch).
 #[derive(Clone, Copy, Debug, Default)]
@@ -16,14 +17,20 @@ pub struct SafeAreaInsets {
 pub fn safe_area_insets() -> SafeAreaInsets {
     bridge::with_activity(|env, activity| {
         let mut insets = SafeAreaInsets::default();
-        let result = env.call_method(activity, "getSafeAreaInsets", "()[I", &[]);
-        if let Ok(val) = result
-            && let Ok(obj) = val.l()
+        let obj = jni_ok(env, "getSafeAreaInsets", |env| {
+            env.call_method(activity, "getSafeAreaInsets", "()[I", &[])?
+                .l()
+        });
+        if let Some(obj) = obj
             && !obj.is_null()
         {
             let arr: jni::objects::JIntArray = obj.into();
             let mut buf = [0i32; 4];
-            if env.get_int_array_region(&arr, 0, &mut buf).is_ok() {
+            if jni_ok(env, "getSafeAreaInsets: read", |env| {
+                env.get_int_array_region(&arr, 0, &mut buf)
+            })
+            .is_some()
+            {
                 insets.top = buf[0];
                 insets.bottom = buf[1];
                 insets.left = buf[2];
@@ -73,26 +80,22 @@ pub fn refresh_rate_hz() -> Option<f32> {
         // call site, and "deprecated" in Android means "still here", not
         // "gone". The newer call is the one to move to when the minimum SDK
         // makes it unconditional.
-        let wm = env
-            .call_method(
+        let wm = jni_ok(env, "getWindowManager", |env| {
+            env.call_method(
                 activity,
                 "getWindowManager",
                 "()Landroid/view/WindowManager;",
                 &[],
-            )
-            .ok()?
+            )?
             .l()
-            .ok()?;
-        let display = env
-            .call_method(&wm, "getDefaultDisplay", "()Landroid/view/Display;", &[])
-            .ok()?
-            .l()
-            .ok()?;
-        let hz = env
-            .call_method(&display, "getRefreshRate", "()F", &[])
-            .ok()?
-            .f()
-            .ok()?;
+        })?;
+        let display = jni_ok(env, "getDefaultDisplay", |env| {
+            env.call_method(&wm, "getDefaultDisplay", "()Landroid/view/Display;", &[])?
+                .l()
+        })?;
+        let hz = jni_ok(env, "getRefreshRate", |env| {
+            env.call_method(&display, "getRefreshRate", "()F", &[])?.f()
+        })?;
         // A panel that claims an implausible rate is a panel whose answer we
         // should not be dividing by. 20Hz is below anything shipping and
         // 1000Hz is above it; either means the call chain returned something
@@ -148,17 +151,18 @@ pub fn refresh_rate_hz() -> Option<f32> {
 /// that module for why it is not written inline.
 pub fn viewport_size() -> Option<(u32, u32)> {
     bridge::with_activity(|env, activity| {
-        let obj = env
-            .call_method(activity, "getViewportSize", "()[I", &[])
-            .ok()?
-            .l()
-            .ok()?;
+        let obj = jni_ok(env, "getViewportSize", |env| {
+            env.call_method(activity, "getViewportSize", "()[I", &[])?
+                .l()
+        })?;
         if obj.is_null() {
             return None;
         }
         let arr: jni::objects::JIntArray = obj.into();
         let mut buf = [0i32; 2];
-        env.get_int_array_region(&arr, 0, &mut buf).ok()?;
+        jni_ok(env, "getViewportSize: read", |env| {
+            env.get_int_array_region(&arr, 0, &mut buf)
+        })?;
         crate::display_decode::decode_viewport_size(buf)
     })
 }
@@ -246,11 +250,9 @@ pub fn viewport_size() -> Option<(u32, u32)> {
 /// host-tested; see that module for why it is not written inline.
 pub fn ime_inset() -> Option<u32> {
     bridge::with_activity(|env, activity| {
-        let px = env
-            .call_method(activity, "getImeInset", "()I", &[])
-            .ok()?
-            .i()
-            .ok()?;
+        let px = jni_ok(env, "getImeInset", |env| {
+            env.call_method(activity, "getImeInset", "()I", &[])?.i()
+        })?;
         crate::display_decode::decode_ime_inset(px)
     })
 }
@@ -258,27 +260,27 @@ pub fn ime_inset() -> Option<u32> {
 pub fn density_dpi() -> Option<i32> {
     bridge::with_activity(|env, activity| {
         // getResources().getDisplayMetrics().densityDpi
-        let resources = env
-            .call_method(
+        let resources = jni_ok(env, "getResources", |env| {
+            env.call_method(
                 activity,
                 "getResources",
                 "()Landroid/content/res/Resources;",
                 &[],
-            )
-            .ok()?
+            )?
             .l()
-            .ok()?;
-        let metrics = env
-            .call_method(
+        })?;
+        let metrics = jni_ok(env, "getDisplayMetrics", |env| {
+            env.call_method(
                 &resources,
                 "getDisplayMetrics",
                 "()Landroid/util/DisplayMetrics;",
                 &[],
-            )
-            .ok()?
+            )?
             .l()
-            .ok()?;
-        let dpi = env.get_field(&metrics, "densityDpi", "I").ok()?.i().ok()?;
+        })?;
+        let dpi = jni_ok(env, "DisplayMetrics.densityDpi", |env| {
+            env.get_field(&metrics, "densityDpi", "I")?.i()
+        })?;
         Some(dpi)
     })
 }
@@ -307,14 +309,14 @@ pub fn set_light_navigation_bars(light: bool) {
 
 fn set_bar_appearance(method: &str, light: bool) {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(
-            activity,
-            method,
-            "(Z)V",
-            &[jni::objects::JValue::Bool(light as jni::sys::jboolean)],
-        ) {
-            log::warn!("{method} failed: {e}");
-        }
+        jni_ok(env, method, |env| {
+            env.call_method(
+                activity,
+                method,
+                "(Z)V",
+                &[jni::objects::JValue::Bool(light as jni::sys::jboolean)],
+            )
+        });
     });
 }
 
@@ -492,17 +494,12 @@ pub fn wallpaper_primary() -> Option<(u8, u8, u8)> {
         Ok(Some(argb)) => Some(crate::display_decode::decode_argb(argb)),
         Ok(None) => None,
         Err(e) => {
-            // Unlike everywhere else in this module, the exception is cleared
-            // rather than merely reported. `jni` 0.21 turns a pending Java
-            // exception into `Err(JavaException)` and leaves it pending, and a
-            // pending exception makes the *next* JNI call on this thread abort
-            // the process — so a SecurityException from an OEM wallpaper
-            // service, thrown here, would be paid for by whichever unrelated
-            // call `with_activity` made next. The rest of the module gets away
-            // without this because its calls (`getResources`, `getRefreshRate`)
-            // are documented not to throw; a wallpaper service is third-party
-            // code and this one genuinely can.
-            let _ = env_clear_exception();
+            // No clear here, and none needed: the pending exception a
+            // throwing wallpaper service leaves (a SecurityException from an
+            // OEM implementation is the realistic one) was settled — described
+            // to logcat and cleared — by `with_activity`'s scope when the
+            // closure's `?` carried the error out of it (#419). This arm runs
+            // no JNI.
             log::warn!("wallpaper_primary: WallpaperColors lookup failed: {e}");
             None
         }
@@ -629,38 +626,11 @@ pub fn system_accent(tone: u16) -> Option<(u8, u8, u8)> {
         Ok(Some(argb)) => Some(crate::display_decode::decode_argb(argb)),
         Ok(None) => None,
         Err(e) => {
-            // **Yes, the discipline `wallpaper_primary` documents applies
-            // here too**, and it is worth saying why rather than copying the
-            // line. Its argument was that a wallpaper service is third-party
-            // code that genuinely throws, unlike `getResources` and
-            // `getRefreshRate`, which are documented not to. `Resources` is
-            // not third-party — but `getColor` is documented to throw
-            // `NotFoundException`, which is one more than `getResources`
-            // throws, and `getIdentifier` allocates three Java strings on the
-            // way in, which is one more chance at an `OutOfMemoryError` than
-            // a no-argument call has. Neither is likely: the id was non-zero a
-            // line earlier, so the resource is there. But "unlikely" is the
-            // wrong bar, because the cost of being wrong is not paid here. A
-            // pending exception makes the *next* JNI call on this thread abort
-            // the process, and the next JNI call belongs to somebody else —
-            // the frame loop, an input event — who will be blamed for it. One
-            // `exception_clear` on a path that should never run is cheaper
-            // than a crash report pointing at innocent code.
-            let _ = env_clear_exception();
+            // Settled already, as in `wallpaper_primary`: `getColor` is
+            // documented to throw `NotFoundException`, and whatever it threw
+            // was cleared by `with_activity`'s scope on the way out (#419).
             log::warn!("system_accent: reading system_accent1_{tone} failed: {e}");
             None
         }
     }
-}
-
-/// Clear any Java exception left pending on this thread. See the error arm of
-/// [`wallpaper_primary`] for why that matters more than it looks.
-fn env_clear_exception() -> jni::errors::Result<()> {
-    bridge::with_jni_env(|env| {
-        if env.exception_check()? {
-            env.exception_describe()?;
-            env.exception_clear()?;
-        }
-        Ok(())
-    })
 }

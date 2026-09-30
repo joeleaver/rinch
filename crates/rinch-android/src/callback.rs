@@ -131,16 +131,14 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnActivityResult(
     result_code: jni::sys::jint,
     data_uri: jni::objects::JString,
 ) {
+    let _scope = crate::jni_exception::native_scope(&env, "nativeOnActivityResult");
     let uri = if data_uri.is_null() {
         None
     } else {
-        match env.get_string(&data_uri) {
-            Ok(s) => Some(String::from(s)),
-            Err(e) => {
-                log::warn!("Failed to read data_uri JString: {e}");
-                None
-            }
-        }
+        crate::jni_exception::jni_ok(&mut env, "Failed to read data_uri JString", |env| {
+            env.get_string(&data_uri)
+        })
+        .map(String::from)
     };
 
     queue_activity_result(ActivityResult {

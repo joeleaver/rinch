@@ -14,6 +14,8 @@ use jni::objects::JValue;
 
 #[cfg(target_os = "android")]
 use crate::bridge;
+#[cfg(target_os = "android")]
+use crate::jni_exception::jni_ok;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(i32)]
@@ -64,14 +66,14 @@ pub fn start(sensor_type: SensorType, delay_us: i32, cb: impl Fn(&SensorData) + 
 #[cfg(target_os = "android")]
 fn arm_sensor(type_id: i32, delay_us: i32) {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(
-            activity,
-            "startSensor",
-            "(II)V",
-            &[JValue::Int(type_id), JValue::Int(delay_us)],
-        ) {
-            log::warn!("startSensor({type_id}) JNI call failed: {e}");
-        }
+        jni_ok(env, &format!("startSensor({type_id})"), |env| {
+            env.call_method(
+                activity,
+                "startSensor",
+                "(II)V",
+                &[JValue::Int(type_id), JValue::Int(delay_us)],
+            )
+        });
     });
 }
 
@@ -89,9 +91,9 @@ pub fn stop(sensor_type: SensorType) {
 #[cfg(target_os = "android")]
 fn disarm_sensor(type_id: i32) {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(activity, "stopSensor", "(I)V", &[JValue::Int(type_id)]) {
-            log::warn!("stopSensor({type_id}) JNI call failed: {e}");
-        }
+        jni_ok(env, &format!("stopSensor({type_id})"), |env| {
+            env.call_method(activity, "stopSensor", "(I)V", &[JValue::Int(type_id)])
+        });
     });
 }
 
@@ -187,12 +189,17 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnSensorChanged(
     values: jni::objects::JFloatArray,
     timestamp: jni::sys::jlong,
 ) {
-    let len = env.get_array_length(&values).unwrap_or(0) as usize;
+    let _scope = crate::jni_exception::native_scope(&env, "nativeOnSensorChanged");
+    let len = jni_ok(&mut env, "sensor values length", |env| {
+        env.get_array_length(&values)
+    })
+    .unwrap_or(0) as usize;
     let num = len.min(6);
     let mut vals = [0.0f32; 6];
     if num > 0 {
-        env.get_float_array_region(&values, 0, &mut vals[..num])
-            .ok();
+        jni_ok(&mut env, "sensor values", |env| {
+            env.get_float_array_region(&values, 0, &mut vals[..num])
+        });
     }
     record_reading(
         sensor_type,

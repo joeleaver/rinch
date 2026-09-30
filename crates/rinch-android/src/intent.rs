@@ -43,6 +43,8 @@
 use std::rc::Rc;
 use std::sync::Mutex;
 
+#[cfg(target_os = "android")]
+use crate::jni_exception::jni_ok;
 use crate::scoped::ScopedList;
 
 /// `Intent.ACTION_MAIN` — what the launcher sends, and the one thing worth
@@ -258,9 +260,9 @@ pub fn drain_incoming_intents() {
 #[cfg(target_os = "android")]
 pub(crate) fn flush_pending_java_intents() {
     crate::bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(activity, "flushPendingIntents", "()V", &[]) {
-            log::warn!("flushPendingIntents JNI call failed: {e}");
-        }
+        jni_ok(env, "flushPendingIntents", |env| {
+            env.call_method(activity, "flushPendingIntents", "()V", &[])
+        });
     });
 }
 
@@ -270,13 +272,12 @@ fn opt_string(env: &mut jni::JNIEnv, s: &jni::objects::JString, what: &str) -> O
     if s.is_null() {
         return None;
     }
-    match env.get_string(s) {
-        Ok(s) => Some(String::from(s)),
-        Err(e) => {
-            log::warn!("failed to read {what} from the incoming intent: {e}");
-            None
-        }
-    }
+    crate::jni_exception::jni_ok(
+        env,
+        &format!("failed to read {what} from the incoming intent"),
+        |env| env.get_string(s),
+    )
+    .map(String::from)
 }
 
 #[cfg(target_os = "android")]
@@ -290,6 +291,10 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnIncomingIntent(
     stream_uris: jni::objects::JObjectArray,
     data_uri: jni::objects::JString,
 ) {
+    // Several JNI calls in a row, each of which gives up on a failure and
+    // carries on to the next: every one goes through `jni_ok`, which settles
+    // its exception before the next is made (#419). The scope is the net.
+    let _scope = crate::jni_exception::native_scope(&env, "nativeOnIncomingIntent");
     let action = opt_string(&mut env, &action, "action").unwrap_or_default();
     let mime_type = opt_string(&mut env, &mime_type, "type");
     let text = opt_string(&mut env, &text, "EXTRA_TEXT");
@@ -297,7 +302,10 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnIncomingIntent(
 
     let mut streams = Vec::new();
     if !stream_uris.is_null() {
-        let len = env.get_array_length(&stream_uris).unwrap_or(0);
+        let len = jni_ok(&mut env, "EXTRA_STREAM length", |env| {
+            env.get_array_length(&stream_uris)
+        })
+        .unwrap_or(0);
         for i in 0..len {
             // `get_object_array_element` hands back a *local* reference, and
             // the JNI local-reference table on a thread this crate attached
@@ -305,7 +313,9 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnIncomingIntent(
             // hundred photos is an entirely ordinary thing for a user to do,
             // so each one is scoped and released rather than left to the frame
             // that never ends.
-            let Ok(element) = env.get_object_array_element(&stream_uris, i) else {
+            let Some(element) = jni_ok(&mut env, "EXTRA_STREAM entry", |env| {
+                env.get_object_array_element(&stream_uris, i)
+            }) else {
                 continue;
             };
             let uri = jni::objects::JString::from(element);

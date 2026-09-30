@@ -7,6 +7,7 @@
 
 use jni::objects::JValue;
 
+use crate::jni_exception::{jni_ok, jni_try};
 use crate::{bridge, callback};
 
 /// Android RESULT_OK constant.
@@ -24,9 +25,9 @@ pub fn pick_file(cb: impl FnOnce(Option<String>) + 'static) {
         })
     });
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(activity, "openFilePicker", "(I)V", &[JValue::Int(code)]) {
-            log::warn!("openFilePicker JNI call failed: {e}");
-        }
+        jni_ok(env, "openFilePicker", |env| {
+            env.call_method(activity, "openFilePicker", "(I)V", &[JValue::Int(code)])
+        });
     });
 }
 
@@ -43,21 +44,19 @@ pub fn save_file(file_name: &str, cb: impl FnOnce(Option<String>) + 'static) {
     });
     let file_name = file_name.to_string();
     bridge::with_activity(|env, activity| {
-        let jname = match env.new_string(&file_name) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("Failed to create JNI string for file name: {e}");
-                return;
-            }
+        let Some(jname) = jni_ok(env, "Failed to create JNI string for file name", |env| {
+            env.new_string(&file_name)
+        }) else {
+            return;
         };
-        if let Err(e) = env.call_method(
-            activity,
-            "saveFilePicker",
-            "(ILjava/lang/String;)V",
-            &[JValue::Int(code), JValue::Object(&jname)],
-        ) {
-            log::warn!("saveFilePicker JNI call failed: {e}");
-        }
+        jni_ok(env, "saveFilePicker", |env| {
+            env.call_method(
+                activity,
+                "saveFilePicker",
+                "(ILjava/lang/String;)V",
+                &[JValue::Int(code), JValue::Object(&jname)],
+            )
+        });
     });
 }
 
@@ -65,30 +64,30 @@ pub fn save_file(file_name: &str, cb: impl FnOnce(Option<String>) + 'static) {
 /// Returns the file contents or an error description.
 pub fn read_content_uri(uri: &str) -> Result<Vec<u8>, String> {
     bridge::with_activity(|env, activity| {
-        let juri = env.new_string(uri).map_err(|e| e.to_string())?;
-        let result = env
-            .call_method(
+        let juri = jni_try(env, "readContentUri: new_string", |env| env.new_string(uri))?;
+        let result = jni_try(env, "readContentUri JNI call failed", |env| {
+            env.call_method(
                 activity,
                 "readContentUri",
                 "(Ljava/lang/String;)[B",
                 &[JValue::Object(&juri)],
-            )
-            .map_err(|e| format!("readContentUri JNI call failed: {e}"))?
+            )?
             .l()
-            .map_err(|e| format!("readContentUri return type error: {e}"))?;
+        })?;
 
         if result.is_null() {
             return Err("readContentUri returned null (IO error or invalid URI)".into());
         }
 
         let jbyte_array: jni::objects::JByteArray = result.into();
-        let len = env
-            .get_array_length(&jbyte_array)
-            .map_err(|e| format!("get_array_length failed: {e}"))?;
+        let len = jni_try(env, "get_array_length failed", |env| {
+            env.get_array_length(&jbyte_array)
+        })?;
 
         let mut buf = vec![0i8; len as usize];
-        env.get_byte_array_region(&jbyte_array, 0, &mut buf)
-            .map_err(|e| format!("get_byte_array_region failed: {e}"))?;
+        jni_try(env, "get_byte_array_region failed", |env| {
+            env.get_byte_array_region(&jbyte_array, 0, &mut buf)
+        })?;
 
         // Convert i8 array to u8 array (safe reinterpret)
         let bytes: Vec<u8> = buf.into_iter().map(|b| b as u8).collect();
@@ -122,20 +121,21 @@ pub fn read_content_uri(uri: &str) -> Result<Vec<u8>, String> {
 /// here.
 pub fn write_content_uri(uri: &str, bytes: &[u8]) -> Result<(), String> {
     bridge::with_activity(|env, activity| {
-        let juri = env.new_string(uri).map_err(|e| e.to_string())?;
-        let jbytes = env
-            .byte_array_from_slice(bytes)
-            .map_err(|e| e.to_string())?;
-        let ok = env
-            .call_method(
+        let juri = jni_try(env, "writeContentUri: new_string", |env| {
+            env.new_string(uri)
+        })?;
+        let jbytes = jni_try(env, "writeContentUri: byte array", |env| {
+            env.byte_array_from_slice(bytes)
+        })?;
+        let ok = jni_try(env, "writeContentUri JNI call failed", |env| {
+            env.call_method(
                 activity,
                 "writeContentUri",
                 "(Ljava/lang/String;[B)Z",
                 &[JValue::Object(&juri), JValue::Object(&jbytes)],
-            )
-            .map_err(|e| format!("writeContentUri JNI call failed: {e}"))?
+            )?
             .z()
-            .map_err(|e| format!("writeContentUri return type error: {e}"))?;
+        })?;
 
         if ok {
             Ok(())

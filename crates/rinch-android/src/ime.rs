@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use jni::objects::JValue;
 
 use crate::bridge;
+use crate::jni_exception::{jni_ok, jni_try, native_scope};
 
 /// One call the IME made on `RinchInputConnection`, queued in call order.
 ///
@@ -50,9 +51,9 @@ static UPDATES: Mutex<Vec<ImeUpdate>> = Mutex::new(Vec::new());
 
 pub fn show_keyboard() {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(activity, "showKeyboard", "()V", &[]) {
-            log::warn!("showKeyboard failed: {e}");
-        }
+        jni_ok(env, "showKeyboard", |env| {
+            env.call_method(activity, "showKeyboard", "()V", &[])
+        });
     });
 }
 
@@ -75,26 +76,23 @@ pub fn show_keyboard() {
 #[must_use = "a push that did not land must not advance the caller's mirror"]
 pub fn set_multiline(multiline: bool) -> bool {
     bridge::with_activity(|env, activity| {
-        match env.call_method(
-            activity,
-            "setInputMultiline",
-            "(Z)V",
-            &[JValue::Bool(multiline as jni::sys::jboolean)],
-        ) {
-            Ok(_) => true,
-            Err(e) => {
-                log::warn!("setInputMultiline failed: {e}");
-                false
-            }
-        }
+        jni_ok(env, "setInputMultiline", |env| {
+            env.call_method(
+                activity,
+                "setInputMultiline",
+                "(Z)V",
+                &[JValue::Bool(multiline as jni::sys::jboolean)],
+            )
+        })
+        .is_some()
     })
 }
 
 pub fn hide_keyboard() {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(activity, "hideKeyboard", "()V", &[]) {
-            log::warn!("hideKeyboard failed: {e}");
-        }
+        jni_ok(env, "hideKeyboard", |env| {
+            env.call_method(activity, "hideKeyboard", "()V", &[])
+        });
     });
 }
 
@@ -107,9 +105,9 @@ pub fn hide_keyboard() {
 /// has focus, and delivers it into the next one.
 pub fn restart_input() {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(activity, "restartInput", "()V", &[]) {
-            log::warn!("restartInput failed: {e}");
-        }
+        jni_ok(env, "restartInput", |env| {
+            env.call_method(activity, "restartInput", "()V", &[])
+        });
     });
 }
 
@@ -142,10 +140,18 @@ pub extern "C" fn Java_com_rinch_RinchInputConnection_nativeCommitText(
     // leave the preedit drawn over text that has already replaced it. The empty
     // commit is the IME's own "throw the region away", which is the closest
     // truthful thing to say when the string cannot be read.
-    match env.get_string(&text) {
+    //
+    // The scope settles the exception a failed read leaves pending (#419):
+    // returned to Java still pending, it would be thrown into the IME's call.
+    let _scope = native_scope(&env, "nativeCommitText");
+    match jni_try(
+        &mut env,
+        "commitText: could not read the committed string",
+        |env| env.get_string(&text),
+    ) {
         Ok(s) => push(ImeUpdate::CommitText(s.into())),
         Err(e) => {
-            log::warn!("commitText: could not read the committed string ({e}); clearing instead");
+            log::warn!("{e}; clearing instead");
             push(ImeUpdate::CommitText(String::new()));
         }
     }
@@ -158,13 +164,18 @@ pub extern "C" fn Java_com_rinch_RinchInputConnection_nativeSetComposingText(
     text: jni::objects::JString,
     new_cursor_position: jni::sys::jint,
 ) {
-    match env.get_string(&text) {
+    let _scope = native_scope(&env, "nativeSetComposingText");
+    match jni_try(
+        &mut env,
+        "setComposingText: could not read the composing string",
+        |env| env.get_string(&text),
+    ) {
         Ok(s) => push(ImeUpdate::SetComposingText {
             text: s.into(),
             new_cursor_position,
         }),
         Err(e) => {
-            log::warn!("setComposingText: could not read the composing string ({e}); clearing");
+            log::warn!("{e}; clearing");
             push(ImeUpdate::SetComposingText {
                 text: String::new(),
                 new_cursor_position,

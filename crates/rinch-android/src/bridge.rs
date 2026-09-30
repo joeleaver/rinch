@@ -189,14 +189,40 @@ fn bridge() -> &'static Bridge {
         .expect("rinch-android not initialized — call rinch_android::init() first")
 }
 
+/// Run `f` with this thread's `JNIEnv`, attaching the thread if it is not
+/// already.
+///
+/// **No Java exception outlives the call** (issue #419). A failed JNI call
+/// leaves its exception pending — `jni` 0.21 reports it and does not clear it —
+/// and the next JNI call on the thread, whoever makes it, aborts the process
+/// under CheckJNI. So `f` runs inside an [`ExceptionScope`] that describes (to
+/// logcat) and clears whatever `f` left pending when it returns, whether a `?`
+/// carried the error out or a site logged it and gave up. The log line names the caller's source location, which
+/// `#[track_caller]` hands through `with_activity` too.
+///
+/// That is the net. Inside `f`, a failure that is swallowed and followed by
+/// another JNI call must be settled on the spot — through
+/// [`jni_ok`](crate::jni_exception::jni_ok) or
+/// [`jni_try`](crate::jni_exception::jni_try) — because the scope only runs
+/// when `f` is done.
+///
+/// [`ExceptionScope`]: crate::jni_exception::ExceptionScope
+#[track_caller]
 pub fn with_jni_env<R>(f: impl FnOnce(&mut JNIEnv) -> R) -> R {
+    let caller = std::panic::Location::caller();
     let b = bridge();
     let mut env =
         b.vm.attach_current_thread()
             .expect("failed to attach JNI thread");
+    // Declared after `env`, so it drops first: the exception is settled while
+    // the thread is still attached.
+    let _scope = crate::jni_exception::native_scope(&env, caller);
     f(&mut env)
 }
 
+/// [`with_jni_env`] with the activity object at hand; the same exception
+/// guarantee holds.
+#[track_caller]
 pub fn with_activity<R>(f: impl FnOnce(&mut JNIEnv, &JObject) -> R) -> R {
     with_jni_env(|env| f(env, bridge().activity.as_obj()))
 }
