@@ -628,7 +628,9 @@ impl RinchApp {
 
                 let tag = node.tag();
                 if matches!(tag, Some("input" | "textarea")) {
-                    let value = node.attributes.get("value").cloned().unwrap_or_default();
+                    let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
+                        .map(|v| v.into_owned())
+                        .unwrap_or_default();
                     if value.is_empty() {
                         let padding_left = node.computed_style.padding_left.to_px() as f64;
                         let padding_top = node.computed_style.padding_top.to_px() as f64;
@@ -712,7 +714,9 @@ impl RinchApp {
 
                 let tag = node.tag();
                 if matches!(tag, Some("input" | "textarea")) {
-                    let value = node.attributes.get("value").cloned().unwrap_or_default();
+                    let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
+                        .map(|v| v.into_owned())
+                        .unwrap_or_default();
                     if value.is_empty() {
                         return DebugResult::Error {
                             message: "No text content".into(),

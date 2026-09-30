@@ -175,6 +175,7 @@ pub(super) fn parse_px(value: &str) -> Option<f32> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_input_value(
     node: &Node,
+    value: &str,
     perf: &crate::perf::PerfCounters,
     painter: &mut dyn Painter,
     scale: f64,
@@ -186,12 +187,8 @@ pub(super) fn paint_input_value(
     layout_cx: &mut parley::LayoutContext<Brush>,
     transform: Affine,
 ) {
-    // Get the value or placeholder
-    let value = node
-        .attributes
-        .get("value")
-        .map(|s| s.as_str())
-        .unwrap_or("");
+    // `value` is `form_control::control_value`: the `value` attribute, else a
+    // textarea's text children (#1159), which nothing else draws.
     let placeholder = node
         .attributes
         .get("placeholder")

@@ -773,10 +773,6 @@ impl RinchDocument {
                                 };
                             }
 
-                            // A `<textarea>` whose value arrived as a text child is
-                            // sized by its `rows`, not by that text (#297).
-                            let rows_h = crate::form_control::inline_root_override(nodes, root_id);
-
                             // Use wrap_width bits as cache key
                             let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
 
@@ -791,9 +787,7 @@ impl RinchDocument {
                                     cache_hits.set(cache_hits.get() + 1);
                                     return taffy::Size {
                                         width: known_dims.width.unwrap_or(cached_w),
-                                        height: known_dims
-                                            .height
-                                            .unwrap_or(rows_h.unwrap_or(cached_h)),
+                                        height: known_dims.height.unwrap_or(cached_h),
                                     };
                                 }
                             }
@@ -819,7 +813,7 @@ impl RinchDocument {
                             // Measure callback for IFC root
                             taffy::Size {
                                 width: known_dims.width.unwrap_or(w),
-                                height: known_dims.height.unwrap_or(rows_h.unwrap_or(h)),
+                                height: known_dims.height.unwrap_or(h),
                             }
                         }
                         Some(NodeContext::FormControl { content_height }) => {

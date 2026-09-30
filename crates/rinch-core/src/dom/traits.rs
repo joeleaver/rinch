@@ -328,7 +328,9 @@ pub trait DomDocument {
     ///   runtime mirrors the edited text into the `value` attribute *before* it
     ///   dispatches `oninput`, and adopts a programmatic write to the focused
     ///   field back into the text engine (#287). So the default — the `value`
-    ///   attribute — is the live text, and desktop does not override it.
+    ///   attribute — is the live text. Desktop overrides it for one case: a
+    ///   `<textarea>` with no `value` attribute answers its text children,
+    ///   its default value, as the browser's property does (#1159).
     /// - **Web** (`rinch-web`) answers from the element's `.value` **property**
     ///   for `<input>`, `<textarea>` and `<select>`. There the attribute holds
     ///   only what was last written programmatically: typing moves the property

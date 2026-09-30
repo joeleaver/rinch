@@ -16,7 +16,7 @@ mod calc_layout;
 pub mod computed_style;
 mod dom_impl;
 pub mod fonts;
-pub(crate) mod form_control;
+pub mod form_control;
 pub mod hit_cache;
 pub mod html_parser;
 pub mod html_serializer;

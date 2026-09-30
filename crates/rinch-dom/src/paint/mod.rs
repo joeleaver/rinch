@@ -3239,8 +3239,11 @@ fn paint_node(
 
                 // Render input element value
                 if matches!(node.tag(), Some("input" | "textarea")) {
+                    let value = crate::form_control::control_value(&tree.nodes, node_id)
+                        .unwrap_or_default();
                     paint_input_value(
                         node,
+                        &value,
                         &tree.perf,
                         painter,
                         scale,

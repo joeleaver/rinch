@@ -1016,3 +1016,31 @@ fn an_escape_cancel_takes_the_ghost_away_in_a_region() {
         "no ghost trail"
     );
 }
+
+/// A textarea's text child changing (the reactive `textarea { {|| s.get()} }`
+/// shape, #1159) repaints the field incrementally, from the value it draws.
+#[test]
+fn a_textarea_text_child_edit_repaints_the_field() {
+    let mut page = Page::mount(
+        (300, 200),
+        1.0,
+        Box::new(|scope, out| {
+            let root = el(scope, "div", "padding: 20px");
+            let ta = el(
+                scope,
+                "textarea",
+                "display: block; width: 200px; font-size: 16px; color: rgb(0,0,0)",
+            );
+            let text = scope.create_text("first");
+            ta.append_child(&text);
+            root.append_child(&ta);
+            out.borrow_mut().push(ta);
+            out.borrow_mut().push(text);
+            root
+        }),
+    );
+    let stats = page.assert_repaints("textarea child text", |p| {
+        p.node(1).set_text("WWWW second");
+    });
+    assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
+}

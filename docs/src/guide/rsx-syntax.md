@@ -444,9 +444,16 @@ types `abcd abcd Xabcd`.
 
 ### Sizing a `<textarea>`
 
-A `<textarea>` holds its value in an attribute rather than as child text, so it
-has no content to size against. Its height comes from `rows`, which reserves
-that many lines plus padding and border — 2 rows when unset, matching HTML.
+A `<textarea>` holds its value in its `value` attribute, and has no content to
+size against. Text written as its child — `textarea { "hi" }`, or a parsed
+`<textarea>hi</textarea>` — is its *default* value, as in HTML: the field shows
+and edits it until the field is focused or its `value` is set (typing does
+both), and it sizes the field no more than a value does. An `<input>`'s
+children are not shown at all. No control has an intrinsic width yet (#1177):
+give it a `width`, or put it in a container that stretches it, or it is 0 wide
+on desktop. A
+textarea's height comes from `rows`, which reserves that many lines plus
+padding and border — 2 rows when unset, matching HTML.
 `rows` is read as HTML reads it: the leading digits (`"3abc"` is 3, `"2.5"` is
 2), and 2 when there are none or they come to zero:
 

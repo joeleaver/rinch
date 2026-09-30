@@ -4840,11 +4840,16 @@ Make changes, rebuild, launch again. The full cycle:
   `radio`, `range`, `color`, `image` and `hidden` — an invalid `type` is a text
   field, as in HTML. It is a measure, not a `min-height`, so `min-height: 0`
   lets the control shrink in a flex column and `max-height` caps it, as in
-  Chrome. A `<textarea>` whose value is a text *child* is still an IFC root;
-  its `InlineRoot` measure answers the `rows` height
-  (`form_control::inline_root_override`), and the form-control sync never
-  overwrites that context. Not modelled: a control's *width* (Chrome's comes
-  from `size`/`cols`), the six excluded types' own sizes (13x13 checkbox, 16px
+  Chrome. A control whose children form an inline formatting context is left
+  *hollow* by the IFC pass (#1159): its Taffy node carries the same
+  `FormControl` measure a childless one does, no inline layout is built for it,
+  and a `<textarea>`'s direct text children are its default value
+  (`form_control::control_value`: the `value` attribute if present, even `""`,
+  else those children), which `paint_input_value` draws and the desktop shell
+  edits from. An `<input>`'s children are not drawn. A block-level element
+  child is still laid out as content (#1178). Not modelled: a control's
+  *width* (Chrome's comes from `size`/`cols`; every control with no `width` is
+  0 wide, #1177), the six excluded types' own sizes (13x13 checkbox, 16px
   range, …), the date/time family's extra 2px, and a `line-height` below the
   font's normal line (Chrome clamps up). Line boxes rinch still gets wrong
   around empty content: #1154
