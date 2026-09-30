@@ -47,16 +47,32 @@ pub const TEXTAREA_SCROLLBAR_GUTTER: f32 = 15.0;
 const MAX_CONTROL_WIDTH: f32 = 33_554_432.0;
 
 /// A font's text-control metrics, in em: the OS/2 `xAvgCharWidth` (`avg_em`)
-/// and the `head` table's `xMax - xMin` (`max_em`). What Chrome sizes a
-/// control from (`SimpleFontData::AvgCharWidth` / `MaxCharWidth`).
+/// and the `head` table's `xMax - xMin` (`max_em`), or — for a face whose
+/// average Chrome does not trust — the advance of its `0` and no extent. What
+/// Chrome sizes a control from (`SimpleFontData::AvgCharWidth` /
+/// `MaxCharWidth`, or the width of `0`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CharMetrics {
-    /// The average character width, per em. A font with no OS/2 table, or a
-    /// zero `xAvgCharWidth`, answers the advance of its `0` instead.
+    /// The average character width, per em.
     pub(crate) avg_em: f32,
-    /// The widest glyph extent (`xMax - xMin`), per em; 0 when unknown.
+    /// The widest glyph extent (`xMax - xMin`), per em; 0 when the average is
+    /// the `0` fallback, which Chrome sizes with no extent term.
     pub(crate) max_em: f32,
+    /// Whether `avg_em` is the OS/2 average (`true`) or the `0` fallback.
+    /// Chrome rounds only the former (`max(avg, round(avg))`).
+    pub(crate) from_os2: bool,
 }
+
+/// The largest `xAvgCharWidth`, as a multiple of the face's `0` advance,
+/// that Chrome 153 trusts. A CJK face declares its full-width ideograph as its
+/// average (Noto Sans CJK: 979 units against a `0` of 555), and Chrome sizes a
+/// control in such a face from its `0` instead. Measured by rewriting the
+/// OS/2 value and nothing else: Noto Sans CJK is trusted at 942 (1.697 × 555)
+/// and not at 944 (1.701), the bundled Inter at 2190 (1.695 × 1292) and not at
+/// 2200 (1.703), at every font size. Nothing else about the face matters:
+/// removing its ideographs, or adding `水` and full-width forms to a Latin
+/// face, moves nothing.
+const MAX_TRUSTED_AVG_PER_ZERO: f32 = 1.7;
 
 /// The content-box height the control at `node` is owed, or `None` when it is
 /// not a line-sized control.
@@ -125,7 +141,8 @@ pub(crate) fn sync_form_control_measure(
     let Some(taffy_id) = node.taffy_id else {
         return false;
     };
-    let want = form_control_content_size(node, font_cx, layout_cx, &tree.perf);
+    let want =
+        form_control_content_size(node, font_cx, layout_cx, tree.font_generation, &tree.perf);
     let have = match tree.taffy.get_node_context(taffy_id) {
         Some(NodeContext::FormControl {
             content_width,
@@ -248,9 +265,10 @@ pub(crate) fn hollow_control_context(
     node: &Node,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    font_generation: u64,
     perf: &crate::perf::PerfCounters,
 ) -> Option<NodeContext> {
-    form_control_content_size(node, font_cx, layout_cx, perf).map(
+    form_control_content_size(node, font_cx, layout_cx, font_generation, perf).map(
         |(content_width, content_height)| NodeContext::FormControl {
             content_width,
             content_height,
@@ -266,6 +284,7 @@ pub(crate) fn form_control_content_size(
     node: &Node,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    font_generation: u64,
     perf: &crate::perf::PerfCounters,
 ) -> Option<(f32, f32)> {
     let height = form_control_content_height(node)?;
@@ -276,7 +295,7 @@ pub(crate) fn form_control_content_size(
     };
     let width = match factor {
         Some(factor) => {
-            let metrics = cached_char_metrics(node, font_cx, layout_cx, perf);
+            let metrics = cached_char_metrics(node, font_cx, layout_cx, font_generation, perf);
             form_control_content_width(node, &node.computed_style, metrics, factor)
         }
         None => 0.0,
@@ -340,7 +359,18 @@ fn input_width_factor(node: &Node) -> Option<u32> {
 /// average it uses is the unrounded one where its fraction is below one half
 /// and the rounded one where it is at or above (Inter at 20px: 12.80, used as
 /// 13). The `− avg'` term is Chrome's own "IE adds some extra width" rule for
-/// a single-line control; a font whose extent is unknown gets `avg' × size`.
+/// a single-line control. A face whose average Chrome distrusts
+/// ([`MAX_TRUSTED_AVG_PER_ZERO`]) is sized from its `0` advance, unrounded and
+/// with no extent term: `ceil(zero × size)`, `ceil(zero × cols) + 15`.
+///
+/// **At a device scale factor of 1.** Chrome runs the same formula in device
+/// pixels and divides back, so at 1.5 or 2 its widths differ from these by
+/// the rounding of each step (measured up to 11px at 1.5: Noto Serif 11px
+/// `cols=33`, 235.33 in Chrome where this gives 246); rinch computes in CSS px
+/// whatever the scale. And "to the pixel" was sampled at whole and half pixel
+/// font sizes: a sweep in 0.1px steps finds a few sizes one pixel off (3 of
+/// 846 cases — DejaVu Serif textarea at 19.8px, Liberation Sans input at 17.8
+/// and 19.8px).
 ///
 /// Not modelled: the exceptions Chrome makes for particular families (a list
 /// of faces whose `xAvgCharWidth` it does not trust, and a fixed extent for
@@ -355,7 +385,11 @@ pub(crate) fn form_control_content_width(
 ) -> f32 {
     let size = f64::from(style.font_size);
     let avg = f64::from(metrics.avg_em) * size;
-    let avg = avg.max(avg.round());
+    let avg = if metrics.from_os2 {
+        avg.max(avg.round())
+    } else {
+        avg
+    };
     let factor = f64::from(factor);
     let width = if node.tag() == Some("textarea") {
         let gutter = if matches!(
@@ -386,16 +420,20 @@ fn ceil_px(v: f64) -> f64 {
 }
 
 /// [`char_metrics`] for `node`'s style, from the node's cache when its font
-/// family, weight and style have not moved since.
+/// family, weight and style have not moved since, and no face has been
+/// registered on the document since (`font_generation`,
+/// `RinchDocument::note_fonts_registered`).
 fn cached_char_metrics(
     node: &Node,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    font_generation: u64,
     perf: &crate::perf::PerfCounters,
 ) -> CharMetrics {
     use std::hash::{Hash, Hasher};
     let style = &node.computed_style;
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    font_generation.hash(&mut h);
     style.font_family.hash(&mut h);
     style.font_weight.to_bits().hash(&mut h);
     (style.font_style as u8).hash(&mut h);
@@ -411,24 +449,34 @@ fn cached_char_metrics(
     m
 }
 
-/// The text-control metrics of `style`'s **primary font** — the face its
-/// font stack resolves a `0` to, at its weight and style, which is the first
-/// available family for any stack whose first family has digits.
+/// The text-control metrics of `style`'s **primary font**: the face its stack
+/// resolves a Latin `x` to, at its weight and style.
+///
+/// An `x`, not the `0` a control's width is about, because fontique's script
+/// fallback for a lone digit under a family that is not installed can land on
+/// a colour-emoji face (whose `0` is an emoji-width glyph), while text in that
+/// stack falls back to the default face. An `x` is in no emoji face. The `0`
+/// advance is then read from the chosen face itself.
 pub(crate) fn char_metrics(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
     style: &ComputedStyle,
 ) -> CharMetrics {
+    use skrifa::MetadataProvider;
     use skrifa::raw::TableProvider;
-    const PROBE: &str = "0";
-    const PROBE_PX: f32 = 16.0;
+    const PROBE: &str = "x";
+    const UNKNOWN: CharMetrics = CharMetrics {
+        avg_em: 0.0,
+        max_em: 0.0,
+        from_os2: false,
+    };
     let family = if style.font_family.is_empty() {
         "sans-serif".to_string()
     } else {
         style.font_family.clone()
     };
     let mut builder = layout_cx.ranged_builder(font_cx, PROBE, 1.0, true);
-    builder.push_default(parley::style::StyleProperty::FontSize(PROBE_PX));
+    builder.push_default(parley::style::StyleProperty::FontSize(16.0));
     builder.push_default(parley::style::StyleProperty::FontFamily(
         parley::style::FontFamily::Source(std::borrow::Cow::Owned(family)),
     ));
@@ -451,33 +499,39 @@ pub(crate) fn char_metrics(
         })
     });
     let Some(run) = run else {
-        return CharMetrics {
-            avg_em: 0.0,
-            max_em: 0.0,
-        };
+        return UNKNOWN;
     };
-    let zero_em = run.glyphs().next().map_or(0.0, |g| g.advance) / PROBE_PX;
     let font = run.run().font();
     let Ok(face) = skrifa::FontRef::from_index(font.data.as_ref(), font.index) else {
-        return CharMetrics {
-            avg_em: zero_em,
-            max_em: 0.0,
-        };
+        return UNKNOWN;
     };
     let Some(head) = face.head().ok().filter(|h| h.units_per_em() > 0) else {
-        return CharMetrics {
-            avg_em: zero_em,
-            max_em: 0.0,
-        };
+        return UNKNOWN;
     };
     let upem = f32::from(head.units_per_em());
-    let avg = face.os2().ok().map_or(0, |t| t.x_avg_char_width());
+    let zero = face
+        .charmap()
+        .map('0')
+        .and_then(|gid| {
+            face.glyph_metrics(
+                skrifa::instance::Size::unscaled(),
+                skrifa::instance::LocationRef::default(),
+            )
+            .advance_width(gid)
+        })
+        .unwrap_or(0.0);
+    let zero_fallback = CharMetrics {
+        avg_em: zero / upem,
+        max_em: 0.0,
+        from_os2: false,
+    };
+    let avg = f32::from(face.os2().ok().map_or(0, |t| t.x_avg_char_width()));
+    if avg <= 0.0 || (zero > 0.0 && avg > MAX_TRUSTED_AVG_PER_ZERO * zero) {
+        return zero_fallback;
+    }
     CharMetrics {
-        avg_em: if avg > 0 {
-            f32::from(avg) / upem
-        } else {
-            zero_em
-        },
+        avg_em: avg / upem,
         max_em: (f32::from(head.x_max()) - f32::from(head.x_min())).max(0.0) / upem,
+        from_os2: true,
     }
 }

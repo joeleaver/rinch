@@ -2795,6 +2795,7 @@ impl RinchDocument {
                     &self.tree.nodes[root_id],
                     &mut self.font_cx,
                     &mut self.layout_cx,
+                    self.tree.font_generation,
                     &self.tree.perf,
                 );
                 let have = self.tree.taffy.get_node_context(root_taffy);

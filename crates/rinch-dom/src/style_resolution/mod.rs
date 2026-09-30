@@ -499,7 +499,30 @@ impl RinchDocument {
     /// the document's font generation, which every cached entry is keyed on,
     /// and re-sizes every `<input>` / `<textarea>` now, so a control sized in
     /// a fallback face is sized in the new face at the next layout.
-    pub fn note_fonts_registered(&mut self) {}
+    pub fn note_fonts_registered(&mut self) {
+        self.tree.font_generation += 1;
+        let controls: Vec<usize> = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| crate::form_control::is_value_control(n))
+            .map(|(id, _)| id)
+            .collect();
+        for node_id in controls {
+            if crate::form_control::sync_form_control_measure(
+                &mut self.tree,
+                &mut self.font_cx,
+                &mut self.layout_cx,
+                node_id,
+            ) {
+                self.tree.layout_dirty = true;
+                self.mark_atomic_inline_dirty(node_id);
+                // A host that resolves only when a node is dirty (the desktop
+                // shell's short-circuit) must see this one.
+                self.tree.push_dirty(node_id);
+            }
+        }
+    }
 
     /// Recompute taffy styles for all element nodes, clearing cached style props
     /// so that CSS variables are re-resolved. Use this after `update_theme_variables()`.

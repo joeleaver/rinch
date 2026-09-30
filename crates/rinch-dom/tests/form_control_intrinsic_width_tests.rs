@@ -493,7 +493,8 @@ fn a_face_registered_after_layout_resizes_the_control() {
     assert_eq!(fresh, 248.0);
     let mut doc = RinchDocument::new();
     let body = doc.body();
-    let c = el(&mut doc, body, "input", css);
+    let div = el(&mut doc, body, "div", "");
+    let c = el(&mut doc, div, "input", css);
     doc.resolve_layout(800.0, 600.0);
     register_as(&mut doc, FACE.to_vec(), "LateFace", None, false);
     doc.note_fonts_registered();

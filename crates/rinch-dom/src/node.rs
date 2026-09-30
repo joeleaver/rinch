@@ -2321,6 +2321,10 @@ pub struct NodeTree {
     /// Per-frame performance counters (see [`crate::perf`]). Instrumentation,
     /// not state: nothing reads them to decide anything.
     pub perf: crate::perf::PerfCounters,
+    /// Moved by `RinchDocument::note_fonts_registered` whenever faces are
+    /// registered on the document's `font_cx` after it was laid out. A text
+    /// control's cached font metrics are keyed on it (#1177).
+    pub font_generation: u64,
     /// The hit tester's memo (subtree extents, stacking sequences), valid
     /// until something bumps its generation. See [`crate::hit_cache`].
     pub hit_cache: crate::hit_cache::HitCache,
@@ -2607,6 +2611,7 @@ impl NodeTree {
             taffy_computes: 0,
             ifc_setup_passes: 0,
             perf: crate::perf::PerfCounters::default(),
+            font_generation: 0,
             hit_cache: Default::default(),
             mousemove_handlers: 0,
             dirty_text_contexts: HashSet::new(),
