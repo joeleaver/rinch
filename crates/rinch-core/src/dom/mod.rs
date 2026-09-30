@@ -1020,6 +1020,57 @@ impl std::fmt::Debug for NodeHandle {
 // reactive_component_dom
 // ============================================================================
 
+/// One call into a re-rendering component's **site bundle** (issue #1190).
+///
+/// `rsx!` compiles a component that re-renders for a reactive struct prop, and
+/// that carries reactive root bindings (`style:`, `class:`, a style shorthand,
+/// a hyphenated attribute), into a single closure — a [`SiteFn`] — that both
+/// renders the component and evaluates each binding. Everything the caller's
+/// tokens name is captured by that one closure, exactly once, as it was when
+/// the bindings were evaluated inside the render closure; the bindings
+/// themselves run in effects owned by the render, which call back into the
+/// bundle with [`SiteCall::Binding`]. Generated code only.
+#[doc(hidden)]
+pub enum SiteCall<'a> {
+    /// Render into the per-render child scope. The second field is the bundle
+    /// itself, so a binding effect created during the render can hold it.
+    Render(&'a mut RenderScope, &'a Rc<SiteFn>),
+    /// Evaluate the root binding with this index.
+    Binding(u32),
+}
+
+/// What a [`SiteFn`] answers: a [`SiteCall::Render`] a node, a
+/// [`SiteCall::Binding`] a string. Generated code only.
+#[doc(hidden)]
+pub enum SiteOut {
+    /// The rendered component root.
+    Node(NodeHandle),
+    /// A binding's value.
+    Str(String),
+}
+
+impl SiteOut {
+    /// The node of a [`SiteCall::Render`].
+    pub fn into_node(self) -> NodeHandle {
+        match self {
+            SiteOut::Node(node) => node,
+            SiteOut::Str(_) => unreachable!("a site render answered a string"),
+        }
+    }
+
+    /// The string of a [`SiteCall::Binding`].
+    pub fn into_string(self) -> String {
+        match self {
+            SiteOut::Str(s) => s,
+            SiteOut::Node(_) => unreachable!("a site binding answered a node"),
+        }
+    }
+}
+
+/// A re-rendering component's site bundle; see [`SiteCall`].
+#[doc(hidden)]
+pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
+
 /// Re-render a component whenever signals read inside `render_fn` change.
 ///
 /// This uses the same marker + Effect + DOM swap pattern as `show_dom`.
