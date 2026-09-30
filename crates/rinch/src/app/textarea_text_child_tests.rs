@@ -120,26 +120,6 @@ fn the_first_click_places_the_caret_in_the_child_text() {
     assert_eq!(value_attr(&app, id).as_deref(), Some("helloX"));
 }
 
-/// A `value` attribute removed while the field is focused leaves it holding
-/// its text children, as removing the attribute leaves a browser's `.value`
-/// alone — not "" (review of #1179: the per-frame adoption reads
-/// `control_value`).
-#[test]
-fn a_value_removed_while_focused_falls_back_to_the_child_text() {
-    let (mut app, id, _log) = mount("hello");
-    click_into(&mut app, id);
-    app.resolve_and_repaint(800.0, 600.0);
-    app.doc
-        .as_ref()
-        .unwrap()
-        .borrow_mut()
-        .remove_attribute(rinch_core::dom::NodeId(id), "value");
-    app.resolve_and_repaint(800.0, 600.0);
-    press(&mut app, KeyCode::End, None);
-    press(&mut app, KeyCode::KeyX, Some("X"));
-    assert_eq!(value_attr(&app, id).as_deref(), Some("helloX"));
-}
-
 // ── The dirty value flag (#1186) ──────────────────────────────────────────
 //
 // A textarea's text children stay its value until the user edits it or
@@ -362,4 +342,178 @@ fn a_value_write_freezes_the_value_against_later_child_changes() {
     press(&mut app, KeyCode::End, None);
     press(&mut app, KeyCode::KeyX, Some("X"));
     assert_eq!(value_attr(&app, id).as_deref(), Some("progX"));
+}
+
+// ── Chrome 153 sequences from the review of #1208 ─────────────────────────
+mod review1208 {
+    use super::*;
+
+    fn chord(app: &mut RinchApp, key: KeyCode) {
+        app.handle_event(
+            PlatformEvent::KeyDown {
+                key,
+                logical_key: None,
+                text: None,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                repeat: KeyRepeat::Unknown,
+            },
+            (800, 600),
+            1.0,
+        );
+    }
+    fn ime(app: &mut RinchApp, ev: rinch_platform::ImeEvent) {
+        app.handle_event(PlatformEvent::Ime(ev), (800, 600), 1.0);
+    }
+    fn preedit(app: &mut RinchApp, t: &str) {
+        ime(
+            app,
+            rinch_platform::ImeEvent::Preedit {
+                text: t.into(),
+                cursor: None,
+            },
+        );
+    }
+
+    /// Chrome C4: Ctrl+Z on an unedited field is no edit.
+    #[test]
+    fn r_undo_on_unedited_follows() {
+        let (mut app, id, text, _log) = mount_with_change("hello");
+        click_into(&mut app, id);
+        chord(&mut app, KeyCode::KeyZ);
+        assert_eq!(value_attr(&app, id), None);
+        set_child(&mut app, text, "CHANGED");
+        assert_eq!(live(&app, id).as_deref(), Some("CHANGED"));
+    }
+
+    /// Chrome C5/C6/C8: no-op deletes and an empty cut are no edit.
+    #[test]
+    fn r_noop_deletes_follow() {
+        let (mut app, id, text, _log) = mount_with_change("hello");
+        click_into(&mut app, id);
+        press(&mut app, KeyCode::Home, None);
+        press(&mut app, KeyCode::Backspace, None);
+        press(&mut app, KeyCode::End, None);
+        press(&mut app, KeyCode::Delete, None);
+        chord(&mut app, KeyCode::KeyX);
+        assert_eq!(value_attr(&app, id), None);
+        set_child(&mut app, text, "CHANGED");
+        assert_eq!(live(&app, id).as_deref(), Some("CHANGED"));
+    }
+
+    /// Chrome C7: select-all is no edit.
+    #[test]
+    fn r_select_all_follows_and_keeps_selection() {
+        let (mut app, id, text, _log) = mount_with_change("hello");
+        click_into(&mut app, id);
+        chord(&mut app, KeyCode::KeyA);
+        assert_eq!(value_attr(&app, id), None);
+        set_child(&mut app, text, "CHANGED");
+        assert_eq!(live(&app, id).as_deref(), Some("CHANGED"));
+        // Chrome keeps 0..5; typing replaces "CHANG".
+        press(&mut app, KeyCode::KeyX, Some("X"));
+        assert_eq!(value_attr(&app, id).as_deref(), Some("XED"));
+    }
+
+    /// Chrome C3: type then undo back to the original — frozen.
+    #[test]
+    fn r_type_then_undo_stays_frozen() {
+        let (mut app, id, text, _log) = mount_with_change("hello");
+        click_into(&mut app, id);
+        press(&mut app, KeyCode::End, None);
+        press(&mut app, KeyCode::KeyX, Some("X"));
+        chord(&mut app, KeyCode::KeyZ);
+        assert_eq!(value_attr(&app, id).as_deref(), Some("hello"));
+        set_child(&mut app, text, "CHANGED");
+        assert_eq!(live(&app, id).as_deref(), Some("hello"));
+    }
+
+    /// Chrome C10: a cancelled composition sets the flag (Chrome's `.value`
+    /// held the preedit).
+    #[test]
+    fn r_ime_cancel_then_child_change() {
+        let (mut app, id, text, _log) = mount_with_change("hello");
+        click_into(&mut app, id);
+        ime(&mut app, rinch_platform::ImeEvent::Enabled);
+        preedit(&mut app, "あ");
+        preedit(&mut app, "");
+        set_child(&mut app, text, "CHANGED");
+        assert_eq!(live(&app, id).as_deref(), Some("hello"));
+    }
+
+    /// Chrome C11: a child change during a composition does not reach
+    /// `.value`, during it or after it ends.
+    #[test]
+    fn r_child_change_during_composition() {
+        let (mut app, id, text, _log) = mount_with_change("hello");
+        click_into(&mut app, id);
+        ime(&mut app, rinch_platform::ImeEvent::Enabled);
+        preedit(&mut app, "あ");
+        set_child(&mut app, text, "CHANGED");
+        assert_eq!(live(&app, id).as_deref(), Some("hello"));
+        preedit(&mut app, "");
+        app.resolve_and_repaint(800.0, 600.0);
+        assert_eq!(live(&app, id).as_deref(), Some("hello"));
+    }
+
+    /// An `<input>` with no `value` attribute still gets one at focus.
+    #[test]
+    fn r_input_still_writes_value_at_focus() {
+        let id_cell: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id_in = id_cell.clone();
+        let h = register_input_handler(InputCallback::new(|_v: String| {}));
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let field = scope.create_element("input");
+            field.set_attribute("style", "display: block; width: 200px; height: 30px");
+            field.set_attribute("data-oninput", &h.0.to_string());
+            root.append_child(&field);
+            id_in.set(Some(field.node_id().0));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let id = id_cell.get().unwrap();
+        click_into(&mut app, id);
+        assert_eq!(value_attr(&app, id).as_deref(), Some(""));
+    }
+
+    /// A `value` attribute removed after an edit leaves the field holding its
+    /// text children, as removing the attribute leaves a browser's `.value`
+    /// alone — not "" (review of #1179: the per-frame adoption reads
+    /// `control_value`). Replaces #1179's fixture, which removed the attribute
+    /// focus wrote and removed nothing once focus stopped writing it (#1186).
+    #[test]
+    fn r_value_removed_after_an_edit_falls_back_to_the_child_text() {
+        let (mut app, id, _text, _log) = mount_with_change("hello");
+        click_into(&mut app, id);
+        press(&mut app, KeyCode::End, None);
+        press(&mut app, KeyCode::KeyY, Some("Y"));
+        assert_eq!(value_attr(&app, id).as_deref(), Some("helloY"));
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .remove_attribute(rinch_core::dom::NodeId(id), "value");
+        app.resolve_and_repaint(800.0, 600.0);
+        press(&mut app, KeyCode::End, None);
+        press(&mut app, KeyCode::KeyX, Some("X"));
+        assert_eq!(value_attr(&app, id).as_deref(), Some("helloX"));
+    }
+    /// A child change during a composition must not reach paint while the
+    /// caret attributes still index the engine text (kills M6: drop the
+    /// text compare in `keeps_default`).
+    #[test]
+    fn r_child_change_during_composition_keeps_the_node_coherent() {
+        let (mut app, id, text, _log) = mount_with_change("héllo");
+        click_into(&mut app, id);
+        caret_at(&mut app, 1);
+        ime(&mut app, rinch_platform::ImeEvent::Enabled);
+        preedit(&mut app, "あ");
+        set_child(&mut app, text, "ééé");
+        assert_eq!(live(&app, id).as_deref(), Some("héllo"));
+        app.resolve_and_repaint(800.0, 600.0);
+    }
 }

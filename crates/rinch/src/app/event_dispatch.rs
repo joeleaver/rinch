@@ -3389,6 +3389,11 @@ impl RinchApp {
                 let ended = text.is_empty();
                 self.focused_input_preedit = if ended { None } else { Some((text, cursor)) };
                 self.sync_input_preedit_to_dom(node_id);
+                if !ended {
+                    // A composition changes a browser's `.value` (the preedit
+                    // is in it), so it sets the dirty value flag (#1186).
+                    self.mark_focused_input_edited();
+                }
                 if ended {
                     // An empty preedit *is* the end of the composition on the
                     // winit backends (an IME cancel delivers only this — no
