@@ -626,6 +626,19 @@ pub fn merge_cells() -> Command {
 /// `splitCell` — split the merged cell under the cursor (or a single selected cell)
 /// back into 1×1 cells, filling the freed grid slots with empty cells. No-op on a
 /// 1×1 cell or a multi-cell selection. Port of `splitCell` (plain-cell type).
+///
+/// **Cost** (#1185): two attribute steps plus one insert per row the cell
+/// spans, not one per vacated slot, so a 1000×1000 cell is 1002 steps. The
+/// cells it creates are as many as the slots it vacates, and there is no cap
+/// (PM has none): the slots come from the [`TableMap`], which holds at most
+/// [`tables::grid_slot_budget`] of them, so a split creates at most
+/// `grid_slot_budget` cells: 2^22 (about 4.2 M) for a table of fewer than
+/// 2^21 cells, twice its cell count beyond that. Measured in a release
+/// build: 1000×1000 is 1.0 M cells in 0.23 s and 390 MB peak; a pasted
+/// 1000 × 4000 cell is 4.0 M cells in 1.1 s and 1.6 GB. A tall cell costs more per slot than a wide one, because each
+/// per-row step keeps its own copy of the table's row list: 62 × 16,000 is
+/// 1.0 M cells in 8.1 s and 2.4 GB, which is what `addColumnBefore` on a
+/// 16,000-row table costs too (16,000 steps, 6.4 s, 2.1 GB; #1200).
 pub fn split_cell() -> Command {
     command_tr(|state| {
         // The single target cell: a 1-cell cell selection, or the cell at the cursor.
@@ -652,21 +665,28 @@ pub fn split_cell() -> Command {
             .ok()?;
         tr.set_node_attr(cell_pos, "rowspan", AttrValue::Int(1))
             .ok()?;
-        // Fill the vacated grid slots with empty cells.
+        // Fill the vacated grid slots with empty cells: one insert per row
+        // holding all of that row's new cells (#1185). PM inserts a cell per
+        // slot, each mapped through the steps before it, which is 10^6 steps
+        // for a pasted 1000×1000 cell; the document is the same, since each
+        // of those inserts landed right after the one before it.
+        let width = rect.right - rect.left;
         for row in rect.top..rect.bottom {
             let mut at = info.map.position_at(row, rect.left);
+            let mut count = width;
             if row == rect.top {
                 at += cell_size; // place new cells just after the master
+                count -= 1; // the master itself stays
             }
-            for col in rect.left..rect.right {
-                if row == rect.top && col == rect.left {
-                    continue; // the master itself stays
-                }
-                let mapped = tr.mapping().map(at, 1);
-                let new_cell = make_empty_cell(schema)?;
-                tr.replace_with(mapped, mapped, Fragment::from_node(new_cell))
-                    .ok()?;
+            if count == 0 {
+                continue;
             }
+            let cells = (0..count)
+                .map(|_| make_empty_cell(schema))
+                .collect::<Option<Vec<_>>>()?;
+            let mapped = tr.mapping().map(at, 1);
+            tr.replace_with(mapped, mapped, Fragment::from_children(cells))
+                .ok()?;
         }
         // Collapse the selection into the (now 1×1) master cell.
         let sel = Selection::near(tr.doc(), Pos(cell_pos + 1), 1);
