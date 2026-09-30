@@ -1653,7 +1653,10 @@ programmatically but not tabbable. An HTML integer attribute — `tabindex`,
 parsing integers (`rinch_core::dom::parse_html_integer` /
 `parse_html_non_negative_integer`, #1138/#1153), never by Rust's `parse`:
 `" 3"`, `"2.5"` and `"3abc"` are 3, 2 and 3, and a value past `i32` is an error,
-as in Chrome 153;
+as in Chrome 153 (the editor's HTML import, which depends on no rinch crate,
+reads `<ol start>`, `colspan` and `rowspan` through a private copy,
+`rinch-editor-core/src/serialize/html_integer.rs`, cross-checked against it in a
+test — #1164);
 `disabled` and `data-disabled` are both honoured (issue #315) as **boolean
 attributes**, take no focus by any route, and are re-checked at edit time: a
 field that goes disabled *while focused* stops accepting keys **and releases the
