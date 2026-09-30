@@ -75,7 +75,7 @@ fn make_empty_cell(schema: &Schema) -> Option<Node> {
 
 /// The colspan attribute of `cell`, clamped to ≥1. The document's word, not the
 /// grid's: only [`split_cell`] reads it, to tell a merged cell from a plain one.
-/// Span arithmetic reads [`cell_rect`] instead.
+/// Span arithmetic reads [`TableMap::cell_rect`] instead.
 fn colspan(cell: &Node) -> i64 {
     cell.attrs().get_int("colspan").unwrap_or(1).max(1)
 }
@@ -88,47 +88,6 @@ fn rowspan(cell: &Node) -> i64 {
 /// A grid slot no cell covers (a ragged row's tail, or a row cut by the bounded
 /// grid, #1176): [`TableMap::map`]'s sentinel.
 const HOLE: usize = usize::MAX;
-
-/// The grid rectangle of the cell covering slot `index`: its spans as the
-/// [`TableMap`] resolved them, which is what every span a command writes is
-/// computed from (#1184). The attributes are the document's word and may say
-/// `i64::MAX`; the map cuts a span at the grid's edge, so a rectangle is at most
-/// the grid and `± 1` on its sides cannot overflow. `None` for a hole, which is
-/// no cell.
-///
-/// The walk goes up and then left to the cell's origin, then right and down from
-/// it. On a malformed table whose cells overlap, a cell's slots need not be a
-/// rectangle and the answer is an approximation; callers therefore step past a
-/// cell by at least one slot.
-fn cell_rect(map: &TableMap, index: usize) -> Option<Rect> {
-    let m = map.map();
-    let width = map.width();
-    let pos = *m.get(index)?;
-    if pos == HOLE {
-        return None;
-    }
-    let (mut top, mut left) = (index / width, index % width);
-    while top > 0 && m[(top - 1) * width + left] == pos {
-        top -= 1;
-    }
-    while left > 0 && m[top * width + left - 1] == pos {
-        left -= 1;
-    }
-    let mut right = left + 1;
-    while right < width && m[top * width + right] == pos {
-        right += 1;
-    }
-    let mut bottom = top + 1;
-    while bottom < map.height() && m[bottom * width + left] == pos {
-        bottom += 1;
-    }
-    Some(Rect {
-        left,
-        top,
-        right,
-        bottom,
-    })
-}
 
 /// A grid extent as a span attribute. An extent is at most the grid's width or
 /// height, so it always fits.
@@ -179,7 +138,7 @@ fn add_column(tr: &mut Transaction, info: &TableRect, col: usize, schema: &Schem
         if inside_span {
             // Inside a horizontally-spanning cell → widen it.
             let pos = map.map()[index];
-            let rect = cell_rect(map, index)?;
+            let rect = map.cell_rect(index)?;
             let mapped = tr.mapping().map(pos, 1);
             tr.set_node_attr(mapped, "colspan", span_value(rect.right - rect.left + 1))
                 .ok()?;
@@ -208,7 +167,7 @@ fn remove_column(tr: &mut Transaction, info: &TableRect, col: usize) -> Option<(
         let index = row * width + col;
         let pos = map.map()[index];
         // A hole: this row has nothing in the column.
-        let Some(rect) = cell_rect(map, index) else {
+        let Some(rect) = map.cell_rect(index) else {
             row += 1;
             continue;
         };
@@ -250,7 +209,7 @@ fn add_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schema) 
             && map.map()[index] == map.map()[index - width];
         if from_above {
             let pos = map.map()[index];
-            let rect = cell_rect(map, index)?;
+            let rect = map.cell_rect(index)?;
             tr.set_node_attr(pos, "rowspan", span_value(rect.bottom - rect.top + 1))
                 .ok()?;
             col = rect.right.max(col + 1);
@@ -289,7 +248,7 @@ fn remove_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schem
             continue;
         }
         // A hole: this row has nothing in the column.
-        let Some(rect) = cell_rect(map, index) else {
+        let Some(rect) = map.cell_rect(index) else {
             col += 1;
             continue;
         };

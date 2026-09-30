@@ -204,6 +204,48 @@ impl TableMap {
         None
     }
 
+    /// The grid rectangle of the cell covering slot `index`: its spans as the
+    /// map resolved them, which is what every span a table command writes is
+    /// computed from (#1184) and what the view places a cell by (#1182). The
+    /// attributes are the document's word and may say `i64::MAX`; the map cuts
+    /// a span at the grid's edge, so a rectangle is at most the grid and `± 1`
+    /// on its sides cannot overflow. `None` for a hole or an index past the
+    /// grid, neither of which is a cell.
+    ///
+    /// The walk goes up and then left to the cell's origin, then right and down
+    /// from it. On a malformed table whose cells overlap, a cell's slots need
+    /// not be a rectangle and the answer is an approximation; callers therefore
+    /// step past a cell by at least one slot.
+    pub fn cell_rect(&self, index: usize) -> Option<Rect> {
+        let m = &self.map;
+        let width = self.width;
+        let pos = *m.get(index)?;
+        if pos == UNSET {
+            return None;
+        }
+        let (mut top, mut left) = (index / width, index % width);
+        while top > 0 && m[(top - 1) * width + left] == pos {
+            top -= 1;
+        }
+        while left > 0 && m[top * width + left - 1] == pos {
+            left -= 1;
+        }
+        let mut right = left + 1;
+        while right < width && m[top * width + right] == pos {
+            right += 1;
+        }
+        let mut bottom = top + 1;
+        while bottom < self.height && m[bottom * width + left] == pos {
+            bottom += 1;
+        }
+        Some(Rect {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
     /// The column index of the cell at document position `pos` (its leftmost
     /// column). `None` if no cell starts at `pos`.
     pub fn col_count(&self, pos: usize) -> Option<usize> {
@@ -425,6 +467,61 @@ fn find_width(table: &Node) -> u64 {
         width = width.max(row_width);
     }
     width.max(1)
+}
+
+/// The grid rectangle of every cell of `table`, row by row and cell by cell in
+/// document order: [`TableMap::cell_rect`] at the cell's first slot, or `None`
+/// for a cell the bounded grid has no slot for (one past a capped width, or in
+/// a row that rowspans from above already fill), which no table command treats
+/// as a cell either. What the view places each cell by (#1182), so the grid a
+/// host lays out is the grid the commands edit.
+///
+/// Linear in the map's slots (a binary search per slot run) plus the cells'
+/// extents; the map is bounded by [`grid_slot_budget`].
+pub fn cell_rects(table: &Node) -> Vec<Vec<Option<Rect>>> {
+    // The map's positions are only compared with each other, so any start
+    // does; 0 keeps them clear of the hole sentinel.
+    let map = TableMap::compute(table, 0);
+    let mut starts = Vec::new();
+    let mut pos = 0usize;
+    for r in 0..table.child_count() {
+        let row = table.child(r);
+        pos += 1;
+        for i in 0..row.child_count() {
+            starts.push(pos);
+            pos += row.child(i).node_size();
+        }
+        pos += 1;
+    }
+    // Each cell's first slot in row-major order is its origin.
+    let mut first = vec![UNSET; starts.len()];
+    let mut last = UNSET;
+    for (index, &p) in map.map().iter().enumerate() {
+        if p == UNSET || p == last {
+            continue;
+        }
+        last = p;
+        if let Ok(k) = starts.binary_search(&p)
+            && first[k] == UNSET
+        {
+            first[k] = index;
+        }
+    }
+    let mut k = 0usize;
+    (0..table.child_count())
+        .map(|r| {
+            (0..table.child(r).child_count())
+                .map(|_| {
+                    let rect = match first[k] {
+                        UNSET => None,
+                        index => map.cell_rect(index),
+                    };
+                    k += 1;
+                    rect
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Walk up from `r` to the nearest enclosing `table`, returning the table node and
@@ -1112,5 +1209,68 @@ mod grid_bound_tests {
             assert_eq!(map.width(), old_find_width(&t), "{spec:?}");
             assert_eq!(map.map(), old_map(&t, 1).as_slice(), "grid of {spec:?}");
         }
+    }
+
+    fn rect(left: usize, top: usize, right: usize, bottom: usize) -> Option<Rect> {
+        Some(Rect {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
+    /// `cell_rects` (#1182): each cell's rectangle in document order, a
+    /// rowspan cut at the last row, and `None` for a cell the capped grid has
+    /// no slot for. Off the fixed point: the cut colspan and the cut rowspan
+    /// are different numbers, and the second row's cell starts past column 0.
+    #[test]
+    fn cell_rects_are_the_maps_rectangles_in_document_order() {
+        let s = Schema::starter_kit();
+        let t = spans_table(&s, &[vec![(2, i64::MAX), (1, 1)], vec![(1, 1)]]);
+        assert_eq!(
+            cell_rects(&t),
+            vec![
+                vec![rect(0, 0, 2, 2), rect(2, 0, 3, 1)],
+                vec![rect(2, 1, 3, 2)]
+            ]
+        );
+        let t = spans_table(&s, &[vec![(3_000_000, i64::MAX)], vec![(1, 1), (1, 1)]]);
+        let w = column_count(&t);
+        assert_eq!(w, FLOOR / 2, "control: the grid is capped");
+        assert_eq!(
+            cell_rects(&t),
+            vec![vec![rect(0, 0, w, 2)], vec![None, None]]
+        );
+    }
+
+    /// `TableMap::cell_rect` from any slot of a cell answers the cell's whole
+    /// rectangle: from a slot in a merged cell's second row and second column
+    /// it walks up and left to the origin. Off the fixed point: the cell does
+    /// not start at column 0 or row 0.
+    #[test]
+    fn cell_rect_from_any_slot_walks_to_the_cells_origin() {
+        let s = Schema::starter_kit();
+        let t = spans_table(
+            &s,
+            &[
+                vec![(1, 1), (1, 1), (1, 1)],
+                vec![(1, 1), (2, 2)],
+                vec![(1, 1)],
+            ],
+        );
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.width(), 3, "control");
+        let whole = rect(1, 1, 3, 3);
+        // Slots (row 1, col 1) .. (row 2, col 2) all belong to the merged cell.
+        for (row, col) in [(1, 1), (1, 2), (2, 1), (2, 2)] {
+            assert_eq!(map.cell_rect(row * 3 + col), whole, "slot ({row}, {col})");
+        }
+        assert_eq!(
+            map.cell_rect(2 * 3),
+            rect(0, 2, 1, 3),
+            "control: a plain cell"
+        );
+        assert_eq!(map.cell_rect(9), None, "past the grid");
     }
 }

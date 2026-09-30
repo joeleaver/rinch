@@ -170,6 +170,18 @@ in its rectangle. Every span a command writes is the cell's extent in the grid �
 never the attribute's own value ± 1: a `colspan` of `i64::MAX` in a two-row table,
 which the grid cuts to 2^21 columns, is 2^21 + 1 after `addColumnAfter` across it.
 
+The view lays a table out as that same grid (#1182): `<table>` is a CSS grid of
+`tables::column_count` columns and each cell is placed by its rectangle in the map
+(`tables::cell_rects`), `grid-column: span <width>` / `grid-row: span <height>`, not
+by its raw attributes — so a `rowspan` of `i64::MAX` in a two-row table spans two
+grid rows. A cell the map has no slot for is laid out as a band across the whole grid
+(`grid-column: 1 / -1`) on a row of its own, so its text stays visible and adds no
+column. Written raw, a few cells of huge spans stacked past the 32767 grid lines Taffy
+numbers a grid with, and desktop layout panicked. Two limits remain: the desktop's
+Stylo clamps a grid template and every span to 10000 tracks, so a table wider than
+that is drawn 10000 columns wide; and the cells are *auto-placed*, which can put a
+cell in a different row than the map does when a rowspan leaves a row short (#1209).
+
 ## The transform engine
 
 Every editing operation is a `Transaction` carrying one or more `Step`s. Steps are
