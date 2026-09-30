@@ -878,10 +878,11 @@ impl WebDocument {
     /// text or `<br>` in `block` ([`Self::caret_where_next_starts`]).
     ///
     /// This is the caret the browser gives no rect (#1202): measured in
-    /// Chrome 153, a collapsed range has none exactly when a `"\n"` of
-    /// preserved-newline text follows it, or at the end of a text node ending
-    /// in one — and the range over that `"\n"` does, a zero-width box at its
-    /// start, on the line the caret is on.
+    /// Chrome 153, a collapsed range has none only right before a `"\n"` of
+    /// preserved-newline text or at the end of a text node ending in one
+    /// (not at every such position: `pre`'s `a\n \nb` has one after the
+    /// space, `pre-wrap`'s does not) — and the range over that `"\n"` does,
+    /// a zero-width box at its start, on the line the caret is on.
     fn caret_where_next_starts_at(
         &self,
         text_node: &web_sys::Node,
@@ -892,7 +893,11 @@ impl WebDocument {
         let units: Vec<u16> = text.encode_utf16().collect();
         if let Some(&unit) = units.get(off as usize) {
             // A surrogate pair is one character.
-            let len = if (0xD800..0xDC00).contains(&unit) { 2 } else { 1 };
+            let len = if (0xD800..0xDC00).contains(&unit) {
+                2
+            } else {
+                1
+            };
             return self.char_start_edge(text_node, off, len);
         }
         self.caret_where_next_starts(text_node, block)
