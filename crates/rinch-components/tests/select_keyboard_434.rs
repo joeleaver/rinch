@@ -38,8 +38,10 @@ const HIGHLIGHTED: &str = "rinch-select__option--highlighted";
 
 struct Mounted {
     _doc: Rc<RefCell<MockDomDocument>>,
-    _scope: RenderScope,
+    scope: Option<RenderScope>,
     root: NodeHandle,
+    /// Another focusable field on the page, outside the `Select`.
+    other: NodeHandle,
     picks: Rc<RefCell<Vec<String>>>,
 }
 
@@ -55,6 +57,10 @@ fn fruit() -> Vec<SelectOption> {
 
 impl Mounted {
     fn new(value: &str) -> Self {
+        Self::with(value, fruit())
+    }
+
+    fn with(value: &str, data: Vec<SelectOption>) -> Self {
         let doc = Rc::new(RefCell::new(MockDomDocument::new()));
         let body = doc.borrow().body();
         let mut scope = RenderScope::new(doc.clone(), body);
@@ -62,17 +68,22 @@ impl Mounted {
         let sink = picks.clone();
         let select = Select {
             value: value.to_string(),
-            data: fruit(),
+            data,
             onchange: Some(InputCallback::new(move |v: String| {
                 sink.borrow_mut().push(v)
             })),
             ..Default::default()
         };
         let root = select.render(&mut scope, &[]);
+        let body_handle = scope.parent();
+        body_handle.append_child(&root);
+        let other = scope.create_element("input");
+        body_handle.append_child(&other);
         Self {
             _doc: doc,
-            _scope: scope,
+            scope: Some(scope),
             root,
+            other,
             picks,
         }
     }
@@ -91,9 +102,10 @@ impl Mounted {
         self.trigger().get_attribute("aria-expanded").as_deref() == Some("true")
     }
 
-    /// Open it the way both backends do: the trigger's `data-rid` (a click, or
-    /// Enter/Space on the focused trigger).
+    /// Open it the way both backends do: the trigger takes the focus (a click
+    /// on it, or Tab), then its `data-rid` runs (the click, or Enter/Space).
     fn open(&self) {
+        self.trigger().focus();
         rinch_core::events::dispatch_event(handler(&self.root, TRIGGER, "data-rid"));
         assert!(self.is_open(), "precondition: the trigger opened the list");
     }
@@ -365,5 +377,100 @@ fn tab_closes_and_passes_on_and_space_commits() {
     assert_eq!(
         *m.picks.borrow(),
         vec!["cherry".to_string(), "blueberry".to_string()]
+    );
+}
+
+// ------------------------------------------------ review of PR #1165
+
+/// Focus moved to another field while the list is open (a "/" shortcut, a
+/// script): the keys typed there are that field's. At the PR's first head the
+/// list took every key in the document, so Enter in the other field committed
+/// the `Select`.
+#[test]
+fn keys_typed_into_another_focused_field_are_not_the_lists() {
+    let m = Mounted::new("banana");
+    m.open();
+    m.other.focus();
+    for key in ["d", "ArrowDown", "Enter", " "] {
+        assert!(!m.press(key), "{key:?} typed into another field was taken");
+    }
+    assert!(m.picks.borrow().is_empty(), "nothing was committed");
+}
+
+/// Focus leaving the `Select` closes the list, as it closes a native
+/// `<select>`'s popup — through `notify_focus_moved`, which each backend
+/// calls after a focus move (the desktop and Chrome twins drive the real one).
+#[test]
+fn focus_leaving_the_select_closes_the_list() {
+    let m = Mounted::new("banana");
+    m.open();
+    let key = m.root.doc_key();
+    rinch_core::notify_focus_moved(key);
+    assert!(
+        m.is_open(),
+        "focus still on the trigger: the list stays open"
+    );
+    m.other.focus();
+    rinch_core::notify_focus_moved(key);
+    assert!(!m.is_open(), "focus left: the list closes");
+    assert!(m.picks.borrow().is_empty(), "without committing");
+}
+
+/// A letter repeated steps to the next option starting with it — the native
+/// popup's rule — rather than searching for the two-letter prefix "bb".
+#[test]
+fn a_repeated_letter_cycles_through_its_options() {
+    let m = Mounted::new("apple");
+    m.open();
+    m.press("b");
+    assert_eq!(m.highlighted(), Some(1), "b → Banana");
+    m.press("b");
+    assert_eq!(
+        m.highlighted(),
+        Some(3),
+        "bb → the next b option, Blueberry"
+    );
+}
+
+/// A space typed while a type-ahead prefix is live extends it ("new y"), as
+/// in a native `<select>`; it does not commit.
+#[test]
+fn a_space_inside_a_typeahead_prefix_extends_it() {
+    let m = Mounted::with(
+        "",
+        vec![
+            SelectOption::new("nj", "New Jersey"),
+            SelectOption::new("nm", "New Mexico"),
+            SelectOption::new("ny", "New York"),
+        ],
+    );
+    m.open();
+    for key in ["n", "e", "w", " ", "y"] {
+        assert!(m.press(key), "{key:?} is consumed");
+    }
+    assert!(m.is_open(), "the space did not commit");
+    assert!(m.picks.borrow().is_empty());
+    assert_eq!(m.highlighted(), Some(2), "new y → New York");
+    assert!(m.press("Enter"));
+    assert_eq!(*m.picks.borrow(), vec!["ny".to_string()]);
+}
+
+/// Unmounting while open releases both stack entries at once, not at the next
+/// scan that happens to find their owner dead.
+#[test]
+fn unmounting_while_open_releases_the_stack_entries() {
+    let before = rinch_core::events::dismiss_handler_count();
+    let mut m = Mounted::new("banana");
+    m.open();
+    assert_eq!(
+        rinch_core::events::dismiss_handler_count(),
+        before + 2,
+        "precondition: the open list holds a key entry and an Escape entry"
+    );
+    m.scope.take().unwrap().dispose();
+    assert_eq!(
+        rinch_core::events::dismiss_handler_count(),
+        before,
+        "both released by the unmount itself"
     );
 }

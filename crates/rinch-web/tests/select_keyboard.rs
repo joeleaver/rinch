@@ -201,3 +201,51 @@ fn escape_closes_without_committing_in_chrome() {
         "a closed Select must leave ArrowDown to the browser"
     );
 }
+
+// ------------------------------------------------ review of PR #1165
+
+/// A page `<input>` outside the rinch mount is focused while the list is open:
+/// its keys are its own (not `preventDefault`ed, nothing committed), and focus
+/// leaving the `Select` closes the list. At the PR's first head the input's
+/// "d", ArrowDown and Enter were all prevented and Enter committed the Select.
+#[wasm_bindgen_test]
+fn keys_typed_into_a_page_input_outside_the_mount_reach_it_in_chrome() {
+    let (doc, picks) = mount("banana");
+    let trigger = open(&doc);
+    let input: web_sys::HtmlInputElement = doc.create_element("input").unwrap().dyn_into().unwrap();
+    input.set_attribute(HOST_ATTR, "true").unwrap();
+    doc.body().unwrap().append_child(&input).unwrap();
+    input.focus().unwrap();
+    assert_eq!(
+        doc.active_element().as_ref(),
+        Some(input.as_ref() as &web_sys::Element),
+        "precondition: the page input holds focus"
+    );
+    assert!(
+        !is_open(&trigger),
+        "focus leaving the Select closes its list"
+    );
+    for key in ["d", "ArrowDown", "Enter", " "] {
+        let ev = keydown(&input, key);
+        assert!(
+            !ev.default_prevented(),
+            "{key:?} typed into the page input was prevented by the Select"
+        );
+    }
+    assert!(picks.borrow().is_empty(), "nothing was committed");
+}
+
+/// Focus going nowhere (a click on the page background: `blur()`) closes the
+/// list too.
+#[wasm_bindgen_test]
+fn a_blur_closes_the_list_in_chrome() {
+    let (doc, picks) = mount("banana");
+    let trigger = open(&doc);
+    trigger
+        .dyn_ref::<web_sys::HtmlElement>()
+        .unwrap()
+        .blur()
+        .unwrap();
+    assert!(!is_open(&trigger), "the list closes when the trigger blurs");
+    assert!(picks.borrow().is_empty());
+}

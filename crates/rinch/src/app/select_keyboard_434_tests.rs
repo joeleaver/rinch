@@ -257,3 +257,151 @@ fn a_tapped_option_leaves_the_trigger_holding_the_keyboard() {
     assert!(f.is_open(), "so Enter reopens it");
     assert_eq!(f.highlighted(), Some(2));
 }
+
+// ------------------------------------------------ review of PR #1165
+
+/// "/" focuses a search field (an app interceptor) while the list is open.
+/// The letters typed next are the field's; the list closes once the focus has
+/// left it; Enter in the field commits nothing to the `Select`. At the PR's
+/// first head the letters were eaten, the list stayed open, and Enter
+/// committed `date`.
+#[test]
+fn a_field_focused_while_the_list_is_open_keeps_its_own_keys() {
+    let picks = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = picks.clone();
+    let typed = Rc::new(RefCell::new(Vec::<String>::new()));
+    let input_id = rinch_core::register_input_handler(InputCallback::new({
+        let t = typed.clone();
+        move |v: String| t.borrow_mut().push(v)
+    }));
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "padding: 40px; width: 240px");
+        let select = Select {
+            value: "banana".into(),
+            data: vec![
+                SelectOption::new("apple", "Apple"),
+                SelectOption::new("banana", "Banana"),
+                SelectOption::new("cherry", "Cherry"),
+                SelectOption::new("date", "Date"),
+            ],
+            onchange: Some(InputCallback::new({
+                let s = sink.clone();
+                move |v: String| s.borrow_mut().push(v)
+            })),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        root.append_child(&select);
+        let input = scope.create_element("input");
+        input.set_attribute("class", "search");
+        input.set_attribute("data-oninput", &input_id.0.to_string());
+        root.append_child(&input);
+        let inp = input.clone();
+        rinch_core::set_keyboard_interceptor(move |k| {
+            if k.is_down() && k.key == "/" {
+                inp.focus();
+                return true;
+            }
+            false
+        });
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(&rinch_theme::generate_theme_css(
+            &rinch_theme::Theme::default(),
+        ));
+        d.load_css(&rinch_components::generate_component_css());
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let mut f = Fixture {
+        app,
+        picks: picks.clone(),
+    };
+    let trigger = f.trigger();
+    f.tap(trigger);
+    assert!(f.is_open(), "precondition: open");
+
+    f.key(KeyCode::Other, Some("/"));
+    // The shell's wake after a handler: the focus request is applied then.
+    f.app.handle_event(
+        PlatformEvent::UserEvent(UserEvent::ReRender),
+        (800, 600),
+        1.0,
+    );
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let input = find_all(&f.app, "search")[0];
+    assert_eq!(
+        f.app.focus_target,
+        FocusTarget::Input(input),
+        "precondition: the shortcut moved focus to the field"
+    );
+    assert!(!f.is_open(), "focus leaving the Select closes its list");
+
+    f.key(KeyCode::KeyD, Some("d"));
+    f.key(KeyCode::KeyA, Some("a"));
+    assert_eq!(
+        typed.borrow().last().map(String::as_str),
+        Some("da"),
+        "the letters reached the focused field"
+    );
+    f.key(KeyCode::Enter, None);
+    assert!(
+        picks.borrow().is_empty(),
+        "Enter in the field commits nothing"
+    );
+}
+
+/// The highlighted option is scrolled into view in a list taller than its
+/// `max-height` (200px): End scrolls the list to its bottom.
+#[test]
+fn end_scrolls_the_highlighted_option_into_view() {
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "padding: 40px; width: 240px");
+        let select = Select {
+            value: "o0".into(),
+            data: (0..30)
+                .map(|i| SelectOption::new(format!("o{i}"), format!("Option {i}")))
+                .collect(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        root.append_child(&select);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(&rinch_theme::generate_theme_css(
+            &rinch_theme::Theme::default(),
+        ));
+        d.load_css(&rinch_components::generate_component_css());
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let mut f = Fixture {
+        app,
+        picks: Rc::new(RefCell::new(Vec::new())),
+    };
+    f.open_by_keyboard();
+    let list = find_all(&f.app, "rinch-select__dropdown")[0];
+    let scroll = |f: &Fixture| {
+        let doc = f.app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree.get(list).unwrap().scroll_offset.1
+    };
+    assert_eq!(scroll(&f), 0.0, "precondition: the list opens at its top");
+    f.key(KeyCode::End, None);
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(f.highlighted(), Some(29));
+    assert!(
+        scroll(&f) > 0.0,
+        "End must scroll the list to show the last option"
+    );
+}
