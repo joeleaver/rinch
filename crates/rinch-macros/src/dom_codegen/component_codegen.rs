@@ -14,14 +14,13 @@ use crate::helpers::{
 };
 use crate::prop::RsxProp;
 
-use super::DomCodegenContext;
 use super::captures::{
-    collect_body_captures, collect_capture_idents, contested_names, is_move_closure, shadow_clones,
-    wrap_site,
+    collect_body_captures, collect_capture_idents, is_move_closure, shadow_clones, wrap_site,
 };
 use super::html::{
     generate_attr_code, generate_class_code, generate_shorthand_code, generate_style_code,
 };
+use super::{DomCodegenContext, no_siblings};
 
 /// Whether a prop written on a component is an attribute for the component's
 /// **root DOM element** rather than a field of its struct (issue #433).
@@ -409,20 +408,25 @@ pub fn element_to_dom_component_reactive(
 /// fresh effects, and with them a fresh reactive `style:` / `class:` memory
 /// (#647, #717), since nothing of the caller's is on a root built a moment ago.
 ///
-/// The user's expression is **not** rebuilt per render. It is wrapped once, at
-/// the component site, in an `Rc<dyn Fn() -> String>` (a "binding fn") that the
-/// render closure moves in and each render's effect shares by `Rc::clone`. So a
-/// binding captures what it names exactly once, as it did when it was evaluated
-/// inside the render closure on main: a borrow of a non-`Clone` value still
-/// compiles, and state a binding keeps in a captured cell lives as long as the
-/// site rather than one render. A `move` closure keeps its per-fire shadow
-/// clones (`#fire`), since the binding fn is an `Fn` that rebuilds it on every
-/// call. A name the binding fn and the render closure (a struct prop, a child)
-/// **both** capture is moved into two closures, so it is shadow-cloned — the
-/// one case that asks for `Clone`.
+/// The user's expressions are **not** rebuilt per render, and they are not
+/// split off into closures of their own either: that captured a name a struct
+/// prop (or a child) and a binding both named twice, which needs `Clone` — and
+/// an analysis that cannot see inside `format!` could not even tell. Instead the
+/// whole site is **one** `move` closure, a site bundle
+/// (`rinch::core::dom::SiteFn`), that renders the component on
+/// `SiteCall::Render` and evaluates binding `N` on `SiteCall::Binding(N)`; the
+/// render closure handed to `reactive_component_dom` and every binding effect
+/// hold it by `Rc`. So everything the caller's tokens name is captured exactly
+/// once, as when the bindings were evaluated inside the render closure: a borrow
+/// of a non-`Clone` value compiles, and state a binding keeps in a captured cell
+/// lives as long as the site. A `move` binding closure keeps its per-call shadow
+/// clones (`#fire`), since the bundle is an `Fn` that rebuilds it on every call.
+/// A site with no reactive binding keeps the plain render closure.
 struct RootBindings {
-    /// `(var, user expression evaluated to a String, captures)` per binding fn.
-    fns: Vec<(syn::Ident, TokenStream2, Vec<syn::Ident>)>,
+    /// Binding `N`'s user expression, evaluated to a `String`.
+    evals: Vec<TokenStream2>,
+    /// The name the render arm binds the bundle to (`&Rc<SiteFn>`).
+    site_self: syn::Ident,
     /// What the render closure runs after `Component::render`.
     per_render: TokenStream2,
 }
@@ -436,40 +440,40 @@ impl RootBindings {
         shorthand_props: &[&RsxProp],
         result_var: &syn::Ident,
     ) -> Self {
-        let mut fns = Vec::new();
+        let mut evals = Vec::new();
         let mut code = Vec::new();
+        let site_self = ctx.next_var("site_self");
 
         // A binding fn for a reactive value (a closure or a non-literal
         // expression); `None` for a literal, which is written once inline.
-        let mut binding_fn = |ctx: &mut DomCodegenContext, value: &syn::Expr| {
+        let mut binding_fn = |value: &syn::Expr| {
             if is_literal_expr(value) {
                 return None;
             }
-            let var = ctx.next_var("binding_fn");
-            let (eval, caps) = if let Some(closure) = get_closure_expr(value) {
-                let caps = collect_capture_idents(closure);
+            let eval = if let Some(closure) = get_closure_expr(value) {
                 let fire = if is_move_closure(closure) {
-                    shadow_clones(caps.iter())
+                    shadow_clones(collect_capture_idents(closure).iter())
                 } else {
                     quote! {}
                 };
-                (
-                    quote! { { #fire ::std::string::ToString::to_string(&(#closure)()) } },
-                    caps,
-                )
+                quote! { { #fire ::std::string::ToString::to_string(&(#closure)()) } }
             } else {
-                (
-                    quote! { ::std::string::ToString::to_string(&(#value)) },
-                    collect_capture_idents(value),
-                )
+                quote! { ::std::string::ToString::to_string(&(#value)) }
             };
-            fns.push((var.clone(), eval, caps));
-            Some(var)
+            let index = proc_macro2::Literal::u32_unsuffixed(evals.len() as u32);
+            evals.push(eval);
+            // A closure over the bundle that evaluates this binding.
+            Some(quote! {
+                {
+                    let __s = ::std::rc::Rc::clone(#site_self);
+                    move || (__s)(rinch::core::dom::SiteCall::Binding(#index)).into_string()
+                }
+            })
         };
 
         for prop in attr_props {
             let name = prop.name.to_string();
-            match binding_fn(ctx, &prop.value) {
+            match binding_fn(&prop.value) {
                 None => {
                     let v = crate::helpers::expr_to_string(&prop.value);
                     code.push(quote! { #result_var.write_attribute(#name, #v); });
@@ -477,7 +481,7 @@ impl RootBindings {
                 Some(f) => code.push(quote! {
                     {
                         let __h = #result_var.clone();
-                        let __f = ::std::rc::Rc::clone(&#f);
+                        let __f = #f;
                         __scope.create_effect(move || {
                             __h.write_attribute(#name, &__f());
                         });
@@ -487,7 +491,7 @@ impl RootBindings {
         }
 
         if let Some(prop) = style_prop {
-            match binding_fn(ctx, &prop.value) {
+            match binding_fn(&prop.value) {
                 None => {
                     let v = crate::helpers::expr_to_string(&prop.value);
                     code.push(quote! { #result_var.merge_style(#v); });
@@ -495,7 +499,7 @@ impl RootBindings {
                 Some(f) => code.push(quote! {
                     {
                         let __h = #result_var.clone();
-                        let __f = ::std::rc::Rc::clone(&#f);
+                        let __f = #f;
                         let mut __sp = rinch::core::StyleProp::default();
                         __scope.create_effect(move || {
                             __sp.apply(&__h, &__f());
@@ -506,7 +510,7 @@ impl RootBindings {
         }
 
         if let Some(prop) = class_prop {
-            match binding_fn(ctx, &prop.value) {
+            match binding_fn(&prop.value) {
                 None => {
                     let v = crate::helpers::expr_to_string(&prop.value);
                     code.push(quote! { #result_var.add_class(#v); });
@@ -514,7 +518,7 @@ impl RootBindings {
                 Some(f) => code.push(quote! {
                     {
                         let __h = #result_var.clone();
-                        let __f = ::std::rc::Rc::clone(&#f);
+                        let __f = #f;
                         let __prev = ::std::cell::RefCell::new(String::new());
                         __scope.create_effect(move || {
                             let __old = __prev.borrow().clone();
@@ -544,12 +548,12 @@ impl RootBindings {
                 }
                 continue;
             }
-            let f = binding_fn(ctx, value).expect("a closure is not a literal");
+            let f = binding_fn(value).expect("a closure is not a literal");
             for css_prop in css_props {
                 code.push(quote! {
                     {
                         let __h = #result_var.clone();
-                        let __f = ::std::rc::Rc::clone(&#f);
+                        let __f = #f;
                         __scope.create_effect(move || {
                             let __resolved = rinch::core::resolve_spacing(&__f());
                             __h.set_style(#css_prop, &__resolved);
@@ -560,33 +564,60 @@ impl RootBindings {
         }
 
         Self {
-            fns,
+            evals,
+            site_self,
             per_render: quote! { #(#code)* },
         }
     }
 
-    /// The binding-fn `let`s to emit at the component site, and the render
-    /// closure over `body`, each with the shadow clones it needs: a name two of
-    /// these closures capture ([`contested_names`]), or one captured from
-    /// outside a repeatable body the site sits in.
+    /// What to emit at the component site before `reactive_component_dom`,
+    /// and the render closure to hand it: the plain render closure over `body`
+    /// when there is no reactive binding, else a site bundle and a render
+    /// closure calling it.
     fn finish(self, ctx: &DomCodegenContext, body: &TokenStream2) -> (TokenStream2, TokenStream2) {
-        let body_caps = collect_body_captures(body);
-        let mut sites: Vec<&[syn::Ident]> = vec![&body_caps];
-        sites.extend(self.fns.iter().map(|(_, _, caps)| caps.as_slice()));
-        let shared = contested_names(&sites);
-
-        let lets: Vec<TokenStream2> = self
-            .fns
-            .iter()
-            .map(|(var, eval, caps)| {
-                let shadows = ctx.site_shadows(caps, &shared);
-                let rc = wrap_site(&shadows, quote! { ::std::rc::Rc::new(move || #eval) });
-                quote! { let #var: ::std::rc::Rc<dyn Fn() -> String> = #rc; }
-            })
-            .collect();
-        let shadows = ctx.site_shadows(&body_caps, &shared);
-        let render = wrap_site(&shadows, quote! { move |__child_scope| { #body } });
-        (quote! { #(#lets)* }, render)
+        if self.evals.is_empty() {
+            let shadows = ctx.site_shadows(&collect_body_captures(body), &no_siblings());
+            let render = wrap_site(&shadows, quote! { move |__child_scope| { #body } });
+            return (quote! {}, render);
+        }
+        let site_self = &self.site_self;
+        let arms = self.evals.iter().enumerate().map(|(i, eval)| {
+            let index = proc_macro2::Literal::u32_unsuffixed(i as u32);
+            quote! {
+                rinch::core::dom::SiteCall::Binding(#index) => rinch::core::dom::SiteOut::Str(#eval),
+            }
+        });
+        let site_body = quote! {
+            match __call {
+                rinch::core::dom::SiteCall::Render(__child_scope, #site_self) => {
+                    rinch::core::dom::SiteOut::Node({ #body })
+                }
+                #(#arms)*
+                rinch::core::dom::SiteCall::Binding(_) => {
+                    ::std::unreachable!("no such root binding")
+                }
+            }
+        };
+        let shadows = ctx.site_shadows(&collect_body_captures(&site_body), &no_siblings());
+        let bundle = wrap_site(
+            &shadows,
+            quote! {
+                ::std::rc::Rc::new(
+                    move |__call: rinch::core::dom::SiteCall<'_>| -> rinch::core::dom::SiteOut {
+                        #site_body
+                    },
+                )
+            },
+        );
+        let lets = quote! {
+            let __site: ::std::rc::Rc<rinch::core::dom::SiteFn> = #bundle;
+        };
+        let render = quote! {
+            move |__child_scope: &mut rinch::core::RenderScope| {
+                (__site)(rinch::core::dom::SiteCall::Render(__child_scope, &__site)).into_node()
+            }
+        };
+        (lets, render)
     }
 }
 
