@@ -2121,6 +2121,23 @@ mod tests {
         );
     }
 
+    /// Bare rows written before an explicit `<tbody>` are their own group, and
+    /// keep their place: the group is closed where the wrapper opens.
+    #[test]
+    fn bare_rows_before_a_tbody_are_a_group_of_their_own() {
+        let html = "<table>\
+                    <tr><td rowspan=\"0\"><p>a</p></td></tr>\
+                    <tr><td><p>b</p></td></tr>\
+                    <tbody><tr><td><p>c</p></td></tr></tbody>\
+                    </table>";
+        assert_eq!(imported_rowspans(html), vec![vec![2], vec![1], vec![1]]);
+        assert_eq!(
+            reserialize_via_slice(&s(), html),
+            "<table><tr><td rowspan=\"2\"><p>a</p></td></tr>\
+             <tr><td><p>b</p></td></tr><tr><td><p>c</p></td></tr></table>"
+        );
+    }
+
     /// A run of bare `<tr>`s is one row group (the HTML parser wraps it in an
     /// implicit `<tbody>`), and one that follows an explicit group starts a new
     /// one. A `rowspan="0"` in a group's last row spans that row alone.
