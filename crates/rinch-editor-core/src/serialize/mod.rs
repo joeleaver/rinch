@@ -14,6 +14,7 @@
 #[cfg(feature = "serde")]
 pub mod doc_json;
 pub mod html;
+mod html_integer;
 #[cfg(feature = "markdown")]
 pub mod markdown;
 pub mod text;
