@@ -297,3 +297,206 @@ fn a_size_cols_or_font_change_after_layout_resizes_the_control() {
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(width(&doc, ta), 220.0, "cols removed: the default again");
 }
+
+// ── Which average, from which face (review of #1196) ───────────────────────
+//
+// The faces below are the bundled Inter with its OS/2 `xAvgCharWidth`
+// rewritten (the same edit, made with fontTools, was measured in Chrome 153
+// through `@font-face`; its `0` stays 1292 units).
+
+fn be16(b: &[u8], at: usize) -> u16 {
+    u16::from_be_bytes([b[at], b[at + 1]])
+}
+
+fn be32(b: &[u8], at: usize) -> u32 {
+    u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+}
+
+/// Inter with its `xAvgCharWidth` set to `avg` font units (of 2048).
+fn inter_with_avg(avg: u16) -> Vec<u8> {
+    let mut f = FACE.to_vec();
+    let n = be16(&f, 4) as usize;
+    let os2 = (0..n)
+        .map(|i| 12 + 16 * i)
+        .find(|&rec| &f[rec..rec + 4] == b"OS/2")
+        .map(|rec| be32(&f, rec + 8) as usize)
+        .expect("Inter has an OS/2 table");
+    f[os2 + 2..os2 + 4].copy_from_slice(&avg.to_be_bytes());
+    f
+}
+
+fn register_as(
+    doc: &mut RinchDocument,
+    data: Vec<u8>,
+    family: &str,
+    weight: Option<f32>,
+    italic: bool,
+) {
+    use parley::fontique::{Blob, FontInfoOverride, FontStyle, FontWeight};
+    let registered = doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(data)),
+        Some(FontInfoOverride {
+            family_name: Some(family),
+            weight: weight.map(FontWeight::new),
+            style: italic.then_some(FontStyle::Italic),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(registered.len(), 1);
+}
+
+/// One control of `tag` in `css`, in a document holding whatever `setup`
+/// registers.
+fn w_in(
+    setup: impl FnOnce(&mut RinchDocument),
+    tag: &str,
+    attrs: &[(&str, &str)],
+    css: &str,
+) -> f32 {
+    let mut doc = document();
+    setup(&mut doc);
+    let body = doc.body();
+    let div = el(&mut doc, body, "div", "width: 600px");
+    let c = doc.create_element(tag);
+    for (k, v) in attrs {
+        doc.set_attribute(c, k, v);
+    }
+    doc.set_attribute(
+        c,
+        "style",
+        &format!("{css}; line-height: 20px; padding: 0; border: 0"),
+    );
+    doc.append_child(div, c);
+    doc.resolve_layout(800.0, 600.0);
+    width(&doc, c)
+}
+
+/// Chrome does not trust an `xAvgCharWidth` more than 1.7 times the face's
+/// `0` — the shape of a CJK face, whose average is its full-width ideograph
+/// (Noto Sans CJK: 979 against a `0` of 555, and a 16px input 178px wide in
+/// Chrome 153, which the OS/2 value would make 367). It then sizes the control
+/// from the `0` advance alone: `ceil(zero × size)`, no extent term, and no
+/// rounding of the average. Measured on this Inter at 2190 units (1.695 × its
+/// `0`: trusted) and 2200 (1.703: not), and on Noto Sans CJK at 942 and 944 —
+/// the same cut.
+#[test]
+fn an_average_wider_than_1_7_zeros_is_replaced_by_the_zero() {
+    let wide = |d: &mut RinchDocument| register_as(d, inter_with_avg(2200), "Wide", None, false);
+    // 20 × 10.09375 = 201.875; the textarea adds its 15.
+    assert_eq!(w_in(wide, "input", &[], "font: 16px Wide"), 202.0);
+    assert_eq!(
+        w_in(wide, "input", &[("size", "5")], "font: 16px Wide"),
+        51.0
+    );
+    assert_eq!(w_in(wide, "textarea", &[], "font: 16px Wide"), 217.0);
+    assert_eq!(
+        w_in(wide, "textarea", &[("cols", "5")], "font: 16px Wide"),
+        66.0
+    );
+    // At 20px the `0` is 12.617: 253, where rounding it as the OS/2 average
+    // is rounded would give 260. Chrome 153: 253, 64, 268.
+    assert_eq!(w_in(wide, "input", &[], "font: 20px Wide"), 253.0);
+    assert_eq!(
+        w_in(wide, "input", &[("size", "5")], "font: 20px Wide"),
+        64.0
+    );
+    assert_eq!(w_in(wide, "textarea", &[], "font: 20px Wide"), 268.0);
+
+    // Just under the cut the OS/2 average stands. Chrome 153: 379 and 358.
+    let edge = |d: &mut RinchDocument| register_as(d, inter_with_avg(2190), "Edge", None, false);
+    assert_eq!(w_in(edge, "input", &[], "font: 16px Edge"), 379.0);
+    assert_eq!(w_in(edge, "textarea", &[], "font: 16px Edge"), 358.0);
+}
+
+/// The face is the one the control's weight and style select. `ProbeFace`
+/// gets a 700 face whose average is 2150 units and an italic one at 2100.
+/// Chrome 153, the same three faces under one `@font-face` family: 248 / 220
+/// regular, 376 / 355 bold, 365 / 344 italic.
+#[test]
+fn the_weight_and_style_pick_the_face_the_average_is_read_from() {
+    let faces = |d: &mut RinchDocument| {
+        register_as(d, inter_with_avg(2150), "ProbeFace", Some(700.0), false);
+        register_as(d, inter_with_avg(2100), "ProbeFace", None, true);
+    };
+    assert_eq!(w_in(faces, "input", &[], "font: 16px ProbeFace"), 248.0);
+    assert_eq!(
+        w_in(faces, "input", &[], "font: bold 16px ProbeFace"),
+        376.0
+    );
+    assert_eq!(
+        w_in(faces, "textarea", &[], "font: bold 16px ProbeFace"),
+        355.0
+    );
+    assert_eq!(
+        w_in(faces, "input", &[], "font: italic 16px ProbeFace"),
+        365.0
+    );
+    assert_eq!(
+        w_in(faces, "textarea", &[], "font: italic 16px ProbeFace"),
+        344.0
+    );
+}
+
+/// A style change after layout finds the italic face again: the metrics cached
+/// on the node are keyed on the style as well as the family and weight.
+#[test]
+fn a_style_change_after_layout_rereads_the_face() {
+    let mut doc = document();
+    register_as(&mut doc, inter_with_avg(2100), "ProbeFace", None, true);
+    let body = doc.body();
+    let div = el(&mut doc, body, "div", "width: 600px");
+    let c = el(&mut doc, div, "input", &bare(16.0));
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, c), 248.0);
+    doc.set_style(c, "font-style", "italic");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, c), 365.0, "Chrome 153: 365");
+}
+
+/// A family that is not installed measures the face the stack falls back to
+/// for text, not the one fontique picks for a lone digit (a colour-emoji face,
+/// on a host that has one, whose average is 1.25 em). So it is exactly as wide
+/// as the fallback it renders in, named or not.
+#[test]
+fn a_missing_family_measures_the_face_its_text_falls_back_to() {
+    let missing = w_in(|_| {}, "input", &[], "font: 16px NoSuchFamily1196");
+    let fallback = w_in(|_| {}, "input", &[], "font: 16px sans-serif");
+    assert!(missing > 0.0);
+    assert_eq!(missing, fallback);
+}
+
+/// Chrome's width is capped at `LayoutUnit`'s maximum: `size="2147483647"` is
+/// 33554432 in Chrome 153.
+#[test]
+fn a_huge_size_is_capped_where_chrome_caps_it() {
+    assert_eq!(
+        w("input", 16.0, &[("size", "2147483647")], ""),
+        33_554_432.0
+    );
+}
+
+/// A face registered after the control was sized is the face it is then sized
+/// from (`RinchDocument::note_fonts_registered`, which `RinchApp::register_app_font`
+/// calls for a live document): as wide as in a document that had the face
+/// from the start.
+#[test]
+fn a_face_registered_after_layout_resizes_the_control() {
+    let css = "font: 16px/20px LateFace, sans-serif; padding: 0; border: 0";
+    let fresh = {
+        let mut doc = RinchDocument::new();
+        register_as(&mut doc, FACE.to_vec(), "LateFace", None, false);
+        let body = doc.body();
+        let c = el(&mut doc, body, "input", css);
+        doc.resolve_layout(800.0, 600.0);
+        width(&doc, c)
+    };
+    assert_eq!(fresh, 248.0);
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(&mut doc, body, "input", css);
+    doc.resolve_layout(800.0, 600.0);
+    register_as(&mut doc, FACE.to_vec(), "LateFace", None, false);
+    doc.note_fonts_registered();
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, c), fresh);
+}

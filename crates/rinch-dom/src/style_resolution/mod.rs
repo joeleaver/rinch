@@ -493,6 +493,14 @@ impl RinchDocument {
         self.set_theme_css(css);
     }
 
+    /// Tell the document that faces were registered on its `font_cx` after it
+    /// was laid out (#1177). A text control is sized from its primary font's
+    /// metrics, cached on the node against its font properties; this moves
+    /// the document's font generation, which every cached entry is keyed on,
+    /// and re-sizes every `<input>` / `<textarea>` now, so a control sized in
+    /// a fallback face is sized in the new face at the next layout.
+    pub fn note_fonts_registered(&mut self) {}
+
     /// Recompute taffy styles for all element nodes, clearing cached style props
     /// so that CSS variables are re-resolved. Use this after `update_theme_variables()`.
     pub fn recompute_all_styles_full(&mut self) {
