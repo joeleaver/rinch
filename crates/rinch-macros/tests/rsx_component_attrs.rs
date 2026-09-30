@@ -347,3 +347,29 @@ fn a_group_carries_data_nofocus_on_its_root() {
         Some("toolbar")
     );
 }
+
+// ── 6. a `move` closure capturing a non-Copy value on the re-render path ────
+
+#[component]
+fn move_capture(label: Signal<String>, name: String) -> NodeHandle {
+    rsx! {
+        div {
+            Tagged { label: {move || label.get()}, data-name: {move || name.clone()} }
+        }
+    }
+}
+
+/// The re-render closure rebuilds the attribute closure on every render, so a
+/// `move` closure capturing a `String` must be handed a fresh clone each time
+/// (the `#fire` shadow clones, issue #223). Without them this does not compile
+/// (E0507). Found by the review of PR #1188.
+#[test]
+fn a_move_closure_capturing_a_string_survives_re_renders() {
+    let label = Signal::new("one".to_string());
+    let (_doc, _scope, root) = mount(|s| move_capture(s, label, "nm".to_string()));
+    label.set("two".to_string());
+    label.set("three".to_string());
+    let tagged = find_tagged(&root).expect("rendered");
+    assert_eq!(tagged.get_attribute("aria-label").as_deref(), Some("three"));
+    assert_eq!(tagged.get_attribute("data-name").as_deref(), Some("nm"));
+}

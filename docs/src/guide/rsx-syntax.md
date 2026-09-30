@@ -515,14 +515,18 @@ rules are the HTML element's rules:
   ([Boolean attributes](#boolean-attributes)). Any other attribute is written as
   the string.
 - A **reactive** value, `data-state: {|| state.get()}`, is an effect on the root
-  that rewrites the attribute when its signals change. It does not re-render
-  the component. When the component re-renders for another reason (a reactive
+  that rewrites the attribute when its signals change. On a component that has
+  no reactive struct prop it re-renders nothing. On one that re-renders for a
+  reactive struct prop, the attribute is re-evaluated inside that re-render, so
+  a change to its signals also rebuilds the component. When the component re-renders for another reason (a reactive
   struct prop), every attribute is written again on its new root.
 - **The caller writes last.** An attribute the component also writes on its own
   root takes the caller's value at mount, and a falsey boolean removes the
   component's. After that the last write wins: a component effect that later
   writes the same attribute overwrites the caller's value, and a reactive
-  attribute overwrites it back only when its own signals change.
+  attribute overwrites it back only when its own signals change. That includes
+  rinch's own wiring attributes: a caller's `data-rid` on a component replaces
+  the id of the component's own click handler, so it stops firing. Don't.
 
 Unhyphenated attribute names — `id`, `tabindex`, `role` — are not routed: on a
 component they are still struct fields, and a component that does not declare
