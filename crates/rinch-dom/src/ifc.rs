@@ -2791,13 +2791,24 @@ impl RinchDocument {
                 // `build_ifc_layouts` shapes nothing for it. Written only when
                 // it differs, so a pass that finds it already hollow leaves
                 // Taffy's cache alone.
-                let want = crate::form_control::hollow_control_context(&self.tree.nodes[root_id]);
+                let want = crate::form_control::hollow_control_context(
+                    &self.tree.nodes[root_id],
+                    &mut self.font_cx,
+                    &mut self.layout_cx,
+                    &self.tree.perf,
+                );
                 let have = self.tree.taffy.get_node_context(root_taffy);
                 let same = match (&want, have) {
                     (
-                        Some(NodeContext::FormControl { content_height: a }),
-                        Some(NodeContext::FormControl { content_height: b }),
-                    ) => a == b,
+                        Some(NodeContext::FormControl {
+                            content_width: aw,
+                            content_height: ah,
+                        }),
+                        Some(NodeContext::FormControl {
+                            content_width: bw,
+                            content_height: bh,
+                        }),
+                    ) => aw == bw && ah == bh,
                     (None, None) => true,
                     _ => false,
                 };
@@ -4740,9 +4751,10 @@ impl RinchDocument {
                             }),
                         }
                     }
-                    Some(NodeContext::FormControl { content_height }) => {
-                        crate::form_control::measure(*content_height, known_dims)
-                    }
+                    Some(NodeContext::FormControl {
+                        content_width,
+                        content_height,
+                    }) => crate::form_control::measure(*content_width, *content_height, known_dims),
                     _ => taffy::Size::ZERO,
                 }
             },

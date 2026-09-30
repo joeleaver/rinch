@@ -1571,7 +1571,12 @@ impl RinchDocument {
             // its rows (#297), and the line height is no Taffy property — so the
             // measure context is re-synced from the new computed style here,
             // and a change is a layout change of its own.
-            if crate::form_control::sync_form_control_measure(&mut self.tree, node_id) {
+            if crate::form_control::sync_form_control_measure(
+                &mut self.tree,
+                &mut self.font_cx,
+                &mut self.layout_cx,
+                node_id,
+            ) {
                 self.tree.layout_dirty = true;
                 self.mark_atomic_inline_dirty(node_id);
             }

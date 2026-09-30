@@ -5027,6 +5027,7 @@ dependencies = [
  "serde",
  "serde_json",
  "servo_arc",
+ "skrifa 0.44.0",
  "slab",
  "stylo",
  "stylo_atoms",

@@ -112,11 +112,15 @@ pub enum NodeContext {
     InlineRoot(usize), // stores the RawNodeId of the IFC root
     /// A text-entry form control — `<textarea>`, or an `<input>` of a
     /// text-like type — whose value is an attribute rather than a child, so
-    /// nothing in the tree gives it a content height (#297). The measure
-    /// answers `content_height` (its rows times its line height; Taffy adds
-    /// the padding and border) and a width of zero. Written and kept current by
+    /// nothing in the tree gives it a content size (#297). The measure
+    /// answers `content_width` (its `size` or `cols` in average characters,
+    /// #1177) and `content_height` (its rows times its line height); Taffy
+    /// adds the padding and border. Written and kept current by
     /// [`crate::form_control::sync_form_control_measure`].
     FormControl {
+        /// Content-box width: `size` / `cols` times the primary font's average
+        /// character width ([`crate::form_control::form_control_content_width`]).
+        content_width: f32,
         /// Content-box height: `rows × line-height` (one row for an `<input>`).
         content_height: f32,
     },
@@ -1051,6 +1055,11 @@ pub struct Node {
     /// restyle that moves neither re-shapes nothing (#1098). `None` until an
     /// auto-width select is first sized.
     pub(crate) select_label_width: Cell<Option<(u64, f32)>>,
+    /// A text-entry control's primary-font metrics, per em, with the hash of
+    /// the font properties they were read under — so a restyle that moves no
+    /// font property shapes nothing to size the control (#1177). `None` until
+    /// the control is first sized.
+    pub(crate) form_char_metrics: Cell<Option<(u64, crate::form_control::CharMetrics)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1223,6 +1232,7 @@ impl Node {
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
+            form_char_metrics: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1284,6 +1294,7 @@ impl Node {
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
+            form_char_metrics: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1344,6 +1355,7 @@ impl Node {
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
+            form_char_metrics: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1402,6 +1414,7 @@ impl Node {
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
+            form_char_metrics: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,

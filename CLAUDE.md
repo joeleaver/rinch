@@ -4861,10 +4861,22 @@ Make changes, rebuild, launch again. The full cycle:
   (`form_control::control_value`: the `value` attribute if present, even `""`,
   else those children), which `paint_input_value` draws and the desktop shell
   edits from. An `<input>`'s children are not drawn. A block-level element
-  child is still laid out as content (#1178). Not modelled: a control's
-  *width* (Chrome's comes from `size`/`cols`; every control with no `width` is
-  0 wide, #1177), the six excluded types' own sizes (13x13 checkbox, 16px
-  range, …), the date/time family's extra 2px, and a `line-height` below the
+  child is still laid out as content (#1178). **Its width comes from `size`
+  / `cols`** (#1177), as in Chrome 153: the primary font's OS/2
+  `xAvgCharWidth` scaled to the font size (`avg`, used as `max(avg,
+  round(avg))`, read off Chrome's output) times `size` for a text-like
+  `<input>` (default 20; `number` is always 20) plus the font's `head` extent
+  `round(xMax - xMin)` less one `avg`, or times `cols` for a `<textarea>`
+  (default 20) plus a 15px scrollbar gutter unless `overflow-y` is
+  `hidden`/`clip`; both read by HTML's non-negative integer rules, 0 or invalid
+  meaning 20, and cached per node against the font (`shape_form_control_metrics`).
+  It is the measure's answer at every available width, so an author `width` or
+  `max-width` wins and a narrow container overflows rather than shrinks it. Not
+  modelled: the other `<input>` types' widths (the date/time family, the
+  buttons, `file` — 0 wide, as before), a `display: block` control's
+  shrink-to-fit (Chrome keeps the intrinsic width; rinch fills), Chrome's
+  per-family exceptions (`system-ui`'s fixed extent), the six excluded types'
+  own sizes (13x13 checkbox, 16px range, …), the date/time family's extra 2px, and a `line-height` below the
   font's normal line (Chrome clamps up). Line boxes rinch still gets wrong
   around empty content: #1154
 - **Text not updating**: Verify signal/effect wiring in the component

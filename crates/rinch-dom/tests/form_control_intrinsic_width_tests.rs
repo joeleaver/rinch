@@ -69,7 +69,12 @@ fn bare(px: f32) -> String {
 fn control(tag: &str, px: f32, attrs: &[(&str, &str)], extra: &str) -> (RinchDocument, NodeId) {
     let mut doc = document();
     let body = doc.body();
-    let div = el(&mut doc, body, "div", "width: 600px; font: 16px/20px ProbeFace");
+    let div = el(
+        &mut doc,
+        body,
+        "div",
+        "width: 600px; font: 16px/20px ProbeFace",
+    );
     let c = doc.create_element(tag);
     for (k, v) in attrs {
         doc.set_attribute(c, k, v);
@@ -101,7 +106,11 @@ fn an_input_is_twenty_average_characters_plus_the_widest_glyph() {
         (20.0, 313.0),
         (24.0, 372.0),
     ] {
-        assert_eq!(w("input", px, &[], ""), chrome, "input at {px}px: Chrome 153 {chrome}");
+        assert_eq!(
+            w("input", px, &[], ""),
+            chrome,
+            "input at {px}px: Chrome 153 {chrome}"
+        );
     }
 }
 
@@ -141,7 +150,11 @@ fn a_textarea_is_twenty_average_characters_plus_the_scrollbar_gutter() {
         (20.0, 275.0),
         (24.0, 323.0),
     ] {
-        assert_eq!(w("textarea", px, &[], ""), chrome, "textarea at {px}px: Chrome 153 {chrome}");
+        assert_eq!(
+            w("textarea", px, &[], ""),
+            chrome,
+            "textarea at {px}px: Chrome 153 {chrome}"
+        );
     }
 }
 
@@ -183,7 +196,9 @@ fn a_textarea_that_cannot_scroll_vertically_reserves_no_gutter() {
 /// or empty `type` is the Text state.
 #[test]
 fn the_text_like_types_read_size_and_number_does_not() {
-    for ty in ["text", "TEXT", "search", "url", "tel", "email", "password", "foo", ""] {
+    for ty in [
+        "text", "TEXT", "search", "url", "tel", "email", "password", "foo", "",
+    ] {
         assert_eq!(w("input", 16.0, &[("type", ty)], ""), 248.0, "type={ty:?}");
         assert_eq!(
             w("input", 16.0, &[("type", ty), ("size", "5")], ""),
@@ -191,7 +206,10 @@ fn the_text_like_types_read_size_and_number_does_not() {
             "type={ty:?} size=5: Chrome 153 94"
         );
     }
-    assert_eq!(w("input", 16.0, &[("type", "number"), ("size", "5")], ""), 248.0);
+    assert_eq!(
+        w("input", 16.0, &[("type", "number"), ("size", "5")], ""),
+        248.0
+    );
 }
 
 /// The width is the content box's: padding and border add to it. Chrome 153:
@@ -200,7 +218,12 @@ fn the_text_like_types_read_size_and_number_does_not() {
 #[test]
 fn padding_and_border_add_to_the_intrinsic_width() {
     assert_eq!(
-        w("input", 16.0, &[], "padding: 0 10px; border: 2px solid black"),
+        w(
+            "input",
+            16.0,
+            &[],
+            "padding: 0 10px; border: 2px solid black"
+        ),
         272.0
     );
 }
@@ -256,7 +279,11 @@ fn a_size_cols_or_font_change_after_layout_resizes_the_control() {
     assert_eq!(width(&doc, input), 248.0);
     doc.set_attribute(input, "size", "5");
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(width(&doc, input), 94.0, "size=5 after layout: Chrome 153 94");
+    assert_eq!(
+        width(&doc, input),
+        94.0,
+        "size=5 after layout: Chrome 153 94"
+    );
     doc.set_style(input, "font-size", "20px");
     doc.resolve_layout(800.0, 600.0);
     // 5 × 13 + 66 − 13 = 118 (Chrome 153: 118).
