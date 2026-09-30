@@ -352,3 +352,72 @@ fn the_caret_between_a_newline_and_a_newline_in_the_next_node() {
     assert!(t4 > t + 20.0, "`cd` is the line after: {t4} vs {t}");
     d.done();
 }
+
+impl D {
+    /// The browser's own collapsed-range height at UTF-16 `off` of the
+    /// block's `n`th child (a text node).
+    fn native_height(&self, n: u32, off: u32) -> f64 {
+        let t = self.el().child_nodes().item(n).expect("the child");
+        let r = document().create_range().unwrap();
+        r.set_start(&t, off).unwrap();
+        r.set_end(&t, off).unwrap();
+        r.get_bounding_client_rect().height()
+    }
+}
+
+/// An empty text node at the block's start (review of #1207): Chrome gives
+/// the collapsed range in it no rect, in `normal` text as in `pre-wrap`. The
+/// caret is where `ab` starts. #1197's walk was guarded by the node ending
+/// in `"\n"`, which an empty node does not, so it answered the block's own
+/// box; that guard is gone, and this pins its going.
+#[wasm_bindgen_test]
+fn the_caret_in_an_empty_text_node_is_where_what_follows_starts() {
+    let d = D::new("white-space: normal", &[("", false), ("ab", false)]);
+    assert!(
+        d.native_height(0, 0) <= 0.0,
+        "positive control: no rect in an empty text node"
+    );
+    let (x, t, h) = d.caret(0);
+    assert!(x.abs() < 0.5 && t < 5.0, "the start of `ab`: ({x}, {t})");
+    assert!(h > 0.0 && h < 25.0, "one line tall, not the block: {h}");
+    d.done();
+}
+
+/// Before a `"\r"` in `pre` (`ab\r\n\r\ncd`, after the first `\n`): no rect
+/// either, and the caret is the start of the empty line 1.
+#[wasm_bindgen_test]
+fn the_caret_before_a_carriage_return_is_on_its_line() {
+    let d = D::new("white-space: pre", &[("ab\r\n\r\ncd", false)]);
+    assert!(
+        d.native_height(0, 4) <= 0.0,
+        "positive control: no rect before the second `\\r`"
+    );
+    let (x, t, h) = d.caret(4);
+    assert!(
+        x.abs() < 0.5 && t > 20.0 && t < 28.0,
+        "the start of line 1: ({x}, {t})"
+    );
+    assert!(h > 0.0 && h < 25.0, "one line tall: {h}");
+    d.done();
+}
+
+/// Right-to-left: the empty line's caret is at the block's RIGHT edge — its
+/// start edge — where the old block-box fallback, like every left-to-right
+/// fixture above, put x at the left.
+#[wasm_bindgen_test]
+fn a_right_to_left_empty_line_caret_is_at_the_right_edge() {
+    let d = D::new("white-space: pre; direction: rtl", &[("אבג\n\nדה", false)]);
+    assert!(
+        d.native_height(0, 4) <= 0.0,
+        "positive control: no rect on the empty line"
+    );
+    let w = d.el().get_bounding_client_rect().width();
+    // `אבג` is 6 bytes, the first `\n` byte 6: the empty line is byte 7.
+    let (x, t, h) = d.caret(7);
+    assert!(
+        (x - w).abs() < 1.0 && t > 20.0 && t < 28.0,
+        "the right edge of line 1: ({x}, {t}), block width {w}"
+    );
+    assert!(h > 0.0 && h < 25.0, "one line tall: {h}");
+    d.done();
+}
