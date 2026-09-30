@@ -43,7 +43,11 @@ fn mount(nofocus: bool) -> Fixture {
             }
         };
         let button = toolbar.children()[0].clone();
-        assert_eq!(button.tag_name().as_deref(), Some("button"), "fixture shape");
+        assert_eq!(
+            button.tag_name().as_deref(),
+            Some("button"),
+            "fixture shape"
+        );
         let (editor, handle) = crate::editor::mount_editor(__scope);
         handle.load_html("<p>hello world</p>");
         editor.set_attribute("style", "width: 400px; height: 100px");

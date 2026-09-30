@@ -80,7 +80,10 @@ fn a_literal_hyphenated_attribute_lands_on_the_component_root() {
         "the static path returns the component's root itself"
     );
     assert_eq!(root.get_attribute("data-testid").as_deref(), Some("bar"));
-    assert_eq!(root.get_attribute("aria-describedby").as_deref(), Some("help"));
+    assert_eq!(
+        root.get_attribute("aria-describedby").as_deref(),
+        Some("help")
+    );
     assert_eq!(
         root.get_attribute("data-role").as_deref(),
         Some("inner"),
@@ -101,7 +104,10 @@ fn caller_overrides() -> NodeHandle {
 fn the_caller_wins_a_collision_with_the_components_own_attribute() {
     let (_doc, _scope, root) = mount(caller_overrides);
     assert_eq!(root.get_attribute("data-role").as_deref(), Some("outer"));
-    assert_eq!(root.get_attribute("aria-label").as_deref(), Some("Formatting"));
+    assert_eq!(
+        root.get_attribute("aria-label").as_deref(),
+        Some("Formatting")
+    );
 }
 
 // ── 2. boolean attributes go through write_attribute ────────────────────────
@@ -336,5 +342,8 @@ fn a_group_carries_data_nofocus_on_its_root() {
         "the result is the Group's own root"
     );
     assert_eq!(root.get_attribute("data-nofocus").as_deref(), Some(""));
-    assert_eq!(root.get_attribute("role-description").as_deref(), Some("toolbar"));
+    assert_eq!(
+        root.get_attribute("role-description").as_deref(),
+        Some("toolbar")
+    );
 }

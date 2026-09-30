@@ -8,7 +8,7 @@ This page lists every prop for every component in `rinch-components`. All compon
 
 **Float literals:** Float literals are auto-wrapped: `value: 30.0` becomes `Some(30.0)` for `Option<f32>` fields.
 
-**Universal props:** All components support `style:` and `class:` in RSX, which are applied to the component's root DOM element. These support reactive closures `{|| expr}`.
+**Universal props:** All components support `style:` and `class:` in RSX, which are applied to the component's root DOM element. These support reactive closures `{|| expr}`. So does any **hyphenated attribute** — `data-nofocus: ""`, `aria-label: "…"` — which is written on the root the way it would be on an HTML element; see [Attributes on a component](rsx-syntax.md#attributes-on-a-component).
 
 Both **merge** with what the component itself put on that root rather than replacing it: `class:` is added to the component's own classes, and `style:` is laid over the component's own inline declarations, last-wins per property. That matters because a component's inline style is not decoration — it is how a component publishes a prop to its own stylesheet, and every overlay's `z_index` is a custom property written there. `style:` used to write the whole attribute, which erased all of them ([issue #647](https://github.com/joeleaver/rinch/issues/647)).
 
