@@ -154,34 +154,70 @@ fn a_stack_that_names_a_generic_is_not_finished_with_sans_serif() {
     );
 }
 
-/// An emoji is drawn exactly as it is under `sans-serif`, and — on a host
-/// with a colour-emoji face — from a colour face, not a text one.
+/// An emoji the appended face lacks still reaches the `emoji` generic, and an
+/// emoji in a stack that resolves is untouched.
 ///
-/// Appending `sans-serif` puts the platform's whole `sans-serif` list ahead of
-/// the `emoji` generic, as it already is for every stack that names a generic
-/// (the theme's default among them), so an emoji-presentation character lands
-/// wherever `sans-serif` sends it: on this host 😀 is Segoe UI Emoji, ⬜ and
-/// ❤️ a symbol or text face (Chrome draws all three from its colour-emoji
-/// face — #1198's follow-up). The first half pins that consistency; the
-/// second is the guard against fixing #1198 by pointing the `emoji` slot at a
-/// text face, and needs a colour face to discriminate, so it asserts nothing
-/// on a host with none (CI) — it prints which way it went.
+/// rinch appends the primary `sans-serif` **face**, not the generic: the
+/// generic expands to the platform's whole list, whose text faces (DejaVu
+/// Sans, FreeSans) would win an emoji ahead of the `emoji` generic. Here the
+/// primary face is Space Grotesk, which lacks U+2B1C and U+2764, and the
+/// `emoji` generic's first face is Inter, which has both. Appending the
+/// `sans-serif` generic instead fails this on a host whose platform list
+/// covers them (this one: FreeSans and DejaVu Sans).
 #[test]
-fn an_emoji_is_drawn_as_under_sans_serif_and_in_colour_where_it_can_be() {
-    for text in ["\u{1f600}", "\u{2b1c}", "\u{2764}\u{fe0f}"] {
-        let missing = run_faces("NoSuchFamily1198", text).0;
-        let generic = run_faces("sans-serif", text).0;
-        assert_eq!(missing, generic, "{text:?}");
+fn an_emoji_the_appended_face_lacks_still_reaches_the_emoji_generic() {
+    use skrifa::MetadataProvider;
+    let sans = skrifa::FontRef::new(SANS).unwrap().charmap();
+    let emoji = skrifa::FontRef::new(EMOJI_STAND_IN).unwrap().charmap();
+    for text in ["\u{2b1c}", "\u{2764}\u{fe0f}"] {
+        let c = text.chars().next().unwrap();
+        assert!(sans.map(c).is_none() && emoji.map(c).is_some());
+        // Missing-only (finished) and resolving (left alone) stacks alike.
+        for family in ["NoSuchFamily1198", "ProbeSans1198"] {
+            let (faces, sans_id, emoji_id) = run_faces(family, text);
+            assert_eq!(
+                faces,
+                vec![emoji_id],
+                "{text:?} under `{family}`: sans-serif is {sans_id}, emoji {emoji_id}"
+            );
+        }
     }
+}
+
+/// On the host's own fonts: where the `emoji` generic draws U+1F600 in colour
+/// and the primary `sans-serif` face lacks it (Noto Sans, Roboto), U+1F600 is
+/// still drawn in colour under a missing-only stack and under a stack naming
+/// the primary face itself. Where the primary face is DejaVu Sans, which has a
+/// monochrome U+1F600, the missing-only stack draws that (the accepted
+/// consequence; #1204); the test then checks only the resolving stack. On a
+/// host with no colour emoji face (CI) it asserts nothing and says so.
+#[test]
+fn a_host_colour_emoji_stays_colour_where_the_primary_face_lacks_it() {
     let (doc, div) = block_on_host("emoji", "\u{1f600}");
     let host_emoji_is_colour = faces_of(&doc, div).iter().all(|f| f.1);
-    eprintln!("host emoji generic draws U+1F600 in colour: {host_emoji_is_colour}");
-    if host_emoji_is_colour {
-        let (doc, div) = block_on_host("NoSuchFamily1198", "\u{1f600}");
+    let mut fcx = rinch_dom::fonts::new_font_context();
+    let primary = fcx
+        .collection
+        .generic_families(GenericFamily::SansSerif)
+        .next();
+    let primary = primary.and_then(|id| fcx.collection.family_name(id).map(str::to_owned));
+    eprintln!("host: emoji generic colour {host_emoji_is_colour}, primary sans {primary:?}");
+    let (Some(primary), true) = (primary, host_emoji_is_colour) else {
+        return;
+    };
+    let named = format!("'{primary}'");
+    let (doc, div) = block_on_host(&named, "\u{1f600}");
+    let primary_lacks_it = faces_of(&doc, div).iter().all(|f| f.2 != primary);
+    let mut stacks = vec![named.as_str()];
+    if primary_lacks_it {
+        stacks.push("NoSuchFamily1198");
+    }
+    for family in stacks {
+        let (doc, div) = block_on_host(family, "\u{1f600}");
         let faces = faces_of(&doc, div);
         assert!(
             !faces.is_empty() && faces.iter().all(|f| f.1),
-            "U+1F600 under a missing-only stack: {faces:?}"
+            "U+1F600 under `{family}`: {faces:?}"
         );
     }
 }
@@ -203,8 +239,10 @@ fn block_on_host(family: &str, text: &str) -> (RinchDocument, NodeId) {
     (doc, div)
 }
 
-/// Each glyph run's face: its blob id, and whether it has a colour table.
-fn faces_of(doc: &RinchDocument, div: NodeId) -> Vec<(u64, bool)> {
+/// Each glyph run's face: its blob id, whether it has a colour table, and its
+/// family name.
+fn faces_of(doc: &RinchDocument, div: NodeId) -> Vec<(u64, bool, String)> {
+    use skrifa::MetadataProvider;
     use skrifa::raw::TableProvider;
     let layout = doc
         .tree
@@ -218,7 +256,12 @@ fn faces_of(doc: &RinchDocument, div: NodeId) -> Vec<(u64, bool)> {
                 let font = run.run().font();
                 let face = skrifa::FontRef::from_index(font.data.as_ref(), font.index).unwrap();
                 let colour = face.colr().is_ok() || face.cbdt().is_ok() || face.sbix().is_ok();
-                faces.push((font.data.id(), colour));
+                let name = face
+                    .localized_strings(skrifa::string::StringId::FAMILY_NAME)
+                    .english_or_first()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                faces.push((font.data.id(), colour, name));
             }
         }
     }
@@ -250,4 +293,71 @@ fn a_text_control_in_a_missing_only_stack_is_as_wide_as_under_sans_serif() {
     for family in ["Helvetica", "NoSuchFamily1198"] {
         assert_eq!(input(family), sans, "input under `{family}`");
     }
+}
+
+/// The issue's own case on the host's fonts: digits in `font-family:
+/// Helvetica` (and `Times`, `Courier`) measure as `sans-serif`'s, wherever
+/// fontique does not have the family (it has no fontconfig aliases). Was
+/// 199px against 92px for ten zeros at 16px on this host.
+#[test]
+fn digits_in_an_uninstalled_named_family_measure_as_sans_serif_on_the_host() {
+    let width_on_host = |family: &str| {
+        let (doc, div) = block_on_host(family, "0000000000");
+        doc.tree.get(div.0).unwrap().layout.width
+    };
+    let sans = width_on_host("sans-serif");
+    let mut fcx = rinch_dom::fonts::new_font_context();
+    let mut asserted = 0;
+    for family in ["Helvetica", "Times", "Courier", "NoSuchFamily1198"] {
+        if fcx.collection.family_by_name(family).is_some() {
+            continue;
+        }
+        assert_eq!(width_on_host(family), sans, "`{family}`");
+        asserted += 1;
+    }
+    assert!(asserted > 0, "NoSuchFamily1198 is never installed");
+}
+
+/// Every parley layout rinch builds takes its family from
+/// `fonts::parley_font_family`, so a new site cannot hand parley a raw stack
+/// and bring #1198 back. Scans the non-test sources of `rinch-dom` and
+/// `rinch` for a family built any other way.
+#[test]
+fn no_source_builds_a_parley_font_family_by_hand() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for krate in ["../rinch-dom/src", "../rinch/src"] {
+        walk(&manifest.join(krate), &mut files);
+    }
+    assert!(files.len() > 50, "the scan found the sources");
+    let mut offenders = Vec::new();
+    for file in &files {
+        let name = file.file_name().unwrap().to_string_lossy();
+        if name.ends_with("_tests.rs") || name == "tests.rs" || name == "fonts.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(file).unwrap();
+        // Stop at an in-file test module: fixtures may name a family directly.
+        let text = text.split("#[cfg(test)]").next().unwrap();
+        for (i, line) in text.lines().enumerate() {
+            if line.contains("FontFamily::Source(") || line.contains("FontFamily::Single(") {
+                offenders.push(format!("{}:{}: {}", file.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "build the family with fonts::parley_font_family:\n{}",
+        offenders.join("\n")
+    );
 }
