@@ -452,9 +452,12 @@ and edits it, and follows it when it changes (a reactive
 sets its `value`. That is HTML's dirty value flag, which focusing and blurring
 do not set (#1186); from then on a child change updates only the default value
 (`defaultValue` on the web), and the field keeps what the user typed. The rule
-is the same on the desktop and on rinch-web, and a child change while the field
-is focused and unedited keeps the caret at its offset, clamped to the new text,
-as in Chrome.
+is the same on the desktop and on rinch-web, with two exceptions around the
+`value` attribute (#1222): removing a textarea's `value` attribute makes it
+follow its children again on the desktop and leaves it empty on the web, and a
+`value` write equal to the shown text freezes the field on the desktop (as in
+Chrome) but not on the web. A child change while the field is focused and
+unedited keeps the caret at its offset, clamped to the new text, as in Chrome.
 
 **A text child is not a controlled value.** Until #1206, rinch-web wrote a
 textarea's `value` from its children on every change (#100), so
@@ -468,13 +471,15 @@ whether or not the user has typed:
 ```rust
 let draft = Signal::new(String::new());
 rsx! {
-    Textarea {
-        value_fn: move || draft.get(),
-        oninput: move |v: String| draft.set(v),
+    div {
+        Textarea {
+            value_fn: move || draft.get(),
+            oninput: move |v: String| draft.set(v),
+        }
+        // or, on the raw element:
+        // textarea { value: {|| draft.get()}, oninput: move |v: String| draft.set(v) }
+        button { onclick: move || { send(draft.get()); draft.set(String::new()); }, "Send" }
     }
-    // or, on the raw element:
-    // textarea { value: {|| draft.get()}, oninput: move |v: String| draft.set(v) }
-    button { onclick: move || { send(draft.get()); draft.set(String::new()); }, "Send" }
 }
 ```
 

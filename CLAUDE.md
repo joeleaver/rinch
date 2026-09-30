@@ -4894,7 +4894,12 @@ Make changes, rebuild, launch again. The full cycle:
   leaving it to the browser (#1206): `set_text_content` sets the text and no
   longer writes `.value` from it, which #100 had done on every change, dirty or
   not. So a text child is a *default*, not a controlled value, on both backends:
-  a controlled textarea is `value_fn` / a reactive `value:`. An `<input>`'s children are not drawn. A block-level element
+  a controlled textarea is `value_fn` / a reactive `value:`. Two `value`-attribute
+  cases still differ (#1222): `remove_attribute("value")` clears desktop's flag
+  (the field follows its children again) but writes `.value = ""` on the web,
+  which sets the browser's; and a `value` write equal to the shown text sets
+  desktop's flag (as Chrome) while the web skips the equal `set_value` and so
+  never sets it. An `<input>`'s children are not drawn. A block-level element
   child is still laid out as content (#1178). **Its width comes from `size`
   / `cols`** (#1177), as in Chrome 153 at a device scale factor of 1 (Chrome
   computes in device px, so at 1.5 it can differ by several px): the primary

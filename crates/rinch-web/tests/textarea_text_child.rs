@@ -166,6 +166,8 @@ fn a_child_change_after_a_user_edit_is_not_shown() {
         "positive control: the edit reached rinch's oninput"
     );
 
+    // The #100 flow: type, click Send (which blurs), then the app clears.
+    ta.blur().unwrap();
     draft.set(String::new());
     assert_eq!(
         ta.default_value().unwrap(),
@@ -292,4 +294,23 @@ fn a_reactive_value_attribute_clears_a_typed_textarea() {
         "a reactive value: reaches an edited textarea"
     );
     fixture.teardown();
+}
+
+/// The `value_fn` example in `docs/src/guide/rsx-syntax.md` ("Sizing a
+/// `<textarea>`"), kept here so it is known to compile. Keep the two in step.
+#[allow(dead_code)]
+#[component]
+fn guide_example() -> NodeHandle {
+    fn send(_: String) {}
+    let draft = Signal::new(String::new());
+    rsx! {
+        div {
+            Textarea {
+                value_fn: move || draft.get(),
+                oninput: move |v: String| draft.set(v),
+            }
+            textarea { value: {|| draft.get()}, oninput: move |v: String| draft.set(v) }
+            button { onclick: move || { send(draft.get()); draft.set(String::new()); }, "Send" }
+        }
+    }
 }
