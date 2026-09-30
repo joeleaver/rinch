@@ -463,6 +463,38 @@ pub fn collab_receive_for(container_id: usize, delta: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    /// A focused editor that is not registered gets no blink clock (#1149,
+    /// review of #1168): the arbiter keeps naming an unmounted editor until
+    /// the next key, and a clock made for it outlived its document.
+    #[test]
+    fn a_blink_tick_for_an_unregistered_editor_keeps_no_clock() {
+        let dk = 9_101;
+        assert!(crate::caret_blink_tick(dk, Some(99)).is_none());
+        assert_eq!(crate::blink::target(dk), None, "a clock for no editor");
+    }
+
+    /// An editor that unregisters takes its document's blink clock with it
+    /// (#1149): it is what releases the clock of a context dropped with its
+    /// editor still focused.
+    #[test]
+    fn unregistering_the_blinking_editor_drops_its_clock() {
+        let dk = 9_102;
+        register_editor(dk, 5, crate::create_editor());
+        crate::blink::set_target(dk, Some(5));
+        unregister_editor(dk, 6);
+        assert_eq!(
+            crate::blink::target(dk),
+            Some(5),
+            "another editor's clock went"
+        );
+        unregister_editor(dk, 5);
+        assert_eq!(
+            crate::blink::target(dk),
+            None,
+            "the clock outlived its editor"
+        );
+    }
+
     /// The drag-select anchor is per-document (issue #139).
     ///
     /// Container ids are per-document slab indices, so two documents on one

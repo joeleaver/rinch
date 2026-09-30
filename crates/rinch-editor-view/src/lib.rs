@@ -104,10 +104,11 @@ pub struct CaretBlink {
 /// `update` (design A3 phase 2 is for *geometry*; this is the standalone
 /// animation tick).
 ///
-/// There is one clock per **document** (issue #1149): every document on the
-/// thread ticks it — a desktop window, its DevTools panel and each embedded
-/// `RinchContext` alike — and each blinks its own focused editor on its own
-/// phase. The clock uses `std::time::Instant`, so a web runtime drives blink
+/// There is one clock per **document** (issue #1149): several documents can
+/// tick on one thread — each embedded `RinchContext`, and a desktop window
+/// beside them — and each blinks its own focused editor on its own phase. (The
+/// desktop DevTools panel is a second document on the window's thread, but
+/// the runtime ticks only the app's.) The clock uses `std::time::Instant`, so a web runtime drives blink
 /// with its own timer (`setInterval` → [`EditorHandle::set_caret_blink`])
 /// rather than calling this.
 ///
@@ -116,6 +117,11 @@ pub struct CaretBlink {
 /// is a container id from that document's focus arbiter, and container ids
 /// collide across documents on one thread (issue #134).
 pub fn caret_blink_tick(doc_key: u64, focused: Option<usize>) -> Option<CaretBlink> {
+    // Only a focused editor that is still registered gets a clock. The focus
+    // arbiter keeps naming an editor that unmounted until the next key, and a
+    // clock made for it here would outlive the document once the context is
+    // dropped: `unregister_editor`, which drops a clock, has already run.
+    let focused = focused.filter(|&id| registry::editor_for_doc(doc_key, id).is_some());
     let prev = blink::target(doc_key);
     // On a focus change, restore the previously-blinked caret to solid so a
     // blurred editor never freezes mid-blink with a hidden caret. Only this

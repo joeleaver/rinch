@@ -14,8 +14,8 @@
 //!
 //! There is one clock **per document** (keyed by
 //! [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)), not one per
-//! thread: a desktop window and its DevTools panel, or several embedded
-//! `RinchContext`s, share a thread and each has a keyboard of its own. A single
+//! thread: several embedded `RinchContext`s, or a desktop window beside them,
+//! share a thread and each has a keyboard of its own. A single
 //! thread-wide clock was retargeted by every document that ticked it, so two
 //! documents that each had a focused editor restored each other's caret to
 //! solid on every tick and neither blinked (issue #1149, the #134 rule).
@@ -40,10 +40,12 @@ struct Clock {
 }
 
 thread_local! {
-    /// One entry per document that is blinking a caret. A document with no
-    /// blink target has no entry, so the list is as long as the number of
-    /// documents on the thread with a focused editor — one or two in practice,
-    /// which is why it is a `Vec` and not a map.
+    /// One entry per document that is blinking a caret: a focused editor that
+    /// is still registered (`caret_blink_tick` gives an unregistered one no
+    /// clock, and `unregister_editor` drops the clock of one that goes). So
+    /// the list is as long as the number of documents on the thread with a
+    /// mounted, focused editor — one or two in practice, which is why it is a
+    /// `Vec` and not a map.
     static CLOCKS: RefCell<Vec<Clock>> = const { RefCell::new(Vec::new()) };
 }
 
