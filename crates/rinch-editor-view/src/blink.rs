@@ -104,6 +104,11 @@ pub(crate) fn tick(doc_key: u64) -> (bool, Duration) {
     phase_at(anchor, now)
 }
 
+/// How many documents hold a clock (see [`crate::blink_clock_count`]).
+pub(crate) fn clock_count() -> usize {
+    CLOCKS.with(|c| c.borrow().len())
+}
+
 /// Pure phase computation (factored out so it is unit-testable without a clock):
 /// given the phase `anchor` and the current instant `now`, return whether the
 /// caret should currently be visible and the [`Duration`] until the next toggle.

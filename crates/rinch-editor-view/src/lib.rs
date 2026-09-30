@@ -134,6 +134,14 @@ pub fn caret_blink_tick(doc_key: u64, focused: Option<usize>) -> Option<CaretBli
     Some(CaretBlink { redraw, next })
 }
 
+/// How many documents on this thread hold a caret blink clock. A structural
+/// test hook (#1149: the clock list must not outlive the documents it is
+/// kept for), not a stable API.
+#[doc(hidden)]
+pub fn blink_clock_count() -> usize {
+    blink::clock_count()
+}
+
 /// A fresh document: one empty paragraph.
 fn empty_doc(schema: &Schema) -> Node {
     schema
