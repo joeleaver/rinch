@@ -877,12 +877,13 @@ impl WebDocument {
     /// character at `off`, else (at the node's end) the start of the next
     /// text or `<br>` in `block` ([`Self::caret_where_next_starts`]).
     ///
-    /// This is the caret the browser gives no rect (#1202): measured in
-    /// Chrome 153, a collapsed range has none only right before a `"\n"` of
-    /// preserved-newline text or at the end of a text node ending in one
-    /// (not at every such position: `pre`'s `a\n \nb` has one after the
-    /// space, `pre-wrap`'s does not) — and the range over that `"\n"` does,
-    /// a zero-width box at its start, on the line the caret is on.
+    /// This is the caret the browser gives no rect (#1202). Measured in
+    /// Chrome 153, a collapsed range has none right before a preserved
+    /// segment break (`"\n"`, `"\r"`), at the end of a text node ending in
+    /// `"\n"`, and in an empty text node — though not at every such position
+    /// (`pre`'s `a\n \nb` has one after the space, `pre-wrap`'s does not).
+    /// The range over the character that follows does have one: for a
+    /// newline, a zero-width box at its start, on the line the caret is on.
     fn caret_where_next_starts_at(
         &self,
         text_node: &web_sys::Node,

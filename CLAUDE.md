@@ -51,11 +51,11 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     (`WebDocument::br_caret_viewport_rect`, its `query_inline_box_caret*`; a `<br>` before an
     image is still answered by byte), which also put the caret after the first of two breaks on
     the empty line between them, not the line after. A caret Chrome gives no collapsed-range
-    rect — measured in Chrome 153, only ever right before a preserved `"\n"` (an empty line
-    inside a code block, the start of one that begins with a newline) or after a text-final one,
-    though not at every such position — is drawn
-    where what follows it starts: that `"\n"`'s own zero-width box, else the same "what follows"
-    walk (`caret_where_next_starts_at`, #1202; it used to fall back to the block's whole box).
+    rect — measured in Chrome 153: right before a preserved segment break (`"\n"` or `"\r"`: an
+    empty line inside a code block, the start of one that begins with a newline), after a
+    text-final `"\n"`, and in an empty text node, though not at every such position — is drawn
+    where what follows it starts: the next character's own box (a newline's is zero-width), else
+    the same "what follows" walk (`caret_where_next_starts_at`, #1202; it used to fall back to the block's whole box).
   - **Preserved spaces do not hang in 0.11.1.** At a width a `pre-wrap` space overflows, parley
     hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
     is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC

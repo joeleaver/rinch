@@ -1,16 +1,17 @@
 //! The caret Chrome gives no rect, on the web (#1202).
 //!
 //! In preserved-newline text (`pre`, `pre-wrap`: every code block) Chrome 153
-//! gives a collapsed range **no rect** — zero height, no client rects — only
-//! right before a `"\n"` or at the end of a text node that ends in one (though
-//! not at every such position). Measured on a `<pre>`: `ab\n\ncd` at offset 3 (the
+//! gives a collapsed range **no rect** — zero height, no client rects — right
+//! before a segment break (`"\n"`, `"\r"`), at the end of a text node that
+//! ends in `"\n"`, and (in any `white-space`) in an empty text node, though not
+//! at every such position. Measured on a `<pre>`: `ab\n\ncd` at offset 3 (the
 //! empty middle line), `\nab` at 0, `\n\nab` at 0 and 1, `ab\n\n` at 3 and 4,
 //! and in `pre-wrap` `a\n \nb` at 3 (after the space, before the second
-//! newline; `pre`'s has a rect there); everywhere else measured, the collapsed
-//! range has a rect of its own. The range over that `"\n"` does have one: a
-//! zero-width rect at the character's start, on the line the caret belongs to
-//! — the empty line itself, the start of a line that begins with a newline, or
-//! just after the space.
+//! newline; `pre`'s has a rect there); at the other positions of those texts
+//! the collapsed range has a rect of its own. The range over the `"\n"` does
+//! have one: a zero-width rect at the character's start, on the line the caret
+//! belongs to — the empty line itself, the start of a line that begins with a
+//! newline, or just after the space.
 //!
 //! `WebDocument::text_caret_viewport_rect` answered `None` for every such
 //! caret except the one #1197 added (after a text-final newline, placed from
