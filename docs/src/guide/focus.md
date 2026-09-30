@@ -152,11 +152,15 @@ behave like a button — and what makes Space on a `Checkbox`'s visually hidden
 The **`Select` component** (not a native `<select>`) behaves the same way on
 both backends (issue #434): its trigger keeps the focus while the list is open,
 ArrowUp/ArrowDown move a highlight (wrapping at the ends), Home/End jump,
-Enter or Space commits the highlighted option, Escape closes without
-committing, Tab closes and moves on, and typing jumps to the first option whose
-label starts with what was typed. The highlight starts at the selected option
-and is announced through `aria-activedescendant`. A key with Ctrl, Alt or Meta
-held is left to the app.
+Enter commits the highlighted option, Escape closes without committing, Tab
+closes and moves on, and typing jumps to the first option whose label starts
+with what was typed. Space commits like Enter, except while a type-ahead prefix
+is being typed, when it extends it ("new y" finds New York). The highlight
+starts at the selected option and is announced through
+`aria-activedescendant`. A key with Ctrl, Alt or Meta held is left to the app.
+The list owns keys only while the focus is in the `Select`: if something moves
+the focus elsewhere while it is open (a shortcut focusing a search box, a
+script), the list closes and the keys go to wherever the focus went.
 
 ### Taking the click without the keyboard
 
@@ -653,18 +657,33 @@ Escape**: the interceptor is a single slot per document, so a second overlay
 registering there silently disables the first, and when it unmounts it clears
 the slot rather than restoring what it displaced.
 
-### A popup that owns every key while it is open
+### A popup that owns every key while it is open and focused
 
-`push_key_handler(doc_key, |k: &KeyEventData| -> bool)` puts an entry on the
-same stack that is offered **every key press** (never a release), ahead of the
-Escape scan; `true` consumes the key, which on `rinch-web` also
-`preventDefault`s it. It exists for a popup whose keys have no focused element
-to land on — the `Select` component's option list, whose trigger keeps the
-focus — and it is only safe registered **at open** and released at close:
-an entry left on the stack while its popup is closed swallows the page's keys.
-`rinch_components::overlay_dismiss::arm_keys_while_open` is that policy. Decline
-Escape in it and give Escape its own dismiss entry, so "which overlay is on top"
-stays one question.
+```rust
+let handle = push_key_handler(
+    &root,                                   // the owner: the popup's component root
+    move |k: &KeyEventData| k.key == "ArrowDown" && { step(); true },
+    move || opened.set(false),               // focus left the owner
+);
+```
+
+`push_key_handler` puts an entry on the same stack that is offered **every key
+press** (never a release), ahead of the Escape scan; `true` consumes the key,
+which on `rinch-web` also `preventDefault`s it. It is for a popup whose focus
+stays on something *outside the popup's list* — the `Select` component's option
+list, whose combobox trigger keeps the focus while the arrows move a highlight.
+
+**It is offered a key only while the focused element is the owner or inside
+it.** A field focused while the popup is open — by a shortcut, a script, an
+`autofocus` — keeps its own keys, and on the web a key typed outside the rinch
+mount is never touched. When focus moves and is no longer inside the owner, the
+entry's `on_focus_leave` runs (the backends report every focus move), which is
+where a listbox closes; pass `|| {}` if yours should stay open.
+
+Register it **at open** and release it at close and on unmount —
+`rinch_components::overlay_dismiss::arm_keys_while_open` is that policy.
+Decline Escape in it and give Escape its own dismiss entry, so "which overlay is
+on top" stays one question.
 
 [`DismissHandle`]: https://docs.rs/rinch/latest/rinch/struct.DismissHandle.html
 

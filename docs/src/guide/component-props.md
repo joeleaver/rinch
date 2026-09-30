@@ -294,9 +294,10 @@ Custom Default: `toggle_visibility` defaults to `true`.
 
 **Keyboard (#251, #434).** The trigger is focusable; Enter or Space opens the
 list, and while it is open ArrowUp/ArrowDown move the highlight (wrapping),
-Home/End jump, Enter or Space commits, Escape closes without committing, Tab
-closes, and typing jumps to the first matching label. The trigger keeps the
-focus throughout, a pointer pick included.
+Home/End jump, Enter commits (Space too, unless it is part of a type-ahead
+prefix), Escape closes without committing, Tab closes, and typing jumps to the
+first matching label. The trigger keeps the focus throughout, a pointer pick
+included; focus moving anywhere else closes the list.
 
 Options are passed via `data`, not as children — the trigger's `_children` param
 is unused. Build a `Vec<SelectOption>` with `SelectOption::new(value, label)` (a
@@ -316,8 +317,7 @@ Select {
 
 The trigger is a Tab stop (`tabindex="0"`, `role="combobox"`,
 `aria-haspopup="listbox"`, and an `aria-expanded` that tracks the open state).
-Enter and Space on it toggle the dropdown. Arrow/Enter/Escape navigation of the
-**open** option list is issue #434.
+Enter and Space on it toggle the dropdown; the open list's keys are above.
 
 ### Radio / RadioGroup
 

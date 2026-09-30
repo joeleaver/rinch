@@ -249,3 +249,69 @@ fn a_blur_closes_the_list_in_chrome() {
     assert!(!is_open(&trigger), "the list closes when the trigger blurs");
     assert!(picks.borrow().is_empty());
 }
+
+thread_local! {
+    static KEY_ENTRY: RefCell<Option<rinch_core::DismissHandle>> = const { RefCell::new(None) };
+}
+
+/// The API rule itself, with an entry that does **not** close on focus leave
+/// (`on_focus_leave` is a no-op), so only the focus gate stands between it and
+/// a key typed into a page `<input>` outside the mount: rinch-web's
+/// `active_element` answers `None` there, and `None` is inside no owner.
+#[wasm_bindgen_test]
+fn a_key_entry_is_not_offered_a_key_typed_outside_its_owner_in_chrome() {
+    let bdoc = browser_document();
+    PREVIOUS.with(|p| {
+        if let Some(h) = p.borrow_mut().take() {
+            h.unmount();
+        }
+    });
+    while let Ok(Some(el)) = bdoc.query_selector(&format!("[{HOST_ATTR}]")) {
+        el.remove();
+    }
+    let host = bdoc.create_element("div").unwrap();
+    host.set_attribute(HOST_ATTR, "true").unwrap();
+    bdoc.body().unwrap().append_child(&host).unwrap();
+    let hits = Rc::new(std::cell::Cell::new(0u32));
+    let h = hits.clone();
+    let handle = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope| {
+        let owner = scope.create_element("div");
+        owner.set_attribute("tabindex", "0");
+        owner.set_attribute("class", "key-owner-434");
+        let h = h.clone();
+        let entry = rinch_core::push_key_handler(
+            &owner,
+            move |_| {
+                h.set(h.get() + 1);
+                true
+            },
+            || {},
+        );
+        KEY_ENTRY.with(|k| *k.borrow_mut() = Some(entry));
+        owner
+    });
+    PREVIOUS.with(|p| *p.borrow_mut() = Some(handle));
+
+    // Positive control: focus on the owner, and the entry takes the key.
+    let owner = one(&bdoc, ".key-owner-434");
+    owner
+        .dyn_ref::<web_sys::HtmlElement>()
+        .unwrap()
+        .focus()
+        .unwrap();
+    assert!(keydown(&owner, "x").default_prevented(), "the owner's key");
+    assert_eq!(hits.get(), 1);
+
+    let input: web_sys::HtmlInputElement =
+        bdoc.create_element("input").unwrap().dyn_into().unwrap();
+    input.set_attribute(HOST_ATTR, "true").unwrap();
+    bdoc.body().unwrap().append_child(&input).unwrap();
+    input.focus().unwrap();
+    let ev = keydown(&input, "x");
+    assert!(
+        !ev.default_prevented(),
+        "a key outside the owner is untouched"
+    );
+    assert_eq!(hits.get(), 1, "and the entry is not asked");
+    KEY_ENTRY.with(|k| k.borrow_mut().take());
+}
