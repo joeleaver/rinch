@@ -480,3 +480,68 @@ fn pre_line_offsets_skip_the_spaces_around_a_newline() {
     assert_eq!(f2d[2], (t1.0, 6));
     assert_eq!(f2d[4], (t2.0, 1));
 }
+
+/// A collapsible space held at the end of the IFC goes even when the IFC
+/// also holds preserved text (from the review of #1213).
+#[test]
+fn a_trailing_collapsible_space_goes_beside_preserved_text() {
+    check(&[(
+        "held space at the IFC's end after a pre span",
+        "",
+        format!("{} b ", span(PRE, "a")),
+        "a b",
+        23.28,
+        25.0,
+    )]);
+}
+
+/// `break-spaces` preserves its spaces and newlines like `pre-wrap` (that its
+/// spaces never hang is #1043's). Read per element since #1192, so a
+/// `break-spaces` span in a `pre` root used to collapse (review of #1213).
+#[test]
+fn break_spaces_text_keeps_its_spaces_and_newlines() {
+    check(&[
+        (
+            "break-spaces span in a pre root",
+            PRE,
+            format!("a{}", span("white-space:break-spaces", "\n  b")),
+            "a\n  b",
+            18.8,
+            50.0,
+        ),
+        (
+            "break-spaces span in a pre-wrap root",
+            "white-space:pre-wrap",
+            format!("a{}c", span("white-space:break-spaces", "  b  ")),
+            "a  b  c",
+            45.92,
+            25.0,
+        ),
+    ]);
+}
+
+/// A collapsing paragraph's min-content line ending in an NBSP counts the
+/// NBSP (#1154; Chrome 153: 56.91) — also when other text in the IFC is `pre`,
+/// which makes it an IFC holding preserved text (review of #1213).
+#[test]
+fn an_nbsp_at_a_soft_wrap_counts_in_min_content_beside_pre_text() {
+    for tail in ["<span>z</span>", "<span style=\"white-space:pre\">z</span>"] {
+        let mut d = doc();
+        let body = d.body();
+        let c = d.create_element("div");
+        d.set_attribute(
+            c,
+            "style",
+            "width:10px;display:flex;font:16px/25px ProbeFace",
+        );
+        d.append_child(body, c);
+        d.set_inner_html(c, &format!("<div id=\"m\">xxxxxx&nbsp; y{tail}</div>"));
+        d.resolve_layout(800.0, 600.0);
+        let m = find(&d, c.0, "m").expect("#m");
+        let w = d.tree.get(m).unwrap().layout.width;
+        assert!(
+            (w - 56.91).abs() <= 0.5 + 1e-3,
+            "{tail}: Chrome 153 56.91, rinch {w}"
+        );
+    }
+}
