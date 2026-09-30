@@ -92,7 +92,11 @@ fn a_block_holding_only_non_collapsible_spaces_is_one_line_tall() {
             text(&mut doc, block, p);
         }
         doc.resolve_layout(800.0, 600.0);
-        assert_eq!(height(&doc, block), *want, "{name}: Chrome 153 gives {want}");
+        assert_eq!(
+            height(&doc, block),
+            *want,
+            "{name}: Chrome 153 gives {want}"
+        );
     }
 }
 
@@ -132,7 +136,12 @@ fn an_nbsp_at_an_edge_of_a_paragraph_keeps_its_width() {
     for (name, parts, want) in cases {
         let mut doc = doc();
         let body = doc.body();
-        let c = el(&mut doc, body, "div", "width: 300px; font: 16px/25px ProbeFace");
+        let c = el(
+            &mut doc,
+            body,
+            "div",
+            "width: 300px; font: 16px/25px ProbeFace",
+        );
         let ib = el(&mut doc, c, "span", "display: inline-block");
         for p in *parts {
             text(&mut doc, ib, p);
