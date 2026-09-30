@@ -447,8 +447,12 @@ types `abcd abcd Xabcd`.
 A `<textarea>` holds its value in its `value` attribute, and has no content to
 size against. Text written as its child — `textarea { "hi" }`, or a parsed
 `<textarea>hi</textarea>` — is its *default* value, as in HTML: the field shows
-and edits it until the field is focused or its `value` is set (typing does
-both), and it sizes the field no more than a value does. An `<input>`'s
+and edits it, and follows it when it changes (a reactive
+`textarea { {|| draft.get()} }`), until the user edits the field or something
+sets its `value` — HTML's dirty value flag, which focusing and blurring do not
+set (#1186). A change while the field is focused and unedited keeps the caret
+at its offset, clamped to the new text, as in Chrome. It sizes the field no
+more than a value does. An `<input>`'s
 children are not shown at all. A control with no `width` is as wide as its
 `cols` (a textarea, default 20) or `size` (a text `<input>`, default 20)
 average characters of its font, as in a browser, and a textarea reserves a
