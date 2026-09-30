@@ -79,8 +79,10 @@ pub(crate) trait PendingException {
 /// comes after it unconditionally: the JNI specification says describe clears
 /// as a side effect, but that is one more thing to rely on for no saving.
 ///
-/// Logs nothing itself: [`jni_ok`] and a `jni_try` caller report the failure
-/// they settled, and [`ExceptionScope`] reports one that reached it.
+/// Logs nothing itself: [`ExceptionScope`] reports one that reached it.
+/// [`jni_try`] settles through [`settle_pending_with_text`] instead, which
+/// also reads the exception's text for the error it hands on.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn settle_pending<E: PendingException + ?Sized>(env: &mut E) -> bool {
     if !env.exception_pending() {
         return false;
