@@ -290,16 +290,17 @@ fn a_shorter_child_text_clamps_the_caret() {
 }
 
 /// The kept offset counts characters (UTF-16 units, as Chrome's
-/// `selectionStart` does), not bytes: three characters into "ééééé" is after
-/// the third `é`, byte 6.
+/// `selectionStart` does), not bytes, on both sides: three characters into
+/// "ééééé" (byte 6) is three characters into "ñññññ" (byte 6), and ASCII
+/// on either side would hide a byte count on that side.
 #[test]
 fn the_kept_caret_offset_counts_characters_not_bytes() {
-    let (mut app, id, text, _log) = mount_with_change("hello");
+    let (mut app, id, text, _log) = mount_with_change("ééééé");
     click_into(&mut app, id);
     caret_at(&mut app, 3);
-    set_child(&mut app, text, "ééééé");
+    set_child(&mut app, text, "ñabcd");
     press(&mut app, KeyCode::KeyX, Some("X"));
-    assert_eq!(value_attr(&app, id).as_deref(), Some("éééXéé"));
+    assert_eq!(value_attr(&app, id).as_deref(), Some("ñabXcd"));
 }
 
 /// A default-value change while focused is not the user's change: blurring
