@@ -1,17 +1,17 @@
-//! A context with no focused editor does not stop another context's caret
-//! blinking (issue #331).
+//! Two embedded contexts on one thread, each with a focused editor, both blink
+//! (issue #1149).
 //!
-//! The blink clock is one per thread — one caret has the keyboard — and every
-//! context now ticks it from `update`. A context whose own editor is not
-//! focused ticks it with no target; that used to *retarget* the clock to
-//! nothing, restoring the other context's caret to solid and resetting the
-//! phase, so with two contexts updated in turn the caret never went off.
+//! The blink clock was one per thread: one anchor, one target. Every document
+//! on the thread ticks it — a desktop window and each `RinchContext` alike —
+//! so two documents that each had a focused editor retargeted it on every
+//! tick, which restored the other caret to solid and restarted the phase.
+//! Neither caret ever went off. The clock is kept per document now
+//! (`DomDocument::doc_key`, the #134 rule).
 //!
 //! Requires the `embed` (or `gpu`) feature, and `desktop` for the editor:
 //!     cargo test -p rinch --features embed,desktop --test embed_caret_blink_two_contexts
 //!
-//! One test in this binary: `RinchContext::new` registers its thread as the
-//! main thread, and the blink clock is thread-local.
+//! One test in this binary: the blink clock is thread-local.
 
 #![cfg(all(feature = "desktop", any(feature = "gpu", feature = "embed")))]
 
@@ -40,9 +40,24 @@ fn caret_hidden(ctx: &RinchContext) -> Option<bool> {
     Some(style.contains("visibility: hidden"))
 }
 
-fn editor_context() -> (RinchContext, EditorHandle) {
+/// The editor container's node id.
+fn editor_id(ctx: &RinchContext) -> usize {
+    let doc = ctx.app().doc().expect("mounted").borrow();
+    doc.query_selector_all("[data-pm-editor]")
+        .into_iter()
+        .next()
+        .expect("an editor container")
+        .0
+}
+
+/// `lead` empty elements go in front of the editor, so the two contexts'
+/// editors get different container ids. With equal ids a clock that ignored
+/// the document still looked right: each document read the other's target as
+/// its own.
+fn editor_context(text: &str, lead: usize) -> (RinchContext, EditorHandle) {
     let slot: Rc<RefCell<Option<EditorHandle>>> = Rc::default();
     let slot_in = slot.clone();
+    let html = format!("<p>{text}</p>");
     let mut ctx = RinchContext::new(
         RinchContextConfig {
             width: 800,
@@ -53,8 +68,11 @@ fn editor_context() -> (RinchContext, EditorHandle) {
         },
         move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
+            for _ in 0..lead {
+                root.append_child(&scope.create_element("span"));
+            }
             let (container, handle) = rinch::editor::mount_editor(scope);
-            handle.load_html("<p>hello</p>");
+            handle.load_html(&html);
             container.set_attribute(
                 "style",
                 "width: 400px; font-size: 16px; line-height: 24px; font-family: sans-serif",
@@ -70,45 +88,88 @@ fn editor_context() -> (RinchContext, EditorHandle) {
 }
 
 #[test]
-fn a_context_without_a_focused_editor_leaves_the_other_ones_blink_alone() {
-    let (mut with_editor, handle) = editor_context();
-    let mut plain = RinchContext::new(
-        RinchContextConfig {
-            width: 400,
-            height: 300,
-            scale_factor: 1.0,
-            theme: None,
-            fonts: Vec::new(),
-        },
-        |scope: &mut RenderScope| {
-            let root = scope.create_element("div");
-            root.set_attribute("style", "width: 100px; height: 100px");
-            root
-        },
-    );
-    handle.focus();
+fn two_contexts_with_focused_editors_both_blink() {
+    let (mut a, ha) = editor_context("alpha", 0);
+    let (mut b, hb) = editor_context("beta", 3);
+    // One focus request at a time: each lands in its own context's update.
+    ha.focus();
+    a.update(&[]);
+    hb.focus();
+    b.update(&[]);
     for _ in 0..3 {
-        with_editor.update(&[]);
-        plain.update(&[]);
+        a.update(&[]);
+        b.update(&[]);
+    }
+    assert!(a.app().has_focused_contenteditable(), "precondition: a");
+    assert_ne!(
+        editor_id(&a),
+        editor_id(&b),
+        "precondition: the two editors' container ids differ"
+    );
+    assert!(b.app().has_focused_contenteditable(), "precondition: b");
+    assert_eq!(caret_hidden(&a), Some(false), "a's caret starts solid");
+    assert_eq!(caret_hidden(&b), Some(false), "b's caret starts solid");
+
+    // Tick both the way a host pumping two contexts does: in turn, every
+    // 20 ms. Each caret must go off and come back on.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (mut a_off, mut a_back) = (false, false);
+    let (mut b_off, mut b_back) = (false, false);
+    while Instant::now() < deadline && !(a_back && b_back) {
+        std::thread::sleep(Duration::from_millis(20));
+        a.update(&[]);
+        b.update(&[]);
+        match caret_hidden(&a) {
+            Some(true) => a_off = true,
+            Some(false) => a_back |= a_off,
+            None => panic!("a's caret went away"),
+        }
+        match caret_hidden(&b) {
+            Some(true) => b_off = true,
+            Some(false) => b_back |= b_off,
+            None => panic!("b's caret went away"),
+        }
     }
     assert!(
-        with_editor.app().has_focused_contenteditable(),
-        "precondition"
+        a_off && a_back,
+        "a's caret never blinked (off {a_off}, back {a_back})"
     );
-    assert_eq!(
-        plain.next_wake(),
-        None,
-        "nothing blinks in the plain context"
+    assert!(
+        b_off && b_back,
+        "b's caret never blinked (off {b_off}, back {b_back})"
     );
 
-    // A host frame loop: both contexts updated every frame, in turn.
+    // Each context arms its own wake while its caret blinks.
+    assert!(a.next_wake().is_some(), "a arms a wake");
+    assert!(b.next_wake().is_some(), "b arms a wake");
+
+    // Blurring one host window stops that blink, with its caret solid, and
+    // leaves the other blinking. Blur `a` while its caret is OFF, so
+    // "restored to solid" is distinguishable from "left alone".
     let deadline = Instant::now() + Duration::from_secs(5);
-    let mut went_off = false;
-    while Instant::now() < deadline && !went_off {
+    while Instant::now() < deadline && caret_hidden(&a) != Some(true) {
         std::thread::sleep(Duration::from_millis(20));
-        with_editor.update(&[]);
-        plain.update(&[]);
-        went_off = caret_hidden(&with_editor) == Some(true);
+        a.update(&[]);
+        b.update(&[]);
     }
-    assert!(went_off, "the plain context's update kept the caret solid");
+    assert_eq!(caret_hidden(&a), Some(true), "control: a's caret is off");
+    a.update(&[rinch::platform::PlatformEvent::WindowFocus(false)]);
+    assert_eq!(a.next_wake(), None, "a blurred window arms no wake");
+    assert_eq!(caret_hidden(&a), Some(false), "and leaves its caret solid");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (mut b_off, mut b_back) = (false, false);
+    while Instant::now() < deadline && !b_back {
+        std::thread::sleep(Duration::from_millis(20));
+        a.update(&[]);
+        b.update(&[]);
+        match caret_hidden(&b) {
+            Some(true) => b_off = true,
+            Some(false) => b_back |= b_off,
+            None => panic!("b's caret went away"),
+        }
+        assert_eq!(caret_hidden(&a), Some(false), "a stays solid while blurred");
+    }
+    assert!(b_off && b_back, "b stopped blinking when a was blurred");
+    assert!(b.next_wake().is_some(), "b still arms a wake");
 }

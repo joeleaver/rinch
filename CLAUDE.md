@@ -3808,8 +3808,9 @@ loop {
 the cross-thread queue, `drain_polls`, the deferred-work inbox, the events, the
 **caret blink** (the one timed wake — `RinchContext::next_wake()` hands an
 event-driven host the instant desktop would arm `WaitUntil` with; the clock is
-one per thread and `caret_blink_tick` leaves another document's target alone
-when its own caller has no focused editor), layout, then `AboutToWait`
+one per **document**, keyed by `doc_key` — `rinch-editor-view/src/blink.rs`,
+#1149 — so two contexts, or a desktop window beside a context, each blink their
+own focused editor; a clock is held only for a registered editor), layout, then `AboutToWait`
 (transitions, animations, images, the editor overlay pass, focus requests).
 `scene()` drives the inline `RenderSurface`s **in its own document** as
 desktop's paint does — physical layout size, render callbacks, frames painted

@@ -1637,10 +1637,12 @@ impl RinchDomEditorView {
         // caret is solid immediately after the interaction. Scope the reset to
         // the *focused* (blink-target) editor: with several editors mounted,
         // `update_all_carets` sweeps every one, and a programmatic caret move in
-        // an unfocused editor must not stomp the focused editor's global phase.
-        // (A focus change resets the phase separately, in `caret_blink_tick`.)
-        if super::blink::target() == Some((self.doc_key(), self.container_id())) {
-            super::blink::reset();
+        // an unfocused editor must not stomp the focused editor's phase. The
+        // clock is per document (#1149), so another document's caret is never
+        // reached from here. (A focus change resets the phase separately, in
+        // `caret_blink_tick`.)
+        if super::blink::target(self.doc_key()) == Some(self.container_id()) {
+            super::blink::reset(self.doc_key());
         }
         // The `visibility: visible` written below always puts this caret in the
         // "shown" phase, so a moved caret is never left mid-blink (hidden).
@@ -2333,14 +2335,15 @@ mod tests {
         let mut view_b = RinchDomEditorView::new(container_b, doc_ref(&h), &st_b);
 
         // Editor A is the focused / blink-target editor.
-        crate::blink::set_target(Some((view_a.doc_key(), view_a.container_id())));
-        crate::blink::reset();
-        let anchor0 = crate::blink::anchor_for_test();
+        let dk = view_a.doc_key();
+        crate::blink::set_target(dk, Some(view_a.container_id()));
+        crate::blink::reset(dk);
+        let anchor0 = crate::blink::anchor_for_test(dk);
 
         // A caret move in the UNFOCUSED editor B must NOT re-anchor the clock.
         view_b.position_caret(1.0, 2.0, 18.0);
         assert_eq!(
-            crate::blink::anchor_for_test(),
+            crate::blink::anchor_for_test(dk),
             anchor0,
             "an unfocused editor's caret move stomped the focused editor's blink phase",
         );
@@ -2348,12 +2351,12 @@ mod tests {
         // A caret move in the FOCUSED editor A re-anchors it (caret back to solid).
         view_a.position_caret(1.0, 2.0, 18.0);
         assert_ne!(
-            crate::blink::anchor_for_test(),
+            crate::blink::anchor_for_test(dk),
             anchor0,
             "the focused editor's caret move failed to reset its own blink phase",
         );
 
-        crate::blink::set_target(None);
+        crate::blink::set_target(dk, None);
     }
 
     #[test]
