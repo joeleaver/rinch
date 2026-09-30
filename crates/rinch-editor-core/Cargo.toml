@@ -28,5 +28,8 @@ markdown = ["dep:pulldown-cmark"]
 a11y = ["dep:accesskit"]
 
 [dev-dependencies]
+# Only to cross-check serialize/html_integer.rs, a private copy of its HTML
+# integer parser (#1164); the library itself depends on no rinch crate.
+rinch-core.workspace = true
 pretty_assertions = "1"
 serde_json = "1"

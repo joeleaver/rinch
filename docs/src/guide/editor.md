@@ -131,6 +131,14 @@ name and there is no string-tag fallthrough; deserialize consults the schema and
 derives tags from the schema's `parse_html_tags`, so copy-out and paste-in share one
 table — the same one `Editor`'s `content:` prop and `load_html` use.
 
+The HTML import reads its three integer attributes as Chrome 153 does (#1164):
+`<ol start>` by HTML's rules for parsing integers (`" 3"`, `"3abc"` and `"2.5"`
+are 3, 3 and 2; a value past `i32` is the default 1), and `colspan` / `rowspan`
+clamped to 1..=1000 and 0..=65534, a value too large to parse being the maximum.
+The model has no "to the end" span, so `rowspan="0"` is imported as the number of
+rows left in the cell's row group (`<thead>`, `<tbody>`, `<tfoot>`, or a run of
+bare `<tr>`s), counting its own.
+
 ## The transform engine
 
 Every editing operation is a `Transaction` carrying one or more `Step`s. Steps are

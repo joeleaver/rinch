@@ -5067,6 +5067,7 @@ dependencies = [
  "pretty_assertions",
  "pulldown-cmark",
  "regex",
+ "rinch-core",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

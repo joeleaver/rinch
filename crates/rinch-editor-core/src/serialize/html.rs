@@ -15,6 +15,7 @@
 //!
 //! The zero-dependency tokenizer is salvaged from `rinch/src/app/html_parser.rs`.
 
+use super::html_integer::{parse_html_clamped_non_negative_integer, parse_html_integer};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::schema::Schema;
@@ -447,9 +448,10 @@ impl<'a> HtmlParser<'a> {
                     items.push(self.empty_list_item()?);
                 }
                 let attrs = if nt.name() == "ordered_list" {
+                    // HTML's integer rules, as `ol.start` reads it (#1164).
                     let start = attr(attributes, "start")
-                        .and_then(|s| s.parse::<i64>().ok())
-                        .unwrap_or(1);
+                        .and_then(parse_html_integer)
+                        .map_or(1, i64::from);
                     Attrs::from_iter([("start", AttrValue::Int(start))])
                 } else {
                     Attrs::new()
@@ -537,9 +539,14 @@ impl<'a> HtmlParser<'a> {
     /// Parse a table's `<tr>` children into `table_row` nodes, transparently
     /// descending through `<thead>`/`<tbody>`/`<tfoot>` wrappers. Rows with no
     /// recognized cells are dropped.
+    ///
+    /// Each wrapper, and each run of bare `<tr>`s (which the HTML parser wraps
+    /// in an implicit `<tbody>`), is a **row group**: a `rowspan="0"` spans to
+    /// the end of its group, so a group's rows are collected before any is
+    /// built (#1164).
     fn parse_table_rows(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
-        let row_type = self.table_node_type("table_row")?;
         let mut rows = Vec::new();
+        let mut group: Vec<Vec<PendingCell<'a>>> = Vec::new();
         for child in children {
             let ParsedNode::Element {
                 tag,
@@ -553,6 +560,7 @@ impl<'a> HtmlParser<'a> {
                 continue;
             }
             if matches!(tag.as_str(), "thead" | "tbody" | "tfoot") {
+                rows.extend(self.build_row_group(std::mem::take(&mut group))?);
                 rows.extend(self.parse_table_rows(tr_children)?);
                 continue;
             }
@@ -563,14 +571,48 @@ impl<'a> HtmlParser<'a> {
             if cells.is_empty() {
                 continue;
             }
+            group.push(cells);
+        }
+        rows.extend(self.build_row_group(group)?);
+        Ok(rows)
+    }
+
+    /// Build one row group's `table_row`s, resolving each `rowspan="0"` to the
+    /// number of rows left in the group, counting its own. The model has no
+    /// "to the end" span (every span is at least 1), and this is the span
+    /// Chrome 153 lays such a cell out with.
+    fn build_row_group(&self, group: Vec<Vec<PendingCell<'a>>>) -> Result<Vec<Node>, EditorError> {
+        let row_type = self.table_node_type("table_row")?;
+        let len = group.len();
+        let mut rows = Vec::with_capacity(len);
+        for (r, cells) in group.into_iter().enumerate() {
+            let rows_left = (len - r) as i64;
+            let cells = cells
+                .into_iter()
+                .map(|cell| {
+                    let rowspan = if cell.rowspan == 0 {
+                        rows_left
+                    } else {
+                        i64::from(cell.rowspan)
+                    };
+                    let attrs = Attrs::from_iter([
+                        ("colspan", AttrValue::Int(i64::from(cell.colspan))),
+                        ("rowspan", AttrValue::Int(rowspan)),
+                    ]);
+                    self.make_node(cell.node_type, attrs, cell.content)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             rows.push(self.make_node(row_type, Attrs::new(), Fragment::from_children(cells))?);
         }
         Ok(rows)
     }
 
-    /// Parse a row's `<td>`/`<th>` children into cell nodes (block content, with
-    /// `colspan`/`rowspan` carried through). Non-cell children are dropped.
-    fn parse_table_cells(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
+    /// Parse a row's `<td>`/`<th>` children into pending cells (block content,
+    /// with `colspan`/`rowspan` carried through). Non-cell children are dropped.
+    fn parse_table_cells(
+        &self,
+        children: &[ParsedNode],
+    ) -> Result<Vec<PendingCell<'a>>, EditorError> {
         let cell_type = self.table_node_type("table_cell")?;
         let header_type = self.table_node_type("table_header_cell")?;
         let mut cells = Vec::new();
@@ -589,28 +631,23 @@ impl<'a> HtmlParser<'a> {
                 _ => continue,
             };
             let inner = self.ensure_block_plus(self.parse_blocks(cell_children)?)?;
-            cells.push(self.make_node(
-                nt,
-                self.cell_span_attrs(attributes),
-                Fragment::from_children(inner),
-            )?);
+            // `colspan`/`rowspan` — the only table attributes that survive
+            // paste — read as Chrome 153's `td.colSpan` / `td.rowSpan` read
+            // them: clamped to 1..=1000 and 0..=65534, an overflow the maximum,
+            // an error or a negative value the default 1 (#1164).
+            let span = |name: &str, min: u32, max: u32| {
+                attr(attributes, name)
+                    .and_then(|v| parse_html_clamped_non_negative_integer(v, min, max))
+                    .unwrap_or(1)
+            };
+            cells.push(PendingCell {
+                node_type: nt,
+                colspan: span("colspan", 1, 1000),
+                rowspan: span("rowspan", 0, 65534),
+                content: Fragment::from_children(inner),
+            });
         }
         Ok(cells)
-    }
-
-    /// `colspan`/`rowspan` attrs parsed from a cell element (defaulting to 1, the
-    /// minimum) — the only table attributes that survive paste.
-    fn cell_span_attrs(&self, attributes: &[(String, String)]) -> Attrs {
-        let span = |name: &str| {
-            attr(attributes, name)
-                .and_then(|s| s.parse::<i64>().ok())
-                .filter(|&n| n >= 1)
-                .unwrap_or(1)
-        };
-        Attrs::from_iter([
-            ("colspan", AttrValue::Int(span("colspan"))),
-            ("rowspan", AttrValue::Int(span("rowspan"))),
-        ])
     }
 
     /// A `table_row` holding one empty (single-paragraph) `table_cell` — the
@@ -619,7 +656,10 @@ impl<'a> HtmlParser<'a> {
         let para = self.make_node(self.paragraph, Attrs::new(), Fragment::empty())?;
         let cell = self.make_node(
             self.table_node_type("table_cell")?,
-            self.cell_span_attrs(&[]),
+            Attrs::from_iter([
+                ("colspan", AttrValue::Int(1)),
+                ("rowspan", AttrValue::Int(1)),
+            ]),
             Fragment::from_node(para),
         )?;
         self.make_node(
@@ -836,6 +876,17 @@ fn is_dropped(tag: &str) -> bool {
             | "frame"
             | "frameset"
     )
+}
+
+/// A table cell parsed but not yet built: its `rowspan` can be `0`, "to the end
+/// of the row group", which only the whole group resolves
+/// ([`HtmlParser::build_row_group`]).
+struct PendingCell<'a> {
+    node_type: &'a NodeType,
+    colspan: u32,
+    /// `0` spans to the end of the row group.
+    rowspan: u32,
+    content: Fragment,
 }
 
 /// The heading level encoded in an `h1`..`h6` tag (defaults to 1).
@@ -1947,5 +1998,161 @@ mod tests {
         let html = node_to_html(&para);
         assert!(html.contains(r#"target="_blank""#), "{html}");
         assert!(html.contains(r#"rel="noopener noreferrer""#), "{html}");
+    }
+
+    // ── HTML integer attributes (#1164) ──────────────────────────────────────
+
+    /// The first `ordered_list`'s `start` after importing `<ol start="{v}">`.
+    fn imported_ol_start(v: &str) -> Option<i64> {
+        let html = format!("<ol start=\"{v}\"><li><p>x</p></li></ol>");
+        let slice = slice_from_html(&s(), &html).unwrap();
+        slice.content.child(0).attrs().get_int("start")
+    }
+
+    /// `(colspan, rowspan)` of the first cell after importing a one-row table
+    /// whose first cell carries `attrs`.
+    fn imported_first_cell_spans(attrs: &str) -> (i64, i64) {
+        let html = format!("<table><tr><td {attrs}><p>a</p></td></tr></table>");
+        let slice = slice_from_html(&s(), &html).unwrap();
+        let cell = slice.content.child(0).child(0).child(0);
+        (
+            cell.attrs().get_int("colspan").unwrap(),
+            cell.attrs().get_int("rowspan").unwrap(),
+        )
+    }
+
+    /// `<ol start>` is read by HTML's rules for parsing integers, as Chrome
+    /// 153's `ol.start` reads it — not by `str::parse`, which refused a leading
+    /// space or trailing junk and accepted values past `i32`.
+    #[test]
+    fn ol_start_is_read_by_the_html_integer_rules() {
+        let rows: &[(&str, i64)] = &[
+            (" 3", 3),
+            ("3abc", 3),
+            ("2.5", 2),
+            ("+4", 4),
+            ("-2", -2),
+            ("7", 7),
+            // Errors read as the default, 1.
+            ("abc", 1),
+            ("", 1),
+            ("99999999999", 1),
+            ("2147483648", 1),
+        ];
+        for &(v, want) in rows {
+            assert_eq!(imported_ol_start(v), Some(want), "start={v:?}");
+        }
+    }
+
+    /// `colspan` is Chrome 153's `td.colSpan`: HTML's non-negative integer,
+    /// clamped to 1..=1000; an overflow is the maximum, an error or a negative
+    /// value is the default 1.
+    #[test]
+    fn colspan_is_read_and_clamped_as_chrome_reads_it() {
+        let rows: &[(&str, i64)] = &[
+            ("3abc", 3),
+            (" 2", 2),
+            ("4.9", 4),
+            ("0", 1),
+            ("-3", 1),
+            ("abc", 1),
+            ("1000", 1000),
+            ("1001", 1000),
+            ("99999999999", 1000),
+            ("99999999999999999999999", 1000),
+        ];
+        for &(v, want) in rows {
+            let attrs = format!("colspan=\"{v}\"");
+            assert_eq!(imported_first_cell_spans(&attrs).0, want, "colspan={v:?}");
+        }
+    }
+
+    /// `rowspan` is Chrome 153's `td.rowSpan`: clamped to 0..=65534, an
+    /// overflow the maximum. (`0` is covered by the section tests below: the
+    /// model has no "to the end" value, so it is resolved at import.)
+    #[test]
+    fn rowspan_is_read_and_clamped_as_chrome_reads_it() {
+        let rows: &[(&str, i64)] = &[
+            ("3abc", 3),
+            (" 2", 2),
+            ("-3", 1),
+            ("abc", 1),
+            ("65534", 65534),
+            ("65535", 65534),
+            ("99999999999", 65534),
+        ];
+        for &(v, want) in rows {
+            let attrs = format!("rowspan=\"{v}\"");
+            assert_eq!(imported_first_cell_spans(&attrs).1, want, "rowspan={v:?}");
+        }
+    }
+
+    /// Every cell's `rowspan`, row by row, of the first table in `html`.
+    fn imported_rowspans(html: &str) -> Vec<Vec<i64>> {
+        let slice = slice_from_html(&s(), html).unwrap();
+        let table = slice.content.child(0);
+        (0..table.child_count())
+            .map(|r| {
+                let row = table.child(r);
+                (0..row.child_count())
+                    .map(|c| row.child(c).attrs().get_int("rowspan").unwrap())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// `rowspan="0"` spans to the end of the cell's row group, which is what
+    /// Chrome 153 lays out. The model has no such value (a span is at least
+    /// 1), so the import writes the number of rows left in the group — two
+    /// explicit `<tbody>`s here, so the first cell spans its own three rows
+    /// and not the table's four.
+    #[test]
+    fn rowspan_zero_spans_to_the_end_of_its_row_group() {
+        let html = "<table><tbody>\
+                    <tr><td rowspan=\"0\"><p>a</p></td><td><p>b</p></td></tr>\
+                    <tr><td><p>c</p></td></tr>\
+                    <tr><td><p>d</p></td></tr>\
+                    </tbody><tbody>\
+                    <tr><td><p>e</p></td></tr>\
+                    </tbody></table>";
+        assert_eq!(
+            imported_rowspans(html),
+            vec![vec![3, 1], vec![1], vec![1], vec![1]]
+        );
+    }
+
+    /// Bare rows written before an explicit `<tbody>` are their own group, and
+    /// keep their place: the group is closed where the wrapper opens.
+    #[test]
+    fn bare_rows_before_a_tbody_are_a_group_of_their_own() {
+        let html = "<table>\
+                    <tr><td rowspan=\"0\"><p>a</p></td></tr>\
+                    <tr><td><p>b</p></td></tr>\
+                    <tbody><tr><td><p>c</p></td></tr></tbody>\
+                    </table>";
+        assert_eq!(imported_rowspans(html), vec![vec![2], vec![1], vec![1]]);
+        assert_eq!(
+            reserialize_via_slice(&s(), html),
+            "<table><tr><td rowspan=\"2\"><p>a</p></td></tr>\
+             <tr><td><p>b</p></td></tr><tr><td><p>c</p></td></tr></table>"
+        );
+    }
+
+    /// A run of bare `<tr>`s is one row group (the HTML parser wraps it in an
+    /// implicit `<tbody>`), and one that follows an explicit group starts a new
+    /// one. A `rowspan="0"` in a group's last row spans that row alone.
+    #[test]
+    fn rowspan_zero_in_bare_rows_and_a_groups_last_row() {
+        let html = "<table><thead>\
+                    <tr><th rowspan=\"0\"><p>h</p></th></tr>\
+                    </thead>\
+                    <tr><td rowspan=\"0\"><p>a</p></td></tr>\
+                    <tr><td><p>b</p></td></tr>\
+                    <tr><td><p>c</p></td><td rowspan=\"0\"><p>d</p></td></tr>\
+                    </table>";
+        assert_eq!(
+            imported_rowspans(html),
+            vec![vec![1], vec![3], vec![1], vec![1, 1]]
+        );
     }
 }
