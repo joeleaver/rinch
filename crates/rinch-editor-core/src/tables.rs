@@ -98,7 +98,8 @@ impl TableMap {
     /// grid's right edge (and at its bottom, for a rowspan past the last row),
     /// and a cell that starts past the right edge is in no slot, so
     /// [`Self::find_cell`] answers `None` for it and a command there does
-    /// nothing. No well-formed table is cut: see [`grid_slot_budget`].
+    /// nothing. A rectangular table with no spans is never cut: see
+    /// [`grid_slot_budget`].
     pub fn compute(table: &Node, table_start: usize) -> TableMap {
         let height = table.child_count();
         let width = column_count(table);
@@ -356,9 +357,11 @@ pub fn column_count(table: &Node) -> usize {
 }
 
 /// The most slots a [`TableMap`] over `table` may hold: twice the number of
-/// cells, and never less than [`GRID_SLOT_FLOOR`]. A table with no spans
-/// fills `width × rows` slots with that many cells, so every well-formed table
-/// fits, and the map stays linear in the document whatever its spans claim.
+/// cells, and never less than [`GRID_SLOT_FLOOR`]. A rectangular table with
+/// no spans fills `width × rows` slots with as many cells, so it always fits;
+/// only a grid past 2^20 slots and past twice its cells (spans, ragged rows)
+/// can be cut.
+/// The map stays linear in the document whatever its spans claim.
 pub fn grid_slot_budget(table: &Node) -> usize {
     let cells: usize = (0..table.child_count())
         .map(|r| table.child(r).child_count())
@@ -923,7 +926,7 @@ mod grid_bound_tests {
 
     /// A plain rectangular table larger than the floor is never cut: the budget
     /// grows with the number of cells (twice it), so it is linear in the
-    /// document and every well-formed table fits.
+    /// document and a table with no spans always fits.
     #[test]
     fn a_rectangular_table_past_the_floor_is_not_cut() {
         let s = Schema::starter_kit();

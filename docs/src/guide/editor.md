@@ -134,10 +134,30 @@ table — the same one `Editor`'s `content:` prop and `load_html` use.
 The HTML import reads its three integer attributes as Chrome 153 does (#1164):
 `<ol start>` by HTML's rules for parsing integers (`" 3"`, `"3abc"` and `"2.5"`
 are 3, 3 and 2; a value past `i32` is the default 1), and `colspan` / `rowspan`
-clamped to 1..=1000 and 0..=65534, a value too large to parse being the maximum.
+clamped to 1..=1000 and 0..=65534, a value too large to parse being the maximum,
+and a negative or unparsable value 1.
 The model has no "to the end" span, so `rowspan="0"` is imported as the number of
 rows left in the cell's row group (`<thead>`, `<tbody>`, `<tfoot>`, or a run of
-bare `<tr>`s), counting its own.
+bare `<tr>`s), counting its own — rows the import keeps: a `<tr>` with no cells is
+dropped and not counted, where Chrome counts it. Any other `rowspan` is cut at the
+same place, the end of its row group, which is where Chrome 153 cuts it when it
+lays the table out (#1176).
+
+A pasted row is also at most 1000 grid columns wide (`tables::MAX_IMPORTED_ROW_WIDTH`),
+counting the columns that rowspans from the rows above carry into it: a `colspan` is
+cut to what is left, and never below 1 (#1176). That limit is rinch's, not Chrome's
+(Chrome lays out a row of 3001 columns); without it a row's width grew with every
+rowspan above it, and a 57 KB paste made a 1,000,000-column table.
+
+Whatever route a table takes into the model — paste, `load_doc`, an app's own
+transaction, the table commands — the grid `TableMap` builds over it is bounded:
+`tables::column_count` caps `width × rows` at `tables::grid_slot_budget`, twice the
+table's cells and never less than 2^20 slots. A rectangular table with no spans fills
+exactly `width × rows` slots with as many cells, so it is never cut; what can be cut
+is a grid far larger than its cells — more than 2^20 slots — as spans or ragged rows
+make one. Past the cap a cell is cut at
+the grid's right edge, and one that starts past it is in no slot, so the table
+commands do nothing there.
 
 ## The transform engine
 
