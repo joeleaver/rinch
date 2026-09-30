@@ -159,6 +159,9 @@ fn as_child(k: Knobs) -> NodeHandle {
     }
 }
 
+/// A named change to one binding's signal.
+type Step = (&'static str, Box<dyn Fn()>);
+
 /// Every caller binding, changed on its own, updates the root in place: same
 /// node, no render, the component-local signal keeps its value, and exactly one
 /// evaluation of that binding.
@@ -174,7 +177,7 @@ fn a_binding_change_does_not_re_render(build: fn(&mut RenderScope, Knobs) -> Nod
         "positive control: the local signal drives the text"
     );
 
-    let steps: [(&str, Box<dyn Fn()>); 4] = [
+    let steps: [Step; 4] = [
         ("style", Box::new(move || k.css.set("color: blue".into()))),
         ("class", Box::new(move || k.cls.set("beta".into()))),
         ("shorthand", Box::new(move || k.margin.set("9px".into()))),
