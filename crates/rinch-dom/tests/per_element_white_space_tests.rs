@@ -378,3 +378,89 @@ fn restyle_relays(extra: &str) {
     d.resolve_layout(800.0, 600.0);
     assert_eq!(text(&d), "a b");
 }
+
+/// Text beside a block child is laid out by an anonymous box, which is not
+/// the text's element: the mode is still the text's own element's (its DOM
+/// parent), here the split `span`. Only the box is compared — the runs are
+/// laid out by boxes of their own — and the widest line is the first.
+#[test]
+fn a_split_inlines_runs_collapse_by_the_inlines_white_space() {
+    for (name, cs, inner, w, h) in [
+        (
+            "pre span split by a block, in a normal root",
+            "",
+            format!("a{}", span(PRE, "  b<div>x</div>  c")),
+            27.78,
+            75.0,
+        ),
+        (
+            "normal span split by a block, in a pre root",
+            PRE,
+            format!("a{}", span("white-space:normal", "  b<div>x</div>  c")),
+            23.28,
+            75.0,
+        ),
+    ] {
+        let (_, got_w, got_h) = measure(cs, &inner);
+        assert!(
+            (got_w - w).abs() <= 0.5 + 1e-3 && (got_h - h).abs() < 1e-3,
+            "{name}: Chrome 153 {w}x{h}, rinch {got_w}x{got_h}"
+        );
+    }
+}
+
+/// A `contenteditable` root keeps every text node verbatim, whatever its
+/// element's `white-space`: the editor maps its caret through the DOM text.
+#[test]
+fn a_contenteditable_root_keeps_every_nodes_text() {
+    let mut d = doc();
+    let body = d.body();
+    let p = d.create_element("div");
+    d.set_attribute(p, "style", "width:300px;font:16px/25px ProbeFace");
+    d.set_attribute(p, "contenteditable", "true");
+    d.append_child(body, p);
+    d.set_inner_html(
+        p,
+        "a  <span style=\"white-space:normal\">  b\n</span> <b>c</b>",
+    );
+    d.resolve_layout(800.0, 600.0);
+    let il = d.tree.get(p.0).unwrap().text_layout.as_ref().unwrap();
+    assert_eq!(il.text_content, "a    b\n c");
+}
+
+/// `pre-line`'s DOM ↔ flat offsets: the spaces around a newline are removed,
+/// in the same text node as the newline and in the one before it.
+#[test]
+fn pre_line_offsets_skip_the_spaces_around_a_newline() {
+    let mut d = doc();
+    let body = d.body();
+    let p = d.create_element("div");
+    d.set_attribute(
+        p,
+        "style",
+        "width:300px;font:16px/25px ProbeFace;white-space:pre-line",
+    );
+    d.append_child(body, p);
+    let t1 = d.create_text("a  \n  b ");
+    d.append_child(p, t1);
+    let t2 = d.create_text("\nc");
+    d.append_child(p, t2);
+    d.resolve_layout(800.0, 600.0);
+    let il = d.tree.get(p.0).unwrap().text_layout.as_ref().unwrap();
+    assert_eq!(il.text_content, "a\nb\nc");
+    let d2f = |node: NodeId, n: usize| -> Vec<usize> {
+        (0..=n)
+            .map(|o| dom_cursor_to_ifc_offset(&il.text_ranges, node.0, o).unwrap())
+            .collect()
+    };
+    // `a` `␠` `␠` `\n` `␠` `␠` `b` `␠`: the two spaces before the newline and
+    // the two after it are gone; the held one after `b` goes at t2's newline.
+    assert_eq!(d2f(t1, 8), vec![0, 1, 1, 1, 2, 2, 2, 3, 3]);
+    assert_eq!(d2f(t2, 2), vec![3, 4, 5]);
+    let f2d: Vec<(usize, usize)> = (0..=5)
+        .map(|f| ifc_offset_to_dom_cursor(&il.text_ranges, f, false).unwrap())
+        .collect();
+    assert_eq!(f2d[1], (t1.0, 3));
+    assert_eq!(f2d[2], (t1.0, 6));
+    assert_eq!(f2d[4], (t2.0, 1));
+}
