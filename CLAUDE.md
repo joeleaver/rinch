@@ -98,7 +98,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
     one byte late per collapsed byte — and `IfcTextRange::offset_map` is each text node's
     DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,
-    `measured_width` keeps it in an IFC with no preserved text (`width_keeping_nbsp`).
+    `measured_width` keeps it (`width_keeping_nbsp`), whatever else the IFC holds.
     `crates/rinch-dom/tests/inline_edge_space_tests.rs` and `nbsp_line_box_tests.rs` are the pins.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on; parley does not re-export it, so a parley bump that moves skrifa silently builds a second copy unless this pin moves with it.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)

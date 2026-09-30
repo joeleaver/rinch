@@ -97,6 +97,10 @@ pub(super) fn white_space_from_stylo(
         (WSCollapse::Preserve, TWMode::Nowrap) => WhiteSpaceValue::Pre,
         (WSCollapse::Preserve, TWMode::Wrap) => WhiteSpaceValue::PreWrap,
         (WSCollapse::PreserveBreaks, TWMode::Wrap) => WhiteSpaceValue::PreLine,
+        // `break-spaces` preserves spaces and newlines, as `pre-wrap` /
+        // `pre` do; that its spaces never hang (#1043) is not modelled.
+        (WSCollapse::BreakSpaces, TWMode::Wrap) => WhiteSpaceValue::PreWrap,
+        (WSCollapse::BreakSpaces, TWMode::Nowrap) => WhiteSpaceValue::Pre,
         _ => WhiteSpaceValue::Normal,
     }
 }

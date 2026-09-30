@@ -603,7 +603,10 @@ impl InlineLayout {
             let m = line.metrics();
             extent = extent.max(m.inline_min_coord + m.advance);
         }
-        extent.min(self.max_width.max(width))
+        // An NBSP never hangs, not even conditionally (#1154).
+        extent
+            .min(self.max_width.max(width))
+            .max(self.width_keeping_nbsp(width))
     }
 
     /// `width` (parley's, which drops every line's trailing white space)
