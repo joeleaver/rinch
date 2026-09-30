@@ -67,7 +67,10 @@ fn nbsp_edges_the_pr_fixtures_do_not_reach() {
     ];
     for (name, html, w, h) in cases {
         let (gw, gh) = measure("", html);
-        assert!((gw - w).abs() <= 0.5 + 1e-3, "{name}: Chrome 153 {w}, rinch {gw}");
+        assert!(
+            (gw - w).abs() <= 0.5 + 1e-3,
+            "{name}: Chrome 153 {w}, rinch {gw}"
+        );
         assert_eq!(gh, *h, "{name}: height");
     }
 }
@@ -119,7 +122,10 @@ fn a_min_content_box_keeps_its_trailing_nbsp_on_its_line() {
         ),
     ] {
         let (gw, gh) = measure("", html);
-        assert!((gw - w).abs() <= 0.5 + 1e-3, "{name}: Chrome 153 {w}, rinch {gw}");
+        assert!(
+            (gw - w).abs() <= 0.5 + 1e-3,
+            "{name}: Chrome 153 {w}, rinch {gw}"
+        );
         assert_eq!(gh, h, "{name}: Chrome 153 {h} tall, rinch {gh}");
     }
 }
