@@ -489,6 +489,49 @@ rsx! {
 
 Note: Shell-level constructs like windows, menus, and themes are configured at the runtime level via props, not in RSX.
 
+### Attributes on a component
+
+A component's props are the fields of its struct, so `Group { gap: "xs" }` sets
+a field. A **hyphenated** name can never be a Rust field, so `rsx!` treats one
+written on a component as an attribute for the component's **root DOM
+element**, applied after `Component::render` — the same route the universal
+`style:` and `class:` props take:
+
+```rust
+rsx! {
+    // The whole toolbar takes clicks without taking the keyboard; no wrapper div.
+    Group { gap: "xs", data-nofocus: "", aria-label: "Formatting",
+        Button { onclick: move || ed.command("toggleBold"), "B" }
+    }
+}
+```
+
+That covers `data-*`, `aria-*` and any other hyphenated name (issue #433). The
+rules are the HTML element's rules:
+
+- A **boolean attribute** — the HTML set and rinch's own `data-disabled`,
+  `data-nofocus`, `data-trap-focus` and `data-backdrop` — is written as a
+  presence for a truthy value and **removed** for a falsey one
+  ([Boolean attributes](#boolean-attributes)). Any other attribute is written as
+  the string.
+- A **reactive** value, `data-state: {|| state.get()}`, is an effect on the root
+  that rewrites the attribute when its signals change. On a component that has
+  no reactive struct prop it re-renders nothing. On one that re-renders for a
+  reactive struct prop, the attribute is re-evaluated inside that re-render, so
+  a change to its signals also rebuilds the component. When the component re-renders for another reason (a reactive
+  struct prop), every attribute is written again on its new root.
+- **The caller writes last.** An attribute the component also writes on its own
+  root takes the caller's value at mount, and a falsey boolean removes the
+  component's. After that the last write wins: a component effect that later
+  writes the same attribute overwrites the caller's value, and a reactive
+  attribute overwrites it back only when its own signals change. That includes
+  rinch's own wiring attributes: a caller's `data-rid` on a component replaces
+  the id of the component's own click handler, so it stops firing. Don't.
+
+Unhyphenated attribute names — `id`, `tabindex`, `role` — are not routed: on a
+component they are still struct fields, and a component that does not declare
+one does not compile.
+
 ## Fragments
 
 Use empty braces to group multiple elements without a wrapper:

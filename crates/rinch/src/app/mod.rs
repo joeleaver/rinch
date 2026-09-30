@@ -25,6 +25,8 @@ mod caret_visibility_paint_tests;
 mod click_handling;
 #[cfg(test)]
 mod color_input_dismiss_465_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod component_attrs_433_tests;
 #[cfg(test)]
 mod component_class_717_tests;
 #[cfg(test)]

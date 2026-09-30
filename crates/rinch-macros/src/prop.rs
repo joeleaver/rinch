@@ -21,7 +21,10 @@ impl RsxProp {
     /// Convert the name back to an `Ident` for use in `quote!` codegen
     /// (e.g., component struct field assignment). For simple names this is
     /// straightforward; for `r#type` the raw prefix is preserved.
-    /// Panics for hyphenated names — those aren't valid struct fields.
+    /// Panics for hyphenated names — those aren't valid struct fields. A
+    /// component never asks for one: `component_codegen::is_root_attribute`
+    /// routes a hyphenated name to the component's root element instead
+    /// (issue #433).
     pub fn name_as_ident(&self) -> Ident {
         // For non-hyphenated names, return the original ident (preserves r# prefix)
         if !self.name.contains('-') {

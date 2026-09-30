@@ -16,10 +16,25 @@ use super::captures::{
     collect_body_captures, collect_capture_idents, is_move_closure, shadow_clones, wrap_site,
 };
 use super::html::{
-    generate_class_code, generate_shorthand_code, generate_shorthand_code_reactive,
-    generate_style_code,
+    generate_attr_code, generate_attr_code_reactive, generate_class_code, generate_shorthand_code,
+    generate_shorthand_code_reactive, generate_style_code,
 };
 use super::{DomCodegenContext, no_siblings};
+
+/// Whether a prop written on a component is an attribute for the component's
+/// **root DOM element** rather than a field of its struct (issue #433).
+///
+/// Exactly the hyphenated names — `data-nofocus`, `aria-label`,
+/// `data-viewport` — because a hyphen is not legal in a Rust identifier, so no
+/// component can ever declare a field of that name and the routing cannot
+/// shadow a prop. Such a prop is applied after `Component::render`, the way
+/// `style:` and `class:` are: through `NodeHandle::write_attribute`, so a
+/// boolean attribute (`data-nofocus`, `data-disabled`, `data-trap-focus`,
+/// `data-backdrop`, `hidden`, …) is a presence for a truthy value and removed
+/// for a falsey one (#551), exactly as on an HTML element.
+pub fn is_root_attribute(name: &str) -> bool {
+    name.contains('-')
+}
 
 /// Check if an element is a component with reactive (closure) props that needs
 /// statement-based insertion (like control flow) rather than expression-based.
@@ -29,7 +44,10 @@ pub fn has_reactive_component_props(element: &RsxElement) -> bool {
     }
     element.props.iter().any(|p| {
         let name = p.name.to_string();
-        if name == "key" || name == "style" || name == "class" {
+        // A hyphenated attribute is applied to the root, not the struct
+        // (issue #433): a reactive one is an effect on a stable root, like a
+        // reactive `style:`/`class:`, and re-renders nothing.
+        if name == "key" || name == "style" || name == "class" || is_root_attribute(&name) {
             return false;
         }
         if name.starts_with("on") || name.ends_with("_fn") {
@@ -58,6 +76,7 @@ pub fn generate_reactive_component_stmt(
     let mut style_prop = None;
     let mut class_prop = None;
     let mut shorthand_props = Vec::new();
+    let mut attr_props = Vec::new();
     let mut comp_props = Vec::new();
 
     for prop in &element.props {
@@ -68,6 +87,8 @@ pub fn generate_reactive_component_stmt(
             style_prop = Some(prop);
         } else if name_str == "class" {
             class_prop = Some(prop);
+        } else if is_root_attribute(&name_str) {
+            attr_props.push(prop);
         } else if expand_style_shorthand(&name_str).is_some() {
             shorthand_props.push(prop);
         } else {
@@ -134,6 +155,7 @@ pub fn generate_reactive_component_stmt(
     };
 
     let shorthand_code = generate_shorthand_code_reactive(&shorthand_props, &result_var);
+    let attr_code = generate_attr_code_reactive(&attr_props, &result_var);
 
     // Pass the actual parent directly to reactive_component_dom — no wrapper div needed.
     // This is the statement path: no return value, the function handles insertion.
@@ -175,6 +197,7 @@ pub fn generate_reactive_component_stmt(
             rinch::core::dom::release_scratch_container(__scope, &#temp_var);
             __rendered
         });
+        #attr_code
         #style_code
         #class_code
         #shorthand_code
@@ -197,6 +220,7 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
     let mut style_prop = None;
     let mut class_prop = None;
     let mut shorthand_props = Vec::new();
+    let mut attr_props = Vec::new();
     let mut comp_props = Vec::new();
 
     for prop in &element.props {
@@ -208,6 +232,8 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
             style_prop = Some(prop);
         } else if name_str == "class" {
             class_prop = Some(prop);
+        } else if is_root_attribute(&name_str) {
+            attr_props.push(prop);
         } else if expand_style_shorthand(&name_str).is_some() {
             shorthand_props.push(prop);
         } else {
@@ -229,6 +255,7 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
             ctx,
             &comp_props,
             &shorthand_props,
+            &attr_props,
             style_prop,
             class_prop,
         );
@@ -252,7 +279,8 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
         .map(|child| super::generate_child_code(child, &temp_var, ctx))
         .collect();
 
-    // Generate post-render style/class/shorthand application code
+    // Generate post-render attribute/style/class/shorthand application code
+    let attr_code = generate_attr_code(&attr_props, &result_var, ctx);
     let style_code = generate_style_code(style_prop, &result_var, ctx);
     let class_code = generate_class_code(class_prop, &result_var, ctx);
     let shorthand_code = generate_shorthand_code(&shorthand_props, &result_var, ctx);
@@ -278,7 +306,11 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
             // the component adopted have been re-parented out by then.
             rinch::core::dom::release_scratch_container(__scope, &#temp_var);
 
-            // Apply style/class/shorthand props to the rendered NodeHandle
+            // Apply hyphenated attributes and style/class/shorthand props to
+            // the rendered NodeHandle. The caller writes after the component,
+            // so a collision with an attribute the component wrote on its own
+            // root goes to the caller (issue #433).
+            #(#attr_code)*
             #style_code
             #class_code
             #shorthand_code
@@ -301,6 +333,7 @@ pub fn element_to_dom_component_reactive(
     ctx: &mut DomCodegenContext,
     comp_props: &[&RsxProp],
     shorthand_props: &[&RsxProp],
+    attr_props: &[&RsxProp],
     style_prop: Option<&RsxProp>,
     class_prop: Option<&RsxProp>,
 ) -> TokenStream2 {
@@ -370,6 +403,7 @@ pub fn element_to_dom_component_reactive(
 
     // Shorthands inside reactive closure invoke closures directly (no separate effects)
     let shorthand_code = generate_shorthand_code_reactive(shorthand_props, &result_var);
+    let attr_code = generate_attr_code_reactive(attr_props, &result_var);
 
     // Use a display:contents wrapper div as the parent for reactive_component_dom.
     // This ensures the component content is placed inside the wrapper, which the caller
@@ -412,6 +446,7 @@ pub fn element_to_dom_component_reactive(
             rinch::core::dom::release_scratch_container(__scope, &#temp_var);
             __rendered
         });
+        #attr_code
         #style_code
         #class_code
         #shorthand_code

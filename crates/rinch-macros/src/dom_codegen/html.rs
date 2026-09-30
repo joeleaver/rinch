@@ -77,59 +77,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
         }
     }
 
-    // Generate attribute setting code.
-    //
-    // Every path here goes through `NodeHandle::write_attribute`, not
-    // `set_attribute`: an HTML boolean attribute's value is a *shape* and not a
-    // string, so a rendered `false` has to remove the attribute rather than
-    // write `disabled="false"` — which HTML reads as *present*, and therefore
-    // true (issue #551). The list of such attributes lives in `rinch-core`; the
-    // macro deliberately does not carry a copy, and deliberately keys on the
-    // attribute **name** rather than the value's type, because `draggable`,
-    // `aria-*` and rinch's own `data-viewport-ready` all take a meaningful
-    // `"false"`.
-    let attr_code: Vec<TokenStream2> = attr_props
-        .iter()
-        .map(|prop| {
-            let name = prop.name.to_string();
-            let value = &prop.value;
-
-            if is_literal_expr(value) {
-                // Static attribute - set once
-                let value_str = crate::helpers::expr_to_string(value);
-                quote! {
-                    #elem_var.write_attribute(#name, #value_str);
-                }
-            } else if let Some(closure) = get_closure_expr(value) {
-                // Closure expression - call it and use result
-                let handle_var = ctx.next_var("attr_handle");
-                let (site, fire) = reactive_shadows(value, Some(closure), ctx);
-                quote! {
-                    {
-                        let #handle_var = #elem_var.clone();
-                        #site
-                        __scope.create_effect(move || {
-                            #fire
-                            #handle_var.write_attribute(#name, &::std::string::ToString::to_string(&(#closure)()));
-                        });
-                    }
-                }
-            } else {
-                // Dynamic expression (not a closure) - wrap in effect
-                let handle_var = ctx.next_var("attr_handle");
-                let (site, _) = reactive_shadows(value, None, ctx);
-                quote! {
-                    {
-                        let #handle_var = #elem_var.clone();
-                        #site
-                        __scope.create_effect(move || {
-                            #handle_var.write_attribute(#name, &::std::string::ToString::to_string(&#value));
-                        });
-                    }
-                }
-            }
-        })
-        .collect();
+    let attr_code = generate_attr_code(&attr_props, &elem_var, ctx);
 
     // Generate event handler registration
     let has_oninput = event_props.iter().any(|prop| prop.name == "oninput");
@@ -294,6 +242,113 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
             }
         }
     }
+}
+
+/// Generate attribute-writing code for `attr_props` on the **stable** node
+/// `elem_var`: an HTML element's own attributes, and the hyphenated attributes
+/// a caller writes on a component, which land on its root after
+/// `Component::render` (issue #433).
+///
+/// Every path here goes through `NodeHandle::write_attribute`, not
+/// `set_attribute`: an HTML boolean attribute's value is a *shape* and not a
+/// string, so a rendered `false` has to remove the attribute rather than
+/// write `disabled="false"` — which HTML reads as *present*, and therefore
+/// true (issue #551). The list of such attributes lives in `rinch-core`; the
+/// macro deliberately does not carry a copy, and deliberately keys on the
+/// attribute **name** rather than the value's type, because `draggable`,
+/// `aria-*` and rinch's own `data-viewport-ready` all take a meaningful
+/// `"false"`.
+///
+/// A literal is written once; a closure, or any other expression, becomes an
+/// effect that rewrites the attribute whenever a signal it reads changes.
+pub fn generate_attr_code(
+    attr_props: &[&RsxProp],
+    elem_var: &syn::Ident,
+    ctx: &mut DomCodegenContext,
+) -> Vec<TokenStream2> {
+    attr_props
+        .iter()
+        .map(|prop| {
+            let name = prop.name.to_string();
+            let value = &prop.value;
+
+            if is_literal_expr(value) {
+                // Static attribute - set once
+                let value_str = crate::helpers::expr_to_string(value);
+                quote! {
+                    #elem_var.write_attribute(#name, #value_str);
+                }
+            } else if let Some(closure) = get_closure_expr(value) {
+                // Closure expression - call it and use result
+                let handle_var = ctx.next_var("attr_handle");
+                let (site, fire) = reactive_shadows(value, Some(closure), ctx);
+                quote! {
+                    {
+                        let #handle_var = #elem_var.clone();
+                        #site
+                        __scope.create_effect(move || {
+                            #fire
+                            #handle_var.write_attribute(#name, &::std::string::ToString::to_string(&(#closure)()));
+                        });
+                    }
+                }
+            } else {
+                // Dynamic expression (not a closure) - wrap in effect
+                let handle_var = ctx.next_var("attr_handle");
+                let (site, _) = reactive_shadows(value, None, ctx);
+                quote! {
+                    {
+                        let #handle_var = #elem_var.clone();
+                        #site
+                        __scope.create_effect(move || {
+                            #handle_var.write_attribute(#name, &::std::string::ToString::to_string(&#value));
+                        });
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// Generate attribute-writing code for a component root **inside** a
+/// re-rendering component's render closure (issue #433).
+///
+/// Like [`generate_shorthand_code_reactive`]: the closure re-renders into a
+/// fresh root every time, so a reactive attribute is invoked directly there
+/// (its signal reads schedule the re-render) rather than given an effect of its
+/// own on a root that the next render discards.
+pub fn generate_attr_code_reactive(
+    attr_props: &[&RsxProp],
+    result_var: &syn::Ident,
+) -> TokenStream2 {
+    let code: Vec<TokenStream2> = attr_props
+        .iter()
+        .map(|prop| {
+            let name = prop.name.to_string();
+            let value = &prop.value;
+            if is_literal_expr(value) {
+                let value_str = crate::helpers::expr_to_string(value);
+                quote! { #result_var.write_attribute(#name, #value_str); }
+            } else if let Some(closure) = get_closure_expr(value) {
+                let fire = if is_move_closure(closure) {
+                    shadow_clones(collect_capture_idents(closure).iter())
+                } else {
+                    quote! {}
+                };
+                quote! {
+                    {
+                        #fire
+                        #result_var.write_attribute(#name, &::std::string::ToString::to_string(&(#closure)()));
+                    }
+                }
+            } else {
+                quote! {
+                    #result_var.write_attribute(#name, &::std::string::ToString::to_string(&#value));
+                }
+            }
+        })
+        .collect();
+    quote! { #(#code)* }
 }
 
 /// Generate `set_style()` calls for style shorthand props.

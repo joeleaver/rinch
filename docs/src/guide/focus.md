@@ -190,6 +190,10 @@ rsx! {
 
 The rules:
 
+- It can be written **on a component**: `Group { data-nofocus: "", … }` or
+  `Paper { data-nofocus: "", … }` puts it on the component's root element, so a
+  toolbar built from components needs no wrapper `div`
+  ([Attributes on a component](rsx-syntax.md#attributes-on-a-component)).
 - It is read **anywhere on the pressed element's ancestor chain**, so a toolbar
   carries it once instead of every button in it. Put it on the toolbar, not on
   a big content region — a press inside it suppresses the browser's default,
