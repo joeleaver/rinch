@@ -549,9 +549,10 @@ impl InlineLayout {
     /// `width` (parley's, which drops every line's trailing white space)
     /// widened to the lines whose trailing white space holds an NBSP: such a
     /// line keeps everything up to and including its last NBSP, and drops
-    /// only the spaces, tabs and newline after it — as far as the available
-    /// width reaches. A text with no NBSP (every ordinary one) returns `width`
-    /// after one scan of its bytes.
+    /// only the spaces, tabs and newline after it. Not clamped to the
+    /// available width: an NBSP never hangs, not even conditionally, so a
+    /// min-content measure must count it. A text with no NBSP (every ordinary
+    /// one) returns `width` after one scan of its bytes.
     fn width_keeping_nbsp(&self, width: f32) -> f32 {
         if !self.text_content.contains('\u{a0}') {
             return width;
@@ -590,8 +591,9 @@ impl InlineLayout {
                 extent = extent.max(m.inline_min_coord + m.advance - hung);
             }
         }
-        // As the preserved-space branch: never past the available width.
-        extent.min(self.max_width.max(width))
+        // Unlike a preserved space, an NBSP never hangs, so no clamp to the
+        // available width: a min-content measure (width 0) must keep it.
+        extent
     }
 }
 

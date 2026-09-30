@@ -278,9 +278,11 @@ fn phantom_last_line(layout: &parley::Layout<Brush>) -> Option<usize> {
 /// space. CSS Text 3 §4.1.1 collapses and removes only spaces, tabs and segment
 /// breaks — ASCII — while parley trims with `str::trim_start`/`trim_end`, which
 /// take all of `White_Space`: U+00A0 NO-BREAK SPACE, U+2009 THIN SPACE, U+3000
-/// IDEOGRAPHIC SPACE and the rest.
+/// IDEOGRAPHIC SPACE and the rest. Not U+2028/U+2029: parley reads both as
+/// forced newlines (`Whitespace::Newline`), so committing one untrimmed would
+/// break the line where Chrome draws an ordinary character.
 fn parley_trims_but_css_keeps(c: char) -> bool {
-    c.is_whitespace() && !c.is_ascii_whitespace()
+    c.is_whitespace() && !c.is_ascii_whitespace() && !matches!(c, '\u{2028}' | '\u{2029}')
 }
 
 /// Push one text node's `text` into an IFC's tree builder, keeping what CSS
