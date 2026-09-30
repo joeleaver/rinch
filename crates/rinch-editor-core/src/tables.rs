@@ -801,7 +801,7 @@ mod grid_bound_tests {
     use crate::{AttrValue, Schema};
 
     /// The slot budget's floor: a map may always hold this many slots.
-    const FLOOR: usize = 1 << 20;
+    const FLOOR: usize = 1 << 22;
 
     fn cell(s: &Schema, colspan: i64, rowspan: i64) -> Node {
         let p = s
@@ -856,7 +856,7 @@ mod grid_bound_tests {
     /// import's clamps do not apply): 1000 rows of one cell each,
     /// `colspan=1000 rowspan=65534`. Row k is 1000·(k+1) wide, so the uncapped
     /// map is 1000 × 1,000,000 slots (8 GB). The width is capped at
-    /// `FLOOR / height` = 1048 and every cell keeps to its own row.
+    /// `FLOOR / height` = 4194 and every cell keeps to its own row.
     ///
     /// Run it against an unbounded map only under `ulimit -v`.
     #[test]
@@ -866,30 +866,44 @@ mod grid_bound_tests {
         // Asked first: it allocates nothing, so an unbounded width fails here.
         assert_eq!(column_count(&t), FLOOR / 1000);
         let map = TableMap::compute(&t, 1);
-        assert_eq!(map.width(), 1048);
+        assert_eq!(map.width(), 4194);
         assert_eq!(map.height(), 1000);
-        assert_eq!(map.map().len(), 1048 * 1000);
-        let (r0, r1, r2) = (cell_pos(&t, 0, 0), cell_pos(&t, 1, 0), cell_pos(&t, 2, 0));
+        assert_eq!(map.map().len(), 4194 * 1000);
+        let (r0, r3, r4, r5) = (
+            cell_pos(&t, 0, 0),
+            cell_pos(&t, 3, 0),
+            cell_pos(&t, 4, 0),
+            cell_pos(&t, 5, 0),
+        );
         // Row 0's cell covers columns 0..1000 of every row.
         assert_eq!(map.cell_at(0, 999), Some(r0));
         assert_eq!(map.cell_at(999, 999), Some(r0));
-        // Row 1's cell starts at column 1000 and is cut at the grid's edge,
-        // in its own rows only.
         assert_eq!(map.cell_at(0, 1000), None, "row 0 has a hole past its cell");
-        assert_eq!(map.cell_at(1, 1000), Some(r1));
-        assert_eq!(map.cell_at(1, 1047), Some(r1));
-        assert_eq!(map.cell_at(2, 1047), Some(r1));
+        // Row 3's cell fits: columns 3000..4000 of rows 3.. only.
+        assert_eq!(map.cell_at(2, 3000), None);
         assert_eq!(
-            map.find_cell(r1),
+            map.find_cell(r3),
             Some(Rect {
-                left: 1000,
-                top: 1,
-                right: 1048,
+                left: 3000,
+                top: 3,
+                right: 4000,
                 bottom: 1000
             })
         );
-        // Row 2's cell would start at column 2000: it is off the grid.
-        assert_eq!(map.find_cell(r2), None);
+        // Row 4's cell starts at column 4000 and is cut at the grid's edge.
+        assert_eq!(map.cell_at(4, 4193), Some(r4));
+        assert_eq!(map.cell_at(999, 4193), Some(r4));
+        assert_eq!(
+            map.find_cell(r4),
+            Some(Rect {
+                left: 4000,
+                top: 4,
+                right: 4194,
+                bottom: 1000
+            })
+        );
+        // Row 5's cell would start at column 5000: it is off the grid.
+        assert_eq!(map.find_cell(r5), None);
     }
 
     /// A row wider than the capped grid is cut at the row's end; it does not
@@ -942,14 +956,50 @@ mod grid_bound_tests {
     fn a_rectangular_table_past_the_floor_is_not_cut() {
         let s = Schema::starter_kit();
         let one = cell(&s, 1, 1);
-        let r = row(&s, vec![one; 1000]);
-        let t = table(&s, vec![r; 1100]);
+        let r = row(&s, vec![one; 2000]);
+        let t = table(&s, vec![r; 2100]);
+        assert_eq!(column_count(&t), 2000);
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.width(), 2000);
+        assert_eq!(map.height(), 2100);
+        assert!(map.map().len() > FLOOR, "the fixture is past the floor");
+        assert!(map.map().iter().all(|&p| p != UNSET), "no hole, no cut");
+    }
+
+    /// The factor of two in the budget: 2100 rows of 1000 `colspan=2` cells
+    /// are a rectangular 2000 × 2100 grid (past the floor) holding 2.1 M
+    /// cells. Twice the cells is exactly the grid, so nothing may be cut.
+    /// (From #1183's review: a budget of the cells alone passed every other
+    /// fixture.)
+    #[test]
+    fn a_rectangular_table_of_colspan_2_cells_past_the_floor_is_not_cut() {
+        let s = Schema::starter_kit();
+        let r = row(&s, vec![cell(&s, 2, 1); 1000]);
+        let t = table(&s, vec![r; 2100]);
+        assert_eq!(column_count(&t), 2000);
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.map().len(), 2000 * 2100);
+        assert!(map.map().len() > FLOOR, "the fixture is past the floor");
+        assert!(map.map().iter().all(|&p| p != UNSET), "no hole, no cut");
+    }
+
+    /// A sparse ragged table with a modest cell count — a 1000-cell header
+    /// over 1499 rows of one cell — is a 1.5 M-slot grid for 2499 cells. The
+    /// floor takes it whole, as the port before #1176 did and as Chrome draws
+    /// it: every header cell keeps its slot (#1183's review, F3).
+    #[test]
+    fn a_sparse_ragged_table_under_the_floor_is_not_cut() {
+        let s = Schema::starter_kit();
+        let header = row(&s, vec![cell(&s, 1, 1); 1000]);
+        let mut rows = vec![header];
+        rows.extend(vec![row(&s, vec![cell(&s, 1, 1)]); 1499]);
+        let t = table(&s, rows);
         assert_eq!(column_count(&t), 1000);
         let map = TableMap::compute(&t, 1);
-        assert_eq!(map.width(), 1000);
-        assert_eq!(map.height(), 1100);
-        assert!(map.map().len() > FLOOR, "the fixture is past the floor");
-        assert_eq!(map.cell_at(1099, 999), Some(cell_pos(&t, 1099, 999)));
+        assert_eq!(map.map().len(), 1000 * 1500);
+        assert_eq!(map.cell_at(0, 999), Some(cell_pos(&t, 0, 999)));
+        assert!(map.find_cell(cell_pos(&t, 0, 999)).is_some());
+        assert_eq!(map.cell_at(1499, 0), Some(cell_pos(&t, 1499, 0)));
     }
 
     // ── The port as it was before #1176, verbatim: the oracle for tables

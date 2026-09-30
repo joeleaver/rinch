@@ -2158,14 +2158,15 @@ mod tests {
             .collect()
     }
 
-    /// A pasted row is at most 1000 columns wide, counting the columns that
-    /// rowspans from the rows above carry into it: a colspan is cut to what
-    /// is left, and never below 1 (#1176). 1000 is Chrome's largest colspan;
-    /// Chrome has no limit on a row's width (it lays out 3001 columns), so
-    /// this one is rinch's, and it is what keeps a pasted grid linear in the
-    /// paste.
+    /// The spans of a pasted row reach at most 1000 columns, counting the
+    /// columns that rowspans from the rows above carry into it: a colspan is
+    /// cut to what is left, never below 1, and a cell that starts in a row
+    /// already 1000 wide spans that row alone, so it carries nothing down
+    /// (#1176). Each further cell adds one column. 1000 is Chrome's largest
+    /// colspan; Chrome has no limit on a row's width (it lays out 3001
+    /// columns), so this one is rinch's.
     #[test]
-    fn a_pasted_row_is_at_most_1000_columns_wide() {
+    fn a_pasted_rows_spans_reach_at_most_1000_columns() {
         let html = "<table><tr><td colspan=\"600\"><p>a</p></td>\
                     <td colspan=\"600\"><p>b</p></td><td colspan=\"7\"><p>c</p></td></tr></table>";
         assert_eq!(imported_colspans(html), vec![vec![600, 400, 1]]);
@@ -2181,6 +2182,19 @@ mod tests {
         let html = "<table><tbody><tr><td colspan=\"700\" rowspan=\"2\"><p>a</p></td></tr></tbody>\
                     <tbody><tr><td colspan=\"500\"><p>b</p></td></tr></tbody></table>";
         assert_eq!(imported_colspans(html), vec![vec![700], vec![500]]);
+        // A cell that finds its row full spans one row, whatever it asked:
+        // row 1 is full with row 0's 1000 carried columns, and in row 0 the
+        // second cell starts after the first has filled it.
+        let html = "<table>\
+                    <tr><td colspan=\"1000\" rowspan=\"3\"><p>a</p></td>\
+                    <td rowspan=\"3\"><p>b</p></td></tr>\
+                    <tr><td colspan=\"4\" rowspan=\"2\"><p>c</p></td></tr>\
+                    <tr><td><p>d</p></td></tr></table>";
+        assert_eq!(
+            imported_colspans(html),
+            vec![vec![1000, 1], vec![1], vec![1]]
+        );
+        assert_eq!(imported_rowspans(html), vec![vec![3, 1], vec![1], vec![1]]);
     }
 
     /// Every cell's `rowspan`, row by row, of the first table in `html`.

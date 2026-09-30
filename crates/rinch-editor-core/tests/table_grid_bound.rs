@@ -18,35 +18,43 @@ fn imported_table(html: &str) -> rinch_editor_core::Node {
 
 /// H rows of `<td colspan="1000" rowspan="65534">`: each row's cell used to
 /// start past every cell carried down from above, so row k was 1000·(k+1)
-/// wide. The import now cuts each row to 1000 columns (a cell keeps at least
-/// one), so row k is 1000 + k wide, and the map is capped at 2^20 slots.
+/// wide. The import now gives row 0's cell the whole of rows 0..H (its
+/// rowspan cut to the table) and every later cell finds its row full, so it
+/// is cut to one column and one row: the grid is 1001 columns at any H.
 #[test]
-fn a_pasted_staircase_has_a_bounded_grid() {
-    let html = format!(
-        "<table>{}</table>",
-        r#"<tr><td colspan="1000" rowspan="65534"><p>x</p></td></tr>"#.repeat(1000)
-    );
-    assert!(html.len() > 50_000, "the issue's ~57 KB paste");
-    let t = imported_table(&html);
-    assert_eq!(t.child_count(), 1000);
-    assert_eq!(column_count(&t), (1 << 20) / 1000);
-    let map = TableMap::compute(&t, 1);
-    assert_eq!(map.map().len(), 1048 * 1000);
-    let first = t.child(0).child(0);
-    assert_eq!(first.attrs().get_int("colspan"), Some(1000));
-    assert_eq!(
-        first.attrs().get_int("rowspan"),
-        Some(1000),
-        "cut to the table"
-    );
-    let second = t.child(1).child(0);
-    assert_eq!(second.attrs().get_int("colspan"), Some(1));
-    assert_eq!(second.attrs().get_int("rowspan"), Some(999));
+fn a_pasted_staircase_is_1001_columns_at_any_height() {
+    for rows in [1000, 4000] {
+        let html = format!(
+            "<table>{}</table>",
+            r#"<tr><td colspan="1000" rowspan="65534"><p>x</p></td></tr>"#.repeat(rows)
+        );
+        assert!(html.len() > 50_000, "at least the issue's ~57 KB paste");
+        let t = imported_table(&html);
+        assert_eq!(t.child_count(), rows);
+        assert_eq!(column_count(&t), 1001, "{rows} rows");
+        let map = TableMap::compute(&t, 1);
+        assert_eq!(map.map().len(), 1001 * rows);
+        let first = t.child(0).child(0);
+        assert_eq!(first.attrs().get_int("colspan"), Some(1000));
+        assert_eq!(
+            first.attrs().get_int("rowspan"),
+            Some(rows as i64),
+            "cut to the table"
+        );
+        let second = t.child(1).child(0);
+        assert_eq!(second.attrs().get_int("colspan"), Some(1));
+        assert_eq!(
+            second.attrs().get_int("rowspan"),
+            Some(1),
+            "its row was full"
+        );
+    }
 }
 
 /// One row of N `colspan="1000"` cells, then H plain rows: the first row used
-/// to be 1000·N wide. It is now 1000 + (N − 1), so the map is 1999 × 1000 —
-/// past the 2^20-slot floor, so capped there too.
+/// to be 1000·N wide. It is now 1000 + (N − 1) — one column for each cell
+/// after the first, which finds the row full — so the grid is 1999 × 1000,
+/// under the slot budget's floor and mapped whole.
 #[test]
 fn a_pasted_wide_row_has_a_bounded_grid() {
     let html = format!(
@@ -57,9 +65,9 @@ fn a_pasted_wide_row_has_a_bounded_grid() {
     assert!(html.len() > 50_000, "the issue's ~58 KB paste");
     let t = imported_table(&html);
     assert_eq!(t.child_count(), 1000);
-    assert_eq!(column_count(&t), (1 << 20) / 1000);
+    assert_eq!(column_count(&t), 1999);
     let map = TableMap::compute(&t, 1);
-    assert_eq!(map.map().len(), 1048 * 1000);
+    assert_eq!(map.map().len(), 1999 * 1000);
     let row = t.child(0);
     assert_eq!(row.child(0).attrs().get_int("colspan"), Some(1000));
     assert_eq!(row.child(999).attrs().get_int("colspan"), Some(1));
