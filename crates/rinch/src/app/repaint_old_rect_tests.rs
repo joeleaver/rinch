@@ -1037,9 +1037,9 @@ mod editor {
     /// the anchor is load-bearing: without it the outline falls to its static
     /// position after the last block (measured by the review of #953: 200px
     /// low) and nothing else noticed. A selected `<hr>`'s outline must cover
-    /// the `<hr>`'s own painted box, within one pixel. (Measured: 1px right
-    /// of and below it, the container's border width — the offset the caret
-    /// overlay has too, which CLAUDE.md records against `caret_rect`.) The page sits at a fractional
+    /// the `<hr>`'s own painted box, within one pixel. (It used to sit 1px right
+    /// of and below it, the container's border width, as every overlay did
+    /// until the desktop answered `content_origin_inset`.) The page sits at a fractional
     /// offset (`padding: 20.3px 13.7px`) so the pin is not on the whole-px
     /// fixed point, and the `<hr>` is below a paragraph so the translation is
     /// not zero; a pixel check that the outline's colour is drawn there
