@@ -2,29 +2,44 @@
 
 use crate::computed_style::values::*;
 
+/// The computed `font-family` as a CSS list parley's `parse_css_list` reads
+/// back as the same families (#1223).
+///
+/// Every family *name* is written quoted, so a name with spaces or a comma
+/// stays one name, a name spelled like a generic (`"serif"`) stays a name,
+/// and a name that starts with a quote is not an unterminated string. Only
+/// the generics are bare. An empty name matches no font and would be a parse
+/// error that loses every family after it, so it is left out; so is a name
+/// holding both `"` and `'`, which parley's parser (no escapes) cannot read.
 pub(super) fn font_family_from_stylo(family: &style::values::computed::font::FontFamily) -> String {
     use style::values::computed::font::{GenericFontFamily, SingleFontFamily};
     let mut result = String::new();
-    for (i, f) in family.families.iter().enumerate() {
-        if i > 0 {
+    for f in family.families.iter() {
+        let item = match f {
+            SingleFontFamily::FamilyName(name) => {
+                let name: &str = name.name.as_ref();
+                if name.is_empty() {
+                    continue;
+                }
+                match crate::fonts::quote_family(name) {
+                    Some(quoted) => std::borrow::Cow::Owned(quoted),
+                    None => continue,
+                }
+            }
+            SingleFontFamily::Generic(generic) => std::borrow::Cow::Borrowed(match *generic {
+                GenericFontFamily::None => "sans-serif",
+                GenericFontFamily::Serif => "serif",
+                GenericFontFamily::SansSerif => "sans-serif",
+                GenericFontFamily::Monospace => "monospace",
+                GenericFontFamily::Cursive => "cursive",
+                GenericFontFamily::Fantasy => "fantasy",
+                GenericFontFamily::SystemUi => "system-ui",
+            }),
+        };
+        if !result.is_empty() {
             result.push_str(", ");
         }
-        match f {
-            SingleFontFamily::FamilyName(name) => {
-                result.push_str(name.name.as_ref());
-            }
-            SingleFontFamily::Generic(generic) => {
-                result.push_str(match *generic {
-                    GenericFontFamily::None => "sans-serif",
-                    GenericFontFamily::Serif => "serif",
-                    GenericFontFamily::SansSerif => "sans-serif",
-                    GenericFontFamily::Monospace => "monospace",
-                    GenericFontFamily::Cursive => "cursive",
-                    GenericFontFamily::Fantasy => "fantasy",
-                    GenericFontFamily::SystemUi => "system-ui",
-                });
-            }
-        }
+        result.push_str(&item);
     }
     result
 }

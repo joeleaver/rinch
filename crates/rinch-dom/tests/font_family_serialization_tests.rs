@@ -76,7 +76,9 @@ fn run_faces(named: &str, family: &str, text: &str) -> (Vec<u64>, Faces) {
     doc.set_attribute(
         div,
         "style",
-        &format!("display: inline-block; font-size: 40px; line-height: 48px; font-family: {family}"),
+        &format!(
+            "display: inline-block; font-size: 40px; line-height: 48px; font-family: {family}"
+        ),
     );
     let t = doc.create_text(text);
     doc.append_child(div, t);
@@ -168,7 +170,13 @@ fn the_computed_family_parses_back_to_the_authored_names() {
     );
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
-    let stack = doc.tree.get(div.0).unwrap().computed_style.font_family.clone();
+    let stack = doc
+        .tree
+        .get(div.0)
+        .unwrap()
+        .computed_style
+        .font_family
+        .clone();
     let parsed: Vec<_> = FontFamilyName::parse_css_list(&stack)
         .map(|r| r.map(FontFamilyName::into_owned))
         .collect::<Result<_, _>>()
