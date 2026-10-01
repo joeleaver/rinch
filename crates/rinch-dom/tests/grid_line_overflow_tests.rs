@@ -113,8 +113,10 @@ fn ten_and_a_half_thousand_rows_are_now_clamped_too() {
 }
 
 /// #1210's second route: 33 items of `grid-row: span 1000` stacked in one
-/// column need 33,000 lines. Taffy 0.12 panicked at `coordinates.rs:94`; 32
-/// items laid out. On 0.14 the implicit grid stops at 10,000 rows: the first
+/// column need 33,000 lines. Taffy 0.12 panicked — at `coordinates.rs:94` in
+/// the release build #1210 measured, at `coordinates.rs:72` (an `i16`
+/// subtraction overflow) in the debug build this test runs in; 32 items laid
+/// out. On 0.14 the implicit grid stops at 10,000 rows: the first
 /// nine items take 1,000 rows each, and items 9 through 32 all start at row
 /// 9,001 and overlap there (y 90 — each 1,000-row band holds one 10px item).
 /// Chrome 153 stacks all 33.

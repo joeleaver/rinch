@@ -605,7 +605,7 @@ for track sizing functions. (`fit-content(<length-percentage>)` is converted for
 tracks too.) A *box's own* `width`/`height`/`min-*`/`max-*` is where it stops.
 Taffy 0.14, which rinch has used since #1236, can lay the keywords out on a
 box's `width`, `height` and `flex-basis`, but rinch does not hand them over yet
-(#691) — the upgrade deliberately changed no layout. `min-*`/`max-*` cannot
+(#691) — the upgrade deliberately kept every keyword at `auto`. `min-*`/`max-*` cannot
 carry a keyword in Taffy at all, and an `inline-block` is laid out as a Taffy
 root, where the keyword has no effect, so those still need a measurement pass
 of rinch's own.

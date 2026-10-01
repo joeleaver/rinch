@@ -187,7 +187,9 @@ Stylo clamping a grid line, a template and every span to 10000: a table wider th
 that is drawn 10000 columns wide; and an axis past 9999 tracks, whose lines would be
 clamped onto one, is placed by `span <n>` and auto-placement instead. A table past
 9999 rows keeps its column lines, so a cell is still placed below the one before it
-in its column. A table past 9999 columns loses its row lines too, because cells
+in its column. On the desktop such a table still meets Taffy's own clamp:
+a table of more than 10000 rows overlaps its rows from the 10000th on (they lay out
+in the last grid track), where Taffy 0.12 laid out up to 32767 lines correctly. A table past 9999 columns loses its row lines too, because cells
 locked to their row with auto-placed columns can grow the grid past what Taffy
 numbers (on Taffy 0.12 a row of four `colspan = 20000` cells panicked; 0.14 clamps
 the axis at 10000 tracks); there a short row's cells are still lifted into the row

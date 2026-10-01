@@ -278,7 +278,9 @@ pub enum DimensionValue {
     /// Taffy 0.14 lays the keywords out on `size` and `flex_basis` — of a box
     /// that is not a Taffy root — and has no representation for them at all on
     /// `min_size`/`max_size`, which are `LengthPercentageAuto`. rinch still
-    /// hands Taffy `auto` (the bump changed no layout); making
+    /// hands Taffy `auto` — the bump itself changed layout only in a handful
+    /// of Chrome-ward shapes, pinned in `tests/taffy_014_layout_changes_tests.rs`,
+    /// none of them a keyword — and making
     /// [`DimensionValue::to_taffy`] the mapping for `width`/`height`/
     /// `flex-basis` is #691. `tests/intrinsic_sizing_tests.rs` pins both
     /// halves.
@@ -320,8 +322,8 @@ impl DimensionValue {
     /// in this conversion yet, and unlike a `Calc` no later pass repairs it:
     /// it goes in as `auto` and stays `auto` (#626). Taffy 0.14 could take one
     /// here (`Dimension::max_content()` and siblings); mapping it is #691,
-    /// deliberately not done by the Taffy bump (#1236) so that it changed no
-    /// layout.
+    /// deliberately left out of the Taffy bump (#1236), which kept every
+    /// keyword at `auto`.
     pub fn to_taffy(&self) -> taffy::Dimension {
         match self {
             Self::Auto => taffy::Dimension::auto(),

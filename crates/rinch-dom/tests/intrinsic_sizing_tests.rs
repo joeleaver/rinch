@@ -40,8 +40,11 @@
 //!   keyword representation, so on `min-*`/`max-*` the keyword stays `auto`
 //!   whatever rinch does.
 //!
-//! The Taffy bump deliberately changes no layout, so `DimensionValue::to_taffy`
-//! still maps every keyword to `auto`; making it the mapping for
+//! The Taffy bump deliberately left the keywords alone: `DimensionValue::to_taffy`
+//! still maps every keyword to `auto`. (The bump does change layout in a
+//! handful of Chrome-ward shapes unrelated to keywords — auto margins before
+//! `justify-content`, margin collapsing — pinned in
+//! `taffy_014_layout_changes_tests.rs`.) making it the mapping for
 //! `width`/`height`/`flex-basis` is #691. Everything below this section is
 //! unchanged by the bump and still true: the deviation records pass, and the
 //! day #691 lands they flip.
@@ -225,7 +228,8 @@ const CASES: &[(&str, &str, &str, &str)] = &[
 ///
 /// rinch does not hand it the keyword yet: `DimensionValue::to_taffy` still
 /// answers `auto` for every intrinsic keyword, so the Taffy bump changes no
-/// layout. Making that a mapping is #691, and when it lands the last assertion
+/// keyword's layout (it does change a few others, see
+/// `taffy_014_layout_changes_tests.rs`). Making that a mapping is #691, and when it lands the last assertion
 /// here and `every_intrinsic_keyword_lays_out_exactly_like_auto` flip together.
 /// The min/max half cannot flip: `min_size`/`max_size` are a
 /// `LengthPercentageAuto`, which has no keyword at all.
