@@ -8,7 +8,14 @@ pub struct MockDomDocument {
     doc_key: u64,
     next_id: usize,
     nodes: std::collections::HashMap<NodeId, MockNode>,
+    /// Dirty nodes in the order they were first marked. May hold a node that
+    /// was discarded since; `dirty_set` is the membership, and
+    /// `take_dirty_nodes` reports only what it still holds.
     dirty: Vec<NodeId>,
+    /// The nodes currently dirty. Marking and discarding are O(1): a `contains`
+    /// over the list made a command that marks n nodes O(n²) — 2.8 s for a
+    /// 40,000-cell table row through a mounted editor (#1214).
+    dirty_set: std::collections::HashSet<NodeId>,
     root_id: NodeId,
     body_id: NodeId,
     /// Box geometry injected by a test, keyed by node (see
@@ -109,6 +116,7 @@ impl MockDomDocument {
             next_id: 0,
             nodes: std::collections::HashMap::new(),
             dirty: Vec::new(),
+            dirty_set: std::collections::HashSet::new(),
             root_id: NodeId(0),
             body_id: NodeId(0),
             layout: std::collections::HashMap::new(),
@@ -163,7 +171,7 @@ impl MockDomDocument {
         self.nodes.remove(&node);
         // A retired id must not come back out of `take_dirty_nodes`: a consumer
         // that resolves the ids it is handed would find nothing there.
-        self.dirty.retain(|&d| d != node);
+        self.dirty_set.remove(&node);
     }
 
     /// Whether `child` still names a node — the guard every structural mutation
@@ -445,13 +453,19 @@ impl DomDocument for MockDomDocument {
     }
 
     fn mark_dirty(&mut self, node: NodeId) {
-        if !self.dirty.contains(&node) {
+        if self.dirty_set.insert(node) {
             self.dirty.push(node);
         }
     }
 
     fn take_dirty_nodes(&mut self) -> Vec<NodeId> {
-        std::mem::take(&mut self.dirty)
+        let marked = std::mem::take(&mut self.dirty);
+        // `remove` answers true once per node still dirty: a discarded node
+        // is dropped, and one marked again after a discard is reported once.
+        marked
+            .into_iter()
+            .filter(|n| self.dirty_set.remove(n))
+            .collect()
     }
 
     fn root(&self) -> NodeId {
@@ -790,6 +804,27 @@ mod tests {
             !doc.take_dirty_nodes().contains(&node),
             "#184: a discarded node must not be reported dirty"
         );
+    }
+
+    /// A node marked twice is reported once, in the order first marked, and a
+    /// node reported once is reported again when marked after the take (#1214:
+    /// the list is backed by a set now, which a take must empty).
+    #[test]
+    fn dirty_nodes_are_reported_once_per_take() {
+        let mut doc = MockDomDocument::new();
+        let body = doc.body();
+        let a = doc.create_element("div");
+        let b = doc.create_element("div");
+        doc.append_child(body, a);
+        doc.append_child(body, b);
+        doc.take_dirty_nodes();
+        doc.set_attribute(b, "class", "x");
+        doc.set_attribute(a, "class", "x");
+        doc.set_attribute(b, "class", "y");
+        assert_eq!(doc.take_dirty_nodes(), vec![b, a]);
+        assert!(doc.take_dirty_nodes().is_empty());
+        doc.set_attribute(a, "class", "z");
+        assert_eq!(doc.take_dirty_nodes(), vec![a]);
     }
 
     // === set_style composes an inline style (#666) ===

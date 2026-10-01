@@ -20,5 +20,6 @@ pub use node_range::{NodeRange, block_range, block_range_simple};
 pub use step::{Step, StepError};
 pub use step_map::{MapResult, Mapping, StepMap};
 pub use steps::{
-    AddMarkStep, RemoveMarkStep, ReplaceAroundStep, ReplaceStep, SetDocAttrStep, SetNodeAttrStep,
+    AddMarkStep, BatchEdit, BatchStep, RemoveMarkStep, ReplaceAroundStep, ReplaceStep,
+    SetDocAttrStep, SetNodeAttrStep,
 };

@@ -201,9 +201,31 @@ gestures map onto it:
 | `RemoveMarkStep { from, to, mark }` | Remove a mark across an inline range. |
 | `SetNodeAttrStep { pos, attr, value }` | Change one node attr (heading level, image alt, list start). |
 | `SetDocAttrStep { attr, value }` | A document-level attr. |
+| `BatchStep` (`Transaction::batch(Vec<BatchEdit>)`) | Many disjoint replaces and node-attr changes, stated in the coordinates of the document it applies to, as **one** step. |
 
-Tables and collaboration add **no new step kinds** — table edits are `Replace` /
-`ReplaceAround` / `SetNodeAttr` over the table, row, and cell nodes.
+`BatchStep` is the one step kind that exists for cost rather than expressiveness. It
+means its edits applied one at a time from the last position to the first (two
+changes of one node's attribute: the last given wins): it builds the document they
+build, and its step map maps every position as those `ReplaceStep`s did. It differs
+in three places. Each rebuilt node's content is checked once, on the result, so it
+accepts a batch whose sequence would pass through an invalid intermediate state.
+Mapped over another change (`Step::map`, a rebase), each *range* maps as one
+`ReplaceStep` of it would — and inserts at one point, and deletions that meet, are one
+range from construction, so a concurrent insert between two such deletions is deleted
+with them where two separate deletions would keep it. Two kept ranges the change brings
+to meet end to end become one replace of both — the same document — unless one
+carries an open slice: then the later edit is dropped and **its content is lost**,
+where separate steps would apply it. An attribute change the change puts inside a kept
+range is dropped as well. No table command builds an open slice. And a selection a command
+does not set is mapped once through the step and resolved in its result, where a
+step per row mapped it after every step: in about 0.6% of the commands the table
+differential compares, the selection lands somewhere else (the old one was placed in an intermediate document). It rebuilds
+each node on the way to an edit once and keeps one document in the transaction
+rather than one per edit. Every table command is one `BatchStep`
+(#1200): as a step per row, a column into 16,000 rows rebuilt and kept the row list
+16,000 times (6.4 s, 2.1 GB; 29 ms as one step). The one exception is `deleteRow` /
+`deleteColumn` on a table whose cells overlap, which still removes one row or
+column per step on a recomputed map. Collaboration adds no step kinds.
 
 A few gesture → step mappings:
 

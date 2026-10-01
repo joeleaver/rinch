@@ -18,7 +18,8 @@ use crate::transform::node_range::NodeRange;
 use crate::transform::step::{Step, StepError};
 use crate::transform::step_map::Mapping;
 use crate::transform::steps::{
-    AddMarkStep, RemoveMarkStep, ReplaceAroundStep, ReplaceStep, SetDocAttrStep, SetNodeAttrStep,
+    AddMarkStep, BatchEdit, BatchStep, RemoveMarkStep, ReplaceAroundStep, ReplaceStep,
+    SetDocAttrStep, SetNodeAttrStep,
 };
 
 /// An abstraction over a document that accumulates [`Step`]s.
@@ -467,6 +468,17 @@ impl<'a> Transform<'a> {
             self.step(Box::new(RemoveMarkStep::new(f, t, mark.clone())))?;
         }
         Ok(self)
+    }
+
+    // -- batch -----------------------------------------------------------
+
+    /// Apply disjoint `edits`, stated in the current document's coordinates,
+    /// as one [`BatchStep`]. Nothing is recorded for an empty list.
+    pub fn batch(&mut self, edits: Vec<BatchEdit>) -> Result<&mut Self, StepError> {
+        if edits.is_empty() {
+            return Ok(self);
+        }
+        self.step(Box::new(BatchStep::new(edits)?))
     }
 
     // -- attrs -----------------------------------------------------------

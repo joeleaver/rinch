@@ -62,9 +62,9 @@ pub use selection::{CellSelection, NodeSelection, Selection, TextSelection};
 pub use state::{EditorState, Transaction};
 pub use tables::{Axis, Rect, TableMap};
 pub use transform::{
-    AddMarkStep, MapResult, Mapping, NodeRange, RemoveMarkStep, ReplaceAroundStep, ReplaceStep,
-    SetDocAttrStep, SetNodeAttrStep, Step, StepError, StepMap, Transform, block_range,
-    block_range_simple,
+    AddMarkStep, BatchEdit, BatchStep, MapResult, Mapping, NodeRange, RemoveMarkStep,
+    ReplaceAroundStep, ReplaceStep, SetDocAttrStep, SetNodeAttrStep, Step, StepError, StepMap,
+    Transform, block_range, block_range_simple,
 };
 pub use view::{EditorView, ViewRequest};
 
