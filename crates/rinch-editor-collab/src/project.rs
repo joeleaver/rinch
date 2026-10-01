@@ -19,7 +19,7 @@
 //! text object. Every child list, the top level's included, is addressed through its
 //! **visible** children ([`crate::projection::read_children`]): a container emptied by
 //! concurrent deletions reads as absent, so it is skipped by the diff and by the count
-//! gate alike. Any node outside the supported scope (a table, a task list) anywhere in
+//! gate alike. Any node outside the supported scope (a task list, a ragged table) anywhere in
 //! `before` or `after` fails loud ([`CollabError::Unsupported`], design A22).
 //!
 //! The diff trusts `before` to describe what the CRDT holds — which is the invariant —
@@ -132,8 +132,8 @@ impl CollabDoc {
         // read and validate EVERY model block this change will touch — the `after`
         // blocks to reconcile/insert, and the `before` blocks to delete — BEFORE
         // issuing any CRDT write, and before the write transaction is even opened. A
-        // mixed in-scope/out-of-scope change (e.g. pasting or loading a table while
-        // collaborating) then leaves the CRDT *exactly* at the prior converged state
+        // mixed in-scope/out-of-scope change (e.g. pasting or loading a task list
+        // while collaborating) then leaves the CRDT *exactly* at the prior converged state
         // and returns `Unsupported`, instead of partially mutating it and wedging the
         // session in a half-projected state.
         //

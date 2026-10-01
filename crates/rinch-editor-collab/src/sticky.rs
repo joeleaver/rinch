@@ -81,6 +81,11 @@
 //! the wrong place. Inline atoms (`image`, `hard_break`) are one char in the CRDT's text
 //! and one position in the model, so they need nothing of their own.
 //!
+//! A table's rows and cells are not content arrays in the CRDT: the walk reads them
+//! off the table's grid (`table::cell_maps`), in the model's order. A **filler** cell
+//! (one the read supplies for a slot no cell covers, which the CRDT does not hold) has
+//! no text behind it, so a position in one has no sticky index.
+//!
 //! "Index for index" counts **visible** children: a container emptied by concurrent
 //! deletions stays in the CRDT but reads as absent (see `projection::is_void`), so both
 //! walks skip it, or every index after it would name the wrong block.
@@ -88,11 +93,13 @@
 //! The one block with no CRDT behind it is the starter paragraph of a CRDT holding
 //! zero blocks (see [`CollabDoc::to_doc`]): positions in it have no sticky index.
 
+use crate::table::{cell_maps, is_table_map};
 use yrs::branch::{Branch, BranchPtr};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Array, ArrayRef, Assoc, GetString, IndexedSequence, ReadTxn, StickyIndex, TextRef, Transact,
+    Array, ArrayRef, Assoc, GetString, IndexedSequence, MapRef, ReadTxn, StickyIndex, TextRef,
+    Transact,
 };
 
 use rinch_editor_core::{Node, Pos};
@@ -152,19 +159,43 @@ impl CollabDoc {
         let txn = self.doc.transact();
         // Walk the child indices from the root to the textblock, which name the same
         // nodes in the projection.
-        let mut list: ArrayRef = self.content.clone();
+        //
+        // A table is the one node whose children are not a content array: its rows and
+        // cells are read off the table's grid (`table::cell_maps`), and a filler cell
+        // (one the CRDT does not hold) has no text to stick to.
+        enum Level {
+            List(ArrayRef),
+            Table(Vec<Vec<Option<MapRef>>>),
+            Row(Vec<Option<MapRef>>),
+        }
+        let mut level = Level::List(self.content.clone());
         let mut text: Option<TextRef> = None;
         for depth in 0..rp.depth() {
-            let map = visible_child(&txn, &list, rp.index(depth))?;
+            let index = rp.index(depth);
             let model_node = rp.node(depth + 1);
+            let map = match level {
+                Level::List(list) => visible_child(&txn, &list, index)?,
+                Level::Table(rows) => {
+                    if model_node.type_name() != "table_row" {
+                        return None;
+                    }
+                    level = Level::Row(rows.into_iter().nth(index)?);
+                    continue;
+                }
+                Level::Row(cells) => cells.into_iter().nth(index)??,
+            };
             if node_type(&txn, &map)? != model_node.type_name() {
                 return None;
             }
             if depth + 1 == rp.depth() {
                 text = Some(block_text(&txn, &map)?);
-            } else {
-                list = node_content(&txn, &map)?;
+                break;
             }
+            level = if is_table_map(&txn, &map) {
+                Level::Table(cell_maps(&txn, &map).ok()?)
+            } else {
+                Level::List(node_content(&txn, &map)?)
+            };
         }
         let text = text?;
         let crdt_text = text.get_string(&txn);
@@ -252,6 +283,26 @@ fn find_text<T: ReadTxn>(
         if let Some(text) = block_text(txn, &map) {
             if BranchPtr::from(AsRef::<Branch>::as_ref(&text)) == target {
                 return Some(text);
+            }
+        } else if is_table_map(txn, &map) {
+            // A table's rows and cells are its grid's, in model order; a filler has
+            // no text and is skipped.
+            for (i, row) in cell_maps(txn, &map).ok()?.into_iter().enumerate() {
+                path.push((i, "table_row".to_string()));
+                for (k, cell) in row.into_iter().enumerate() {
+                    let Some(cell) = cell else { continue };
+                    let (Some(cell_type), Some(children)) =
+                        (node_type(txn, &cell), node_content(txn, &cell))
+                    else {
+                        continue;
+                    };
+                    path.push((k, cell_type));
+                    if let Some(text) = find_text(txn, &children, target, path) {
+                        return Some(text);
+                    }
+                    path.pop();
+                }
+                path.pop();
             }
         } else if let Some(children) = node_content(txn, &map)
             && let Some(text) = find_text(txn, &children, target, path)

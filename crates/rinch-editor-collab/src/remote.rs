@@ -143,7 +143,8 @@ fn carried_position(
 /// index.
 ///
 /// Two textblocks: by the text they share ([`carried_offset`]). Two containers of the
-/// same type (a quote, a list, a list item) whose content a peer changed: recurse into
+/// same type (a quote, a list, a list item, a table, a row, a cell) whose content a
+/// peer changed: recurse into
 /// their children ([`carried_in_children`]), so a caret in a paragraph inside a quote
 /// keeps its place when a peer types in that paragraph — the remote change replaces
 /// the whole top-level quote, and the step mapping alone would carry the caret to its

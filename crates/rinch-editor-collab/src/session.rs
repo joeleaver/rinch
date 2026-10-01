@@ -23,7 +23,7 @@
 //!
 //! ## Outbound stalls (issue #220)
 //!
-//! A local edit outside the staged A22 scope — pasting a table, toggling a task
+//! A local edit outside the staged A22 scope — pasting a ragged table, toggling a task
 //! list — is refused by `record_local` with the CRDT untouched. But the *model*
 //! has already applied it, so from that moment the caller's `before` is a false
 //! description of the CRDT.
@@ -51,7 +51,7 @@
 //! the moment of the first refusal; there is nothing left to trust in it.
 //!
 //! [`CollabSession::outbound_stall`] reports the state in between, so an app can say
-//! "not syncing — remove the table" rather than leaving the user to wonder. It is
+//! "not syncing — remove the task list" rather than leaving the user to wonder. It is
 //! **not** poison: local-outbound-only, the shared CRDT is healthy throughout, inbound
 //! keeps working, and it clears itself on the next projectable edit.
 //!
@@ -317,7 +317,7 @@ impl CollabSession {
     /// Why this replica's **outbound** is currently refusing, if it is (issue #220).
     ///
     /// `Some` from the moment a local edit cannot be projected — content outside the
-    /// staged A22 scope (a table paste, a task list) — until a later
+    /// staged A22 scope (a ragged table paste, a task list) — until a later
     /// [`Self::record_local`] succeeds. While it is `Some`, local edits are **not**
     /// reaching peers; inbound integration is unaffected and the shared document is
     /// healthy throughout.

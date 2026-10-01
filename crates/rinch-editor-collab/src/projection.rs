@@ -20,6 +20,7 @@
 //! root Array "content"            // a named root type, holding the top-level blocks
 //!   Node (Map):
 //!     "type"  -> string           // "paragraph" | "heading" | "blockquote" | …
+//!                                 // (a "table" has a shape of its own: see below)
 //!     "attrs" -> Map<str, Any>    // e.g. heading {"level": 2}, ordered_list {"start": 3}
 //!     and then EXACTLY ONE of:
 //!       "text"    -> Text         // a textblock's plain text
@@ -134,6 +135,17 @@
 //! (yrs has no move between arrays); lifting a block out of a quote is the same trade.
 //! Both peers still converge, on the quote.
 //!
+//! A **table** is the one node with a wire shape of its own: no `text` and no
+//! `content`, but a `cols` and a `rows` array naming its columns and rows by id, with
+//! every cell keyed by the row and column it starts in, so that a row and a column
+//! added at once (or two columns) still make a full grid. Its read is total and always
+//! rectangular, by rules that are a pure function of the converged CRDT. The design,
+//! the rules and what concurrency can still lose are in [`crate::table`]. The format
+//! tag does not move for it either: a peer built before tables reads a node with
+//! neither `text` nor `content` and fails loud (`Schema`), which poisons a live session
+//! that integrates one (#196) and fails a join from a snapshot that holds one. Every
+//! peer must run a build with tables in scope before any of them inserts a table.
+//!
 //! One `Text` per textblock with native formatting attributes over it is the
 //! *rich-text* model — text and formatting merge independently, which is exactly the
 //! "concurrent insert/format" convergence the milestone requires. A textblock keeps its
@@ -183,14 +195,16 @@
 //! Supported: **flat text-blocks + marks** (`paragraph`/`heading`/`code_block`), the
 //! **inline atoms** inside them (`image`/`hard_break` — one placeholder char each), the
 //! **leaf block atoms** (`horizontal_rule` — a block-level node with no content at all),
-//! and the **containers** `bullet_list` / `ordered_list` / `list_item` / `blockquote`,
-//! nested into each other and around text-blocks to any depth.
+//! the **containers** `bullet_list` / `ordered_list` / `list_item` / `blockquote`,
+//! nested into each other and around text-blocks to any depth, and **tables**
+//! (`table` / `table_row` / `table_cell` / `table_header_cell`, spans included, cells
+//! holding any of the above) whose cells tile their grid.
 //!
 //! Everything else still **fails loud** with
 //! [`CollabError::Unsupported`](crate::CollabError::Unsupported) — **never a silent
-//! drop**: any other nested block (`table`/`table_row`/cells, `task_list`/`task_item`),
-//! and an embedded value in a block's text, which is not how this projection writes an
-//! atom.
+//! drop**: any other nested block (`task_list`/`task_item`), a table whose cells do not
+//! tile a rectangle (a ragged row, overlapping spans), and an embedded value in a
+//! block's text, which is not how this projection writes an atom.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
@@ -207,11 +221,15 @@ use yrs::{
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, NodeType, Schema};
 
 use crate::error::{CollabError, Result};
+use crate::table::{
+    TABLE, TableData, is_table_map, read_model_table, read_table, reconcile_table,
+    table_map_is_void, write_table,
+};
 
 /// yrs key/root names used by the projection.
-const CONTENT: &str = "content";
-const TYPE: &str = "type";
-const ATTRS: &str = "attrs";
+pub(crate) const CONTENT: &str = "content";
+pub(crate) const TYPE: &str = "type";
+pub(crate) const ATTRS: &str = "attrs";
 const TEXT: &str = "text";
 /// The root map holding the projection-format marker, and its one key.
 const META: &str = "meta";
@@ -328,6 +346,9 @@ pub(crate) enum NodeData {
         attrs: Attrs,
         children: Vec<NodeData>,
     },
+    /// A `table`: its rows of cells, each cell holding child nodes. Its wire shape is
+    /// its own (see [`crate::table`]).
+    Table(TableData),
 }
 
 impl NodeData {
@@ -336,6 +357,7 @@ impl NodeData {
         match self {
             NodeData::Block(b) => &b.type_name,
             NodeData::Container { type_name, .. } => type_name,
+            NodeData::Table(_) => TABLE,
         }
     }
 
@@ -344,13 +366,14 @@ impl NodeData {
         match self {
             NodeData::Block(b) => &b.attrs,
             NodeData::Container { attrs, .. } => attrs,
+            NodeData::Table(t) => &t.attrs,
         }
     }
 }
 
 /// The container block types the projection nests (design A22). A container carries a
 /// `content` array of child nodes instead of a `text`. Deliberately a whitelist: every
-/// other non-text-block node (tables, `task_list`/`task_item`, atoms) stays
+/// other non-text-block node (`task_list`/`task_item`, atoms) stays
 /// [`CollabError::Unsupported`] so an unsupported shape fails loud rather than being
 /// silently mangled.
 ///
@@ -390,8 +413,14 @@ fn retype_keeps_identity(from: &str, to: &str) -> bool {
 /// would race a third peer's concurrent insert into it, and that insert makes it
 /// visible again, holding just what was inserted. The rule is a pure function of the
 /// converged CRDT, so every replica reads the same document.
+///
+/// A table is void when it has no live row or no live column (see [`crate::table`]).
 fn is_void(nd: &NodeData) -> bool {
-    matches!(nd, NodeData::Container { children, .. } if children.is_empty())
+    match nd {
+        NodeData::Container { children, .. } => children.is_empty(),
+        NodeData::Table(t) => t.rows.is_empty() || t.width == 0,
+        NodeData::Block(_) => false,
+    }
 }
 
 /// A **leaf block atom** — a block-level node type that holds no content of its own and
@@ -710,6 +739,9 @@ pub(crate) fn map_is_void<T: ReadTxn>(txn: &T, node: &MapRef) -> bool {
     if block_text(txn, node).is_some() {
         return false;
     }
+    if is_table_map(txn, node) {
+        return table_map_is_void(txn, node);
+    }
     let Some(content) = node_content(txn, node) else {
         return false;
     };
@@ -758,7 +790,7 @@ pub(crate) fn node_type<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<String> {
 }
 
 /// A node's `attrs` map read back into a model attr set (empty when absent).
-fn node_attrs<T: ReadTxn>(txn: &T, node: &MapRef) -> Attrs {
+pub(crate) fn node_attrs<T: ReadTxn>(txn: &T, node: &MapRef) -> Attrs {
     match node.get(txn, ATTRS) {
         Some(Out::YMap(m)) => read_attrs(txn, &m),
         _ => Attrs::new(),
@@ -823,6 +855,7 @@ fn write_node(txn: &mut TransactionMut, node: &MapRef, nd: &NodeData) -> Result<
                 insert_node(txn, &content, i as u32, child)?;
             }
         }
+        NodeData::Table(t) => write_table(txn, node, t)?,
     }
     Ok(())
 }
@@ -845,11 +878,22 @@ pub(crate) fn reconcile_node(
     let node = child_map(txn, list, index)
         .ok_or_else(|| CollabError::schema("reconcile_node: missing node"))?;
 
-    // A node changing *kind* (text-block <-> container — e.g. a paragraph wrapped
+    // A node changing *kind* (text-block, container, table — e.g. a paragraph wrapped
     // into a list) can't be reconciled in place; replace it wholesale. Rare, so the
     // coarse-grained replace is fine.
     let crdt_is_block = block_text(txn, &node).is_some();
-    let target_is_block = matches!(target, NodeData::Block(_));
+    let crdt_kind = if crdt_is_block {
+        0
+    } else if is_table_map(txn, &node) {
+        2
+    } else {
+        1
+    };
+    let target_kind = match target {
+        NodeData::Block(_) => 0,
+        NodeData::Container { .. } => 1,
+        NodeData::Table(_) => 2,
+    };
     // A container retyped into one that accepts different children (a list made a
     // quote) is replaced too; see `retype_keeps_identity`.
     let container_retyped = match target {
@@ -877,9 +921,9 @@ pub(crate) fn reconcile_node(
         NodeData::Block(b) => {
             b.text.is_empty() && node_type(txn, &node).as_deref() != Some(b.type_name.as_str())
         }
-        NodeData::Container { .. } => false,
+        NodeData::Container { .. } | NodeData::Table(_) => false,
     };
-    if crdt_is_block != target_is_block || retyped_to_empty || container_retyped {
+    if crdt_kind != target_kind || retyped_to_empty || container_retyped {
         check_index(txn, list, index, false)?;
         list.remove(txn, index);
         return insert_node(txn, list, index, target);
@@ -910,6 +954,7 @@ pub(crate) fn reconcile_node(
                 .ok_or_else(|| CollabError::schema("reconcile_node: missing content"))?;
             reconcile_child_list(txn, &content, children, per_char)
         }
+        NodeData::Table(t) => reconcile_table(txn, &node, t, per_char),
     }
 }
 
@@ -967,7 +1012,7 @@ fn reconcile_text(
 /// count difference. This is the same block-list diff as
 /// [`project_change`](CollabDoc::project_change), one level down; recursion carries it
 /// to any depth.
-fn reconcile_child_list(
+pub(crate) fn reconcile_child_list(
     txn: &mut TransactionMut,
     content: &ArrayRef,
     target: &[NodeData],
@@ -1451,6 +1496,13 @@ pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -
             text,
             marks,
         }))
+    } else if is_table_map(txn, &node) {
+        if type_name != TABLE {
+            return Err(CollabError::schema(format!(
+                "node `{type_name}` carries a table's `rows`"
+            )));
+        }
+        Ok(NodeData::Table(read_table(txn, &node)?.data))
     } else if let Some(content) = node_content(txn, &node) {
         // Only the visible children: a void child container is not part of this one
         // (see `is_void`), and a container whose every child is void is void itself.
@@ -1465,7 +1517,7 @@ pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -
         })
     } else {
         Err(CollabError::schema(format!(
-            "node `{type_name}` has neither a `text` nor a `content` object"
+            "node `{type_name}` has neither a `text`, a `content` nor a table's `rows`"
         )))
     }
 }
@@ -1476,11 +1528,14 @@ pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -
 /// containers. A flat text-block — or a leaf block atom ([`is_leaf_block_atom`]) —
 /// becomes [`NodeData::Block`]; a supported container ([`is_supported_container`])
 /// becomes [`NodeData::Container`] over its recursively-read children. Anything else —
-/// an unsupported nested block (table, task list) or an *inline* atom — fails loud
+/// an unsupported nested block (a task list) or an *inline* atom — fails loud
 /// (design A22).
 pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
     if node.is_textblock() || is_leaf_block_atom(node.node_type()) {
         return Ok(NodeData::Block(read_block(node)?));
+    }
+    if node.type_name() == TABLE {
+        return Ok(NodeData::Table(read_model_table(node)?));
     }
     if is_supported_container(node.type_name()) {
         // The read-back never yields an empty container (it reads as absent — see
@@ -1503,8 +1558,8 @@ pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
         });
     }
     Err(CollabError::unsupported(format!(
-        "node `{}` is not a flat text-block, a leaf block atom, or a supported container \
-         (bullet_list/ordered_list/list_item/blockquote); tables and task lists are not \
+        "node `{}` is not a flat text-block, a leaf block atom, a table, or a supported \
+         container (bullet_list/ordered_list/list_item/blockquote); task lists are not \
          yet supported",
         node.type_name()
     )))
@@ -1710,6 +1765,39 @@ fn build_node(schema: &Schema, nd: &NodeData) -> Result<Node> {
                 .create_node(type_name, attrs.clone(), Fragment::from_children(kids))
                 .map_err(CollabError::from)
         }
+        NodeData::Table(t) => {
+            let mut rows = Vec::with_capacity(t.rows.len());
+            for row in &t.rows {
+                let mut cells = Vec::with_capacity(row.cells.len());
+                for cell in &row.cells {
+                    let mut blocks = Vec::with_capacity(cell.children.len());
+                    for c in &cell.children {
+                        blocks.push(build_node(schema, c)?);
+                    }
+                    cells.push(
+                        schema
+                            .create_node(
+                                &cell.type_name,
+                                cell.attrs.clone(),
+                                Fragment::from_children(blocks),
+                            )
+                            .map_err(CollabError::from)?,
+                    );
+                }
+                rows.push(
+                    schema
+                        .create_node(
+                            "table_row",
+                            row.attrs.clone(),
+                            Fragment::from_children(cells),
+                        )
+                        .map_err(CollabError::from)?,
+                );
+            }
+            schema
+                .create_node(TABLE, t.attrs.clone(), Fragment::from_children(rows))
+                .map_err(CollabError::from)
+        }
     }
 }
 
@@ -1889,7 +1977,7 @@ fn same_mark_set(a: &[Mark], b: &[Mark]) -> bool {
 
 /// Write a model attr set into a yrs map. Values stay **typed** — an integer is an
 /// integer, not a stringified one.
-fn write_attrs(txn: &mut TransactionMut, obj: &MapRef, attrs: &Attrs) {
+pub(crate) fn write_attrs(txn: &mut TransactionMut, obj: &MapRef, attrs: &Attrs) {
     for (k, v) in attrs.iter() {
         // `attr_to_any` yields `None` for `AttrValue::Null`, which means "explicitly
         // absent" — storing it would be indistinguishable from a cleared key on
@@ -1909,7 +1997,12 @@ fn write_attrs(txn: &mut TransactionMut, obj: &MapRef, attrs: &Attrs) {
 /// no longer carries — or carries as [`AttrValue::Null`], which [`write_attrs`] never
 /// stores — are removed; keys whose value differs are written; equal keys are left
 /// untouched, keeping their CRDT history out of the transaction entirely.
-fn reconcile_attrs(txn: &mut TransactionMut, node: &MapRef, current: &Attrs, target: &Attrs) {
+pub(crate) fn reconcile_attrs(
+    txn: &mut TransactionMut,
+    node: &MapRef,
+    current: &Attrs,
+    target: &Attrs,
+) {
     let obj = match node.get(txn, ATTRS) {
         Some(Out::YMap(m)) => m,
         // Every projected node is written with an attrs map (`write_node`), but a

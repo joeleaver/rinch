@@ -1096,13 +1096,15 @@ for a *late*-joining peer to `start_collaboration_guest` from), and
 `collab_take_error()` round out the API. The first milestone covers **flat
 text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…),
 list containers (bullet/ordered lists and list items) and block quotes, nested
-into each other to any depth, horizontal rules, and the inline atoms inside a line —
-images and hard breaks (Shift+Enter). Tables and task lists are still outside it: an edit
+into each other to any depth, tables (merged cells included, anything above inside a
+cell), horizontal rules, and the inline atoms inside a line — images and hard breaks
+(Shift+Enter). Task lists, and a pasted table whose rows are ragged, are still outside
+it: an edit
 outside that scope fails loud rather than silently diverging —
 `collab_take_error()` surfaces it, and the CRDT is left untouched (the local edit is
-not projected). Horizontal rules, images, hard breaks and block quotes all joined that
-scope without a new wire format, so **every peer on a document must be upgraded
-together**: an older build accepts a rule, an image, a hard break or a quote from a newer
+not projected). Horizontal rules, images, hard breaks, block quotes and tables all
+joined that scope without a new format tag, so **every peer on a document must be upgraded
+together**: an older build accepts a rule, an image, a hard break, a quote or a table from a newer
 peer and then cannot read it, which poisons its session (see below) in both
 directions for as long as that content remains in the document — it heals only
 when the last one is deleted. A peer joining from a snapshot that already holds
@@ -1111,6 +1113,13 @@ one fails the join instead.
 Wrapping a paragraph in a quote or a list, or lifting it out of one, replaces that
 paragraph in the shared document, so if someone else is typing in it at that moment
 their typing is lost; both editors still end up with the same document.
+
+Tables keep a full grid however their structure is edited at once: a row and a column
+added by two people meet at an empty cell, two columns added at once are both there in
+every row, and a row deleted while someone types in it is gone with that typing. What
+can still be lost is typing in a row, column or cell someone else deletes or merges
+away, and, when two people type at once into the same empty cell that such a
+concurrent row-and-column insert created, one of the two.
 
 Two concurrent edits to images can still be lost, and both editors still end up
 with the same document when they are. **Two identical images side by side**
@@ -1144,7 +1153,7 @@ the condition holds — so it is what to drive a persistent indicator from:
 
 ```rust
 if let Some(err) = editor.collab_outbound_stall() {
-    // e.g. "Not syncing — remove the pasted table to resume." The error names the
+    // e.g. "Not syncing — remove the task list to resume." The error names the
     // content: "collab does not support this content yet: node `task_list` …".
     show_banner(&err.to_string());
 }

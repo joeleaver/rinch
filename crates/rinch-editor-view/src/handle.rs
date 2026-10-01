@@ -2997,13 +2997,13 @@ impl EditorHandle {
     }
 
     /// Why this editor's **outbound** collaboration is currently refusing, if it is
-    /// (issue #220): a local edit outside the staged A22 scope — a pasted table, a
-    /// task list — cannot be projected onto the CRDT, so this edit and every
+    /// (issue #220): a local edit outside the staged A22 scope — a pasted ragged
+    /// table, a task list — cannot be projected onto the CRDT, so this edit and every
     /// one after it stays local until that content is removed.
     ///
     /// Unlike [`Self::collab_take_error`] this does **not** clear: it stays `Some` for
     /// as long as the condition holds, so it is what an app should drive a persistent
-    /// "not syncing — remove the table to resume" indicator from. It clears itself the
+    /// "not syncing — remove the task list to resume" indicator from. It clears itself the
     /// moment a local edit projects again, and that same edit broadcasts everything
     /// that accumulated meanwhile.
     ///
@@ -6244,6 +6244,39 @@ mod tests {
             assert_eq!(doc_text(&guest), "quoted!\nli", "one block per line");
             assert_eq!(shape(&guest), shape(&host));
             assert_eq!(guest.doc().child(0).type_name(), "paragraph");
+        }
+
+        #[test]
+        fn table_edits_sync_to_the_peer() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ok")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            let shape = |h: &EditorHandle| format!("{:?}", h.doc());
+
+            // A table, typing in a cell, a column and a merge: every one syncs.
+            host.set_selection(Selection::cursor(Pos(3)));
+            assert!(host.command("insertTable"));
+            assert!(
+                host.collab_take_error().is_none(),
+                "a table is supported and must not fail loud"
+            );
+            let doc = host.doc();
+            let table_at = (0..doc.child_count())
+                .take_while(|&i| doc.child(i).type_name() != "table")
+                .map(|i| doc.child(i).node_size())
+                .sum::<usize>();
+            // table, row, cell, paragraph: the first cell's text starts four in.
+            host.set_selection(Selection::cursor(Pos(table_at + 4)));
+            assert!(host.insert_text("cell"));
+            assert!(host.command("addColumnAfter"));
+            assert!(host.collab_take_error().is_none());
+            assert_eq!(
+                shape(&guest),
+                shape(&host),
+                "the guest holds the same table"
+            );
+            assert!(doc_text(&guest).contains("cell"));
         }
 
         /// Seeded fuzz over the real `EditorHandle` wiring: two handles relay random

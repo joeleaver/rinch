@@ -2,10 +2,11 @@
 //!
 //! The most important variant is [`CollabError::Unsupported`]: per design amendment
 //! **A22**, the staged first-milestone scope is **flat text-blocks + marks**, the list
-//! and quote containers, **leaf block atoms** (a block-level node with no content of its own,
-//! such as `horizontal_rule`) and the **inline atoms** `image`/`hard_break`. When the
-//! adapter meets a model shape it cannot faithfully project onto the CRDT (a nested
-//! block outside that scope, a table, a multi-block paste it cannot reduce), it
+//! and quote containers, tables, **leaf block atoms** (a block-level node with no
+//! content of its own, such as `horizontal_rule`) and the **inline atoms**
+//! `image`/`hard_break`. When the adapter meets a model shape it cannot faithfully
+//! project onto the CRDT (a nested block outside that scope, a ragged table, a
+//! multi-block paste it cannot reduce), it
 //! **fails loud** with `Unsupported` rather than
 //! silently dropping the change. A silent drop would reintroduce the exact "the two
 //! sides disagree" divergence class the editor rewrite set out to kill.
@@ -21,7 +22,8 @@ pub enum CollabError {
     Engine(String),
 
     /// The model shape is outside the staged first-milestone scope (nested blocks
-    /// other than the list and quote containers: tables, task lists). **Fail-loud, never a
+    /// other than the list and quote containers and tables: task lists; a table whose
+    /// cells do not tile its grid). **Fail-loud, never a
     /// silent drop** (design A22). Leaf block atoms such as `horizontal_rule` and the
     /// inline atoms `image`/`hard_break` are **in** scope and do not reach here.
     #[error("collab does not support this content yet: {0}")]
