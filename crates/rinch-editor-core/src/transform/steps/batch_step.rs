@@ -836,7 +836,7 @@ mod tests {
         // Deletions end to end are one range, and map as two did.
         let del = BatchStep::new(vec![BatchEdit::delete(0, 3), BatchEdit::delete(3, 6)]).unwrap();
         assert_eq!(del.len(), 1);
-        assert_eq!(del.get_map().map_result(3, -1).deleted(), true);
+        assert!(del.get_map().map_result(3, -1).deleted());
     }
 
     #[test]
