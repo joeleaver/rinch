@@ -1,0 +1,261 @@
+//! A `white-space: nowrap` / `pre` IFC root still wraps the text of a
+//! descendant whose own `white-space` allows wrapping (#1212).
+//!
+//! CSS Text 3 §5 decides soft wrap opportunities per character. rinch broke a
+//! `nowrap`/`pre` root's whole paragraph unconstrained, so a `normal`,
+//! `pre-wrap` or `pre-line` span inside one never wrapped. The root's own wrap
+//! mode is now the root text style's `TextWrapMode`, and the paragraph is
+//! broken at the container's width whenever some text in it may wrap. Parley
+//! takes each break opportunity's wrap mode from the character before it,
+//! which is Chrome's answer at every seam pinned here (it is not Chrome's
+//! after a `normal` span followed by the root's preserved spaces, where
+//! Chrome breaks before the spaces).
+//!
+//! Every expectation is Chrome 153's on the same markup (bundled Inter as
+//! `ProbeFace`, 16px/25px, a `width: 50px` block), read line by line. Note the
+//! first line, `aaa bbb`: there is no break between the root's space and
+//! `bbb`, because the space before the opportunity is the non-wrapping
+//! root's — so that line overflows the 50px box (it is 60.84px), exactly as
+//! in Chrome.
+
+use rinch_core::dom::{DomDocument, NodeId};
+use rinch_dom::RinchDocument;
+
+const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+
+fn doc() -> RinchDocument {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let mut d = RinchDocument::new();
+    let registered = d.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(FACE)),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(registered.len(), 1, "one file, one family");
+    d
+}
+
+/// `<div style="width:50px;{style}">{inner}</div>`, laid out; returns the
+/// div's lines (each trimmed at both ends, since a space at a soft wrap is
+/// not ink and Chrome's per-character rects put the one in
+/// `the_roots_own_text_stays_unwrapped_beside_a_wrapping_span` at the start
+/// of the second line) and its height.
+fn lay_out(style: &str, inner: &str) -> (Vec<String>, f32) {
+    let mut d = doc();
+    let body = d.body();
+    let c = d.create_element("div");
+    d.set_attribute(
+        c,
+        "style",
+        &format!("width:50px;font:16px/25px ProbeFace;{style}"),
+    );
+    d.append_child(body, c);
+    d.set_inner_html(c, inner);
+    d.resolve_layout(800.0, 600.0);
+    read(&d, c)
+}
+
+fn read(d: &RinchDocument, c: NodeId) -> (Vec<String>, f32) {
+    let n = d.tree.get(c.0).unwrap();
+    let il = n.text_layout.as_ref().expect("the div is an IFC root");
+    let lines = il
+        .layout
+        .lines()
+        .map(|l| il.text_content[l.text_range()].trim().to_string())
+        .collect();
+    (lines, n.layout.height)
+}
+
+const SPANS: &str = "aaa <span style=\"white-space:normal\">bbb ccc ddd</span>";
+
+/// The issue's table: a `normal` span in a `pre` root, and in a `nowrap` one.
+#[test]
+fn a_wrapping_span_wraps_inside_a_nowrap_or_pre_root() {
+    for root in ["white-space:pre", "white-space:nowrap"] {
+        let (lines, h) = lay_out(root, SPANS);
+        assert_eq!(
+            lines,
+            ["aaa bbb", "ccc", "ddd"],
+            "{root}: Chrome 153 wraps the span's text, and not between the root's space and it"
+        );
+        assert_eq!(h, 75.0, "{root}: three 25px lines");
+    }
+}
+
+/// `pre-wrap` and `pre-line` spans wrap too: wrapping is `text-wrap-mode`,
+/// not the collapse half of `white-space`.
+#[test]
+fn pre_wrap_and_pre_line_spans_wrap_inside_a_pre_root() {
+    for span in ["white-space:pre-wrap", "white-space:pre-line"] {
+        let (lines, h) = lay_out(
+            "white-space:pre",
+            &format!("aaa <span style=\"{span}\">bbb ccc ddd</span>"),
+        );
+        assert_eq!(lines, ["aaa bbb", "ccc", "ddd"], "{span}");
+        assert_eq!(h, 75.0, "{span}");
+    }
+}
+
+/// The root's own text does not wrap, even when a span in the same paragraph
+/// does: `aaa bbb ccc` belongs to the `pre` root and stays one line, then the
+/// span wraps after it.
+#[test]
+fn the_roots_own_text_stays_unwrapped_beside_a_wrapping_span() {
+    let (lines, h) = lay_out(
+        "white-space:pre",
+        "aaa bbb ccc<span style=\"white-space:normal\"> ddd eee</span>",
+    );
+    assert_eq!(lines, ["aaa bbb ccc", "ddd", "eee"]);
+    assert_eq!(h, 75.0);
+}
+
+/// Control: with no wrapping descendant a `nowrap` root is still one line.
+#[test]
+fn an_all_nowrap_root_is_still_one_line() {
+    let (lines, h) = lay_out(
+        "white-space:nowrap",
+        "aaa <span style=\"color:red\">bbb ccc ddd</span>",
+    );
+    assert_eq!(lines, ["aaa bbb ccc ddd"]);
+    assert_eq!(h, 25.0);
+}
+
+/// A `nowrap` root clipped with `text-overflow: ellipsis` whose span wraps is
+/// a wrapping paragraph, not one line to cut whole: when the flat rebuild is
+/// not faithful (a coloured span) it keeps its three lines (#1091's "clipped,
+/// no …" route) rather than collapsing them to one cut prefix.
+#[test]
+fn an_unfaithful_ellipsis_root_with_a_wrapping_span_keeps_its_lines() {
+    let (lines, h) = lay_out(
+        "white-space:nowrap;overflow:hidden;text-overflow:ellipsis",
+        "aaa <span style=\"white-space:normal;color:red\">bbb ccc ddd</span>",
+    );
+    assert_eq!(lines, ["aaa bbb", "ccc", "ddd"]);
+    assert_eq!(h, 75.0);
+}
+
+/// `(line text, offset)` of each line of `#c`'s layout.
+fn offsets(style: &str, inner: &str) -> Vec<(String, f32)> {
+    let mut d = doc();
+    let body = d.body();
+    let c = d.create_element("div");
+    d.set_attribute(
+        c,
+        "style",
+        &format!("width:50px;font:16px/25px ProbeFace;{style}"),
+    );
+    d.append_child(body, c);
+    d.set_inner_html(c, inner);
+    d.resolve_layout(800.0, 600.0);
+    let n = d.tree.get(c.0).unwrap();
+    let il = n.text_layout.as_ref().expect("the div is an IFC root");
+    il.layout
+        .lines()
+        .map(|l| {
+            (
+                il.text_content[l.text_range()].trim().to_string(),
+                l.metrics().offset,
+            )
+        })
+        .collect()
+}
+
+const SPACES: &str = "                    ";
+
+/// A `pre` root's preserved spaces do not hang (CSS Text 3 §4.1.3 hangs
+/// only `pre-wrap`'s): `aaa` and twenty spaces overflow a 50px right-aligned
+/// box, and an overflowing line starts at the start edge. Chrome 153: offset
+/// 0. With no wrapping text the root is broken unconstrained; broken at the
+/// box's width instead, the line keeps offset 0 only through the alignment
+/// width `ifc::align_unhung_trailing` narrows.
+#[test]
+fn a_pre_roots_trailing_spaces_do_not_hang() {
+    let lines = offsets("white-space:pre;text-align:right", &format!("aaa{SPACES}"));
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].1, 0.0, "{lines:?}");
+}
+
+/// The same spaces after a wrapping span: the paragraph is now broken at the
+/// box's width, and the root's own spaces still do not hang — Chrome 153
+/// puts `ccaaa` and its spaces at offset 0, overflowing, after `bb`.
+#[test]
+fn a_pre_roots_trailing_spaces_do_not_hang_beside_a_wrapping_span() {
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        &format!("<span style=\"white-space:normal\">bb cc</span>aaa{SPACES}"),
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0].0, "bb");
+    assert_eq!(lines[1].0, "ccaaa");
+    assert_eq!(lines[1].1, 0.0, "{lines:?}");
+}
+
+/// Why a paragraph with no wrapping text is still broken unconstrained:
+/// parley marks a break opportunity after every inline box whatever the wrap
+/// mode, so a `nowrap` root broken at 50px would wrap `bbb ccc` after the
+/// chip. Chrome 153 keeps `aaabbb ccc` on one line. (Kills the mutant that
+/// always breaks at the box's width.)
+#[test]
+fn a_nowrap_root_does_not_wrap_after_an_inline_box() {
+    let (lines, h) = lay_out(
+        "white-space:nowrap",
+        "aaa<b style=\"display:inline-block;width:20px;height:10px\"></b>bbb ccc",
+    );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(h, 25.0);
+}
+
+/// A `pre-wrap` span's spaces hang at the wrap, and the `pre` root's spaces
+/// after them do not join the hang: they start the next line, as content.
+/// Chrome 153: `aaaaa␣␣` at offset 5.08 (the hanging spaces past the edge),
+/// `␣␣␣bb` at 16.91.
+#[test]
+fn a_pre_roots_spaces_after_hanging_pre_wrap_spaces_start_the_next_line() {
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        "<span style=\"white-space:pre-wrap\">aaaaa  </span>   bb",
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0].0, "aaaaa");
+    assert_eq!(lines[1].0, "bb");
+    assert!((lines[0].1 - 5.08).abs() < 0.01, "{lines:?}");
+    assert!((lines[1].1 - 16.91).abs() < 0.01, "{lines:?}");
+}
+
+/// A line ended by a forced break after the `pre` root's spaces is aligned
+/// with those spaces as content too. Chrome 153 (round-2 review of #1228,
+/// c13/c21): `ccaaa␣␣␣` overflows and starts at 0, `cca␣␣␣` fits and sits at
+/// 9.08, and the last line `d` at 40.20.
+#[test]
+fn a_pre_roots_spaces_before_a_newline_are_content_in_alignment() {
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        "<span style=\"white-space:normal\">bb cc</span>aaa   \nddd",
+    );
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[1].0, "ccaaa");
+    assert_eq!(lines[1].1, 0.0, "{lines:?}");
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        "<span style=\"white-space:normal\">bb cc</span>a   \nd",
+    );
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[1].0, "cca");
+    assert!((lines[1].1 - 9.08).abs() < 0.01, "{lines:?}");
+    assert!((lines[2].1 - 40.20).abs() < 0.01, "{lines:?}");
+}
+
+/// The trailing `pre` spaces may come from two adjacent text nodes (here the
+/// root's and a `<b>`'s): every one counts. Chrome 153 (c22): 9.08.
+#[test]
+fn trailing_pre_spaces_across_adjacent_text_nodes_all_count() {
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        "<span style=\"white-space:normal\">bb cc</span>a <b style=\"font-weight:normal\">  </b>",
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[1].0, "cca");
+    assert!((lines[1].1 - 9.08).abs() < 0.01, "{lines:?}");
+}
