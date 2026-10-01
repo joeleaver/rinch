@@ -107,11 +107,21 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 
 /* ── Lists ─────────────────────────────────────────────────────────────── */
 /* `li` is flex so the bullet/number aligns with the first line of its content
-   (rinch-dom renders list markers as block siblings otherwise). `flex-wrap: wrap`
-   plus `flex-basis: 100%` on a *nested* list make the sublist break onto its own
-   full-width line and indent below the item, instead of floating beside it. */
+   (rinch-dom renders list markers as block siblings otherwise). The item's first
+   block takes `flex: 1 1 0; min-width: 0` — the rest of the marker's line, its text
+   wrapping inside it — because with `flex-basis: auto` it is sized at its
+   max-content width (the whole paragraph on one line) and `flex-wrap` then moves a
+   long one onto a line of its own, leaving the bullet alone above it (#1246; Chrome
+   does the same with that CSS). Every later block, a *nested* list included, takes
+   `flex-basis: 100%` and breaks onto its own full-width line below the item. Items
+   align at the top, not the baseline: the marker shares the content's font and line
+   height, so the two agree on the first line, and rinch-dom's Taffy baseline-aligns
+   a multi-line item by its bottom edge (#1013), which would put the marker beside
+   the paragraph's last line. */
 [data-pm-editor] ul, [data-pm-editor] ol { padding-left: 1.6em; margin: 0 0 0.75em; }
-[data-pm-editor] li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4em; margin: 0.15em 0; }
+[data-pm-editor] li { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.4em; margin: 0.15em 0; }
+[data-pm-editor] li > *, [data-pm-editor] [data-pm-type="task_item"] > * { flex: 1 1 0; min-width: 0; }
+[data-pm-editor] li > * ~ *, [data-pm-editor] [data-pm-type="task_item"] > * ~ * { flex-basis: 100%; }
 [data-pm-editor] li > ul, [data-pm-editor] li > ol,
 [data-pm-editor] li > [data-pm-type="task_list"] { flex-basis: 100%; margin: 0.15em 0 0; }
 
@@ -122,10 +132,10 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    struck through. Nested task lists wrap onto their own indented line, like ul/ol. */
 [data-pm-editor] [data-pm-type="task_list"] { margin: 0 0 0.75em; padding-left: 0.1em; }
 [data-pm-editor] [data-pm-type="task_item"] {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5em; margin: 0.15em 0;
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.5em; margin: 0.15em 0;
 }
 [data-pm-editor] [data-pm-type="task_item"]::before {
-  content: "\2610"; flex: 0 0 auto; color: #57606a; line-height: 1.4;
+  content: "\2610"; flex: 0 0 auto; color: #57606a;
 }
 [data-pm-editor] [data-pm-type="task_item"][data-checked="true"]::before { content: "\2611"; color: #1a7f37; }
 /* Dim + strike the item's *own* content only — never a nested sub-list (whose items
