@@ -208,7 +208,10 @@ fn a_cell_in_a_row_a_rowspan_leaves_short_stays_in_its_row() {
     assert!(b.1 > x.1 + 1.0, "B is in row 1, below X: {r:?}");
     assert!((b.1 - cc.1).abs() < 0.5, "B and C share row 1: {r:?}");
     assert!((b.0 - x.0).abs() < 0.5 && cc.0 > b.0, "B under X: {r:?}");
-    assert!((cc.1 + cc.3 - (a.1 + a.3)).abs() <= 1.0, "A spans both: {r:?}");
+    assert!(
+        (cc.1 + cc.3 - (a.1 + a.3)).abs() <= 1.0,
+        "A spans both: {r:?}"
+    );
 }
 
 /// Four rows of `colspan = 1_000_000, rowspan = i64::MAX`. The map's grid is

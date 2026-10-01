@@ -171,7 +171,10 @@ fn a_cell_in_a_row_a_rowspan_leaves_short_stays_in_its_row() {
     let [a, x, b, c] = [r[0], r[1], r[2], r[3]];
     assert!(b.1 > x.1 + 1.0, "B is in row 1, below X: {r:?}");
     assert!((b.1 - c.1).abs() < 0.5, "B and C share row 1: {r:?}");
-    assert!((b.0 - x.0).abs() < 0.5 && c.0 > b.0, "B under X, C beside it: {r:?}");
+    assert!(
+        (b.0 - x.0).abs() < 0.5 && c.0 > b.0,
+        "B under X, C beside it: {r:?}"
+    );
     assert!(
         (c.1 + c.3 - (a.1 + a.3)).abs() <= 1.0,
         "A spans both rows: {r:?}"
@@ -187,7 +190,10 @@ fn every_row_under_a_short_one_keeps_its_cells() {
     let r: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
     assert_eq!(r.len(), 5, "control: five cells mounted");
     let [a, x, b, c, d] = [r[0], r[1], r[2], r[3], r[4]];
-    assert!(b.1 > x.1 + 1.0 && (b.1 - c.1).abs() < 0.5, "B, C in row 1: {r:?}");
+    assert!(
+        b.1 > x.1 + 1.0 && (b.1 - c.1).abs() < 0.5,
+        "B, C in row 1: {r:?}"
+    );
     assert!(d.1 > b.1 + 1.0, "D in row 2: {r:?}");
     assert!(
         (b.0 - x.0).abs() < 0.5 && (d.0 - x.0).abs() < 0.5 && c.0 > b.0,

@@ -376,7 +376,8 @@ enum GridPlacement {
     /// rowspans from above fill). No table command treats it as a cell; it is
     /// laid out as a band across the whole grid (`grid-column: 1 / -1`) on a
     /// row of its own, so its content stays visible without adding a column.
-    /// Among definitely placed cells that row is after the grid's last.
+    /// Among cells placed by lines it is the first row the grid leaves empty —
+    /// normally one after its last.
     Outside,
 }
 
@@ -4416,7 +4417,11 @@ mod table_span_tests {
         let got: Vec<_> = cells(&r).into_iter().map(|c| placement(&r, c)).collect();
         assert_eq!(
             got,
-            vec![p("1 / 3", "1 / 3"), p("3 / 4", "1 / 2"), p("3 / 4", "2 / 3")]
+            vec![
+                p("1 / 3", "1 / 3"),
+                p("3 / 4", "1 / 2"),
+                p("3 / 4", "2 / 3")
+            ]
         );
     }
 
@@ -4605,9 +4610,11 @@ mod table_span_tests {
         let placed = |rows: &[Vec<(i64, i64)>]| {
             let r = rig();
             let st = state_with(&s, table(&s, rows));
-            let _view =
-                RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
-            cells(&r).into_iter().map(|c| placement(&r, c)).collect::<Vec<_>>()
+            let _view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+            cells(&r)
+                .into_iter()
+                .map(|c| placement(&r, c))
+                .collect::<Vec<_>>()
         };
         let w = MAX_DEFINITE_GRID_TRACKS as i64;
         assert_eq!(

@@ -142,9 +142,9 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 /* ── Tables (CSS grid — rinch-dom has no display:table) ─────────────────
    The <table> is a grid; the view sets `grid-template-columns: repeat(N, …)`
    inline (N = column count). <tr> is `display: contents`, so its cells become
-   the grid's direct items, and a merged cell carries an inline
-   `grid-column`/`grid-row` span — its rectangle in the table's TableMap,
-   which is how colspan/rowspan render (#1182). */
+   the grid's direct items, and each cell carries an inline
+   `grid-column`/`grid-row` — its rectangle in the table's TableMap as grid
+   lines, which is how colspan/rowspan render (#1182, #1209). */
 [data-pm-editor] table {
   display: grid; margin: 0.85em 0;
   grid-template-columns: minmax(0, 1fr);
