@@ -1257,7 +1257,7 @@ impl RinchDomEditorView {
         // The overlays are absolutely-positioned children of the container, so they
         // anchor to its *padding* box; the summed offsets are border-box-relative.
         // Subtract the container's border inset once so caret/selection land on glyphs
-        // (a no-op on the desktop renderer — default `(0, 0)`).
+        // (both renderers report it).
         let (ix, iy) = d.content_origin_inset(container_id as u64);
         (x - ix, y - iy)
     }

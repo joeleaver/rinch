@@ -1203,6 +1203,25 @@ impl DomDocument for RinchDocument {
         ))
     }
 
+    /// The node's left and top border widths, as Taffy laid them out
+    /// (`taffy_conversion` hands it the computed widths). A child's
+    /// [`LayoutResult`](crate::node::LayoutResult) origin is relative to its parent's
+    /// border box, but an absolutely-positioned child's `left: 0; top: 0` sits
+    /// at the parent's padding box, inside the border. The editor's caret and
+    /// selection overlays are such children, placed from summed layout
+    /// origins, so without this they were drawn one border width right of and
+    /// below the glyphs (1px in the default editor style).
+    fn content_origin_inset(&self, node_id: u64) -> (f32, f32) {
+        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+            return (0.0, 0.0);
+        };
+        let cs = &node.computed_style;
+        (
+            cs.border_left_width.to_px().max(0.0),
+            cs.border_top_width.to_px().max(0.0),
+        )
+    }
+
     fn tag_name(&self, node: NodeId) -> Option<String> {
         let n = self.tree.nodes.get(node.0)?;
         match &n.kind {
