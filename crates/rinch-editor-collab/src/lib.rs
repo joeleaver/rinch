@@ -108,3 +108,4 @@ pub use projection::CollabDoc;
 pub use rebase::rebase_steps;
 pub use remote::{ORIGIN_REMOTE, build_remote_transaction};
 pub use session::CollabSession;
+pub use table::OversizedTable;

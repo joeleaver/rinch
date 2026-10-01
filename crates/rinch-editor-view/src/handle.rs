@@ -32,7 +32,7 @@ use rinch_editor_core::{
 };
 
 #[cfg(feature = "collaboration")]
-use rinch_editor_collab::{CollabError, CollabSession};
+use rinch_editor_collab::{CollabError, CollabSession, OversizedTable};
 
 #[cfg(feature = "collaboration")]
 use super::collab::CollabBridge;
@@ -3037,11 +3037,67 @@ impl EditorHandle {
     ///
     /// Uses `try_borrow` — soft, like [`Self::collab_receive`] — so an `outbound`
     /// callback may call it re-entrantly.
+    ///
+    /// [`CollabError::OversizedTable`] is the **freeze** (see
+    /// [`Self::collab_oversized_tables`]): reported as soon as such a table arrives,
+    /// and cleared only by [`Self::collab_delete_oversized_table`] or a peer removing
+    /// or shrinking the table, not by an edit.
     pub fn collab_outbound_stall(&self) -> Option<CollabError> {
         let core = self.inner.try_borrow().ok()?;
         core.collab
             .as_ref()
             .and_then(|b| b.session.outbound_stall().cloned())
+    }
+
+    /// The tables in the shared document too large to read: a peer grew each past
+    /// the read's budget, and the model shows it as a one-cell placeholder. While
+    /// any exists, outbound is **frozen** — every local edit stays local and
+    /// [`Self::collab_outbound_stall`] reports [`CollabError::OversizedTable`] naming
+    /// them — because no diff against a placeholder can be trusted not to delete real
+    /// content. Cure it with [`Self::collab_delete_oversized_table`], or wait for a
+    /// peer to delete or shrink the table. Empty when not collaborating.
+    pub fn collab_oversized_tables(&self) -> Vec<OversizedTable> {
+        let Ok(core) = self.inner.try_borrow() else {
+            return Vec::new();
+        };
+        core.collab
+            .as_ref()
+            .map(|b| b.session.oversized_tables())
+            .unwrap_or_default()
+    }
+
+    /// Delete the table too large to read named `id` (an [`OversizedTable::id`] from
+    /// [`Self::collab_oversized_tables`]) from the shared document, for every peer:
+    /// the one change that may touch it. Its placeholder leaves the model, and once
+    /// no such table is left, the edits made while frozen are projected and broadcast
+    /// with the deletion. Not undoable. `Ok(false)` when there is no such table (a
+    /// peer deleted it first) or this editor is not collaborating.
+    #[cfg(feature = "collaboration")]
+    pub fn collab_delete_oversized_table(&self, id: &str) -> Result<bool, CollabError> {
+        let mut core = self.core_mut();
+        if core.collab.is_none() {
+            return Ok(false);
+        }
+        let prev = core.state.clone();
+        let bridge = core.collab.as_mut().unwrap();
+        let Some(next) = bridge.session.delete_oversized_table(&prev, id)? else {
+            return Ok(false);
+        };
+        match bridge.session.save_incremental() {
+            Ok(delta) if !delta.is_empty() => untracked_handler(|| (bridge.outbound)(delta)),
+            Ok(_) => {}
+            Err(e) => bridge.last_error = Some(e),
+        }
+        if !prev.doc.same_ref(&next.doc) {
+            core.carry_anchors(&next.doc, None);
+            core.carry_caret_hint(&prev, &next);
+            core.note_selection(&prev.selection, &next.selection);
+            core.state = next.clone();
+            if let Some(view) = core.view.as_mut() {
+                view.update_dom(&prev, &next);
+            }
+        }
+        Ok(true)
     }
 
     /// Take (and clear) the most recent collaboration error — e.g. an edit outside

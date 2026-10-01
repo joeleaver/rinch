@@ -54,6 +54,19 @@ pub enum CollabError {
         "collab session poisoned — the shared CRDT is no longer projectable; stop and rejoin: {0}"
     )]
     SessionPoisoned(String),
+
+    /// The shared document holds a table too large to read (one a peer grew past the
+    /// read's budget, which the model shows as a one-cell placeholder). While it does,
+    /// a session refuses **every** local change — outbound is frozen, inbound keeps
+    /// integrating — because no diff against a placeholder can be trusted not to delete
+    /// real content. The edits stay local and ship when the freeze lifts: when the
+    /// table is deleted through `CollabSession::delete_oversized_table` (by its id,
+    /// listed by `CollabSession::oversized_tables`), or a peer deletes or shrinks it.
+    /// The message names the table ids.
+    #[error(
+        "collab outbound is frozen: the shared document holds a table too large to read ({0}); delete it to resume"
+    )]
+    OversizedTable(String),
 }
 
 impl CollabError {

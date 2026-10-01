@@ -225,8 +225,8 @@ use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, NodeType, Schema
 
 use crate::error::{CollabError, Result};
 use crate::table::{
-    TABLE, TableData, is_table_map, placeholder_reads, read_model_table, read_table_data,
-    reconcile_table, table_map_is_void, write_table,
+    OversizedTable, TABLE, TableData, is_table_map, lock_oversized, placeholder_reads,
+    read_model_table, read_table_data, reconcile_table, table_map_is_void, write_table,
 };
 
 /// yrs key/root names used by the projection.
@@ -493,6 +493,10 @@ pub struct CollabDoc {
     /// would exceed the model's and `project_change`'s count gate would fail loud: a
     /// stall, never a write to the wrong block.
     pub(crate) top_void: bool,
+    /// The tables in the CRDT too large to read (`table` rule 5), as the last model
+    /// read found them ([`CollabDoc::to_doc`], the join gate). While it is non-empty a
+    /// session refuses every local change; see `CollabSession::record_local`.
+    pub(crate) oversized: Mutex<Vec<OversizedTable>>,
     /// Keeps the update observer alive — dropping the subscription unsubscribes it, and
     /// the outbox would silently stop filling.
     _updates: Subscription,
@@ -599,6 +603,9 @@ impl CollabDoc {
             outbox,
             // A projection of a model holds no void container: the model cannot.
             top_void: false,
+            // Nor a table too large to read: the model's own tables are bounded the
+            // same way on write.
+            oversized: Mutex::new(Vec::new()),
             _updates: updates,
         })
     }
@@ -650,7 +657,7 @@ impl CollabDoc {
         // transaction for both gates.
         let content = ydoc.get_or_insert_array(CONTENT);
         let meta = ydoc.get_or_insert_map(META);
-        let top_void = {
+        let (top_void, oversized) = {
             let txn = ydoc.transact();
             match meta.get(&txn, FORMAT) {
                 Some(Out::Any(Any::String(tag))) if &*tag == FORMAT_TAG => {}
@@ -663,17 +670,18 @@ impl CollabDoc {
             }
             // The model's read: a table too large to read joins as its placeholder,
             // as `to_doc` builds it, so a guest can join and delete it.
-            let _placeholders = placeholder_reads();
+            let placeholders = placeholder_reads();
             for child in content.iter(&txn) {
                 read_out_data(&txn, child)?;
             }
-            holds_void(&txn, &content)
+            (holds_void(&txn, &content), placeholders.finish())
         };
         Ok(CollabDoc {
             doc: ydoc,
             content,
             outbox,
             top_void,
+            oversized: Mutex::new(oversized),
             _updates: updates,
         })
     }
@@ -702,13 +710,15 @@ impl CollabDoc {
     pub fn to_doc(&self, schema: &Schema) -> Result<Node> {
         let mut blocks = {
             // The model's read: a table past the read's budget is a placeholder here
-            // (and nowhere else), so it reaches the model and can be deleted.
-            let _placeholders = placeholder_reads();
+            // (and in the join gate, nowhere else), and the tables read so are what
+            // [`CollabDoc::oversized_tables`] answers from now on.
+            let placeholders = placeholder_reads();
             let txn = self.doc.transact();
             let mut blocks = Vec::new();
             for (_, nd) in read_children(&txn, &self.content)? {
                 blocks.push(build_node(schema, &nd)?);
             }
+            *lock_oversized(&self.oversized) = placeholders.finish();
             blocks
         };
         if blocks.is_empty() {

@@ -1129,14 +1129,23 @@ the first of three empty rows while someone types in the last keeps their typing
 
 A table read from someone else that would be absurdly large for what the shared
 document actually holds (rows and columns cost a few bytes each to send, the empty
-cells between them nothing) is not built: it
-shows up as a single empty cell instead. Editing, moving or copying that cell is
-refused (the session reports it as not syncing, as for any edit it cannot share) until
-someone deletes the table, which any of the editors can do. A table you make yourself
-whose merged cells span far more rows and columns than it has cells (thousands of them)
-is refused the same way before it is shared. One person's edits never make such
-a table; two people adding hundreds of rows and hundreds of columns at the same moment
-could.
+cells between them nothing) is not built: it shows up as a single empty cell instead,
+and while the document holds one, **this editor shares none of its own edits**. Every
+edit stays local, `collab_outbound_stall()` reports `CollabError::OversizedTable`
+naming the table, and other people's edits keep arriving. No edit is allowed near
+the table — not even deleting it with the editor — because the empty cell is not the
+table, and a change to it (or a document reloaded from an export, which cannot tell
+it from an ordinary empty table) could delete the real one for everybody. Two things
+end it: `collab_oversized_tables()` lists the tables, and
+`collab_delete_oversized_table(id)` deletes one from the shared document for every
+peer, after which the edits made meanwhile are shared; or someone else deletes or
+shrinks it. Edits made while frozen are lost if someone else's change arrives first,
+as for any edit that cannot be shared. One person's edits never make such a table;
+two people adding hundreds of rows and hundreds of columns at the same moment could.
+
+A table you make yourself whose merged cells span far more rows and columns than it
+has cells (thousands of them) is refused before it is shared, and the session reports
+it as not syncing until you remove it.
 
 Two concurrent edits to images can still be lost, and both editors still end up
 with the same document when they are. **Two identical images side by side**

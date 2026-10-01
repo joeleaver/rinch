@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
-use rinch_editor_collab::{CollabPlugin, CollabSession};
+use rinch_editor_collab::{CollabError, CollabPlugin, CollabSession};
 use rinch_editor_core::{
     AttrValue, Attrs, EditorState, Fragment, Mark, Node, Plugin, Pos, Schema, Selection, TableMap,
     Transaction, default_plugins,
@@ -1349,54 +1349,132 @@ fn a_span_over_more_slots_than_the_model_allows_reads_as_a_placeholder() {
     assert_eq!(table_dims(&b.state.doc), (1, 1));
 }
 
-/// The placeholder is curable from inside the session, by any peer that has seen it:
-/// an edit inside it is refused loud and stalls outbound (its write would need the
-/// table read), nothing reaches the CRDT; deleting the table projects, catches up the
-/// stalled outbound, and every peer converges without it.
+/// While the shared document holds a table too large to read, outbound is frozen:
+/// every local edit is refused with `OversizedTable` — typing inside the placeholder,
+/// typing elsewhere, even deleting the table with the editor's own command — and
+/// nothing reaches the CRDT. The cure is `delete_oversized_table`, by id: the table
+/// leaves the CRDT and the model, the edits made meanwhile ship with it, and every
+/// peer converges without the table.
 #[test]
-fn an_over_budget_table_is_refused_for_edits_and_can_be_deleted() {
+fn an_over_budget_table_freezes_outbound_until_it_is_deleted_by_id() {
     let s = schema();
     let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
     let update = grown_table_update(&b, 2000, false);
     integrate_healthy(&mut a, &update);
     integrate_healthy(&mut b, &update);
     let snapshot = b.session.snapshot();
+    let tables = b.session.oversized_tables();
+    assert_eq!(tables.len(), 1);
+    assert!(
+        matches!(
+            b.session.outbound_stall(),
+            Some(CollabError::OversizedTable(_))
+        ),
+        "the freeze is reported as soon as the table arrives"
+    );
 
-    // Typing inside it: refused, loud, nothing written.
+    // The freeze alone leaves the model the CRDT's read: sticky indexes still work.
+    let tail_pos = Pos(pos_of(&b.state.doc, "tail") + 2);
+    assert!(b.session.sticky_index(&b.state.doc, tail_pos).is_some());
+
+    // Typing inside it, typing elsewhere, deleting it with the editor: all refused.
     let at = cell_pos(&b.state.doc, 0, 0) + 2;
     let mut tr = b.state.tr();
     tr.set_selection(Selection::cursor(Pos(at)));
     tr.insert_text("x").unwrap();
     let typed = b.state.apply(tr);
-    let err = b
-        .session
-        .record_local(&s, &b.state.doc, &typed.doc)
-        .expect_err("an edit inside an over-budget table cannot be written");
-    assert!(
-        matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
-        "{err}"
-    );
-    assert!(!b.session.is_poisoned());
-    assert!(b.session.outbound_stall().is_some());
-    assert_eq!(b.session.snapshot(), snapshot, "nothing reached the CRDT");
-    b.state = typed;
-
-    // Deleting it: projects, and the peer follows.
+    assert!(!rv4_soft_commit(&mut b, typed));
+    let tail = pos_of(&b.state.doc, "tail") + 4;
+    let mut tr = b.state.tr();
+    tr.set_selection(Selection::cursor(Pos(tail)));
+    tr.insert_text("!").unwrap();
+    let typed = b.state.apply(tr);
+    assert!(!rv4_soft_commit(&mut b, typed));
     let caret = Selection::near(&b.state.doc, Pos(at), 1);
     let mut tr = b.state.tr();
     tr.set_selection(caret);
     let placed = b.state.apply(tr);
     let gone = placed.run("deleteTable").expect("deleteTable applies");
-    b.session
-        .record_local(&s, &b.state.doc, &gone.doc)
-        .expect("deleting the table projects");
-    b.state = gone;
-    assert!(b.session.outbound_stall().is_none());
+    assert!(!rv4_soft_commit(&mut b, gone));
+    assert!(matches!(
+        b.session.outbound_stall(),
+        Some(CollabError::OversizedTable(_))
+    ));
+    assert_eq!(b.session.snapshot(), snapshot, "nothing reached the CRDT");
+    // The model is ahead of the CRDT now: no sticky index can be trusted.
+    assert!(b.session.sticky_index(&b.state.doc, tail_pos).is_none());
+
+    // Start over from the frozen model with the "!" kept, and cure by id.
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    let tail = pos_of(&b.state.doc, "tail") + 4;
+    let mut tr = b.state.tr();
+    tr.set_selection(Selection::cursor(Pos(tail)));
+    tr.insert_text("!").unwrap();
+    let typed = b.state.apply(tr);
+    assert!(!rv4_soft_commit(&mut b, typed));
+    let id = b.session.oversized_tables()[0].id.clone();
+    let next = b
+        .session
+        .delete_oversized_table(&b.state, &id)
+        .expect("the delete projects")
+        .expect("the table was there");
+    b.state = next;
+    assert!(b.session.outbound_stall().is_none(), "the freeze lifted");
+    assert!(b.session.oversized_tables().is_empty());
     assert!(first_table(&b.state.doc).is_none());
+    b.assert_model_is_projection("after the delete");
     let delta = b.send();
     a.receive(&delta);
     assert_eq!(a.state.doc, b.state.doc);
-    assert!(first_table(&a.state.doc).is_none());
+    assert_eq!(
+        inline_text(a.state.doc.child(0)),
+        "tail!",
+        "the frozen edit shipped"
+    );
+    assert!(a.session.oversized_tables().is_empty());
+    assert!(a.session.outbound_stall().is_none());
+    // A second delete finds nothing.
+    assert!(
+        b.session
+            .delete_oversized_table(&b.state, &id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A guest joining a document that holds a table too large to read starts frozen.
+#[test]
+fn a_guest_joining_a_document_with_an_over_budget_table_starts_frozen() {
+    let s = schema();
+    let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let u = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut b, &u);
+    let guest = b.join(3);
+    assert_eq!(guest.session.oversized_tables().len(), 1);
+    assert!(matches!(
+        guest.session.outbound_stall(),
+        Some(CollabError::OversizedTable(_))
+    ));
+}
+
+/// A peer shrinking the table back under the budget lifts the freeze on its own: the
+/// placeholder becomes the real table and outbound resumes.
+#[test]
+fn a_peer_shrinking_the_table_lifts_the_freeze() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 2, 2), (1, 2));
+    let u = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut b, &u);
+    integrate_healthy(&mut a, &u);
+    assert!(!b.session.oversized_tables().is_empty());
+    let shrink = rv4_foreign(&b, 0, 0, true, 777).expect("a shrink");
+    integrate_healthy(&mut b, &shrink);
+    assert!(b.session.oversized_tables().is_empty());
+    assert!(b.session.outbound_stall().is_none());
+    assert_eq!(table_dims(&b.state.doc).0, 3);
+    b.type_after("tail", "!");
 }
 
 /// An honest concurrent edit that leaves fillers is untouched by the budget: a table
@@ -2286,11 +2364,10 @@ fn commit_and_send(a: &mut Peer, b: &mut Peer, next: EditorState) -> bool {
     ok
 }
 
-/// A load while collaborating that keeps the table and drops the paragraph above it:
-/// the load shares no `Rc`, so the diff matches by value, and the placeholder matches
-/// the real table's read. The real table stays, and the paragraph goes.
+/// A load while collaborating that keeps the table and drops the paragraph above it
+/// is refused like any other edit while the document is frozen: nothing is deleted.
 #[test]
-fn a_load_that_keeps_the_placeholder_keeps_the_real_table() {
+fn a_load_while_frozen_deletes_nothing() {
     let s = schema();
     let (mut a, mut b) = over_budget_pair(&s);
     let doc = &b.state.doc;
@@ -2299,10 +2376,13 @@ fn a_load_that_keeps_the_placeholder_keeps_the_real_table() {
         &doc_of(&s, vec![doc.child(1).clone(), doc.child(2).clone()]),
     );
     let next = EditorState::create(s.clone(), loaded, plugins());
-    assert!(commit_and_send(&mut a, &mut b, next), "the load projects");
+    assert!(!commit_and_send(&mut a, &mut b, next));
     assert!(rv3_real_table_alive(&b) && rv3_real_table_alive(&a));
-    assert_eq!(a.state.doc, b.state.doc);
-    assert_eq!(a.state.doc.child_count(), 2);
+    assert_eq!(
+        a.state.doc.child_count(),
+        3,
+        "the paragraph above stays too"
+    );
 }
 
 /// A load that moves the placeholder to where another block was cannot be written
@@ -2325,10 +2405,10 @@ fn a_load_that_moves_the_placeholder_is_refused() {
     assert!(rv3_real_table_alive(&b) && rv3_real_table_alive(&a));
 }
 
-/// Select all and type over it (a paste or a replace-all): the user deleted the table,
-/// which projects; every peer loses it, as the user asked.
+/// Select all and type over it (a paste or a replace-all) while frozen: refused, the
+/// real table kept; only `delete_oversized_table` removes it.
 #[test]
-fn replacing_everything_deletes_the_over_budget_table() {
+fn replacing_everything_while_frozen_deletes_nothing() {
     let s = schema();
     let (mut a, mut b) = over_budget_pair(&s);
     let end = b.state.doc.content_size();
@@ -2336,10 +2416,21 @@ fn replacing_everything_deletes_the_over_budget_table() {
     tr.replace_with(0, end, Fragment::from_node(para(&s, "pasted")))
         .unwrap();
     let next = b.state.apply(tr);
-    assert!(commit_and_send(&mut a, &mut b, next));
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    assert!(rv3_real_table_alive(&b) && rv3_real_table_alive(&a));
+    // The cure, then the replace-all ships.
+    let id = b.session.oversized_tables()[0].id.clone();
+    let next = b
+        .session
+        .delete_oversized_table(&b.state, &id)
+        .unwrap()
+        .unwrap();
+    b.state = next;
+    let delta = b.send();
+    a.receive(&delta);
     assert!(!rv3_real_table_alive(&b) && !rv3_real_table_alive(&a));
     assert_eq!(a.state.doc, b.state.doc);
-    assert!(first_table(&a.state.doc).is_none());
+    assert_eq!(inline_text(&a.state.doc), "pasted");
 }
 
 /// Pasting a copy of the placeholder elsewhere would write it: refused.
@@ -2474,4 +2565,694 @@ fn a_guest_joining_past_the_line_budget_sees_the_placeholder() {
     let guest = b.join(3);
     assert!(placeholder(&guest));
     assert!(!guest.session.is_poisoned());
+}
+
+// --- rv4 fuzz: over-budget tables among random multi-peer edits --------------------
+
+fn rv4_soft_commit(peer: &mut Peer, next: EditorState) -> bool {
+    let ok = peer
+        .session
+        .record_local(&peer.schema, &peer.state.doc, &next.doc)
+        .is_ok();
+    peer.state = next;
+    ok
+}
+
+/// A foreign writer (client `cid`) grows the `k`th top-level table of `p`'s CRDT by
+/// `n` rows and columns, or shrinks it to 3 rows when `shrink`.
+fn rv4_foreign(p: &Peer, k: usize, n: usize, shrink: bool, cid: u64) -> Option<Vec<u8>> {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+    let doc = yrs::Doc::with_client_id(cid);
+    {
+        let mut txn = doc.transact_mut();
+        txn.apply_update(Update::decode_v1(&p.session.snapshot()).unwrap())
+            .unwrap();
+    }
+    let sv = doc.transact().state_vector();
+    {
+        let content: ArrayRef = doc.get_or_insert_array("content");
+        let mut txn = doc.transact_mut();
+        let tables: Vec<yrs::MapRef> = content
+            .iter(&txn)
+            .filter_map(|v| match v {
+                Out::YMap(m) if m.get(&txn, "cols").is_some() => Some(m),
+                _ => None,
+            })
+            .collect();
+        let table = tables.get(k)?.clone();
+        let Some(Out::YArray(cols)) = table.get(&txn, "cols") else {
+            return None;
+        };
+        let Some(Out::YArray(rows)) = table.get(&txn, "rows") else {
+            return None;
+        };
+        if shrink {
+            let len = rows.len(&txn);
+            if len <= 3 {
+                return None;
+            }
+            rows.remove_range(&mut txn, 3, len - 3);
+        } else {
+            for i in 0..n {
+                let m = cols.insert(&mut txn, 1, MapPrelim::default());
+                m.insert(&mut txn, "id", Any::String(format!("x{cid}c{i}").into()));
+                let r = rows.insert(&mut txn, 1, MapPrelim::default());
+                r.insert(&mut txn, "id", Any::String(format!("x{cid}r{i}").into()));
+            }
+        }
+    }
+    Some(doc.transact().encode_state_as_update_v1(&sv))
+}
+
+fn rv4_edit(rng: &mut Rng, peer: &mut Peer) -> bool {
+    let doc = peer.state.doc.clone();
+    let n = doc.child_count();
+    let mut starts = Vec::with_capacity(n);
+    let mut at = 0;
+    for i in 0..n {
+        starts.push(at);
+        at += doc.child(i).node_size();
+    }
+    let i = rng.below(n);
+    let block = doc.child(i);
+    let mut tr = peer.state.tr();
+    match rng.below(10) {
+        0..=2 if block.is_textblock() => {
+            let off = rng.below(block.content_size() + 1);
+            tr.set_selection(Selection::cursor(Pos(starts[i] + 1 + off)));
+            tr.insert_text(["a", "zz", "é"][rng.below(3)]).unwrap();
+        }
+        3 | 4 if n > 1 => {
+            tr.delete(starts[i], starts[i] + block.node_size()).unwrap();
+        }
+        5 => {
+            let j = rng.below(n + 1);
+            let pos = if j == n { at } else { starts[j] };
+            tr.replace_with(pos, pos, Fragment::from_node(para(&peer.schema, "new")))
+                .unwrap();
+        }
+        6 if std::env::var("RV4_NOTABLE").is_ok() => return false,
+        6 => {
+            let pos = if rng.below(2) == 0 { 0 } else { at };
+            tr.replace_with(pos, pos, Fragment::from_node(grid(&peer.schema, 2, 2)))
+                .unwrap();
+        }
+        _ => {
+            let Some((h, w)) = dims(&doc) else {
+                return false;
+            };
+            let (r, c) = (rng.below(h), rng.below(w));
+            let at = cell_pos(&doc, r, c);
+            let caret = Selection::near(&doc, Pos(at + 1), 1);
+            let name = [
+                "addRowAfter",
+                "addColumnBefore",
+                "deleteRow",
+                "deleteColumn",
+                "splitCell",
+                "enter",
+            ][rng.below(6)];
+            tr.set_selection(caret);
+            let placed = peer.state.apply(tr);
+            let Some(next) = placed.run(name) else {
+                return false;
+            };
+            rv4_soft_commit(peer, next);
+            return true;
+        }
+    }
+    let next = peer.state.apply(tr);
+    rv4_soft_commit(peer, next);
+    true
+}
+
+// The review's harness, kept as it was written (index loops over shared logs).
+#[allow(clippy::needless_range_loop)]
+fn rv4_trial(seed: u64, peers: usize, rounds: usize) -> (usize, usize) {
+    let s = schema();
+    let mut rng = Rng::new(seed);
+    let notable = std::env::var("RV4_NOTABLE").is_ok();
+    let blocks = if notable {
+        vec![
+            para(&s, "a"),
+            para(&s, "mid"),
+            para(&s, "b"),
+            para(&s, "tail"),
+        ]
+    } else {
+        vec![
+            grid(&s, 2, 2),
+            para(&s, "mid"),
+            grid(&s, 2, 3),
+            para(&s, "tail"),
+        ]
+    };
+    let host = Peer::host(&s, blocks, seed * 16 + 1);
+    let mut reps: Vec<Peer> = (1..peers)
+        .map(|p| host.join(seed * 16 + 1 + p as u64))
+        .collect();
+    reps.insert(0, host);
+    let _ = reps[0].send();
+    let initial = reps[0].session.snapshot();
+    let mut seq: Vec<Vec<usize>> = vec![Vec::new(); peers];
+    // Every delta (local or foreign) is broadcast to everyone, in random order per
+    // receiver; yrs parks out-of-order updates.
+    let mut log: Vec<Vec<u8>> = Vec::new();
+    let mut deps: Vec<std::collections::HashSet<usize>> = Vec::new();
+    let causal = std::env::var("RV4_CAUSAL").is_ok();
+    // FIFO per sender by default: arbitrary per-sender reordering diverges even
+    // with paragraphs only (out of this PR's scope; the review's issue draft 5).
+    let fifo = std::env::var("RV4_ARBITRARY").is_err();
+    let mut prod: Vec<usize> = Vec::new();
+    let mut order: Vec<Vec<usize>> = vec![Vec::new(); peers];
+    let mut foreign_cid = 1_000_000 + seed * 1000;
+    let mut grows = 0;
+    for _ in 0..rounds {
+        let roll = rng.below(100);
+        let p = rng.below(peers);
+        if roll < 50 {
+            if rv4_edit(&mut rng, &mut reps[p])
+                && let Ok(d) = reps[p].session.save_incremental()
+                && !d.is_empty()
+            {
+                deps.push(order[p].iter().copied().collect());
+                prod.push(p);
+                log.push(d);
+                order[p].push(log.len() - 1);
+                seq[p].push(log.len() - 1);
+            }
+        } else if roll
+            < 50 + std::env::var("RV4_FOREIGN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(6usize)
+        {
+            foreign_cid += 1;
+            let k = rng.below(3);
+            let shrink = rng.below(3) == 0;
+            if let Some(u) = rv4_foreign(&reps[p], k, 2100, shrink, foreign_cid) {
+                grows += usize::from(!shrink);
+                deps.push(order[p].iter().copied().collect());
+                prod.push(usize::MAX);
+                log.push(u);
+            }
+        } else {
+            // deliver a random undelivered delta to p
+            let mine: std::collections::HashSet<usize> = order[p].iter().copied().collect();
+            let pending: Vec<usize> = (0..log.len())
+                .filter(|i| !mine.contains(i))
+                .filter(|&i| !causal || deps[i].iter().all(|d| mine.contains(d)))
+                .filter(|&i| {
+                    !fifo
+                        || prod[i] == usize::MAX
+                        || (0..i).all(|j| prod[j] != prod[i] || mine.contains(&j))
+                })
+                .collect();
+            if !pending.is_empty() {
+                let i = pending[rng.below(pending.len())];
+                order[p].push(i);
+                seq[p].push(i);
+                let st = reps[p].state.clone();
+                let r = reps[p].session.integrate_incremental(&st, &log[i]);
+                match r {
+                    Ok(Some(n)) => reps[p].state = n,
+                    Ok(None) => {}
+                    Err(e) => panic!("seed {seed}: peer {p} integrate failed: {e:?}"),
+                }
+                assert!(!reps[p].session.is_poisoned(), "seed {seed}: poisoned");
+            }
+        }
+    }
+    // Flush.
+    for p in 0..peers {
+        let mine: std::collections::HashSet<usize> = order[p].iter().copied().collect();
+        for i in 0..log.len() {
+            if !mine.contains(&i) {
+                seq[p].push(i);
+                let st = reps[p].state.clone();
+                if let Some(n) = reps[p]
+                    .session
+                    .integrate_incremental(&st, &log[i])
+                    .unwrap_or_else(|e| panic!("seed {seed}: flush {e:?}"))
+                {
+                    reps[p].state = n;
+                }
+                assert!(!reps[p].session.is_poisoned(), "seed {seed}: poisoned");
+            }
+        }
+    }
+    if std::env::var("RV4_RAW").is_ok() {
+        use yrs::updates::decoder::Decode;
+        use yrs::{ReadTxn, Transact, Update};
+        let replay = |ids: &[usize]| {
+            let doc = yrs::Doc::new();
+            {
+                let mut t = doc.transact_mut();
+                t.apply_update(Update::decode_v1(&initial).unwrap())
+                    .unwrap();
+            }
+            for &i in ids {
+                let mut t = doc.transact_mut();
+                t.apply_update(Update::decode_v1(&log[i]).unwrap()).unwrap();
+            }
+            let t = doc.transact();
+            let missing = t.has_missing_updates();
+            let bytes = t.encode_state_as_update_v1(&yrs::StateVector::default());
+            let sess = session_from_bytes_with_client_id(&bytes, 77).unwrap();
+            (sess.projected_doc(&s).unwrap(), missing)
+        };
+        let all: Vec<usize> = (0..log.len()).collect();
+        let reference = replay(&all);
+        for q in 0..peers {
+            let mine = replay(&seq[q]);
+            let session_json = reps[q].session.projected_doc(&s).unwrap();
+            eprintln!(
+                "RAW peer {q}: raw-replay==index-order {} (missing {}), session==raw-replay {}",
+                mine.0 == reference.0,
+                mine.1,
+                session_json == mine.0
+            );
+        }
+    }
+    // The placeholder attr never reaches the CRDT.
+    for (q, r) in reps.iter().enumerate() {
+        let snap = r.session.snapshot();
+        let needle = b"rinch-collab-unreadable-table";
+        assert!(
+            !snap.windows(needle.len()).any(|w| w == needle),
+            "seed {seed}: peer {q} wrote a placeholder"
+        );
+        assert_valid(&r.state.doc);
+    }
+    // Healthy (un-stalled) peers hold the CRDT's projection, and all CRDTs agree.
+    let healthy: Vec<usize> = (0..peers)
+        .filter(|&q| reps[q].session.outbound_stall().is_none())
+        .collect();
+    let proj0 = reps[0].session.projected_doc(&s).unwrap();
+    if std::env::var("RV4_SEED").is_ok() {
+        for (i, l) in log.iter().enumerate() {
+            eprintln!(
+                "log {i}: {} bytes, delivered to {:?}",
+                l.len(),
+                (0..peers)
+                    .filter(|&q| order[q].contains(&i))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if std::env::var("RV4_REDELIVER").is_ok() {
+            for p in 0..peers {
+                for i in 0..log.len() {
+                    let before = reps[p].session.state_vector();
+                    let missing_before = reps[1].session.sync_diff(&before).unwrap().len();
+                    let st = reps[p].state.clone();
+                    let r = reps[p].session.integrate_incremental(&st, &log[i]);
+                    let after = reps[p].session.state_vector();
+                    let missing_after = reps[1].session.sync_diff(&after).unwrap().len();
+                    if missing_after != missing_before {
+                        eprintln!(
+                            "REDELIVER peer {p} log {i} ({} bytes): missing {missing_before} -> {missing_after}, r {:?}",
+                            log[i].len(),
+                            r.as_ref().map(|o| o.is_some())
+                        );
+                    }
+                    if let Ok(Some(n)) = r {
+                        reps[p].state = n;
+                    }
+                }
+            }
+        }
+        for q in 0..peers {
+            let sv0 = reps[0].session.state_vector();
+            let svq = reps[q].session.state_vector();
+            let d0q = reps[0].session.sync_diff(&svq).map(|d| d.len());
+            let dq0 = reps[q].session.sync_diff(&sv0).map(|d| d.len());
+            eprintln!(
+                "peer {q}: stall {:?} diffs {d0q:?} {dq0:?}\n  proj {:?}",
+                reps[q].session.outbound_stall().is_some(),
+                grid_text(&reps[q].session.projected_doc(&s).unwrap())
+            );
+            eprintln!("  model {}", grid_text(&reps[q].state.doc));
+            eprintln!("  doc {:?}", reps[q].session.projected_doc(&s).unwrap());
+        }
+    }
+    for q in 0..peers {
+        assert_eq!(
+            reps[q].session.projected_doc(&s).unwrap(),
+            proj0,
+            "seed {seed}: CRDT of peer {q} diverged"
+        );
+    }
+    for &q in &healthy {
+        assert_eq!(
+            reps[q].state.doc, proj0,
+            "seed {seed}: healthy peer {q} model"
+        );
+    }
+    (healthy.len(), grows)
+}
+
+#[test]
+fn rv4_fuzz_over_budget_tables_among_multi_peer_edits() {
+    let (mut healthy, mut grows, mut total) = (0, 0, 0);
+    let seeds: Vec<u64> = match std::env::var("RV4_SEED") {
+        Ok(v) => vec![v.parse().unwrap()],
+        Err(_) => match std::env::var("RV4_SEEDS") {
+            Ok(n) => (1..=n.parse::<u64>().unwrap()).collect(),
+            // About 20 s a seed in a debug build; RV4_SEEDS=150 for the review's run.
+            Err(_) => (1..=3).collect(),
+        },
+    };
+    for seed in seeds {
+        let (h, g) = rv4_trial(seed, 3, 160);
+        healthy += h;
+        grows += g;
+        total += 3;
+    }
+    eprintln!("REPORT fuzz: healthy {healthy}/{total}, grows {grows}");
+    // A positive control: the trials did grow tables past the budget.
+    assert!(
+        grows >= total / 3
+            || std::env::var("RV4_SEED").is_ok()
+            || std::env::var("RV4_FOREIGN").is_ok(),
+        "grows {grows}"
+    );
+}
+
+// --- round 4: the review's routes to a deleted table, all frozen now ------------------
+
+/// The ids of the tables too large to read in `p`'s CRDT, read afresh.
+fn oversized_ids(p: &Peer) -> Vec<String> {
+    p.session.projected_doc(&p.schema).unwrap();
+    p.session
+        .oversized_tables()
+        .into_iter()
+        .map(|t| t.id)
+        .collect()
+}
+
+/// [T1 (grown 2000), T2 (grown 2500), tail] on two peers.
+fn two_over_budget(s: &Rc<Schema>) -> (Peer, Peer, Vec<String>) {
+    let blocks = vec![grid(s, 1, 1), grid(s, 1, 1), para(s, "tail")];
+    let (mut a, mut b) = pair(s, blocks, (1, 2));
+    let first = rv3_grown_at(&b, 0, 2000);
+    integrate_healthy(&mut a, &first);
+    integrate_healthy(&mut b, &first);
+    let second = rv3_grown_at(&b, 1, 2500);
+    integrate_healthy(&mut a, &second);
+    integrate_healthy(&mut b, &second);
+    let ids = oversized_ids(&b);
+    assert_eq!(ids.len(), 2);
+    (a, b, ids)
+}
+
+/// Review round 4, F1: two placeholders are never equal (each carries its table's id),
+/// and while either exists nothing is projected. The review's flow — stall on a ragged
+/// paste, delete the first placeholder, cure the stall — used to re-base by value,
+/// match the first placeholder to the second and delete the table the user kept.
+#[test]
+fn deleting_the_first_of_two_placeholders_while_frozen_deletes_nothing() {
+    let s = schema();
+    let (mut a, mut b, ids) = two_over_budget(&s);
+    // A ragged table at the end.
+    let ragged = branch(
+        &s,
+        "table",
+        vec![
+            branch(&s, "table_row", vec![cell(&s, "a"), cell(&s, "b")]),
+            branch(&s, "table_row", vec![cell(&s, "c")]),
+        ],
+    );
+    let end = b.state.doc.content_size();
+    let mut tr = b.state.tr();
+    tr.replace_with(end, end, Fragment::from_node(ragged))
+        .unwrap();
+    let next = b.state.apply(tr);
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    // Delete the first placeholder.
+    let size = b.state.doc.child(0).node_size();
+    let mut tr = b.state.tr();
+    tr.delete(0, size).unwrap();
+    let next = b.state.apply(tr);
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    // Delete the ragged table.
+    let doc = b.state.doc.clone();
+    let last = doc.child_count() - 1;
+    let from: usize = (0..last).map(|i| doc.child(i).node_size()).sum();
+    let mut tr = b.state.tr();
+    tr.delete(from, doc.content_size()).unwrap();
+    let next = b.state.apply(tr);
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    assert_eq!(oversized_ids(&b), ids, "both real tables are still there");
+    assert_eq!(oversized_ids(&a), ids);
+    // The cure, by id, deletes exactly the table named.
+    let next = b
+        .session
+        .delete_oversized_table(&b.state, &ids[0])
+        .unwrap()
+        .unwrap();
+    b.state = next;
+    let delta = b.send();
+    a.receive(&delta);
+    assert_eq!(oversized_ids(&b), vec![ids[1].clone()]);
+    assert_eq!(oversized_ids(&a), vec![ids[1].clone()]);
+    assert!(matches!(
+        b.session.outbound_stall(),
+        Some(CollabError::OversizedTable(_))
+    ));
+}
+
+/// Review round 4, F1 through a load: a load that drops the first of two placeholders
+/// deletes nothing.
+#[test]
+fn a_load_dropping_the_first_of_two_placeholders_deletes_nothing() {
+    let s = schema();
+    let (mut a, mut b, ids) = two_over_budget(&s);
+    let doc = &b.state.doc;
+    let loaded = rebuilt(
+        &s,
+        &doc_of(&s, vec![doc.child(1).clone(), doc.child(2).clone()]),
+    );
+    let next = EditorState::create(s.clone(), loaded, plugins());
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    assert_eq!(oversized_ids(&b), ids);
+    assert_eq!(oversized_ids(&a), ids);
+}
+
+/// Review round 4, F2: an app export carries no mark, so loading one back cannot tell
+/// the placeholder from an ordinary empty table. Through HTML: the export of the
+/// document without the line above, loaded back, deletes nothing.
+#[test]
+fn an_html_round_trip_while_frozen_deletes_nothing() {
+    let s = schema();
+    let (mut a, mut b) = over_budget_pair(&s);
+    let doc = &b.state.doc;
+    let html = rinch_editor_core::serialize::node_to_html(&doc_of(
+        &s,
+        vec![doc.child(1).clone(), doc.child(2).clone()],
+    ));
+    let slice = rinch_editor_core::serialize::slice_from_html(&s, &html).unwrap();
+    let loaded = doc_of(
+        &s,
+        (0..slice.content.child_count())
+            .map(|i| slice.content.child(i).clone())
+            .collect(),
+    );
+    assert!(
+        first_table(&loaded).is_some(),
+        "the export holds a table: {html}"
+    );
+    let next = EditorState::create(s.clone(), loaded, plugins());
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    assert!(rv3_real_table_alive(&b) && rv3_real_table_alive(&a));
+}
+
+/// A quote holding a table too large to read and a paragraph.
+fn nested_over_budget(s: &Rc<Schema>) -> (Peer, Peer) {
+    let quote = branch(s, "blockquote", vec![grid(s, 1, 1), para(s, "beside")]);
+    let (mut a, mut b) = pair(s, vec![quote, para(s, "tail")], (1, 2));
+    let update = {
+        use yrs::updates::decoder::Decode;
+        use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+        let doc = yrs::Doc::with_client_id(999);
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(Update::decode_v1(&b.session.snapshot()).unwrap())
+                .unwrap();
+        }
+        let sv = doc.transact().state_vector();
+        {
+            let content: ArrayRef = doc.get_or_insert_array("content");
+            let mut txn = doc.transact_mut();
+            let Some(Out::YMap(quote)) = content.get(&txn, 0) else {
+                panic!("no quote")
+            };
+            let Some(Out::YArray(inner)) = quote.get(&txn, "content") else {
+                panic!("no content")
+            };
+            let Some(Out::YMap(table)) = inner.get(&txn, 0) else {
+                panic!("no table")
+            };
+            let Some(Out::YArray(cols)) = table.get(&txn, "cols") else {
+                panic!("no cols")
+            };
+            let Some(Out::YArray(rows)) = table.get(&txn, "rows") else {
+                panic!("no rows")
+            };
+            for i in 0..2000 {
+                let m = cols.insert(&mut txn, 1, MapPrelim::default());
+                m.insert(&mut txn, "id", Any::String(format!("c{i}").into()));
+                let r = rows.insert(&mut txn, 1, MapPrelim::default());
+                r.insert(&mut txn, "id", Any::String(format!("r{i}").into()));
+            }
+        }
+        doc.transact().encode_state_as_update_v1(&sv)
+    };
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    assert_eq!(b.session.oversized_tables().len(), 1);
+    (a, b)
+}
+
+/// Review round 4, F3: a placeholder nested in a quote. Typing beside it, or deleting
+/// it with the editor, is frozen (nothing deleted); `delete_oversized_table` reaches
+/// it inside the quote, the typing beside it ships, and the quote stays.
+#[test]
+fn a_nested_over_budget_table_is_deleted_by_id_and_typing_beside_it_ships() {
+    let s = schema();
+    let (mut a, mut b) = nested_over_budget(&s);
+    let snapshot = b.session.snapshot();
+    let at = pos_of(&b.state.doc, "beside") + 6;
+    b.state = {
+        let mut tr = b.state.tr();
+        tr.set_selection(Selection::cursor(Pos(at)));
+        tr.insert_text("!").unwrap();
+        let next = b.state.apply(tr);
+        assert!(!rv4_soft_commit(&mut b, next.clone()));
+        next
+    };
+    assert_eq!(b.session.snapshot(), snapshot, "frozen");
+    let id = b.session.oversized_tables()[0].id.clone();
+    let next = b
+        .session
+        .delete_oversized_table(&b.state, &id)
+        .unwrap()
+        .unwrap();
+    b.state = next;
+    assert!(b.session.outbound_stall().is_none());
+    b.assert_model_is_projection("after deleting the nested table");
+    let delta = b.send();
+    a.receive(&delta);
+    assert_eq!(a.state.doc, b.state.doc);
+    let quote = a.state.doc.child(0);
+    assert_eq!(quote.type_name(), "blockquote");
+    assert_eq!(quote.child_count(), 1);
+    assert_eq!(inline_text(quote), "beside!");
+}
+
+/// The table can be deleted by id from a cell of another table too (a nested table in
+/// pasted HTML): the walk reaches inside the outer table's cells.
+#[test]
+fn an_over_budget_table_inside_a_cell_is_deleted_by_id() {
+    let s = schema();
+    let inner = grid(&s, 1, 1);
+    let outer_cell = branch(&s, "table_cell", vec![inner, para(&s, "in cell")]);
+    let outer = branch(
+        &s,
+        "table",
+        vec![branch(&s, "table_row", vec![outer_cell, cell(&s, "x")])],
+    );
+    let (mut a, mut b) = pair(&s, vec![outer, para(&s, "tail")], (1, 2));
+    let update = {
+        use yrs::updates::decoder::Decode;
+        use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+        let doc = yrs::Doc::with_client_id(999);
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(Update::decode_v1(&b.session.snapshot()).unwrap())
+                .unwrap();
+        }
+        let sv = doc.transact().state_vector();
+        {
+            let content: ArrayRef = doc.get_or_insert_array("content");
+            let mut txn = doc.transact_mut();
+            let Some(Out::YMap(outer)) = content.get(&txn, 0) else {
+                panic!("no table")
+            };
+            let Some(Out::YArray(rows)) = outer.get(&txn, "rows") else {
+                panic!("no rows")
+            };
+            let Some(Out::YMap(row)) = rows.get(&txn, 0) else {
+                panic!("no row")
+            };
+            let Some(Out::YMap(cells)) = row.get(&txn, "cells") else {
+                panic!("no cells")
+            };
+            let inner = cells
+                .iter(&txn)
+                .find_map(|(_, c)| match c {
+                    Out::YMap(c) => match c.get(&txn, "content") {
+                        Some(Out::YArray(content)) => match content.get(&txn, 0) {
+                            Some(Out::YMap(t)) if t.get(&txn, "rows").is_some() => Some(t),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("the inner table");
+            let Some(Out::YArray(cols)) = inner.get(&txn, "cols") else {
+                panic!("no cols")
+            };
+            let Some(Out::YArray(rows)) = inner.get(&txn, "rows") else {
+                panic!("no rows")
+            };
+            for i in 0..2000 {
+                let m = cols.insert(&mut txn, 1, MapPrelim::default());
+                m.insert(&mut txn, "id", Any::String(format!("c{i}").into()));
+                let r = rows.insert(&mut txn, 1, MapPrelim::default());
+                r.insert(&mut txn, "id", Any::String(format!("r{i}").into()));
+            }
+        }
+        doc.transact().encode_state_as_update_v1(&sv)
+    };
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    let id = b.session.oversized_tables()[0].id.clone();
+    let next = b
+        .session
+        .delete_oversized_table(&b.state, &id)
+        .unwrap()
+        .unwrap();
+    b.state = next;
+    b.assert_model_is_projection("after deleting the table in a cell");
+    let delta = b.send();
+    a.receive(&delta);
+    assert_eq!(a.state.doc, b.state.doc);
+    assert_eq!(grid_text(&a.state.doc), "in cell | x");
+}
+
+/// Once an edit is refused during a freeze the model is ahead of the CRDT, and a
+/// sticky index can no longer be mapped: with two equal paragraphs and the first
+/// deleted locally (refused), the model's first paragraph is the CRDT's second, and
+/// an index taken there would name the deleted one.
+#[test]
+fn no_sticky_index_once_an_edit_is_refused_during_a_freeze() {
+    let s = schema();
+    let blocks = vec![
+        para(&s, "dup"),
+        para(&s, "dup"),
+        grid(&s, 1, 1),
+        para(&s, "tail"),
+    ];
+    let (_a, mut b) = pair(&s, blocks, (1, 2));
+    let update = rv3_grown_at(&b, 2, 2000);
+    integrate_healthy(&mut b, &update);
+    assert!(b.session.sticky_index(&b.state.doc, Pos(2)).is_some());
+    let size = b.state.doc.child(0).node_size();
+    let mut tr = b.state.tr();
+    tr.delete(0, size).unwrap();
+    let next = b.state.apply(tr);
+    assert!(!rv4_soft_commit(&mut b, next));
+    assert!(b.session.sticky_index(&b.state.doc, Pos(2)).is_none());
 }

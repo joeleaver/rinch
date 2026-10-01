@@ -78,25 +78,25 @@
 //!    256 × 256 block of them; honest peers reach it by adding hundreds of rows on
 //!    one replica and hundreds of columns on another at once). The model sees such a
 //!    table as a **placeholder** — one empty cell, the table's attrs plus
-//!    [`PLACEHOLDER_ATTR`] — so the session stays healthy and any peer can delete it.
-//!    Only the model's reads (`CollabDoc::to_doc` and the join gate, under
-//!    [`placeholder_reads`]) build it; every CRDT read a write depends on is strict.
+//!    [`PLACEHOLDER_ATTR`] holding its yrs item id, so two are never equal — built only
+//!    by the model's reads (`CollabDoc::to_doc` and the join gate, under
+//!    [`placeholder_reads`], which also record it as an [`OversizedTable`]); every CRDT
+//!    read a write depends on is strict.
 //!
-//!    **A placeholder is never written, by construction.** [`read_model_table`] —
-//!    which every write path runs on every node it writes, before the write
-//!    transaction opens — refuses a table carrying [`PLACEHOLDER_ATTR`], wherever it
-//!    is: edited, moved, copied, pasted elsewhere, loaded back by an app, or paired
-//!    with another block by a diff. Such a change is refused `Unsupported` and stalls
-//!    outbound (#220) until the table is deleted. The one change admitted is its
-//!    deletion: the blocks a change deletes are validated under [`deleting`], and a
-//!    deletion never reads the CRDT node. (Before this rule a diff that paired the
-//!    model's placeholder with another block by position wrote the one empty cell
-//!    over it and deleted the real table, for every peer, with `Ok`.) As a second net,
-//!    a top-level CRDT block a change deletes that is a table past the budget must be
-//!    a placeholder in the model's `before` at that index; with `before` describing
-//!    the CRDT, which `record_local` ensures, that check cannot fire. It was a poison
-//!    (#196) at first, which no peer that had seen the table could cure: a poisoned
-//!    session sends nothing.
+//!    **No diff ever runs against a placeholder.** While the shared document holds a
+//!    table too large to read, `CollabSession::record_local` refuses every local
+//!    change (`CollabError::OversizedTable`): outbound is frozen, inbound keeps
+//!    integrating. Every narrower rule was a route the next review found around — a
+//!    position-paired middle, two equal placeholders matched by value, an app export
+//!    (HTML, markdown, `DocNode`) loaded back, which cannot carry the mark — each of
+//!    which deleted the real table for every peer with `Ok`. The cure is
+//!    `CollabSession::delete_oversized_table` by id ([`CollabDoc::delete_table`] removes
+//!    the map wherever it is, without reading it), or a peer deleting or shrinking the
+//!    table; the edits made meanwhile are then re-based on the CRDT's read, which holds
+//!    no placeholder, and ship. [`read_model_table`] still refuses a marked table (an
+//!    undo, a paste of a copy), so a placeholder is never written either. It was a
+//!    poison (#196) at first, which no peer that had seen the table could cure: a
+//!    poisoned session sends nothing.
 //!
 //! The model side is held to the same shape: a table whose cells do not tile a
 //! rectangle exactly (a ragged row, overlapping spans, a span past the edge), or whose
@@ -152,11 +152,12 @@
 //!   to the next row or column, which the projection writes as a new cell there, so a
 //!   peer's concurrent typing in it lands in the old one.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use yrs::{
-    Any, Array, ArrayPrelim, ArrayRef, Map, MapPrelim, MapRef, Out, ReadTxn, TransactionMut,
+    Any, Array, ArrayPrelim, ArrayRef, Map, MapPrelim, MapRef, Out, ReadTxn, Transact,
+    TransactionMut,
 };
 
 use rinch_editor_core::{AttrValue, Attrs, Node};
@@ -165,9 +166,9 @@ use rinch_editor_core::tables::GRID_SLOT_FLOOR;
 
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    ATTRS, BlockData, CONTENT, Model, NodeData, TYPE, common_runs, insert_node, node_attrs,
-    node_content, node_type, read_children, read_node, reconcile_attrs, reconcile_child_list,
-    write_attrs,
+    ATTRS, BlockData, CONTENT, CollabDoc, Model, NodeData, TYPE, common_runs, insert_node,
+    node_attrs, node_content, node_type, read_children, read_node, reconcile_attrs,
+    reconcile_child_list, write_attrs,
 };
 
 /// The table node type, and its row type.
@@ -247,40 +248,36 @@ fn line_budget(cells: usize) -> usize {
 /// and refuses one of `colspan = 3_000_000`.
 pub(crate) const LINE_FLOOR: usize = 1 << 16;
 
-/// The attr that marks a [`placeholder`] in the model. No HTML, markdown or table
-/// command produces it; the projection refuses to write a table carrying it.
+/// The attr that marks a [`placeholder`] in the model, holding the id of the CRDT
+/// table it stands for ([`OversizedTable::id`]), so two placeholders are never equal
+/// and the model's one can be found by it. No HTML, markdown or table command
+/// produces it; the projection refuses to write a table carrying it.
 pub(crate) const PLACEHOLDER_ATTR: &str = "rinch-collab-unreadable-table";
+
+/// A table in the shared document too large to read (rule 5): the model holds a
+/// [`placeholder`] for it, and while any exists, a session refuses every local change
+/// (see `CollabSession::record_local`). The cure is deleting it by its `id`
+/// (`CollabSession::delete_oversized_table`), or a peer shrinking or deleting it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OversizedTable {
+    /// The table's identity in the CRDT (its yrs item id, `"{client}:{clock}"`), the
+    /// same on every replica; also the value of [`PLACEHOLDER_ATTR`] on its placeholder.
+    pub id: String,
+    /// What made it too large, for a message.
+    pub detail: String,
+}
+
+/// The id [`OversizedTable::id`] names a CRDT node map by.
+pub(crate) fn map_id(map: &MapRef) -> String {
+    match AsRef::<yrs::branch::Branch>::as_ref(map).id() {
+        yrs::branch::BranchID::Nested(id) => format!("{}:{}", id.client.get(), id.clock),
+        yrs::branch::BranchID::Root(name) => name.to_string(),
+    }
+}
 
 /// Whether `node` is a [`placeholder`].
 pub(crate) fn is_placeholder(node: &Node) -> bool {
     node.type_name() == TABLE && node.attrs().get(PLACEHOLDER_ATTR).is_some()
-}
-
-thread_local! {
-    /// Whether a [`placeholder`] is being validated as a block a change deletes,
-    /// which is the one change the projection makes to it ([`deleting`]).
-    static DELETING: Cell<bool> = const { Cell::new(false) };
-}
-
-/// While the returned guard lives, [`read_model_table`] admits a [`placeholder`]: the
-/// projection is validating blocks a change deletes.
-pub(crate) fn deleting() -> Deleting {
-    Deleting(DELETING.with(|c| c.replace(true)))
-}
-
-/// The guard [`deleting`] returns; restores the previous setting on drop.
-pub(crate) struct Deleting(bool);
-
-impl Drop for Deleting {
-    fn drop(&mut self) {
-        DELETING.with(|c| c.set(self.0));
-    }
-}
-
-/// Whether the CRDT node `node` is a table past the read's budget (rule 5). Reads the
-/// table's lines and cells, so it is asked only of a table a change deletes.
-pub(crate) fn map_is_over_budget<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<bool> {
-    Ok(is_table_map(txn, node) && read_table_or_budget(txn, node)?.is_err())
 }
 
 /// How many filler cells a read may make for a table whose CRDT stores fewer cells
@@ -382,10 +379,10 @@ pub(crate) fn read_model_table(node: &Node) -> Result<TableData> {
     // A placeholder stands for a table this replica could not read (rule 5): writing
     // it would put one empty cell where the real table is. Only its deletion is a
     // change the projection can make, and a deletion never reads the node.
-    if is_placeholder(node) && !DELETING.with(Cell::get) {
+    if is_placeholder(node) {
         return Err(CollabError::unsupported(
-            "a table too large to read from the shared document cannot be edited, \
-             moved or copied while collaborating; delete it",
+            "a table too large to read from the shared document cannot be written \
+             while collaborating",
         ));
     }
     // The grid a hostile paste can declare is bounded the way `TableMap`'s is: in
@@ -546,33 +543,44 @@ pub(crate) fn read_table<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableRead
 }
 
 thread_local! {
-    /// Whether a table past the read's budget reads as a [`placeholder`] rather than
-    /// an error: on only inside [`placeholder_reads`], which `CollabDoc::to_doc` holds.
-    static PLACEHOLDER_READS: Cell<bool> = const { Cell::new(false) };
+    /// The tables read as a [`placeholder`] so far, while [`placeholder_reads`] is
+    /// held (`None` outside it: a table past the read's budget is then an error).
+    static PLACEHOLDER_READS: RefCell<Option<Vec<OversizedTable>>> = const { RefCell::new(None) };
 }
 
 /// While the returned guard lives, a table past the read's budget reads as a
-/// [`placeholder`] (rule 5). Held by the one read that builds the model
-/// (`CollabDoc::to_doc`); every read a write depends on stays strict.
+/// [`placeholder`] (rule 5), and is recorded. Held by the reads that build the model
+/// (`CollabDoc::to_doc`, the join gate); every read a write depends on stays strict.
 pub(crate) fn placeholder_reads() -> PlaceholderReads {
-    PlaceholderReads(PLACEHOLDER_READS.with(|c| c.replace(true)))
+    PlaceholderReads(PLACEHOLDER_READS.with(|c| c.replace(Some(Vec::new()))))
 }
 
 /// The guard [`placeholder_reads`] returns; restores the previous setting on drop.
-pub(crate) struct PlaceholderReads(bool);
+pub(crate) struct PlaceholderReads(Option<Vec<OversizedTable>>);
+
+impl PlaceholderReads {
+    /// End the scope and return the tables it read as placeholders, in read order.
+    pub(crate) fn finish(mut self) -> Vec<OversizedTable> {
+        let prev = self.0.take();
+        PLACEHOLDER_READS
+            .with(|c| c.replace(prev))
+            .unwrap_or_default()
+    }
+}
 
 impl Drop for PlaceholderReads {
     fn drop(&mut self) {
-        PLACEHOLDER_READS.with(|c| c.set(self.0));
+        let prev = self.0.take();
+        PLACEHOLDER_READS.with(|c| *c.borrow_mut() = prev);
     }
 }
 
 /// What the model sees of a table past the read's budget: one empty cell, with the
 /// table's own attrs and [`PLACEHOLDER_ATTR`]. A pure function of the CRDT, so every
 /// replica reads the same, and marked, so no write path can put it in the CRDT.
-fn placeholder(attrs: Attrs) -> TableData {
+fn placeholder(attrs: Attrs, id: &str) -> TableData {
     TableData {
-        attrs: attrs.with(PLACEHOLDER_ATTR, AttrValue::Bool(true)),
+        attrs: attrs.with(PLACEHOLDER_ATTR, AttrValue::Str(id.into())),
         width: 1,
         rows: vec![RowData {
             attrs: Attrs::new(),
@@ -586,8 +594,15 @@ fn placeholder(attrs: Attrs) -> TableData {
 pub(crate) fn read_table_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableData> {
     match read_table_or_budget(txn, node)? {
         Ok(read) => Ok(read.data),
-        Err(_) if PLACEHOLDER_READS.with(Cell::get) => Ok(placeholder(node_attrs(txn, node))),
-        Err(detail) => Err(over_budget(detail)),
+        Err(detail) => PLACEHOLDER_READS.with(|c| match c.borrow_mut().as_mut() {
+            Some(read) => {
+                let id = map_id(node);
+                let data = placeholder(node_attrs(txn, node), &id);
+                read.push(OversizedTable { id, detail });
+                Ok(data)
+            }
+            None => Err(over_budget(detail)),
+        }),
     }
 }
 
@@ -1284,4 +1299,82 @@ fn reconcile_cell(
     reconcile_child_list(txn, &content, &target.children, model, per_char)?;
     set_ends(txn, map, ends);
     Ok(())
+}
+
+// --- tables too large to read: the freeze and its cure -------------------------------
+
+/// Lock the oversized-table list, recovering a poisoned lock (the list has no
+/// invariant a panic could break).
+pub(crate) fn lock_oversized(
+    list: &std::sync::Mutex<Vec<OversizedTable>>,
+) -> std::sync::MutexGuard<'_, Vec<OversizedTable>> {
+    list.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The content array holding the table map named `id`, and its raw index there,
+/// searching `list` and every container, table and cell below it. Walks the CRDT's
+/// own shapes (rows, cell maps, content arrays) rather than the table read, so it
+/// reaches a table inside a table too large to read too.
+fn find_table<T: ReadTxn>(txn: &T, list: &ArrayRef, id: &str) -> Option<(ArrayRef, u32)> {
+    for (raw, child) in list.iter(txn).enumerate() {
+        let Out::YMap(map) = child else { continue };
+        if is_table_map(txn, &map) {
+            if map_id(&map) == id {
+                return Some((list.clone(), raw as u32));
+            }
+            let Some(Out::YArray(rows)) = map.get(txn, ROWS) else {
+                continue;
+            };
+            for row in rows.iter(txn) {
+                let Out::YMap(row) = row else { continue };
+                let Some(Out::YMap(cells)) = row.get(txn, CELLS) else {
+                    continue;
+                };
+                for (_, cell) in cells.iter(txn) {
+                    if let Out::YMap(cell) = cell
+                        && let Some(content) = node_content(txn, &cell)
+                        && let Some(found) = find_table(txn, &content, id)
+                    {
+                        return Some(found);
+                    }
+                }
+            }
+        } else if let Some(content) = node_content(txn, &map)
+            && let Some(found) = find_table(txn, &content, id)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+impl CollabDoc {
+    /// The tables in the shared document too large to read, as the last model read
+    /// found them (rule 5).
+    pub fn oversized_tables(&self) -> Vec<OversizedTable> {
+        lock_oversized(&self.oversized).clone()
+    }
+
+    /// Delete the table map named `id` (an [`OversizedTable::id`]) from wherever it is
+    /// in the CRDT, without reading it. `false` when there is none (a peer deleted it
+    /// first). The delete is a local change: it lands in the outbox for peers. The
+    /// caller re-reads the model ([`CollabDoc::to_doc`]), which also refreshes
+    /// [`CollabDoc::oversized_tables`].
+    pub fn delete_table(&mut self, id: &str) -> bool {
+        let found = {
+            let txn = self.doc.transact();
+            find_table(&txn, &self.content, id)
+        };
+        let Some((list, raw)) = found else {
+            return false;
+        };
+        {
+            let mut txn = self.doc.transact_mut();
+            list.remove(&mut txn, raw);
+        }
+        // A container whose only child was the table is void now; at the top level the
+        // diff must know (see `top_void`).
+        self.top_void = crate::projection::holds_void(&self.doc.transact(), &self.content);
+        true
+    }
 }
