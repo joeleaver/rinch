@@ -62,9 +62,9 @@ fn rect(doc: &RinchDocument, id: NodeId) -> Rect {
 /// Ignored by default for its cost, which is not the grid's: building and
 /// laying out 40,000 siblings of one parent takes minutes in a debug build
 /// whatever the parent's `display` (a flex column or a block of 36,000 rows
-/// costs the same order in release, #1247). Run it with `--ignored`; the routes past
-/// 32,767 lines that CI runs are the span fixtures below, and the clamp itself
-/// is `ten_and_a_half_thousand_rows_are_now_clamped_too`.
+/// costs the same order in release, #1247). Run it with `--ignored`; the
+/// routes past 32,767 lines that CI runs are the span fixtures below, and the
+/// clamp itself is `ten_and_a_half_thousand_rows_are_now_clamped_too`.
 #[test]
 #[ignore = "40,000 siblings: minutes in a debug build (rinch-side, not Taffy: #1247)"]
 fn forty_thousand_auto_placed_rows_lay_out_clamped_at_ten_thousand_tracks() {
