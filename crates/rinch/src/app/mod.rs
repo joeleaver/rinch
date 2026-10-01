@@ -71,6 +71,8 @@ mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_space_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_list_item_wrap_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_popup_hooks_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_programmatic_selection_tests;
@@ -82,6 +84,8 @@ mod editor_selection_seam_tests;
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_word_delete_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_wrapped_selection_tests;
 mod event_dispatch;
 mod focus;
 #[cfg(test)]

@@ -110,16 +110,6 @@ fn para_box(app: &RinchApp, i: usize) -> (f32, f32, f32, f32) {
     painted_element_box(&doc.tree, ps[i].0)
 }
 
-/// The editor container's left and top border widths. The overlays are
-/// anchored at its padding box, where the text's own geometry is measured from
-/// its border box, so they sit this far right of and below the text.
-fn editor_border(app: &RinchApp) -> (f32, f32) {
-    let doc = app.doc.as_ref().unwrap().borrow();
-    let ed = doc.query_selector_all("[data-pm-editor]");
-    let cs = &doc.tree.nodes[ed[0].0].computed_style;
-    (cs.border_left_width.to_px(), cs.border_top_width.to_px())
-}
-
 /// The caret overlay's painted box, if it is shown.
 fn caret_box(app: &RinchApp) -> Option<(f32, f32, f32, f32)> {
     let doc = app.doc.as_ref().unwrap().borrow();
@@ -150,15 +140,14 @@ fn a_range_set_from_app_code_draws_its_highlight() {
     assert_eq!(rects.len(), 1, "one line selected: {rects:?}");
     let (x, y, w, h) = rects[0];
     let (px, py, _, ph) = para_box(&page.app, 2);
-    let (bl, bt) = editor_border(&page.app);
-    assert_eq!(x, px + bl, "the highlight starts at the line's start");
+    assert_eq!(x, px, "the highlight starts at the line's start");
     // The highlight covers the third line's box exactly (#1008): its top is
     // the line box's top, not `baseline - ascent` — one half-leading lower, a
     // font metric that differed between this host and CI — and it is one line
     // tall. A stale highlight, or one on another line, is 36px away.
     assert_eq!(
         (y, h),
-        (py + bt, ph),
+        (py, ph),
         "the highlight sits on the third line's box: {:?}",
         rects[0]
     );
@@ -178,18 +167,16 @@ fn a_caret_set_from_app_code_is_drawn_where_it_now_is() {
         .editor_caret_point(&page.handle, target)
         .expect("the fifth paragraph has geometry");
     let (_, py, _, ph) = para_box(&page.app, 4);
-    let (bl, bt) = editor_border(&page.app);
     let (x, y, _, h) = caret_box(&page.app).expect("the caret is shown");
     assert_eq!(
         (y, h),
-        (py + bt, ph),
+        (py, ph),
         "the caret spans the fifth line's box (a stale caret sits on the first)"
     );
     // The overlay's x is the text caret's, snapped to a whole pixel.
     assert!(
-        (x - (cx + bl)).abs() <= 1.0,
-        "the caret is drawn at x {x}, the selection puts it at {}",
-        cx + bl
+        (x - cx).abs() <= 1.0,
+        "the caret is drawn at x {x}, the selection puts it at {cx}"
     );
 }
 

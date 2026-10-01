@@ -3,9 +3,9 @@
 //!
 //! Found in the rich-text editor: typing in a bulleted list item, the bullet
 //! jumped a line down whenever the item's text ended in a space ("bullet text "),
-//! and back up at the next character. The editor's `li` is a flex row
-//! (`align-items: baseline`) holding the marker and the paragraph, and its text
-//! is `pre-wrap`. Two things combined:
+//! and back up at the next character. The editor's `li` was then a flex row
+//! (`align-items: baseline`) holding the marker and the paragraph (since #1246
+//! it is a block with a hanging marker), and its text is `pre-wrap`. Two things combined:
 //!
 //! 1. **The measure left the space out.** The paragraph's IFC reported parley's
 //!    `Layout::width`, which drops every line's trailing white space, so the flex

@@ -610,9 +610,10 @@ pub trait DomDocument {
     /// absolutely-positioned child anchors to. On the web that is the node's border
     /// width (`clientLeft`/`clientTop`): CSS positions an `absolute` child against the
     /// padding box, while `getBoundingClientRect` differences report against the border
-    /// box, so the editor's overlay container offset must subtract this once. Default
-    /// `(0, 0)` — the desktop renderer positions overlays against the same origin it
-    /// lays children out against.
+    /// box, so the editor's overlay container offset must subtract this once. The
+    /// desktop renderer is the same (its layout origins are border-box-relative, an
+    /// absolute child's insets padding-box-relative) and answers the border widths
+    /// too. Default `(0, 0)`, for a backend with no borders to report.
     fn content_origin_inset(&self, _node_id: u64) -> (f32, f32) {
         (0.0, 0.0)
     }

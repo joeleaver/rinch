@@ -223,12 +223,16 @@ pub(crate) fn break_lines_hanging_spaces(
     text: &str,
     max_width: Option<f32>,
     preserves_spaces: bool,
+    unhung: &[std::ops::Range<usize>],
 ) -> HangStats {
     layout.break_all_lines(max_width);
-    let hang = max_width
-        .filter(|max| preserves_spaces && max.is_finite() && any_unhung_line(layout, text));
+    let hang = max_width.filter(|max| {
+        preserves_spaces
+            && max.is_finite()
+            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung))
+    });
     let mut stats = match hang {
-        Some(max) => hang_pass(layout, text, max, None),
+        Some(max) => hang_pass(layout, text, max, None, unhung),
         None => HangStats::default(),
     };
     // #1050, #1172: parley's trailing empty line after an overflowing inline
@@ -236,7 +240,7 @@ pub(crate) fn break_lines_hanging_spaces(
     // before it.
     if let Some(keep) = phantom_last_line(layout) {
         match hang {
-            Some(max) => stats = hang_pass(layout, text, max, Some(keep)),
+            Some(max) => stats = hang_pass(layout, text, max, Some(keep), unhung),
             None => break_lines_up_to(layout, max_width, keep),
         }
         stats.phantom_rebreaks = 1;
@@ -704,10 +708,11 @@ fn hang_pass(
     text: &str,
     max: f32,
     limit: Option<usize>,
+    unhung: &[std::ops::Range<usize>],
 ) -> HangStats {
     use parley::layout::{BreakReason, YieldData};
     let mut stats = HangStats::default();
-    let units = logical_units(layout, text);
+    let units = logical_units(layout, text, unhung);
     stats.passes = 1;
     let mut breaker = layout.break_lines();
     // The first unit of the line being broken, and the state it starts from.
@@ -732,9 +737,16 @@ fn hang_pass(
             continue;
         };
         committed += 1;
+        if !in_step {
+            continue;
+        }
         // The last line is committed as it is (`BreakReason::None`; an empty
-        // one after a final newline even copies the previous line's advance).
-        if !in_step || data.reason == BreakReason::None {
+        // one after a final newline even copies the previous line's advance),
+        // but its unhung spaces still count for its alignment (#1212).
+        if data.reason == BreakReason::None {
+            if let Some(end) = line_end(&units, cursor, data.advance) {
+                align_unhung_trailing(&mut breaker, &units[cursor..end], max);
+            }
             continue;
         }
         // A line that ends at the hang is broken again, from the state it
@@ -755,6 +767,7 @@ fn hang_pass(
                 _ => None,
             };
             let Some(hanging) = hanging else {
+                align_unhung_trailing(&mut breaker, &units[cursor..end], max);
                 cursor = end;
                 line_start = breaker.state().clone();
                 break;
@@ -802,15 +815,73 @@ fn hang_pass(
 /// breaker adds to a line's advance, and what [`hanging_after`] needs to know.
 struct LineUnit {
     advance: f32,
-    /// A space or tab: white space that hangs (not NBSP).
+    /// A space or tab that hangs at a soft wrap: one whose element wraps
+    /// (not NBSP, and not a `pre` element's).
     hangs: bool,
+    /// A space or tab of a `pre` element (#1212): preserved, and CSS Text 3
+    /// §4.1.3 hangs a preserved space only where the text wraps, so the hang
+    /// pass does not widen a line for it and a line ending in it is aligned
+    /// with it as content. (Parley itself still hangs the one that overflows
+    /// right after `pre-wrap` spaces — tracked in #1243.)
+    unhung: bool,
     newline: bool,
+}
+
+/// Re-set the alignment width of the line just committed, `line` its units,
+/// when it ends in [`LineUnit::unhung`] spaces: parley counts every trailing
+/// space as hanging when it aligns a line, so a `pre` root's spaces after a
+/// wrapping span let an overflowing line right-align as if it fitted. With
+/// the width narrowed by those spaces, parley's free space is the box's width
+/// less the whole line, and an overflowing line is start-aligned — Chrome
+/// 153's answer (#1212).
+fn align_unhung_trailing(
+    breaker: &mut parley::layout::BreakLines<'_, Brush>,
+    line: &[LineUnit],
+    max: f32,
+) {
+    let unhung: f32 = line
+        .iter()
+        .rev()
+        .skip_while(|u| u.newline)
+        .take_while(|u| u.unhung)
+        .map(|u| u.advance)
+        .sum();
+    if unhung > 0.0 {
+        breaker.set_prior_line_width(max - unhung);
+    }
+}
+
+/// Whether `byte` is in one of the sorted, disjoint `ranges`.
+fn in_ranges(ranges: &[std::ops::Range<usize>], byte: usize) -> bool {
+    let i = ranges.partition_point(|r| r.end <= byte);
+    ranges.get(i).is_some_and(|r| r.contains(&byte))
+}
+
+/// Whether some line ends (before any newline) in a space or tab of an
+/// `unhung` range — the cheap test that sends a paragraph through
+/// [`hang_pass`] for [`align_unhung_trailing`].
+fn any_unhung_trailing_line(
+    layout: &parley::Layout<Brush>,
+    text: &str,
+    unhung: &[std::ops::Range<usize>],
+) -> bool {
+    !unhung.is_empty()
+        && layout.lines().any(|line| {
+            let r = line.text_range();
+            let body = text.get(r.clone()).unwrap_or("");
+            let trimmed = body.trim_end_matches(['\n', '\r']);
+            trimmed.ends_with([' ', '\t']) && in_ranges(unhung, r.start + trimmed.len() - 1)
+        })
 }
 
 /// Every cluster and inline box of `layout`, in the logical order the line
 /// breaker walks them. Read from an already broken layout: each cluster is on
-/// exactly one line.
-fn logical_units(layout: &parley::Layout<Brush>, text: &str) -> Vec<LineUnit> {
+/// exactly one line. A space in an `unhung` range is [`LineUnit::unhung`].
+fn logical_units(
+    layout: &parley::Layout<Brush>,
+    text: &str,
+    unhung: &[std::ops::Range<usize>],
+) -> Vec<LineUnit> {
     // (byte, 0 = inline box / 1 = cluster, index within its kind) → unit.
     let mut keyed: Vec<((usize, u8, usize), LineUnit)> = Vec::new();
     for line in layout.lines() {
@@ -818,11 +889,14 @@ fn logical_units(layout: &parley::Layout<Brush>, text: &str) -> Vec<LineUnit> {
             for c in run.clusters() {
                 let range = c.text_range();
                 let n = keyed.len();
+                let space = is_hanging_space(text, &c);
+                let pre = space && in_ranges(unhung, range.start);
                 keyed.push((
                     (range.start, 1, n),
                     LineUnit {
                         advance: c.advance(),
-                        hangs: is_hanging_space(text, &c),
+                        hangs: space && !pre,
+                        unhung: pre,
                         newline: c.is_hard_line_break(),
                     },
                 ));
@@ -839,6 +913,7 @@ fn logical_units(layout: &parley::Layout<Brush>, text: &str) -> Vec<LineUnit> {
             LineUnit {
                 advance,
                 hangs: false,
+                unhung: false,
                 newline: false,
             },
         ));
@@ -1178,8 +1253,12 @@ impl RinchDocument {
                     &inline_layout,
                 ) {
                     Some(EllipsisSource::Lines(&inline_layout))
-                } else if root_is_nowrap {
+                } else if root_is_nowrap
+                    && !Self::wraps_anywhere(&self.tree.nodes, root_id, &inline_layout.text_ranges)
+                {
                     // As before #1091: the whole text, cut to one prefix.
+                    // Not when a descendant wraps (#1212): that paragraph has
+                    // lines of its own, and one cut prefix would drop them.
                     Some(EllipsisSource::Whole(&inline_layout.text_content))
                 } else {
                     None
@@ -5269,13 +5348,22 @@ impl RinchDocument {
         root_text_style.letter_spacing = root_computed.letter_spacing;
         root_text_style.word_spacing = root_computed.word_spacing;
 
+        // The root's own `nowrap`/`pre` forbids a soft wrap in its own text,
+        // while a descendant that allows wrapping still wraps (#1212). Parley
+        // takes a break opportunity's wrap mode from the cluster *before* it.
+        // That agrees with Chrome 153 at `pre` root text followed by a
+        // `normal` span (no break at the seam) and between two `normal` spans
+        // (a break, though their common ancestor is the root), and differs
+        // after a `normal` span followed by the root's preserved spaces,
+        // where Chrome breaks before the spaces and rinch does not.
+        root_text_style.text_wrap_mode = Self::text_wrap_mode(root_computed);
+
         let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
 
         // Apply white-space mode from computed style.
         // Contenteditable elements always use Preserve (pre-wrap) to prevent
         // Parley from collapsing trailing whitespace, which would cause cursor
         // position mismatches (the DOM text has the space but the layout doesn't).
-        use crate::computed_style::WhiteSpaceValue;
         let is_contenteditable = {
             let mut nid = Some(root_id);
             let mut found = false;
@@ -5342,19 +5430,48 @@ impl RinchDocument {
 
         let (text_layout, text_content) = builder.build();
         let mut text_layout = text_layout;
-        // white-space: nowrap/pre prevents line wrapping — use infinite width
-        let effective_max_width = match root_computed.white_space {
-            WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre => None,
-            _ => max_width,
+        // A paragraph none of whose text may wrap is broken unconstrained:
+        // only forced breaks end its lines. One that holds wrapping text — a
+        // wrapping root, or a `normal`/`pre-wrap`/`pre-line` element inside a
+        // `nowrap`/`pre` root (#1212) — is broken at the available width, and
+        // the per-cluster `TextWrapMode` keeps the rest of it on its lines.
+        let effective_max_width = if Self::wraps_anywhere(nodes, root_id, &text_ranges) {
+            max_width
+        } else {
+            None
         };
         // Only preserved spaces can hang past a soft wrap or end a line as
         // content; collapsible ones are single, and gone at a forced break.
         let preserves_spaces = ifc_text.preserved();
+        // The text of `pre` elements, whose preserved spaces must not hang
+        // (`LineUnit::unhung`; the mixed seams left are tracked in #1243).
+        let unhung: Vec<std::ops::Range<usize>> = if preserves_spaces {
+            text_ranges
+                .iter()
+                .filter(|r| !r.is_br && r.flat_end > r.flat_start)
+                .filter(|r| {
+                    nodes
+                        .get(r.node_id)
+                        .and_then(|t| t.parent)
+                        .and_then(|el| nodes.get(el))
+                        .is_some_and(|el| {
+                            matches!(
+                                el.computed_style.white_space,
+                                crate::computed_style::WhiteSpaceValue::Pre
+                            )
+                        })
+                })
+                .map(|r| r.flat_start..r.flat_end)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let hang = break_lines_hanging_spaces(
             &mut text_layout,
             &text_content,
             effective_max_width,
             preserves_spaces,
+            &unhung,
         );
 
         // Apply text-align from computed style
@@ -5372,6 +5489,29 @@ impl RinchDocument {
             preserves_spaces,
             hang,
         }
+    }
+
+    /// Whether anything in an IFC may soft-wrap: the root itself (between its
+    /// own text and its atomic inlines alike), or the nearest element of some
+    /// text run inside it (#1212). `false` only for a `nowrap`/`pre` root none
+    /// of whose text belongs to a wrapping element.
+    pub(crate) fn wraps_anywhere(
+        nodes: &slab::Slab<Node>,
+        root_id: usize,
+        text_ranges: &[crate::node::IfcTextRange],
+    ) -> bool {
+        let wraps = |id: usize| {
+            nodes.get(id).is_some_and(|n| {
+                Self::text_wrap_mode(&n.computed_style) == parley::style::TextWrapMode::Wrap
+            })
+        };
+        wraps(root_id)
+            || text_ranges.iter().filter(|r| !r.is_br).any(|r| {
+                nodes
+                    .get(r.node_id)
+                    .and_then(|t| t.parent)
+                    .is_some_and(wraps)
+            })
     }
 
     /// Whether rebuilding `il` as flat text in the root's own style draws
@@ -5744,8 +5884,8 @@ impl RinchDocument {
     /// (#1091). Pushed per inline element, so a `nowrap` span inside a
     /// wrapping root keeps its text on one line — and overflows that line,
     /// which is what draws its `text-overflow: ellipsis`. The IFC root's own
-    /// `nowrap`/`pre` is honoured by breaking it unconstrained instead
-    /// (`build_inline_layout`).
+    /// mode is its root text style's (#1212), so a wrapping span inside a
+    /// `nowrap`/`pre` root wraps while the root's own text does not.
     fn text_wrap_mode(
         computed: &crate::computed_style::ComputedStyle,
     ) -> parley::style::TextWrapMode {

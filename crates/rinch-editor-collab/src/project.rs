@@ -371,6 +371,34 @@ mod tests {
     }
 
     #[test]
+    fn an_embed_behind_an_unchanged_prefix_does_not_partially_mutate() {
+        // The same as above with an unchanged leading block, so the changed blocks sit
+        // at raw 1 and 2: gate 3 must read them at `prefix + k`, not at `k`.
+        let s = schema();
+        let before = doc_of(
+            &s,
+            vec![para(&s, "keep"), para(&s, "alpha"), para(&s, "beta")],
+        );
+        let mut cdoc = CollabDoc::from_doc(&before).unwrap();
+        {
+            let mut txn = cdoc.doc.transact_mut();
+            let Some(Out::YMap(node)) = cdoc.content.get(&txn, 2) else {
+                panic!("block 2 must be a node map");
+            };
+            let Some(Out::YText(text)) = node.get(&txn, "text") else {
+                panic!("block 2 must carry a text");
+            };
+            text.insert_embed(&mut txn, 2, Any::Bool(true));
+        }
+        let base = baseline(&mut cdoc);
+        let keep = before.child(0).clone();
+        let after = doc_of(&s, vec![keep, para(&s, "ALPHA"), para(&s, "BETA")]);
+        let err = cdoc.project_change(&before, &after).unwrap_err();
+        assert!(matches!(err, CollabError::Unsupported(_)), "{err:?}");
+        assert_untouched(&mut cdoc, &base, "embed behind a prefix");
+    }
+
+    #[test]
     fn a_model_block_the_crdt_lacks_fails_before_any_write() {
         // Repro (b) of issue #194: the model believes in a block the CRDT does not
         // hold. Before the count gate this surfaced as `Schema("content index 2 out of

@@ -172,8 +172,9 @@ fn stack_resolves(collection: &mut Collection, stack: &str) -> bool {
 /// `name` as a CSS string that parley's `parse_css_list` reads back as that
 /// name, so a family name with spaces or commas survives. parley's parser has
 /// no escapes, so the quote is one the name does not contain; a name holding
-/// both quote characters cannot be written and is not appended.
-fn quote_family(name: &str) -> Option<String> {
+/// both quote characters cannot be written. Used for the face appended here
+/// and for every name in a computed `font-family` (#1223).
+pub(crate) fn quote_family(name: &str) -> Option<String> {
     let quote = ['"', '\''].into_iter().find(|q| !name.contains(*q))?;
     Some(format!("{quote}{name}{quote}"))
 }

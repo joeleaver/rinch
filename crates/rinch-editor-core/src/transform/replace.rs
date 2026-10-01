@@ -89,7 +89,7 @@ fn replace_outer(
 /// Reconstruct `node`'s content as `content`, **enforcing the schema**: the child
 /// sequence must satisfy `node`'s content expression and each child's marks must
 /// be allowed. Returns `Err` otherwise — the schema gate for every replace.
-fn close(node: &Node, content: Fragment) -> Result<Node, StepError> {
+pub(crate) fn close(node: &Node, content: Fragment) -> Result<Node, StepError> {
     let names: Vec<&str> = content.children().iter().map(Node::type_name).collect();
     if !node.node_type().content_match().matches(&names) {
         return Err(StepError::new(format!(

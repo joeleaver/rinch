@@ -1096,6 +1096,34 @@ fn sticky_after_a_cascading_void_container() {
 }
 
 #[test]
+fn editing_after_a_cascading_top_level_void_quote() {
+    // quote(ul(li x, li y)): A deletes x's item, B y's. The list goes void, and the
+    // quote holding only it cascades void too, at the top level. Both peers then type:
+    // the top-level void check must look through the quote to the list, or the raw
+    // block count exceeds the model's and every later edit stalls.
+    let s = schema();
+    let blocks = vec![
+        para(&s, "p0"),
+        quote(&s, vec![bullets(&s, vec!["x", "y"])]),
+        para(&s, "p1"),
+    ];
+    let mut a = Peer::host(&s, blocks, 1);
+    let mut b = a.join(2);
+    let _ = a.send();
+    let x = pos_of(&a.state.doc, "x");
+    a.delete(x - 2, x + 3);
+    let y = pos_of(&b.state.doc, "y");
+    b.delete(y - 2, y + 3);
+    exchange(&mut a, &mut b);
+    assert_eq!(html(&a.state.doc), "<p>p0</p><p>p1</p>");
+    a.type_after("p1", "!");
+    b.type_after("p0", "?");
+    exchange(&mut a, &mut b);
+    assert_eq!(html(&a.state.doc), "<p>p0?</p><p>p1!</p>");
+    assert_eq!(a.state.doc, b.state.doc);
+}
+
+#[test]
 fn a_peer_joining_after_a_quote_went_void_edits_around_it() {
     // The void quote arrives in the joiner's snapshot rather than in a delta: loading it
     // must find it too, or the joiner's first edit addresses the blocks by the wrong

@@ -177,6 +177,10 @@ pub struct ComputedStyle {
     // Typography
     pub font_size: f32,
     pub font_weight: f32,
+    /// The family list as a CSS list string, every name quoted and the
+    /// generics bare — stylo's, and the unquoted CSS Fonts 4 ones parley knows
+    /// (`ui-monospace`, `emoji`, ...) — so parley's `parse_css_list` reads it
+    /// back whole (#1223).
     pub font_family: String,
     pub font_style: FontStyleValue,
     pub line_height: LineHeightValue,
