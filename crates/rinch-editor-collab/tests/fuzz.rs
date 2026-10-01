@@ -115,7 +115,7 @@ fn random_text(rng: &mut Rng) -> String {
 /// Apply one random *projectable* edit to `state` — insert / delete / mark / split /
 /// block-type, plus the list container ops (wrap, unwrap, indent, outdent). Returns
 /// `None` (skip) when the random selection makes the op invalid; the fuzz tolerates
-/// skips. Stays inside the projected scope (no task lists, blockquotes or tables), so
+/// skips. Stays inside the projected scope (no task lists or tables), so
 /// `record_local` never hits the A22 `Unsupported` boundary — a failure here is a real
 /// projection bug, not an out-of-scope node. **Inline atoms are in scope** and are
 /// generated deliberately: they are one char of a block's text carrying a reserved

@@ -2,7 +2,7 @@
 //!
 //! The most important variant is [`CollabError::Unsupported`]: per design amendment
 //! **A22**, the staged first-milestone scope is **flat text-blocks + marks**, the list
-//! containers, **leaf block atoms** (a block-level node with no content of its own,
+//! and quote containers, **leaf block atoms** (a block-level node with no content of its own,
 //! such as `horizontal_rule`) and the **inline atoms** `image`/`hard_break`. When the
 //! adapter meets a model shape it cannot faithfully project onto the CRDT (a nested
 //! block outside that scope, a table, a multi-block paste it cannot reduce), it

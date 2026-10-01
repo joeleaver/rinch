@@ -32,8 +32,7 @@
 //! The first milestone covers **flat text-blocks + marks** (`paragraph`/`heading`/
 //! `code_block` with text + bold/italic/link/… marks), the **containers**
 //! (`bullet_list`/`ordered_list`/`list_item` and `blockquote`, nested to any depth),
-//! **leaf block
-//! atoms** — a block-level node holding no content at all, such as the
+//! **leaf block atoms** — a block-level node holding no content at all, such as the
 //! `horizontal_rule` an author inserts as a scene break, which projects as a block
 //! whose text is empty — and the **inline atoms** `image`/`hard_break`, each one
 //! U+FFFC char of its block's text carrying a reserved `@atom` attribute. Anything
