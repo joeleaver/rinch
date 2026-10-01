@@ -104,8 +104,12 @@ thing rather than several*:
 - **A deliberately minimal `Step` set.** `ReplaceStep`, `ReplaceAroundStep`,
   `AddMarkStep`, `RemoveMarkStep`, `SetNodeAttrStep`, `SetDocAttrStep`. Steps are
   invertible (undo), mappable (redo, decoration tracking, collaboration rebase) and
-  composable. Tables and collaboration add **no** new step kinds — that is the test
-  of whether the set is actually primitive.
+  composable. Collaboration adds **no** new step kinds — that is the test of
+  whether the set is actually primitive. `BatchStep` (#1200) is the one addition,
+  and it adds no expressiveness: it is a list of disjoint replaces and attribute
+  changes that applies, maps and inverts exactly as those `ReplaceStep`s and
+  `SetNodeAttrStep`s would one at a time, as one step, so a table command touching
+  every row is linear rather than quadratic.
 - **Persistent tree, so identity is cheap.** `Node` is `Rc`-shared and every edit
   produces a new tree sharing unchanged subtrees. `Node::same_ref` (an `Rc::ptr_eq`)
   therefore answers "did this subtree change?" in constant time — which is what makes

@@ -201,9 +201,18 @@ gestures map onto it:
 | `RemoveMarkStep { from, to, mark }` | Remove a mark across an inline range. |
 | `SetNodeAttrStep { pos, attr, value }` | Change one node attr (heading level, image alt, list start). |
 | `SetDocAttrStep { attr, value }` | A document-level attr. |
+| `BatchStep` (`Transaction::batch(Vec<BatchEdit>)`) | Many disjoint replaces and node-attr changes, stated in the coordinates of the document it applies to, as **one** step. |
 
-Tables and collaboration add **no new step kinds** — table edits are `Replace` /
-`ReplaceAround` / `SetNodeAttr` over the table, row, and cell nodes.
+`BatchStep` is the one step kind that exists for cost rather than expressiveness: it
+is exactly its edits applied one at a time from the last position to the first —
+same document, and its step map maps every position as those `ReplaceStep`s did,
+except that each rebuilt node's content is checked once, on the result, so it never
+refuses an intermediate state a sequence would pass through — but it rebuilds each node on the way to an edit once and keeps one document in the
+transaction rather than one per edit. Every table command is one `BatchStep`
+(#1200): as a step per row, a column into 16,000 rows rebuilt and kept the row list
+16,000 times (6.4 s, 2.1 GB; 29 ms as one step). The one exception is `deleteRow` /
+`deleteColumn` on a table whose cells overlap, which still removes one row or
+column per step on a recomputed map. Collaboration adds no step kinds.
 
 A few gesture → step mappings:
 

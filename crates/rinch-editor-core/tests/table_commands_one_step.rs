@@ -849,9 +849,6 @@ const CMDS: &[(&str, RefCmd)] = &[
 /// every position mapped to the same place, and undo taking it back.
 fn assert_same_edit(st: &EditorState, got: Transaction, want: Transaction, what: &str) {
     for p in 0..=st.doc.content_size() {
-        if std::env::var("SKIPMAP").is_ok() {
-            break;
-        }
         for a in [-1, 1] {
             let (g, w) = (
                 got.mapping().map_result(p, a),
