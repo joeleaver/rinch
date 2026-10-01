@@ -223,3 +223,39 @@ fn a_pre_roots_spaces_after_hanging_pre_wrap_spaces_start_the_next_line() {
     assert!((lines[0].1 - 5.08).abs() < 0.01, "{lines:?}");
     assert!((lines[1].1 - 16.91).abs() < 0.01, "{lines:?}");
 }
+
+/// A line ended by a forced break after the `pre` root's spaces is aligned
+/// with those spaces as content too. Chrome 153 (round-2 review of #1228,
+/// c13/c21): `ccaaa␣␣␣` overflows and starts at 0, `cca␣␣␣` fits and sits at
+/// 9.08, and the last line `d` at 40.20.
+#[test]
+fn a_pre_roots_spaces_before_a_newline_are_content_in_alignment() {
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        "<span style=\"white-space:normal\">bb cc</span>aaa   \nddd",
+    );
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[1].0, "ccaaa");
+    assert_eq!(lines[1].1, 0.0, "{lines:?}");
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        "<span style=\"white-space:normal\">bb cc</span>a   \nd",
+    );
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[1].0, "cca");
+    assert!((lines[1].1 - 9.08).abs() < 0.01, "{lines:?}");
+    assert!((lines[2].1 - 40.20).abs() < 0.01, "{lines:?}");
+}
+
+/// The trailing `pre` spaces may come from two adjacent text nodes (here the
+/// root's and a `<b>`'s): every one counts. Chrome 153 (c22): 9.08.
+#[test]
+fn trailing_pre_spaces_across_adjacent_text_nodes_all_count() {
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        "<span style=\"white-space:normal\">bb cc</span>a <b style=\"font-weight:normal\">  </b>",
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[1].0, "cca");
+    assert!((lines[1].1 - 9.08).abs() < 0.01, "{lines:?}");
+}

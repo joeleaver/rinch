@@ -818,9 +818,11 @@ struct LineUnit {
     /// A space or tab that hangs at a soft wrap: one whose element wraps
     /// (not NBSP, and not a `pre` element's).
     hangs: bool,
-    /// A space or tab of a `pre` element (#1212): preserved, and it does not
-    /// hang (CSS Text 3 §4.1.3 hangs a preserved space only where the text
-    /// wraps), so at a line's end it is content.
+    /// A space or tab of a `pre` element (#1212): preserved, and CSS Text 3
+    /// §4.1.3 hangs a preserved space only where the text wraps, so the hang
+    /// pass does not widen a line for it and a line ending in it is aligned
+    /// with it as content. (Parley itself still hangs the one that overflows
+    /// right after `pre-wrap` spaces — tracked in #1243.)
     unhung: bool,
     newline: bool,
 }
@@ -5441,7 +5443,8 @@ impl RinchDocument {
         // Only preserved spaces can hang past a soft wrap or end a line as
         // content; collapsible ones are single, and gone at a forced break.
         let preserves_spaces = ifc_text.preserved();
-        // The text of `pre` elements, whose preserved spaces do not hang.
+        // The text of `pre` elements, whose preserved spaces must not hang
+        // (`LineUnit::unhung`; the mixed seams left are tracked in #1243).
         let unhung: Vec<std::ops::Range<usize>> = if preserves_spaces {
             text_ranges
                 .iter()
