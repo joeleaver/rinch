@@ -5784,8 +5784,8 @@ impl RinchDocument {
     /// (#1091). Pushed per inline element, so a `nowrap` span inside a
     /// wrapping root keeps its text on one line — and overflows that line,
     /// which is what draws its `text-overflow: ellipsis`. The IFC root's own
-    /// `nowrap`/`pre` is honoured by breaking it unconstrained instead
-    /// (`build_inline_layout`).
+    /// mode is its root text style's (#1212), so a wrapping span inside a
+    /// `nowrap`/`pre` root wraps while the root's own text does not.
     fn text_wrap_mode(
         computed: &crate::computed_style::ComputedStyle,
     ) -> parley::style::TextWrapMode {
