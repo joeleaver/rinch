@@ -330,6 +330,20 @@ impl DimensionValue {
         }
     }
 
+    /// Convert to the `LengthPercentageAuto` Taffy 0.14 stores `min_size` and
+    /// `max_size` as. Same mapping as [`Self::to_taffy`]; an
+    /// [`Intrinsic`](Self::Intrinsic) keyword goes in as `auto` here for good,
+    /// since Taffy's min/max sizes have no keyword representation at all.
+    pub fn to_taffy_lpa(&self) -> taffy::LengthPercentageAuto {
+        match self {
+            Self::Auto => taffy::LengthPercentageAuto::auto(),
+            Self::Length(v) => taffy::LengthPercentageAuto::length(*v),
+            Self::Percent(v) => taffy::LengthPercentageAuto::percent(*v),
+            Self::Calc { px, .. } => taffy::LengthPercentageAuto::length(px.max(0.0)),
+            Self::Intrinsic(_) => taffy::LengthPercentageAuto::auto(),
+        }
+    }
+
     /// Whether the author wrote `auto` (or nothing).
     ///
     /// This is the **specified** value. It answers `false` for an intrinsic

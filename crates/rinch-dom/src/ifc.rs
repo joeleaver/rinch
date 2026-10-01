@@ -4885,7 +4885,12 @@ impl RinchDocument {
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
             avail,
-            |known_dims, avail_space, _node_id, context, _style| {
+            |inputs, _node_id, context, style| {
+                // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
+                // algorithm (box-sizing, min/max clamps) is what 0.12's
+                // `TaffyView` ran around the size this body returns, with the
+                // same `0.0` calc resolver.
+                taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |known_dims, avail_space| {
                 let max_width = match avail_space.width {
                     taffy::AvailableSpace::Definite(w) => Some(w),
                     taffy::AvailableSpace::MaxContent => None,
@@ -4984,6 +4989,7 @@ impl RinchDocument {
                     }) => crate::form_control::measure(*content_width, *content_height, known_dims),
                     _ => taffy::Size::ZERO,
                 }
+            })
             },
         );
         tree.atomic_leaf_layouts.extend(leaf_layouts);

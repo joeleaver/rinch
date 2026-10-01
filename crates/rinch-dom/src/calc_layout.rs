@@ -132,11 +132,16 @@ fn patch_lpa(
 /// Same for sizes — floored at zero, a box cannot be negative-sized. Against
 /// an indefinite basis a percentage size behaves as `auto` (CSS 10.5), so the
 /// whole `Calc` does too, replacing the seed rather than keeping it.
-fn patch_dim(target: &mut taffy::Dimension, v: DimensionValue, basis: Option<f32>) {
+/// Generic over the target type because Taffy 0.14 stores `size`/`flex_basis`
+/// as a `Dimension` and `min_size`/`max_size` as a `LengthPercentageAuto`.
+fn patch_dim<T>(target: &mut T, v: DimensionValue, basis: Option<f32>)
+where
+    T: taffy::style_helpers::FromLength + taffy::style_helpers::TaffyAuto,
+{
     if matches!(v, DimensionValue::Calc { .. }) {
         *target = match basis {
-            Some(b) => taffy::Dimension::length(v.resolve_calc(b).unwrap_or(0.0)),
-            None => taffy::Dimension::auto(),
+            Some(b) => T::from_length(v.resolve_calc(b).unwrap_or(0.0)),
+            None => T::AUTO,
         };
     }
 }
