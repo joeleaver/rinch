@@ -71,6 +71,8 @@ mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_space_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_list_item_wrap_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_popup_hooks_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_programmatic_selection_tests;
