@@ -183,10 +183,14 @@ so its text stays visible and adds no column.
 Written raw, a few cells of huge spans stacked past the 32767 grid lines Taffy numbers
 a grid with, and desktop layout panicked. Two limits remain, both from the desktop's
 Stylo clamping a grid line, a template and every span to 10000: a table wider than
-that is drawn 10000 columns wide; and a grid past 9999 tracks in either axis, whose
-lines would be clamped onto one, is placed by `span <width>` / `span <height>` alone
-and auto-placed, so there a short row's cells are still lifted into the row before
-it, on the web as well as the desktop.
+that is drawn 10000 columns wide; and an axis past 9999 tracks, whose lines would be
+clamped onto one, is placed by `span <n>` and auto-placement instead. A table past
+9999 rows keeps its column lines, so a cell is still placed below the one before it
+in its column. A table past 9999 columns loses its row lines too, because cells
+locked to their row with auto-placed columns can grow the grid past the 32767 lines
+Taffy numbers it with (a row of four `colspan = 20000` cells panicked); there a short
+row's cells are still lifted into the row before it, on the web as well as the
+desktop.
 
 ## The transform engine
 

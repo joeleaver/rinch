@@ -237,8 +237,8 @@ fn a_table_of_unbounded_spans_is_placed_as_its_table_map() {
     // The first cell spans the map's 1_000_000 of 1_048_576 columns — of the
     // bands' width, which is the grid's — and the second starts where it ends.
     // (Auto-placement puts the second at the first cell's top, where the map
-    // has it one row down: #1209, which places by grid lines only a grid of
-    // at most 9999 tracks a side — Stylo's line cap — and this one is wider. Its own padding makes it wider than the
+    // has it one row down: #1209, which places a table wider than 9999
+    // columns — Stylo's line cap — by spans in both axes. Its own padding makes it wider than the
     // 48_576 columns it spans, so it is not asserted to end at the grid's edge.)
     let grid_w = r[2].2;
     assert!(

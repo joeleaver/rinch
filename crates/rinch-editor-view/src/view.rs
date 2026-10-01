@@ -361,17 +361,14 @@ pub(crate) struct ViewDesc {
 /// [`TableMap`]: rinch_editor_core::tables::TableMap
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GridPlacement {
-    /// The rectangle's grid lines, written as they are (#1209). CSS
+    /// The rectangle, on its grid lines in each axis whose lines fit
+    /// ([`GridLines`]) and as a span of tracks in the other (#1209). CSS
     /// auto-placement does not know which row a cell belongs to — it packs
     /// each cell into the first free area after the previous one — so a row a
     /// rowspan from above leaves short had its cells lifted into the row
     /// before it, beside the rowspan's top, where the map puts them below it.
     /// Definite lines are the map's grid, overlaps and holes included.
-    At(rinch_editor_core::tables::Rect),
-    /// `colspan × rowspan` grid tracks, auto-placed: a table whose map is past
-    /// [`MAX_DEFINITE_GRID_TRACKS`] in either axis, whose lines Stylo would
-    /// clamp onto one. Right for a table every row of which fills the grid.
-    Span(usize, usize),
+    At(rinch_editor_core::tables::Rect, GridLines),
     /// A cell no grid slot holds (past the capped width, or in a row the
     /// rowspans from above fill). No table command treats it as a cell; it is
     /// laid out as a band across the whole grid (`grid-column: 1 / -1`) on a
@@ -381,13 +378,24 @@ enum GridPlacement {
     Outside,
 }
 
-/// The most tracks a table's grid may have in each axis for its cells to be
-/// placed on definite grid lines ([`GridPlacement::At`]): Stylo clamps a grid
-/// line number to 10000 (`MAX_GRID_LINE`), so a cell starting past line 10000
-/// would be laid out on it, on top of its neighbours. A grid this size has
-/// lines 1 to 10000. Past it the cells are auto-placed by their spans, as
-/// before #1209.
+/// The most tracks a table's grid may have in an axis for its cells to be
+/// placed on definite grid lines in that axis ([`GridLines`]): Stylo clamps a
+/// grid line number to 10000 (`MAX_GRID_LINE`), so a cell starting past line
+/// 10000 would be laid out on it, on top of its neighbours. A grid this size
+/// has lines 1 to 10000. Past it the cells are placed in that axis by their
+/// spans and auto-placement, as before #1209.
 const MAX_DEFINITE_GRID_TRACKS: usize = 9999;
+
+/// Which axes of a table's grid its cells are placed in by definite lines:
+/// columns when there are at most [`MAX_DEFINITE_GRID_TRACKS`] of them, so a
+/// table past 9999 rows keeps its cells in their columns; rows when both axes
+/// are within it, because row lines over auto-placed columns can grow the
+/// grid past Taffy's lines (see [`ViewDesc::sync_table_spans`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GridLines {
+    rows: bool,
+    columns: bool,
+}
 
 impl GridPlacement {
     /// The `grid-column` / `grid-row` values that place a cell so.
@@ -400,11 +408,19 @@ impl GridPlacement {
             }
         };
         match self {
-            GridPlacement::At(r) => (
-                format!("{} / {}", r.left + 1, r.right + 1),
-                format!("{} / {}", r.top + 1, r.bottom + 1),
-            ),
-            GridPlacement::Span(cols, rows) => (span(cols), span(rows)),
+            GridPlacement::At(r, lines) => {
+                let axis = |definite: bool, start: usize, end: usize| {
+                    if definite {
+                        format!("{} / {}", start + 1, end + 1)
+                    } else {
+                        span(end - start)
+                    }
+                };
+                (
+                    axis(lines.columns, r.left, r.right),
+                    axis(lines.rows, r.top, r.bottom),
+                )
+            }
             GridPlacement::Outside => ("1 / -1".to_string(), "auto".to_string()),
         }
     }
@@ -492,13 +508,21 @@ impl ViewDesc {
         #[cfg(test)]
         table_span_tests::SYNCS.with(|n| n.set(n.get() + 1));
         let rects = rinch_editor_core::tables::cell_rects(&self.node);
-        let definite = self.node.child_count() <= MAX_DEFINITE_GRID_TRACKS
-            && rinch_editor_core::tables::column_count(&self.node) <= MAX_DEFINITE_GRID_TRACKS;
+        let columns =
+            rinch_editor_core::tables::column_count(&self.node) <= MAX_DEFINITE_GRID_TRACKS;
+        let lines = GridLines {
+            // Row lines need column lines too: a cell locked to its row is
+            // placed beside the cells before it, so a wide row of wide cells
+            // (four of `colspan = 20000`, each span clamped to 10000 tracks)
+            // grows the implicit grid past the 32767 lines Taffy numbers it
+            // with, and layout panics. Auto-placed, those cells wrap.
+            rows: columns && self.node.child_count() <= MAX_DEFINITE_GRID_TRACKS,
+            columns,
+        };
         for (row, row_rects) in self.children.iter_mut().zip(&rects) {
             for (cell, rect) in row.children.iter_mut().zip(row_rects) {
                 let placement = match rect {
-                    Some(r) if definite => GridPlacement::At(*r),
-                    Some(r) => GridPlacement::Span(r.right - r.left, r.bottom - r.top),
+                    Some(r) => GridPlacement::At(*r, lines),
                     None => GridPlacement::Outside,
                 };
                 if cell.grid_placement == Some(placement) {
@@ -4602,8 +4626,9 @@ mod table_span_tests {
     /// Definite lines stop where Stylo's grid lines do: a grid of
     /// [`MAX_DEFINITE_GRID_TRACKS`] columns ends on line 10000, Stylo's
     /// `MAX_GRID_LINE`, and is placed by lines; one column more and its cells
-    /// are auto-placed by their spans, as before #1209, rather than piled on
-    /// line 10000. Rows are counted the same way.
+    /// are auto-placed by their spans in both axes, as before #1209, rather
+    /// than piled on line 10000 (rows too: see [`GridLines`]). One row more
+    /// than the cap loses only the row lines: the columns keep theirs.
     #[test]
     fn a_grid_past_the_line_cap_falls_back_to_spans() {
         let s = Rc::new(Schema::starter_kit());
@@ -4630,8 +4655,9 @@ mod table_span_tests {
         assert_eq!(at[0], p("1 / 2", "1 / 3"));
         assert_eq!(at.last(), Some(&p("1 / 2", "9999 / 10000")));
         let past = placed(&tall(MAX_DEFINITE_GRID_TRACKS + 1));
-        assert_eq!(past[0], p("auto", "span 2"));
-        assert_eq!(past.last(), Some(&p("auto", "auto")));
+        assert_eq!(past[0], p("1 / 2", "span 2"));
+        assert_eq!(past[1], p("2 / 3", "span 2"));
+        assert_eq!(past.last(), Some(&p("2 / 3", "auto")));
     }
 }
 
