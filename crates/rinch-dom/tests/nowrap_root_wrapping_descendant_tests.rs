@@ -131,3 +131,74 @@ fn an_unfaithful_ellipsis_root_with_a_wrapping_span_keeps_its_lines() {
     assert_eq!(lines, ["aaa bbb", "ccc", "ddd"]);
     assert_eq!(h, 75.0);
 }
+
+/// `(line text, offset)` of each line of `#c`'s layout.
+fn offsets(style: &str, inner: &str) -> Vec<(String, f32)> {
+    let mut d = doc();
+    let body = d.body();
+    let c = d.create_element("div");
+    d.set_attribute(
+        c,
+        "style",
+        &format!("width:50px;font:16px/25px ProbeFace;{style}"),
+    );
+    d.append_child(body, c);
+    d.set_inner_html(c, inner);
+    d.resolve_layout(800.0, 600.0);
+    let n = d.tree.get(c.0).unwrap();
+    let il = n.text_layout.as_ref().expect("the div is an IFC root");
+    il.layout
+        .lines()
+        .map(|l| {
+            (
+                il.text_content[l.text_range()].trim().to_string(),
+                l.metrics().offset,
+            )
+        })
+        .collect()
+}
+
+const SPACES: &str = "                    ";
+
+/// A `pre` root's preserved spaces do not hang (CSS Text 3 §4.1.3 hangs
+/// only `pre-wrap`'s): `aaa` and twenty spaces overflow a 50px right-aligned
+/// box, and an overflowing line starts at the start edge. Chrome 153: offset
+/// 0. With no wrapping text the root is broken unconstrained; broken at the
+/// box's width instead, the line keeps offset 0 only through the alignment
+/// width `ifc::align_unhung_trailing` narrows.
+#[test]
+fn a_pre_roots_trailing_spaces_do_not_hang() {
+    let lines = offsets("white-space:pre;text-align:right", &format!("aaa{SPACES}"));
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].1, 0.0, "{lines:?}");
+}
+
+/// The same spaces after a wrapping span: the paragraph is now broken at the
+/// box's width, and the root's own spaces still do not hang — Chrome 153
+/// puts `ccaaa` and its spaces at offset 0, overflowing, after `bb`.
+#[test]
+fn a_pre_roots_trailing_spaces_do_not_hang_beside_a_wrapping_span() {
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        &format!("<span style=\"white-space:normal\">bb cc</span>aaa{SPACES}"),
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0].0, "bb");
+    assert_eq!(lines[1].0, "ccaaa");
+    assert_eq!(lines[1].1, 0.0, "{lines:?}");
+}
+
+/// Why a paragraph with no wrapping text is still broken unconstrained:
+/// parley marks a break opportunity after every inline box whatever the wrap
+/// mode, so a `nowrap` root broken at 50px would wrap `bbb ccc` after the
+/// chip. Chrome 153 keeps `aaabbb ccc` on one line. (Kills the mutant that
+/// always breaks at the box's width.)
+#[test]
+fn a_nowrap_root_does_not_wrap_after_an_inline_box() {
+    let (lines, h) = lay_out(
+        "white-space:nowrap",
+        "aaa<b style=\"display:inline-block;width:20px;height:10px\"></b>bbb ccc",
+    );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(h, 25.0);
+}

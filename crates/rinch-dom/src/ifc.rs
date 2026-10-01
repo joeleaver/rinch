@@ -223,12 +223,16 @@ pub(crate) fn break_lines_hanging_spaces(
     text: &str,
     max_width: Option<f32>,
     preserves_spaces: bool,
+    unhung: &[std::ops::Range<usize>],
 ) -> HangStats {
     layout.break_all_lines(max_width);
-    let hang = max_width
-        .filter(|max| preserves_spaces && max.is_finite() && any_unhung_line(layout, text));
+    let hang = max_width.filter(|max| {
+        preserves_spaces
+            && max.is_finite()
+            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung))
+    });
     let mut stats = match hang {
-        Some(max) => hang_pass(layout, text, max, None),
+        Some(max) => hang_pass(layout, text, max, None, unhung),
         None => HangStats::default(),
     };
     // #1050, #1172: parley's trailing empty line after an overflowing inline
@@ -236,7 +240,7 @@ pub(crate) fn break_lines_hanging_spaces(
     // before it.
     if let Some(keep) = phantom_last_line(layout) {
         match hang {
-            Some(max) => stats = hang_pass(layout, text, max, Some(keep)),
+            Some(max) => stats = hang_pass(layout, text, max, Some(keep), unhung),
             None => break_lines_up_to(layout, max_width, keep),
         }
         stats.phantom_rebreaks = 1;
@@ -704,10 +708,11 @@ fn hang_pass(
     text: &str,
     max: f32,
     limit: Option<usize>,
+    unhung: &[std::ops::Range<usize>],
 ) -> HangStats {
     use parley::layout::{BreakReason, YieldData};
     let mut stats = HangStats::default();
-    let units = logical_units(layout, text);
+    let units = logical_units(layout, text, unhung);
     stats.passes = 1;
     let mut breaker = layout.break_lines();
     // The first unit of the line being broken, and the state it starts from.
@@ -732,9 +737,16 @@ fn hang_pass(
             continue;
         };
         committed += 1;
+        if !in_step {
+            continue;
+        }
         // The last line is committed as it is (`BreakReason::None`; an empty
-        // one after a final newline even copies the previous line's advance).
-        if !in_step || data.reason == BreakReason::None {
+        // one after a final newline even copies the previous line's advance),
+        // but its unhung spaces still count for its alignment (#1212).
+        if data.reason == BreakReason::None {
+            if let Some(end) = line_end(&units, cursor, data.advance) {
+                align_unhung_trailing(&mut breaker, &units[cursor..end], max);
+            }
             continue;
         }
         // A line that ends at the hang is broken again, from the state it
@@ -755,6 +767,7 @@ fn hang_pass(
                 _ => None,
             };
             let Some(hanging) = hanging else {
+                align_unhung_trailing(&mut breaker, &units[cursor..end], max);
                 cursor = end;
                 line_start = breaker.state().clone();
                 break;
@@ -802,15 +815,71 @@ fn hang_pass(
 /// breaker adds to a line's advance, and what [`hanging_after`] needs to know.
 struct LineUnit {
     advance: f32,
-    /// A space or tab: white space that hangs (not NBSP).
+    /// A space or tab that hangs at a soft wrap: one whose element wraps
+    /// (not NBSP, and not a `pre` element's).
     hangs: bool,
+    /// A space or tab of a `pre` element (#1212): preserved, and it does not
+    /// hang (CSS Text 3 §4.1.3 hangs a preserved space only where the text
+    /// wraps), so at a line's end it is content.
+    unhung: bool,
     newline: bool,
+}
+
+/// Re-set the alignment width of the line just committed, `line` its units,
+/// when it ends in [`LineUnit::unhung`] spaces: parley counts every trailing
+/// space as hanging when it aligns a line, so a `pre` root's spaces after a
+/// wrapping span let an overflowing line right-align as if it fitted. With
+/// the width narrowed by those spaces, parley's free space is the box's width
+/// less the whole line, and an overflowing line is start-aligned — Chrome
+/// 153's answer (#1212).
+fn align_unhung_trailing(
+    breaker: &mut parley::layout::BreakLines<'_, Brush>,
+    line: &[LineUnit],
+    max: f32,
+) {
+    let unhung: f32 = line
+        .iter()
+        .rev()
+        .skip_while(|u| u.newline)
+        .take_while(|u| u.unhung)
+        .map(|u| u.advance)
+        .sum();
+    if unhung > 0.0 {
+        breaker.set_prior_line_width(max - unhung);
+    }
+}
+
+/// Whether `byte` is in one of the sorted, disjoint `ranges`.
+fn in_ranges(ranges: &[std::ops::Range<usize>], byte: usize) -> bool {
+    let i = ranges.partition_point(|r| r.end <= byte);
+    ranges.get(i).is_some_and(|r| r.contains(&byte))
+}
+
+/// Whether some line ends (before any newline) in a space or tab of an
+/// `unhung` range — the cheap test that sends a paragraph through
+/// [`hang_pass`] for [`align_unhung_trailing`].
+fn any_unhung_trailing_line(
+    layout: &parley::Layout<Brush>,
+    text: &str,
+    unhung: &[std::ops::Range<usize>],
+) -> bool {
+    !unhung.is_empty()
+        && layout.lines().any(|line| {
+            let r = line.text_range();
+            let body = text.get(r.clone()).unwrap_or("");
+            let trimmed = body.trim_end_matches(['\n', '\r']);
+            trimmed.ends_with([' ', '\t']) && in_ranges(unhung, r.start + trimmed.len() - 1)
+        })
 }
 
 /// Every cluster and inline box of `layout`, in the logical order the line
 /// breaker walks them. Read from an already broken layout: each cluster is on
-/// exactly one line.
-fn logical_units(layout: &parley::Layout<Brush>, text: &str) -> Vec<LineUnit> {
+/// exactly one line. A space in an `unhung` range is [`LineUnit::unhung`].
+fn logical_units(
+    layout: &parley::Layout<Brush>,
+    text: &str,
+    unhung: &[std::ops::Range<usize>],
+) -> Vec<LineUnit> {
     // (byte, 0 = inline box / 1 = cluster, index within its kind) → unit.
     let mut keyed: Vec<((usize, u8, usize), LineUnit)> = Vec::new();
     for line in layout.lines() {
@@ -818,11 +887,14 @@ fn logical_units(layout: &parley::Layout<Brush>, text: &str) -> Vec<LineUnit> {
             for c in run.clusters() {
                 let range = c.text_range();
                 let n = keyed.len();
+                let space = is_hanging_space(text, &c);
+                let pre = space && in_ranges(unhung, range.start);
                 keyed.push((
                     (range.start, 1, n),
                     LineUnit {
                         advance: c.advance(),
-                        hangs: is_hanging_space(text, &c),
+                        hangs: space && !pre,
+                        unhung: pre,
                         newline: c.is_hard_line_break(),
                     },
                 ));
@@ -839,6 +911,7 @@ fn logical_units(layout: &parley::Layout<Brush>, text: &str) -> Vec<LineUnit> {
             LineUnit {
                 advance,
                 hangs: false,
+                unhung: false,
                 newline: false,
             },
         ));
@@ -5366,11 +5439,34 @@ impl RinchDocument {
         // Only preserved spaces can hang past a soft wrap or end a line as
         // content; collapsible ones are single, and gone at a forced break.
         let preserves_spaces = ifc_text.preserved();
+        // The text of `pre` elements, whose preserved spaces do not hang.
+        let unhung: Vec<std::ops::Range<usize>> = if preserves_spaces {
+            text_ranges
+                .iter()
+                .filter(|r| !r.is_br && r.flat_end > r.flat_start)
+                .filter(|r| {
+                    nodes
+                        .get(r.node_id)
+                        .and_then(|t| t.parent)
+                        .and_then(|el| nodes.get(el))
+                        .is_some_and(|el| {
+                            matches!(
+                                el.computed_style.white_space,
+                                crate::computed_style::WhiteSpaceValue::Pre
+                            )
+                        })
+                })
+                .map(|r| r.flat_start..r.flat_end)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let hang = break_lines_hanging_spaces(
             &mut text_layout,
             &text_content,
             effective_max_width,
             preserves_spaces,
+            &unhung,
         );
 
         // Apply text-align from computed style
