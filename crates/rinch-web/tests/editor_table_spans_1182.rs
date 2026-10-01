@@ -100,7 +100,16 @@ fn mount(rows: &[Vec<(i64, i64)>]) -> Mounted {
     .unwrap();
     document().body().unwrap().append_child(&host).unwrap();
     let handle = create_editor();
-    handle.load_doc(table_doc(&handle, rows));
+    // As an app's own transaction: a load would cap the 1,000,000 colspans
+    // at 1000 (#1214), and this shape is about spans that reach the model
+    // unbounded.
+    let table = table_doc(&handle, rows);
+    assert!(handle.update(|st| {
+        let mut tr = st.tr();
+        tr.replace_with(0, st.doc.content_size(), table.content().clone())
+            .ok()?;
+        Some(tr)
+    }));
     let mounted = handle.clone();
     let root = rinch_web::mount_into(
         &host,
