@@ -19,7 +19,9 @@
 //! text object. Every child list, the top level's included, is addressed through its
 //! **visible** children ([`crate::projection::read_children`]): a container emptied by
 //! concurrent deletions reads as absent, so it is skipped by the diff and by the count
-//! gate alike. Any node outside the supported scope (a task list, a ragged table) anywhere in
+//! gate alike. The top level finds its void containers only when a remote merge has
+//! left one (`CollabDoc::top_void`), so a keystroke in a document without one reads the
+//! block it changed and nothing else (`tests/projection_cost.rs`). Any node outside the supported scope (a task list, a ragged table) anywhere in
 //! `before` or `after` fails loud ([`CollabError::Unsupported`], design A22).
 //!
 //! The diff trusts `before` to describe what the CRDT holds — which is the invariant —
@@ -34,12 +36,14 @@
 
 use std::collections::BTreeSet;
 
-use yrs::Transact;
+use yrs::{Array, Transact};
 
 use rinch_editor_core::{Node, Transaction};
 
 use crate::error::{CollabError, Result};
-use crate::projection::{CollabDoc, insert_node, read_children, read_node, write_child_diff};
+use crate::projection::{
+    CollabDoc, RawIndex, insert_node, read_node, read_node_data, visible_indices, write_child_diff,
+};
 
 impl CollabDoc {
     /// Project a freshly-applied local transaction onto the CRDT. A no-op for a
@@ -72,17 +76,23 @@ impl CollabDoc {
         // concurrent deletions, see `projection::is_void`) reads as absent, so a CRDT
         // holding only those reads as the starter paragraph too.
         //
-        // The visible blocks are read once, here, with their raw indices: the diff below
-        // runs over what the model sees and writes where each block lives. The read
-        // doubles as pre-pass gate 3 (it reads back every CRDT node, so a CRDT-side
-        // failure surfaces before any write); the read transaction is scoped so it
-        // drops before `transact_mut` opens (yrs cannot nest transaction acquisitions).
-        let raw: Vec<u32> = {
+        // The diff below runs over the blocks the model sees and writes where each one
+        // lives. While the top level holds no void container (`top_void`, which only a
+        // remote merge can set) those are the same index and nothing is read here, so a
+        // keystroke reads the one block it changed. While it holds one, the raw index of
+        // every visible block is found by one sequential pass over the top-level
+        // *shapes* — no text is read — which is the linear cost of a document a merge
+        // left a void container in. The read transaction is scoped so it drops before
+        // `transact_mut` opens (yrs cannot nest transaction acquisitions).
+        let mapped: Option<Vec<u32>>;
+        let raw = {
             let txn = self.doc.transact();
-            read_children(&txn, &self.content)?
-                .into_iter()
-                .map(|(i, _)| i)
-                .collect()
+            if self.top_void {
+                mapped = Some(visible_indices(&txn, &self.content));
+                RawIndex::Mapped(mapped.as_deref().unwrap_or_default())
+            } else {
+                RawIndex::Identity(self.content.len(&txn))
+            }
         };
         let crdt_blocks = raw.len();
         if crdt_blocks == 0 {
@@ -156,13 +166,24 @@ impl CollabDoc {
             non_inclusive_marks(after.child(prefix + k), &mut per_char);
         }
 
-        // Pre-pass gate 3, CRDT side (issue #194): every CRDT node the write phase will
-        // read was read back above, with the visible blocks — recursively, a
-        // container's whole subtree, which is a superset of what `reconcile_node`
-        // walks (over-strict in the safe direction, never a hole). That surfaces every
+        // Pre-pass gate 3, CRDT side (issue #194): read back every CRDT node the write
+        // phase will read — the blocks being reconciled in place, recursively (a
+        // container's whole subtree, at least what `reconcile_node` walks: on the
+        // kind-mismatch wholesale-replace path this reads a superset, which is
+        // over-strict in the safe direction, never a hole). This surfaces every
         // CRDT-side failure the model-side gates cannot see — an embed parked in a
         // block's text, a corrupt mark value, a node that is neither text-block nor
-        // container — before the first write.
+        // container — before the first write. Blocks being *deleted* are not read back:
+        // removal never reads their content.
+        {
+            let txn = self.doc.transact();
+            for k in 0..common {
+                let at = raw.get(prefix + k).ok_or_else(|| {
+                    CollabError::schema("model/CRDT out of step: a changed block is missing")
+                })?;
+                read_node_data(&txn, &self.content, at)?;
+            }
+        }
 
         // Writes — one transaction for the whole change, which yrs commits on drop:
         // there is no rollback primitive, so the pre-pass above is the *only*
@@ -184,7 +205,7 @@ impl CollabDoc {
         write_child_diff(
             &mut txn,
             &content,
-            &raw,
+            raw,
             prefix..prefix + pre_mid,
             &targets,
             Some((before, after)),

@@ -62,6 +62,14 @@ pub fn session_from_bytes_with_client_id(bytes: &[u8], client_id: u64) -> Result
     CollabSession::from_bytes_with_client_id(bytes, checked(client_id))
 }
 
+/// How many CRDT nodes this **thread** has examined so far: one per node read back
+/// (its text, marks and children) and one per node whose shape was checked for a void
+/// container. Take the difference across an operation to count what it read — the pin
+/// that a local keystroke reads the block it changed and not the whole document.
+pub fn node_reads() -> u64 {
+    crate::projection::node_reads()
+}
+
 /// yrs client ids are **53-bit** (`ClientID::new` debug-asserts it, and a release build
 /// would silently fold the high bits into the mask instead), so two ids that differ only
 /// above bit 52 would collide — the corruption this module exists to warn about. Reject

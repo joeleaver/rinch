@@ -65,11 +65,20 @@ impl CollabDoc {
     /// untouched — transient) from an *apply* failure (the update may be partially
     /// integrated — yrs commits on drop and has no rollback), because only the latter
     /// can leave the document unprojectable (issue #196).
+    ///
+    /// Merging foreign bytes is the only thing that can leave a void container at the
+    /// top level (or fill one), so it is where `top_void` is recomputed: one pass over
+    /// the top-level shapes, beside an integrate that rebuilds the whole document anyway.
+    /// It is recomputed on a failed apply too — yrs may have integrated part of it.
     pub(crate) fn apply_decoded(&mut self, update: Update) -> Result<()> {
-        let mut txn = self
-            .doc
-            .transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
-        txn.apply_update(update)?;
+        let applied = {
+            let mut txn = self
+                .doc
+                .transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
+            txn.apply_update(update)
+        };
+        self.top_void = crate::projection::holds_void(&self.doc.transact(), &self.content);
+        applied?;
         Ok(())
     }
 
