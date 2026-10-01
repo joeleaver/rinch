@@ -204,3 +204,38 @@ fn every_row_under_a_short_one_keeps_its_cells() {
         "A ends with the last row: {r:?}"
     );
 }
+
+/// #1209, a table past 9999 rows: its columns still fit Stylo's grid lines,
+/// so its cells keep their column lines, and a cell locked to its column is
+/// placed below the cell before it in that column. `[[A rowspan=2, X],
+/// [B, C], …]` then 9998 rows of three cells: B and C in row 1, under X, where
+/// auto-placement by spans put B beside X.
+///
+/// Ignored: laying out 10000 rows takes about two minutes in a debug build.
+/// The written lines are pinned by `rinch-editor-view`'s
+/// `a_grid_past_the_line_cap_falls_back_to_spans`; this is their layout.
+#[test]
+#[ignore = "10000-row layout, ~2 min in debug"]
+fn a_tall_table_keeps_its_column_lines() {
+    let mut rows = vec![vec![(1, 2), (1, 1)], vec![(1, 1), (1, 1)]];
+    rows.extend(std::iter::repeat_n(vec![(1, 1); 3], 9_998));
+    let (app, cells, _) = mounted(&rows);
+    let r: Vec<_> = cells[..4].iter().map(|&c| rect(&app, c)).collect();
+    let [_, x, b, c] = [r[0], r[1], r[2], r[3]];
+    assert!(b.1 > x.1 + 1.0, "B is in row 1, below X: {r:?}");
+    assert!((b.1 - c.1).abs() < 0.5 && (b.0 - x.0).abs() < 0.5, "{r:?}");
+}
+
+/// #1209: a wide row of wide cells — four of `colspan = 20000` in a
+/// 80000-column table — lays out without a panic. Locked to their row with
+/// auto-placed columns, the four (each span clamped to 10000 tracks) took
+/// 40000 column lines, past the `i16` Taffy numbers them with; a table past
+/// 9999 columns is therefore auto-placed in both axes.
+#[test]
+fn a_wide_row_of_wide_cells_does_not_panic() {
+    let w = (20_000, 1);
+    let (app, cells, _) = mounted(&[vec![w, w, w, w]]);
+    assert_eq!(cells.len(), 4, "control: four cells mounted");
+    let r: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
+    assert!(r.iter().all(|c| c.2 > 0.0), "{r:?}");
+}
