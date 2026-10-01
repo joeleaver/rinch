@@ -84,7 +84,9 @@ fn read_image_uri(uri: &str) -> Result<Vec<u8>, String> {
         })?;
 
         if result.is_null() {
-            return Err("readImageUri returned null".into());
+            // A failure to open or read throws, and `jni_try` names it (#1215);
+            // null is only no stream, or one the platform could not decode.
+            return Err("readImageUri: no stream, or not a decodable image".into());
         }
 
         let jbyte_array: jni::objects::JByteArray = result.into();
