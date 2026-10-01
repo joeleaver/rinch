@@ -965,10 +965,14 @@ fn random_tiled(rng: &mut Rng) -> Vec<Vec<(i64, i64)>> {
 #[test]
 fn every_command_makes_the_edit_the_per_row_commands_made() {
     let s = Schema::starter_kit();
-    let mut rng = Rng(0x1200_1214_5eed_0001);
+    // `TABLE_DIFF_SEED` / `TABLE_DIFF_CASES` run it wider (the review of
+    // #1224 ran three more seeds at 20,000 cases each).
+    let env = |name: &str| std::env::var(name).ok().and_then(|v| v.parse().ok());
+    let mut rng = Rng(env("TABLE_DIFF_SEED").unwrap_or(0x1200_1214_5eed_0001));
+    let cases = env("TABLE_DIFF_CASES").unwrap_or(800) as usize;
     const SPANS: &[i64] = &[1, 1, 1, 1, 2, 3, 0, -1, 40];
     let (mut compared, mut one_step_of_many, mut per_row) = (0, 0, 0);
-    for case in 0..800 {
+    for case in 0..cases {
         let rows = if case % 2 == 0 {
             random_tiled(&mut rng)
         } else {
@@ -1029,3 +1033,4 @@ fn every_command_makes_the_edit_the_per_row_commands_made() {
     // The positive control: most cases applied, on both sides.
     assert!(compared > 4000, "only {compared} compared");
 }
+
