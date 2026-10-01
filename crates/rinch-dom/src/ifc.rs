@@ -855,13 +855,15 @@ fn hang_pass(
 /// Break again a line parley ended by hanging a no-break space (#1218), and
 /// return the reason and advance of the line that replaces it.
 ///
-/// U+00A0 is UAX #14 class GL: there is no break opportunity on either side
-/// of it. parley 0.11.1's breaker hangs an overflowing one like a space
+/// U+00A0 is UAX #14 class GL: no break after it, and none before it but
+/// after a space, tab or hyphen (LB12, LB12a). parley 0.11.1's breaker hangs an overflowing one like a space
 /// (`is_space_or_nbsp` in its hang branch) and commits the line right after
 /// it. The line, from `line_start` to `units[end]`, ends in a run of NBSPs
 /// that starts `run_x` along it; CSS puts the break where parley would have
 /// without that branch:
 ///
+/// - **Right after an inline box** the run follows: Chrome 153 breaks between
+///   an atomic inline and an NBSP, where UAX #14 alone would glue them.
 /// - **At the last opportunity before the run.** Broken with room for all
 ///   but the unit before the run, that unit overflows and parley takes the
 ///   opportunity it last passed — the same one, since an NBSP offers none.
@@ -947,16 +949,13 @@ fn unglue(
             BreakReason::Emergency if a.1 <= line_max => {
                 return before_run(breaker, BreakReason::Emergency);
             }
-            // An inline box too wide for any line, placed alone at its start:
-            // the opportunity after it is the last one before the run.
-            BreakReason::Emergency => {
-                breaker.set_prior_line_width(max);
-                return Some(a);
-            }
+            // A regular break, or a box too wide for any line placed alone at
+            // the line's start: the last opportunity before the run.
             _ if !ends_in_hung_nbsp(a, line_max) => {
                 breaker.set_prior_line_width(max);
                 return Some(a);
             }
+            // Hung again: there is none.
             _ => {}
         }
     }
