@@ -22,7 +22,8 @@
 //! applied as if one by one from the last to the first, so no edit moves
 //! another's positions; several inserts at one position land in the order
 //! given. An attribute change names the node that starts at its position in the
-//! original document; an insert at that position goes before the node, and a
+//! original document (of two changes of one attribute of one node, the last
+//! given wins); an insert at that position goes before the node, and a
 //! replace may not cover it. Unlike a sequence of steps, the content of each
 //! rebuilt node is checked once, on the result: an intermediate state a
 //! sequence would have passed through is never built.
@@ -548,9 +549,10 @@ impl Step for BatchStep {
     /// them) cannot be two ranges of one step unless they merge, so a pair
     /// with closed slices becomes one replace of both ranges by both slices
     /// — the document the two make one after the other — and of a pair
-    /// with an open slice the later one is dropped. An attribute change on a
-    /// node a kept replace now covers is dropped: as a step of its own, it
-    /// would have changed a node that replace then removes.
+    /// with an open slice the later one is dropped (separate steps would
+    /// apply both). An attribute change on a node a kept replace now covers
+    /// is dropped: as a step of its own, it would have changed a node that
+    /// replace then removes.
     fn map(&self, mapping: &Mapping) -> Option<Box<dyn Step>> {
         let mut reps: Vec<Rep> = Vec::with_capacity(self.reps.len());
         for rep in &self.reps {
@@ -592,7 +594,11 @@ impl Step for BatchStep {
                 continue;
             }
             // `BatchStep::new`'s rule: the last range starting at or before
-            // the node is the only one that can cover it.
+            // the node is the only one that can cover it. Defensive: a
+            // mapping keeps an attribute change at or after the end of a
+            // replace before it, and a fold only reaches over what the
+            // mapping deleted, which drops the change first — but a node
+            // found inside a range would make `new` refuse the whole step.
             let k = ranges.partition_point(|&(f, _)| f <= pos.pos);
             if k > 0 && pos.pos < ranges[k - 1].1 {
                 continue;

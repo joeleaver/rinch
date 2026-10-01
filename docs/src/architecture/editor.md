@@ -107,9 +107,11 @@ thing rather than several*:
   composable. Collaboration adds **no** new step kinds — that is the test of
   whether the set is actually primitive. `BatchStep` (#1200) is the one addition,
   and it adds no expressiveness: it is a list of disjoint replaces and attribute
-  changes that applies, maps and inverts exactly as those `ReplaceStep`s and
-  `SetNodeAttrStep`s would one at a time, as one step, so a table command touching
-  every row is linear rather than quadratic.
+  changes that builds the document those `ReplaceStep`s and `SetNodeAttrStep`s
+  would one at a time, maps positions as they would, and inverts — as one step, so
+  a table command touching every row is linear rather than quadratic. Where it
+  differs (content checked on the result only; a rebase that brings two replaces
+  together) is in `docs/src/guide/editor.md`.
 - **Persistent tree, so identity is cheap.** `Node` is `Rc`-shared and every edit
   produces a new tree sharing unchanged subtrees. `Node::same_ref` (an `Rc::ptr_eq`)
   therefore answers "did this subtree change?" in constant time — which is what makes
