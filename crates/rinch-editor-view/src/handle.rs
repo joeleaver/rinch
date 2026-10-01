@@ -911,7 +911,8 @@ impl EditorHandle {
     /// Build a handle and project it into `container` in one step (the eager path,
     /// used by tests and by [`Self::mount`]). `doc_ref` is a weak handle to the
     /// host document the view patches. Does **not** register the editor with the
-    /// runtime — that is [`Self::mount`]'s job.
+    /// runtime — that is [`Self::mount`]'s job. `doc` is loaded as
+    /// [`Self::load_doc`] loads one (a `colspan` past 1000 is capped, #1214).
     pub fn new(
         container: NodeHandle,
         doc_ref: Weak<RefCell<dyn DomDocument>>,
@@ -919,6 +920,8 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
+        // A load: colspans past 1000 are capped (#1214).
+        let doc = rinch_editor_core::tables::cap_colspans(&doc);
         // Plugins' `init_state` and `decorations` run here; untracked, as under
         // the core (#943).
         let (state, view) = untracked_handler(|| {
@@ -2159,6 +2162,12 @@ impl EditorHandle {
     /// single empty paragraph, so the editor is never left with no textblock to
     /// render or place a caret in.
     ///
+    /// A table cell's `colspan` past 1000 is capped at 1000, as the HTML import
+    /// and Chrome read it (#1214, `rinch_editor_core::tables::cap_colspans`):
+    /// one such cell made every row as wide as it, and a row insert built a
+    /// cell per column. The same cap applies to the document [`Self::new`] is
+    /// given. Edits (commands, [`Self::update`]) are not capped.
+    ///
     /// A [read-only](Self::set_read_only) editor still loads — that is how it gets
     /// a document to show — **except while collaborating**, where a load is a
     /// write to the shared document and is refused like any other (see
@@ -2174,7 +2183,9 @@ impl EditorHandle {
         let doc = if doc.child_count() == 0 {
             empty_paragraph_doc(&core.schema).unwrap_or(doc)
         } else {
-            doc
+            // A table cell's `colspan` past 1000 is capped, as the HTML import
+            // reads it (#1214, `tables::cap_colspans`).
+            rinch_editor_core::tables::cap_colspans(&doc)
         };
         let prev = core.state.clone();
         let next = EditorState::create(core.schema.clone(), doc, core.plugins.clone());

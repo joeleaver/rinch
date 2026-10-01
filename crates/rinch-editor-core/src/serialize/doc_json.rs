@@ -163,9 +163,12 @@ impl Node {
 impl Schema {
     /// Deserialize a [`DocNode`] into a model [`Node`], validated against this
     /// schema. Unknown node/mark types and missing required attributes are hard
-    /// errors — the structural fix for #59.
+    /// errors — the structural fix for #59. A table cell's `colspan` past
+    /// [`MAX_COLSPAN`](crate::tables::MAX_COLSPAN) loads capped at it, as the
+    /// HTML import reads it (#1214, [`cap_colspans`](crate::tables::cap_colspans)),
+    /// so this is not a lossless inverse of `to_doc` for such a cell.
     pub fn node_from_doc(&self, doc: &DocNode) -> Result<Node, EditorError> {
-        node_from_doc_node(self, doc)
+        node_from_doc_node(self, doc).map(|node| crate::tables::cap_colspans(&node))
     }
 }
 

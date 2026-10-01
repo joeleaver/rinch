@@ -27,8 +27,7 @@ fn cell(s: &Schema, c: i64, r: i64) -> Node {
     .unwrap()
 }
 
-/// A table of `rows`, inside a list item so the cap is shown to reach a
-/// nested table, then a paragraph.
+/// A table of `rows`, then a paragraph.
 fn doc(s: &Schema, rows: &[Vec<(i64, i64)>]) -> Node {
     let rows = rows
         .iter()
@@ -84,7 +83,7 @@ fn cells(doc: &Node) -> usize {
 
 /// The issue's pin: the wide cell arrives through `new` and through
 /// `load_doc` capped at 1000, so `addRowAfter` adds 1000 cells and
-/// `splitCell` makes 1000 (not ~2^21). Spans at or under the cap, and every
+/// `splitCell` makes 999 more (not ~2^21). Spans at or under the cap, and every
 /// `rowspan`, are left alone.
 #[test]
 fn a_colspan_past_1000_is_capped_where_a_document_is_loaded() {
@@ -104,7 +103,7 @@ fn a_colspan_past_1000_is_capped_where_a_document_is_loaded() {
     let h = mount(fine.clone());
     assert!(h.doc().same_ref(&fine), "nothing to cap, nothing rebuilt");
 
-    for (cmd, added) in [("addRowAfter", 1007), ("splitCell", 999)] {
+    for (cmd, added) in [("addRowAfter", 1000), ("splitCell", 999)] {
         let h = mount(wide.clone());
         h.set_selection(Selection::cursor(Pos(4)));
         let before = cells(&h.doc());
