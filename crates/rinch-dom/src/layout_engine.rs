@@ -655,6 +655,8 @@ impl RinchDocument {
                             }
 
                             shape_text.set(shape_text.get() + 1);
+                            let font_family =
+                                crate::fonts::parley_font_family(font_cx, &text.font_family);
                             let mut builder =
                                 layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
                             builder.push_default(parley::style::StyleProperty::FontSize(
@@ -670,13 +672,8 @@ impl RinchDocument {
                             {
                                 builder.push_default(parley::style::StyleProperty::LineHeight(lh));
                             }
-                            let font_stack = if !text.font_family.is_empty() {
-                                std::borrow::Cow::Owned(text.font_family.clone())
-                            } else {
-                                std::borrow::Cow::Borrowed("sans-serif")
-                            };
                             builder.push_default(parley::style::StyleProperty::FontFamily(
-                                parley::style::FontFamily::Source(font_stack),
+                                font_family,
                             ));
                             // Add brush so the cached layout can be rendered with color
                             builder.push_default(parley::style::StyleProperty::Brush(

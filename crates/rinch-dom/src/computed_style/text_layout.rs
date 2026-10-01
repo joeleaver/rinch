@@ -23,25 +23,19 @@ impl ComputedStyle {
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
         max_width: Option<f32>,
     ) -> parley::layout::Layout<peniko::Brush> {
-        use parley::style::{FontFamily, FontWeight as ParleyFontWeight, StyleProperty};
-        use std::borrow::Cow;
+        use parley::style::{FontWeight as ParleyFontWeight, StyleProperty};
 
         let scaled_font_size = self.font_size * scale;
 
+        let font_family = crate::fonts::parley_font_family(font_cx, &self.font_family);
         let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
 
         // Set font size (scaled for DPI)
         builder.push_default(StyleProperty::FontSize(scaled_font_size));
 
-        // Set font family (default to sans-serif if empty)
-        let font_family = if self.font_family.is_empty() {
-            "sans-serif"
-        } else {
-            &self.font_family
-        };
-        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(
-            font_family.to_string(),
-        ))));
+        // Font family: empty is sans-serif, a stack that resolves to nothing
+        // is finished with the primary sans-serif face (#1198).
+        builder.push_default(StyleProperty::FontFamily(font_family));
 
         // Set font weight if not normal (400)
         if (self.font_weight - 400.0).abs() > 1.0 {
