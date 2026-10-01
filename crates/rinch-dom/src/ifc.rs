@@ -5346,12 +5346,14 @@ impl RinchDocument {
         root_text_style.letter_spacing = root_computed.letter_spacing;
         root_text_style.word_spacing = root_computed.word_spacing;
 
-        // The root's own `nowrap`/`pre` forbids a soft wrap in its own text
-        // (and at any boundary whose common ancestor is the root), while a
-        // descendant that allows wrapping still wraps (#1212). Parley decides
-        // a break opportunity from the wrap mode of the cluster before it, so
-        // `pre` root text followed by a `normal` span does not break at their
-        // seam — Chrome 153's answer.
+        // The root's own `nowrap`/`pre` forbids a soft wrap in its own text,
+        // while a descendant that allows wrapping still wraps (#1212). Parley
+        // takes a break opportunity's wrap mode from the cluster *before* it.
+        // That agrees with Chrome 153 at `pre` root text followed by a
+        // `normal` span (no break at the seam) and between two `normal` spans
+        // (a break, though their common ancestor is the root), and differs
+        // after a `normal` span followed by the root's preserved spaces,
+        // where Chrome breaks before the spaces and rinch does not.
         root_text_style.text_wrap_mode = Self::text_wrap_mode(root_computed);
 
         let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);

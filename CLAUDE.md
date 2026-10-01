@@ -2559,7 +2559,10 @@ input a shaped layout is built from:
   `pre` root wraps, and only an IFC with no wrapping text at all is broken
   unconstrained. Parley takes a break's wrap mode from the cluster before it,
   so `pre` text then a `normal` span has no break at their seam, as in
-  Chrome 153. The "…" is drawn by rebuilding the paragraph as flat
+  Chrome 153. A `pre` element's preserved spaces do not hang: at a soft wrap
+  they are not widened past the line, and a line ending in them is aligned
+  with them as content (`ifc::align_unhung_trailing` narrows its alignment
+  width), so an overflowing right-aligned line starts at 0 as in Chrome. The "…" is drawn by rebuilding the paragraph as flat
   text in the root's style, which would strip every line of it, so the
   per-line cut is taken only where that draws the same glyphs
   (`ellipsis_rebuild_is_faithful`: no inline box, no background or

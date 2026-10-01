@@ -1,18 +1,22 @@
 //! A `white-space: nowrap` / `pre` IFC root still wraps the text of a
 //! descendant whose own `white-space` allows wrapping (#1212).
 //!
-//! CSS Text 3 §5 decides soft wrap opportunities per character: at a boundary
-//! the nearest common ancestor's `text-wrap-mode` applies. rinch broke a
+//! CSS Text 3 §5 decides soft wrap opportunities per character. rinch broke a
 //! `nowrap`/`pre` root's whole paragraph unconstrained, so a `normal`,
 //! `pre-wrap` or `pre-line` span inside one never wrapped. The root's own wrap
 //! mode is now the root text style's `TextWrapMode`, and the paragraph is
-//! broken at the container's width whenever some text in it may wrap.
+//! broken at the container's width whenever some text in it may wrap. Parley
+//! takes each break opportunity's wrap mode from the character before it,
+//! which is Chrome's answer at every seam pinned here (it is not Chrome's
+//! after a `normal` span followed by the root's preserved spaces, where
+//! Chrome breaks before the spaces).
 //!
 //! Every expectation is Chrome 153's on the same markup (bundled Inter as
 //! `ProbeFace`, 16px/25px, a `width: 50px` block), read line by line. Note the
 //! first line, `aaa bbb`: there is no break between the root's space and
-//! `bbb`, because their common ancestor is the non-wrapping root — so that line
-//! overflows the 50px box (it is 60.84px), exactly as in Chrome.
+//! `bbb`, because the space before the opportunity is the non-wrapping
+//! root's — so that line overflows the 50px box (it is 60.84px), exactly as
+//! in Chrome.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
