@@ -288,4 +288,6 @@ fn the_theme_monospace_stack_keeps_ui_monospace_generic() {
 #[test]
 fn a_family_name_with_both_quote_kinds_does_not_hide_the_family_after_it() {
     assert_all("Foo1223", "\"a\\\"b'c\", Foo1223", |f| f.named);
+    // Quote-led: written raw, it would open a string that swallows `Foo1223`.
+    assert_all("Foo1223", "\"\\\"b'c\", Foo1223", |f| f.named);
 }
