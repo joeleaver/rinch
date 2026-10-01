@@ -1258,3 +1258,16 @@ fn equal_paragraphs_two_levels_down_keep_a_peers_typing() {
         assert!(html(q.child(1)).contains("keep"), "{}", html(&doc));
     }
 }
+
+/// The top-level twin: the document's own blocks match by identity too.
+#[test]
+fn deleting_one_of_several_equal_top_level_paragraphs_keeps_a_peers_typing() {
+    for doc in concurrently(
+        |s| vec![para(s, ""), para(s, ""), para(s, ""), para(s, "tail")],
+        |a| a.delete(0, 2),
+        |b| b.type_at(5, "keep"),
+    ) {
+        assert_eq!(doc.child_count(), 3, "{}", html(&doc));
+        assert!(html(doc.child(1)).contains("keep"), "{}", html(&doc));
+    }
+}

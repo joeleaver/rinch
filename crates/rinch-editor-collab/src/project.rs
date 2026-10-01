@@ -42,9 +42,10 @@ use rinch_editor_core::{Node, Transaction};
 
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    CollabDoc, RawIndex, common_runs, insert_node, read_node, read_node_data, visible_indices,
-    write_child_diff,
+    CollabDoc, RawIndex, child_map, common_runs, insert_node, read_node, read_node_data,
+    visible_indices, write_child_diff,
 };
+use crate::table::{deleting, is_placeholder, map_is_over_budget};
 
 impl CollabDoc {
     /// Project a freshly-applied local transaction onto the CRDT. A no-op for a
@@ -151,9 +152,14 @@ impl CollabDoc {
         for k in 0..post_mid {
             targets.push(read_node(after.child(prefix + k))?);
         }
-        for idx in prefix + common..prefix + pre_mid {
-            // Validate (and discard) each block being deleted — fail loud if out of scope.
-            read_node(before.child(idx))?;
+        {
+            // A placeholder (a table too large to read) may be deleted: that is the one
+            // change the projection makes to it.
+            let _deleting = deleting();
+            for idx in prefix + common..prefix + pre_mid {
+                // Validate (and discard) each block being deleted — fail loud if out of scope.
+                read_node(before.child(idx))?;
+            }
         }
         // The non-inclusive marks the reconciled blocks carry, on either side: their
         // formatting is resynced per char, not per span (see `resync_marks`).
@@ -179,6 +185,24 @@ impl CollabDoc {
                     CollabError::schema("model/CRDT out of step: a changed block is missing")
                 })?;
                 read_node_data(&txn, &self.content, at)?;
+            }
+            // And the deleted tail: a table too large to read may leave the CRDT only
+            // where the model deletes its placeholder. Any other pairing that would
+            // remove it is a diff against a `before` that does not describe the CRDT,
+            // and is refused before it writes.
+            for idx in prefix + common..prefix + pre_mid {
+                let at = raw.get(idx).ok_or_else(|| {
+                    CollabError::schema("model/CRDT out of step: a deleted block is missing")
+                })?;
+                if let Some(map) = child_map(&txn, &self.content, at)
+                    && map_is_over_budget(&txn, &map)?
+                    && !is_placeholder(before.child(idx))
+                {
+                    return Err(CollabError::unsupported(
+                        "a change would delete a table too large to read that the model \
+                         does not hold where the shared document does",
+                    ));
+                }
             }
         }
 

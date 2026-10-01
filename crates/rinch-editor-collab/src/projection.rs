@@ -661,6 +661,9 @@ impl CollabDoc {
                     )));
                 }
             }
+            // The model's read: a table too large to read joins as its placeholder,
+            // as `to_doc` builds it, so a guest can join and delete it.
+            let _placeholders = placeholder_reads();
             for child in content.iter(&txn) {
                 read_out_data(&txn, child)?;
             }

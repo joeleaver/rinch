@@ -1130,9 +1130,11 @@ the first of three empty rows while someone types in the last keeps their typing
 A table read from someone else that would be absurdly large for what the shared
 document actually holds (rows and columns cost a few bytes each to send, the empty
 cells between them nothing) is not built: it
-shows up as a single empty cell instead. Editing inside that cell is refused (the
-session reports it as not syncing, as for any edit it cannot share) until someone
-deletes the table, which any of the editors can do. One person's edits never make such
+shows up as a single empty cell instead. Editing, moving or copying that cell is
+refused (the session reports it as not syncing, as for any edit it cannot share) until
+someone deletes the table, which any of the editors can do. A table you make yourself
+whose merged cells span far more rows and columns than it has cells (thousands of them)
+is refused the same way before it is shared. One person's edits never make such
 a table; two people adding hundreds of rows and hundreds of columns at the same moment
 could.
 
@@ -1244,10 +1246,11 @@ What it survives and what it does not:
   joined text as a new insert, not a move. Likewise, splitting a block (Enter) before
   the position moves the tail into a new block, and an index on the tail then resolves
   to the split point.
-- **An edit next to its paragraph, at the top level of the document.** The projection
-  finds the top-level blocks an edit left alone by node *identity*, and a split or a
-  join rebuilds both nodes it touches, so the paragraph beside it is rewritten even
-  though its text did not change (tracked in #917). In practice:
+- **An edit next to its paragraph**, at the top level or inside a list, a quote or a
+  table cell. The projection finds the blocks an edit left alone by node *identity*,
+  and a split or a join rebuilds both nodes it touches, so the paragraph beside it is
+  rewritten even though its text did not change (tracked in #917). In practice, when
+  the paragraph has a sibling at its level:
   - **Enter at the start of a paragraph** (inserting an empty paragraph above it):
     every index into that paragraph now resolves into the **new empty paragraph**.
     That is a wrong position, not `None`.
@@ -1256,8 +1259,9 @@ What it survives and what it does not:
   - **Toggling a bullet list on a paragraph** replaces the block with one of another
     kind: `None`.
 
-  Blocks inside a list fare better: that level of the diff compares nodes
-  structurally, so Enter at the start of a paragraph in a list item keeps its indexes.
+  A paragraph that is alone at its level (the document's only block, a list item's
+  only paragraph) fares better: an edit there keeps nothing of the level, which is
+  then compared by content, so Enter at its start keeps its indexes.
 
 `collab_sticky_index` answers `None` when not collaborating, for a position that is
 not inside a textblock (between two blocks), for the empty starter paragraph of a

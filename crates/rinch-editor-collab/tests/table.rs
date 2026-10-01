@@ -1372,7 +1372,10 @@ fn an_over_budget_table_is_refused_for_edits_and_can_be_deleted() {
         .session
         .record_local(&s, &b.state.doc, &typed.doc)
         .expect_err("an edit inside an over-budget table cannot be written");
-    assert!(err.to_string().contains("budget"), "{err}");
+    assert!(
+        matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
+        "{err}"
+    );
     assert!(!b.session.is_poisoned());
     assert!(b.session.outbound_stall().is_some());
     assert_eq!(b.session.snapshot(), snapshot, "nothing reached the CRDT");
@@ -1998,4 +2001,475 @@ fn rv2_a_fresh_document_load_deletes_the_paragraph_that_was_dropped_in_a_quote()
             .collect();
         assert_eq!(texts, ["p1", "p2", "p3X"], "ids {ids:?}");
     }
+}
+
+// --- review round 3 (rv3_*): the placeholder written over the real table -------------
+
+/// [`grown_table_update`], for the table at top-level index `idx`.
+fn rv3_grown_at(b: &Peer, idx: u32, n: usize) -> Vec<u8> {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+    let doc = yrs::Doc::with_client_id(999);
+    {
+        let mut txn = doc.transact_mut();
+        txn.apply_update(Update::decode_v1(&b.session.snapshot()).unwrap())
+            .unwrap();
+    }
+    let sv = doc.transact().state_vector();
+    {
+        let content: ArrayRef = doc.get_or_insert_array("content");
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(table)) = content.get(&txn, idx) else {
+            panic!("no table")
+        };
+        let Some(Out::YArray(cols)) = table.get(&txn, "cols") else {
+            panic!("no cols")
+        };
+        let Some(Out::YArray(rows)) = table.get(&txn, "rows") else {
+            panic!("no rows")
+        };
+        for i in 0..n {
+            let m = cols.push_back(&mut txn, MapPrelim::default());
+            m.insert(&mut txn, "id", Any::String(format!("c{i}").into()));
+            let r = rows.push_back(&mut txn, MapPrelim::default());
+            r.insert(&mut txn, "id", Any::String(format!("r{i}").into()));
+        }
+    }
+    doc.transact().encode_state_as_update_v1(&sv)
+}
+
+/// Whether the peer's CRDT still holds the over-budget table: a strict read
+/// (`projected_doc`... is the model read, so ask the snapshot's size instead: the real
+/// table carries 2000 row and column lines).
+fn rv3_real_table_alive(p: &Peer) -> bool {
+    p.session.snapshot().len() > 20_000
+}
+
+/// Stalled by an edit inside the placeholder, then the paragraph above it deleted:
+/// the re-base diffs the CRDT's read (placeholder) against the model by value, pairs
+/// positionally, writes the model's 1-cell table over the paragraph and deletes the
+/// real table — for every peer.
+#[test]
+fn rv3_typing_in_the_placeholder_then_deleting_the_line_above_keeps_the_real_table() {
+    let s = schema();
+    let blocks = vec![para(&s, "above"), grid(&s, 1, 1), para(&s, "tail")];
+    let (mut a, mut b) = pair(&s, blocks, (1, 2));
+    let update = rv3_grown_at(&b, 1, 2000);
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    assert!(rv3_real_table_alive(&b));
+
+    // Type in the placeholder: refused, stalled.
+    let at = cell_pos(&b.state.doc, 0, 0) + 2;
+    let mut tr = b.state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("x").unwrap();
+    let typed = b.state.apply(tr);
+    assert!(
+        b.session
+            .record_local(&s, &b.state.doc, &typed.doc)
+            .is_err()
+    );
+    b.state = typed;
+
+    // Delete the paragraph above.
+    let size = b.state.doc.child(0).node_size();
+    let mut tr = b.state.tr();
+    tr.delete(0, size).unwrap();
+    let gone = b.state.apply(tr);
+    let res = b.session.record_local(&s, &b.state.doc, &gone.doc);
+    eprintln!("record_local after deleting the line above: {res:?}");
+    b.state = gone;
+    let delta = b.send();
+    if let Some(n) = a.session.integrate_incremental(&a.state, &delta).unwrap() {
+        a.state = n;
+    }
+    eprintln!(
+        "snapshot bytes b={} a={}; a's table: {:?} {}",
+        b.session.snapshot().len(),
+        a.session.snapshot().len(),
+        table_dims(&a.state.doc),
+        grid_text(&a.state.doc)
+    );
+    assert!(
+        rv3_real_table_alive(&b) && rv3_real_table_alive(&a),
+        "the real 2000x2000 table was replaced by the placeholder (res {res:?})"
+    );
+}
+
+/// The same, unstalled: one transaction deletes the two paragraphs above the
+/// placeholder and edits the one after (an app's `update`, a grouped undo). Identity
+/// runs are (0, 0), so the mid pairs positionally.
+#[test]
+fn rv3_one_transaction_moving_the_placeholder_up_keeps_the_real_table() {
+    let s = schema();
+    let blocks = vec![
+        para(&s, "p1"),
+        para(&s, "p2"),
+        grid(&s, 1, 1),
+        para(&s, "tail"),
+    ];
+    let (mut a, mut b) = pair(&s, blocks, (1, 2));
+    let update = rv3_grown_at(&b, 2, 2000);
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    assert!(rv3_real_table_alive(&b));
+
+    let tail = pos_of(&b.state.doc, "tail");
+    let two = b.state.doc.child(0).node_size() + b.state.doc.child(1).node_size();
+    let mut tr = b.state.tr();
+    tr.set_selection(Selection::cursor(Pos(tail)));
+    tr.insert_text("X").unwrap();
+    tr.delete(0, two).unwrap();
+    let next = b.state.apply(tr);
+    let res = b.session.record_local(&s, &b.state.doc, &next.doc);
+    eprintln!("record_local: {res:?}");
+    b.state = next;
+    let delta = b.send();
+    if let Some(n) = a.session.integrate_incremental(&a.state, &delta).unwrap() {
+        a.state = n;
+    }
+    eprintln!(
+        "snapshot bytes b={} a={}; a's table: {:?} {}",
+        b.session.snapshot().len(),
+        a.session.snapshot().len(),
+        table_dims(&a.state.doc),
+        grid_text(&a.state.doc)
+    );
+    assert!(
+        rv3_real_table_alive(&b) && rv3_real_table_alive(&a),
+        "the real table was replaced by the placeholder (res {res:?})"
+    );
+}
+
+/// A sticky anchor in a paragraph AFTER an over-budget table: the session is healthy
+/// now (no poison), so it should resolve. `find_text` walks the table with the strict
+/// `cell_maps(..).ok()?`, which returns `None` for the whole search.
+#[test]
+fn rv3_a_sticky_after_the_placeholder_resolves() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let pos = Pos(pos_of(&b.state.doc, "tail") + 2);
+    let before = b
+        .session
+        .sticky_index(&b.state.doc, pos)
+        .expect("encode before");
+    assert_eq!(b.session.resolve_sticky(&b.state.doc, &before), Some(pos));
+    let update = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    let pos = Pos(pos_of(&b.state.doc, "tail") + 2);
+    assert!(
+        b.session.sticky_index(&b.state.doc, pos).is_some(),
+        "encode after the placeholder"
+    );
+    assert_eq!(
+        b.session.resolve_sticky(&b.state.doc, &before),
+        Some(pos),
+        "resolve after the placeholder"
+    );
+}
+
+/// Enter at the start of a paragraph: where an anchor in it resolves. Reports, does
+/// not assert (the sticky docs say: top level → the new empty paragraph; in a list or
+/// quote → kept).
+#[test]
+fn rv3_enter_at_start_anchor_report() {
+    let s = schema();
+    let cases: Vec<(&str, Vec<Node>)> = vec![
+        ("top, one block", vec![para(&s, "hello")]),
+        (
+            "top, two blocks",
+            vec![para(&s, "first"), para(&s, "hello")],
+        ),
+        (
+            "list item, one para",
+            vec![branch(
+                &s,
+                "bullet_list",
+                vec![branch(&s, "list_item", vec![para(&s, "hello")])],
+            )],
+        ),
+        (
+            "quote, two paras",
+            vec![branch(
+                &s,
+                "blockquote",
+                vec![para(&s, "first"), para(&s, "hello")],
+            )],
+        ),
+    ];
+    for (name, blocks) in cases {
+        let (_a, mut b) = pair(&s, blocks, (1, 2));
+        let start = pos_of(&b.state.doc, "hello");
+        let anchor = b
+            .session
+            .sticky_index(&b.state.doc, Pos(start + 3))
+            .unwrap();
+        b.try_run(Selection::cursor(Pos(start)), "splitBlock")
+            .then_some(())
+            .or_else(|| {
+                b.local(|tr| {
+                    tr.set_selection(Selection::cursor(Pos(start)));
+                    tr.split(start, 1, None).unwrap();
+                });
+                Some(())
+            });
+        let now = pos_of(&b.state.doc, "hello");
+        let got = b.session.resolve_sticky(&b.state.doc, &anchor);
+        eprintln!(
+            "RV3 {name}: hello now at {now}, anchor resolves to {got:?} (kept = {:?})",
+            Some(Pos(now + 3)) == got
+        );
+    }
+}
+
+/// Cost of the new "shares nothing?" scan: bold over every block of an n-paragraph doc
+/// (every top-level block changes, none shared) — reports, does not assert.
+#[test]
+#[ignore]
+fn rv3_select_all_bold_cost() {
+    let s = schema();
+    for n in [2000usize, 8000] {
+        let blocks: Vec<Node> = (0..n).map(|i| para(&s, &format!("para {i}"))).collect();
+        let (_a, b) = pair(&s, blocks, (1, 2));
+        let bold = Mark::simple(s.mark_type("bold").unwrap().clone());
+        let mut tr = b.state.tr();
+        tr.add_mark(0, b.state.doc.content_size(), bold).unwrap();
+        let next = b.state.apply(tr);
+        let mut session = b.session;
+        let t = std::time::Instant::now();
+        session.record_local(&s, &b.state.doc, &next.doc).unwrap();
+        eprintln!("RV3 bold-all n={n}: {:?}", t.elapsed());
+    }
+}
+
+// --- round 3: the placeholder is never written; the line budget (#1248) ---------------
+
+/// `node` rebuilt from scratch: equal by value, sharing no `Rc` — what a load
+/// (`load_doc`/`load_html`) hands the projection.
+fn rebuilt(s: &Schema, node: &Node) -> Node {
+    if let Some(t) = node.text() {
+        return s.text(t).unwrap();
+    }
+    let children: Vec<Node> = (0..node.child_count())
+        .map(|i| rebuilt(s, node.child(i)))
+        .collect();
+    s.create_node(
+        node.type_name(),
+        node.attrs().clone(),
+        Fragment::from_children(children),
+    )
+    .unwrap()
+}
+
+/// [above, table, tail] with the table grown past the budget on both peers.
+fn over_budget_pair(s: &Rc<Schema>) -> (Peer, Peer) {
+    let blocks = vec![para(s, "above"), grid(s, 1, 1), para(s, "tail")];
+    let (mut a, mut b) = pair(s, blocks, (1, 2));
+    let update = rv3_grown_at(&b, 1, 2000);
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    assert!(rv3_real_table_alive(&b));
+    (a, b)
+}
+
+/// Commit `next` on `b`, send it to `a`, and return whether the projection took it.
+fn commit_and_send(a: &mut Peer, b: &mut Peer, next: EditorState) -> bool {
+    let s = b.schema.clone();
+    let ok = b.session.record_local(&s, &b.state.doc, &next.doc).is_ok();
+    b.state = next;
+    let delta = b.send();
+    if let Some(n) = a.session.integrate_incremental(&a.state, &delta).unwrap() {
+        a.state = n;
+    }
+    ok
+}
+
+/// A load while collaborating that keeps the table and drops the paragraph above it:
+/// the load shares no `Rc`, so the diff matches by value, and the placeholder matches
+/// the real table's read. The real table stays, and the paragraph goes.
+#[test]
+fn a_load_that_keeps_the_placeholder_keeps_the_real_table() {
+    let s = schema();
+    let (mut a, mut b) = over_budget_pair(&s);
+    let doc = &b.state.doc;
+    let loaded = rebuilt(
+        &s,
+        &doc_of(&s, vec![doc.child(1).clone(), doc.child(2).clone()]),
+    );
+    let next = EditorState::create(s.clone(), loaded, plugins());
+    assert!(commit_and_send(&mut a, &mut b, next), "the load projects");
+    assert!(rv3_real_table_alive(&b) && rv3_real_table_alive(&a));
+    assert_eq!(a.state.doc, b.state.doc);
+    assert_eq!(a.state.doc.child_count(), 2);
+}
+
+/// A load that moves the placeholder to where another block was cannot be written
+/// without writing the placeholder: refused, stalled, the real table kept.
+#[test]
+fn a_load_that_moves_the_placeholder_is_refused() {
+    let s = schema();
+    let (mut a, mut b) = over_budget_pair(&s);
+    let doc = &b.state.doc;
+    let loaded = rebuilt(
+        &s,
+        &doc_of(
+            &s,
+            vec![doc.child(1).clone(), para(&s, "new"), para(&s, "tail!")],
+        ),
+    );
+    let next = EditorState::create(s.clone(), loaded, plugins());
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    assert!(b.session.outbound_stall().is_some());
+    assert!(rv3_real_table_alive(&b) && rv3_real_table_alive(&a));
+}
+
+/// Select all and type over it (a paste or a replace-all): the user deleted the table,
+/// which projects; every peer loses it, as the user asked.
+#[test]
+fn replacing_everything_deletes_the_over_budget_table() {
+    let s = schema();
+    let (mut a, mut b) = over_budget_pair(&s);
+    let end = b.state.doc.content_size();
+    let mut tr = b.state.tr();
+    tr.replace_with(0, end, Fragment::from_node(para(&s, "pasted")))
+        .unwrap();
+    let next = b.state.apply(tr);
+    assert!(commit_and_send(&mut a, &mut b, next));
+    assert!(!rv3_real_table_alive(&b) && !rv3_real_table_alive(&a));
+    assert_eq!(a.state.doc, b.state.doc);
+    assert!(first_table(&a.state.doc).is_none());
+}
+
+/// Pasting a copy of the placeholder elsewhere would write it: refused.
+#[test]
+fn pasting_a_copy_of_the_placeholder_is_refused() {
+    let s = schema();
+    let (mut a, mut b) = over_budget_pair(&s);
+    let copy = b.state.doc.child(1).clone();
+    let end = b.state.doc.content_size();
+    let mut tr = b.state.tr();
+    tr.replace_with(end, end, Fragment::from_node(copy))
+        .unwrap();
+    let next = b.state.apply(tr);
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    assert!(rv3_real_table_alive(&b) && rv3_real_table_alive(&a));
+}
+
+/// #1248: a table's lines are bounded on write. One cell of `colspan = 3_000_000`
+/// would write three million column lines; hosting it is refused, quickly, and
+/// `colspan = 1000` (Chrome's largest) is not.
+#[test]
+fn hosting_a_table_with_a_huge_colspan_is_refused_quickly() {
+    let s = schema();
+    let huge = branch(
+        &s,
+        "table",
+        vec![branch(
+            &s,
+            "table_row",
+            vec![spanning(&s, "x", 3_000_000, 1)],
+        )],
+    );
+    let state = EditorState::create(
+        s.clone(),
+        doc_of(&s, vec![huge, para(&s, "tail")]),
+        plugins(),
+    );
+    let t = std::time::Instant::now();
+    let err = session_with_client_id(&state, 1).expect_err("three million columns");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        t.elapsed()
+    );
+    assert!(err.to_string().contains("rows and columns"), "{err}");
+    let wide = branch(
+        &s,
+        "table",
+        vec![branch(&s, "table_row", vec![spanning(&s, "x", 1000, 1)])],
+    );
+    let state = EditorState::create(
+        s.clone(),
+        doc_of(&s, vec![wide, para(&s, "tail")]),
+        plugins(),
+    );
+    assert!(session_with_client_id(&state, 1).is_ok());
+}
+
+/// #1248, an app's own transaction while collaborating: refused, stalled.
+#[test]
+fn an_app_transaction_adding_a_huge_colspan_is_refused() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let huge = branch(
+        &s,
+        "table",
+        vec![branch(&s, "table_row", vec![spanning(&s, "x", 5000, 1)])],
+    );
+    let end = b.state.doc.content_size();
+    let mut tr = b.state.tr();
+    tr.replace_with(end, end, Fragment::from_node(huge))
+        .unwrap();
+    let next = b.state.apply(tr);
+    assert!(!commit_and_send(&mut a, &mut b, next));
+    assert!(b.session.outbound_stall().is_some());
+}
+
+/// #1248, the read side and a guest join: a CRDT whose table has more lines than its
+/// cells allow — here one cell stretched over 4200 appended columns, 4202 lines and
+/// only 4201 slots, so no other budget applies — reads as the placeholder, for a peer
+/// and for a guest joining from it.
+#[test]
+fn a_guest_joining_past_the_line_budget_sees_the_placeholder() {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+    let s = schema();
+    let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let doc = yrs::Doc::with_client_id(999);
+    {
+        let mut txn = doc.transact_mut();
+        txn.apply_update(Update::decode_v1(&b.session.snapshot()).unwrap())
+            .unwrap();
+    }
+    let sv = doc.transact().state_vector();
+    {
+        let content: ArrayRef = doc.get_or_insert_array("content");
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(table)) = content.get(&txn, 0) else {
+            panic!("no table")
+        };
+        let Some(Out::YArray(cols)) = table.get(&txn, "cols") else {
+            panic!("no cols")
+        };
+        let Some(Out::YArray(rows)) = table.get(&txn, "rows") else {
+            panic!("no rows")
+        };
+        for i in 0..4200 {
+            let m = cols.push_back(&mut txn, MapPrelim::default());
+            m.insert(&mut txn, "id", Any::String(format!("c{i}").into()));
+        }
+        let Some(Out::YMap(row0)) = rows.get(&txn, 0) else {
+            panic!("no row 0")
+        };
+        let Some(Out::YMap(cells)) = row0.get(&txn, "cells") else {
+            panic!("no cells")
+        };
+        let first = cells.keys(&txn).next().unwrap().to_string();
+        let Some(Out::YMap(cell)) = cells.get(&txn, &first) else {
+            panic!("no cell")
+        };
+        cell.insert(&mut txn, "col_end", Any::String("c4199".into()));
+    }
+    let update = doc.transact().encode_state_as_update_v1(&sv);
+    integrate_healthy(&mut b, &update);
+    let placeholder = |p: &Peer| {
+        let (t, _) = first_table(&p.state.doc).unwrap();
+        t.attrs().get("rinch-collab-unreadable-table").is_some()
+    };
+    assert!(placeholder(&b), "{:?}", table_dims(&b.state.doc));
+    let guest = b.join(3);
+    assert!(placeholder(&guest));
+    assert!(!guest.session.is_poisoned());
 }

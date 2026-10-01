@@ -51,11 +51,15 @@
 //!   [`crate::project`]). A sticky index on the moved characters then points into a
 //!   deleted `Text` (joined) or at a tombstone at the split point (split, which
 //!   resolves to the end of the first half).
-//! * **An edit next to its block, at the top level of the document**, can end it or
-//!   move it even though the block's own text did not change. The projection finds
-//!   the unchanged top-level blocks by node *identity*, and a split or a join rebuilds
-//!   both nodes it touches, so the untouched paragraph is rewritten through its
-//!   neighbour's `Text` (tracked in #917). Concretely:
+//! * **An edit next to its block** can end it or move it even though the block's own
+//!   text did not change, at the top level and inside a list, a quote or a cell alike.
+//!   The projection finds the unchanged blocks of a level by node *identity* (#1240),
+//!   and a split or a join rebuilds both nodes it touches, so the untouched paragraph
+//!   is rewritten through its neighbour's `Text` (tracked in #917). The exception is a
+//!   level the edit kept **nothing** of — the block was its level's only child, so
+//!   both of its new nodes are new: such a level is matched by value, and an Enter at
+//!   the start of that block keeps its indexes. Concretely, where the level keeps a
+//!   sibling:
 //!   - **Enter at the start of a paragraph** (a new empty paragraph above it): every
 //!     index into that paragraph resolves into the **new empty paragraph**, a wrong
 //!     position and not `None`.
@@ -64,9 +68,7 @@
 //!   - **Toggling a bullet list on a paragraph, or wrapping it in a quote** (the
 //!     node's kind changes, so the block is replaced whole): `None`. Lifting it out of
 //!     a quote or a list is the same replace.
-//!
-//!   Inside a list or a quote the child diff compares structurally, so the same Enter
-//!   at the start of a paragraph in a list item or a quote keeps its indexes.
+
 //!
 //! ## Why the model document is a parameter
 //!
@@ -289,7 +291,10 @@ fn find_text<T: ReadTxn>(
         } else if is_table_map(txn, &map) {
             // A table's rows and cells are its grid's, in model order; a filler has
             // no text and is skipped.
-            for (i, row) in cell_maps(txn, &map).ok()?.into_iter().enumerate() {
+            // A table too large to read holds no text a model position can name (the
+            // model sees its placeholder), so the walk steps over it.
+            let rows = cell_maps(txn, &map).unwrap_or_default();
+            for (i, row) in rows.into_iter().enumerate() {
                 path.push((i, "table_row".to_string()));
                 for (k, cell) in row.into_iter().enumerate() {
                     let Some(cell) = cell else { continue };

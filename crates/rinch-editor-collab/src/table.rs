@@ -67,25 +67,41 @@
 //!    one of its two paragraphs). Typing into it inserts the paragraph.
 //! 4. **A table with no live row or no live column is void** and reads as absent, like
 //!    any emptied container (`projection::is_void`).
-//! 5. **A table too large for what the CRDT stores is not built.** A row or column line costs about 20 bytes on the wire and a filler none,
-//!    so `n` rows and `n` columns appended by a foreign writer would read as `n²`
-//!    fillers (90 KB of update, 2.3 GB on every replica, measured). The read refuses
-//!    more slots than the model's own `grid_slot_budget` allows (checked before the
-//!    grid is allocated), and more fillers than `max(stored cells, FILLER_FLOOR)`
+//! 5. **A table too large for what the CRDT stores is not built.** A row or column
+//!    line costs about 20 bytes on the wire and a filler none, so `n` rows and `n`
+//!    columns appended by a foreign writer would read as `n²` fillers (90 KB of
+//!    update, 2.3 GB on every replica, measured). The read refuses more rows plus
+//!    columns than `line_budget` (`max(2 × stored cells, LINE_FLOOR = 4096)`, #1248)
+//!    and more slots than the model's own `grid_slot_budget` allows (both checked
+//!    before the grid is allocated), and more fillers than `max(stored cells, FILLER_FLOOR)`
 //!    (2^16 — room for the fillers honest concurrent row and column adds make: a
 //!    256 × 256 block of them; honest peers reach it by adding hundreds of rows on
 //!    one replica and hundreds of columns on another at once). The model sees such a
-//!    table as a **placeholder** — one empty cell, the table's attrs — so the session
-//!    stays healthy and any peer can delete it: deleting a block never reads it. Only
-//!    the model's own read (`CollabDoc::to_doc`, under [`placeholder_reads`]) does
-//!    this; every read a write depends on is strict, so an edit inside the placeholder
-//!    (or in a container holding it) is refused `Unsupported` before anything is
-//!    written and stalls outbound (#220) until the table is deleted. It was a poison
+//!    table as a **placeholder** — one empty cell, the table's attrs plus
+//!    [`PLACEHOLDER_ATTR`] — so the session stays healthy and any peer can delete it.
+//!    Only the model's reads (`CollabDoc::to_doc` and the join gate, under
+//!    [`placeholder_reads`]) build it; every CRDT read a write depends on is strict.
+//!
+//!    **A placeholder is never written, by construction.** [`read_model_table`] —
+//!    which every write path runs on every node it writes, before the write
+//!    transaction opens — refuses a table carrying [`PLACEHOLDER_ATTR`], wherever it
+//!    is: edited, moved, copied, pasted elsewhere, loaded back by an app, or paired
+//!    with another block by a diff. Such a change is refused `Unsupported` and stalls
+//!    outbound (#220) until the table is deleted. The one change admitted is its
+//!    deletion: the blocks a change deletes are validated under [`deleting`], and a
+//!    deletion never reads the CRDT node. (Before this rule a diff that paired the
+//!    model's placeholder with another block by position wrote the one empty cell
+//!    over it and deleted the real table, for every peer, with `Ok`.) As a second net,
+//!    a top-level CRDT block a change deletes that is a table past the budget must be
+//!    a placeholder in the model's `before` at that index; with `before` describing
+//!    the CRDT, which `record_local` ensures, that check cannot fire. It was a poison
 //!    (#196) at first, which no peer that had seen the table could cure: a poisoned
 //!    session sends nothing.
 //!
 //! The model side is held to the same shape: a table whose cells do not tile a
-//! rectangle exactly (a ragged row, overlapping spans, a span past the edge) is
+//! rectangle exactly (a ragged row, overlapping spans, a span past the edge), or whose
+//! spans declare more rows plus columns than `line_budget` allows for its cells (one
+//! `colspan = 3_000_000` cell would write three million column lines, #1248), is
 //! [`CollabError::Unsupported`]. The editor's own table commands never make one; a
 //! pasted ragged table can, and stalls outbound until it is fixed or removed.
 //!
@@ -217,6 +233,52 @@ fn span(attrs: &Attrs, key: &str) -> usize {
     usize::try_from(attrs.get_int(key).unwrap_or(1).max(1)).unwrap_or(usize::MAX)
 }
 
+/// How many rows plus columns a table may have for `cells` cells, on both sides
+/// (#1248): `max(2 × cells, LINE_FLOOR)`. A rectangle of 1×1 cells has `w + h ≤
+/// cells + 1`, so only spans can pass it; a line costs a CRDT map on the wire.
+fn line_budget(cells: usize) -> usize {
+    cells.saturating_mul(2).max(LINE_FLOOR)
+}
+
+/// The floor of [`line_budget`].
+pub(crate) const LINE_FLOOR: usize = 4096;
+
+/// The attr that marks a [`placeholder`] in the model. No HTML, markdown or table
+/// command produces it; the projection refuses to write a table carrying it.
+pub(crate) const PLACEHOLDER_ATTR: &str = "rinch-collab-unreadable-table";
+
+/// Whether `node` is a [`placeholder`].
+pub(crate) fn is_placeholder(node: &Node) -> bool {
+    node.type_name() == TABLE && node.attrs().get(PLACEHOLDER_ATTR).is_some()
+}
+
+thread_local! {
+    /// Whether a [`placeholder`] is being validated as a block a change deletes,
+    /// which is the one change the projection makes to it ([`deleting`]).
+    static DELETING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// While the returned guard lives, [`read_model_table`] admits a [`placeholder`]: the
+/// projection is validating blocks a change deletes.
+pub(crate) fn deleting() -> Deleting {
+    Deleting(DELETING.with(|c| c.replace(true)))
+}
+
+/// The guard [`deleting`] returns; restores the previous setting on drop.
+pub(crate) struct Deleting(bool);
+
+impl Drop for Deleting {
+    fn drop(&mut self) {
+        DELETING.with(|c| c.set(self.0));
+    }
+}
+
+/// Whether the CRDT node `node` is a table past the read's budget (rule 5). Reads the
+/// table's lines and cells, so it is asked only of a table a change deletes.
+pub(crate) fn map_is_over_budget<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<bool> {
+    Ok(is_table_map(txn, node) && read_table_or_budget(txn, node)?.is_err())
+}
+
 /// How many filler cells a read may make for a table whose CRDT stores fewer cells
 /// than that (see [`read_table`]): 2^16, about 36 MB of read and model at their cost
 /// today, and a 256 × 256 table's worth of concurrently added rows and columns.
@@ -313,9 +375,26 @@ fn filler() -> CellData {
 /// projection carries: rows of `table_row`, cells of the two cell types, every cell
 /// holding projectable blocks, and the cells tiling the grid exactly.
 pub(crate) fn read_model_table(node: &Node) -> Result<TableData> {
-    // The grid a hostile paste can declare is bounded the way `TableMap`'s is.
+    // A placeholder stands for a table this replica could not read (rule 5): writing
+    // it would put one empty cell where the real table is. Only its deletion is a
+    // change the projection can make, and a deletion never reads the node.
+    if is_placeholder(node) && !DELETING.with(Cell::get) {
+        return Err(CollabError::unsupported(
+            "a table too large to read from the shared document cannot be edited, \
+             moved or copied while collaborating; delete it",
+        ));
+    }
+    // The grid a hostile paste can declare is bounded the way `TableMap`'s is: in
+    // lines (#1248 — the projection writes one per row and column, so a single
+    // `colspan = 3_000_000` cell would write three million) and in slots.
     let height = node.child_count();
     let width = rinch_editor_core::tables::column_count(node);
+    let cells: usize = (0..height).map(|r| node.child(r).child_count()).sum();
+    if width.saturating_add(height) > line_budget(cells) {
+        return Err(not_a_tiling(
+            "its spans declare more rows and columns than it has cells for",
+        ));
+    }
     if (width as u128) * (height as u128)
         > rinch_editor_core::tables::grid_slot_budget(node) as u128
     {
@@ -482,10 +561,11 @@ impl Drop for PlaceholderReads {
 }
 
 /// What the model sees of a table past the read's budget: one empty cell, with the
-/// table's own attrs. A pure function of the CRDT, so every replica reads the same.
+/// table's own attrs and [`PLACEHOLDER_ATTR`]. A pure function of the CRDT, so every
+/// replica reads the same, and marked, so no write path can put it in the CRDT.
 fn placeholder(attrs: Attrs) -> TableData {
     TableData {
-        attrs,
+        attrs: attrs.with(PLACEHOLDER_ATTR, AttrValue::Bool(true)),
         width: 1,
         rows: vec![RowData {
             attrs: Attrs::new(),
@@ -531,9 +611,14 @@ fn read_table_or_budget<T: ReadTxn>(
         })
         .collect();
     let stored: usize = row_maps.iter().flatten().map(|m| m.len(txn) as usize).sum();
-    // The slot budget, before anything is allocated: the model's own
-    // (`grid_slot_budget`), so the read never yields a table the model would refuse
-    // to project an edit of.
+    // The line budget (#1248) and the slot budget, before anything is allocated: the
+    // model's own (`line_budget`, `grid_slot_budget`), so the read never yields a table
+    // the model would refuse to project an edit of.
+    if width.saturating_add(height) > line_budget(stored) {
+        return Ok(Err(format!(
+            "{width} columns and {height} rows for {stored} stored cells"
+        )));
+    }
     let slots = width as u128 * height as u128;
     if slots > stored.saturating_mul(2).max(GRID_SLOT_FLOOR) as u128 {
         return Ok(Err(format!(
