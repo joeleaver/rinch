@@ -862,8 +862,9 @@ fn hang_pass(
 /// that starts `run_x` along it; CSS puts the break where parley would have
 /// without that branch:
 ///
-/// - **Right after an inline box** the run follows: Chrome 153 breaks between
-///   an atomic inline and an NBSP, where UAX #14 alone would glue them.
+/// - **Right after an inline box or a hyphen** the run follows: Chrome 153
+///   breaks between an atomic inline and an NBSP, where UAX #14 alone would
+///   glue them, and LB12a allows a break after HY and BA.
 /// - **At the last opportunity before the run.** Broken with room for all
 ///   but the unit before the run, that unit overflows and parley takes the
 ///   opportunity it last passed — the same one, since an NBSP offers none.
@@ -935,9 +936,13 @@ fn unglue(
             breaker.set_prior_line_width(max);
             Some((reason, run_x))
         };
-    // Right after an inline box: Chrome 153 breaks between an atomic inline
-    // and the NBSP after it, as parley does after any box.
-    if run_start > cursor && units[run_start - 1].inline_box {
+    // Right after an inline box (Chrome 153 breaks between an atomic inline
+    // and the NBSP after it, as parley does after any box) or a hyphen
+    // (LB12a: no break before GL but after a space, BA or HY).
+    if run_start > cursor && {
+        let u = &units[run_start - 1];
+        u.inline_box || u.breaks_before_glue
+    } {
         return before_run(breaker, BreakReason::Regular);
     }
     if run_start > cursor && run_x > ROOM {
@@ -998,6 +1003,9 @@ struct LineUnit {
     counted: bool,
     /// An in-flow inline box.
     inline_box: bool,
+    /// A hyphen or another UAX #14 class HY/BA character that is not white
+    /// space: LB12a allows a break between it and an NBSP after it.
+    breaks_before_glue: bool,
 }
 
 /// Re-set the alignment width of the line just committed, `line` its units,
@@ -1077,6 +1085,10 @@ fn logical_units(
                                 .is_some_and(|t| t.starts_with('\u{a0}')),
                         counted: true,
                         inline_box: false,
+                        breaks_before_glue: text
+                            .get(range.clone())
+                            .and_then(|t| t.chars().next_back())
+                            .is_some_and(breaks_before_glue),
                     },
                 ));
             }
@@ -1095,6 +1107,7 @@ fn logical_units(
                 nbsp: false,
                 counted: in_flow,
                 inline_box: in_flow,
+                breaks_before_glue: false,
             },
         ));
     }
@@ -1149,6 +1162,23 @@ fn hanging_after(units: &[LineUnit], end: usize) -> Option<f32> {
 /// not white space for this rule — it glues).
 fn is_hanging_space(text: &str, c: &parley::layout::Cluster<'_, Brush>) -> bool {
     c.is_space_or_nbsp() && matches!(text.get(c.text_range()), Some(" " | "\t"))
+}
+
+/// Whether `c` is of UAX #14 class HY or BA and not white space — after
+/// which LB12a allows a break before a no-break space (the common members;
+/// spaces and tabs hang instead).
+fn breaks_before_glue(c: char) -> bool {
+    matches!(
+        c,
+        '-' | '|'
+            | '\u{ad}'
+            | '\u{58a}'
+            | '\u{5be}'
+            | '\u{2010}'
+            | '\u{2012}'
+            | '\u{2013}'
+            | '\u{2027}'
+    )
 }
 
 /// Whether some line parley ended by hanging a no-break space (#1218): a

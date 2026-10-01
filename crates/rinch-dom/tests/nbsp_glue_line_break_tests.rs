@@ -83,12 +83,26 @@ fn a_glued_word_that_does_not_fit_wraps_at_the_opportunity_before_it() {
     );
 }
 
-/// The opportunity before the glued word is a hyphen's, not a space's.
+/// The opportunity before the glued word is a hyphen's, not a space's — and
+/// a hyphen right before the NBSP is one too (LB12a: no break before GL but
+/// after a space, BA or HY), for U+2010 HYPHEN as for `-`.
 #[test]
 fn the_opportunity_before_the_glued_word_can_be_a_hyphen() {
     assert_eq!(
         lines("width: 38px", &"a-bb~cc".replace('~', N)),
         s(&["a-", "bb~cc"])
+    );
+    assert_eq!(
+        lines("width: 28px", &"aa-~bb".replace('~', N)),
+        s(&["aa-", "~bb"])
+    );
+    assert_eq!(
+        lines("width: 28px", &"aa\u{2010}~bb".replace('~', N)),
+        s(&["aa\u{2010}", "~bb"])
+    );
+    assert_eq!(
+        lines("width: 40px", &"x aa-~bb".replace('~', N)),
+        s(&["x aa-", "~bb"])
     );
 }
 
