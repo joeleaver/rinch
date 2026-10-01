@@ -895,7 +895,8 @@ fn unglue(
         .count();
     let run_start = end - run;
     let run_x = advance - units[run_start..end].iter().map(|u| u.advance).sum::<f32>();
-    let mut rebreak = |line_max: f32| -> Option<(BreakReason, f32)> {
+    type Breaker<'b, 'l> = &'b mut parley::layout::BreakLines<'l, Brush>;
+    let rebreak = |breaker: Breaker<'_, '_>, line_max: f32| -> Option<(BreakReason, f32)> {
         breaker.revert_to(line_start.clone());
         let state = breaker.state_mut();
         state.set_layout_max_advance(line_max);
@@ -910,15 +911,12 @@ fn unglue(
             && adv > line_max
             && line_end(units, cursor, adv).is_some_and(|e| e > cursor && units[e - 1].nbsp)
     };
-    if run_start > cursor && run_x > ROOM {
-        let line_max = run_x - ROOM;
-        let a = rebreak(line_max)?;
-        // An emergency break that fits is text's (`overflow-wrap`); one that
-        // overflows is an inline box too wide for the line, placed alone at
-        // its start, which is no opportunity before the run.
-        if a.0 == BreakReason::Emergency && a.1 <= line_max {
-            // The table's cursor can sit on the zero-width newline that ended
-            // the line before; a newline is never the first unit of a line.
+    // Commit the line up to the run, by length: the line breaker places no
+    // break of its own right before an NBSP.
+    let before_run =
+        |breaker: Breaker<'_, '_>, reason: BreakReason| -> Option<(BreakReason, f32)> {
+            // The table's cursor can sit on the zero-width newline that ended the
+            // line before; a newline is never the first unit of a line.
             let first = cursor
                 + units[cursor..run_start]
                     .iter()
@@ -933,16 +931,38 @@ fn unglue(
             breaker.revert_to(line_start.clone());
             breaker.break_next_with_length(u32::try_from(n).ok()?)?;
             breaker.set_prior_line_width(max);
-            return Some((BreakReason::Emergency, run_x));
-        }
-        if a.0 != BreakReason::Emergency && !ends_in_hung_nbsp(a, line_max) {
-            breaker.set_prior_line_width(max);
-            return Some(a);
+            Some((reason, run_x))
+        };
+    // Right after an inline box: Chrome 153 breaks between an atomic inline
+    // and the NBSP after it, as parley does after any box.
+    if run_start > cursor && units[run_start - 1].inline_box {
+        return before_run(breaker, BreakReason::Regular);
+    }
+    if run_start > cursor && run_x > ROOM {
+        let line_max = run_x - ROOM;
+        let a = rebreak(breaker, line_max)?;
+        match a.0 {
+            // Text's emergency break (`overflow-wrap`), one unit early: the
+            // last emergency opportunity is right before the run.
+            BreakReason::Emergency if a.1 <= line_max => {
+                return before_run(breaker, BreakReason::Emergency);
+            }
+            // An inline box too wide for any line, placed alone at its start:
+            // the opportunity after it is the last one before the run.
+            BreakReason::Emergency => {
+                breaker.set_prior_line_width(max);
+                return Some(a);
+            }
+            _ if !ends_in_hung_nbsp(a, line_max) => {
+                breaker.set_prior_line_width(max);
+                return Some(a);
+            }
+            _ => {}
         }
     }
     let mut through = advance;
     loop {
-        let c = rebreak(through + ROOM)?;
+        let c = rebreak(breaker, through + ROOM)?;
         if !ends_in_hung_nbsp(c, through + ROOM) {
             breaker.set_prior_line_width(max);
             return Some(c);
@@ -977,6 +997,8 @@ struct LineUnit {
     /// Counted by [`parley::layout::BreakLines::break_next_with_length`]:
     /// every cluster and in-flow inline box, not an out-of-flow box.
     counted: bool,
+    /// An in-flow inline box.
+    inline_box: bool,
 }
 
 /// Re-set the alignment width of the line just committed, `line` its units,
@@ -1055,6 +1077,7 @@ fn logical_units(
                                 .get(range.clone())
                                 .is_some_and(|t| t.starts_with('\u{a0}')),
                         counted: true,
+                        inline_box: false,
                     },
                 ));
             }
@@ -1072,6 +1095,7 @@ fn logical_units(
                 newline: false,
                 nbsp: false,
                 counted: in_flow,
+                inline_box: in_flow,
             },
         ));
     }

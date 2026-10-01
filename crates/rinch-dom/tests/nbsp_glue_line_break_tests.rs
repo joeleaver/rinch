@@ -164,3 +164,64 @@ fn a_flex_items_own_text_glues_at_an_nbsp() {
     );
     assert_eq!(d.tree.get(c.0).unwrap().layout.height, 75.0);
 }
+
+/// The table the re-break counts units through can start a line on the
+/// newline that ended the one before; the `overflow-wrap` break before the
+/// NBSP still lands right before it.
+#[test]
+fn overflow_wrap_breaks_before_the_nbsp_on_a_line_after_a_newline() {
+    assert_eq!(
+        lines(
+            "width: 40px; white-space: pre-wrap; overflow-wrap: break-word",
+            &"aa\nyyyy~bb".replace('~', N)
+        ),
+        s(&["aa\n", "yyyy", "~bb"])
+    );
+}
+
+/// The lines (text only: a line holding nothing but a box has none) and the
+/// height of a 40px container holding `html`.
+fn box_lines(html: &str) -> (Vec<String>, f32) {
+    let mut d = doc();
+    let body = d.body();
+    let c = d.create_element("div");
+    d.set_attribute(c, "style", "font: 16px/25px ProbeFace; width: 40px");
+    d.append_child(body, c);
+    d.set_inner_html(c, &html.replace('~', "&nbsp;"));
+    d.resolve_layout(800.0, 600.0);
+    let node = d.tree.get(c.0).unwrap();
+    let il = node.text_layout.as_ref().expect("an IFC root");
+    let lines = il
+        .layout
+        .lines()
+        .map(|l| {
+            il.text_content
+                .get(l.text_range())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    (lines, node.layout.height)
+}
+
+/// Chrome 153 breaks between an atomic inline and the NBSP after it, and
+/// after a box too wide for any line when an NBSP follows the text after it.
+/// (Only the first height is compared: a line holding nothing but the box is
+/// the box's 10px tall in rinch and a whole 25px line in Chrome, which has
+/// nothing to do with the NBSP.)
+#[test]
+fn an_atomic_inline_before_the_nbsp_is_an_opportunity() {
+    const B: &str = "display: inline-block; height: 10px; vertical-align: top";
+    assert_eq!(
+        box_lines(&format!("x <span style=\"{B}; width: 26px\"></span>~bb")),
+        (s(&["x ", "~bb"]), 50.0)
+    );
+    assert_eq!(
+        box_lines(&format!("<span style=\"{B}; width: 50px\"></span>~bb cc")).0,
+        s(&["", "~bb ", "cc"])
+    );
+    assert_eq!(
+        box_lines(&format!("<span style=\"{B}; width: 50px\"></span>yy~bb")).0,
+        s(&["", "yy~bb"])
+    );
+}
