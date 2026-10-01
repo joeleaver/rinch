@@ -100,8 +100,11 @@ fn edits(s: &Schema, rng: &mut Rng, doc: &Node, open_ok: bool) -> Vec<BatchEdit>
     out
 }
 
-fn as_steps(step_edits: &[BatchEdit]) -> Vec<((usize, bool, usize), Box<dyn Step>)> {
-    let mut v: Vec<((usize, bool, usize), Box<dyn Step>)> = Vec::new();
+/// A step with its sort key: position, attribute-or-not, edit index.
+type Keyed = ((usize, bool, usize), Box<dyn Step>);
+
+fn as_steps(step_edits: &[BatchEdit]) -> Vec<Keyed> {
+    let mut v: Vec<Keyed> = Vec::new();
     for (i, e) in step_edits.iter().enumerate() {
         match e {
             BatchEdit::Replace { from, to, slice } => v.push((
