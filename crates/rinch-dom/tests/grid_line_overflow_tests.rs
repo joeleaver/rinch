@@ -19,6 +19,9 @@ use rinch_dom::RinchDocument;
 const VW: f32 = 800.0;
 const VH: f32 = 600.0;
 
+/// `(x, y, width, height)` of a node's layout box.
+type Rect = (f32, f32, f32, f32);
+
 /// A grid styled `grid_style` holding `items` children, each styled
 /// `item_style`, laid out at 800x600. Returns the document, the grid, and the
 /// items.
@@ -39,7 +42,7 @@ fn grid(grid_style: &str, item_style: &str, items: usize) -> (RinchDocument, Nod
     (doc, g, ids)
 }
 
-fn rect(doc: &RinchDocument, id: NodeId) -> (f32, f32, f32, f32) {
+fn rect(doc: &RinchDocument, id: NodeId) -> Rect {
     let l = &doc.tree.get(id.0).unwrap().layout;
     (l.x, l.y, l.width, l.height)
 }
@@ -59,11 +62,11 @@ fn rect(doc: &RinchDocument, id: NodeId) -> (f32, f32, f32, f32) {
 /// Ignored by default for its cost, which is not the grid's: building and
 /// laying out 40,000 siblings of one parent takes minutes in a debug build
 /// whatever the parent's `display` (a flex column or a block of 36,000 rows
-/// costs the same order in release). Run it with `--ignored`; the routes past
+/// costs the same order in release, #1247). Run it with `--ignored`; the routes past
 /// 32,767 lines that CI runs are the span fixtures below, and the clamp itself
 /// is `ten_and_a_half_thousand_rows_are_now_clamped_too`.
 #[test]
-#[ignore = "40,000 siblings: minutes in a debug build (rinch-side, not Taffy)"]
+#[ignore = "40,000 siblings: minutes in a debug build (rinch-side, not Taffy: #1247)"]
 fn forty_thousand_auto_placed_rows_lay_out_clamped_at_ten_thousand_tracks() {
     let (doc, g, items) = grid("grid-template-columns: 100px", "height: 10px", 40_000);
     let (_, _, w, h) = rect(&doc, g);
@@ -202,8 +205,7 @@ fn auto_fill_zero_px_columns_at_800_lay_out() {
     );
 }
 
-const RECORDED_AUTO_FILL_ZERO: ((f32, f32, f32, f32), (f32, f32, f32, f32)) =
-    ((0.0, 0.0, 0.0, 10.0), (0.0, 0.0, 0.0, 10.0));
+const RECORDED_AUTO_FILL_ZERO: (Rect, Rect) = ((0.0, 0.0, 0.0, 10.0), (0.0, 0.0, 0.0, 10.0));
 
 /// Valid CSS that panicked the same way: `minmax(0px, 1fr)` is a
 /// `<fixed-size>`, so it may be auto-repeated, and its fixed breadth is 0.
@@ -221,8 +223,7 @@ fn auto_fill_minmax_zero_one_fr_at_800_lays_out() {
     );
 }
 
-const RECORDED_AUTO_FILL_MINMAX: ((f32, f32, f32, f32), (f32, f32, f32, f32)) =
-    ((0.0, 0.0, 0.0, 10.0), (0.0, 0.0, 0.0, 10.0));
+const RECORDED_AUTO_FILL_MINMAX: (Rect, Rect) = ((0.0, 0.0, 0.0, 10.0), (0.0, 0.0, 0.0, 10.0));
 
 /// `auto-fit` collapses the empty repetitions `auto-fill` keeps, and is
 /// reached by the same count computation.
@@ -240,5 +241,4 @@ fn auto_fit_zero_px_columns_at_800_lay_out() {
     );
 }
 
-const RECORDED_AUTO_FIT_ZERO: ((f32, f32, f32, f32), (f32, f32, f32, f32)) =
-    ((0.0, 0.0, 0.0, 10.0), (0.0, 0.0, 0.0, 10.0));
+const RECORDED_AUTO_FIT_ZERO: (Rect, Rect) = ((0.0, 0.0, 0.0, 10.0), (0.0, 0.0, 0.0, 10.0));
