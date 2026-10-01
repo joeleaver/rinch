@@ -67,10 +67,13 @@ fn box_of(n: &rinch_dom::Node) -> Box4 {
     }
 }
 
+/// `(item, marker, [(name, box)] of the blocks after the marker)`.
+type Item = (Box4, Box4, Vec<(String, Box4)>);
+
 /// Every list item (an `li` or a task item) as `(item, marker, children)`:
 /// the marker is the item's generated first child, the children are the
 /// item's element children after it, all in the item's own coordinates.
-fn items(app: &RinchApp) -> Vec<(Box4, Box4, Vec<(String, Box4)>)> {
+fn items(app: &RinchApp) -> Vec<Item> {
     let doc = app.doc.as_ref().unwrap().borrow();
     let nodes = &doc.tree.nodes;
     let mut out = Vec::new();
