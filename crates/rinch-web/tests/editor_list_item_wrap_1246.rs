@@ -1,11 +1,11 @@
 //! A list item whose text wraps keeps its marker beside the text's first line
 //! on the web too (#1246).
 //!
-//! The shared editor stylesheet makes a task item a wrapping flex row of its
+//! The shared editor stylesheet made a task item a wrapping flex row of its
 //! checkbox `::before` and its paragraph. The paragraph kept `flex-basis:
 //! auto`, so Chrome sized it at its max-content width and `flex-wrap` moved a
 //! long one onto a flex line of its own: the checkbox alone on a line, the text
-//! below it. A `ul`/`ol` item is `display: list-item` on the web (rinch-web's
+//! below it. The checkbox now hangs in the item's left padding. A `ul`/`ol` item is `display: list-item` on the web (rinch-web's
 //! override, native `::marker`), so it never had the bug; it is pinned here as
 //! the control that the shared rules leave it alone.
 //!
@@ -106,16 +106,22 @@ fn first_and_last_char(p: &web_sys::Element) -> (web_sys::DomRect, web_sys::DomR
 fn a_wrapping_task_item_keeps_its_checkbox_beside_the_first_line() {
     let (root, host) = mount(&format!("<p>{LONG}</p>"), Some("toggleTaskList"));
     let item = el("[data-pm-editor] [data-pm-type=\"task_item\"]");
-    assert_eq!(computed(&item, "display"), "flex", "positive control");
+    assert!(
+        document()
+            .query_selector("[data-pm-editor]")
+            .unwrap()
+            .is_some(),
+        "positive control: the editor mounted"
+    );
     let p = el("[data-pm-editor] [data-pm-type=\"task_item\"] > p");
     let (ir, pr) = (
         item.get_bounding_client_rect(),
         p.get_bounding_client_rect(),
     );
     let (first, last) = first_and_last_char(&p);
-    // The checkbox `::before` is the item's first flex item; it has no rect of
-    // its own to read, so its line is the item's top and its width is the gap
-    // between the item's left edge and the paragraph's.
+    // The checkbox `::before` has no rect of its own to read: its line is the
+    // item's top, and it sits in the gap between the item's left edge and the
+    // paragraph's.
     assert!(
         (pr.top() - ir.top()).abs() < 0.5,
         "the paragraph starts on the checkbox's line (item top {}, p top {})",

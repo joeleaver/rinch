@@ -1,15 +1,15 @@
 //! A list item whose text wraps keeps its marker beside the text's first line,
 //! and the text wraps inside the item (#1246).
 //!
-//! The editor's `li` (and its task item) is a wrapping flex row of the marker
-//! and the item's content. The content used to keep `flex-basis: auto`, so its
-//! hypothetical size was its max-content width — the whole paragraph on one
+//! The editor's `li` (and its task item) used to be a wrapping flex row of the
+//! marker and the item's blocks. A paragraph there kept `flex-basis: auto`, so
+//! its hypothetical size was its max-content width — the whole text on one
 //! line — and once that was wider than the room beside the marker,
-//! `flex-wrap: wrap` moved the paragraph onto a flex line of its own: the
-//! bullet alone on a line, the text starting under it. Chrome does the same
-//! with that CSS. And `align-items: baseline` would then have put the marker
-//! beside the paragraph's *last* line on desktop, where Taffy 0.12
-//! baseline-aligns a multi-line item by its bottom edge (#1013).
+//! `flex-wrap: wrap` moved it onto a flex line of its own: the bullet alone on
+//! a line, the text starting under it (Chrome does the same with that CSS).
+//! The item is now an ordinary block whose marker hangs outside it, as a
+//! browser's `list-item` does: desktop's generated marker span (and the task
+//! item's `::before`) is taken out of flow onto the first line.
 //!
 //! Host fonts: every assertion is a relation between boxes of one document
 //! (same line, beside, below, inside), and the text is long enough to wrap at
@@ -112,8 +112,12 @@ fn assert_beside_and_wrapped(what: &str, item: Box4, marker: Box4, content: Box4
          (marker {marker:?}, content {content:?})"
     );
     assert!(
-        content.x >= marker.x + marker.w,
-        "{what}: the content starts right of the marker \
+        marker.w < 48.0,
+        "{what}: the marker is a marker's width, not a share of the line: {marker:?}"
+    );
+    assert!(
+        content.x >= marker.x + marker.w - 1.0 && content.x <= marker.x + marker.w + 12.0,
+        "{what}: the content starts right of the marker, to a pixel of edge rounding \
          (marker {marker:?}, content {content:?})"
     );
     assert!(
@@ -172,7 +176,10 @@ fn a_short_item_is_unchanged_and_a_nested_list_breaks_onto_its_own_line() {
     let (name, nested) = &rest[1];
     assert_eq!(name, "bullet_list", "{rest:?}");
     assert_eq!(p.y, marker.y, "a short item: text on the marker's line");
-    assert!(p.x >= marker.x + marker.w, "beside it");
+    assert!(
+        p.x >= marker.x + marker.w - 1.0 && p.x <= marker.x + marker.w + 12.0 && marker.w < 48.0,
+        "right beside it: {p:?} vs {marker:?}"
+    );
     assert!(p.h < 2.0 * marker.h, "on one line: {p:?} vs {marker:?}");
     assert!(
         nested.y >= p.y + p.h,
@@ -198,6 +205,7 @@ fn a_second_paragraph_in_an_item_starts_its_own_line() {
     assert_eq!(rest.len(), 2, "{rest:?}");
     let (p1, p2) = (rest[0].1, rest[1].1);
     assert_eq!(p1.y, marker.y);
+    assert_eq!(p2.x, p1.x, "under the text, not under the bullet");
     assert!(
         p2.y >= p1.y + p1.h,
         "the second paragraph is below the first, not beside it: {p1:?} {p2:?}"

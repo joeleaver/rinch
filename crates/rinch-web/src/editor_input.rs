@@ -2881,11 +2881,11 @@ fn add_target_listener<E: JsCast + 'static>(
 }
 
 /// A small web-only override of the shared editor default stylesheet. The shared
-/// stylesheet (`rinch_editor_view`'s `styles.rs`) sets `li { display: flex }` so the
-/// *desktop* renderer (rinch-dom, which emits list markers as block siblings) can align
-/// them inline with their content. On the web the browser draws the native `::marker`,
-/// which `display: flex` suppresses — so bullets and numbers vanish. Restoring
-/// `display: list-item` brings them back. Scoped one level deeper (`ul/ol > li`) than the
+/// stylesheet (`rinch_editor_view`'s `styles.rs`) gives `li` no `display` of its own
+/// and hangs the *desktop* renderer's generated marker span (rinch-dom has no
+/// `list-item`) outside the item, while the editor's UA sheet makes `li` a block — so
+/// on the web, where the browser draws the native `::marker`, bullets and numbers would
+/// vanish. Restoring `display: list-item` brings them back. Scoped one level deeper (`ul/ol > li`) than the
 /// base `li` rule so it wins by specificity regardless of `<style>` source order.
 const EDITOR_WEB_CSS: &str =
     "[data-pm-editor] ul > li, [data-pm-editor] ol > li { display: list-item; }";

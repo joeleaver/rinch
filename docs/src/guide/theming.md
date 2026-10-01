@@ -183,10 +183,10 @@ desktop draws instead is a text marker — `•` or `N.` followed by an en space
 generated as a span at the start of every `<li>` whose parent is a `<ul>` or
 `<ol>`, whose `list-style-type` is not `none` and which has no `::before` of
 its own. It is inline content of the
-item, not an outside marker hanging in its padding. The rich-text editor lays
-its `li` out as a flex row of that marker and the item's blocks (so a long item
-wraps beside its bullet, #1246), and draws its task-list checkbox itself as a
-`::before`.
+item, not an outside marker hanging in its padding. The rich-text editor's
+stylesheet takes that span out of flow and hangs it against the item's left
+edge, as a browser's outside marker hangs, and draws its task-list checkbox
+itself as a `::before` hung the same way (#1246).
 
 **Components are unaffected**, and that is pinned rather than assumed —
 `Divider`, `List`, `Breadcrumbs`, `Tree`, `Image`, `Blockquote` and `Code` all
