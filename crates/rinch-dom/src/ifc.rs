@@ -226,21 +226,24 @@ pub(crate) fn break_lines_hanging_spaces(
     unhung: &[std::ops::Range<usize>],
 ) -> HangStats {
     layout.break_all_lines(max_width);
-    let hang = max_width.filter(|max| {
-        preserves_spaces
-            && max.is_finite()
-            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung))
+    let max = max_width.filter(|max| max.is_finite());
+    let fix = max.and_then(|max| {
+        let hang_spaces = preserves_spaces
+            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung));
+        (hang_spaces || any_hung_nbsp_line(layout, text, max)).then_some((max, hang_spaces))
     });
-    let mut stats = match hang {
-        Some(max) => hang_pass(layout, text, max, None, unhung),
+    let mut stats = match fix {
+        Some((max, hang_spaces)) => hang_pass(layout, text, max, None, unhung, hang_spaces),
         None => HangStats::default(),
     };
     // #1050, #1172: parley's trailing empty line after an overflowing inline
     // box or a final forced break. Broken again, the same way, up to the line
     // before it.
     if let Some(keep) = phantom_last_line(layout) {
-        match hang {
-            Some(max) => stats = hang_pass(layout, text, max, Some(keep), unhung),
+        match fix {
+            Some((max, hang_spaces)) => {
+                stats = hang_pass(layout, text, max, Some(keep), unhung, hang_spaces)
+            }
             None => break_lines_up_to(layout, max_width, keep),
         }
         stats.phantom_rebreaks = 1;
@@ -254,12 +257,20 @@ pub(crate) fn break_lines_hanging_spaces(
 /// #1172). A leaf hangs no spaces (it never has), so this is the phantom half of [`break_lines_hanging_spaces`] alone.
 pub(crate) fn break_leaf_lines(
     layout: &mut parley::Layout<Brush>,
+    text: &str,
     max_width: Option<f32>,
 ) -> HangStats {
     layout.break_all_lines(max_width);
-    let mut stats = HangStats::default();
+    let glue = max_width.filter(|max| max.is_finite() && any_hung_nbsp_line(layout, text, *max));
+    let mut stats = match glue {
+        Some(max) => hang_pass(layout, text, max, None, &[], false),
+        None => HangStats::default(),
+    };
     if let Some(keep) = phantom_last_line(layout) {
-        break_lines_up_to(layout, max_width, keep);
+        match glue {
+            Some(max) => stats = hang_pass(layout, text, max, Some(keep), &[], false),
+            None => break_lines_up_to(layout, max_width, keep),
+        }
         stats.phantom_rebreaks = 1;
     }
     stats
@@ -703,12 +714,15 @@ fn break_lines_up_to(layout: &mut parley::Layout<Brush>, max_width: Option<f32>,
 
 /// The hanging-space re-break of [`break_lines_hanging_spaces`], over a layout
 /// already broken at `max`, committing at most `limit` lines when given one.
+/// Spaces are hung only with `hang_spaces`; a line parley ended by hanging a
+/// no-break space is broken again ([`unglue`]) either way.
 fn hang_pass(
     layout: &mut parley::Layout<Brush>,
     text: &str,
     max: f32,
     limit: Option<usize>,
     unhung: &[std::ops::Range<usize>],
+    hang_spaces: bool,
 ) -> HangStats {
     use parley::layout::{BreakReason, YieldData};
     let mut stats = HangStats::default();
@@ -753,17 +767,40 @@ fn hang_pass(
         // started from, with room for its content and every space and tab
         // after it. That can end at a hang again — an NBSP after the spaces
         // overflows too, and parley hangs NBSP itself — so until it does not.
-        let mut data = data;
+        let (mut reason, mut advance) = (data.reason, data.advance);
         let mut line_max = max;
         let mut widened_from = f32::NEG_INFINITY;
+        let mut unglued = false;
         loop {
-            let Some(end) = line_end(&units, cursor, data.advance) else {
+            let Some(end) = line_end(&units, cursor, advance) else {
                 in_step = false;
                 break;
             };
-            let hanging = match data.reason {
+            // #1218: parley hangs an overflowing NBSP as it hangs a space, and
+            // commits the line after it, where there is no break opportunity.
+            if !unglued
+                && reason == BreakReason::Regular
+                && advance > line_max
+                && end > cursor
+                && units[end - 1].nbsp
+            {
+                unglued = true;
+                let Some(again) =
+                    unglue(&mut breaker, &units, cursor, end, &line_start, max, advance)
+                else {
+                    in_step = false;
+                    break;
+                };
+                stats.lines += 1;
+                (reason, advance) = again;
+                line_max = max;
+                continue;
+            }
+            let hanging = match reason {
                 // The hang branch is the one Regular break that overflows.
-                BreakReason::Regular if data.advance > line_max => hanging_after(&units, end),
+                BreakReason::Regular if hang_spaces && advance > line_max => {
+                    hanging_after(&units, end)
+                }
                 _ => None,
             };
             let Some(hanging) = hanging else {
@@ -775,11 +812,11 @@ fn hang_pass(
             // Each round takes in more of the paragraph, which is what ends
             // the loop. One that hangs again having taken in nothing would
             // repeat forever: stop fixing instead (the table would be wrong).
-            if data.advance <= widened_from {
+            if advance <= widened_from {
                 in_step = false;
                 break;
             }
-            widened_from = data.advance;
+            widened_from = advance;
             breaker.revert_to(line_start.clone());
             // Room for every space and tab but the last, which is left to
             // overflow: parley then hangs a real space and commits the line,
@@ -794,7 +831,7 @@ fn hang_pass(
                 // line, so the whole run fits.
                 _ => 0.0,
             };
-            line_max = data.advance + hanging - last + 0.01;
+            line_max = advance + hanging - last + 0.01;
             let state = breaker.state_mut();
             state.set_layout_max_advance(line_max);
             state.set_line_max_advance(line_max);
@@ -804,11 +841,101 @@ fn hang_pass(
             };
             breaker.set_prior_line_width(max);
             stats.lines += 1;
-            data = again;
+            (reason, advance) = (again.reason, again.advance);
         }
     }
     breaker.finish();
     stats
+}
+
+/// Break again a line parley ended by hanging a no-break space (#1218), and
+/// return the reason and advance of the line that replaces it.
+///
+/// U+00A0 is UAX #14 class GL: there is no break opportunity on either side
+/// of it. parley 0.11.1's breaker hangs an overflowing one like a space
+/// (`is_space_or_nbsp` in its hang branch) and commits the line right after
+/// it. The line, from `line_start` to `units[end]`, ends in a run of NBSPs
+/// that starts `run_x` along it; CSS puts the break where parley would have
+/// without that branch:
+///
+/// - **At the last opportunity before the run.** Broken with room for all
+///   but the unit before the run, that unit overflows and parley takes the
+///   opportunity it last passed — the same one, since an NBSP offers none.
+/// - **Right before the run**, when that is an `overflow-wrap` (emergency)
+///   opportunity and there is no other: the run then starts the next line,
+///   as in Chrome 153. parley says so by answering the first re-break with
+///   an emergency break one unit early, and the line is committed by length.
+/// - **At the first opportunity after the glued word**, when there is none
+///   before the run: the word overflows. Broken with room for the run, the
+///   next thing overflows and parley appends it (no opportunity yet) up to
+///   the first one it finds; another NBSP hung further on goes round again.
+///
+/// `None` when the unit table and the breaker disagree.
+fn unglue(
+    breaker: &mut parley::layout::BreakLines<'_, Brush>,
+    units: &[LineUnit],
+    cursor: usize,
+    end: usize,
+    line_start: &parley::layout::BreakerState,
+    max: f32,
+    advance: f32,
+) -> Option<(parley::layout::BreakReason, f32)> {
+    use parley::layout::{BreakReason, YieldData};
+    // No following word fits in this much room: it only decides which side
+    // of a width boundary a unit falls.
+    const ROOM: f32 = 0.01;
+    let run = units[cursor..end]
+        .iter()
+        .rev()
+        .take_while(|u| u.nbsp)
+        .count();
+    let run_start = end - run;
+    let run_x = advance - units[run_start..end].iter().map(|u| u.advance).sum::<f32>();
+    let mut rebreak = |line_max: f32| -> Option<(BreakReason, f32)> {
+        breaker.revert_to(line_start.clone());
+        let state = breaker.state_mut();
+        state.set_layout_max_advance(line_max);
+        state.set_line_max_advance(line_max);
+        match breaker.break_next()? {
+            YieldData::LineBreak(d) => Some((d.reason, d.advance)),
+            _ => None,
+        }
+    };
+    let ends_in_hung_nbsp = |(reason, adv): (BreakReason, f32), line_max: f32| {
+        reason == BreakReason::Regular
+            && adv > line_max
+            && line_end(units, cursor, adv).is_some_and(|e| e > cursor && units[e - 1].nbsp)
+    };
+    if run_start > cursor && run_x > ROOM {
+        let line_max = run_x - ROOM;
+        let a = rebreak(line_max)?;
+        if a.0 == BreakReason::Emergency {
+            breaker.revert_to(line_start.clone());
+            let n = units[cursor..run_start]
+                .iter()
+                .filter(|u| u.counted)
+                .count();
+            breaker.break_next_with_length(u32::try_from(n).ok()?)?;
+            breaker.set_prior_line_width(max);
+            return Some((BreakReason::Emergency, run_x));
+        }
+        if !ends_in_hung_nbsp(a, line_max) {
+            breaker.set_prior_line_width(max);
+            return Some(a);
+        }
+    }
+    let mut through = advance;
+    loop {
+        let c = rebreak(through + ROOM)?;
+        if !ends_in_hung_nbsp(c, through + ROOM) {
+            breaker.set_prior_line_width(max);
+            return Some(c);
+        }
+        if c.1 <= through {
+            return None;
+        }
+        through = c.1;
+    }
 }
 
 /// One cluster or inline box of a paragraph, in logical order: what the line
@@ -825,6 +952,11 @@ struct LineUnit {
     /// right after `pre-wrap` spaces — tracked in #1243.)
     unhung: bool,
     newline: bool,
+    /// A no-break space (U+00A0), which parley hangs and CSS glues (#1218).
+    nbsp: bool,
+    /// Counted by [`parley::layout::BreakLines::break_next_with_length`]:
+    /// every cluster and in-flow inline box, not an out-of-flow box.
+    counted: bool,
 }
 
 /// Re-set the alignment width of the line just committed, `line` its units,
@@ -898,16 +1030,19 @@ fn logical_units(
                         hangs: space && !pre,
                         unhung: pre,
                         newline: c.is_hard_line_break(),
+                        nbsp: c.is_space_or_nbsp()
+                            && text
+                                .get(range.clone())
+                                .is_some_and(|t| t.starts_with('\u{a0}')),
+                        counted: true,
                     },
                 ));
             }
         }
     }
     for (i, b) in layout.inline_boxes().iter().enumerate() {
-        let advance = match b.kind {
-            parley::InlineBoxKind::InFlow => b.width,
-            _ => 0.0,
-        };
+        let in_flow = matches!(b.kind, parley::InlineBoxKind::InFlow);
+        let advance = if in_flow { b.width } else { 0.0 };
         keyed.push((
             (b.index, 0, i),
             LineUnit {
@@ -915,6 +1050,8 @@ fn logical_units(
                 hangs: false,
                 unhung: false,
                 newline: false,
+                nbsp: false,
+                counted: in_flow,
             },
         ));
     }
@@ -969,6 +1106,20 @@ fn hanging_after(units: &[LineUnit], end: usize) -> Option<f32> {
 /// not white space for this rule — it glues).
 fn is_hanging_space(text: &str, c: &parley::layout::Cluster<'_, Brush>) -> bool {
     c.is_space_or_nbsp() && matches!(text.get(c.text_range()), Some(" " | "\t"))
+}
+
+/// Whether some line parley ended by hanging a no-break space (#1218): a
+/// regular break past `max` right after an U+00A0. The cheap test that sends a
+/// paragraph through [`hang_pass`] for [`unglue`].
+fn any_hung_nbsp_line(layout: &parley::Layout<Brush>, text: &str, max: f32) -> bool {
+    use parley::layout::BreakReason;
+    layout.lines().any(|line| {
+        line.break_reason() == BreakReason::Regular
+            && line.metrics().advance > max
+            && text
+                .get(..line.text_range().end)
+                .is_some_and(|t| t.ends_with('\u{a0}'))
+    })
 }
 
 /// Whether some line parley ended by hanging one space while more hangable
@@ -4949,7 +5100,7 @@ impl RinchDocument {
                         } else {
                             known_dims.width.or(max_width)
                         };
-                        break_leaf_lines(&mut layout, wrap_width).record(perf);
+                        break_leaf_lines(&mut layout, &text.content, wrap_width).record(perf);
                         let size = taffy::Size {
                             width: known_dims.width.unwrap_or(layout.width()),
                             height: known_dims.height.unwrap_or(layout.height()),

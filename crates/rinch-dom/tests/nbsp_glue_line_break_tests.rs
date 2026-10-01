@@ -115,11 +115,17 @@ fn with_no_opportunity_before_it_the_glued_word_overflows() {
 #[test]
 fn pre_wrap_text_glues_at_an_nbsp_too() {
     assert_eq!(
-        lines("width: 64px; white-space: pre-wrap", &"Wk mno~pq~".replace('~', N)),
+        lines(
+            "width: 64px; white-space: pre-wrap",
+            &"Wk mno~pq~".replace('~', N)
+        ),
         s(&["Wk ", "mno~pq~"])
     );
     assert_eq!(
-        lines("width: 64px; white-space: pre-wrap", &"Wk  mno~pq".replace('~', N)),
+        lines(
+            "width: 64px; white-space: pre-wrap",
+            &"Wk  mno~pq".replace('~', N)
+        ),
         s(&["Wk  ", "mno~pq"])
     );
 }
