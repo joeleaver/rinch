@@ -799,7 +799,8 @@ mod tests {
     /// `over` leads to) from the last position to the first. Mapping keeps
     /// the order of positions, so the order is the original one.
     fn sequence_mapped(doc: &Node, step: &BatchStep, over: &Mapping) -> Result<Node, StepError> {
-        let mut keyed: Vec<((usize, bool, usize), Box<dyn Step>)> = Vec::new();
+        type Keyed = ((usize, bool, usize), Box<dyn Step>);
+        let mut keyed: Vec<Keyed> = Vec::new();
         for (i, r) in step.reps.iter().enumerate() {
             let s = ReplaceStep::new(r.from, r.to, r.slice.clone());
             keyed.push(((r.from, false, i), Box::new(s)));
@@ -812,7 +813,7 @@ mod tests {
             };
             keyed.push(((a.pos, true, 0), Box::new(s)));
         }
-        keyed.sort_by(|x, y| y.0.cmp(&x.0));
+        keyed.sort_by_key(|k| std::cmp::Reverse(k.0));
         let mut doc = doc.clone();
         for (_, s) in keyed {
             if let Some(m) = s.map(over) {
