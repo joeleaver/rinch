@@ -496,7 +496,7 @@ impl ViewDesc {
     /// table reaching the model by `load_doc` or an app's own transaction can
     /// say `colspan = 3_000_000` or `rowspan = i64::MAX`; written raw, that
     /// asked the host for that many implicit grid tracks, and on the desktop a
-    /// few such cells stacked past the `i16` lines Taffy numbers a grid with,
+    /// few such cells stacked past the `i16` lines Taffy 0.12 numbered a grid with,
     /// and layout panicked. The map cuts a span at the grid's edge and has no
     /// slot for a cell past its capped width, so no cell asks for more columns
     /// than the map has or more rows than the table has, and a cell with no
@@ -514,8 +514,10 @@ impl ViewDesc {
             // Row lines need column lines too: a cell locked to its row is
             // placed beside the cells before it, so a wide row of wide cells
             // (four of `colspan = 20000`, each span clamped to 10000 tracks)
-            // grows the implicit grid past the 32767 lines Taffy numbers it
-            // with, and layout panics. Auto-placed, those cells wrap.
+            // grows the implicit grid past the 32767 lines Taffy 0.12 numbered
+            // it with, and layout panicked; Taffy 0.14 (#1236) clamps the axis
+            // at 10000 tracks and overlaps the cells past it instead.
+            // Auto-placed, those cells wrap.
             rows: columns && self.node.child_count() <= MAX_DEFINITE_GRID_TRACKS,
             columns,
         };
