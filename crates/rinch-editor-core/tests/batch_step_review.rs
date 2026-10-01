@@ -67,6 +67,7 @@ fn duplicate_attribute_changes_resolve_the_same_way_on_both_paths() {
     let mut edits = attrs();
     edits.push(BatchEdit::delete(2, 5));
     let one_by_one = BatchStep::new(edits).unwrap().apply(&doc).unwrap();
+    assert_eq!(level(&spliced), Some(3), "the last change given wins");
     assert_eq!(
         level(&spliced),
         level(&one_by_one),
