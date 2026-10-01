@@ -1131,28 +1131,98 @@ fn a_sticky_index_in_the_master_cell_survives_a_peers_merge() {
     assert_eq!(&t[rp.parent_offset()..], "c0", "parent text {t}");
 }
 
-/// Equal rows take each other's edits: the table matches rows and columns before and
-/// after a local edit by value, so with three empty rows A's `deleteRow` on the first
-/// tombstones the **last** row, and B's typing there goes with it though nobody deleted
-/// that row. Pinned as the documented loss (guide, `src/table.rs`); a matching by
-/// identity would make this keep "keep" and fail here.
+/// An all-empty table (what `insertTable` makes).
+fn empty_grid(s: &Schema, rows: usize, cols: usize) -> Node {
+    branch(
+        s,
+        "table",
+        (0..rows)
+            .map(|_| branch(s, "table_row", (0..cols).map(|_| cell(s, "")).collect()))
+            .collect(),
+    )
+}
+
+/// Equal rows do not take each other's edits (#1240): rows and columns are matched by
+/// the model's identity, not their value, so with three empty rows A's `deleteRow` on
+/// the first deletes the first, and B's typing in the last survives. By value, the
+/// last row was the one deleted, with B's typing.
 #[test]
-fn deleting_one_of_several_equal_rows_can_take_a_peers_typing_with_it() {
+fn deleting_one_of_several_equal_rows_keeps_a_peers_typing_in_another() {
     for g in concurrently(
-        |s| {
-            let empty = branch(
-                s,
-                "table",
-                (0..3)
-                    .map(|_| branch(s, "table_row", vec![cell(s, ""), cell(s, "")]))
-                    .collect(),
-            );
-            vec![empty, para(s, "tail")]
-        },
+        |s| vec![empty_grid(s, 3, 2), para(s, "tail")],
         |a| a.in_cell(0, 0, "deleteRow"),
         |b| b.type_in_cell(2, 0, "keep"),
     ) {
-        assert_eq!(g, "_ | _\n_ | _", "today the wrong row is deleted");
+        assert_eq!(g, "_ | _\nkeep | _");
+    }
+}
+
+#[test]
+fn deleting_one_of_several_equal_columns_keeps_a_peers_typing_in_another() {
+    for g in concurrently(
+        |s| vec![empty_grid(s, 2, 3), para(s, "tail")],
+        |a| a.in_cell(0, 0, "deleteColumn"),
+        |b| b.type_in_cell(0, 2, "keep"),
+    ) {
+        assert_eq!(g, "_ | keep\n_ | _");
+    }
+}
+
+#[test]
+fn a_row_added_among_equal_rows_lands_where_it_was_added() {
+    // A's new row goes after row 0; B typed in old row 1, which is now row 2.
+    for g in concurrently(
+        |s| vec![empty_grid(s, 3, 1), para(s, "tail")],
+        |a| a.in_cell(0, 0, "addRowAfter"),
+        |b| b.type_in_cell(1, 0, "x"),
+    ) {
+        assert_eq!(g, "_\n_\nx\n_");
+    }
+}
+
+#[test]
+fn a_column_added_among_equal_columns_lands_where_it_was_added() {
+    for g in concurrently(
+        |s| vec![empty_grid(s, 1, 3), para(s, "tail")],
+        |a| a.in_cell(0, 0, "addColumnAfter"),
+        |b| b.type_in_cell(0, 1, "x"),
+    ) {
+        assert_eq!(g, "_ | _ | x | _");
+    }
+}
+
+#[test]
+fn deleting_one_of_several_equal_paragraphs_in_a_cell_keeps_a_peers_typing() {
+    // A cell's blocks are a child list, matched by identity like the rows.
+    let s = schema();
+    for ids in [(11u64, 22u64), (22, 11)] {
+        let three = branch(
+            &s,
+            "table_cell",
+            vec![para(&s, ""), para(&s, ""), para(&s, "")],
+        );
+        let blocks = vec![
+            branch(
+                &s,
+                "table",
+                vec![branch(&s, "table_row", vec![three, cell(&s, "x")])],
+            ),
+            para(&s, "tail"),
+        ];
+        let (mut a, mut b) = pair(&s, blocks, ids);
+        let at = cell_pos(&a.state.doc, 0, 0) + 1; // the cell's content
+        a.local(|tr| {
+            tr.delete(at, at + 2).unwrap();
+        });
+        b.type_at(at + 4 + 1, "keep");
+        exchange(&mut a, &mut b);
+        assert_eq!(a.state.doc, b.state.doc, "ids {ids:?}");
+        let (table, _) = first_table(&a.state.doc).unwrap();
+        let c = table.child(0).child(0);
+        let texts: Vec<String> = (0..c.child_count())
+            .map(|i| inline_text(c.child(i)))
+            .collect();
+        assert_eq!(texts, ["", "keep"], "ids {ids:?}");
     }
 }
 
@@ -1291,4 +1361,274 @@ fn many_rows_and_columns_added_at_once_still_read() {
     a.type_in_cell(1, 1, "filled");
     exchange(&mut a, &mut b);
     assert_eq!(a.state.doc, b.state.doc);
+}
+
+// --- the identity the local diff relies on -----------------------------------------------
+
+/// Every cell and row of `before`'s first table, with its text: `(row texts, cell)`.
+fn cells_by_text(doc: &Node) -> Vec<(String, Node)> {
+    let (table, _) = first_table(doc).expect("a table");
+    let mut out = Vec::new();
+    for r in 0..table.child_count() {
+        let row = table.child(r);
+        for k in 0..row.child_count() {
+            out.push((inline_text(row.child(k)), row.child(k).clone()));
+        }
+    }
+    out
+}
+
+/// Assert every row of `before`'s table not in `touched_rows` (by its first cell's
+/// text) is the **same** `Rc` in `after`, and every cell whose text is not in
+/// `touched_cells` and that is still there is the same `Rc` too: what the table and
+/// child-list diffs match on.
+fn assert_untouched_kept(
+    before: &Node,
+    after: &Node,
+    touched_rows: &[usize],
+    touched_cells: &[&str],
+) {
+    let (bt, _) = first_table(before).unwrap();
+    let (at, _) = first_table(after).unwrap();
+    let after_cells = cells_by_text(after);
+    for (text, cell) in cells_by_text(before) {
+        if text.is_empty() || touched_cells.contains(&text.as_str()) {
+            continue;
+        }
+        if let Some((_, now)) = after_cells.iter().find(|(t, _)| *t == text) {
+            assert!(cell.same_ref(now), "cell {text} was rebuilt");
+        }
+    }
+    for r in 0..bt.child_count() {
+        if touched_rows.contains(&r) {
+            continue;
+        }
+        let row = bt.child(r);
+        let first = inline_text(row.child(0));
+        let kept = (0..at.child_count()).any(|i| {
+            at.child(i).child_count() > 0
+                && inline_text(at.child(i).child(0)) == first
+                && at.child(i).same_ref(row)
+        });
+        assert!(kept, "row {r} was rebuilt");
+    }
+}
+
+#[test]
+fn table_commands_keep_every_row_and_cell_they_do_not_touch() {
+    let s = schema();
+    let fresh = || Peer::host(&s, table_and_tail(&s, 4, 4), 1);
+    let check = |edit: &dyn Fn(&mut Peer), rows: &[usize], cells: &[&str]| {
+        let mut p = fresh();
+        let before = p.state.doc.clone();
+        edit(&mut p);
+        assert_untouched_kept(&before, &p.state.doc, rows, cells);
+    };
+    check(&|p| p.type_in_cell(1, 1, "!"), &[1], &["r1c1"]);
+    check(&|p| p.in_cell(1, 1, "addRowAfter"), &[], &[]);
+    check(&|p| p.in_cell(1, 1, "addRowBefore"), &[], &[]);
+    check(&|p| p.in_cell(1, 1, "deleteRow"), &[1], &[]);
+    check(&|p| p.in_cell(1, 1, "addColumnAfter"), &[0, 1, 2, 3], &[]);
+    check(&|p| p.in_cell(1, 1, "addColumnBefore"), &[0, 1, 2, 3], &[]);
+    check(&|p| p.in_cell(1, 1, "deleteColumn"), &[0, 1, 2, 3], &[]);
+    check(
+        &|p| p.merge((1, 1), (2, 2)),
+        &[1, 2],
+        &["r1c1", "r1c2", "r2c1", "r2c2"],
+    );
+    // A split, from the merged table.
+    let mut p = fresh();
+    p.merge((1, 1), (2, 2));
+    let before = p.state.doc.clone();
+    p.in_cell(1, 1, "splitCell");
+    assert_untouched_kept(&before, &p.state.doc, &[1, 2], &["r1c1r1c2r2c1r2c2"]);
+    // A row or column added inside a merged cell: the master cell's span changes.
+    let mut p = fresh();
+    p.merge((1, 1), (2, 2));
+    let before = p.state.doc.clone();
+    p.in_cell(1, 0, "addRowAfter");
+    assert_untouched_kept(&before, &p.state.doc, &[1], &["r1c1r1c2r2c1r2c2"]);
+    let before = p.state.doc.clone();
+    p.in_cell(0, 1, "addColumnAfter");
+    assert_untouched_kept(
+        &before,
+        &p.state.doc,
+        &[0, 1, 2, 3, 4],
+        &["r1c1r1c2r2c1r2c2"],
+    );
+}
+
+// --- equal rows under concurrent structure: a randomized check (#1240) ---------------------
+
+/// One peer's concurrent action in [`equal_rows_trial`].
+#[derive(Debug, Clone, Copy)]
+enum Act {
+    Type {
+        row: usize,
+        col: usize,
+    },
+    /// `deleteRow`/`deleteColumn` (`after` unused), or an add before/after.
+    Rows {
+        at: usize,
+        add: bool,
+        after: bool,
+    },
+    Cols {
+        at: usize,
+        add: bool,
+        after: bool,
+    },
+}
+
+/// Where logical line `i` of one axis ends up after concurrent `deletes` and `adds`
+/// (anchor, after?), or `None` when one of the peers deleted it.
+fn moved(i: usize, deletes: &[usize], adds: &[(usize, bool)]) -> Option<usize> {
+    if deletes.contains(&i) {
+        return None;
+    }
+    let survivors = (0..i).filter(|k| !deletes.contains(k)).count();
+    let added = adds
+        .iter()
+        .filter(|&&(a, after)| if after { a < i } else { a <= i })
+        .count();
+    Some(survivors + added)
+}
+
+/// A trial: an all-empty `rows × cols` table on `peers` synced replicas; every peer
+/// makes one edit at once — typing a token of its own into a cell, or deleting or
+/// adding a row or a column — and every delta reaches every peer in an order of its
+/// own. All rows and columns are equal before, which is where a match by value
+/// attributes a structural edit to the wrong line. The check: every token is exactly
+/// where its author typed it, moved only by the rows and columns the others really
+/// added or deleted, and is gone only when its own row or column was deleted.
+fn equal_rows_trial(seed: u64, peers: usize) -> Vec<Act> {
+    let s = schema();
+    let mut rng = Rng::new(seed);
+    let (rows, cols) = (4 + rng.below(2), 4 + rng.below(2));
+    let id = |p: usize| seed * 16 + p as u64 + 1;
+    let host = Peer::host(
+        &s,
+        vec![empty_grid(&s, rows, cols), para(&s, "tail")],
+        id(0),
+    );
+    let mut replicas: Vec<Peer> = (1..peers).map(|p| host.join(id(p))).collect();
+    replicas.insert(0, host);
+    let _ = replicas[0].send();
+    let mut acts = Vec::new();
+    for (p, peer) in replicas.iter_mut().enumerate() {
+        let (at_r, at_c) = (rng.below(rows), rng.below(cols));
+        let (add, after) = (rng.below(2) == 0, rng.below(2) == 0);
+        let act = match rng.below(if p == 0 { 1 } else { 3 }) {
+            0 => Act::Type {
+                row: at_r,
+                col: at_c,
+            },
+            1 => Act::Rows {
+                at: at_r,
+                add,
+                after,
+            },
+            _ => Act::Cols {
+                at: at_c,
+                add,
+                after,
+            },
+        };
+        let command = |add: bool, after: bool, what: &str| match (add, after) {
+            (false, _) => format!("delete{what}"),
+            (true, true) => format!("add{what}After"),
+            (true, false) => format!("add{what}Before"),
+        };
+        match act {
+            Act::Type { row, col } => peer.type_in_cell(row, col, &format!("t{p}x")),
+            Act::Rows { at, add, after } => peer.in_cell(at, 0, &command(add, after, "Row")),
+            Act::Cols { at, add, after } => peer.in_cell(0, at, &command(add, after, "Column")),
+        }
+        acts.push(act);
+    }
+    let deltas: Vec<Vec<u8>> = replicas.iter_mut().map(|p| p.send()).collect();
+    for (q, replica) in replicas.iter_mut().enumerate() {
+        let mut order: Vec<usize> = (0..peers).filter(|&p| p != q).collect();
+        for k in (1..order.len()).rev() {
+            order.swap(k, rng.below(k + 1));
+        }
+        for p in order {
+            replica.receive(&deltas[p]);
+        }
+    }
+    for q in 1..peers {
+        assert_eq!(
+            replicas[q].state.doc, replicas[0].state.doc,
+            "seed {seed}: {acts:?}"
+        );
+    }
+    let (mut row_del, mut row_add, mut col_del, mut col_add) = (vec![], vec![], vec![], vec![]);
+    for act in &acts {
+        match *act {
+            Act::Rows { at, add: false, .. } => row_del.push(at),
+            Act::Rows {
+                at,
+                add: true,
+                after,
+            } => row_add.push((at, after)),
+            Act::Cols { at, add: false, .. } => col_del.push(at),
+            Act::Cols {
+                at,
+                add: true,
+                after,
+            } => col_add.push((at, after)),
+            Act::Type { .. } => {}
+        }
+    }
+    let doc = &replicas[0].state.doc;
+    let text = grid_text(doc);
+    let grid: Vec<Vec<&str>> = text.lines().map(|l| l.split(" | ").collect()).collect();
+    for (p, act) in acts.iter().enumerate() {
+        let Act::Type { row, col } = *act else {
+            continue;
+        };
+        let token = format!("t{p}x");
+        let found = text.matches(&token).count();
+        match (
+            moved(row, &row_del, &row_add),
+            moved(col, &col_del, &col_add),
+        ) {
+            (Some(r), Some(c)) => {
+                assert_eq!(
+                    found, 1,
+                    "seed {seed}: {token} lost or doubled; {acts:?}\n{text}"
+                );
+                assert!(
+                    grid[r][c].contains(&token),
+                    "seed {seed}: {token} typed at ({row}, {col}) belongs at ({r}, {c}); \
+                     {acts:?}\n{text}"
+                );
+            }
+            _ => assert_eq!(
+                found, 0,
+                "seed {seed}: {token}'s line was deleted; {acts:?}\n{text}"
+            ),
+        }
+    }
+    acts
+}
+
+#[test]
+fn typing_in_equal_rows_lands_where_it_was_typed_whatever_the_others_add_or_delete() {
+    let (mut typed_beside_a_change, mut trials) = (0, 0);
+    for seed in 1..=150u64 {
+        for peers in [3, 4] {
+            let acts = equal_rows_trial(seed * 7 + peers as u64, peers);
+            trials += 1;
+            let structural = acts.iter().any(|a| !matches!(a, Act::Type { .. }));
+            if structural {
+                typed_beside_a_change += 1;
+            }
+        }
+    }
+    // A positive control: most trials put a structural edit beside the typing.
+    assert!(
+        typed_beside_a_change * 2 > trials,
+        "{typed_beside_a_change} of {trials}"
+    );
 }

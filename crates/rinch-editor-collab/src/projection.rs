@@ -868,11 +868,16 @@ fn write_node(txn: &mut TransactionMut, node: &MapRef, nd: &NodeData) -> Result<
 /// Two kinds of change are **replaced** wholesale instead: a node changing kind
 /// (text-block ↔ container), and a node retyped into a shape that holds no text (a
 /// paragraph becoming a `horizontal_rule`) — see the comments on each below.
+///
+/// `model` is this node in the model before and after the edit, when the caller has
+/// them: the nested diffs below match children by **identity** through it (see
+/// [`Model`]).
 pub(crate) fn reconcile_node(
     txn: &mut TransactionMut,
     list: &ArrayRef,
     index: u32,
     target: &NodeData,
+    model: Model<'_>,
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
     let node = child_map(txn, list, index)
@@ -952,9 +957,9 @@ pub(crate) fn reconcile_node(
         NodeData::Container { children, .. } => {
             let content = node_content(txn, &node)
                 .ok_or_else(|| CollabError::schema("reconcile_node: missing content"))?;
-            reconcile_child_list(txn, &content, children, per_char)
+            reconcile_child_list(txn, &content, children, model, per_char)
         }
-        NodeData::Table(t) => reconcile_table(txn, &node, t, per_char),
+        NodeData::Table(t) => reconcile_table(txn, &node, t, model, per_char),
     }
 }
 
@@ -1005,17 +1010,62 @@ fn reconcile_text(
     Ok(())
 }
 
+/// The model's before and after of the node being reconciled, when the caller has
+/// them (`None` otherwise).
+///
+/// A child list is diffed by a common leading and trailing run of **unchanged**
+/// children. Unchanged is a question of identity, not value: a model edit keeps the
+/// `Rc` of every node it does not touch (the editor's transactions share untouched
+/// subtrees, table commands included — `table_commands_keep_every_row_and_cell_they_do_not_touch`),
+/// so a child the edit left alone is `same_ref` before and after, and one it rebuilt
+/// is not, however equal. Matching by value instead attributes an edit among **equal**
+/// siblings to the wrong one — three empty paragraphs in a quote, the first deleted,
+/// reads as the *last* deleted — and a peer's concurrent typing in the sibling nobody
+/// touched goes with it (#1240). The document's top level has always matched by
+/// identity ([`project_change`](CollabDoc::project_change)); this carries it down.
+///
+/// Identity needs each model sibling to be its own `Rc`: a model that shared one node
+/// between two siblings would make them indistinguishable again (nothing in the editor
+/// or the projection's read does).
+pub(crate) type Model<'a> = Option<(&'a Node, &'a Node)>;
+
+/// The `i`-th children of a [`Model`] pair, given the before and after index.
+pub(crate) fn model_child<'a>(model: Model<'a>, before: usize, after: usize) -> Model<'a> {
+    model.map(|(b, a)| (b.child(before), a.child(after)))
+}
+
+/// A common leading and trailing run of `bn` before and `an` after items under `same`:
+/// the lengths of the two runs, never overlapping.
+pub(crate) fn common_runs(
+    bn: usize,
+    an: usize,
+    same: impl Fn(usize, usize) -> bool,
+) -> (usize, usize) {
+    let mut prefix = 0;
+    while prefix < bn && prefix < an && same(prefix, prefix) {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < bn - prefix && suffix < an - prefix && same(bn - 1 - suffix, an - 1 - suffix) {
+        suffix += 1;
+    }
+    (prefix, suffix)
+}
+
 /// Reconcile a container's `content` array to `target`. Diffs the CRDT's current
-/// children against `target` by *structural* equality (a common leading/trailing run
-/// is left untouched, keeping the CRDT identity — and merge behaviour — of every
-/// node in it), reconciles the overlapping middle in place, and inserts/deletes the
-/// count difference. This is the same block-list diff as
-/// [`project_change`](CollabDoc::project_change), one level down; recursion carries it
-/// to any depth.
+/// children against `target` by a common leading and trailing run left untouched
+/// (keeping the CRDT identity — and merge behaviour — of every node in it), reconciles
+/// the overlapping middle in place, and inserts/deletes the count difference. This is
+/// the same block-list diff as [`project_change`](CollabDoc::project_change), one level
+/// down; recursion carries it to any depth.
+///
+/// The runs are taken by model identity when `model` is given and describes this list
+/// (see [`Model`]); by *structural* equality otherwise.
 pub(crate) fn reconcile_child_list(
     txn: &mut TransactionMut,
     content: &ArrayRef,
     target: &[NodeData],
+    model: Model<'_>,
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
     // The visible children, each with its raw index: a void container ([`is_void`]) is
@@ -1025,17 +1075,13 @@ pub(crate) fn reconcile_child_list(
     let cn = cur.len();
     let tn = target.len();
 
-    let mut prefix = 0;
-    while prefix < cn && prefix < tn && cur[prefix] == target[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < cn - prefix
-        && suffix < tn - prefix
-        && cur[cn - 1 - suffix] == target[tn - 1 - suffix]
-    {
-        suffix += 1;
-    }
+    // The model describes this list only when its children line up with it (they
+    // always do: the model is the projection); anything else falls back to values.
+    let model = model.filter(|(b, a)| b.child_count() == cn && a.child_count() == tn);
+    let (prefix, suffix) = match model {
+        Some((b, a)) => common_runs(cn, tn, |i, j| b.child(i).same_ref(a.child(j))),
+        None => common_runs(cn, tn, |i, j| cur[i] == target[j]),
+    };
 
     let cur_mid = cn - prefix - suffix;
     let tgt_mid = tn - prefix - suffix;
@@ -1044,15 +1090,15 @@ pub(crate) fn reconcile_child_list(
         txn,
         content,
         &raw,
-        prefix,
-        cur_mid,
+        prefix..prefix + cur_mid,
         &target[prefix..prefix + tgt_mid],
+        model,
         per_char,
     )
 }
 
-/// Apply a child-list diff to `content`. The diff keeps the first `prefix` visible
-/// children and replaces the next `cur_mid` of them with `targets`: the overlapping
+/// Apply a child-list diff to `content`. The diff keeps the visible children before
+/// `mid` (`prefix` of them) and replaces the `cur_mid` in it with `targets`: the overlapping
 /// changed children are reconciled in place (keeping their identity), then the extra
 /// targets are inserted or the extra current children deleted. At most one of the two
 /// runs, since the overlap is the shorter of the two changed runs.
@@ -1062,22 +1108,28 @@ pub(crate) fn reconcile_child_list(
 /// children are inserted right before the visible child that follows them (or at the
 /// end of the array), so a void container between two visible children stays where it
 /// was relative to the one after it.
+///
+/// `model`, when given, is the before and after of the node whose list this is, with
+/// children lined up with `raw` and with `prefix + targets.len()` and beyond: each
+/// reconciled pair is handed its own children's identity ([`Model`]).
 pub(crate) fn write_child_diff(
     txn: &mut TransactionMut,
     content: &ArrayRef,
     raw: &[u32],
-    prefix: usize,
-    cur_mid: usize,
+    mid: std::ops::Range<usize>,
     targets: &[NodeData],
+    model: Model<'_>,
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
+    let (prefix, cur_mid) = (mid.start, mid.len());
     let tgt_mid = targets.len();
     let common = cur_mid.min(tgt_mid);
     // Reconcile the overlapping changed children in place (keeps identity). A replace
     // inside `reconcile_node` removes and re-inserts at the same raw index, so no raw
     // index moves.
     for (k, target) in targets.iter().take(common).enumerate() {
-        reconcile_node(txn, content, raw[prefix + k], target, per_char)?;
+        let pair = model_child(model, prefix + k, prefix + k);
+        reconcile_node(txn, content, raw[prefix + k], target, pair, per_char)?;
     }
     // Insert the extra targets, consecutively, before the visible child that comes
     // after them.

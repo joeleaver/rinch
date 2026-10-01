@@ -182,7 +182,13 @@ impl CollabDoc {
         let content = self.content.clone();
         let mut txn = self.doc.transact_mut();
         write_child_diff(
-            &mut txn, &content, &raw, prefix, pre_mid, &targets, &per_char,
+            &mut txn,
+            &content,
+            &raw,
+            prefix..prefix + pre_mid,
+            &targets,
+            Some((before, after)),
+            &per_char,
         )
     }
 

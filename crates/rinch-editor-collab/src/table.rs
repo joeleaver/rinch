@@ -89,29 +89,31 @@
 //! The editor hands the projection the table after a command, not the command. The
 //! rows and columns of the table before (the CRDT's read, with ids) and after (the
 //! model) are matched the way a child list is: a common leading and trailing run of
-//! equal rows (equal columns) keeps its ids, the changed middle is paired by index, and
-//! the rest is inserted (fresh ids) or deleted (tombstoned). Rows and columns are
-//! compared by their **slots** with spans left out — the anchored cell's type, attrs and
-//! content, or "covered" — so a column added through a merged cell, which changes that
-//! cell's `colspan`, still matches every other column. Then every anchor of the new
-//! grid is written at its key: unchanged cells are left alone, changed ones reconciled
-//! in place (their blocks diffed like any child list, so a peer's typing in another
-//! paragraph of the cell merges), new ones inserted, and cells that are no longer
-//! anchors (merged away) deleted.
+//! **unchanged** rows (columns) keeps its ids, the changed middle is paired by index,
+//! and the rest is inserted (fresh ids) or deleted (tombstoned).
+//!
+//! Unchanged means the model edit kept it, which is a question of **identity**, not
+//! value (#1240): a row is unchanged when the model's row node before and after is the
+//! same `Rc`, and a column when, in every row kept on both sides, the same model cell
+//! covers it at the same offset from its anchor. By value, equal rows were
+//! interchangeable: in a fresh `insertTable`, whose rows are all empty, a `deleteRow`
+//! on the first tombstoned the *last*, and a peer's concurrent typing there went with
+//! it. A column added or deleted changes every row node, so the rows fall in the
+//! middle and pair by index; a merge changes the master cell, so the columns it spans
+//! fall in the middle and pair by index too. Without the model's before and after (a
+//! caller that has none) the match falls back to values: the rows' and columns' **slots**
+//! with spans left out — the anchored cell's type, attrs and content, or "covered".
+//!
+//! Then every anchor of the new grid is written at its key: unchanged cells are left
+//! alone, changed ones reconciled in place (their blocks diffed like any child list,
+//! by identity too, so a peer's typing in another paragraph of the cell merges), new
+//! ones inserted, and cells that are no longer anchors (merged away) deleted.
 //!
 //! ## What concurrency can still lose
 //!
 //! Convergence holds for every interleaving; these are the edits that lose to another:
 //!
 //! * Typing in a row or column a peer deletes, or in a cell a peer merges away.
-//! * Typing in a row or column **equal to its neighbours**. Matching is by value, not
-//!   identity: with three equal rows (every row of a fresh `insertTable` is empty), a
-//!   `deleteRow` on the first tombstones the *last*, and a peer's concurrent typing in
-//!   that row goes with it, though nobody deleted it. An `addRowAfter` among equal
-//!   rows is written at the end of the equal run, so after a peer's concurrent typing
-//!   in one of them the new row is not where it was added. The same holds for
-//!   columns, and for equal blocks in a cell or any other container (their children
-//!   are diffed by value too; only the document's top level matches by identity).
 //! * Two peers changing the same **filler** at once: both write a cell at one key, and
 //!   one of the two cells wins whole (a yrs map key is last-writer-wins).
 //! * Two overlapping merges: the content the later one moved is in a cell the earlier
@@ -132,8 +134,9 @@ use rinch_editor_core::tables::GRID_SLOT_FLOOR;
 
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    ATTRS, BlockData, CONTENT, NodeData, TYPE, insert_node, node_attrs, node_content, node_type,
-    read_children, read_node, reconcile_attrs, reconcile_child_list, write_attrs,
+    ATTRS, BlockData, CONTENT, Model, NodeData, TYPE, common_runs, insert_node, node_attrs,
+    node_content, node_type, read_children, read_node, reconcile_attrs, reconcile_child_list,
+    write_attrs,
 };
 
 /// The table node type, and its row type.
@@ -778,22 +781,15 @@ fn slots<'a>(t: &'a TableData, grid: &Layout) -> Vec<Vec<Slot<'a>>> {
 }
 
 /// Match a sequence before and after an edit, the way a child list is diffed: a
-/// common leading and trailing run, the changed middle paired by index. Returns, for
-/// every `after` index, the `before` index it keeps (`None` for a new one), and the
-/// `before` indices no `after` index keeps.
-fn match_lines<T: PartialEq>(before: &[T], after: &[T]) -> (Vec<Option<usize>>, Vec<usize>) {
-    let (bn, an) = (before.len(), after.len());
-    let mut prefix = 0;
-    while prefix < bn && prefix < an && before[prefix] == after[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < bn - prefix
-        && suffix < an - prefix
-        && before[bn - 1 - suffix] == after[an - 1 - suffix]
-    {
-        suffix += 1;
-    }
+/// common leading and trailing run under `same`, the changed middle paired by index.
+/// Returns, for every `after` index, the `before` index it keeps (`None` for a new
+/// one), and the `before` indices no `after` index keeps.
+fn match_lines(
+    bn: usize,
+    an: usize,
+    same: impl Fn(usize, usize) -> bool,
+) -> (Vec<Option<usize>>, Vec<usize>) {
+    let (prefix, suffix) = common_runs(bn, an, same);
     let (bm, am) = (bn - prefix - suffix, an - prefix - suffix);
     let common = bm.min(am);
     let mut keep = Vec::with_capacity(an);
@@ -807,6 +803,36 @@ fn match_lines<T: PartialEq>(before: &[T], after: &[T]) -> (Vec<Option<usize>>, 
         });
     }
     (keep, (prefix + common..prefix + bm).collect())
+}
+
+/// For every slot of a grid, the model cell covering it and the column that cell is
+/// anchored in: a column's identity, slot by slot ([`reconcile_table`]).
+fn cover<'a>(
+    table: &'a Node,
+    cells: &[Vec<Placed>],
+    width: usize,
+) -> Vec<Vec<Option<(&'a Node, usize)>>> {
+    let mut out = vec![vec![None; width]; cells.len()];
+    for (r, row) in cells.iter().enumerate() {
+        for (k, p) in row.iter().enumerate() {
+            let cell = table.child(r).child(k);
+            for slots in out.iter_mut().skip(r).take(p.rs) {
+                for slot in &mut slots[p.col..p.col + p.cs] {
+                    *slot = Some((cell, p.col));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether a model table's rows and cells line up with a grid's placed cells.
+fn lines_up(table: &Node, cells: &[Vec<Placed>]) -> bool {
+    table.child_count() == cells.len()
+        && cells
+            .iter()
+            .enumerate()
+            .all(|(r, row)| table.child(r).child_count() == row.len())
 }
 
 /// Bring the CRDT's lines (rows or columns) in step with `keep`: tombstone the dropped
@@ -855,6 +881,7 @@ pub(crate) fn reconcile_table(
     txn: &mut TransactionMut,
     node: &MapRef,
     target: &TableData,
+    model: Model<'_>,
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
     let before = read_table(txn, node)?;
@@ -882,15 +909,51 @@ pub(crate) fn reconcile_table(
             })
             .collect(),
     };
-    let (b_slots, a_slots) = (slots(&before.data, &before_grid), slots(target, &grid));
-    let (row_keep, row_drop) = match_lines(&b_slots, &a_slots);
-    let b_cols: Vec<Vec<&Slot<'_>>> = (0..before_grid.width)
-        .map(|j| b_slots.iter().map(|row| &row[j]).collect())
-        .collect();
-    let a_cols: Vec<Vec<&Slot<'_>>> = (0..grid.width)
-        .map(|j| a_slots.iter().map(|row| &row[j]).collect())
-        .collect();
-    let (col_keep, col_drop) = match_lines(&b_cols, &a_cols);
+    // Rows and columns are matched by model identity when the model's before and
+    // after line up with the two grids (they always do: the model is the projection),
+    // and by their slots' values otherwise (see the module docs).
+    let model = model.filter(|(b, a)| lines_up(b, &before_grid.cells) && lines_up(a, &grid.cells));
+    let (bn, an) = (before_grid.height, grid.height);
+    let ((row_keep, row_drop), (col_keep, col_drop)) = match model {
+        Some((old, new)) => {
+            // A row is kept when the edit kept its `Rc`.
+            let rows = match_lines(bn, an, |b, a| old.child(b).same_ref(new.child(a)));
+            // A column is kept when, in every row kept on both sides, the same model
+            // cell covers it at the same offset from its anchor. (Every row of the
+            // shorter side is paired, so some row always vouches. The offset is what
+            // "the same column" means; no case is known where it decides a match the
+            // cell alone would not — a kept cell keeps its span, so runs walked from
+            // one end meet it at one offset — and dropping it fails no test.)
+            let (bc, ac) = (
+                cover(old, &before_grid.cells, before_grid.width),
+                cover(new, &grid.cells, grid.width),
+            );
+            let kept: Vec<(usize, usize)> = rows
+                .0
+                .iter()
+                .enumerate()
+                .filter_map(|(i, k)| k.map(|k| (k, i)))
+                .collect();
+            let cols = match_lines(before_grid.width, grid.width, |b, a| {
+                kept.iter().all(|&(k, i)| match (bc[k][b], ac[i][a]) {
+                    (Some((x, xc)), Some((y, yc))) => x.same_ref(y) && b - xc == a - yc,
+                    _ => false,
+                })
+            });
+            (rows, cols)
+        }
+        None => {
+            let (b_slots, a_slots) = (slots(&before.data, &before_grid), slots(target, &grid));
+            let rows = match_lines(bn, an, |b, a| b_slots[b] == a_slots[a]);
+            let cols = match_lines(before_grid.width, grid.width, |b, a| {
+                b_slots
+                    .iter()
+                    .map(|row| &row[b])
+                    .eq(a_slots.iter().map(|row| &row[a]))
+            });
+            (rows, cols)
+        }
+    };
 
     let row_attrs: Vec<Attrs> = target.rows.iter().map(|r| r.attrs.clone()).collect();
     let cols = write_lines(
@@ -914,12 +977,16 @@ pub(crate) fn reconcile_table(
 
     // The before anchors, by (row id, column id): what each one was, so an unchanged
     // cell is left alone and one that is no longer an anchor is deleted.
-    let mut was: HashMap<(String, String), (&CellData, &ReadCell)> = HashMap::new();
+    let mut was: HashMap<(String, String), (&CellData, &ReadCell, Option<&Node>)> = HashMap::new();
     for (b, row) in before.cells.iter().enumerate() {
         for (k, cell) in row.iter().enumerate() {
             was.insert(
                 (before.rows[b].id.clone(), before.cols[cell.col].id.clone()),
-                (&before.data.rows[b].cells[k], cell),
+                (
+                    &before.data.rows[b].cells[k],
+                    cell,
+                    model.map(|(old, _)| old.child(b).child(k)),
+                ),
             );
         }
     }
@@ -936,14 +1003,16 @@ pub(crate) fn reconcile_table(
             Some(Out::YMap(m)) => m,
             _ => rows[i].1.insert(txn, CELLS, MapPrelim::default()),
         };
-        for (cell, p) in row.cells.iter().zip(&grid.cells[i]) {
+        for (k, (cell, p)) in row.cells.iter().zip(&grid.cells[i]).enumerate() {
             let key = (row_ids[i].clone(), col_ids[p.col].clone());
             let ends = ends_of(*p, i, &col_ids, &row_ids);
             let ends = (ends.0.as_deref(), ends.1.as_deref());
             let unchanged = match was.get(&key) {
                 // A filler that is still exactly a filler stays virtual.
-                Some((data, ReadCell { map: None, .. })) => *data == cell && p.cs == 1 && p.rs == 1,
-                Some((data, ReadCell { map: Some(m), .. })) => {
+                Some((data, ReadCell { map: None, .. }, _)) => {
+                    *data == cell && p.cs == 1 && p.rs == 1
+                }
+                Some((data, ReadCell { map: Some(m), .. }, _)) => {
                     *data == cell
                         && stored_ends(txn, m)
                             == (ends.0.map(str::to_string), ends.1.map(str::to_string))
@@ -954,8 +1023,15 @@ pub(crate) fn reconcile_table(
             if unchanged {
                 continue;
             }
+            // The cell's blocks are matched by identity too, when this key held it before.
+            let pair = match (was.get(&key), model) {
+                (Some((_, _, Some(old))), Some((_, new))) => Some((*old, new.child(i).child(k))),
+                _ => None,
+            };
             match cells_map.get(txn, &key.1) {
-                Some(Out::YMap(existing)) => reconcile_cell(txn, &existing, cell, ends, per_char)?,
+                Some(Out::YMap(existing)) => {
+                    reconcile_cell(txn, &existing, cell, ends, pair, per_char)?
+                }
                 _ => write_cell(txn, &cells_map, &key.1, cell, ends)?,
             }
         }
@@ -1001,6 +1077,7 @@ fn reconcile_cell(
     map: &MapRef,
     target: &CellData,
     ends: (Option<&str>, Option<&str>),
+    model: Model<'_>,
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
     if node_type(txn, map).as_deref() != Some(target.type_name.as_str()) {
@@ -1014,7 +1091,7 @@ fn reconcile_cell(
         Some(c) => c,
         None => map.insert(txn, CONTENT, ArrayPrelim::default()),
     };
-    reconcile_child_list(txn, &content, &target.children, per_char)?;
+    reconcile_child_list(txn, &content, &target.children, model, per_char)?;
     set_ends(txn, map, ends);
     Ok(())
 }
