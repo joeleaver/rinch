@@ -886,6 +886,9 @@ fn hang_pass(
 ///   next thing overflows and parley appends it (no opportunity yet) up to
 ///   the first one it finds; another NBSP hung further on goes round again.
 ///
+/// parley's `main` hangs no NBSP since linebender/parley#762 (merged
+/// 2026-09-07, after 0.11.1): this can go with the release that carries it.
+///
 /// `None` when the unit table and the breaker disagree.
 fn unglue(
     breaker: &mut parley::layout::BreakLines<'_, Brush>,
