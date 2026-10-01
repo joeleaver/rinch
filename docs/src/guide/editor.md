@@ -172,15 +172,25 @@ which the grid cuts to 2^21 columns, is 2^21 + 1 after `addColumnAfter` across i
 
 The view lays a table out as that same grid (#1182): `<table>` is a CSS grid of
 `tables::column_count` columns and each cell is placed by its rectangle in the map
-(`tables::cell_rects`), `grid-column: span <width>` / `grid-row: span <height>`, not
-by its raw attributes — so a `rowspan` of `i64::MAX` in a two-row table spans two
-grid rows. A cell the map has no slot for is laid out as a band across the whole grid
-(`grid-column: 1 / -1`) on a row of its own, so its text stays visible and adds no
-column. Written raw, a few cells of huge spans stacked past the 32767 grid lines Taffy
-numbers a grid with, and desktop layout panicked. Two limits remain: the desktop's
-Stylo clamps a grid template and every span to 10000 tracks, so a table wider than
-that is drawn 10000 columns wide; and the cells are *auto-placed*, which can put a
-cell in a different row than the map does when a rowspan leaves a row short (#1209).
+(`tables::cell_rects`), not by its raw attributes — so a `rowspan` of `i64::MAX` in a
+two-row table spans two grid rows. The rectangle is written as definite grid lines,
+`grid-column: <left + 1> / <right + 1>` and `grid-row: <top + 1> / <bottom + 1>`
+(#1209): CSS auto-placement knows no rows and packed a cell of a row that a rowspan
+leaves short into the row before it, where the map has it below. A cell the map has
+no slot for is laid out as a band across the whole grid (`grid-column: 1 / -1`) on a
+row of its own (the first the grid leaves empty, normally after its last),
+so its text stays visible and adds no column.
+Written raw, a few cells of huge spans stacked past the 32767 grid lines Taffy numbers
+a grid with, and desktop layout panicked. Two limits remain, both from the desktop's
+Stylo clamping a grid line, a template and every span to 10000: a table wider than
+that is drawn 10000 columns wide; and an axis past 9999 tracks, whose lines would be
+clamped onto one, is placed by `span <n>` and auto-placement instead. A table past
+9999 rows keeps its column lines, so a cell is still placed below the one before it
+in its column. A table past 9999 columns loses its row lines too, because cells
+locked to their row with auto-placed columns can grow the grid past the 32767 lines
+Taffy numbers it with (a row of four `colspan = 20000` cells panicked); there a short
+row's cells are still lifted into the row before it, on the web as well as the
+desktop.
 
 ## The transform engine
 

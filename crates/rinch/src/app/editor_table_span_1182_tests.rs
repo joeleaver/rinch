@@ -154,3 +154,88 @@ fn an_ordinary_merged_table_lays_out_as_before() {
     assert_eq!(r[1].1, r[2].1, "{r:?}");
     assert!(r[2].0 > r[1].0 && r[1].1 > r[0].1, "{r:?}");
 }
+
+/// #1209: a row a rowspan leaves short keeps its cells. In
+/// `[[A rowspan=2, X], [B, C]]` the map is three columns wide (row 1 is A's
+/// carried column plus B and C) and puts B and C in row 1, under X and the
+/// empty slot beside it. CSS auto-placement, which knows no rows, packed B
+/// into that empty slot in row 0 — beside X, one row up — and C under X.
+/// (A row that holds nothing but a rowspan's top is zero pixels tall, so a
+/// shape whose lifted row is otherwise empty draws the same either way: X is
+/// what makes row 0 visible.)
+#[test]
+fn a_cell_in_a_row_a_rowspan_leaves_short_stays_in_its_row() {
+    let (app, cells, _) = mounted(&[vec![(1, 2), (1, 1)], vec![(1, 1), (1, 1)]]);
+    let r: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
+    assert_eq!(r.len(), 4, "control: four cells mounted");
+    let [a, x, b, c] = [r[0], r[1], r[2], r[3]];
+    assert!(b.1 > x.1 + 1.0, "B is in row 1, below X: {r:?}");
+    assert!((b.1 - c.1).abs() < 0.5, "B and C share row 1: {r:?}");
+    assert!(
+        (b.0 - x.0).abs() < 0.5 && c.0 > b.0,
+        "B under X, C beside it: {r:?}"
+    );
+    assert!(
+        (c.1 + c.3 - (a.1 + a.3)).abs() <= 1.0,
+        "A spans both rows: {r:?}"
+    );
+}
+
+/// Off the two-row shape: a three-row rowspan, so two rows are re-lifted.
+/// `[[A rowspan=3, X], [B, C], [D]]`: the map is `A X . / A B C / A D .`.
+/// Auto-placement drew `A X B / A C D`, every cell after X one slot early.
+#[test]
+fn every_row_under_a_short_one_keeps_its_cells() {
+    let (app, cells, _) = mounted(&[vec![(1, 3), (1, 1)], vec![(1, 1), (1, 1)], vec![(1, 1)]]);
+    let r: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
+    assert_eq!(r.len(), 5, "control: five cells mounted");
+    let [a, x, b, c, d] = [r[0], r[1], r[2], r[3], r[4]];
+    assert!(
+        b.1 > x.1 + 1.0 && (b.1 - c.1).abs() < 0.5,
+        "B, C in row 1: {r:?}"
+    );
+    assert!(d.1 > b.1 + 1.0, "D in row 2: {r:?}");
+    assert!(
+        (b.0 - x.0).abs() < 0.5 && (d.0 - x.0).abs() < 0.5 && c.0 > b.0,
+        "X, B, D in column 1, C in column 2: {r:?}"
+    );
+    assert!(
+        (d.1 + d.3 - (a.1 + a.3)).abs() <= 1.0,
+        "A ends with the last row: {r:?}"
+    );
+}
+
+/// #1209, a table past 9999 rows: its columns still fit Stylo's grid lines,
+/// so its cells keep their column lines, and a cell locked to its column is
+/// placed below the cell before it in that column. `[[A rowspan=2, X],
+/// [B, C], …]` then 9998 rows of three cells: B and C in row 1, under X, where
+/// auto-placement by spans put B beside X.
+///
+/// Ignored: laying out 10000 rows takes about two minutes in a debug build.
+/// The written lines are pinned by `rinch-editor-view`'s
+/// `a_grid_past_the_line_cap_falls_back_to_spans`; this is their layout.
+#[test]
+#[ignore = "10000-row layout, ~2 min in debug"]
+fn a_tall_table_keeps_its_column_lines() {
+    let mut rows = vec![vec![(1, 2), (1, 1)], vec![(1, 1), (1, 1)]];
+    rows.extend(std::iter::repeat_n(vec![(1, 1); 3], 9_998));
+    let (app, cells, _) = mounted(&rows);
+    let r: Vec<_> = cells[..4].iter().map(|&c| rect(&app, c)).collect();
+    let [_, x, b, c] = [r[0], r[1], r[2], r[3]];
+    assert!(b.1 > x.1 + 1.0, "B is in row 1, below X: {r:?}");
+    assert!((b.1 - c.1).abs() < 0.5 && (b.0 - x.0).abs() < 0.5, "{r:?}");
+}
+
+/// #1209: a wide row of wide cells — four of `colspan = 20000` in a
+/// 80000-column table — lays out without a panic. Locked to their row with
+/// auto-placed columns, the four (each span clamped to 10000 tracks) took
+/// 40000 column lines, past the `i16` Taffy numbers them with; a table past
+/// 9999 columns is therefore auto-placed in both axes.
+#[test]
+fn a_wide_row_of_wide_cells_does_not_panic() {
+    let w = (20_000, 1);
+    let (app, cells, _) = mounted(&[vec![w, w, w, w]]);
+    assert_eq!(cells.len(), 4, "control: four cells mounted");
+    let r: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
+    assert!(r.iter().all(|c| c.2 > 0.0), "{r:?}");
+}
