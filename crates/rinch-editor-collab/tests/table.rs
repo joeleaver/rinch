@@ -2406,7 +2406,7 @@ fn an_app_transaction_adding_a_huge_colspan_is_refused() {
     let huge = branch(
         &s,
         "table",
-        vec![branch(&s, "table_row", vec![spanning(&s, "x", 5000, 1)])],
+        vec![branch(&s, "table_row", vec![spanning(&s, "x", 100_000, 1)])],
     );
     let end = b.state.doc.content_size();
     let mut tr = b.state.tr();
@@ -2418,8 +2418,8 @@ fn an_app_transaction_adding_a_huge_colspan_is_refused() {
 }
 
 /// #1248, the read side and a guest join: a CRDT whose table has more lines than its
-/// cells allow — here one cell stretched over 4200 appended columns, 4202 lines and
-/// only 4201 slots, so no other budget applies — reads as the placeholder, for a peer
+/// cells allow — here one cell stretched over 70,000 appended columns, 70,002 lines
+/// and only 70,001 slots, so no other budget applies — reads as the placeholder, for a peer
 /// and for a guest joining from it.
 #[test]
 fn a_guest_joining_past_the_line_budget_sees_the_placeholder() {
@@ -2446,8 +2446,10 @@ fn a_guest_joining_past_the_line_budget_sees_the_placeholder() {
         let Some(Out::YArray(rows)) = table.get(&txn, "rows") else {
             panic!("no rows")
         };
-        for i in 0..4200 {
-            let m = cols.push_back(&mut txn, MapPrelim::default());
+        // Each new column right after the first: `push_back` walks the whole array per
+        // insert, quadratic at this size. So the first one added ends up last.
+        for i in 0..70_000 {
+            let m = cols.insert(&mut txn, 1, MapPrelim::default());
             m.insert(&mut txn, "id", Any::String(format!("c{i}").into()));
         }
         let Some(Out::YMap(row0)) = rows.get(&txn, 0) else {
@@ -2460,7 +2462,7 @@ fn a_guest_joining_past_the_line_budget_sees_the_placeholder() {
         let Some(Out::YMap(cell)) = cells.get(&txn, &first) else {
             panic!("no cell")
         };
-        cell.insert(&mut txn, "col_end", Any::String("c4199".into()));
+        cell.insert(&mut txn, "col_end", Any::String("c0".into()));
     }
     let update = doc.transact().encode_state_as_update_v1(&sv);
     integrate_healthy(&mut b, &update);

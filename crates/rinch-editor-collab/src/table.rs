@@ -71,7 +71,7 @@
 //!    line costs about 20 bytes on the wire and a filler none, so `n` rows and `n`
 //!    columns appended by a foreign writer would read as `n²` fillers (90 KB of
 //!    update, 2.3 GB on every replica, measured). The read refuses more rows plus
-//!    columns than `line_budget` (`max(2 × stored cells, LINE_FLOOR = 4096)`, #1248)
+//!    columns than `line_budget` (`max(2 × stored cells, LINE_FLOOR = 2^16)`, #1248)
 //!    and more slots than the model's own `grid_slot_budget` allows (both checked
 //!    before the grid is allocated), and more fillers than `max(stored cells, FILLER_FLOOR)`
 //!    (2^16 — room for the fillers honest concurrent row and column adds make: a
@@ -241,7 +241,11 @@ fn line_budget(cells: usize) -> usize {
 }
 
 /// The floor of [`line_budget`].
-pub(crate) const LINE_FLOOR: usize = 4096;
+/// 2^16 lines is about 1.3 MB of row and column maps on the wire: it admits a cell
+/// spanning thousands of columns that an app's own transaction made (a host holding
+/// `colspan = 5000` must reach its guests whole, `colspan_cap_collab_guest`, #1214),
+/// and refuses one of `colspan = 3_000_000`.
+pub(crate) const LINE_FLOOR: usize = 1 << 16;
 
 /// The attr that marks a [`placeholder`] in the model. No HTML, markdown or table
 /// command produces it; the projection refuses to write a table carrying it.
@@ -469,8 +473,11 @@ struct Line {
 fn read_lines<T: ReadTxn>(txn: &T, list: &ArrayRef, what: &str) -> Result<Vec<Line>> {
     let mut out = Vec::with_capacity(list.len(txn) as usize);
     let mut seen = HashSet::new();
-    for raw in 0..list.len(txn) {
-        let Some(Out::YMap(map)) = list.get(txn, raw) else {
+    // One sequential pass: `ArrayRef::get` walks the array from its start, so reading
+    // each line by index cost O(lines²) — 70,000 lines took minutes.
+    for (raw, line) in list.iter(txn).enumerate() {
+        let raw = raw as u32;
+        let Out::YMap(map) = line else {
             return Err(CollabError::schema(format!(
                 "a table {what} that is not a map"
             )));
@@ -785,8 +792,8 @@ fn read_cell<T: ReadTxn>(txn: &T, cell: &MapRef, cs: usize, rs: usize) -> Result
 /// tombstones alone.
 pub(crate) fn table_map_is_void<T: ReadTxn>(txn: &T, node: &MapRef) -> bool {
     let live = |key: &str| match node.get(txn, key) {
-        Some(Out::YArray(list)) => (0..list.len(txn)).any(|i| match list.get(txn, i) {
-            Some(Out::YMap(m)) => !matches!(m.get(txn, DELETED), Some(Out::Any(Any::Bool(true)))),
+        Some(Out::YArray(list)) => list.iter(txn).any(|line| match line {
+            Out::YMap(m) => !matches!(m.get(txn, DELETED), Some(Out::Any(Any::Bool(true)))),
             _ => false,
         }),
         _ => false,
