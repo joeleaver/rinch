@@ -911,7 +911,8 @@ impl EditorHandle {
     /// Build a handle and project it into `container` in one step (the eager path,
     /// used by tests and by [`Self::mount`]). `doc_ref` is a weak handle to the
     /// host document the view patches. Does **not** register the editor with the
-    /// runtime — that is [`Self::mount`]'s job.
+    /// runtime — that is [`Self::mount`]'s job. `doc` is loaded as
+    /// [`Self::load_doc`] loads one (a `colspan` past 1000 is capped, #1214).
     pub fn new(
         container: NodeHandle,
         doc_ref: Weak<RefCell<dyn DomDocument>>,
@@ -919,6 +920,8 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
+        // A load: colspans past 1000 are capped (#1214).
+        let doc = rinch_editor_core::tables::cap_colspans(&doc);
         // Plugins' `init_state` and `decorations` run here; untracked, as under
         // the core (#943).
         let (state, view) = untracked_handler(|| {
@@ -2159,6 +2162,14 @@ impl EditorHandle {
     /// single empty paragraph, so the editor is never left with no textblock to
     /// render or place a caret in.
     ///
+    /// A table cell's `colspan` past 1000 is capped at 1000, as the HTML import
+    /// and Chrome read it (#1214, `rinch_editor_core::tables::cap_colspans`):
+    /// one such cell made every row as wide as it, and a row insert built a
+    /// cell per column. The same cap applies to the document [`Self::new`] is
+    /// given. Edits (commands, [`Self::update`]) are not capped, and neither is
+    /// the shared document a [collaboration guest](Self::start_collaboration_guest)
+    /// adopts: that is its peers' edits.
+    ///
     /// A [read-only](Self::set_read_only) editor still loads — that is how it gets
     /// a document to show — **except while collaborating**, where a load is a
     /// write to the shared document and is refused like any other (see
@@ -2170,9 +2181,21 @@ impl EditorHandle {
     /// [`Self::load_doc`], answering whether the document was loaded (`false`:
     /// refused by a read-only, collaborating editor).
     fn load_doc_checked(&self, doc: Node) -> bool {
+        self.load_doc_inner(doc, true)
+    }
+
+    /// Install `doc` as a load does. With `cap`, a table cell's `colspan` past
+    /// 1000 is capped, as the HTML import reads it (#1214,
+    /// `tables::cap_colspans`). A collaboration guest adopts the shared
+    /// document with `cap: false`: what the CRDT holds is its peers' edits,
+    /// which are not capped, and a capped model would differ from its own
+    /// projection and write the cap back to the peers as an edit nobody made.
+    fn load_doc_inner(&self, doc: Node, cap: bool) -> bool {
         let mut core = self.core_mut();
         let doc = if doc.child_count() == 0 {
             empty_paragraph_doc(&core.schema).unwrap_or(doc)
+        } else if cap {
+            rinch_editor_core::tables::cap_colspans(&doc)
         } else {
             doc
         };
@@ -2790,7 +2813,8 @@ impl EditorHandle {
         let schema = self.core().schema.clone();
         let doc = session.projected_doc(&schema)?;
         self.core_mut().collab = None;
-        self.load_doc(doc);
+        // Not capped (#1214): the shared document is peers' edits, not a load.
+        self.load_doc_inner(doc, false);
         self.core_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
         Ok(())
     }
@@ -3077,6 +3101,48 @@ mod tests {
             container_id,
             handle,
         }
+    }
+
+    /// #1214: the guest join's load (`cap: false`) installs a wide `colspan` as
+    /// it is; a load proper caps it. (The join itself is pinned in
+    /// `tests/colspan_cap_collab_guest.rs` once tables are in the collab scope,
+    /// #1233.)
+    #[test]
+    fn only_a_capped_load_caps_a_colspan() {
+        let s = Schema::starter_kit();
+        let p = s.branch("paragraph", Fragment::empty()).unwrap();
+        let h = mount(s.branch("doc", Fragment::from_node(p.clone())).unwrap());
+        let cell = s
+            .create_node(
+                "table_cell",
+                rinch_editor_core::Attrs::from_iter([(
+                    "colspan",
+                    rinch_editor_core::AttrValue::Int(5000),
+                )]),
+                Fragment::from_node(p.clone()),
+            )
+            .unwrap();
+        let row = s
+            .create_node("table_row", Default::default(), Fragment::from_node(cell))
+            .unwrap();
+        let table = s
+            .create_node("table", Default::default(), Fragment::from_node(row))
+            .unwrap();
+        let wide = s
+            .branch("doc", Fragment::from_children(vec![table, p]))
+            .unwrap();
+        let colspan = |h: &EditorHandle| {
+            h.doc()
+                .child(0)
+                .child(0)
+                .child(0)
+                .attrs()
+                .get_int("colspan")
+        };
+        assert!(h.handle.load_doc_inner(wide.clone(), false));
+        assert_eq!(colspan(&h.handle), Some(5000));
+        assert!(h.handle.load_doc_inner(wide, true));
+        assert_eq!(colspan(&h.handle), Some(1000));
     }
 
     /// The handle→request plumbing: `update_caret` must *fulfil* the view's
