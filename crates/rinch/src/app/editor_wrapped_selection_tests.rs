@@ -34,8 +34,7 @@ const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 const LINE: f32 = 24.0;
 
 /// Wraps at spaces, which hang at the line ends.
-const WORDS: &str =
-    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike \
+const WORDS: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike \
                      november oscar papa quebec romeo sierra tango";
 /// One word broken by `overflow-wrap: anywhere`: a glyph wrap, no hanging space.
 const WORD: &str =
@@ -570,9 +569,17 @@ fn overlays_sit_on_the_glyphs_inside_a_bordered_editor() {
 #[test]
 fn overlays_follow_asymmetric_borders() {
     for (border, ex, ey) in [
-        ("border-left: 7px solid red; border-top: 3px solid red; border-right: 13px solid red; border-bottom: 17px solid red; padding: 9px 4px 2px 11px", 0.0f32, 0.0f32),
+        (
+            "border-left: 7px solid red; border-top: 3px solid red; border-right: 13px solid red; border-bottom: 17px solid red; padding: 9px 4px 2px 11px",
+            0.0f32,
+            0.0f32,
+        ),
         ("border-width: 6px; border-style: none", 0.0, 0.0),
-        ("border-width: 2px 5px 9px 4px; border-style: solid", 0.0, 0.0),
+        (
+            "border-width: 2px 5px 9px 4px; border-style: solid",
+            0.0,
+            0.0,
+        ),
     ] {
         let mut p = page_with(
             WORDS,
@@ -589,9 +596,16 @@ fn overlays_follow_asymmetric_borders() {
             let id = doc.query_selector_all("[data-pm-caret]")[0];
             painted_element_box(&doc.tree, id.0)
         };
-        assert_eq!((caret.0 - bx, caret.1 - by), (ex, ey), "{border}: caret vs text origin");
+        assert_eq!(
+            (caret.0 - bx, caret.1 - by),
+            (ex, ey),
+            "{border}: caret vs text origin"
+        );
         let r = p.handle.caret_rect(Pos(1)).expect("caret rect");
-        assert!((r.x - caret.0).abs() <= 1.0 && (r.y - caret.1).abs() <= 1.0, "{border}: caret_rect {r:?} vs painted {caret:?}");
+        assert!(
+            (r.x - caret.0).abs() <= 1.0 && (r.y - caret.1).abs() <= 1.0,
+            "{border}: caret_rect {r:?} vs painted {caret:?}"
+        );
         let w = p.starts[2];
         p.caret_at(p.starts[1]);
         shift(&mut p, KeyCode::End);
