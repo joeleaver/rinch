@@ -54,8 +54,9 @@
 //!
 //! 1. **The earlier anchor wins.** A cell whose anchor slot an earlier cell already
 //!    covers is hidden (it stays in the CRDT, inert). A cell whose rectangle would run
-//!    into an earlier one is clipped: first along its row to the slots still free, then
-//!    down to the rows where all of those are free. Two concurrent merges that overlap
+//!    into an earlier one is clipped along its row to the slots still free; the rows
+//!    below need no clip, because cells are placed in row-major order and so a slot
+//!    below a free one is never taken yet. Two concurrent merges that overlap
 //!    therefore converge on the earlier one whole and what is left of the other.
 //! 2. **Every slot left uncovered gets a filler**: a 1×1 `table_cell` holding one empty
 //!    paragraph, which exists in the model and not in the CRDT. That is the cell of a
@@ -66,6 +67,17 @@
 //!    one of its two paragraphs). Typing into it inserts the paragraph.
 //! 4. **A table with no live row or no live column is void** and reads as absent, like
 //!    any emptied container (`projection::is_void`).
+//! 5. **A table too large for what the CRDT stores is refused**, loud, before it is
+//!    built. A row or column line costs about 20 bytes on the wire and a filler none,
+//!    so `n` rows and `n` columns appended by a foreign writer would read as `n²`
+//!    fillers (90 KB of update, 2.3 GB on every replica, measured). The read refuses
+//!    more slots than the model's own `grid_slot_budget` allows (checked before the
+//!    grid is allocated), and more fillers than `max(stored cells, FILLER_FLOOR)`
+//!    (2^16 — room for the fillers honest concurrent row and column adds make: a
+//!    256 × 256 block of them). The refusal is an `Unsupported` read error, which
+//!    poisons the session (#196) until the table is deleted. Honest peers reach it
+//!    only by adding hundreds of rows on one replica and hundreds of columns on
+//!    another at once.
 //!
 //! The model side is held to the same shape: a table whose cells do not tile a
 //! rectangle exactly (a ragged row, overlapping spans, a span past the edge) is
@@ -92,6 +104,14 @@
 //! Convergence holds for every interleaving; these are the edits that lose to another:
 //!
 //! * Typing in a row or column a peer deletes, or in a cell a peer merges away.
+//! * Typing in a row or column **equal to its neighbours**. Matching is by value, not
+//!   identity: with three equal rows (every row of a fresh `insertTable` is empty), a
+//!   `deleteRow` on the first tombstones the *last*, and a peer's concurrent typing in
+//!   that row goes with it, though nobody deleted it. An `addRowAfter` among equal
+//!   rows is written at the end of the equal run, so after a peer's concurrent typing
+//!   in one of them the new row is not where it was added. The same holds for
+//!   columns, and for equal blocks in a cell or any other container (their children
+//!   are diffed by value too; only the document's top level matches by identity).
 //! * Two peers changing the same **filler** at once: both write a cell at one key, and
 //!   one of the two cells wins whole (a yrs map key is last-writer-wins).
 //! * Two overlapping merges: the content the later one moved is in a cell the earlier

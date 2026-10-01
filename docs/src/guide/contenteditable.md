@@ -1119,7 +1119,21 @@ added by two people meet at an empty cell, two columns added at once are both th
 every row, and a row deleted while someone types in it is gone with that typing. What
 can still be lost is typing in a row, column or cell someone else deletes or merges
 away, and, when two people type at once into the same empty cell that such a
-concurrent row-and-column insert created, one of the two.
+concurrent row-and-column insert created, one of the two. **Rows and columns that are
+equal to their neighbours can also take each other's edits**, because a table edit is
+matched to the shared document by content, not by which row it was: in a table whose
+rows are all empty — every table just inserted — deleting the first row while someone
+types in the last deletes the last one, typing and all, and a row added among empty
+rows lands at the end of them. The same is true of identical paragraphs inside one
+cell, quote or list item. Fill a new table in before sharing structural edits to it
+with others, or expect this. Both editors still end up with the same document.
+
+A table read from someone else that would be absurdly large for what the shared
+document actually holds (rows and columns cost a few bytes each to send, the empty
+cells between them nothing) is refused, the same way as content an older build cannot
+read: the session stops syncing until the table is deleted. One person's edits never
+make such a table; two people adding hundreds of rows and hundreds of columns at the
+same moment could.
 
 Two concurrent edits to images can still be lost, and both editors still end up
 with the same document when they are. **Two identical images side by side**
