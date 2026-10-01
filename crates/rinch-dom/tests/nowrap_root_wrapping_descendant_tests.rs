@@ -206,3 +206,20 @@ fn a_nowrap_root_does_not_wrap_after_an_inline_box() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(h, 25.0);
 }
+
+/// A `pre-wrap` span's spaces hang at the wrap, and the `pre` root's spaces
+/// after them do not join the hang: they start the next line, as content.
+/// Chrome 153: `aaaaa␣␣` at offset 5.08 (the hanging spaces past the edge),
+/// `␣␣␣bb` at 16.91.
+#[test]
+fn a_pre_roots_spaces_after_hanging_pre_wrap_spaces_start_the_next_line() {
+    let lines = offsets(
+        "white-space:pre;text-align:right",
+        "<span style=\"white-space:pre-wrap\">aaaaa  </span>   bb",
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0].0, "aaaaa");
+    assert_eq!(lines[1].0, "bb");
+    assert!((lines[0].1 - 5.08).abs() < 0.01, "{lines:?}");
+    assert!((lines[1].1 - 16.91).abs() < 0.01, "{lines:?}");
+}
