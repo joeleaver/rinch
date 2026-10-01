@@ -159,8 +159,8 @@ the HTML import (`load_html`, paste, `Editor`'s `content:`) already reads `colsp
 One `colspan = 3,000,000` cell made a two-row table 2^21 columns wide, and
 `addRowAfter` built a cell per column: 2,097,152 cells, 15.6 s and 5 GB through a
 mounted view, 3.8 ms after the cap. Edits are not capped — an app's own transaction,
-a peer's change, or a command (`addColumnAfter` across a 1000-wide cell makes it
-1001) — so `node_from_doc` is not a lossless inverse of `to_doc` for a cell that went
+a peer's change (and the shared document a collaboration guest adopts on joining), or
+a command (`addColumnAfter` across a 1000-wide cell makes it 1001) — so `node_from_doc` is not a lossless inverse of `to_doc` for a cell that went
 past 1000 that way. `rowspan` is not capped: a grid is never taller than its rows. The
 row-width limit above is the HTML import's alone: a loaded row of 2,100
 `colspan = 1000` cells is still 2,100,000 columns wide.

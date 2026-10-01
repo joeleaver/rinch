@@ -128,3 +128,55 @@ fn a_command_is_not_capped() {
     assert!(h.command("addRowAfter"));
     assert_eq!(spans(&h.doc())[0][0].0, Some(1001));
 }
+
+/// Untouched siblings of a capped table keep their identity: the cap rebuilds
+/// only the path to a capped cell (from the review of #1245).
+#[test]
+fn untouched_siblings_are_shared() {
+    let s = Schema::starter_kit();
+    let p1 = s
+        .branch("paragraph", Fragment::from_node(s.text("a").unwrap()))
+        .unwrap();
+    let table = |c| {
+        let row = s
+            .create_node(
+                "table_row",
+                Attrs::new(),
+                Fragment::from_node(cell(&s, c, 1)),
+            )
+            .unwrap();
+        s.create_node("table", Attrs::new(), Fragment::from_node(row))
+            .unwrap()
+    };
+    let (fine, wide) = (table(2), table(5000));
+    let d = s
+        .branch(
+            "doc",
+            Fragment::from_children(vec![p1.clone(), fine.clone(), wide]),
+        )
+        .unwrap();
+    let out = tables::cap_colspans(&d);
+    assert!(!out.same_ref(&d));
+    assert!(out.child(0).same_ref(&p1));
+    assert!(out.child(1).same_ref(&fine));
+    assert_eq!(
+        out.child(2).child(0).child(0).attrs().get_int("colspan"),
+        Some(1000)
+    );
+}
+
+/// An app's own transaction is not capped (the #1182 layout fixtures depend
+/// on it).
+#[test]
+fn an_update_keeps_an_unbounded_colspan() {
+    let s = Schema::starter_kit();
+    let h = mount(doc(&s, &[vec![(1, 1)]]));
+    let wide = doc(&h.state().schema().clone(), &[vec![(1_000_000, 1)]]);
+    assert!(h.update(|st| {
+        let mut tr = st.tr();
+        tr.replace_with(0, st.doc.content_size(), wide.content().clone())
+            .ok()?;
+        Some(tr)
+    }));
+    assert_eq!(spans(&h.doc())[0][0].0, Some(1_000_000));
+}
