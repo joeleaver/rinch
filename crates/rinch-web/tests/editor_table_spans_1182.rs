@@ -157,7 +157,7 @@ fn s4(a: &str, b: &str, c: &str, d: &str) -> [String; 4] {
 
 /// Control: an ordinary merged table is placed as its attributes say, a
 /// `colspan = 2` cell over two cells side by side, and a `rowspan = 2` cell
-/// beside them.
+/// beside them — on the grid lines of its map rectangles (#1209).
 #[wasm_bindgen_test]
 fn an_ordinary_merged_table_is_placed_by_its_attributes() {
     let m = mount(&[vec![(2, 1), (1, 2)], vec![(1, 1), (1, 1)]]);
@@ -167,10 +167,10 @@ fn an_ordinary_merged_table_is_placed_by_its_attributes() {
     assert_eq!(
         got,
         vec![
-            s4("span 2", "auto", "auto", "auto"),
-            s4("auto", "auto", "span 2", "auto"),
-            s4("auto", "auto", "auto", "auto"),
-            s4("auto", "auto", "auto", "auto"),
+            s4("1", "3", "1", "2"),
+            s4("3", "4", "1", "3"),
+            s4("1", "2", "2", "3"),
+            s4("2", "3", "2", "3"),
         ]
     );
     let t = table(&m);
@@ -187,11 +187,28 @@ fn an_overlong_rowspan_is_placed_cut_at_the_last_row() {
     assert_eq!(
         got,
         vec![
-            s4("span 2", "auto", "span 2", "auto"),
-            s4("auto", "auto", "auto", "auto"),
-            s4("auto", "auto", "auto", "auto"),
+            s4("1", "3", "1", "3"),
+            s4("3", "4", "1", "2"),
+            s4("3", "4", "2", "3"),
         ]
     );
+}
+
+/// #1209: `[[A rowspan=2, X], [B, C]]` is `A X . / A B C` in the map, and B
+/// and C are drawn in row 1 under X and the slot beside it. Auto-placement put
+/// B in that empty slot of row 0, beside X.
+#[wasm_bindgen_test]
+fn a_cell_in_a_row_a_rowspan_leaves_short_stays_in_its_row() {
+    let m = mount(&[vec![(1, 2), (1, 1)], vec![(1, 1), (1, 1)]]);
+    let c = cells(&m);
+    assert_eq!(c.len(), 4, "control: four cells");
+    let t = table(&m);
+    let r: Vec<_> = c.iter().map(|e| rect(e, &t)).collect();
+    let [a, x, b, cc] = [r[0], r[1], r[2], r[3]];
+    assert!(b.1 > x.1 + 1.0, "B is in row 1, below X: {r:?}");
+    assert!((b.1 - cc.1).abs() < 0.5, "B and C share row 1: {r:?}");
+    assert!((b.0 - x.0).abs() < 0.5 && cc.0 > b.0, "B under X: {r:?}");
+    assert!((cc.1 + cc.3 - (a.1 + a.3)).abs() <= 1.0, "A spans both: {r:?}");
 }
 
 /// Four rows of `colspan = 1_000_000, rowspan = i64::MAX`. The map's grid is
@@ -217,7 +234,8 @@ fn a_table_of_unbounded_spans_is_placed_as_its_table_map() {
     // The first cell spans the map's 1_000_000 of 1_048_576 columns — of the
     // bands' width, which is the grid's — and the second starts where it ends.
     // (Auto-placement puts the second at the first cell's top, where the map
-    // has it one row down: #1209. Its own padding makes it wider than the
+    // has it one row down: #1209, which places by grid lines only a grid of
+    // at most 9999 tracks a side — Stylo's line cap — and this one is wider. Its own padding makes it wider than the
     // 48_576 columns it spans, so it is not asserted to end at the grid's edge.)
     let grid_w = r[2].2;
     assert!(

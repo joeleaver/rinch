@@ -355,20 +355,38 @@ pub(crate) struct ViewDesc {
     grid_placement: Option<GridPlacement>,
 }
 
-/// Where a table cell sits in its table's CSS grid: the [`TableMap`] rectangle's
-/// extents, or [`Self::Outside`] for a cell the bounded grid has no slot for.
+/// Where a table cell sits in its table's CSS grid: the [`TableMap`] rectangle,
+/// or [`Self::Outside`] for a cell the bounded grid has no slot for.
 ///
 /// [`TableMap`]: rinch_editor_core::tables::TableMap
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GridPlacement {
-    /// `colspan × rowspan` grid tracks, auto-placed.
+    /// The rectangle's grid lines, written as they are (#1209). CSS
+    /// auto-placement does not know which row a cell belongs to — it packs
+    /// each cell into the first free area after the previous one — so a row a
+    /// rowspan from above leaves short had its cells lifted into the row
+    /// before it, beside the rowspan's top, where the map puts them below it.
+    /// Definite lines are the map's grid, overlaps and holes included.
+    At(rinch_editor_core::tables::Rect),
+    /// `colspan × rowspan` grid tracks, auto-placed: a table whose map is past
+    /// [`MAX_DEFINITE_GRID_TRACKS`] in either axis, whose lines Stylo would
+    /// clamp onto one. Right for a table every row of which fills the grid.
     Span(usize, usize),
     /// A cell no grid slot holds (past the capped width, or in a row the
     /// rowspans from above fill). No table command treats it as a cell; it is
     /// laid out as a band across the whole grid (`grid-column: 1 / -1`) on a
     /// row of its own, so its content stays visible without adding a column.
+    /// Among definitely placed cells that row is after the grid's last.
     Outside,
 }
+
+/// The most tracks a table's grid may have in each axis for its cells to be
+/// placed on definite grid lines ([`GridPlacement::At`]): Stylo clamps a grid
+/// line number to 10000 (`MAX_GRID_LINE`), so a cell starting past line 10000
+/// would be laid out on it, on top of its neighbours. A grid this size has
+/// lines 1 to 10000. Past it the cells are auto-placed by their spans, as
+/// before #1209.
+const MAX_DEFINITE_GRID_TRACKS: usize = 9999;
 
 impl GridPlacement {
     /// The `grid-column` / `grid-row` values that place a cell so.
@@ -381,6 +399,10 @@ impl GridPlacement {
             }
         };
         match self {
+            GridPlacement::At(r) => (
+                format!("{} / {}", r.left + 1, r.right + 1),
+                format!("{} / {}", r.top + 1, r.bottom + 1),
+            ),
             GridPlacement::Span(cols, rows) => (span(cols), span(rows)),
             GridPlacement::Outside => ("1 / -1".to_string(), "auto".to_string()),
         }
@@ -469,9 +491,12 @@ impl ViewDesc {
         #[cfg(test)]
         table_span_tests::SYNCS.with(|n| n.set(n.get() + 1));
         let rects = rinch_editor_core::tables::cell_rects(&self.node);
+        let definite = self.node.child_count() <= MAX_DEFINITE_GRID_TRACKS
+            && rinch_editor_core::tables::column_count(&self.node) <= MAX_DEFINITE_GRID_TRACKS;
         for (row, row_rects) in self.children.iter_mut().zip(&rects) {
             for (cell, rect) in row.children.iter_mut().zip(row_rects) {
                 let placement = match rect {
+                    Some(r) if definite => GridPlacement::At(*r),
                     Some(r) => GridPlacement::Span(r.right - r.left, r.bottom - r.top),
                     None => GridPlacement::Outside,
                 };
@@ -4357,11 +4382,11 @@ mod table_span_tests {
         (c.to_string(), r.to_string())
     }
 
-    /// Control: an ordinary table's spans are written exactly as before —
-    /// `span N` for a span, `auto` for none — because a well-formed table's
-    /// map rectangles are its attributes.
+    /// An ordinary table's cells are written at their map rectangles' grid
+    /// lines (#1209), which for a well-formed table are where its spans put
+    /// them.
     #[test]
-    fn an_ordinary_tables_spans_are_its_attributes() {
+    fn an_ordinary_tables_cells_are_written_at_their_grid_lines() {
         let r = rig();
         let s = Rc::new(Schema::starter_kit());
         let st = state_with(&s, table(&s, &[vec![(2, 1), (1, 2)], vec![(1, 1), (1, 1)]]));
@@ -4370,10 +4395,10 @@ mod table_span_tests {
         assert_eq!(
             got,
             vec![
-                p("span 2", "auto"),
-                p("auto", "span 2"),
-                p("auto", "auto"),
-                p("auto", "auto"),
+                p("1 / 3", "1 / 2"),
+                p("3 / 4", "1 / 3"),
+                p("1 / 2", "2 / 3"),
+                p("2 / 3", "2 / 3"),
             ]
         );
     }
@@ -4391,7 +4416,7 @@ mod table_span_tests {
         let got: Vec<_> = cells(&r).into_iter().map(|c| placement(&r, c)).collect();
         assert_eq!(
             got,
-            vec![p("span 2", "span 2"), p("auto", "auto"), p("auto", "auto")]
+            vec![p("1 / 3", "1 / 3"), p("3 / 4", "1 / 2"), p("3 / 4", "2 / 3")]
         );
     }
 
@@ -4427,7 +4452,7 @@ mod table_span_tests {
         let t = table(&s, &[vec![(1, i64::MAX)], vec![(1, 1)]]);
         let st = state_with(&s, t.clone());
         let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
-        assert_eq!(placement(&r, cells(&r)[0]), p("auto", "span 2"), "control");
+        assert_eq!(placement(&r, cells(&r)[0]), p("1 / 2", "1 / 3"), "control");
         // The table's inner end: after its open token and its content.
         let end = 1 + t.content_size();
         let mut tr = st.tr();
@@ -4435,7 +4460,7 @@ mod table_span_tests {
             .unwrap();
         let next = st.apply(tr);
         view.update_dom(&st, &next);
-        assert_eq!(placement(&r, cells(&r)[0]), p("auto", "span 3"));
+        assert_eq!(placement(&r, cells(&r)[0]), p("1 / 2", "1 / 4"));
     }
 
     /// A row removed from under an overlong rowspan shortens it, and a cell's
@@ -4452,8 +4477,8 @@ mod table_span_tests {
         let st = state_with(&s, t.clone());
         let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
         let c = cells(&r);
-        assert_eq!(placement(&r, c[0]), p("auto", "span 3"), "control");
-        assert_eq!(placement(&r, c[1]), p("auto", "auto"), "control");
+        assert_eq!(placement(&r, c[0]), p("1 / 2", "1 / 4"), "control");
+        assert_eq!(placement(&r, c[1]), p("2 / 3", "1 / 2"), "control");
         // Remove the last row: it ends one before the table's inner end.
         let last = t.child(2).node_size();
         let end = 1 + t.content_size();
@@ -4463,7 +4488,7 @@ mod table_span_tests {
         view.update_dom(&st, &st2);
         let c2 = cells(&r);
         assert_eq!(&c2[..3], &c[..3], "control: no cell host rebuilt");
-        assert_eq!(placement(&r, c[0]), p("auto", "span 2"));
+        assert_eq!(placement(&r, c[0]), p("1 / 2", "1 / 3"));
         // The second cell of the first row: after the row open and cell one.
         let second = 2 + t.child(0).child(0).node_size();
         let mut tr = st2.tr();
@@ -4472,7 +4497,7 @@ mod table_span_tests {
         let st3 = st2.apply(tr);
         view.update_dom(&st2, &st3);
         assert_eq!(cells(&r), c2, "control: no cell host rebuilt");
-        assert_eq!(placement(&r, c[1]), p("span 2", "auto"));
+        assert_eq!(placement(&r, c[1]), p("2 / 4", "1 / 2"));
         // And its rowspan: the second row's one cell then sits beside the two.
         let mut tr = st3.tr();
         tr.set_node_attr(second, "rowspan", AttrValue::Int(2))
@@ -4480,7 +4505,7 @@ mod table_span_tests {
         let st4 = st3.apply(tr);
         view.update_dom(&st3, &st4);
         assert_eq!(cells(&r), c2, "control: no cell host rebuilt");
-        assert_eq!(placement(&r, c[1]), p("span 2", "span 2"));
+        assert_eq!(placement(&r, c[1]), p("2 / 4", "1 / 3"));
     }
 
     /// Typing in a cell computes no map and places no cell: only a change to
@@ -4543,7 +4568,7 @@ mod table_span_tests {
         let st = state_with(&s, t.clone());
         let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
         let before = cells(&r)[0];
-        assert_eq!(placement(&r, before), p("span 2", "auto"), "control");
+        assert_eq!(placement(&r, before), p("1 / 3", "1 / 2"), "control");
         // The first cell spans positions 2 .. 2 + its size.
         let first = t.child(0).child(0).clone();
         let th = cell_of(&s, "table_header_cell", 2, 1, "c0");
@@ -4554,7 +4579,52 @@ mod table_span_tests {
         view.update_dom(&st, &next);
         let after = cells(&r)[0];
         assert_ne!(after, before, "control: the host was rebuilt");
-        assert_eq!(placement(&r, after), p("span 2", "auto"));
+        assert_eq!(placement(&r, after), p("1 / 3", "1 / 2"));
+    }
+
+    /// #1209: a row a rowspan leaves short keeps its cells — `[[A rowspan=2],
+    /// [B]]` writes B at row line 2, where auto-placement packed it into row 0.
+    #[test]
+    fn a_cell_in_a_short_row_is_written_at_its_own_row() {
+        let r = rig();
+        let s = Rc::new(Schema::starter_kit());
+        let st = state_with(&s, table(&s, &[vec![(1, 2)], vec![(1, 1)]]));
+        let _view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+        let got: Vec<_> = cells(&r).into_iter().map(|c| placement(&r, c)).collect();
+        assert_eq!(got, vec![p("1 / 2", "1 / 3"), p("2 / 3", "2 / 3")]);
+    }
+
+    /// Definite lines stop where Stylo's grid lines do: a grid of
+    /// [`MAX_DEFINITE_GRID_TRACKS`] columns ends on line 10000, Stylo's
+    /// `MAX_GRID_LINE`, and is placed by lines; one column more and its cells
+    /// are auto-placed by their spans, as before #1209, rather than piled on
+    /// line 10000. Rows are counted the same way.
+    #[test]
+    fn a_grid_past_the_line_cap_falls_back_to_spans() {
+        let s = Rc::new(Schema::starter_kit());
+        let placed = |rows: &[Vec<(i64, i64)>]| {
+            let r = rig();
+            let st = state_with(&s, table(&s, rows));
+            let _view =
+                RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
+            cells(&r).into_iter().map(|c| placement(&r, c)).collect::<Vec<_>>()
+        };
+        let w = MAX_DEFINITE_GRID_TRACKS as i64;
+        assert_eq!(
+            placed(&[vec![(w, 1)], vec![(1, 1)]]),
+            vec![p("1 / 10000", "1 / 2"), p("1 / 2", "2 / 3")]
+        );
+        assert_eq!(
+            placed(&[vec![(w + 1, 1)], vec![(1, 1)]]),
+            vec![p("span 10000", "auto"), p("auto", "auto")]
+        );
+        let tall = |n: usize| vec![vec![(1, 2)]; n];
+        let at = placed(&tall(MAX_DEFINITE_GRID_TRACKS));
+        assert_eq!(at[0], p("1 / 2", "1 / 3"));
+        assert_eq!(at.last(), Some(&p("1 / 2", "9999 / 10000")));
+        let past = placed(&tall(MAX_DEFINITE_GRID_TRACKS + 1));
+        assert_eq!(past[0], p("auto", "span 2"));
+        assert_eq!(past.last(), Some(&p("auto", "auto")));
     }
 }
 
