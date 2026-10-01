@@ -1060,3 +1060,235 @@ fn a_table_trial_replays_from_its_seed() {
         );
     }
 }
+
+// --- review round (#1233): rules the first suite did not pin -------------------------
+
+#[test]
+fn a_cell_emptied_by_two_concurrent_deletions_reads_as_one_empty_paragraph() {
+    // Rule 3 of the read: each peer deletes one of the cell's two paragraphs, and the
+    // converged cell holds no block at all in the CRDT.
+    let s = schema();
+    let two = branch(&s, "table_cell", vec![para(&s, "p1"), para(&s, "p2")]);
+    for ids in [(11u64, 22u64), (22, 11)] {
+        let blocks = vec![
+            branch(
+                &s,
+                "table",
+                vec![branch(&s, "table_row", vec![two.clone(), cell(&s, "x")])],
+            ),
+            para(&s, "tail"),
+        ];
+        let (mut a, mut b) = pair(&s, blocks, ids);
+        let p1 = pos_of(&a.state.doc, "p1") - 1;
+        a.local(|tr| {
+            tr.delete(p1, p1 + 4).unwrap();
+        });
+        let p2 = pos_of(&b.state.doc, "p2") - 1;
+        b.local(|tr| {
+            tr.delete(p2, p2 + 4).unwrap();
+        });
+        exchange(&mut a, &mut b);
+        assert_eq!(a.state.doc, b.state.doc, "ids {ids:?}");
+        assert_eq!(grid_text(&a.state.doc), "_ | x", "ids {ids:?}");
+    }
+}
+
+#[test]
+fn a_column_inserted_beside_a_tombstone_is_outside_a_span_ending_on_it() {
+    // `write_lines` inserts a new line after the tombstones before the next kept line,
+    // so B's merge, whose span ends on the column A deleted, does not grow over A's
+    // new column.
+    for g in concurrently(
+        |s| table_and_tail(s, 2, 3),
+        |a| {
+            a.in_cell(0, 1, "deleteColumn");
+            a.in_cell(0, 0, "addColumnAfter");
+        },
+        |b| b.merge((0, 0), (0, 1)),
+    ) {
+        assert_eq!(g, "r0c0/r0c1 | _ | r0c2\nr1c0 | _ | r1c2");
+    }
+}
+
+#[test]
+fn a_sticky_index_in_the_master_cell_survives_a_peers_merge() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 2, 2), (1, 2));
+    let at = pos_of(&b.state.doc, "r0c0") + 2;
+    let sticky = b
+        .session
+        .sticky_index(&b.state.doc, Pos(at))
+        .expect("an index in a cell");
+    a.merge((0, 0), (1, 1));
+    let d = a.send();
+    b.receive(&d);
+    let p = b
+        .session
+        .resolve_sticky(&b.state.doc, &sticky)
+        .expect("resolves");
+    let rp = b.state.doc.resolve(p).unwrap();
+    let t = inline_text(rp.parent());
+    assert_eq!(&t[rp.parent_offset()..], "c0", "parent text {t}");
+}
+
+/// Equal rows take each other's edits: the table matches rows and columns before and
+/// after a local edit by value, so with three empty rows A's `deleteRow` on the first
+/// tombstones the **last** row, and B's typing there goes with it though nobody deleted
+/// that row. Pinned as the documented loss (guide, `src/table.rs`); a matching by
+/// identity would make this keep "keep" and fail here.
+#[test]
+fn deleting_one_of_several_equal_rows_can_take_a_peers_typing_with_it() {
+    for g in concurrently(
+        |s| {
+            let empty = branch(
+                s,
+                "table",
+                (0..3)
+                    .map(|_| branch(s, "table_row", vec![cell(s, ""), cell(s, "")]))
+                    .collect(),
+            );
+            vec![empty, para(s, "tail")]
+        },
+        |a| a.in_cell(0, 0, "deleteRow"),
+        |b| b.type_in_cell(2, 0, "keep"),
+    ) {
+        assert_eq!(g, "_ | _\n_ | _", "today the wrong row is deleted");
+    }
+}
+
+// --- the read's budget (a small remote update must not build a huge table) -----------
+
+/// A foreign peer's update on top of `b`'s document: `n` column lines and `n` row lines
+/// appended to the first table, each ~20 bytes on the wire, and optionally the first
+/// cell's span stretched to the last of them. Returns the update.
+fn grown_table_update(b: &Peer, n: usize, stretch: bool) -> Vec<u8> {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+    let doc = yrs::Doc::with_client_id(999);
+    {
+        let mut txn = doc.transact_mut();
+        txn.apply_update(Update::decode_v1(&b.session.snapshot()).unwrap())
+            .unwrap();
+    }
+    let sv = doc.transact().state_vector();
+    {
+        let content: ArrayRef = doc.get_or_insert_array("content");
+        let mut txn = doc.transact_mut();
+        let Some(Out::YMap(table)) = content.get(&txn, 0) else {
+            panic!("no table")
+        };
+        let Some(Out::YArray(cols)) = table.get(&txn, "cols") else {
+            panic!("no cols")
+        };
+        let Some(Out::YArray(rows)) = table.get(&txn, "rows") else {
+            panic!("no rows")
+        };
+        for i in 0..n {
+            let m = cols.push_back(&mut txn, MapPrelim::default());
+            m.insert(&mut txn, "id", Any::String(format!("c{i}").into()));
+            let r = rows.push_back(&mut txn, MapPrelim::default());
+            r.insert(&mut txn, "id", Any::String(format!("r{i}").into()));
+        }
+        if stretch {
+            let Some(Out::YMap(row0)) = rows.get(&txn, 0) else {
+                panic!("no row 0")
+            };
+            let Some(Out::YMap(cells)) = row0.get(&txn, "cells") else {
+                panic!("no cells")
+            };
+            let first = cells.keys(&txn).next().unwrap().to_string();
+            let Some(Out::YMap(cell)) = cells.get(&txn, &first) else {
+                panic!("no cell")
+            };
+            let last = n - 1;
+            cell.insert(&mut txn, "col_end", Any::String(format!("c{last}").into()));
+            cell.insert(&mut txn, "row_end", Any::String(format!("r{last}").into()));
+        }
+    }
+    doc.transact().encode_state_as_update_v1(&sv)
+}
+
+/// The review's case: 2000 rows and 2000 columns appended to a 1×1 table (90 KB), which
+/// read as four million filler cells — 2.3 GB on every replica before the budget. It
+/// must be refused, quickly, and poison (the CRDT is healthy only once the table goes).
+#[test]
+fn a_small_update_that_would_read_as_millions_of_fillers_is_refused_loud() {
+    let s = schema();
+    let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let update = grown_table_update(&b, 2000, false);
+    assert!(update.len() < 100_000, "{} bytes", update.len());
+    let t = std::time::Instant::now();
+    let res = b.session.integrate_incremental(&b.state, &update);
+    let took = t.elapsed();
+    let err = res.expect_err("four million fillers must not be built");
+    assert!(err.to_string().contains("filler"), "{err}");
+    assert!(
+        b.session.is_poisoned(),
+        "a refused read poisons, like any unreadable CRDT"
+    );
+    assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
+}
+
+/// The filler budget is exact, and off the fixed point: a 1×1 table grown by 255 lines
+/// each way has 256² − 1 = 65,535 fillers, inside the 2^16 floor, and reads; one line
+/// more each way is 66,048, past it.
+#[test]
+fn the_filler_budget_admits_the_floor_and_refuses_past_it() {
+    let s = schema();
+    let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let update = grown_table_update(&b, 255, false);
+    let next = b
+        .session
+        .integrate_incremental(&b.state, &update)
+        .expect("65,535 fillers are inside the floor")
+        .expect("the table grew");
+    let (table, _) = first_table(&next.doc).unwrap();
+    assert_eq!(table.child_count(), 256);
+    assert_eq!(table.child(255).child_count(), 256);
+
+    let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let update = grown_table_update(&b, 256, false);
+    let err = b
+        .session
+        .integrate_incremental(&b.state, &update)
+        .expect_err("66,048 fillers are past the floor");
+    assert!(err.to_string().contains("filler"), "{err}");
+}
+
+/// The slot budget is checked before anything is allocated, and is the model's own
+/// (`grid_slot_budget`): one stored cell stretched over 2100×2100 slots (more than
+/// 2^22, and more than twice its one cell) has no filler at all, and is still refused,
+/// as the model would refuse that table for any local edit.
+#[test]
+fn a_span_over_more_slots_than_the_model_allows_is_refused_before_allocating() {
+    let s = schema();
+    let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let update = grown_table_update(&b, 2100, true);
+    let err = b
+        .session
+        .integrate_incremental(&b.state, &update)
+        .expect_err("4.4 million slots for one cell");
+    assert!(err.to_string().contains("slots"), "{err}");
+    assert!(b.session.is_poisoned());
+}
+
+/// An honest concurrent edit that leaves fillers is untouched by the budget: a table
+/// grown by 20 rows on one peer and 20 columns on the other at once reads with 400
+/// fillers on both, and typing into one of them projects.
+#[test]
+fn many_rows_and_columns_added_at_once_still_read() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 2, 2), (1, 2));
+    for _ in 0..20 {
+        a.in_cell(0, 0, "addRowAfter");
+        b.in_cell(0, 0, "addColumnAfter");
+    }
+    exchange(&mut a, &mut b);
+    assert_eq!(a.state.doc, b.state.doc);
+    let (table, _) = first_table(&a.state.doc).unwrap();
+    assert_eq!(table.child_count(), 22);
+    assert_eq!(table.child(0).child_count(), 22);
+    a.type_in_cell(1, 1, "filled");
+    exchange(&mut a, &mut b);
+    assert_eq!(a.state.doc, b.state.doc);
+}
