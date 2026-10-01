@@ -193,3 +193,99 @@ fn the_computed_family_parses_back_to_the_authored_names() {
         "computed `{stack}`"
     );
 }
+
+// Generics stylo lacks (review of #1234).
+
+/// Runs of `text` under `family`, with `generic` filled by the `named` copy of
+/// Inter only (so a hit on the generic slot is told apart from a hit on Foo).
+fn run_faces_with_slot(family: &str, generic: GenericFamily) -> (Vec<u64>, Faces) {
+    let (mut doc, faces) = document("Foo1223");
+    let slot: Vec<_> = doc
+        .font_cx
+        .collection
+        .family_by_name("ProbeEmoji1223")
+        .map(|f| f.id())
+        .into_iter()
+        .collect();
+    doc.font_cx
+        .collection
+        .set_generic_families(generic, slot.into_iter());
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        &format!(
+            "display: inline-block; font-size: 40px; line-height: 48px; font-family: {family}"
+        ),
+    );
+    let t = doc.create_text("abc");
+    doc.append_child(div, t);
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    (blobs(&doc, div), faces)
+}
+
+/// An unquoted `ui-monospace` is the CSS Fonts 4 generic parley resolves
+/// through its slot (the slot `AppFont::monospace` and #322's Android repair
+/// fill); quoting it turns it into a family named `ui-monospace`.
+#[test]
+fn unquoted_css_fonts_4_generics_stay_generics() {
+    for (kw, g) in [
+        ("ui-monospace", GenericFamily::UiMonospace),
+        ("ui-sans-serif", GenericFamily::UiSansSerif),
+        ("ui-serif", GenericFamily::UiSerif),
+        ("emoji", GenericFamily::Emoji),
+        ("math", GenericFamily::Math),
+    ] {
+        let (runs, faces) = run_faces_with_slot(&format!("{kw}, Foo1223"), g);
+        assert!(!runs.is_empty());
+        assert!(
+            runs.iter().all(|r| *r == faces.emoji),
+            "`{kw}, Foo1223`: runs {runs:?}, want the {kw} slot face {} (named {})",
+            faces.emoji,
+            faces.named
+        );
+    }
+}
+
+/// The default theme monospace stack keeps `ui-monospace` as a generic.
+#[test]
+fn the_theme_monospace_stack_keeps_ui_monospace_generic() {
+    use parley::style::FontFamilyName;
+    let (mut doc, _) = document("Foo1223");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "font-family: ui-monospace, 'Liberation Mono', monospace",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    let stack = doc
+        .tree
+        .get(div.0)
+        .unwrap()
+        .computed_style
+        .font_family
+        .clone();
+    let first = FontFamilyName::parse_css_list(&stack)
+        .next()
+        .unwrap()
+        .unwrap()
+        .into_owned();
+    assert_eq!(
+        first,
+        FontFamilyName::Generic(GenericFamily::UiMonospace),
+        "computed `{stack}`"
+    );
+}
+
+/// A name holding both quote characters cannot be written for parley (its
+/// parser has no escapes), so it is left out rather than written raw, where
+/// it would break the parse of the family after it.
+#[test]
+fn a_family_name_with_both_quote_kinds_does_not_hide_the_family_after_it() {
+    assert_all("Foo1223", "\"a\\\"b'c\", Foo1223", |f| f.named);
+}
