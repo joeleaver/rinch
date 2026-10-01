@@ -108,6 +108,8 @@ use yrs::{
 
 use rinch_editor_core::{AttrValue, Attrs, Node};
 
+use rinch_editor_core::tables::GRID_SLOT_FLOOR;
+
 use crate::error::{CollabError, Result};
 use crate::projection::{
     ATTRS, BlockData, CONTENT, NodeData, TYPE, insert_node, node_attrs, node_content, node_type,
@@ -175,6 +177,21 @@ struct Layout {
 
 fn span(attrs: &Attrs, key: &str) -> usize {
     usize::try_from(attrs.get_int(key).unwrap_or(1).max(1)).unwrap_or(usize::MAX)
+}
+
+/// How many filler cells a read may make for a table whose CRDT stores fewer cells
+/// than that (see [`read_table`]): 2^16, about 36 MB of read and model at their cost
+/// today, and a 256 × 256 table's worth of concurrently added rows and columns.
+pub(crate) const FILLER_FLOOR: usize = 1 << 16;
+
+/// A remote table too large to read: refused, loud, before it is built. It surfaces
+/// as an `Unsupported` read error, which poisons the session (#196) until the table is
+/// deleted, as any CRDT the projection cannot read does.
+fn over_budget(detail: String) -> CollabError {
+    CollabError::unsupported(format!(
+        "a table of {detail} is past the read's budget and is not built \
+         (a filler cell costs no bytes on the wire, so the read bounds them)"
+    ))
 }
 
 fn not_a_tiling(detail: &str) -> CollabError {
@@ -413,20 +430,54 @@ pub(crate) fn read_table<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableRead
     let (rows, row_index) = resolve_index(&read_lines(txn, &rows_array, "row")?);
     let (width, height) = (cols.len(), rows.len());
 
+    // Every live row's cell map, and how many cells the CRDT stores in them: what the
+    // budgets below measure against.
+    let row_maps: Vec<Option<MapRef>> = rows
+        .iter()
+        .map(|row| match row.map.get(txn, CELLS) {
+            Some(Out::YMap(m)) => Some(m),
+            _ => None,
+        })
+        .collect();
+    let stored: usize = row_maps.iter().flatten().map(|m| m.len(txn) as usize).sum();
+    // The slot budget, before anything is allocated: the model's own
+    // (`grid_slot_budget`), so the read never yields a table the model would refuse
+    // to project an edit of.
+    let slots = width as u128 * height as u128;
+    if slots > stored.saturating_mul(2).max(GRID_SLOT_FLOOR) as u128 {
+        return Err(over_budget(format!(
+            "{width}×{height} slots for {stored} stored cells"
+        )));
+    }
+    let slots = slots as usize;
+    let col_pos: HashMap<&str, usize> = cols
+        .iter()
+        .enumerate()
+        .map(|(j, c)| (c.id.as_str(), j))
+        .collect();
+
     let mut cells: Vec<Vec<ReadCell>> = vec![Vec::new(); height];
     let mut row_cells_data: Vec<Vec<(usize, CellData)>> = vec![Vec::new(); height];
-    let mut taken = vec![false; width * height];
-    for (i, row) in rows.iter().enumerate() {
-        let Some(Out::YMap(cell_map)) = row.map.get(txn, CELLS) else {
+    let mut taken = vec![false; slots];
+    let mut covered = 0usize;
+    for (i, cell_map) in row_maps.iter().enumerate() {
+        let Some(cell_map) = cell_map else {
             continue;
         };
-        for (j, col) in cols.iter().enumerate() {
+        // This row's anchors in a live column, left to right: walking the stored cells
+        // rather than every column keeps the read proportional to what the CRDT holds.
+        let mut anchors: Vec<(usize, MapRef)> = cell_map
+            .iter(txn)
+            .filter_map(|(key, value)| match (col_pos.get(key), value) {
+                (Some(&j), Out::YMap(cell)) => Some((j, cell)),
+                _ => None,
+            })
+            .collect();
+        anchors.sort_by_key(|(j, _)| *j);
+        for (j, cell) in anchors {
             if taken[i * width + j] {
                 continue;
             }
-            let Some(Out::YMap(cell)) = cell_map.get(txn, &col.id) else {
-                continue;
-            };
             let end = |key: &str, index: &HashMap<String, Option<usize>>, from: usize| match cell
                 .get(txn, key)
             {
@@ -437,22 +488,22 @@ pub(crate) fn read_table<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableRead
                 _ => from,
             };
             let (je, ie) = (end(COL_END, &col_index, j), end(ROW_END, &row_index, i));
-            // Clip: along the row to the slots still free, then down to the rows where
-            // all of those are.
+            // Clip along the row to the slots still free. No clip downwards is needed:
+            // cells are placed in row-major order, so a slot below one of these that an
+            // earlier cell covers is in a rectangle that also covers the slot above it
+            // in this row, where the clip has already stopped.
             let mut jx = j;
             while jx < je && !taken[i * width + jx + 1] {
                 jx += 1;
             }
-            let mut ix = i;
-            while ix < ie && (j..=jx).all(|c| !taken[(ix + 1) * width + c]) {
-                ix += 1;
-            }
-            for r in i..=ix {
+            for r in i..=ie {
                 for c in j..=jx {
+                    debug_assert!(!taken[r * width + c], "a slot below the row clip is free");
                     taken[r * width + c] = true;
                 }
             }
-            let (cs, rs) = (jx - j + 1, ix - i + 1);
+            let (cs, rs) = (jx - j + 1, ie - i + 1);
+            covered += cs * rs;
             row_cells_data[i].push((j, read_cell(txn, &cell, cs, rs)?));
             cells[i].push(ReadCell {
                 col: j,
@@ -461,6 +512,16 @@ pub(crate) fn read_table<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableRead
                 map: Some(cell),
             });
         }
+    }
+    // The filler budget: a filler costs no wire bytes (a line costs about 20, and
+    // `n` rows and `n` columns make `n²` slots), so it is bounded by what the CRDT
+    // stores, with a floor for small tables that honest concurrent row and column
+    // adds can fill (each pair of a new row and a new column makes one filler).
+    let fillers = slots - covered;
+    if fillers > stored.max(FILLER_FLOOR) {
+        return Err(over_budget(format!(
+            "{fillers} filler cells for {stored} stored cells in a {width}×{height} grid"
+        )));
     }
     // Fillers for the slots no cell covers.
     for i in 0..height {
