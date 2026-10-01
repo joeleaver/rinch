@@ -130,23 +130,111 @@ fn carried_position(
         // Content positions of a block at `at`: `at + 1 ..= at + 1 + content_size`.
         let inside = pos > old_at && pos < old_at + old_block.node_size();
         if inside {
-            // Both sides must be textblocks for an offset in one to mean anything in
-            // the other. A **block atom** (`horizontal_rule`) is where the two can
-            // differ: a peer replacing a paragraph with a scene break, or a scene break
-            // with a paragraph, changes the block's kind, and there is no text offset to
-            // carry across. `None` hands the caret to the step mapping, which re-anchors
-            // it from the block-level replace the caller already emits — an atom is
-            // never spliced as text. (An atom on the *old* side cannot even reach here:
-            // a leaf is one position wide, so nothing sits `inside` it.)
-            if !(old_block.is_textblock() && new_block.is_textblock()) {
-                return None;
-            }
-            let (old_units, new_units) = (flat_units(old_block)?, flat_units(new_block)?);
-            let offset = carried_offset(&old_units, &new_units, pos - old_at - 1);
-            return Some(new_at + 1 + offset);
+            return carried_into(old_block, new_block, old_at, new_at, pos);
         }
         old_at += old_block.node_size();
         new_at += new_block.node_size();
+    }
+    None
+}
+
+/// Where `pos`, inside `old_block` (which starts at `old_at`), belongs inside
+/// `new_block` (which starts at `new_at`), the block that replaced it at the same
+/// index.
+///
+/// Two textblocks: by the text they share ([`carried_offset`]). Two containers of the
+/// same type (a quote, a list, a list item) whose content a peer changed: recurse into
+/// their children ([`carried_in_children`]), so a caret in a paragraph inside a quote
+/// keeps its place when a peer types in that paragraph — the remote change replaces
+/// the whole top-level quote, and the step mapping alone would carry the caret to its
+/// end. Anything else (a block that changed kind) is `None`.
+fn carried_into(
+    old_block: &Node,
+    new_block: &Node,
+    old_at: usize,
+    new_at: usize,
+    pos: usize,
+) -> Option<usize> {
+    if old_block.is_textblock() && new_block.is_textblock() {
+        let (old_units, new_units) = (flat_units(old_block)?, flat_units(new_block)?);
+        let offset = carried_offset(&old_units, &new_units, pos - old_at - 1);
+        return Some(new_at + 1 + offset);
+    }
+    // A **block atom** (`horizontal_rule`) is where the two can differ in kind: a peer
+    // replacing a paragraph with a scene break, or a scene break with a paragraph,
+    // and there is no text offset to carry across. `None` hands the caret to the step
+    // mapping, which re-anchors it from the block-level replace the caller already
+    // emits — an atom is never spliced as text. (An atom on the *old* side cannot even
+    // reach here: a leaf is one position wide, so nothing sits `inside` it.)
+    if old_block.is_textblock()
+        || new_block.is_textblock()
+        || old_block.is_leaf()
+        || new_block.is_leaf()
+        || old_block.type_name() != new_block.type_name()
+    {
+        return None;
+    }
+    carried_in_children(old_block, new_block, old_at + 1, new_at + 1, pos)
+}
+
+/// `pos`, inside the content of `old` (which begins at `old_start`), carried into the
+/// content of `new` (which begins at `new_start`). The children the two share at
+/// their start and at their end are the same nodes, so a position in one of those
+/// keeps its offset from that end; a position in a changed child is followed into the
+/// child that replaced it when the changed runs have the same length, as at the top
+/// level ([`carried_position`]). `None` when the position sits between children or the
+/// change is not one this can follow.
+fn carried_in_children(
+    old: &Node,
+    new: &Node,
+    old_start: usize,
+    new_start: usize,
+    pos: usize,
+) -> Option<usize> {
+    let (on, nn) = (old.child_count(), new.child_count());
+    let mut prefix = 0;
+    while prefix < on && prefix < nn && old.child(prefix) == new.child(prefix) {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < on - prefix
+        && suffix < nn - prefix
+        && old.child(on - 1 - suffix) == new.child(nn - 1 - suffix)
+    {
+        suffix += 1;
+    }
+    let mut old_at = old_start;
+    let mut new_at = new_start;
+    // The children before the change are identical, so their positions are too.
+    for index in 0..prefix {
+        let size = old.child(index).node_size();
+        if pos > old_at && pos < old_at + size {
+            return Some(new_at + (pos - old_at));
+        }
+        old_at += size;
+        new_at += size;
+    }
+    let old_end = old_start + old.content_size();
+    let new_end = new_start + new.content_size();
+    // The children after it are identical too, measured from the end.
+    let suffix_start = old_end
+        - (on - suffix..on)
+            .map(|i| old.child(i).node_size())
+            .sum::<usize>();
+    if pos > suffix_start && pos < old_end {
+        return Some(new_end - (old_end - pos));
+    }
+    let (old_changed, new_changed) = (on - prefix - suffix, nn - prefix - suffix);
+    if old_changed == 0 || old_changed != new_changed {
+        return None;
+    }
+    for index in prefix..prefix + old_changed {
+        let (old_child, new_child) = (old.child(index), new.child(index));
+        if pos > old_at && pos < old_at + old_child.node_size() {
+            return carried_into(old_child, new_child, old_at, new_at, pos);
+        }
+        old_at += old_child.node_size();
+        new_at += new_child.node_size();
     }
     None
 }
