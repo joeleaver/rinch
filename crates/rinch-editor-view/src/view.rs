@@ -493,8 +493,9 @@ impl ViewDesc {
     /// Place every cell of this `table` descriptor in the table's CSS grid by its
     /// rectangle in the table's [`TableMap`] — the bounded grid every table
     /// command edits — rather than by its raw `colspan` / `rowspan` (#1182). A
-    /// table reaching the model by `load_doc` or an app's own transaction can
-    /// say `colspan = 3_000_000` or `rowspan = i64::MAX`; written raw, that
+    /// table reaching the model by an app's own transaction can say
+    /// `colspan = 3_000_000` or `rowspan = i64::MAX` (a load caps `colspan` at
+    /// 1000, #1214); written raw, that
     /// asked the host for that many implicit grid tracks, and on the desktop a
     /// few such cells stacked past the `i16` lines Taffy numbers a grid with,
     /// and layout panicked. The map cuts a span at the grid's edge and has no
@@ -4287,9 +4288,9 @@ mod tests {
 }
 
 /// Issue #1182: a cell's grid span is its [`TableMap`] rectangle, not its raw
-/// `colspan` / `rowspan`. A table that reaches the model by `load_doc` or an
-/// app's own transaction can say `colspan = 3_000_000` or `rowspan =
-/// i64::MAX`; written raw, that asked the host's CSS grid for that many
+/// `colspan` / `rowspan`. A table that reaches the model by an app's own
+/// transaction can say `colspan = 3_000_000` or `rowspan = i64::MAX` (a
+/// load caps `colspan` at 1000 since #1214, but not `rowspan`); written raw, that asked the host's CSS grid for that many
 /// implicit tracks (and on the desktop, four stacked cells of `span 10000` —
 /// Stylo's clamp — made more grid lines than Taffy's `i16` lines hold, and it
 /// panicked). The map cuts a span at the grid's edge, and a cell past the
