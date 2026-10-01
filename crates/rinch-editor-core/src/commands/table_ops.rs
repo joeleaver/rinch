@@ -303,9 +303,11 @@ fn remove_rows(
         map.row_start(top)?,
         map.row_start(bottom)?,
     )];
-    // Each cell once: its rectangle and the column it was found in on the
-    // topmost of the rows (the row whose removal moves it down).
-    let mut found: HashMap<usize, (Rect, usize)> = HashMap::new();
+    // Each cell once, with its rectangle, in the order the walk meets them:
+    // row `bottom - 1` first, left to right. A cell that continues below
+    // `bottom` covers that row, so the cells to move come in column order,
+    // which is the order their copies land in.
+    let mut found: HashMap<usize, Rect> = HashMap::new();
     let mut order = Vec::new();
     for row in (top..bottom).rev() {
         let mut col = 0;
@@ -317,19 +319,15 @@ fn remove_rows(
                 col += 1;
                 continue;
             };
-            found
-                .entry(pos)
-                .and_modify(|e| e.1 = col)
-                .or_insert_with(|| {
-                    order.push(pos);
-                    (rect, col)
-                });
+            found.entry(pos).or_insert_with(|| {
+                order.push(pos);
+                rect
+            });
             col = rect.right.max(col + 1);
         }
     }
-    let mut moved: Vec<(usize, usize, Node)> = Vec::new();
     for pos in order {
-        let (rect, col) = found[&pos];
+        let rect = found[&pos];
         if rect.top < top {
             // Spans into the rows from above → it loses those rows.
             let lost = rect.bottom.min(bottom) - top;
@@ -345,12 +343,11 @@ fn remove_rows(
             let copy = schema
                 .create_node(cell.type_name(), new_attrs, cell.content().clone())
                 .ok()?;
-            moved.push((map.position_at(bottom, col), col, copy));
+            edits.push(BatchEdit::insert(
+                map.position_at(bottom, rect.left),
+                Fragment::from_node(copy),
+            ));
         }
-    }
-    moved.sort_by_key(|&(at, col, _)| (at, col));
-    for (at, _, copy) in moved {
-        edits.push(BatchEdit::insert(at, Fragment::from_node(copy)));
     }
     Some(edits)
 }
@@ -387,6 +384,8 @@ fn plain_grid(info: &TableRect, cells: &Cells) -> bool {
         let cell = cells.node(info, *pos).expect("a cell of the table");
         let span = |name: &str| usize::try_from(cell.attrs().get_int(name).unwrap_or(1).max(1));
         let (cols, rows) = (rect.right - rect.left, rect.bottom - rect.top);
+        // `cols * rows == count` is defensive: no grid the differential in
+        // `table_commands_one_step.rs` has met fails it alone.
         (rect.top, rect.left) == (index / width, index % width)
             && cols * rows == count
             && span("colspan").map_or(cols == width - rect.left, |c| {

@@ -157,7 +157,15 @@ impl BatchStep {
             }
         }
         reps.sort_by_key(|r| (r.from, r.to));
+        // Two changes of one attribute of one node: the last given wins, as
+        // it does one step after the other. Keeping one makes the step mean
+        // the same on both of `rebuild`'s paths (the splice applies changes
+        // in order, `one_by_one` from the last).
         attrs.sort_by_key(|a| a.pos);
+        attrs.reverse();
+        let mut seen = std::collections::HashSet::new();
+        attrs.retain(|a| seen.insert((a.pos, a.attr.clone())));
+        attrs.reverse();
         let mut merged: Vec<Rep> = Vec::with_capacity(reps.len());
         for rep in reps {
             match merged.last_mut() {
@@ -534,30 +542,59 @@ impl Step for BatchStep {
         Box::new(BatchStep::new(edits).expect("invert: the inverse edits are disjoint"))
     }
 
+    /// Each edit mapped as its own [`ReplaceStep`] / [`SetNodeAttrStep`]
+    /// would be, dropping only the edits those would drop. Two kept replaces
+    /// the mapping brings to meet end to end (it deleted what lay between
+    /// them) cannot be two ranges of one step unless they merge, so a pair
+    /// with closed slices becomes one replace of both ranges by both slices
+    /// — the document the two make one after the other — and of a pair
+    /// with an open slice the later one is dropped. An attribute change on a
+    /// node a kept replace now covers is dropped: as a step of its own, it
+    /// would have changed a node that replace then removes.
     fn map(&self, mapping: &Mapping) -> Option<Box<dyn Step>> {
-        let mut edits = Vec::with_capacity(self.len());
-        let mut kept: Vec<(usize, usize)> = Vec::new();
+        let mut reps: Vec<Rep> = Vec::with_capacity(self.reps.len());
         for rep in &self.reps {
             let from = mapping.map_result(rep.from, 1);
             let to = mapping.map_result(rep.to, -1);
             if from.deleted_across() && to.deleted_across() {
                 continue;
             }
-            let to = from.pos.max(to.pos);
-            kept.push((from.pos, to));
-            edits.push(BatchEdit::Replace {
+            let rep = Rep {
                 from: from.pos,
-                to,
+                to: from.pos.max(to.pos),
                 slice: rep.slice.clone(),
-            });
+            };
+            // Mapping is monotonic, so a kept replace can meet the one
+            // before it but never overlap it.
+            match reps.last_mut() {
+                Some(last) if last.to == rep.from && !mergeable(last, &rep) => {
+                    if closed(&last.slice) && closed(&rep.slice) {
+                        last.to = rep.to;
+                        last.slice =
+                            Slice::new(last.slice.content.append(&rep.slice.content), 0, 0);
+                    }
+                }
+                _ => reps.push(rep),
+            }
         }
+        let ranges: Vec<(usize, usize)> = reps.iter().map(|r| (r.from, r.to)).collect();
+        let mut edits: Vec<BatchEdit> = reps
+            .into_iter()
+            .map(|r| BatchEdit::Replace {
+                from: r.from,
+                to: r.to,
+                slice: r.slice,
+            })
+            .collect();
         for attr in &self.attrs {
             let pos = mapping.map_result(attr.pos, 1);
             if pos.deleted_after() {
                 continue;
             }
-            // A node the mapping put inside a replaced range is gone.
-            if kept.iter().any(|&(f, t)| f <= pos.pos && pos.pos < t) {
+            // `BatchStep::new`'s rule: the last range starting at or before
+            // the node is the only one that can cover it.
+            let k = ranges.partition_point(|&(f, _)| f <= pos.pos);
+            if k > 0 && pos.pos < ranges[k - 1].1 {
                 continue;
             }
             edits.push(BatchEdit::SetAttr {
@@ -751,13 +788,41 @@ mod tests {
         Ok((doc, mapping))
     }
 
+    /// The edits as separate steps, each mapped over `over` on its own (the
+    /// steps that map to nothing dropped), applied to `doc` (the document
+    /// `over` leads to) from the last position to the first. Mapping keeps
+    /// the order of positions, so the order is the original one.
+    fn sequence_mapped(doc: &Node, step: &BatchStep, over: &Mapping) -> Result<Node, StepError> {
+        let mut keyed: Vec<((usize, bool, usize), Box<dyn Step>)> = Vec::new();
+        for (i, r) in step.reps.iter().enumerate() {
+            let s = ReplaceStep::new(r.from, r.to, r.slice.clone());
+            keyed.push(((r.from, false, i), Box::new(s)));
+        }
+        for a in &step.attrs {
+            let s = SetNodeAttrStep {
+                pos: a.pos,
+                attr: a.attr.clone(),
+                value: a.value.clone(),
+            };
+            keyed.push(((a.pos, true, 0), Box::new(s)));
+        }
+        keyed.sort_by(|x, y| y.0.cmp(&x.0));
+        let mut doc = doc.clone();
+        for (_, s) in keyed {
+            if let Some(m) = s.map(over) {
+                doc = m.apply(&doc)?;
+            }
+        }
+        Ok(doc)
+    }
+
     /// A batch applies as its edits one at a time, maps positions as they
     /// did, inverts, and shares the subtrees it does not edit.
     #[test]
     fn a_batch_is_its_edits_one_at_a_time() {
         let s = Schema::starter_kit();
         let mut rng = Rng(0x1200_ba7c_0000_0001);
-        let (mut same, mut stricter, mut refused) = (0, 0, 0);
+        let (mut same, mut stricter, mut refused, mut mapped) = (0, 0, 0, 0);
         for case in 0..20000 {
             let doc = doc(&s, &mut rng);
             let Ok(step) = BatchStep::new(edits(&s, &mut rng, &doc)) else {
@@ -784,6 +849,36 @@ mod tests {
                     });
                     assert!(back == doc, "case {case}: invert {step:?}");
                     same += 1;
+                    // Mapped over another change (a random deletion), the
+                    // batch makes the document its edits make as separate
+                    // steps mapped one by one, wherever both apply.
+                    let size = doc.content_size();
+                    let x = rng.below(size + 1);
+                    let y = (x + rng.below(5)).min(size);
+                    let other = ReplaceStep::new(x, y, Slice::empty());
+                    if let Ok(doc1) = other.apply(&doc) {
+                        let mut over = Mapping::new();
+                        over.append_map(other.get_map());
+                        let seq = sequence_mapped(&doc1, &step, &over);
+                        match (step.map(&over), seq) {
+                            (Some(m), Ok(w)) => {
+                                if let Ok(got) = m.apply(&doc1) {
+                                    assert!(
+                                        got == w,
+                                        "case {case}: mapped over {x}..{y}: {step:?}\n \
+                                         as {m:?}\n got {got:?}\n want {w:?}"
+                                    );
+                                    mapped += 1;
+                                }
+                            }
+                            (None, Ok(w)) => assert!(
+                                w == doc1,
+                                "case {case}: the batch mapped over {x}..{y} to nothing, \
+                                 where its edits change the document: {step:?}"
+                            ),
+                            _ => {}
+                        }
+                    }
                 }
                 // The batch checks each node's content once, on the result;
                 // one at a time can pass through an invalid state.
@@ -794,8 +889,12 @@ mod tests {
                 (Err(_), Err(_)) => refused += 1,
             }
         }
-        eprintln!("same {same}, one at a time refused {stricter}, both refused {refused}");
+        eprintln!(
+            "same {same} (mapped {mapped}), one at a time refused {stricter}, \
+             both refused {refused}"
+        );
         assert!(same > 2000, "positive control: {same}");
+        assert!(mapped > 600, "positive control: {mapped} mapped");
     }
 
     #[test]

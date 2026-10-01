@@ -1033,4 +1033,3 @@ fn every_command_makes_the_edit_the_per_row_commands_made() {
     // The positive control: most cases applied, on both sides.
     assert!(compared > 4000, "only {compared} compared");
 }
-
