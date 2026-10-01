@@ -347,13 +347,12 @@ fn text_behind_an_element_child_is_not_the_value() {
     assert_eq!(ink(&px), 0);
 }
 
-/// The children follow every change while no `value` is set: removed `value`,
-/// changed text, appended and removed children (review of #1179).
+/// The children follow every change while no `value` is set: changed text,
+/// appended and removed children (review of #1179).
 #[test]
 fn the_drawn_value_follows_the_children_until_a_value_is_set() {
     let reference = |v: &str| one_textarea(|d, t| d.set_attribute(t, "value", v));
 
-    // `value` removed after it was set: the children show again.
     let mut d = doc();
     let c = container(&mut d, "");
     let t = el(
@@ -364,10 +363,7 @@ fn the_drawn_value_follows_the_children_until_a_value_is_set() {
     );
     let tx = d.create_text("CHILD");
     d.append_child(t, tx);
-    d.set_attribute(t, "value", "typed");
-    let _ = pixels(&mut d);
-    d.remove_attribute(t, "value");
-    assert!(pixels(&mut d) == reference("CHILD"), "value removed");
+    assert!(pixels(&mut d) == reference("CHILD"), "the child is drawn");
 
     // The child's text changed (the reactive `{|| s}` shape).
     d.set_text_content(tx, "second second");
@@ -381,4 +377,32 @@ fn the_drawn_value_follows_the_children_until_a_value_is_set() {
     let px = pixels(&mut d);
     assert!(px == reference("late"), "appended child drawn");
     assert_eq!(wh(&d, t).1, 40.0, "still rows lines");
+}
+
+/// A removed `value` is a write of `""`, as on rinch-web (`.value = ""`): the
+/// field draws nothing and stays dirty, so a later child change is not drawn
+/// (#1222). It used to read as "pristine again" and draw the children.
+#[test]
+fn a_removed_value_draws_nothing_and_stays_dirty() {
+    let mut d = doc();
+    let c = container(&mut d, "");
+    let t = el(
+        &mut d,
+        c,
+        "textarea",
+        &format!("display: block; width: 200px; {BARE}"),
+    );
+    let tx = d.create_text("CHILD");
+    d.append_child(t, tx);
+    d.set_attribute(t, "value", "typed");
+    assert!(
+        ink(&pixels(&mut d)) > 0,
+        "positive control: the value is drawn"
+    );
+    d.remove_attribute(t, "value");
+    assert_eq!(d.live_value(t).as_deref(), Some(""));
+    assert_eq!(ink(&pixels(&mut d)), 0, "value removed: nothing drawn");
+    d.set_text_content(tx, "second second");
+    assert_eq!(d.live_value(t).as_deref(), Some(""));
+    assert_eq!(ink(&pixels(&mut d)), 0, "a child change is not drawn");
 }
