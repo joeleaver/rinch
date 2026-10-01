@@ -108,7 +108,10 @@ fn a_wrapping_task_item_keeps_its_checkbox_beside_the_first_line() {
     let item = el("[data-pm-editor] [data-pm-type=\"task_item\"]");
     assert_eq!(computed(&item, "display"), "flex", "positive control");
     let p = el("[data-pm-editor] [data-pm-type=\"task_item\"] > p");
-    let (ir, pr) = (item.get_bounding_client_rect(), p.get_bounding_client_rect());
+    let (ir, pr) = (
+        item.get_bounding_client_rect(),
+        p.get_bounding_client_rect(),
+    );
     let (first, last) = first_and_last_char(&p);
     // The checkbox `::before` is the item's first flex item; it has no rect of
     // its own to read, so its line is the item's top and its width is the gap
@@ -143,11 +146,18 @@ fn a_wrapping_task_item_keeps_its_checkbox_beside_the_first_line() {
 fn a_wrapping_bullet_item_is_a_native_list_item_with_its_text_on_the_marker_line() {
     let (root, host) = mount(&format!("<ul><li><p>{LONG}</p></li></ul>"), None);
     let li = el("[data-pm-editor] li");
-    assert_eq!(computed(&li, "display"), "list-item", "rinch-web's override");
+    assert_eq!(
+        computed(&li, "display"),
+        "list-item",
+        "rinch-web's override"
+    );
     let p = el("[data-pm-editor] li > p");
     let (lr, pr) = (li.get_bounding_client_rect(), p.get_bounding_client_rect());
     let (first, last) = first_and_last_char(&p);
-    assert!((pr.top() - lr.top()).abs() < 0.5, "text starts on the li's first line");
+    assert!(
+        (pr.top() - lr.top()).abs() < 0.5,
+        "text starts on the li's first line"
+    );
     assert!(last.top() > first.top() + first.height(), "and wraps");
     root.unmount();
     host.remove();

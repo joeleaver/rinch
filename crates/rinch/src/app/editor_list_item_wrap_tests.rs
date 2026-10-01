@@ -75,8 +75,7 @@ fn items(app: &RinchApp) -> Vec<(Box4, Box4, Vec<(String, Box4)>)> {
     let nodes = &doc.tree.nodes;
     let mut out = Vec::new();
     for (_, n) in nodes.iter() {
-        let is_item = n.tag() == Some("li")
-            || attr(n, "data-pm-type") == Some("task_item");
+        let is_item = n.tag() == Some("li") || attr(n, "data-pm-type") == Some("task_item");
         if !is_item || n.parent.is_none() {
             continue;
         }
