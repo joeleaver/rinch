@@ -1178,8 +1178,12 @@ impl RinchDocument {
                     &inline_layout,
                 ) {
                     Some(EllipsisSource::Lines(&inline_layout))
-                } else if root_is_nowrap {
+                } else if root_is_nowrap
+                    && !Self::wraps_anywhere(&self.tree.nodes, root_id, &inline_layout.text_ranges)
+                {
                     // As before #1091: the whole text, cut to one prefix.
+                    // Not when a descendant wraps (#1212): that paragraph has
+                    // lines of its own, and one cut prefix would drop them.
                     Some(EllipsisSource::Whole(&inline_layout.text_content))
                 } else {
                     None
@@ -5269,6 +5273,14 @@ impl RinchDocument {
         root_text_style.letter_spacing = root_computed.letter_spacing;
         root_text_style.word_spacing = root_computed.word_spacing;
 
+        // The root's own `nowrap`/`pre` forbids a soft wrap in its own text
+        // (and at any boundary whose common ancestor is the root), while a
+        // descendant that allows wrapping still wraps (#1212). Parley decides
+        // a break opportunity from the wrap mode of the cluster before it, so
+        // `pre` root text followed by a `normal` span does not break at their
+        // seam — Chrome 153's answer.
+        root_text_style.text_wrap_mode = Self::text_wrap_mode(root_computed);
+
         let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
 
         // Apply white-space mode from computed style.
@@ -5342,10 +5354,15 @@ impl RinchDocument {
 
         let (text_layout, text_content) = builder.build();
         let mut text_layout = text_layout;
-        // white-space: nowrap/pre prevents line wrapping — use infinite width
-        let effective_max_width = match root_computed.white_space {
-            WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre => None,
-            _ => max_width,
+        // A paragraph none of whose text may wrap is broken unconstrained:
+        // only forced breaks end its lines. One that holds wrapping text — a
+        // wrapping root, or a `normal`/`pre-wrap`/`pre-line` element inside a
+        // `nowrap`/`pre` root (#1212) — is broken at the available width, and
+        // the per-cluster `TextWrapMode` keeps the rest of it on its lines.
+        let effective_max_width = if Self::wraps_anywhere(nodes, root_id, &text_ranges) {
+            max_width
+        } else {
+            None
         };
         // Only preserved spaces can hang past a soft wrap or end a line as
         // content; collapsible ones are single, and gone at a forced break.
@@ -5372,6 +5389,29 @@ impl RinchDocument {
             preserves_spaces,
             hang,
         }
+    }
+
+    /// Whether anything in an IFC may soft-wrap: the root itself (between its
+    /// own text and its atomic inlines alike), or the nearest element of some
+    /// text run inside it (#1212). `false` only for a `nowrap`/`pre` root none
+    /// of whose text belongs to a wrapping element.
+    pub(crate) fn wraps_anywhere(
+        nodes: &slab::Slab<Node>,
+        root_id: usize,
+        text_ranges: &[crate::node::IfcTextRange],
+    ) -> bool {
+        let wraps = |id: usize| {
+            nodes.get(id).is_some_and(|n| {
+                Self::text_wrap_mode(&n.computed_style) == parley::style::TextWrapMode::Wrap
+            })
+        };
+        wraps(root_id)
+            || text_ranges.iter().filter(|r| !r.is_br).any(|r| {
+                nodes
+                    .get(r.node_id)
+                    .and_then(|t| t.parent)
+                    .is_some_and(wraps)
+            })
     }
 
     /// Whether rebuilding `il` as flat text in the root's own style draws
