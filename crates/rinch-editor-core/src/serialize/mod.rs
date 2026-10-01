@@ -23,5 +23,7 @@ pub mod text;
 pub use doc_json::{DocMark, DocNode, JsonAttr};
 pub use html::{mark_dom_tag, node_dom_tag, node_to_html, slice_from_html, slice_to_html};
 #[cfg(feature = "markdown")]
-pub use markdown::{doc_from_markdown, doc_to_markdown};
+pub use markdown::{
+    Construct, MarkdownError, doc_from_markdown, doc_from_markdown_strict, doc_to_markdown,
+};
 pub use text::{slice_from_text, slice_to_text};
