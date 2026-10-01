@@ -5,8 +5,10 @@
 //! mapping, so it is **two** kinds of test at once and they must not be confused
 //! with each other:
 //!
-//! - `taffy_0_12_cannot_carry_an_intrinsic_keyword_in_a_dimension` and the
-//!   computed-style fixtures assert behaviour this PR **established**. Against
+//! - `taffy_0_14_lays_out_an_intrinsic_dimension_rinch_still_maps_it_to_auto`
+//!   and the computed-style fixtures assert behaviour that is **established**
+//!   (the first one rewritten for Taffy 0.14 by #1236; #690 established the
+//!   rest). Against
 //!   `main` this file does not compile at all — the API is new — so what was
 //!   actually run is the mutant that keeps the API and puts the keyword arms
 //!   back to `DimensionValue::Auto`. Two of the twelve fail there, exactly
@@ -18,32 +20,31 @@
 //!   implements the keywords they have to delete or flip them deliberately,
 //!   with Chrome's number sitting right there to flip them to.
 //!
-//! # Why `auto`, and why that is not a missing match arm
+//! # Why `auto` — and why, since Taffy 0.14, it is a mapping not yet made
 //!
-//! `taffy::Dimension` is a newtype over `CompactLength`. That type *does* carry
-//! `MIN_CONTENT_TAG`, `MAX_CONTENT_TAG`, `FIT_CONTENT_PX_TAG` and
-//! `FIT_CONTENT_PERCENT_TAG` — the issue's premise that "Taffy has `Dimension`
-//! variants for these" comes from reading that list — but nothing reads them on
-//! a box's size:
+//! Until #1236 rinch used Taffy 0.12, where a box's size could not carry an
+//! intrinsic keyword at all: `Dimension` had no safe constructor for one, and
+//! `impl MaybeResolve for Dimension` ended `_ => unreachable!()`, so a
+//! `size`/`min_size`/`max_size` holding one **panicked** during layout. Only
+//! grid track sizing read the keyword tags. Implementing #626 meant a
+//! rinch-side measurement pass.
 //!
-//! - The helper traits that construct them (`TaffyMinContent`,
-//!   `TaffyMaxContent`, `TaffyFitContent`) are implemented for `AvailableSpace`,
-//!   for `MinTrackSizingFunction` / `MaxTrackSizingFunction` /
-//!   `TrackSizingFunction` (grid), and for `CompactLength` itself.
-//!   **Not for `Dimension`**, which implements only `TaffyAuto`, `FromLength`
-//!   and `FromPercent` (taffy-0.12.2, `src/style/dimension.rs:233`).
-//! - `impl MaybeResolve for Dimension` (`src/util/resolve.rs:57`) matches
-//!   `AUTO`/`LENGTH`/`PERCENT`/calc and ends `_ => unreachable!()`, so a
-//!   `size`/`min_size`/`max_size` holding one **panics** during layout. The
-//!   probe below constructs exactly that, through the `unsafe from_raw` escape
-//!   hatch, and catches the panic.
-//! - Every consumer of those tags under `src/compute/` is under
-//!   `src/compute/grid/` (`track_sizing.rs` and `types/grid_track.rs`).
+//! Taffy 0.14 changed that, for part of the property set:
 //!
-//! The vendored `crates/stylo-taffy/src/convert.rs` — upstream Blitz's
-//! stylo↔taffy converter, not rinch's code — maps all four keywords to
-//! `Dimension::AUTO` as well, for the same reason. So implementing them needs a
-//! rinch-side measurement pass, which is deliberately not in this PR.
+//! - `Dimension::{min_content, max_content, fit_content, fit_content_px,
+//!   fit_content_percent, stretch}` exist, and `size` and `flex_basis` lay them
+//!   out — for a box that is **not a Taffy root** (at a root Taffy ignores the
+//!   keyword, and rinch computes atomic inlines as roots). The pin is
+//!   `taffy_0_14_lays_out_an_intrinsic_dimension_rinch_still_maps_it_to_auto`.
+//! - `min_size` and `max_size` became `LengthPercentageAuto`, which has **no**
+//!   keyword representation, so on `min-*`/`max-*` the keyword stays `auto`
+//!   whatever rinch does.
+//!
+//! The Taffy bump deliberately changes no layout, so `DimensionValue::to_taffy`
+//! still maps every keyword to `auto`; making it the mapping for
+//! `width`/`height`/`flex-basis` is #691. Everything below this section is
+//! unchanged by the bump and still true: the deviation records pass, and the
+//! day #691 lands they flip.
 //!
 //! # All four spellings really do parse
 //!
@@ -214,48 +215,48 @@ const CASES: &[(&str, &str, &str, &str)] = &[
 // What this PR established
 // ---------------------------------------------------------------------------
 
-/// The load-bearing claim behind "this is not a mapping".
+/// What Taffy 0.14 can do and what rinch still does with it (#1236).
 ///
-/// A `Dimension` carrying `CompactLength::max_content()` can only be built
-/// through `unsafe from_raw` — no safe constructor exists, because `Dimension`
-/// does not implement `TaffyMaxContent` — and handing one to a block layout
-/// **panics** at `MaybeResolve for Dimension`'s `_ => unreachable!()`.
+/// Taffy 0.12 panicked on this tree (`MaybeResolve for Dimension`'s
+/// `_ => unreachable!()`, reached through `unsafe from_raw` — there was no safe
+/// constructor). 0.14 constructs the keyword safely and shrink-wraps a non-root
+/// block child to its 300px content where `auto` fills the 800px container —
+/// Chrome's answer in the oracle table's first row.
 ///
-/// If a future Taffy makes this work, this test fails, and most of #626's
-/// follow-up evaporates: the fix would become the match arm the issue first
-/// assumed it was. The grid half is asserted beside it so the failure message
-/// distinguishes "Taffy grew box-level support" from "the grid API moved".
+/// rinch does not hand it the keyword yet: `DimensionValue::to_taffy` still
+/// answers `auto` for every intrinsic keyword, so the Taffy bump changes no
+/// layout. Making that a mapping is #691, and when it lands the last assertion
+/// here and `every_intrinsic_keyword_lays_out_exactly_like_auto` flip together.
+/// The min/max half cannot flip: `min_size`/`max_size` are a
+/// `LengthPercentageAuto`, which has no keyword at all.
 #[test]
-fn taffy_0_12_cannot_carry_an_intrinsic_keyword_in_a_dimension() {
+fn taffy_0_14_lays_out_an_intrinsic_dimension_rinch_still_maps_it_to_auto() {
     use taffy::prelude::*;
-    use taffy::{CompactLength, Dimension, Style};
+    use taffy::{Dimension, Style};
 
-    // Grid track sizing functions *do* take the keyword, safely. This is the
-    // whole of Taffy 0.12's intrinsic-sizing support.
-    assert!(MaxTrackSizingFunction::MAX_CONTENT.is_max_content());
-    assert!(MinTrackSizingFunction::MIN_CONTENT.is_min_content());
-
-    #[allow(unsafe_code)]
-    let intrinsic = unsafe { Dimension::from_raw(CompactLength::max_content()) };
-    assert!(
-        !intrinsic.is_auto(),
-        "a max-content Dimension is not auto, so nothing routes it to the auto path"
-    );
-
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let outcome = std::panic::catch_unwind(|| {
+    fn child_width(width: Dimension) -> f32 {
         let mut t: TaffyTree<()> = TaffyTree::new();
-        #[allow(unsafe_code)]
-        let width = unsafe { Dimension::from_raw(CompactLength::max_content()) };
-        let child = t
+        let content = t
             .new_leaf(Style {
                 size: Size {
-                    width,
+                    width: Dimension::length(300.0),
                     height: Dimension::length(20.0),
                 },
                 ..Default::default()
             })
+            .unwrap();
+        let child = t
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size {
+                        width,
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+                &[content],
+            )
             .unwrap();
         let root = t
             .new_with_children(
@@ -279,15 +280,33 @@ fn taffy_0_12_cannot_carry_an_intrinsic_keyword_in_a_dimension() {
         )
         .unwrap();
         t.layout(child).unwrap().size.width
-    });
-    std::panic::set_hook(hook);
+    }
 
-    assert!(
-        outcome.is_err(),
-        "Taffy laid out an intrinsic Dimension instead of panicking — it gave {outcome:?}. \
-         If Taffy now supports this, #626 becomes a mapping after all: revisit \
-         `DimensionValue::to_taffy` and delete this test."
+    assert_eq!(child_width(Dimension::auto()), 800.0, "control: auto fills");
+    assert_eq!(
+        child_width(Dimension::max_content()),
+        300.0,
+        "Taffy 0.14 shrink-wraps a max-content block child, as Chrome does"
     );
+    assert_eq!(child_width(Dimension::min_content()), 300.0);
+    assert_eq!(child_width(Dimension::fit_content()), 300.0);
+
+    for k in [
+        IntrinsicSize::MaxContent,
+        IntrinsicSize::MinContent,
+        IntrinsicSize::FitContent,
+        IntrinsicSize::Stretch,
+    ] {
+        let v = DimensionValue::Intrinsic(k);
+        assert!(
+            v.to_taffy().is_auto(),
+            "{k:?}: rinch still hands Taffy `auto` (#691 makes this a mapping)"
+        );
+        assert!(
+            v.to_taffy_lpa().is_auto(),
+            "{k:?}: a min/max size has no keyword representation in Taffy 0.14"
+        );
+    }
 }
 
 /// The declaration now survives style conversion. **Fails against `main`**,
