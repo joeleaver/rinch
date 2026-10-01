@@ -209,6 +209,100 @@ fn a_child_change_after_a_value_write_is_not_shown() {
     fixture.teardown();
 }
 
+/// Issue #1222 case 2: a `value` write **equal** to the shown text sets the
+/// dirty value flag too, as a script `.value` write does in Chrome 153
+/// ([`chrome_sets_the_flag_on_an_equal_script_write`]). rinch-web skipped the
+/// equal write, so the flag stayed clear and the field went on following its
+/// children — where desktop, whose flag is the attribute, froze.
+#[wasm_bindgen_test]
+fn an_equal_value_write_sets_the_dirty_flag_1222() {
+    let draft = Signal::new(String::from("same"));
+    let slot = Rc::new(RefCell::new(None));
+    let fixture = reactive_child(draft, slot.clone());
+    let ta = fixture.textarea();
+    let handle = slot.borrow().clone().expect("the textarea's handle");
+
+    handle.set_attribute("value", "same");
+    draft.set("changed".into());
+    assert_eq!(ta.default_value().unwrap(), "changed", "positive control");
+    assert_eq!(ta.value(), "same", "an equal write froze the field");
+    fixture.teardown();
+}
+
+/// The equal write leaves a focused field's caret where it was: per HTML
+/// the setter moves the cursor only when the value changed.
+#[wasm_bindgen_test]
+fn an_equal_value_write_keeps_the_caret_1222() {
+    let draft = Signal::new(String::from("abcdef"));
+    let slot = Rc::new(RefCell::new(None));
+    let fixture = reactive_child(draft, slot.clone());
+    let ta = fixture.textarea();
+    let handle = slot.borrow().clone().expect("the textarea's handle");
+
+    ta.focus().unwrap();
+    ta.set_selection_range(2, 4).unwrap();
+    handle.set_attribute("value", "abcdef");
+    assert_eq!(ta.selection_start().unwrap(), Some(2));
+    assert_eq!(ta.selection_end().unwrap(), Some(4));
+    fixture.teardown();
+}
+
+/// The oracle for the two fixtures above: Chrome sets the flag on a script
+/// `.value` write equal to the current value.
+#[wasm_bindgen_test]
+fn chrome_sets_the_flag_on_an_equal_script_write() {
+    let ta: web_sys::HtmlTextAreaElement = document()
+        .create_element("textarea")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    document().body().unwrap().append_child(&ta).unwrap();
+    ta.set_text_content(Some("same"));
+    ta.set_value("same");
+    ta.set_text_content(Some("changed"));
+    assert_eq!(ta.value(), "same");
+    ta.remove();
+}
+
+/// Issue #1222 case 1: removing the `value` attribute writes `.value = ""`,
+/// which leaves the flag set; a page cannot clear it. Desktop now agrees
+/// (it used to fall back to the children). A parity pin: this was the web's
+/// behaviour before #1222.
+#[wasm_bindgen_test]
+fn removing_a_written_value_leaves_the_field_empty_and_dirty_1222() {
+    let draft = Signal::new(String::from("child"));
+    let slot = Rc::new(RefCell::new(None));
+    let fixture = reactive_child(draft, slot.clone());
+    let ta = fixture.textarea();
+    let handle = slot.borrow().clone().expect("the textarea's handle");
+
+    handle.set_attribute("value", "written");
+    handle.remove_attribute("value");
+    assert_eq!(ta.value(), "");
+    assert_eq!(ta.get_attribute("value"), None);
+    draft.set("changed".into());
+    assert_eq!(ta.default_value().unwrap(), "changed", "positive control");
+    assert_eq!(ta.value(), "");
+    fixture.teardown();
+}
+
+/// The same from a pristine field that never had the attribute.
+#[wasm_bindgen_test]
+fn removing_an_absent_value_from_a_pristine_textarea_empties_it_1222() {
+    let draft = Signal::new(String::from("child"));
+    let slot = Rc::new(RefCell::new(None));
+    let fixture = reactive_child(draft, slot.clone());
+    let ta = fixture.textarea();
+    let handle = slot.borrow().clone().expect("the textarea's handle");
+
+    assert_eq!(ta.value(), "child", "positive control");
+    handle.remove_attribute("value");
+    assert_eq!(ta.value(), "");
+    draft.set("changed".into());
+    assert_eq!(ta.value(), "");
+    fixture.teardown();
+}
+
 /// A child set directly on the textarea element (`set_text`, i.e. `set_text_content`, on the
 /// element, not on its text node) follows the same rule.
 #[wasm_bindgen_test]
