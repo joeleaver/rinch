@@ -230,7 +230,9 @@ pub fn is_value_control(node: &Node) -> bool {
 /// `value_fn`, and focusing or blurring the field writes nothing (#1186). So
 /// an attribute that is present wins even when it is empty — once a field has
 /// been edited or written, its children no longer show — and while it is
-/// absent the field follows its children, as a browser's `.value` does. An
+/// absent the field follows its children, as a browser's `.value` does.
+/// Removing the attribute is a write of `""` and leaves the field dirty
+/// ([`Node::value_dirty`], #1222): it answers `""`, not its children. An
 /// `<input>` has no default value in its children, so it answers only its
 /// attribute. `None` for any other element.
 pub fn control_value(
@@ -244,13 +246,18 @@ pub fn control_value(
     if node.tag() != Some("textarea") {
         return None;
     }
+    if node.value_dirty {
+        // Its `value` was removed: an empty dirty field (#1222).
+        return Some(std::borrow::Cow::Borrowed(""));
+    }
     Some(textarea_child_text(nodes, node))
 }
 
 /// Whether `node` is a `<textarea>` whose value is still its default value —
-/// no `value` attribute, so its dirty value flag is clear (#1186).
+/// no `value` attribute and never had one removed, so its dirty value flag is
+/// clear (#1186, #1222).
 pub fn is_pristine_textarea(node: &Node) -> bool {
-    node.tag() == Some("textarea") && !node.attributes.contains_key("value")
+    node.tag() == Some("textarea") && !node.value_dirty && !node.attributes.contains_key("value")
 }
 
 /// A `<textarea>`'s child text content: its direct `Text` children,

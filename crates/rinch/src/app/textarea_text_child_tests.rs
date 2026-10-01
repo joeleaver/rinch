@@ -548,7 +548,11 @@ mod dirty_flag_1222 {
         write(&mut app, id, Some("written"));
         assert_eq!(live(&app, id).as_deref(), Some("written"));
         write(&mut app, id, None);
-        assert_eq!(live(&app, id).as_deref(), Some(""), "the removal empties it");
+        assert_eq!(
+            live(&app, id).as_deref(),
+            Some(""),
+            "the removal empties it"
+        );
         assert_eq!(
             value_attr(&app, id),
             None,
@@ -596,5 +600,54 @@ mod dirty_flag_1222 {
         press(&mut app, KeyCode::End, None);
         press(&mut app, KeyCode::KeyX, Some("X"));
         assert_eq!(value_attr(&app, id).as_deref(), Some("X"));
+    }
+
+    /// The removal reaches paint: the incremental frame after it holds what
+    /// a from-scratch frame holds over the field, and that differs from the
+    /// frame before (the child text is gone). Kills dropping the paint
+    /// invalidation from `remove_attribute`'s absent-attribute arm.
+    #[cfg(software_shell)]
+    #[test]
+    fn a_removal_on_a_pristine_textarea_repaints_it() {
+        const SIZE: (u32, u32) = (800, 600);
+        let (mut app, id, _text, _log) = mount_with_change("child text");
+        let frame = |app: &mut RinchApp, full: bool| {
+            if full {
+                app.scene_dirty = true;
+                app.has_previous_frame = false;
+            }
+            let px = app.build_pixels(1.0, SIZE, false).0.to_vec();
+            let _ = app.end_perf_frame();
+            px
+        };
+        let before = frame(&mut app, true);
+        {
+            let mut d = app.doc.as_ref().unwrap().borrow_mut();
+            d.remove_attribute(rinch_core::dom::NodeId(id), "value");
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        let incremental = frame(&mut app, false);
+        let fresh = frame(&mut app, true);
+        let (x, y, w, h) = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            painted_element_box(&d.tree, id)
+        };
+        let region = |px: &[u8]| -> Vec<u8> {
+            let mut out = Vec::new();
+            for row in (y as usize)..((y + h) as usize) {
+                let start = (row * SIZE.0 as usize + x as usize) * 4;
+                out.extend_from_slice(&px[start..start + (w as usize) * 4]);
+            }
+            out
+        };
+        assert_ne!(
+            region(&before),
+            region(&fresh),
+            "positive control: the child text was painted and is gone"
+        );
+        assert!(
+            region(&incremental) == region(&fresh),
+            "the incremental frame repainted the emptied field"
+        );
     }
 }

@@ -376,6 +376,9 @@ fn is_svg_tag(tag: &str) -> bool {
 /// value. For `value` that avoids resetting the caret to the end on the common
 /// echo path (user types → `oninput` → signal → effect re-writes the same
 /// string); for the boolean properties it just skips redundant DOM writes.
+/// The exception is a `<textarea>`, whose equal write goes through `set_value`
+/// anyway: that sets its dirty value flag (it stops following its text
+/// children) without moving the cursor (#1222).
 ///
 /// A `value` write to the control that holds focus is the user's live text
 /// being rewritten under them (issue #238): the selection is mapped through
@@ -398,10 +401,18 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
                 if settable && input.value() != value {
                     write_live_text(&TextControl::Input(input), value);
                 }
-            } else if let Some(textarea) = node.dyn_ref::<web_sys::HtmlTextAreaElement>()
-                && textarea.value() != value
-            {
-                write_live_text(&TextControl::TextArea(textarea), value);
+            } else if let Some(textarea) = node.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+                if textarea.value() != value {
+                    write_live_text(&TextControl::TextArea(textarea), value);
+                } else {
+                    // An equal write is still a write: it sets the dirty value
+                    // flag, as a script `.value` write does in Chrome 153, so
+                    // the field stops following its text children — as on
+                    // desktop, where the flag is the attribute's presence
+                    // (#1222). The setter moves the cursor only when the value
+                    // changes, so the echo path keeps its caret.
+                    textarea.set_value(value);
+                }
             } else if let Some(select) = node.dyn_ref::<web_sys::HtmlSelectElement>()
                 && select.value() != value
             {
