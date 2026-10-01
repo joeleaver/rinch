@@ -85,10 +85,10 @@ pub enum NodeContext {
     },
     /// IFC root that needs Parley TreeBuilder measurement.
     ///
-    /// **The IFC leaf invariant (#466).** Taffy 0.12 consults a measure
-    /// function only on a node with zero children (`taffy_tree.rs:303-327`,
-    /// the `(_, false)` arm of the `match (display_mode, has_children)`
-    /// dispatch). Therefore the Taffy node carrying a live `InlineRoot` must
+    /// **The IFC leaf invariant (#466).** Taffy (0.12 and 0.14 alike) consults a
+    /// measure function only on a node with zero children
+    /// (`taffy_tree.rs:310-326` in 0.14, the `(_, false)` arm of the
+    /// `match (display_mode, has_children)` dispatch). Therefore the Taffy node carrying a live `InlineRoot` must
     /// be childless: the IFC root's own node when inline detachment emptied
     /// it, or its dedicated measure-leaf when out-of-flow children remain
     /// attached. After `setup_inline_formatting_contexts`, no Taffy node with
@@ -2462,8 +2462,8 @@ pub struct NodeTree {
     ///
     /// **In shipped code this is provably zero**, not hopefully zero:
     /// `compute_taffy_child_index` returns an in-range index by construction,
-    /// and the clamp makes `insert_child_at_index` total (`taffy 0.12.2` can
-    /// only fail it with `ChildIndexOutOfBounds`). So a non-zero value is not a
+    /// and the clamp makes `insert_child_at_index` total (`taffy 0.14.0`, like
+    /// 0.12.2, can only fail it with `ChildIndexOutOfBounds`). So a non-zero value is not a
     /// tolerable condition to be handled — it is evidence that a regression of
     /// the #477 class has been reintroduced.
     ///

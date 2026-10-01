@@ -630,7 +630,7 @@ impl RinchDocument {
                 available_space,
                 |inputs, _node_id, context, style| {
                     // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
-                    // algorithm (box-sizing, min/max clamps) is what 0.12's
+                    // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
                     // `TaffyView` ran around the size this body returns, with the
                     // same `0.0` calc resolver.
                     taffy::compute_leaf_layout(

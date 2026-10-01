@@ -1,8 +1,8 @@
 //! The IFC leaf invariant (#466).
 //!
-//! Taffy 0.12 consults a node's measure function only when that node has zero
-//! Taffy children (`taffy_tree.rs:303-327`, the `(_, false)` arm of the
-//! `match (display_mode, has_children)` dispatch). So an IFC root gets its
+//! Taffy (0.12 and 0.14 alike) consults a node's measure function only when
+//! that node has zero Taffy children (`taffy_tree.rs:310-326` in 0.14, the
+//! `(_, false)` arm of the `match (display_mode, has_children)` dispatch). So an IFC root gets its
 //! height from its inline content **only while its `InlineRoot`-carrying Taffy
 //! node is a leaf** — a non-leaf carrier's measure is not skipped but
 //! structurally unreachable, and an auto-height root collapses to `h = 0`.

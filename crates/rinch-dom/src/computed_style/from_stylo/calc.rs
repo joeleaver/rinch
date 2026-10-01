@@ -40,8 +40,8 @@
 //! is not representable without carrying the calc tree, and the previous
 //! answer for these was a silent `(0, 0)`. Exact non-affine support would
 //! need either a stylo calc tree carried to resolution time or Taffy's calc
-//! pointer, which `TaffyTree` resolves to `0.0` unconditionally (taffy-0.12.2,
-//! `src/tree/taffy_tree.rs:391`).
+//! pointer, which `TaffyTree` resolves to `0.0` unconditionally (taffy-0.14.0,
+//! `src/tree/taffy_tree.rs:387`).
 
 use style::values::computed::{Length, LengthPercentage};
 

@@ -3157,7 +3157,7 @@ impl RinchDocument {
     /// Every violation of the IFC leaf invariant (#466): DOM nodes whose Taffy
     /// node carries [`NodeContext::InlineRoot`] while having Taffy children.
     ///
-    /// Taffy 0.12 consults a measure function only on a node with zero
+    /// Taffy (0.12 and 0.14 alike) consults a measure function only on a node with zero
     /// children, so a non-leaf carrying `InlineRoot` can never be measured —
     /// an auto-height IFC root in that state collapses to `h = 0`. After
     /// [`Self::setup_inline_formatting_contexts`] this must be empty; a
@@ -4887,7 +4887,7 @@ impl RinchDocument {
             avail,
             |inputs, _node_id, context, style| {
                 // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
-                // algorithm (box-sizing, min/max clamps) is what 0.12's
+                // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
                 // `TaffyView` ran around the size this body returns, with the
                 // same `0.0` calc resolver.
                 taffy::compute_leaf_layout(

@@ -1,10 +1,10 @@
 //! Resolving mixed `calc()` values for Taffy-consumed properties (#278).
 //!
 //! A `Calc { px, pct }` (see `computed_style/from_stylo/calc.rs`) has no Taffy
-//! representation: Taffy 0.12's calc pointer (`CompactLength::calc`) is only
+//! representation: Taffy's calc pointer (`CompactLength::calc`) is only
 //! resolvable by callers implementing the layout-tree traits themselves —
 //! `TaffyTree`'s `LayoutPartialTree::resolve_calc_value` is hardcoded to
-//! `0.0` (taffy-0.12.2, `src/tree/taffy_tree.rs:391`), with no hook. So rinch
+//! `0.0` (taffy-0.14.0, `src/tree/taffy_tree.rs:387`; 0.12 did the same), with no hook. So rinch
 //! resolves these itself with the two-pass shape
 //! `ifc::resolve_percentage_inline_blocks` (#120) already uses:
 //!

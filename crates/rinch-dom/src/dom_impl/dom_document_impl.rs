@@ -1420,8 +1420,8 @@ impl RinchDocument {
     /// it, so the divergence is observable to a test or a devtools surface
     /// without scraping logs.
     ///
-    /// **What the clamp is worth, measured against taffy 0.12.2 rather than
-    /// assumed.** `insert_child_at_index` returns `Err` for exactly one reason,
+    /// **What the clamp is worth, measured against taffy 0.12.2 (and re-read
+    /// against 0.14.0, unchanged) rather than assumed.** `insert_child_at_index` returns `Err` for exactly one reason,
     /// `ChildIndexOutOfBounds`; its only other fallible call is `mark_dirty`,
     /// which always answers `Ok`. So the clamp does not merely *usually* avoid
     /// the error — it makes this call **total**, and with
