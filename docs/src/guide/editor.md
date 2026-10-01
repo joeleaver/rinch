@@ -182,6 +182,14 @@ Stylo clamps a grid template and every span to 10000 tracks, so a table wider th
 that is drawn 10000 columns wide; and the cells are *auto-placed*, which can put a
 cell in a different row than the map does when a rowspan leaves a row short (#1209).
 
+The row count is the other route past those 32767 lines: a grid reaching past
+line 32767 used to **panic** layout (#1210). A table that could — more than 32767 rows, or spans
+stacking past that — is now laid out as a row-wrapping flex container instead,
+each cell `colspan / columns` of the width; see
+[Very large grids](theming.md#very-large-grids-desktop) for what that keeps and
+what it gives up (a `rowspan` among them). A table of fewer rows is a grid as
+before, however many columns it has.
+
 ## The transform engine
 
 Every editing operation is a `Transaction` carrying one or more `Step`s. Steps are

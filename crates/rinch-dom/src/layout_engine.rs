@@ -213,6 +213,8 @@ impl RinchDocument {
         // A table whose rows came or went with no restyle — a removal, a row
         // moved in from elsewhere — still owes its direction (#1083).
         self.resolve_table_directions();
+        // …and a grid whose items came or went its line budget (#1210).
+        self.resolve_grid_budgets();
         // Everything styled so far is rendered by this frame; a later
         // cascade has a before-change style to transition from.
         for id in std::mem::take(&mut self.tree.styled_unrendered) {

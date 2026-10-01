@@ -636,3 +636,45 @@ you reached for `width: fit-content` on a block, `display: inline-block` gives
 the same shrink-to-fit today; where you reached for `height: stretch`, `height:
 100%` gives the same used size as long as the box has no margin, border or
 padding on that axis.
+
+## Very large grids (desktop)
+
+Taffy 0.12, which lays grids out on desktop, numbers grid lines as `i16`. A
+grid whose placement reaches past line 32767 — 40000 auto-placed rows, 33
+items of `grid-row: span 1000`, a template of `repeat(10000, 1px 1px 1px 1px)`
+— used to **panic** layout (#1210). rinch now bounds, before layout, the lines
+each grid's placement can reach, and a grid that could pass the limit is not
+laid out as a grid:
+
+- **One column** (a `grid-template-columns` of one track, or none): a flex
+  column. Each item fills the container's width, or the track's when it is one
+  fixed length, and stacks — which is exactly what the grid gives for a long
+  list (Chrome 153: 40000 rows of 10px, 400000px tall, each item the column's
+  width; rinch the same).
+- **Several columns**: a row-wrapping flex container of `N` columns, `N` the
+  explicit column count, each item `span / N` of the width. For equal columns
+  and auto-placed items that span no rows — every table the editor draws
+  without a `rowspan` — that is the grid's own geometry: rows of `N`, each as
+  tall as its tallest item.
+
+What the degraded layout gives up: rows spanned by an item, definite line
+placement (`grid-row: 3`), unequal or fixed track sizes across several columns
+(the width is shared equally), explicit row sizes, the column gap (a gap would
+push the `N`th item onto the next line; the row gap stays), and alignment other
+than `stretch`. Nothing is dropped: every item is laid out and painted. The
+bound counts auto-placed 1x1 items a row per explicit column, so a
+three-column table of 12000 rows (36000 cells) is still a grid. Taffy 0.13
+clamps a grid to 10000 tracks per axis instead (Gecko's limit); Chrome has none
+at these sizes. `rinch-web` is unaffected: the browser lays its grids out.
+
+The bound also counts a Taffy 0.12 quirk that CSS does not have: an item
+with a definite row and an auto column (`grid-row: 1`) starts its search for
+a free column at a position Taffy computes with the wrong axis' negative
+track count, so on a grid with negative implicit lines (`grid-column: -10000`
+and the like) it can land thousands of columns past where it belongs. A grid
+with no negative lines pays nothing for that.
+
+Not covered: `repeat(auto-fill, …)` and `repeat(auto-fit, …)`, whose count
+Taffy derives from the container's size during layout, are counted as one
+repetition — and still panic past the limit, or at any width when a
+repetition is `0px` wide (#1231).

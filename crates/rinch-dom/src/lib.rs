@@ -17,6 +17,7 @@ pub mod computed_style;
 mod dom_impl;
 pub mod fonts;
 pub mod form_control;
+pub mod grid_budget;
 pub mod hit_cache;
 pub mod html_parser;
 pub mod html_serializer;

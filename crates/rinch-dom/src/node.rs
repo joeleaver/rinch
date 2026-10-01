@@ -1070,6 +1070,12 @@ pub struct Node {
     /// collapse off-screen blocks. IFC building and painting are skipped.
     pub estimated_height: Option<f32>,
 
+    /// Set on a grid container whose placement could reach past the grid
+    /// lines Taffy 0.12 can number (#1210): the column count its degraded
+    /// flex-wrap layout uses, which `grid_budget` writes into its Taffy style
+    /// and its items'. `None` for every grid that fits, and for every other box.
+    pub grid_degrade: Option<u32>,
+
     /// True while a `sync_display_contents` pass has this node's children
     /// spliced into an ancestor's Taffy child list (and the node's own Taffy
     /// node detached) because it computed `display: contents` — and no later
@@ -1238,6 +1244,7 @@ impl Node {
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             estimated_height: None,
+            grid_degrade: None,
             contents_spliced: false,
             ifc_detached: false,
         }
@@ -1300,6 +1307,7 @@ impl Node {
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             estimated_height: None,
+            grid_degrade: None,
             contents_spliced: false,
             ifc_detached: false,
         }
@@ -1361,6 +1369,7 @@ impl Node {
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             estimated_height: None,
+            grid_degrade: None,
             contents_spliced: false,
             ifc_detached: false,
         }
@@ -1420,6 +1429,7 @@ impl Node {
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             estimated_height: None,
+            grid_degrade: None,
             contents_spliced: false,
             ifc_detached: false,
         }
@@ -2105,6 +2115,15 @@ pub struct NodeTree {
     /// bulk removal under a table costs one walk of its children per frame,
     /// not a Taffy re-sync per move.
     pub table_direction_owed: Vec<RawNodeId>,
+    /// Grid containers whose line budget may have moved (#1210): a layout
+    /// child inserted, removed, or restyled in its placement, or the container
+    /// itself restyled. Drained once per layout by
+    /// `RinchDocument::resolve_grid_budgets`.
+    pub grid_budget_owed: Vec<RawNodeId>,
+    /// How many grid containers carry [`Node::grid_degrade`], counted loosely
+    /// (a freed container is not subtracted): `0` lets every Taffy style
+    /// rebuild skip the item check. Only ever an over-estimate.
+    pub degraded_grids: usize,
     /// Roots of subtrees needing style resolution. When non-empty,
     /// `resolve_styles()` resolves only these subtrees instead of the
     /// full tree — turning O(tree) into O(changed_subtree).
@@ -2582,6 +2601,8 @@ impl NodeTree {
             inline_text_shadows: false,
             style_dirty_nodes: Vec::new(),
             table_direction_owed: Vec::new(),
+            grid_budget_owed: Vec::new(),
+            degraded_grids: 0,
             style_roots: Vec::new(),
             full_style_walk: true, // The first resolve styles everything
             styles_dirty: true,    // Initial render needs styles

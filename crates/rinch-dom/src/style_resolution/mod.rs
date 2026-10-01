@@ -950,6 +950,22 @@ impl RinchDocument {
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
             let old_table_part = self.tree.nodes[node_id].computed_style.table_part;
+            // What a grid's line budget reads (#1210): the item's placement and
+            // flow, and — for a grid container — its template and flow.
+            let old_grid_item = {
+                let s = &self.tree.nodes[node_id].computed_style;
+                (s.grid_row.clone(), s.grid_column.clone(), s.position)
+            };
+            let old_grid_container = {
+                let s = &self.tree.nodes[node_id].computed_style;
+                crate::grid_budget::is_grid(s.display).then(|| {
+                    (
+                        s.grid_template_columns.clone(),
+                        s.grid_template_rows.clone(),
+                        s.grid_auto_flow,
+                    )
+                })
+            };
             // …and whether it was a containing block for absolute descendants.
             let was_abs_containing_block =
                 self.tree.nodes[node_id].establishes_abs_containing_block();
@@ -1328,6 +1344,40 @@ impl RinchDocument {
                 }
             }
 
+            // A grid's line budget (#1210) moves with its items' placement and
+            // with its own template and flow: owe the check to the grid this
+            // node is an item of, and to this node when it is (or was, or is
+            // laid out as) a grid.
+            {
+                let node = &self.tree.nodes[node_id];
+                let new = &node.computed_style;
+                let item_moved = old_grid_item.0 != new.grid_row
+                    || old_grid_item.1 != new.grid_column
+                    || old_grid_item.2 != new.position
+                    || old_display != new.display;
+                if item_moved
+                    && let Some(p) = node.parent
+                    && let Some(grid) = crate::grid_budget::layout_container_of(&self.tree, p)
+                    && crate::grid_budget::is_grid(self.tree.nodes[grid].computed_style.display)
+                {
+                    self.tree.grid_budget_owed.push(grid);
+                }
+                let node = &self.tree.nodes[node_id];
+                let new = &node.computed_style;
+                let container_moved = match &old_grid_container {
+                    Some((cols, rows, flow)) => {
+                        !crate::grid_budget::is_grid(new.display)
+                            || *cols != new.grid_template_columns
+                            || *rows != new.grid_template_rows
+                            || *flow != new.grid_auto_flow
+                    }
+                    None => crate::grid_budget::is_grid(new.display),
+                } || node.grid_degrade.is_some();
+                if container_moved {
+                    self.tree.grid_budget_owed.push(node_id);
+                }
+            }
+
             // Drop the Parley layout the old typography was baked into, and
             // every measurement taken from it (#654, #661, #678) —
             // `invalidate_text_measure_for_node` is the one place that knows
@@ -1614,6 +1664,8 @@ impl RinchDocument {
         }
         // Children restyled on this pass carry their new table part now.
         self.resolve_table_directions();
+        // …and their new grid placement (#1210).
+        self.resolve_grid_budgets();
 
         let perf = &self.tree.perf;
         perf.add(
@@ -1740,6 +1792,7 @@ impl RinchDocument {
     /// restyles anything that would say so. Consecutive changes under one
     /// container are pushed once.
     pub(crate) fn note_table_children_changed(&mut self, parent: usize) {
+        self.note_grid_children_changed(parent);
         if let Some(table) = Self::table_container_of(&self.tree, parent)
             && self.tree.table_direction_owed.last() != Some(&table)
         {
@@ -1782,6 +1835,75 @@ impl RinchDocument {
         }
     }
 
+    /// Owe `parent`'s grid container a line-budget check after its child
+    /// list changed (#1210): the placement Taffy is handed grows with the
+    /// items, and an insertion restyles nothing that would say so.
+    /// Consecutive changes under one grid are pushed once.
+    pub(crate) fn note_grid_children_changed(&mut self, parent: usize) {
+        if let Some(grid) = crate::grid_budget::layout_container_of(&self.tree, parent)
+            && (crate::grid_budget::is_grid(self.tree.nodes[grid].computed_style.display)
+                || self.tree.nodes[grid].grid_degrade.is_some())
+            && self.tree.grid_budget_owed.last() != Some(&grid)
+        {
+            self.tree.grid_budget_owed.push(grid);
+            self.tree.layout_dirty = true;
+        }
+    }
+
+    /// Decide, for every grid container owed a check
+    /// ([`NodeTree::grid_budget_owed`]), whether its placement could reach
+    /// past the grid lines Taffy 0.12 can number, and — where the answer
+    /// moved — rewrite its Taffy style and its items' between the grid and
+    /// its degraded flex layout (`crate::grid_budget`). Only the fields that
+    /// layout owns are written, so this is no Taffy re-sync. Run after the
+    /// style sync and before every layout compute.
+    pub(crate) fn resolve_grid_budgets(&mut self) {
+        if self.tree.grid_budget_owed.is_empty() {
+            return;
+        }
+        let mut owed = std::mem::take(&mut self.tree.grid_budget_owed);
+        owed.sort_unstable();
+        owed.dedup();
+        let mut items = Vec::new();
+        for id in owed {
+            if !self.tree.contains(id) {
+                continue;
+            }
+            let want = crate::grid_budget::over_budget(&self.tree, id);
+            let had = self.tree.nodes[id].grid_degrade;
+            if want == had {
+                continue;
+            }
+            match (had, want) {
+                (None, Some(_)) => self.tree.degraded_grids += 1,
+                (Some(_), None) => {
+                    self.tree.degraded_grids = self.tree.degraded_grids.saturating_sub(1)
+                }
+                _ => {}
+            }
+            self.tree.nodes[id].grid_degrade = want;
+            items.clear();
+            items.push(id);
+            crate::grid_budget::item_elements(&self.tree, id, &mut items);
+            for &n in &items {
+                let Some(t) = self.tree.nodes[n].taffy_id else {
+                    continue;
+                };
+                let fresh = self.taffy_style_from_computed(n);
+                if let Ok(old) = self.tree.taffy.style(t) {
+                    let mut st = old.clone();
+                    crate::grid_budget::copy_degrade_fields(&fresh, &mut st);
+                    if st != *old {
+                        let _ = self.tree.taffy.set_style(t, st);
+                        self.tree.perf.bump(crate::perf::Counter::TaffyStyleChanges);
+                    }
+                }
+            }
+            self.tree.layout_dirty = true;
+            self.mark_atomic_inline_dirty(id);
+        }
+    }
+
     /// The Taffy style `node_id`'s computed values produce — the one
     /// rebuild every site that re-syncs a node's Taffy style from
     /// `computed_style` starts from (the cascade's sync and both tick
@@ -1793,6 +1915,7 @@ impl RinchDocument {
         if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
             style.flex_direction = dir;
         }
+        crate::grid_budget::apply_degrade(&self.tree, node_id, &mut style);
         style
     }
 
