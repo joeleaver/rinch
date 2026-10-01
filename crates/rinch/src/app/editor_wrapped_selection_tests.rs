@@ -34,7 +34,8 @@ const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 const LINE: f32 = 24.0;
 
 /// Wraps at spaces, which hang at the line ends.
-const WORDS: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike \
+const WORDS: &str =
+    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike \
                      november oscar papa quebec romeo sierra tango";
 /// One word broken by `overflow-wrap: anywhere`: a glyph wrap, no hanging space.
 const WORD: &str =
@@ -561,4 +562,71 @@ fn overlays_sit_on_the_glyphs_inside_a_bordered_editor() {
             "border {border}: line 1's highlight starts at its text, not at {hl:?}"
         );
     }
+}
+
+/// Asymmetric borders (left != top, and right/bottom different again)
+/// so a swapped or wrong-side inset is caught; plus a border-style none with a
+/// declared width (computes to 0), and a padded editor.
+#[test]
+fn overlays_follow_asymmetric_borders() {
+    for (border, ex, ey) in [
+        ("border-left: 7px solid red; border-top: 3px solid red; border-right: 13px solid red; border-bottom: 17px solid red; padding: 9px 4px 2px 11px", 0.0f32, 0.0f32),
+        ("border-width: 6px; border-style: none", 0.0, 0.0),
+        ("border-width: 2px 5px 9px 4px; border-style: solid", 0.0, 0.0),
+    ] {
+        let mut p = page_with(
+            WORDS,
+            "",
+            &format!(
+                "width: 180px; font-size: 16px; line-height: 24px; \
+                 font-family: sans-serif; {border}"
+            ),
+        );
+        p.caret_at(0);
+        let (bx, by, _, _) = p.para_box();
+        let caret = {
+            let doc = p.app.doc.as_ref().unwrap().borrow();
+            let id = doc.query_selector_all("[data-pm-caret]")[0];
+            painted_element_box(&doc.tree, id.0)
+        };
+        assert_eq!((caret.0 - bx, caret.1 - by), (ex, ey), "{border}: caret vs text origin");
+        let r = p.handle.caret_rect(Pos(1)).expect("caret rect");
+        assert!((r.x - caret.0).abs() <= 1.0 && (r.y - caret.1).abs() <= 1.0, "{border}: caret_rect {r:?} vs painted {caret:?}");
+        let w = p.starts[2];
+        p.caret_at(p.starts[1]);
+        shift(&mut p, KeyCode::End);
+        p.assert_sel(&format!("{border}: Shift+End"), p.starts[1], w);
+    }
+}
+
+/// REVIEW: a scrolled, bordered editor: overlays still land on the glyphs.
+#[test]
+fn review_overlays_in_a_scrolled_bordered_editor() {
+    let mut p = page_with(
+        WORDS,
+        "",
+        "width: 180px; height: 60px; overflow-y: auto; font-size: 16px; line-height: 24px; \
+         font-family: sans-serif; border-left: 7px solid red; border-top: 3px solid red",
+    );
+    // Put the caret at the start of line 3 (scrolls it into view).
+    p.caret_at(p.starts[3]);
+    {
+        let doc = p.app.doc.as_ref().unwrap().borrow();
+        let ed = doc.query_selector_all("[data-pm-editor]")[0];
+        let so = doc.tree.nodes[ed.0].scroll_offset;
+        assert!(so.1 > 1.0, "positive control: the editor scrolled: {so:?}");
+    }
+    let (bx, by, _, _) = p.para_box();
+    let caret = {
+        let doc = p.app.doc.as_ref().unwrap().borrow();
+        let id = doc.query_selector_all("[data-pm-caret]")[0];
+        painted_element_box(&doc.tree, id.0)
+    };
+    let (lx, ly) = p.local(p.starts[3], CaretAffinity::Downstream);
+    assert!(
+        (caret.0 - (bx + lx)).abs() <= 1.0 && (caret.1 - (by + ly)).abs() <= 1.0,
+        "caret {caret:?} vs text ({}, {})",
+        bx + lx,
+        by + ly
+    );
 }
