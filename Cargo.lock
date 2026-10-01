@@ -4955,6 +4955,8 @@ dependencies = [
  "rinch-components",
  "rinch-core",
  "rinch-dom",
+ "rinch-editor-collab",
+ "rinch-editor-core",
  "rinch-platform",
  "rinch-theme",
 ]

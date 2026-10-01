@@ -16,7 +16,7 @@
 //! before** each cell (its open-token position) — the same anchor a
 //! [`crate::selection::NodeSelection`] would use, and what `cell_around` returns.
 
-use crate::model::Node;
+use crate::model::{AttrValue, Fragment, Node};
 use crate::pos::{Pos, ResolvedPos};
 
 /// The schema type name of the table container.
@@ -428,6 +428,60 @@ pub const GRID_SLOT_FLOOR: usize = 1 << 22;
 /// plus one column per cell that found it full. 1000 is Chrome's largest
 /// `colspan`; Chrome itself has no limit on a row's width.
 pub const MAX_IMPORTED_ROW_WIDTH: usize = 1000;
+
+/// The largest `colspan` a loaded document keeps: Chrome's (`td.colSpan`
+/// clamps to 1000), and what the HTML import reads (#1164).
+pub const MAX_COLSPAN: i64 = 1000;
+
+/// `doc` with every table cell's `colspan` past [`MAX_COLSPAN`] cut to it —
+/// the cap a document gets where it is *loaded* (#1214): the HTML import
+/// reads `colspan` that way, and `Schema::node_from_doc` and the editor's own
+/// loads (`EditorHandle::new`, `load_doc`) call this. A `TableMap` is as wide
+/// as its widest row, so one `colspan = 3,000,000` cell in a 2-row table was a
+/// 2^21-column grid ([`grid_slot_budget`]), and `addRowAfter` built a cell per
+/// column: 2,097,152 cells, 15.6 s and 5 GB through a mounted view. Edits are
+/// not capped: a command may still widen a cell past 1000, one column at a
+/// time. `rowspan` is not capped either: a map is never taller than its rows,
+/// so a tall span costs nothing until the rows exist.
+///
+/// Nothing is rebuilt that holds no such cell: with none, the result is
+/// `doc` itself ([`Node::same_ref`]).
+pub fn cap_colspans(doc: &Node) -> Node {
+    capped(doc).unwrap_or_else(|| doc.clone())
+}
+
+/// `node` with its colspans capped, or `None` when none needed it.
+fn capped(node: &Node) -> Option<Node> {
+    if node.is_text() || node.is_textblock() || node.is_leaf() {
+        return None;
+    }
+    let children = node.content().children();
+    let mut out: Option<Vec<Node>> = None;
+    for (i, child) in children.iter().enumerate() {
+        if let Some(c) = capped(child) {
+            out.get_or_insert_with(|| children[..i].to_vec()).push(c);
+        } else if let Some(out) = out.as_mut() {
+            out.push(child.clone());
+        }
+    }
+    let wide = is_cell(node)
+        && node
+            .attrs()
+            .get_int("colspan")
+            .is_some_and(|c| c > MAX_COLSPAN);
+    if out.is_none() && !wide {
+        return None;
+    }
+    let node = match out {
+        Some(children) => node.copy_with_content(Fragment::from_children(children)),
+        None => node.clone(),
+    };
+    if wide {
+        let attrs = node.attrs().with("colspan", AttrValue::Int(MAX_COLSPAN));
+        return Some(node.with_attrs(attrs));
+    }
+    Some(node)
+}
 
 /// Read a span attribute (`colspan`/`rowspan`), clamped to a minimum of 1.
 fn span_attr(cell: &Node, name: &str) -> usize {

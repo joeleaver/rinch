@@ -178,11 +178,15 @@ Four things about that set are worth knowing before they surprise you.
 `<li>` (issue #725) are **not** part of this: neither is a stylesheet line —
 `ComputedStyle` carries no `vertical_align` field and `DisplayValue` no
 `ListItem` — so both need property and layout work first. Until then a `<sub>`
-is smaller but not lowered, and a bulleted list is indented but **unbulleted**:
-desktop draws no list marker at all, for a bare `<ul>`, for the `List`
-component (whose `list-style-type` is parsed and ignored) and for the
-rich-text editor alike. The editor's only marker is the task-list checkbox,
-which it draws itself as a `::before`.
+is smaller but not lowered, and a list item is not a `list-item` box. What
+desktop draws instead is a text marker — `•` or `N.` followed by an en space —
+generated as a span at the start of every `<li>` whose parent is a `<ul>` or
+`<ol>`, whose `list-style-type` is not `none` and which has no `::before` of
+its own. It is inline content of the
+item, not an outside marker hanging in its padding. The rich-text editor's
+stylesheet takes that span out of flow and hangs it against the item's left
+edge, as a browser's outside marker hangs, and draws its task-list checkbox
+itself as a `::before` hung the same way (#1246).
 
 **Components are unaffected**, and that is pinned rather than assumed —
 `Divider`, `List`, `Breadcrumbs`, `Tree`, `Image`, `Blockquote` and `Code` all

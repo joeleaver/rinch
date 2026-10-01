@@ -466,12 +466,13 @@ fn a_stalled_session_gives_no_sticky_index() {
     let s = schema();
     let mut peer = Peer::host(&s, vec![para(&s, "abc")]);
     let bytes = peer.sticky(2).unwrap();
-    // A blockquote is outside the projection's scope: outbound stalls (#220). It goes
+    // A task list is outside the projection's scope: outbound stalls (#220). It goes
     // *after* the paragraph, so the paragraph's own path and text still match the
     // CRDT: only the stall itself can say no.
-    let quote = s
-        .branch("blockquote", Fragment::from_node(para(&s, "q")))
+    let item = s
+        .branch("task_item", Fragment::from_node(para(&s, "q")))
         .unwrap();
+    let quote = s.branch("task_list", Fragment::from_node(item)).unwrap();
     let mut tr = peer.state.tr();
     tr.replace(5, 5, Slice::new(Fragment::from_node(quote), 0, 0))
         .unwrap();

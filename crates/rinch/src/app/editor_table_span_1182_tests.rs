@@ -1,5 +1,6 @@
 //! #1182 on the desktop: an editor table whose cells' spans reach the model
-//! unbounded — by `load_doc`, or an app's own transaction — is laid out as the
+//! unbounded — by an app's own transaction (a load caps `colspan` at 1000
+//! since #1214) — is laid out as the
 //! grid the model's `TableMap` sees, not as the grid its raw `colspan` /
 //! `rowspan` attributes ask for.
 //!
@@ -70,7 +71,16 @@ fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<usize>, usize) {
     let editor_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
     let editor_in = editor_id.clone();
     let handle = crate::editor::create_editor();
-    handle.load_doc(table_doc(&handle, rows));
+    // As an app's own transaction: a load would cap the 1,000,000 colspans
+    // at 1000 (#1214), and this shape is about spans that reach the model
+    // unbounded.
+    let table = table_doc(&handle, rows);
+    assert!(handle.update(|st| {
+        let mut tr = st.tr();
+        tr.replace_with(0, st.doc.content_size(), table.content().clone())
+            .ok()?;
+        Some(tr)
+    }));
     let handle_in = handle.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");

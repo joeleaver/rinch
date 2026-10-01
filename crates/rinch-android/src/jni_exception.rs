@@ -40,6 +40,11 @@
 //! it before anything else runs; `bridge::init` panics on a failure instead,
 //! and `DeleteLocalRef` cannot throw.
 //!
+//! The same bodies also run in a JNI local frame ([`LocalFrame`], issue
+//! #1217), popped when they return, so no local reference a body made — nor
+//! one made settling its exception — outlives it on a thread that never
+//! returns to Java.
+//!
 //! The logic is generic over [`PendingException`] so it is unit-tested on the
 //! host against a recording fake; the one real implementation, for
 //! `jni::JNIEnv`, is Android-only because `jni` is.
@@ -230,6 +235,95 @@ impl<'local> PendingException for jni::JNIEnv<'local> {
     }
 }
 
+/// The JNI functions a local reference frame needs (issue #1217).
+///
+/// **Why a frame.** A local reference lives until the native method that made
+/// it returns to Java — and the `android_main` thread never returns:
+/// android-activity attaches it once, for good, so every local made on it
+/// through [`bridge::with_jni_env`](crate::bridge::with_jni_env) used to live
+/// for the life of the app. Not only the ones this crate makes and forgets
+/// (`new_string`, a `call_method` result): `jni` 0.21's own `get_string` makes
+/// two (`FindClass("java/lang/String")` and `GetObjectClass`, for its type
+/// check) and deletes neither. So every `clipboard::paste_text` leaked two, and
+/// so did every Java exception `jni_try` reads the text of. A frame pushed
+/// around each body and popped after it frees all of them at once, whichever
+/// call made them.
+pub(crate) trait LocalFrames: PendingException {
+    /// `PushLocalFrame`. Answers whether a frame was pushed; a failure
+    /// (out of memory) throws `OutOfMemoryError` and pushes nothing.
+    fn enter_local_frame(&mut self, capacity: i32) -> bool;
+    /// `PopLocalFrame(NULL)`: free every local reference made since the
+    /// matching push. Legal while an exception is pending.
+    fn leave_local_frame(&mut self);
+}
+
+/// The capacity each body's frame asks for. Only a floor: ART grows a frame
+/// past it on demand, so a body that makes more locals is not refused.
+pub(crate) const BODY_FRAME_CAPACITY: i32 = 16;
+
+/// A local reference frame, popped when dropped — on a panic too, which
+/// `jni`'s own `with_local_frame` does not do.
+pub(crate) struct LocalFrame<E: LocalFrames> {
+    /// `None` when the push failed: there is no frame to pop.
+    env: Option<E>,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+impl<E: LocalFrames> LocalFrame<E> {
+    pub(crate) fn push(mut env: E, capacity: i32) -> Self {
+        if env.enter_local_frame(capacity) {
+            return Self { env: Some(env) };
+        }
+        // The failed push left an `OutOfMemoryError` pending, which would
+        // abort the body's first call. Settle it and run the body without a
+        // frame: its locals then live as they did before #1217.
+        settle_pending(&mut env);
+        log::warn!("PushLocalFrame failed; running without a local frame");
+        Self { env: None }
+    }
+}
+
+impl<E: LocalFrames> Drop for LocalFrame<E> {
+    fn drop(&mut self) {
+        if let Some(env) = self.env.as_mut() {
+            env.leave_local_frame();
+        }
+    }
+}
+
+/// Run `f` inside a [`LocalFrame`] and an [`ExceptionScope`] — the body of
+/// [`bridge::with_jni_env`](crate::bridge::with_jni_env). `frame` and `scope`
+/// are further handles to `env`'s thread.
+///
+/// The scope is declared after the frame, so it drops first: whatever it
+/// does to settle an exception happens inside the frame, and any local it
+/// makes goes with the frame.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn run_framed<E: LocalFrames, C: Display, R>(
+    env: &mut E,
+    frame: E,
+    scope: E,
+    context: C,
+    f: impl FnOnce(&mut E) -> R,
+) -> R {
+    let _frame = LocalFrame::push(frame, BODY_FRAME_CAPACITY);
+    let _scope = ExceptionScope::new(scope, context);
+    f(env)
+}
+
+#[cfg(target_os = "android")]
+impl LocalFrames for jni::JNIEnv<'_> {
+    fn enter_local_frame(&mut self, capacity: i32) -> bool {
+        jni::JNIEnv::push_local_frame(self, capacity).is_ok()
+    }
+    fn leave_local_frame(&mut self) {
+        // SAFETY: pops the frame `enter_local_frame` pushed on this thread,
+        // keeping no result. Every local made in it is dead after this, and
+        // none can be named: `with_jni_env`'s `R` cannot borrow the env.
+        let _ = unsafe { jni::JNIEnv::pop_local_frame(self, &jni::objects::JObject::null()) };
+    }
+}
+
 /// An [`ExceptionScope`] over `env`'s thread, for a function that is handed a
 /// `JNIEnv` — an `extern "C"` entry point Java calls — rather than taking one
 /// through `bridge`.
@@ -268,6 +362,14 @@ mod tests {
         to_string_throws: bool,
         /// Local references `take_throwable` made and nobody released.
         live_refs: usize,
+        /// Every other local reference alive on the thread (issue #1217):
+        /// the ones a body makes and never deletes, as `jni`'s
+        /// `get_string` does.
+        locals: usize,
+        /// The `locals` count at each live `PushLocalFrame`, innermost last.
+        frames: Vec<usize>,
+        /// Whether `PushLocalFrame` fails (and throws).
+        push_fails: bool,
     }
 
     /// A `JNIEnv` stand-in that records every call. Cloneable (the state is
@@ -297,6 +399,15 @@ mod tests {
         fn throw(&mut self, name: &'static str, text: &'static str) -> Result<(), &'static str> {
             self.0.borrow_mut().text = Some(text);
             self.call(name, true)
+        }
+        /// A JNI call that makes `n` local references and deletes none —
+        /// `get_string`'s `FindClass` and `GetObjectClass` are `make_locals(2)`.
+        fn make_locals(&mut self, n: usize) {
+            self.call("makeLocals", false).unwrap();
+            self.0.borrow_mut().locals += n;
+        }
+        fn locals(&self) -> usize {
+            self.0.borrow().locals
         }
         fn calls(&self) -> Vec<&'static str> {
             self.0.borrow().calls.clone()
@@ -343,6 +454,9 @@ mod tests {
                 "toString() called with an exception pending (CheckJNI would abort)"
             );
             s.calls.push("toString");
+            // The real one reads the answer with `jni`'s `get_string`, whose
+            // type check leaves two locals behind (issue #1217).
+            s.locals += 2;
             if s.to_string_throws {
                 s.pending = true;
                 return None;
@@ -354,6 +468,101 @@ mod tests {
             s.calls.push("DeleteLocalRef");
             s.live_refs -= 1;
         }
+    }
+
+    impl LocalFrames for FakeEnv {
+        fn enter_local_frame(&mut self, _capacity: i32) -> bool {
+            let mut s = self.0.borrow_mut();
+            s.calls.push("PushLocalFrame");
+            if s.push_fails {
+                s.pending = true;
+                return false;
+            }
+            let mark = s.locals;
+            s.frames.push(mark);
+            true
+        }
+        fn leave_local_frame(&mut self) {
+            let mut s = self.0.borrow_mut();
+            s.calls.push("PopLocalFrame");
+            let mark = s.frames.pop().expect("PopLocalFrame with no frame pushed");
+            s.locals = mark;
+        }
+    }
+
+    /// `bridge::with_jni_env`'s body, over the fake.
+    fn with_env<R>(env: &FakeEnv, f: impl FnOnce(&mut FakeEnv) -> R) -> R {
+        run_framed(&mut env.clone(), env.clone(), env.clone(), "test", f)
+    }
+
+    #[test]
+    fn a_body_releases_every_local_it_made() {
+        // Issue #1217: the `android_main` thread never returns to Java, so a
+        // local made on it lives until something deletes it. 1000 pastes,
+        // each a `get_string` leaving two behind.
+        let env = FakeEnv::default();
+        for _ in 0..1000 {
+            with_env(&env, |e| e.make_locals(2));
+        }
+        assert_eq!(env.locals(), 0, "the bodies' locals leaked");
+        assert_eq!(env.0.borrow().frames.len(), 0, "a frame was left pushed");
+    }
+
+    #[test]
+    fn locals_made_while_settling_a_failure_are_released_too() {
+        // `jni_try` reads the exception's text with `toString` and
+        // `get_string`, whose two locals it cannot delete.
+        let env = FakeEnv::default();
+        let r: Result<(), String> = with_env(&env, |e| {
+            jni_try(e, "readContentUri", |e| e.throw("readContentUri", "x"))?;
+            Ok(())
+        });
+        assert!(r.is_err());
+        assert_eq!(env.locals(), 0, "toString's locals leaked");
+        let calls = env.calls();
+        assert_eq!(calls.first(), Some(&"PushLocalFrame"));
+        assert_eq!(calls.last(), Some(&"PopLocalFrame"));
+        assert!(!env.pending());
+    }
+
+    #[test]
+    fn a_panicking_body_still_pops_its_frame() {
+        let env = FakeEnv::default();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_env(&env, |e| {
+                e.make_locals(2);
+                panic!("body panicked");
+            })
+        }));
+        assert!(r.is_err());
+        assert_eq!(env.locals(), 0);
+        assert_eq!(env.0.borrow().frames.len(), 0);
+    }
+
+    #[test]
+    fn nested_bodies_pop_their_own_frames() {
+        let env = FakeEnv::default();
+        with_env(&env, |e| {
+            e.make_locals(3);
+            with_env(e, |e| e.make_locals(5));
+            assert_eq!(e.locals(), 3, "the inner frame freed only its own");
+        });
+        assert_eq!(env.locals(), 0);
+    }
+
+    #[test]
+    fn a_failed_push_is_settled_and_the_body_runs_without_a_frame() {
+        let env = FakeEnv::default();
+        env.0.borrow_mut().push_fails = true;
+        // The fake panics on a call made with an exception pending, which
+        // is what the push's `OutOfMemoryError` would be left as.
+        with_env(&env, |e| e.make_locals(2));
+        assert!(!env.pending());
+        assert_eq!(env.locals(), 2, "no frame, so nothing was freed");
+        assert!(
+            !env.calls().contains(&"PopLocalFrame"),
+            "popped a frame that was never pushed"
+        );
     }
 
     #[test]

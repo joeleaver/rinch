@@ -130,6 +130,12 @@ library_benchmark_group!(
     ]
 );
 
+#[library_benchmark]
+#[bench::paragraphs_2000(setup = setup_collab_keystroke)]
+fn collab_keystroke(f: CollabFixture) -> CollabFixture {
+    black_box(measure(black_box(f), op_collab_keystroke))
+}
+
 library_benchmark_group!(
     name = shell,
     benchmarks = [
@@ -141,4 +147,6 @@ library_benchmark_group!(
     ]
 );
 
-main!(library_benchmark_groups = dom, shell);
+library_benchmark_group!(name = editor, benchmarks = [collab_keystroke]);
+
+main!(library_benchmark_groups = dom, shell, editor);

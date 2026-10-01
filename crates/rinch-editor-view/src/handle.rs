@@ -911,7 +911,8 @@ impl EditorHandle {
     /// Build a handle and project it into `container` in one step (the eager path,
     /// used by tests and by [`Self::mount`]). `doc_ref` is a weak handle to the
     /// host document the view patches. Does **not** register the editor with the
-    /// runtime — that is [`Self::mount`]'s job.
+    /// runtime — that is [`Self::mount`]'s job. `doc` is loaded as
+    /// [`Self::load_doc`] loads one (a `colspan` past 1000 is capped, #1214).
     pub fn new(
         container: NodeHandle,
         doc_ref: Weak<RefCell<dyn DomDocument>>,
@@ -919,6 +920,8 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
+        // A load: colspans past 1000 are capped (#1214).
+        let doc = rinch_editor_core::tables::cap_colspans(&doc);
         // Plugins' `init_state` and `decorations` run here; untracked, as under
         // the core (#943).
         let (state, view) = untracked_handler(|| {
@@ -2159,6 +2162,14 @@ impl EditorHandle {
     /// single empty paragraph, so the editor is never left with no textblock to
     /// render or place a caret in.
     ///
+    /// A table cell's `colspan` past 1000 is capped at 1000, as the HTML import
+    /// and Chrome read it (#1214, `rinch_editor_core::tables::cap_colspans`):
+    /// one such cell made every row as wide as it, and a row insert built a
+    /// cell per column. The same cap applies to the document [`Self::new`] is
+    /// given. Edits (commands, [`Self::update`]) are not capped, and neither is
+    /// the shared document a [collaboration guest](Self::start_collaboration_guest)
+    /// adopts: that is its peers' edits.
+    ///
     /// A [read-only](Self::set_read_only) editor still loads — that is how it gets
     /// a document to show — **except while collaborating**, where a load is a
     /// write to the shared document and is refused like any other (see
@@ -2170,9 +2181,21 @@ impl EditorHandle {
     /// [`Self::load_doc`], answering whether the document was loaded (`false`:
     /// refused by a read-only, collaborating editor).
     fn load_doc_checked(&self, doc: Node) -> bool {
+        self.load_doc_inner(doc, true)
+    }
+
+    /// Install `doc` as a load does. With `cap`, a table cell's `colspan` past
+    /// 1000 is capped, as the HTML import reads it (#1214,
+    /// `tables::cap_colspans`). A collaboration guest adopts the shared
+    /// document with `cap: false`: what the CRDT holds is its peers' edits,
+    /// which are not capped, and a capped model would differ from its own
+    /// projection and write the cap back to the peers as an edit nobody made.
+    fn load_doc_inner(&self, doc: Node, cap: bool) -> bool {
         let mut core = self.core_mut();
         let doc = if doc.child_count() == 0 {
             empty_paragraph_doc(&core.schema).unwrap_or(doc)
+        } else if cap {
+            rinch_editor_core::tables::cap_colspans(&doc)
         } else {
             doc
         };
@@ -2790,7 +2813,8 @@ impl EditorHandle {
         let schema = self.core().schema.clone();
         let doc = session.projected_doc(&schema)?;
         self.core_mut().collab = None;
-        self.load_doc(doc);
+        // Not capped (#1214): the shared document is peers' edits, not a load.
+        self.load_doc_inner(doc, false);
         self.core_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
         Ok(())
     }
@@ -2998,7 +3022,7 @@ impl EditorHandle {
 
     /// Why this editor's **outbound** collaboration is currently refusing, if it is
     /// (issue #220): a local edit outside the staged A22 scope — a pasted table, a
-    /// `blockquote` wrap — cannot be projected onto the CRDT, so this edit and every
+    /// task list — cannot be projected onto the CRDT, so this edit and every
     /// one after it stays local until that content is removed.
     ///
     /// Unlike [`Self::collab_take_error`] this does **not** clear: it stays `Some` for
@@ -3077,6 +3101,48 @@ mod tests {
             container_id,
             handle,
         }
+    }
+
+    /// #1214: the guest join's load (`cap: false`) installs a wide `colspan` as
+    /// it is; a load proper caps it. (The join itself is pinned in
+    /// `tests/colspan_cap_collab_guest.rs` once tables are in the collab scope,
+    /// #1233.)
+    #[test]
+    fn only_a_capped_load_caps_a_colspan() {
+        let s = Schema::starter_kit();
+        let p = s.branch("paragraph", Fragment::empty()).unwrap();
+        let h = mount(s.branch("doc", Fragment::from_node(p.clone())).unwrap());
+        let cell = s
+            .create_node(
+                "table_cell",
+                rinch_editor_core::Attrs::from_iter([(
+                    "colspan",
+                    rinch_editor_core::AttrValue::Int(5000),
+                )]),
+                Fragment::from_node(p.clone()),
+            )
+            .unwrap();
+        let row = s
+            .create_node("table_row", Default::default(), Fragment::from_node(cell))
+            .unwrap();
+        let table = s
+            .create_node("table", Default::default(), Fragment::from_node(row))
+            .unwrap();
+        let wide = s
+            .branch("doc", Fragment::from_children(vec![table, p]))
+            .unwrap();
+        let colspan = |h: &EditorHandle| {
+            h.doc()
+                .child(0)
+                .child(0)
+                .child(0)
+                .attrs()
+                .get_int("colspan")
+        };
+        assert!(h.handle.load_doc_inner(wide.clone(), false));
+        assert_eq!(colspan(&h.handle), Some(5000));
+        assert!(h.handle.load_doc_inner(wide, true));
+        assert_eq!(colspan(&h.handle), Some(1000));
     }
 
     /// The handle→request plumbing: `update_caret` must *fulfil* the view's
@@ -5493,16 +5559,18 @@ mod tests {
             assert_eq!(doc_text(&guest), "hello");
             assert!(host.collab_outbound_stall().is_none(), "healthy to start");
 
-            // Append a blockquote — applied locally, refused by the projection. (A
-            // `horizontal_rule` used to stand here; leaf block atoms are inside the
-            // projected scope now, so the stall needs content that is still outside it.)
+            // Append a task list — applied locally, refused by the projection. (A
+            // `horizontal_rule` and then a `blockquote` used to stand here; both are
+            // inside the projected scope now, so the stall needs content that is still
+            // outside it.)
             assert!(
                 host.update(|state| {
                     let s = state.schema().clone();
                     let inner = s
                         .branch("paragraph", Fragment::from_node(s.text("q").ok()?))
                         .ok()?;
-                    let bq = s.branch("blockquote", Fragment::from_node(inner)).ok()?;
+                    let item = s.branch("task_item", Fragment::from_node(inner)).ok()?;
+                    let bq = s.branch("task_list", Fragment::from_node(item)).ok()?;
                     let at = state.doc.content_size();
                     let mut tr = state.tr();
                     tr.replace(at, at, Slice::new(Fragment::from_node(bq), 0, 0))
@@ -5515,7 +5583,7 @@ mod tests {
                 .collab_outbound_stall()
                 .expect("outbound must report itself stalled");
             assert!(
-                stall.to_string().contains("blockquote"),
+                stall.to_string().contains("task_list"),
                 "the stall must name the content to remove, got: {stall}"
             );
             assert!(
@@ -5528,7 +5596,7 @@ mod tests {
             assert!(host.insert_text("!!"));
             assert!(
                 host.collab_outbound_stall().is_some(),
-                "still stalled while the blockquote is there"
+                "still stalled while the task list is there"
             );
             assert_eq!(
                 doc_text(&guest),
@@ -5536,7 +5604,7 @@ mod tests {
                 "nothing reached the guest during the stall"
             );
 
-            // Delete the blockquote — selecting it and pressing Delete, as an app would. Note
+            // Delete the task list — selecting it and pressing Delete, as an app would. Note
             // this is NOT `undo`: the text typed during the stall stays, which is the
             // half that must survive.
             assert!(
@@ -5549,7 +5617,7 @@ mod tests {
                     tr.delete(from, to).ok()?;
                     Some(tr)
                 }),
-                "the blockquote is deleted"
+                "the task list is deleted"
             );
             assert!(
                 host.collab_outbound_stall().is_none(),
@@ -6089,9 +6157,22 @@ mod tests {
             loopback(&host, &guest);
             assert_eq!(doc_text(&guest), "ok");
 
-            // A blockquote is still outside the projected scope (lists are supported
-            // now, and so are inline atoms; blockquote / tables / task lists are not).
-            assert!(host.load_html("<blockquote><p>quoted</p></blockquote>"));
+            // A task list is still outside the projected scope (lists, quotes and
+            // inline atoms are supported now; tables and task lists are not). HTML has
+            // no task list, so it is inserted directly.
+            assert!(host.update(|state| {
+                let s = state.schema().clone();
+                let inner = s
+                    .branch("paragraph", Fragment::from_node(s.text("todo").ok()?))
+                    .ok()?;
+                let item = s.branch("task_item", Fragment::from_node(inner)).ok()?;
+                let list = s.branch("task_list", Fragment::from_node(item)).ok()?;
+                let at = state.doc.content_size();
+                let mut tr = state.tr();
+                tr.replace(at, at, Slice::new(Fragment::from_node(list), 0, 0))
+                    .ok()?;
+                Some(tr)
+            }));
 
             // The host's model changed locally, but the projection failed loud (the
             // CRDT was left untouched, all-or-nothing) so the peer received nothing.
@@ -6173,7 +6254,7 @@ mod tests {
             assert_eq!(doc_text(&guest), "ok");
 
             // Lists are inside the projected scope, so this must sync rather than
-            // fail loud (the counterpart to the blockquote case above).
+            // fail loud (the counterpart to the task list case above).
             assert!(host.load_html("<ul><li><p>item</p></li></ul>"));
             assert!(
                 host.collab_take_error().is_none(),
@@ -6193,6 +6274,42 @@ mod tests {
                 "ab",
                 "nested list content reaches the peer"
             );
+        }
+
+        #[test]
+        fn quote_edits_sync_to_the_peer() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ok")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            assert_eq!(doc_text(&guest), "ok");
+
+            // Quotes are inside the projected scope: a loaded one syncs.
+            assert!(
+                host.load_html("<blockquote><p>quoted</p><ul><li><p>li</p></li></ul></blockquote>")
+            );
+            assert!(
+                host.collab_take_error().is_none(),
+                "a blockquote is supported and must not fail loud"
+            );
+            assert_eq!(doc_text(&guest), "quotedli");
+            // Compared by shape: each mount builds its own schema, and node types
+            // compare by schema identity.
+            let shape = |h: &EditorHandle| format!("{:?}", h.doc());
+            assert_eq!(
+                shape(&guest),
+                shape(&host),
+                "the guest holds the same quote"
+            );
+
+            // Typing inside it, and lifting the paragraph out, sync as well.
+            host.set_selection(Selection::cursor(Pos(8)));
+            assert!(host.insert_text("!"));
+            assert!(host.command("liftListItem"));
+            assert!(host.collab_take_error().is_none());
+            assert_eq!(doc_text(&guest), "quoted!\nli", "one block per line");
+            assert_eq!(shape(&guest), shape(&host));
+            assert_eq!(guest.doc().child(0).type_name(), "paragraph");
         }
 
         /// Seeded fuzz over the real `EditorHandle` wiring: two handles relay random

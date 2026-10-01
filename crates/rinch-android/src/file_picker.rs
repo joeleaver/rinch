@@ -76,7 +76,9 @@ pub fn read_content_uri(uri: &str) -> Result<Vec<u8>, String> {
         })?;
 
         if result.is_null() {
-            return Err("readContentUri returned null (IO error or invalid URI)".into());
+            // A failure to open or read throws, and `jni_try` names it (#1215);
+            // null is only a provider that handed back no stream.
+            return Err("readContentUri: the provider opened no stream".into());
         }
 
         let jbyte_array: jni::objects::JByteArray = result.into();
@@ -140,7 +142,8 @@ pub fn write_content_uri(uri: &str, bytes: &[u8]) -> Result<(), String> {
         if ok {
             Ok(())
         } else {
-            Err("writeContentUri returned false (IO error or invalid URI)".into())
+            // As for the reader: a failure throws and is named above (#1215).
+            Err("writeContentUri: the provider opened no stream".into())
         }
     })
 }

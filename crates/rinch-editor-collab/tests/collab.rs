@@ -764,24 +764,27 @@ fn multi_block_with_code_and_heading_round_trips() {
     assert_eq!(norm(&doc), norm(&back));
 }
 
+/// A task list holding one paragraph: a container the projection still refuses (A22),
+/// so the out-of-scope fixture of the tests below. (A `blockquote` was that fixture
+/// until quotes came into scope.)
+fn task_list(schema: &Schema, text: &str) -> Node {
+    let item = schema
+        .branch("task_item", Fragment::from_node(para(schema, text)))
+        .unwrap();
+    schema
+        .branch("task_list", Fragment::from_node(item))
+        .unwrap()
+}
+
 #[test]
 fn nested_content_fails_loud() {
-    // design A22: anything outside flat text-blocks is a loud Unsupported error.
+    // design A22: anything outside the projected scope is a loud Unsupported error.
     let schema = Rc::new(Schema::starter_kit());
-    let inner = schema
-        .branch(
-            "paragraph",
-            Fragment::from_node(schema.text("quote").unwrap()),
-        )
-        .unwrap();
-    let bq = schema
-        .branch("blockquote", Fragment::from_node(inner))
-        .unwrap();
-    let doc = doc_of(&schema, vec![bq]);
+    let doc = doc_of(&schema, vec![task_list(&schema, "todo")]);
     let err = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap_err();
     assert!(
         matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
-        "nested block must fail loud, got {err:?}"
+        "an out-of-scope container must fail loud, got {err:?}"
     );
 }
 
@@ -795,24 +798,22 @@ fn unsupported_change_does_not_partially_mutate() {
     let mut cdoc = rinch_editor_collab::CollabDoc::from_doc(&before).unwrap();
     let original = norm(&cdoc.to_doc(&schema).unwrap());
 
-    // `after` mutates the FIRST (reconcilable) block AND appends a non-flat block —
-    // so a naive in-order projection would write block 0 before failing on the
-    // blockquote, leaving the CRDT half-mutated.
-    let inner = schema
-        .branch("paragraph", Fragment::from_node(schema.text("q").unwrap()))
-        .unwrap();
-    let bq = schema
-        .branch("blockquote", Fragment::from_node(inner))
-        .unwrap();
+    // `after` mutates the FIRST (reconcilable) block AND appends an out-of-scope block
+    // — so a naive in-order projection would write block 0 before failing on the
+    // task list, leaving the CRDT half-mutated.
     let after = doc_of(
         &schema,
-        vec![para(&schema, "ALPHA"), para(&schema, "beta"), bq],
+        vec![
+            para(&schema, "ALPHA"),
+            para(&schema, "beta"),
+            task_list(&schema, "q"),
+        ],
     );
 
     let err = cdoc.project_change(&before, &after).unwrap_err();
     assert!(
         matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
-        "the blockquote must fail loud, got {err:?}"
+        "the task list must fail loud, got {err:?}"
     );
     assert_eq!(
         original,
@@ -969,13 +970,11 @@ fn table_still_fails_loud() {
 
 #[test]
 fn unsupported_block_inside_a_list_item_fails_loud() {
-    // A supported container (list_item) holding an *unsupported* child (blockquote) must
-    // fail loud on the descendant — the recursion doesn't relax the scope for children.
+    // A supported container (list_item) holding an *unsupported* child (a task list)
+    // must fail loud on the descendant — the recursion doesn't relax the scope for
+    // children.
     let schema = Rc::new(Schema::starter_kit());
-    let bq = schema
-        .branch("blockquote", Fragment::from_node(para(&schema, "q")))
-        .unwrap();
-    let item = list_item(&schema, vec![bq]);
+    let item = list_item(&schema, vec![task_list(&schema, "q")]);
     let list = bullet_list(&schema, vec![item]);
     let doc = doc_of(&schema, vec![list]);
     let err = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap_err();

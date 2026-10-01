@@ -415,6 +415,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `shell::hover_frame.partial_repaint` | A move onto another row, then the frame: layout and a partial software repaint |
 | `shell::keyed_for.reverse_200` | Reverse a keyed `for` of 200 rows, then the frame |
 | `shell::memo_flush.selection_40` | Move the selection among 40 rows, each with a `Memo<bool>` and an effect: the signal write and its effect flush |
+| `editor::collab_keystroke.paragraphs_2000` | One keystroke in the middle of a collaborating 2,000-paragraph document, projected onto the CRDT (`CollabSession::record_local`): reads back the paragraph it changed and no other (#1229's first round read back all 2,000) |
 
 Each benchmark builds its fixture in a setup that Callgrind does not count. The
 setup also runs the operation once where that warms a cache, so what is counted

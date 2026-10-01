@@ -32,6 +32,7 @@ import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -1158,50 +1159,50 @@ public class RinchActivity extends NativeActivity {
 
     // ── Image Reader (EXIF-aware) ─────────────────────────────────────
 
-    public byte[] readImageUri(String uriString) {
-        try {
-            Uri uri = Uri.parse(uriString);
+    // Throws rather than catching (issue #1215): the Rust caller's `jni_try`
+    // names the exception in its `Err` — a revoked grant, a missing item —
+    // where a catch-and-return-null left it only "returned null". `null` is
+    // still answered for an image the platform cannot decode.
+    public byte[] readImageUri(String uriString) throws IOException {
+        Uri uri = Uri.parse(uriString);
 
-            // Read EXIF orientation
-            int rotation = 0;
-            try (InputStream exifStream = getContentResolver().openInputStream(uri)) {
-                if (exifStream != null) {
-                    ExifInterface exif = new ExifInterface(exifStream);
-                    int orient = exif.getAttributeInt(
-                        ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-                    switch (orient) {
-                        case ExifInterface.ORIENTATION_ROTATE_90:  rotation = 90;  break;
-                        case ExifInterface.ORIENTATION_ROTATE_180: rotation = 180; break;
-                        case ExifInterface.ORIENTATION_ROTATE_270: rotation = 270; break;
-                    }
+        // Read EXIF orientation
+        int rotation = 0;
+        try (InputStream exifStream = getContentResolver().openInputStream(uri)) {
+            if (exifStream != null) {
+                ExifInterface exif = new ExifInterface(exifStream);
+                int orient = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                switch (orient) {
+                    case ExifInterface.ORIENTATION_ROTATE_90:  rotation = 90;  break;
+                    case ExifInterface.ORIENTATION_ROTATE_180: rotation = 180; break;
+                    case ExifInterface.ORIENTATION_ROTATE_270: rotation = 270; break;
                 }
             }
-
-            // Decode bitmap
-            Bitmap bitmap;
-            try (InputStream imageStream = getContentResolver().openInputStream(uri)) {
-                bitmap = BitmapFactory.decodeStream(imageStream);
-            }
-            if (bitmap == null) return null;
-
-            // Apply rotation if needed
-            if (rotation != 0) {
-                Matrix matrix = new Matrix();
-                matrix.postRotate(rotation);
-                Bitmap rotated = Bitmap.createBitmap(
-                    bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
-                bitmap.recycle();
-                bitmap = rotated;
-            }
-
-            // Encode to JPEG
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, baos);
-            bitmap.recycle();
-            return baos.toByteArray();
-        } catch (Exception e) {
-            return null;
         }
+
+        // Decode bitmap
+        Bitmap bitmap;
+        try (InputStream imageStream = getContentResolver().openInputStream(uri)) {
+            bitmap = BitmapFactory.decodeStream(imageStream);
+        }
+        if (bitmap == null) return null;
+
+        // Apply rotation if needed
+        if (rotation != 0) {
+            Matrix matrix = new Matrix();
+            matrix.postRotate(rotation);
+            Bitmap rotated = Bitmap.createBitmap(
+                bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+            bitmap.recycle();
+            bitmap = rotated;
+        }
+
+        // Encode to JPEG
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, baos);
+        bitmap.recycle();
+        return baos.toByteArray();
     }
 
     // ── Content URI Reader ──────────────────────────────────────────────
@@ -1209,22 +1210,23 @@ public class RinchActivity extends NativeActivity {
     // try-with-resources, matching the writer below: the bare `is.close()`
     // this used to end with does not run when `read` throws, leaking the
     // provider's file descriptor for the life of the process.
-    public byte[] readContentUri(String uriString) {
-        try {
-            Uri uri = Uri.parse(uriString);
-            try (InputStream is = getContentResolver().openInputStream(uri)) {
-                if (is == null) return null;
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                byte[] buffer = new byte[8192];
-                int len;
-                while ((len = is.read(buffer)) != -1) {
-                    baos.write(buffer, 0, len);
-                }
-                return baos.toByteArray();
+    //
+    // Throws rather than catching (issue #1215), so the Rust caller's
+    // `jni_try` can name what went wrong — `SecurityException: Permission
+    // Denial`, `FileNotFoundException: No item at …` — instead of answering
+    // an anonymous null. `null` now means only that the provider handed back
+    // no stream.
+    public byte[] readContentUri(String uriString) throws IOException {
+        Uri uri = Uri.parse(uriString);
+        try (InputStream is = getContentResolver().openInputStream(uri)) {
+            if (is == null) return null;
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int len;
+            while ((len = is.read(buffer)) != -1) {
+                baos.write(buffer, 0, len);
             }
-        } catch (Exception e) {
-            android.util.Log.w("rinch", "readContentUri failed: " + uriString, e);
-            return null;
+            return baos.toByteArray();
         }
     }
 
@@ -1233,9 +1235,10 @@ public class RinchActivity extends NativeActivity {
     // The other half of the reader above. `shareImage` also writes through a
     // content URI, but only to a MediaStore JPEG it created itself; this one
     // takes whatever URI `saveFilePicker`'s ACTION_CREATE_DOCUMENT handed
-    // back, which can be any document provider on the device. It reports
-    // success rather than swallowing the exception, because a failed save has
-    // a caller waiting on it where a failed share does not.
+    // back, which can be any document provider on the device. It throws a
+    // failure to its caller rather than swallowing it, because a failed save
+    // has a caller waiting on it where a failed share does not — and, since
+    // issue #1215, the caller's `Err` names the exception (`jni_try`).
     //
     // Mode "wt", NOT the "w" that the one-argument openOutputStream(uri)
     // defaults to. Truncation under "w" is explicitly undefined — the platform
@@ -1259,18 +1262,13 @@ public class RinchActivity extends NativeActivity {
     // try-with-resources, so a throwing write still closes the stream. An
     // OutputStream left open holds buffered bytes that never reach the
     // document and can leave the provider's file locked or half-written.
-    public boolean writeContentUri(String uriString, byte[] bytes) {
-        try {
-            Uri uri = Uri.parse(uriString);
-            try (OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
-                if (os == null) return false;
-                os.write(bytes);
-                os.flush();
-                return true;
-            }
-        } catch (Exception e) {
-            android.util.Log.w("rinch", "writeContentUri failed: " + uriString, e);
-            return false;
+    public boolean writeContentUri(String uriString, byte[] bytes) throws IOException {
+        Uri uri = Uri.parse(uriString);
+        try (OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
+            if (os == null) return false;
+            os.write(bytes);
+            os.flush();
+            return true;
         }
     }
 }

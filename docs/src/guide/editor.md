@@ -111,7 +111,7 @@ The same pointer identity is why comparing `Node`s across two editor handles fai
 for structurally identical documents — compare their serialized HTML instead.
 
 **This reaches `EditorHandle` too.** `create_editor` mints a new `Rc<Schema>` per handle,
-and `load_doc` installs the `Node` you give it as-is, so `b.load_doc(a.doc())` hands `b` a
+and `load_doc` installs the `Node` you give it as-is (but for the `colspan` cap below), so `b.load_doc(a.doc())` hands `b` a
 document built by `a`'s schema. `b` then reports `is_mark_active("bold") == false` over
 text that is bold, and its formatting commands return `false` rather than editing it —
 before the guard above they returned `true` and left the run carrying *two* `bold` marks,
@@ -152,6 +152,19 @@ plus one per cell that found it full. That limit is rinch's, not Chrome's (Chrom
 out a row of 3001 columns); without it a row's width grew with every rowspan above it,
 and a 57 KB paste made a 1,000,000-column table.
 
+A loaded document keeps no `colspan` past 1000 either (#1214, Chrome's limit):
+`tables::cap_colspans` cuts every larger one to `tables::MAX_COLSPAN`, and
+`Schema::node_from_doc`, `EditorHandle::new` and `EditorHandle::load_doc` call it, as
+the HTML import (`load_html`, paste, `Editor`'s `content:`) already reads `colspan`.
+One `colspan = 3,000,000` cell made a two-row table 2^21 columns wide, and
+`addRowAfter` built a cell per column: 2,097,152 cells, 15.6 s and 5 GB through a
+mounted view, 3.8 ms after the cap. Edits are not capped — an app's own transaction,
+a peer's change (and the shared document a collaboration guest adopts on joining), or
+a command (`addColumnAfter` across a 1000-wide cell makes it 1001) — so `node_from_doc` is not a lossless inverse of `to_doc` for a cell that went
+past 1000 that way. `rowspan` is not capped: a grid is never taller than its rows. The
+row-width limit above is the HTML import's alone: a loaded row of 2,100
+`colspan = 1000` cells is still 2,100,000 columns wide.
+
 Whatever route a table takes into the model — paste, `load_doc`, an app's own
 transaction, the table commands — the grid `TableMap` builds over it is bounded:
 `tables::column_count` caps `width × rows` at `tables::grid_slot_budget`, twice the
@@ -167,7 +180,8 @@ is a hole, and the table commands treat it as no cell (#1184): `deleteRow` and
 hole at that column a new cell at its end, a row added by `addRowBefore`/`addRowAfter`
 gets a cell in a hole's column, and `mergeCells` grows the top-left cell over the holes
 in its rectangle. Every span a command writes is the cell's extent in the grid ± 1,
-never the attribute's own value ± 1: a `colspan` of `i64::MAX` in a two-row table,
+never the attribute's own value ± 1: a `colspan` of `i64::MAX` in a two-row table
+(which an app's own transaction can still write; a load caps it at 1000),
 which the grid cuts to 2^21 columns, is 2^21 + 1 after `addColumnAfter` across it.
 
 The view lays a table out as that same grid (#1182): `<table>` is a CSS grid of
