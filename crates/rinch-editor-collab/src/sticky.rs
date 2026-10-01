@@ -92,13 +92,14 @@ use yrs::branch::{Branch, BranchPtr};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Array, ArrayRef, Assoc, GetString, IndexedSequence, ReadTxn, StickyIndex, TextRef, Transact,
+    Array, ArrayRef, Assoc, GetString, IndexedSequence, Out, ReadTxn, StickyIndex, TextRef,
+    Transact,
 };
 
 use rinch_editor_core::{Node, Pos};
 
 use crate::projection::{
-    CollabDoc, block_text, child_map, map_is_void, node_content, node_type, read_block, u16_offset,
+    CollabDoc, block_text, map_is_void, node_content, node_type, read_block, u16_offset,
     visible_child,
 };
 
@@ -235,9 +236,11 @@ fn find_text<T: ReadTxn>(
     // The index recorded is the child's *visible* index, the one the model uses: a
     // void container is not in the model (see `projection::is_void`), and holds no
     // text to find.
+    // One sequential pass: `ArrayRef::get` walks the array from its start, so reading
+    // each child by index would cost O(len²) per level.
     let mut visible = 0usize;
-    for i in 0..list.len(txn) {
-        let Some(map) = child_map(txn, list, i) else {
+    for child in list.iter(txn) {
+        let Out::YMap(map) = child else {
             continue;
         };
         if map_is_void(txn, &map) {

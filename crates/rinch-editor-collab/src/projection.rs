@@ -105,10 +105,13 @@
 //! headings, code, scene breaks, lists and other quotes, and sits inside list items.
 //! No wire shape of its own, so [`FORMAT_TAG`] does not move, and it is the leaf atoms'
 //! **coordinated upgrade** again: a peer built before quotes were in scope reads the
-//! container and refuses its type in [`build_node`] (`Unsupported`, "container
-//! `blockquote` is not a supported container type"), so joining from a snapshot holding
-//! a quote fails, and a live older peer that integrates one is poisoned (#196) until the
-//! last quote is gone. Every peer on a shared document must run a build with quotes in
+//! container and refuses its type in its `build_node` (`Unsupported`, "container
+//! `blockquote` is not a supported list type"), so joining from a snapshot holding a
+//! quote fails, and a live older peer that integrates one is poisoned (#196) for as long
+//! as the CRDT holds a quote. That can be **for good**: a quote emptied by concurrent
+//! deletions is void (below), which no upgraded peer shows and none ever deletes, so an
+//! older peer stays refused for the life of the document although no upgraded peer can
+//! see a quote in it. Every peer on a shared document must run a build with quotes in
 //! scope before any of them wraps a block in one.
 //!
 //! Two rules keep a converged document one a model can hold, for every container:
@@ -449,6 +452,18 @@ pub struct CollabDoc {
     pub(crate) content: ArrayRef,
     /// Updates from locally-projected transactions, awaiting broadcast.
     pub(crate) outbox: Outbox,
+    /// Whether the top-level `content` array holds a **void** container ([`is_void`]).
+    /// While it does not, visible block `i` is raw block `i`, and a local edit reads
+    /// nothing but the blocks it changed; while it does, every local edit first scans
+    /// the top level's shapes to find the raw index of each visible block.
+    ///
+    /// Only a **remote** merge can change it — no local edit writes a void container or
+    /// removes one (the model holds none, and the diff never addresses one) — so it is
+    /// computed when bytes arrive ([`CollabDoc::load`], [`CollabDoc::apply_update`]) and
+    /// nowhere else. If it were ever stale `false` with a void present, the raw count
+    /// would exceed the model's and `project_change`'s count gate would fail loud: a
+    /// stall, never a write to the wrong block.
+    pub(crate) top_void: bool,
     /// Keeps the update observer alive — dropping the subscription unsubscribes it, and
     /// the outbox would silently stop filling.
     _updates: Subscription,
@@ -553,6 +568,8 @@ impl CollabDoc {
             doc: ydoc,
             content,
             outbox,
+            // A projection of a model holds no void container: the model cannot.
+            top_void: false,
             _updates: updates,
         })
     }
@@ -604,7 +621,7 @@ impl CollabDoc {
         // transaction for both gates.
         let content = ydoc.get_or_insert_array(CONTENT);
         let meta = ydoc.get_or_insert_map(META);
-        {
+        let top_void = {
             let txn = ydoc.transact();
             match meta.get(&txn, FORMAT) {
                 Some(Out::Any(Any::String(tag))) if &*tag == FORMAT_TAG => {}
@@ -615,14 +632,16 @@ impl CollabDoc {
                     )));
                 }
             }
-            for i in 0..content.len(&txn) {
-                read_node_data(&txn, &content, i)?;
+            for child in content.iter(&txn) {
+                read_out_data(&txn, child)?;
             }
-        }
+            holds_void(&txn, &content)
+        };
         Ok(CollabDoc {
             doc: ydoc,
             content,
             outbox,
+            top_void,
             _updates: updates,
         })
     }
@@ -693,6 +712,25 @@ fn u16_span(s: &str, start: usize, end: usize) -> (u32, u32) {
 
 // --- structural read helpers (any transaction) ----------------------------------
 
+thread_local! {
+    /// How many CRDT nodes this thread has examined — one per [`read_map_data`] (a node
+    /// read back with its text and children) and one per [`map_is_void`] (a node's shape
+    /// checked). Read by [`crate::testing::node_reads`] so a test can pin that a local
+    /// keystroke reads O(changed) nodes, not the whole document. A thread-local `Cell`
+    /// increment is all it costs, so it is compiled into every build.
+    static NODE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn count_node_read() {
+    NODE_READS.with(|c| c.set(c.get() + 1));
+}
+
+/// The running count behind [`crate::testing::node_reads`].
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn node_reads() -> u64 {
+    NODE_READS.with(|c| c.get())
+}
+
 /// The map object of the child at `index` of a content array (the root `content` or a
 /// container's nested `content`).
 pub(crate) fn child_map<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Option<MapRef> {
@@ -707,30 +745,80 @@ pub(crate) fn child_map<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Opt
 /// only void nodes. A node with neither is not void (it is corrupt, and the read-back
 /// reports it).
 pub(crate) fn map_is_void<T: ReadTxn>(txn: &T, node: &MapRef) -> bool {
+    count_node_read();
     if block_text(txn, node).is_some() {
         return false;
     }
     let Some(content) = node_content(txn, node) else {
         return false;
     };
-    (0..content.len(txn)).all(|i| child_map(txn, &content, i).is_some_and(|m| map_is_void(txn, &m)))
+    content
+        .iter(txn)
+        .all(|child| matches!(child, Out::YMap(m) if map_is_void(txn, &m)))
+}
+
+/// Whether any child of `list` is a void container ([`map_is_void`]): one sequential
+/// pass over the children's shapes, reading no text.
+pub(crate) fn holds_void<T: ReadTxn>(txn: &T, list: &ArrayRef) -> bool {
+    list.iter(txn)
+        .any(|child| matches!(child, Out::YMap(m) if map_is_void(txn, &m)))
+}
+
+/// The raw index of every **visible** child of `list` (void containers skipped, as
+/// [`read_children`] skips them), read off the children's shapes alone in one
+/// sequential pass. A child that is not a node map at all is kept: it is not void, and
+/// reading it back fails loud.
+pub(crate) fn visible_indices<T: ReadTxn>(txn: &T, list: &ArrayRef) -> Vec<u32> {
+    list.iter(txn)
+        .enumerate()
+        .filter_map(|(i, child)| match child {
+            Out::YMap(m) if map_is_void(txn, &m) => None,
+            _ => Some(i as u32),
+        })
+        .collect()
+}
+
+/// Where each **visible** child of a content array lives in it: the raw index a write
+/// to visible child `i` addresses.
+#[derive(Clone, Copy)]
+pub(crate) enum RawIndex<'a> {
+    /// The array holds no void container, so visible child `i` is raw child `i`. Carries
+    /// the array's length, so the index past the last child is known without a read.
+    Identity(u32),
+    /// Visible child `i` is raw child `raw[i]`.
+    Mapped(&'a [u32]),
+}
+
+impl RawIndex<'_> {
+    /// The raw index of visible child `i`, `None` past the last one.
+    pub(crate) fn get(self, i: usize) -> Option<u32> {
+        match self {
+            RawIndex::Identity(len) => u32::try_from(i).ok().filter(|&i| i < len),
+            RawIndex::Mapped(raw) => raw.get(i).copied(),
+        }
+    }
+
+    /// How many visible children there are.
+    pub(crate) fn len(self) -> usize {
+        match self {
+            RawIndex::Identity(len) => len as usize,
+            RawIndex::Mapped(raw) => raw.len(),
+        }
+    }
 }
 
 /// The map of **visible** child `index` of `list` (void containers skipped, as
 /// [`read_children`] skips them), if there is one.
 pub(crate) fn visible_child<T: ReadTxn>(txn: &T, list: &ArrayRef, index: usize) -> Option<MapRef> {
-    let mut seen = 0usize;
-    for i in 0..list.len(txn) {
-        let map = child_map(txn, list, i)?;
-        if map_is_void(txn, &map) {
-            continue;
-        }
-        if seen == index {
-            return Some(map);
-        }
-        seen += 1;
-    }
-    None
+    // One sequential pass: `ArrayRef::get` walks the array from its start, so asking it
+    // for each child in turn would cost O(index²).
+    list.iter(txn)
+        .filter_map(|child| match child {
+            Out::YMap(m) => Some(m),
+            _ => None,
+        })
+        .filter(|m| !map_is_void(txn, m))
+        .nth(index)
 }
 
 /// The `text` Text object of a text-block node.
@@ -998,7 +1086,7 @@ fn reconcile_child_list(
     write_child_diff(
         txn,
         content,
-        &raw,
+        RawIndex::Mapped(&raw),
         prefix,
         cur_mid,
         &target[prefix..prefix + tgt_mid],
@@ -1012,7 +1100,7 @@ fn reconcile_child_list(
 /// targets are inserted or the extra current children deleted. At most one of the two
 /// runs, since the overlap is the shorter of the two changed runs.
 ///
-/// `raw[i]` is the raw CRDT index of visible child `i` (see [`read_children`]): the
+/// `raw` gives the raw CRDT index of visible child `i` (see [`read_children`]): the
 /// diff is computed over what the model sees, and written where it lives. Extra
 /// children are inserted right before the visible child that follows them (or at the
 /// end of the array), so a void container between two visible children stays where it
@@ -1020,7 +1108,7 @@ fn reconcile_child_list(
 pub(crate) fn write_child_diff(
     txn: &mut TransactionMut,
     content: &ArrayRef,
-    raw: &[u32],
+    raw: RawIndex<'_>,
     prefix: usize,
     cur_mid: usize,
     targets: &[NodeData],
@@ -1032,22 +1120,24 @@ pub(crate) fn write_child_diff(
     // inside `reconcile_node` removes and re-inserts at the same raw index, so no raw
     // index moves.
     for (k, target) in targets.iter().take(common).enumerate() {
-        reconcile_node(txn, content, raw[prefix + k], target, per_char)?;
+        let at = raw
+            .get(prefix + k)
+            .ok_or_else(|| CollabError::schema("write_child_diff: missing child"))?;
+        reconcile_node(txn, content, at, target, per_char)?;
     }
     // Insert the extra targets, consecutively, before the visible child that comes
     // after them.
     if tgt_mid > common {
-        let at = raw
-            .get(prefix + common)
-            .copied()
-            .unwrap_or_else(|| content.len(txn));
+        let at = raw.get(prefix + common).unwrap_or_else(|| content.len(txn));
         for (n, target) in targets.iter().skip(common).enumerate() {
             insert_node(txn, content, at + n as u32, target)?;
         }
     }
     // Delete the extra current children (from the end so earlier indices stay valid).
     for idx in (prefix + common..prefix + cur_mid).rev() {
-        let at = raw[idx];
+        let at = raw
+            .get(idx)
+            .ok_or_else(|| CollabError::schema("write_child_diff: missing child"))?;
         check_index(txn, content, at, false)?;
         content.remove(txn, at);
     }
@@ -1060,12 +1150,13 @@ pub(crate) fn write_child_diff(
 /// diffs that write ([`reconcile_child_list`], `project_change`) and the sticky-index
 /// walk all agree on which child "index `i`" is.
 pub(crate) fn read_children<T: ReadTxn>(txn: &T, list: &ArrayRef) -> Result<Vec<(u32, NodeData)>> {
-    let len = list.len(txn);
-    let mut out = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        let nd = read_node_data(txn, list, i)?;
+    let mut out = Vec::with_capacity(list.len(txn) as usize);
+    // One sequential pass: `ArrayRef::get` walks the array from its start, so reading
+    // child `i` by index for each `i` would cost O(len²).
+    for (i, child) in list.iter(txn).enumerate() {
+        let nd = read_out_data(txn, child)?;
         if !is_void(&nd) {
-            out.push((i, nd));
+            out.push((i as u32, nd));
         }
     }
     Ok(out)
@@ -1441,9 +1532,23 @@ fn read_text_data<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<(String, Vec<Sp
 pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Result<NodeData> {
     let node = child_map(txn, list, index)
         .ok_or_else(|| CollabError::schema("read_node_data: missing node"))?;
-    let type_name = node_type(txn, &node).ok_or_else(|| CollabError::schema("node has no type"))?;
-    let attrs = node_attrs(txn, &node);
-    if let Some(text_obj) = block_text(txn, &node) {
+    read_map_data(txn, &node)
+}
+
+/// [`read_node_data`] for a child value already in hand (an array iterator's item).
+fn read_out_data<T: ReadTxn>(txn: &T, child: Out) -> Result<NodeData> {
+    match child {
+        Out::YMap(node) => read_map_data(txn, &node),
+        _ => Err(CollabError::schema("read_node_data: missing node")),
+    }
+}
+
+/// [`read_node_data`] for the node map itself.
+fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
+    count_node_read();
+    let type_name = node_type(txn, node).ok_or_else(|| CollabError::schema("node has no type"))?;
+    let attrs = node_attrs(txn, node);
+    if let Some(text_obj) = block_text(txn, node) {
         let (text, marks) = read_text_data(txn, &text_obj)?;
         Ok(NodeData::Block(BlockData {
             type_name,
@@ -1451,7 +1556,7 @@ pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -
             text,
             marks,
         }))
-    } else if let Some(content) = node_content(txn, &node) {
+    } else if let Some(content) = node_content(txn, node) {
         // Only the visible children: a void child container is not part of this one
         // (see `is_void`), and a container whose every child is void is void itself.
         let children = read_children(txn, &content)?

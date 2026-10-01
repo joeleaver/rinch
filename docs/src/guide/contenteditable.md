@@ -1104,9 +1104,13 @@ not projected). Horizontal rules, images, hard breaks and block quotes all joine
 scope without a new wire format, so **every peer on a document must be upgraded
 together**: an older build accepts a rule, an image, a hard break or a quote from a newer
 peer and then cannot read it, which poisons its session (see below) in both
-directions for as long as that content remains in the document — it heals only
-when the last one is deleted. A peer joining from a snapshot that already holds
-one fails the join instead.
+directions for as long as that content remains in the document — for a rule, an
+image or a hard break it heals when the last one is deleted. A quote may never
+leave: one emptied by two people deleting its contents at the same time is no
+longer shown, but it stays in the shared document for good (deleting it could race
+a third person typing into it), so once that has happened an older build stays
+locked out of the document for its whole life. A peer joining from a snapshot that
+already holds one fails the join instead.
 
 Wrapping a paragraph in a quote or a list, or lifting it out of one, replaces that
 paragraph in the shared document, so if someone else is typing in it at that moment

@@ -894,3 +894,305 @@ fn a_bullet_list_toggled_to_ordered_keeps_a_peers_concurrent_typing() {
         );
     }
 }
+
+// --- review of #1229: the void-container paths the first round did not reach -----
+
+#[test]
+fn nested_void_list_inside_a_quote() {
+    // quote(p0, ul(li a, li b)): A deletes item a, B item b. The list goes void inside
+    // the quote; the quote keeps p0. Then edits inside the quote around the void list.
+    for ids in [(11u64, 22u64), (22, 11)] {
+        let s = schema();
+        let mut a = Peer::host(
+            &s,
+            vec![
+                para(&s, "top"),
+                quote(
+                    &s,
+                    vec![
+                        para(&s, "p0"),
+                        bullets(&s, vec!["aa", "bb"]),
+                        para(&s, "p9"),
+                    ],
+                ),
+                para(&s, "end"),
+            ],
+            ids.0,
+        );
+        let mut b = a.join(ids.1);
+        let mut c = a.join(33);
+        let _ = a.send();
+        let at = pos_of(&a.state.doc, "aa");
+        a.delete(at - 2, at + 2 + 2);
+        let at = pos_of(&b.state.doc, "bb");
+        b.delete(at - 2, at + 2 + 2);
+        let (da, db) = (a.send(), b.send());
+        b.receive(&da);
+        a.receive(&db);
+        c.receive(&da);
+        c.receive(&db);
+        assert_eq!(a.state.doc, b.state.doc);
+        assert_eq!(
+            html(&a.state.doc),
+            "<p>top</p><blockquote><p>p0</p><p>p9</p></blockquote><p>end</p>"
+        );
+        // A inserts a paragraph between p0 and p9 (where the void list sits), B types in p9,
+        // C deletes p0.
+        let end_p0 = pos_of(&a.state.doc, "p0") + 2;
+        a.run(end_p0, "enter");
+        let caret = a.state.selection.head().0;
+        a.type_at(caret, "mid");
+        b.type_after("p9", "!");
+        let p0 = pos_of(&c.state.doc, "p0");
+        c.delete(p0 - 1, p0 + 3);
+        let (da, db, dc) = (a.send(), b.send(), c.send());
+        for (p, ds) in [
+            (&mut a, [&db, &dc]),
+            (&mut b, [&da, &dc]),
+            (&mut c, [&da, &db]),
+        ] {
+            for d in ds {
+                p.receive(d);
+            }
+        }
+        assert_eq!(a.state.doc, b.state.doc);
+        assert_eq!(a.state.doc, c.state.doc);
+        assert_valid(&a.state.doc);
+        // sticky inside the quote after the void list
+        let at = pos_of(&a.state.doc, "p9");
+        let st = a
+            .session
+            .sticky_index(&a.state.doc, Pos(at + 1))
+            .expect("sticky");
+        assert_eq!(
+            b.session.resolve_sticky(&b.state.doc, &st),
+            Some(Pos(at + 1))
+        );
+        assert_eq!(
+            c.session.resolve_sticky(&c.state.doc, &st),
+            Some(Pos(at + 1))
+        );
+        // a late joiner
+        let d = a.join(44);
+        assert_eq!(d.state.doc, a.state.doc);
+    }
+}
+
+#[test]
+fn cascading_void_quote_holding_only_a_list() {
+    // quote(ul(li a, li b)): both items deleted concurrently -> list void -> quote void.
+    for doc in concurrently(
+        |s| {
+            vec![
+                para(s, "x"),
+                quote(s, vec![bullets(s, vec!["aa", "bb"])]),
+                para(s, "y"),
+            ]
+        },
+        |a| {
+            let at = pos_of(&a.state.doc, "aa");
+            a.delete(at - 2, at + 4);
+        },
+        |b| {
+            let at = pos_of(&b.state.doc, "bb");
+            b.delete(at - 2, at + 4);
+        },
+    ) {
+        assert_eq!(html(&doc), "<p>x</p><p>y</p>");
+    }
+}
+
+#[test]
+fn void_list_item_holding_only_a_nested_list() {
+    // ul(li(ul(li a, li b))) : list_item whose only child is a list, both nested items
+    // deleted concurrently: nested list void -> li void -> outer ul void.
+    for doc in concurrently(
+        |s| {
+            let inner = bullets(s, vec!["aa", "bb"]);
+            vec![
+                para(s, "x"),
+                branch(
+                    s,
+                    "bullet_list",
+                    vec![branch(s, "list_item", vec![para(s, "head"), inner])],
+                ),
+            ]
+        },
+        |a| {
+            let at = pos_of(&a.state.doc, "aa");
+            a.delete(at - 2, at + 4);
+        },
+        |b| {
+            let at = pos_of(&b.state.doc, "bb");
+            b.delete(at - 2, at + 4);
+        },
+    ) {
+        assert_eq!(html(&doc), "<p>x</p><ul><li><p>head</p></li></ul>");
+    }
+}
+
+#[test]
+fn insert_between_blocks_after_a_leading_void_container() {
+    // CRDT [void quote, p1, p2] / model [p1, p2]: a block inserted between p1 and p2
+    // must land between them, not before p1 (kills "insert at the visible index").
+    let s = schema();
+    let mut a = Peer::host(
+        &s,
+        vec![
+            quote(&s, vec![para(&s, "x"), para(&s, "y")]),
+            para(&s, "one"),
+            para(&s, "two"),
+        ],
+        1,
+    );
+    let mut b = a.join(2);
+    let _ = a.send();
+    let x = pos_of(&a.state.doc, "x");
+    a.delete(x - 1, x + 2);
+    let y = pos_of(&b.state.doc, "y");
+    b.delete(y - 1, y + 2);
+    exchange(&mut a, &mut b);
+    assert_eq!(html(&a.state.doc), "<p>one</p><p>two</p>");
+    let end = pos_of(&a.state.doc, "one") + 3;
+    a.run(end, "enter");
+    let caret = a.state.selection.head().0;
+    a.type_at(caret, "mid");
+    exchange(&mut a, &mut b);
+    assert_eq!(html(&b.state.doc), "<p>one</p><p>mid</p><p>two</p>");
+    assert_eq!(a.state.doc, b.state.doc);
+}
+
+#[test]
+fn sticky_after_a_cascading_void_container() {
+    // quote(ul(a, b)) emptied concurrently: the list is void, so the quote is void too.
+    // A sticky index after it must skip the quote (kills a shallow `map_is_void`). Two
+    // and three levels deep, so a check that looks only one level down is caught too.
+    for depth in [1, 2] {
+        let s = schema();
+        let mut wrapped = bullets(&s, vec!["aa", "bb"]);
+        for _ in 0..depth {
+            wrapped = quote(&s, vec![wrapped]);
+        }
+        let mut a = Peer::host(&s, vec![wrapped, para(&s, "after it")], 1);
+        let mut b = a.join(2);
+        let _ = a.send();
+        let at = pos_of(&a.state.doc, "aa");
+        a.delete(at - 2, at + 4);
+        let at = pos_of(&b.state.doc, "bb");
+        b.delete(at - 2, at + 4);
+        exchange(&mut a, &mut b);
+        assert_eq!(html(&a.state.doc), "<p>after it</p>", "depth {depth}");
+        let at = pos_of(&a.state.doc, "it");
+        let sticky = a
+            .session
+            .sticky_index(&a.state.doc, Pos(at))
+            .expect("an index");
+        assert_eq!(
+            b.session.resolve_sticky(&b.state.doc, &sticky),
+            Some(Pos(at)),
+            "depth {depth}"
+        );
+    }
+}
+
+#[test]
+fn a_peer_joining_after_a_quote_went_void_edits_around_it() {
+    // The void quote arrives in the joiner's snapshot rather than in a delta: loading it
+    // must find it too, or the joiner's first edit addresses the blocks by the wrong
+    // index (its count gate refuses it, and its typing stays local).
+    let s = schema();
+    let mut a = Peer::host(
+        &s,
+        vec![
+            para(&s, "p0"),
+            quote(&s, vec![para(&s, "x"), para(&s, "y")]),
+            para(&s, "p1"),
+        ],
+        1,
+    );
+    let mut b = a.join(2);
+    let _ = a.send();
+    let x = pos_of(&a.state.doc, "x");
+    a.delete(x - 1, x + 2);
+    let y = pos_of(&b.state.doc, "y");
+    b.delete(y - 1, y + 2);
+    exchange(&mut a, &mut b);
+    let mut c = a.join(3);
+    assert_eq!(html(&c.state.doc), "<p>p0</p><p>p1</p>");
+    c.type_after("p1", "!");
+    let end_p0 = pos_of(&c.state.doc, "p0") + 2;
+    c.run(end_p0, "enter");
+    let caret = c.state.selection.head().0;
+    c.type_at(caret, "mid");
+    let dc = c.send();
+    a.receive(&dc);
+    b.receive(&dc);
+    assert_eq!(html(&a.state.doc), "<p>p0</p><p>mid</p><p>p1!</p>");
+    assert_eq!(a.state.doc, b.state.doc);
+    assert_eq!(a.state.doc, c.state.doc);
+}
+
+#[test]
+fn stall_and_heal_with_a_void_container_present() {
+    let s = schema();
+    let mut a = Peer::host(
+        &s,
+        vec![
+            para(&s, "p0"),
+            quote(&s, vec![para(&s, "x"), para(&s, "y")]),
+            para(&s, "p1"),
+        ],
+        1,
+    );
+    let mut b = a.join(2);
+    let _ = a.send();
+    let x = pos_of(&a.state.doc, "x");
+    a.delete(x - 1, x + 2);
+    let y = pos_of(&b.state.doc, "y");
+    b.delete(y - 1, y + 2);
+    exchange(&mut a, &mut b);
+    // A appends a task list: refused, stalls.
+    let item = s
+        .branch("task_item", Fragment::from_node(para(&s, "todo")))
+        .unwrap();
+    let tl = s.branch("task_list", Fragment::from_node(item)).unwrap();
+    let mut tr = a.state.tr();
+    let at = a.state.doc.content_size();
+    tr.replace(at, at, Slice::new(Fragment::from_node(tl), 0, 0))
+        .unwrap();
+    let next = a.state.apply(tr);
+    assert!(a.session.record_local(&s, &a.state.doc, &next.doc).is_err());
+    a.state = next;
+    assert!(a.session.outbound_stall().is_some());
+    // Type during the stall, in p0 and p1.
+    let type_raw = |a: &mut Peer, after: &str, t: &str| {
+        let at = pos_of(&a.state.doc, after) + after.len();
+        let mut tr = a.state.tr();
+        tr.set_selection(Selection::cursor(Pos(at)));
+        tr.insert_text(t).unwrap();
+        let next = a.state.apply(tr);
+        let _ = a.session.record_local(&s, &a.state.doc, &next.doc);
+        a.state = next;
+    };
+    type_raw(&mut a, "p0", "A");
+    type_raw(&mut a, "p1", "B");
+    assert!(a.session.outbound_stall().is_some());
+    // Delete the task list: heals.
+    let start: usize = (0..a.state.doc.child_count() - 1)
+        .map(|i| a.state.doc.child(i).node_size())
+        .sum();
+    let end = a.state.doc.content_size();
+    let mut tr = a.state.tr();
+    tr.delete(start, end).unwrap();
+    let next = a.state.apply(tr);
+    a.session
+        .record_local(&s, &a.state.doc, &next.doc)
+        .expect("heals");
+    a.state = next;
+    assert!(a.session.outbound_stall().is_none());
+    a.assert_model_is_projection("after heal");
+    let d = a.send();
+    b.receive(&d);
+    assert_eq!(html(&b.state.doc), "<p>p0A</p><p>p1B</p>");
+    assert_eq!(a.state.doc, b.state.doc);
+}
