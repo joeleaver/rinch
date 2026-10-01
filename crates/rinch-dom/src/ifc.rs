@@ -5287,7 +5287,6 @@ impl RinchDocument {
         // Contenteditable elements always use Preserve (pre-wrap) to prevent
         // Parley from collapsing trailing whitespace, which would cause cursor
         // position mismatches (the DOM text has the space but the layout doesn't).
-        use crate::computed_style::WhiteSpaceValue;
         let is_contenteditable = {
             let mut nid = Some(root_id);
             let mut found = false;
