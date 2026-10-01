@@ -227,11 +227,15 @@ pub(crate) fn break_lines_hanging_spaces(
 ) -> HangStats {
     layout.break_all_lines(max_width);
     let max = max_width.filter(|max| max.is_finite());
-    let fix = max.and_then(|max| {
-        let hang_spaces = preserves_spaces
-            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung));
-        (hang_spaces || any_hung_nbsp_line(layout, text, max)).then_some((max, hang_spaces))
+    // The pass hangs preserved spaces on every line it breaks, whichever
+    // test sent the paragraph through it: a line [`unglue`] moves an NBSP onto
+    // can come out ending in spaces parley did not hang.
+    let fix = max.filter(|&max| {
+        (preserves_spaces
+            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung)))
+            || any_hung_nbsp_line(layout, text, max)
     });
+    let fix = fix.map(|max| (max, preserves_spaces));
     let mut stats = match fix {
         Some((max, hang_spaces)) => hang_pass(layout, text, max, None, unhung, hang_spaces),
         None => HangStats::default(),
@@ -909,17 +913,29 @@ fn unglue(
     if run_start > cursor && run_x > ROOM {
         let line_max = run_x - ROOM;
         let a = rebreak(line_max)?;
-        if a.0 == BreakReason::Emergency {
+        // An emergency break that fits is text's (`overflow-wrap`); one that
+        // overflows is an inline box too wide for the line, placed alone at
+        // its start, which is no opportunity before the run.
+        if a.0 == BreakReason::Emergency && a.1 <= line_max {
+            // The table's cursor can sit on the zero-width newline that ended
+            // the line before; a newline is never the first unit of a line.
+            let first = cursor
+                + units[cursor..run_start]
+                    .iter()
+                    .take_while(|u| u.newline)
+                    .count();
+            let before = &units[first..run_start];
+            let width: f32 = before.iter().map(|u| u.advance).sum();
+            if (width - run_x).abs() > 0.005 {
+                return None;
+            }
+            let n = before.iter().filter(|u| u.counted).count();
             breaker.revert_to(line_start.clone());
-            let n = units[cursor..run_start]
-                .iter()
-                .filter(|u| u.counted)
-                .count();
             breaker.break_next_with_length(u32::try_from(n).ok()?)?;
             breaker.set_prior_line_width(max);
             return Some((BreakReason::Emergency, run_x));
         }
-        if !ends_in_hung_nbsp(a, line_max) {
+        if a.0 != BreakReason::Emergency && !ends_in_hung_nbsp(a, line_max) {
             breaker.set_prior_line_width(max);
             return Some(a);
         }
@@ -931,8 +947,12 @@ fn unglue(
             breaker.set_prior_line_width(max);
             return Some(c);
         }
+        // Nothing more taken in: what ends the line is not a hang but parley
+        // breaking before an inline box that does not fit, which it does
+        // after an NBSP too. Kept as parley breaks it.
         if c.1 <= through {
-            return None;
+            breaker.set_prior_line_width(max);
+            return Some(c);
         }
         through = c.1;
     }
