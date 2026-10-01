@@ -67,17 +67,22 @@
 //!    one of its two paragraphs). Typing into it inserts the paragraph.
 //! 4. **A table with no live row or no live column is void** and reads as absent, like
 //!    any emptied container (`projection::is_void`).
-//! 5. **A table too large for what the CRDT stores is refused**, loud, before it is
-//!    built. A row or column line costs about 20 bytes on the wire and a filler none,
+//! 5. **A table too large for what the CRDT stores is not built.** A row or column line costs about 20 bytes on the wire and a filler none,
 //!    so `n` rows and `n` columns appended by a foreign writer would read as `n²`
 //!    fillers (90 KB of update, 2.3 GB on every replica, measured). The read refuses
 //!    more slots than the model's own `grid_slot_budget` allows (checked before the
 //!    grid is allocated), and more fillers than `max(stored cells, FILLER_FLOOR)`
 //!    (2^16 — room for the fillers honest concurrent row and column adds make: a
-//!    256 × 256 block of them). The refusal is an `Unsupported` read error, which
-//!    poisons the session (#196) until the table is deleted. Honest peers reach it
-//!    only by adding hundreds of rows on one replica and hundreds of columns on
-//!    another at once.
+//!    256 × 256 block of them; honest peers reach it by adding hundreds of rows on
+//!    one replica and hundreds of columns on another at once). The model sees such a
+//!    table as a **placeholder** — one empty cell, the table's attrs — so the session
+//!    stays healthy and any peer can delete it: deleting a block never reads it. Only
+//!    the model's own read (`CollabDoc::to_doc`, under [`placeholder_reads`]) does
+//!    this; every read a write depends on is strict, so an edit inside the placeholder
+//!    (or in a container holding it) is refused `Unsupported` before anything is
+//!    written and stalls outbound (#220) until the table is deleted. It was a poison
+//!    (#196) at first, which no peer that had seen the table could cure: a poisoned
+//!    session sends nothing.
 //!
 //! The model side is held to the same shape: a table whose cells do not tile a
 //! rectangle exactly (a ragged row, overlapping spans, a span past the edge) is
@@ -100,9 +105,18 @@
 //! on the first tombstoned the *last*, and a peer's concurrent typing there went with
 //! it. A column added or deleted changes every row node, so the rows fall in the
 //! middle and pair by index; a merge changes the master cell, so the columns it spans
-//! fall in the middle and pair by index too. Without the model's before and after (a
-//! caller that has none) the match falls back to values: the rows' and columns' **slots**
-//! with spans left out — the anchored cell's type, attrs and content, or "covered".
+//! fall in the middle and pair by index too. A row also matches a row that shares one
+//! of its cells: deleting a row a rowspan starts in moves that cell one row down,
+//! which rebuilds the row below, and that row is still the same row. In the column
+//! check, a row whose cell there changed abstains rather than vetoes, for the same
+//! reason with a colspan.
+//!
+//! Identity is used only where the before and after are **related** — they share a
+//! row or a cell. A load while collaborating (`load_doc`/`load_html`) and the re-base
+//! of a stalled outbound on the CRDT's read-back hand the projection two documents that
+//! share nothing; there the match falls back to values — the rows' and columns'
+//! **slots** with spans left out (the anchored cell's type, attrs and content, or
+//! "covered") — and the model is still passed down, since a level below may be related.
 //!
 //! Then every anchor of the new grid is written at its key: unchanged cells are left
 //! alone, changed ones reconciled in place (their blocks diffed like any child list,
@@ -122,6 +136,7 @@
 //!   to the next row or column, which the projection writes as a new cell there, so a
 //!   peer's concurrent typing in it lands in the old one.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use yrs::{
@@ -207,9 +222,8 @@ fn span(attrs: &Attrs, key: &str) -> usize {
 /// today, and a 256 × 256 table's worth of concurrently added rows and columns.
 pub(crate) const FILLER_FLOOR: usize = 1 << 16;
 
-/// A remote table too large to read: refused, loud, before it is built. It surfaces
-/// as an `Unsupported` read error, which poisons the session (#196) until the table is
-/// deleted, as any CRDT the projection cannot read does.
+/// A remote table too large to read (rule 5): the `Unsupported` error every strict read
+/// of it fails with. The model's own read sees a [`placeholder`] instead.
 fn over_budget(detail: String) -> CollabError {
     CollabError::unsupported(format!(
         "a table of {detail} is past the read's budget and is not built \
@@ -439,8 +453,62 @@ pub(crate) struct TableRead {
 }
 
 /// Read a table node map back as the model sees it — see the module docs for the
-/// rules that make the grid rectangular whatever concurrent edits left.
+/// rules that make the grid rectangular whatever concurrent edits left. A table past
+/// the read's budget (rule 5) is an `Unsupported` error.
 pub(crate) fn read_table<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableRead> {
+    read_table_or_budget(txn, node)?.map_err(over_budget)
+}
+
+thread_local! {
+    /// Whether a table past the read's budget reads as a [`placeholder`] rather than
+    /// an error: on only inside [`placeholder_reads`], which `CollabDoc::to_doc` holds.
+    static PLACEHOLDER_READS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// While the returned guard lives, a table past the read's budget reads as a
+/// [`placeholder`] (rule 5). Held by the one read that builds the model
+/// (`CollabDoc::to_doc`); every read a write depends on stays strict.
+pub(crate) fn placeholder_reads() -> PlaceholderReads {
+    PlaceholderReads(PLACEHOLDER_READS.with(|c| c.replace(true)))
+}
+
+/// The guard [`placeholder_reads`] returns; restores the previous setting on drop.
+pub(crate) struct PlaceholderReads(bool);
+
+impl Drop for PlaceholderReads {
+    fn drop(&mut self) {
+        PLACEHOLDER_READS.with(|c| c.set(self.0));
+    }
+}
+
+/// What the model sees of a table past the read's budget: one empty cell, with the
+/// table's own attrs. A pure function of the CRDT, so every replica reads the same.
+fn placeholder(attrs: Attrs) -> TableData {
+    TableData {
+        attrs,
+        width: 1,
+        rows: vec![RowData {
+            attrs: Attrs::new(),
+            cells: vec![filler()],
+        }],
+    }
+}
+
+/// [`read_table`]'s data, or — inside [`placeholder_reads`] — a [`placeholder`] for a
+/// table past the read's budget.
+pub(crate) fn read_table_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableData> {
+    match read_table_or_budget(txn, node)? {
+        Ok(read) => Ok(read.data),
+        Err(_) if PLACEHOLDER_READS.with(Cell::get) => Ok(placeholder(node_attrs(txn, node))),
+        Err(detail) => Err(over_budget(detail)),
+    }
+}
+
+/// [`read_table`], with a table past the read's budget as `Ok(Err(detail))`.
+fn read_table_or_budget<T: ReadTxn>(
+    txn: &T,
+    node: &MapRef,
+) -> Result<std::result::Result<TableRead, String>> {
     let (Some(Out::YArray(rows_array)), Some(Out::YArray(cols_array))) =
         (node.get(txn, ROWS), node.get(txn, COLS))
     else {
@@ -468,7 +536,7 @@ pub(crate) fn read_table<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableRead
     // to project an edit of.
     let slots = width as u128 * height as u128;
     if slots > stored.saturating_mul(2).max(GRID_SLOT_FLOOR) as u128 {
-        return Err(over_budget(format!(
+        return Ok(Err(format!(
             "{width}×{height} slots for {stored} stored cells"
         )));
     }
@@ -542,7 +610,7 @@ pub(crate) fn read_table<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableRead
     // adds can fill (each pair of a new row and a new column makes one filler).
     let fillers = slots - covered;
     if fillers > stored.max(FILLER_FLOOR) {
-        return Err(over_budget(format!(
+        return Ok(Err(format!(
             "{fillers} filler cells for {stored} stored cells in a {width}×{height} grid"
         )));
     }
@@ -574,14 +642,14 @@ pub(crate) fn read_table<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<TableRead
             })
             .collect(),
     };
-    Ok(TableRead {
+    Ok(Ok(TableRead {
         data,
         rows,
         cols,
         cells,
         rows_array,
         cols_array,
-    })
+    }))
 }
 
 /// The CRDT map behind every cell of a table node, per row and per cell in model
@@ -826,6 +894,21 @@ fn cover<'a>(
     out
 }
 
+/// Whether the edit kept any cell of the table: a before and after with nothing in
+/// common (a load, a re-base on the CRDT's read-back) carries no identity.
+fn shares_a_cell(b: &Node, a: &Node) -> bool {
+    (0..a.child_count()).any(|i| {
+        let ar = a.child(i);
+        (0..ar.child_count()).any(|j| {
+            let c = ar.child(j);
+            (0..b.child_count()).any(|k| {
+                let br = b.child(k);
+                br.same_ref(ar) || (0..br.child_count()).any(|l| br.child(l).same_ref(c))
+            })
+        })
+    })
+}
+
 /// Whether a model table's rows and cells line up with a grid's placed cells.
 fn lines_up(table: &Node, cells: &[Vec<Placed>]) -> bool {
     table.child_count() == cells.len()
@@ -913,11 +996,17 @@ pub(crate) fn reconcile_table(
     // after line up with the two grids (they always do: the model is the projection),
     // and by their slots' values otherwise (see the module docs).
     let model = model.filter(|(b, a)| lines_up(b, &before_grid.cells) && lines_up(a, &grid.cells));
+    let identity = model.filter(|(b, a)| shares_a_cell(b, a));
     let (bn, an) = (before_grid.height, grid.height);
-    let ((row_keep, row_drop), (col_keep, col_drop)) = match model {
+    let ((row_keep, row_drop), (col_keep, col_drop)) = match identity {
         Some((old, new)) => {
             // A row is kept when the edit kept its `Rc`.
-            let rows = match_lines(bn, an, |b, a| old.child(b).same_ref(new.child(a)));
+            let rows = match_lines(bn, an, |b, a| {
+                let (x, y) = (old.child(b), new.child(a));
+                x.same_ref(y)
+                    || (0..x.child_count())
+                        .any(|i| (0..y.child_count()).any(|j| x.child(i).same_ref(y.child(j))))
+            });
             // A column is kept when, in every row kept on both sides, the same model
             // cell covers it at the same offset from its anchor. (Every row of the
             // shorter side is paired, so some row always vouches. The offset is what
@@ -935,10 +1024,19 @@ pub(crate) fn reconcile_table(
                 .filter_map(|(i, k)| k.map(|k| (k, i)))
                 .collect();
             let cols = match_lines(before_grid.width, grid.width, |b, a| {
-                kept.iter().all(|&(k, i)| match (bc[k][b], ac[i][a]) {
-                    (Some((x, xc)), Some((y, yc))) => x.same_ref(y) && b - xc == a - yc,
-                    _ => false,
-                })
+                let mut yes = false;
+                for &(k, i) in &kept {
+                    // A row whose cell here changed abstains: it cannot say.
+                    if let (Some((x, xc)), Some((y, yc))) = (bc[k][b], ac[i][a])
+                        && x.same_ref(y)
+                    {
+                        if b - xc != a - yc {
+                            return false;
+                        }
+                        yes = true;
+                    }
+                }
+                yes
             });
             (rows, cols)
         }

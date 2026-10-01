@@ -1278,68 +1278,122 @@ fn grown_table_update(b: &Peer, n: usize, stretch: bool) -> Vec<u8> {
     doc.transact().encode_state_as_update_v1(&sv)
 }
 
+/// The table a peer's model holds as its first block, as `rows × cols`.
+fn table_dims(doc: &Node) -> (usize, usize) {
+    let (table, _) = first_table(doc).expect("a table");
+    (table.child_count(), table.child(0).child_count())
+}
+
+/// Integrate `update` into `peer`, which must stay healthy.
+fn integrate_healthy(peer: &mut Peer, update: &[u8]) {
+    if let Some(next) = peer
+        .session
+        .integrate_incremental(&peer.state, update)
+        .expect("a table past the budget does not fail the integrate")
+    {
+        peer.state = next;
+    }
+    assert!(!peer.session.is_poisoned());
+    peer.assert_model_is_projection("after an over-budget table arrived");
+}
+
 /// The review's case: 2000 rows and 2000 columns appended to a 1×1 table (90 KB), which
-/// read as four million filler cells — 2.3 GB on every replica before the budget. It
-/// must be refused, quickly, and poison (the CRDT is healthy only once the table goes).
+/// read as four million filler cells — 2.3 GB on every replica before the budget. The
+/// read builds none of them: the model sees a one-cell placeholder, quickly, and the
+/// session stays healthy, so the table can be deleted (below).
 #[test]
-fn a_small_update_that_would_read_as_millions_of_fillers_is_refused_loud() {
+fn a_small_update_that_would_read_as_millions_of_fillers_reads_as_a_placeholder() {
     let s = schema();
     let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
     let update = grown_table_update(&b, 2000, false);
     assert!(update.len() < 100_000, "{} bytes", update.len());
     let t = std::time::Instant::now();
-    let res = b.session.integrate_incremental(&b.state, &update);
+    integrate_healthy(&mut b, &update);
     let took = t.elapsed();
-    let err = res.expect_err("four million fillers must not be built");
-    assert!(err.to_string().contains("filler"), "{err}");
-    assert!(
-        b.session.is_poisoned(),
-        "a refused read poisons, like any unreadable CRDT"
+    assert_eq!(table_dims(&b.state.doc), (1, 1));
+    assert_eq!(
+        grid_text(&b.state.doc),
+        "_",
+        "the placeholder is one empty cell"
     );
     assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
 }
 
 /// The filler budget is exact, and off the fixed point: a 1×1 table grown by 255 lines
-/// each way has 256² − 1 = 65,535 fillers, inside the 2^16 floor, and reads; one line
-/// more each way is 66,048, past it.
+/// each way has 256² − 1 = 65,535 fillers, inside the 2^16 floor, and reads whole; one
+/// line more each way is 66,048, past it, and reads as the placeholder.
 #[test]
 fn the_filler_budget_admits_the_floor_and_refuses_past_it() {
     let s = schema();
     let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
     let update = grown_table_update(&b, 255, false);
-    let next = b
-        .session
-        .integrate_incremental(&b.state, &update)
-        .expect("65,535 fillers are inside the floor")
-        .expect("the table grew");
-    let (table, _) = first_table(&next.doc).unwrap();
-    assert_eq!(table.child_count(), 256);
-    assert_eq!(table.child(255).child_count(), 256);
+    integrate_healthy(&mut b, &update);
+    assert_eq!(table_dims(&b.state.doc), (256, 256));
 
     let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
     let update = grown_table_update(&b, 256, false);
-    let err = b
-        .session
-        .integrate_incremental(&b.state, &update)
-        .expect_err("66,048 fillers are past the floor");
-    assert!(err.to_string().contains("filler"), "{err}");
+    integrate_healthy(&mut b, &update);
+    assert_eq!(table_dims(&b.state.doc), (1, 1));
 }
 
-/// The slot budget is checked before anything is allocated, and is the model's own
-/// (`grid_slot_budget`): one stored cell stretched over 2100×2100 slots (more than
-/// 2^22, and more than twice its one cell) has no filler at all, and is still refused,
-/// as the model would refuse that table for any local edit.
+/// The slot budget is the model's own (`grid_slot_budget`): one stored cell stretched
+/// over 2100×2100 slots (more than 2^22, and more than twice its one cell) has no
+/// filler at all, and still reads as the placeholder, not as a table the model would
+/// refuse any edit of.
 #[test]
-fn a_span_over_more_slots_than_the_model_allows_is_refused_before_allocating() {
+fn a_span_over_more_slots_than_the_model_allows_reads_as_a_placeholder() {
     let s = schema();
     let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
     let update = grown_table_update(&b, 2100, true);
+    integrate_healthy(&mut b, &update);
+    assert_eq!(table_dims(&b.state.doc), (1, 1));
+}
+
+/// The placeholder is curable from inside the session, by any peer that has seen it:
+/// an edit inside it is refused loud and stalls outbound (its write would need the
+/// table read), nothing reaches the CRDT; deleting the table projects, catches up the
+/// stalled outbound, and every peer converges without it.
+#[test]
+fn an_over_budget_table_is_refused_for_edits_and_can_be_deleted() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let update = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    let snapshot = b.session.snapshot();
+
+    // Typing inside it: refused, loud, nothing written.
+    let at = cell_pos(&b.state.doc, 0, 0) + 2;
+    let mut tr = b.state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("x").unwrap();
+    let typed = b.state.apply(tr);
     let err = b
         .session
-        .integrate_incremental(&b.state, &update)
-        .expect_err("4.4 million slots for one cell");
-    assert!(err.to_string().contains("slots"), "{err}");
-    assert!(b.session.is_poisoned());
+        .record_local(&s, &b.state.doc, &typed.doc)
+        .expect_err("an edit inside an over-budget table cannot be written");
+    assert!(err.to_string().contains("budget"), "{err}");
+    assert!(!b.session.is_poisoned());
+    assert!(b.session.outbound_stall().is_some());
+    assert_eq!(b.session.snapshot(), snapshot, "nothing reached the CRDT");
+    b.state = typed;
+
+    // Deleting it: projects, and the peer follows.
+    let caret = Selection::near(&b.state.doc, Pos(at), 1);
+    let mut tr = b.state.tr();
+    tr.set_selection(caret);
+    let placed = b.state.apply(tr);
+    let gone = placed.run("deleteTable").expect("deleteTable applies");
+    b.session
+        .record_local(&s, &b.state.doc, &gone.doc)
+        .expect("deleting the table projects");
+    b.state = gone;
+    assert!(b.session.outbound_stall().is_none());
+    assert!(first_table(&b.state.doc).is_none());
+    let delta = b.send();
+    a.receive(&delta);
+    assert_eq!(a.state.doc, b.state.doc);
+    assert!(first_table(&a.state.doc).is_none());
 }
 
 /// An honest concurrent edit that leaves fillers is untouched by the budget: a table
@@ -1631,4 +1685,317 @@ fn typing_in_equal_rows_lands_where_it_was_typed_whatever_the_others_add_or_dele
         typed_beside_a_change * 2 > trials,
         "{typed_beside_a_change} of {trials}"
     );
+}
+
+// ===================== review round 2 (#1233b) =====================
+
+/// A row deleted through a rowspan that STARTS in it: remove_row re-creates the
+/// spanning cell one row down, so the row below changes Rc too. Does a peer's
+/// typing in that lower row (another column) survive?
+#[test]
+fn rv2_delete_row_with_a_rowspan_starting_in_it_keeps_typing_below() {
+    for g in concurrently(
+        |s| {
+            let t = branch(
+                s,
+                "table",
+                vec![
+                    branch(s, "table_row", vec![cell(s, "r0c0"), cell(s, "r0c1")]),
+                    branch(
+                        s,
+                        "table_row",
+                        vec![spanning(s, "S", 1, 2), cell(s, "r1c1")],
+                    ),
+                    branch(s, "table_row", vec![cell(s, "r2c1")]),
+                    branch(s, "table_row", vec![cell(s, "r3c0"), cell(s, "r3c1")]),
+                ],
+            );
+            vec![t, para(s, "tail")]
+        },
+        |a| a.in_cell(1, 1, "deleteRow"),
+        |b| b.type_in_cell(2, 1, "X"),
+    ) {
+        assert_eq!(g, "r0c0 | r0c1\nS | r2c1X\nr3c0 | r3c1");
+    }
+}
+
+/// A column deleted through a colspan that STARTS in it.
+#[test]
+fn rv2_delete_column_with_a_colspan_starting_in_it_keeps_typing_beside() {
+    for g in concurrently(
+        |s| {
+            let t = branch(
+                s,
+                "table",
+                vec![
+                    branch(
+                        s,
+                        "table_row",
+                        vec![spanning(s, "S", 2, 1), cell(s, "r0c2")],
+                    ),
+                    branch(
+                        s,
+                        "table_row",
+                        vec![cell(s, "r1c0"), cell(s, "r1c1"), cell(s, "r1c2")],
+                    ),
+                ],
+            );
+            vec![t, para(s, "tail")]
+        },
+        |a| a.in_cell(1, 0, "deleteColumn"),
+        |b| b.type_in_cell(1, 1, "X"),
+    ) {
+        assert_eq!(g, "S | r0c2\nr1c1X | r1c2");
+    }
+}
+
+/// Stall recovery: the re-base diffs the CRDT's fresh read-back (no Rc shared with
+/// the model) against the model. Identity then matches nothing.
+#[test]
+fn rv2_stall_recovery_rebase_deletes_the_row_that_was_deleted() {
+    for ids in [(11u64, 22u64), (22, 11)] {
+        let s = schema();
+        let (mut a, mut b) = pair(&s, vec![grid(&s, 4, 1), para(&s, "tail")], ids);
+        // A: an out-of-scope block → outbound stalls.
+        let task = branch(
+            &s,
+            "task_list",
+            vec![branch(&s, "task_item", vec![para(&s, "t")])],
+        );
+        let end = a.state.doc.content_size();
+        let mut tr = a.state.tr();
+        tr.replace_with(end, end, Fragment::from_node(task))
+            .unwrap();
+        let next = a.state.apply(tr);
+        assert!(a.session.record_local(&s, &a.state.doc, &next.doc).is_err());
+        a.state = next;
+        // A deletes row 0 while stalled.
+        let at = cell_pos(&a.state.doc, 0, 0);
+        let mut tr = a.state.tr();
+        tr.set_selection(Selection::near(&a.state.doc, Pos(at + 1), 1));
+        let placed = a.state.apply(tr);
+        let next = placed.run("deleteRow").unwrap();
+        assert!(a.session.record_local(&s, &a.state.doc, &next.doc).is_err());
+        a.state = next;
+        // A removes the task list → re-base on the CRDT's read-back.
+        let n = a.state.doc.child_count();
+        let size = a.state.doc.child(n - 1).node_size();
+        let end = a.state.doc.content_size();
+        let mut tr = a.state.tr();
+        tr.delete(end - size, end).unwrap();
+        let next = a.state.apply(tr);
+        a.session
+            .record_local(&s, &a.state.doc, &next.doc)
+            .expect("recovers");
+        a.state = next;
+        // B, concurrently, typed in the last row.
+        b.type_in_cell(3, 0, "X");
+        exchange(&mut a, &mut b);
+        assert_eq!(a.state.doc, b.state.doc);
+        assert_eq!(grid_text(&a.state.doc), "r1c0\nr2c0\nr3c0X", "ids {ids:?}");
+    }
+}
+
+/// Undo of a deleteRow among equal rows, while a peer types in a later row.
+#[test]
+fn rv2_undo_of_a_row_delete_among_equal_rows_keeps_typing() {
+    for ids in [(11u64, 22u64), (22, 11)] {
+        let s = schema();
+        let (mut a, mut b) = pair(&s, vec![empty_grid(&s, 4, 1), para(&s, "tail")], ids);
+        a.in_cell(0, 0, "deleteRow");
+        exchange(&mut a, &mut b);
+        // A undoes; B types in what is now row 2 (originally row 3).
+        let next = a.state.run("undo").expect("undo");
+        a.commit(next);
+        b.type_in_cell(2, 0, "X");
+        exchange(&mut a, &mut b);
+        assert_eq!(a.state.doc, b.state.doc);
+        assert_eq!(grid_text(&a.state.doc), "_\n_\n_\nX", "ids {ids:?}");
+    }
+}
+
+/// No two siblings anywhere in the model share an Rc, after random table edits with
+/// undo/redo mixed in (identity matching needs every sibling to be its own Rc).
+fn assert_no_shared_siblings(n: &Node, path: &str) {
+    for i in 0..n.child_count() {
+        for j in i + 1..n.child_count() {
+            assert!(
+                !n.child(i).same_ref(n.child(j)),
+                "{path}: children {i} and {j} share an Rc"
+            );
+        }
+        assert_no_shared_siblings(n.child(i), &format!("{path}/{i}"));
+    }
+}
+
+#[test]
+fn rv2_random_edits_with_undo_redo_never_share_a_sibling_rc() {
+    let mut undos = 0;
+    for seed in 1..=60u64 {
+        let s = schema();
+        let mut rng = Rng::new(seed);
+        let mut p = Peer::host(&s, vec![empty_grid(&s, 3, 3), para(&s, "tail")], 1);
+        for _ in 0..80 {
+            match rng.below(10) {
+                0 | 1 => {
+                    let name = if rng.below(2) == 0 { "undo" } else { "redo" };
+                    if let Some(next) = p.state.run(name) {
+                        p.commit(next);
+                        undos += 1;
+                    }
+                }
+                _ => {
+                    random_table_edit(&mut rng, &mut p);
+                }
+            }
+            assert_no_shared_siblings(&p.state.doc, "doc");
+        }
+    }
+    assert!(undos > 100, "{undos}");
+}
+
+/// Honest concurrent structure that exceeds the filler budget: A adds N rows while B
+/// adds N columns (N² fillers). Measures where honest use poisons.
+#[test]
+#[ignore]
+fn rv2_honest_concurrent_rows_and_columns_vs_filler_budget() {
+    let n: usize = std::env::var("RV2_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(260);
+    let s = schema();
+    let (mut a, mut b) = pair(&s, vec![grid(&s, 1, 1), para(&s, "tail")], (11, 22));
+    for _ in 0..n {
+        a.in_cell(0, 0, "addRowAfter");
+        b.in_cell(0, 0, "addColumnAfter");
+    }
+    let (da, db) = (a.send(), b.send());
+    let t = std::time::Instant::now();
+    let r = b.session.integrate_incremental(&b.state, &da);
+    eprintln!(
+        "n={n} delta={}B integrate={:?} ok={} poisoned={}",
+        da.len(),
+        t.elapsed(),
+        r.is_ok(),
+        b.session.is_poisoned()
+    );
+    // Past the floor the table reads as a placeholder; the session stays healthy.
+    assert!(r.is_ok() && !b.session.is_poisoned());
+    let _ = db;
+}
+
+#[test]
+#[ignore]
+fn rv2_perf_keystroke_big_table_and_big_list() {
+    let s = schema();
+    // 1000×10 table.
+    let mut a = Peer::host(&s, vec![grid(&s, 1000, 10), para(&s, "tail")], 1);
+    let mut b = a.join(2);
+    let _ = a.send();
+    let at = pos_of(&a.state.doc, "r500c5") + 2;
+    let mut best = std::time::Duration::MAX;
+    for i in 0..5 {
+        let mut tr = a.state.tr();
+        tr.set_selection(Selection::cursor(Pos(at + i)));
+        tr.insert_text("x").unwrap();
+        let next = a.state.apply(tr);
+        let t = std::time::Instant::now();
+        a.session.record_local(&s, &a.state.doc, &next.doc).unwrap();
+        best = best.min(t.elapsed());
+        a.state = next;
+    }
+    let d = a.send();
+    let t = std::time::Instant::now();
+    b.receive(&d);
+    eprintln!(
+        "table 1000x10: record_local best {best:?}; integrate {:?}",
+        t.elapsed()
+    );
+    let t = std::time::Instant::now();
+    b.in_cell(500, 5, "deleteRow");
+    eprintln!("table 1000x10: deleteRow cmd+record {:?}", t.elapsed());
+    // 2000-item list, each item: para + nested 1-item list.
+    let item = |k: usize| {
+        branch(
+            &s,
+            "list_item",
+            vec![
+                para(&s, &format!("i{k}")),
+                branch(
+                    &s,
+                    "bullet_list",
+                    vec![branch(&s, "list_item", vec![para(&s, &format!("n{k}"))])],
+                ),
+            ],
+        )
+    };
+    let list = branch(&s, "bullet_list", (0..2000).map(item).collect());
+    let mut a = Peer::host(&s, vec![list, para(&s, "tail")], 3);
+    let at = pos_of(&a.state.doc, "n1000") + 2;
+    let mut best = std::time::Duration::MAX;
+    for i in 0..5 {
+        let mut tr = a.state.tr();
+        tr.set_selection(Selection::cursor(Pos(at + i)));
+        tr.insert_text("x").unwrap();
+        let next = a.state.apply(tr);
+        let t = std::time::Instant::now();
+        a.session.record_local(&s, &a.state.doc, &next.doc).unwrap();
+        best = best.min(t.elapsed());
+        a.state = next;
+    }
+    eprintln!("list 2000 nested: record_local best {best:?}");
+}
+
+/// A whole-document load while collaborating (EditorHandle::load_doc commits with no
+/// node shared with the old document): a reload that drops row 0.
+#[test]
+fn rv2_a_fresh_document_load_deletes_the_row_that_was_dropped() {
+    for ids in [(11u64, 22u64), (22, 11)] {
+        let s = schema();
+        let (mut a, mut b) = pair(&s, vec![grid(&s, 4, 1), para(&s, "tail")], ids);
+        let fresh = doc_of(
+            &s,
+            vec![
+                branch(
+                    &s,
+                    "table",
+                    (1..4)
+                        .map(|r| branch(&s, "table_row", vec![cell(&s, &format!("r{r}c0"))]))
+                        .collect(),
+                ),
+                para(&s, "tail"),
+            ],
+        );
+        a.session.record_local(&s, &a.state.doc, &fresh).unwrap();
+        a.state = EditorState::create(s.clone(), fresh, plugins());
+        b.type_in_cell(3, 0, "X");
+        exchange(&mut a, &mut b);
+        assert_eq!(a.state.doc, b.state.doc);
+        assert_eq!(grid_text(&a.state.doc), "r1c0\nr2c0\nr3c0X", "ids {ids:?}");
+    }
+}
+
+/// The same for a quote's paragraphs (a nested child list).
+#[test]
+fn rv2_a_fresh_document_load_deletes_the_paragraph_that_was_dropped_in_a_quote() {
+    for ids in [(11u64, 22u64), (22, 11)] {
+        let s = schema();
+        let q = |ps: &[&str]| branch(&s, "blockquote", ps.iter().map(|p| para(&s, p)).collect());
+        let (mut a, mut b) = pair(
+            &s,
+            vec![q(&["p0", "p1", "p2", "p3"]), para(&s, "tail")],
+            ids,
+        );
+        let fresh = doc_of(&s, vec![q(&["p1", "p2", "p3"]), para(&s, "tail")]);
+        a.session.record_local(&s, &a.state.doc, &fresh).unwrap();
+        a.state = EditorState::create(s.clone(), fresh, plugins());
+        b.type_after("p3", "X");
+        exchange(&mut a, &mut b);
+        assert_eq!(a.state.doc, b.state.doc);
+        let q0 = a.state.doc.child(0);
+        let texts: Vec<String> = (0..q0.child_count())
+            .map(|i| inline_text(q0.child(i)))
+            .collect();
+        assert_eq!(texts, ["p1", "p2", "p3X"], "ids {ids:?}");
+    }
 }

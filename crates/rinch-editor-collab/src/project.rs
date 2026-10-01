@@ -42,7 +42,8 @@ use rinch_editor_core::{Node, Transaction};
 
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    CollabDoc, RawIndex, insert_node, read_node, read_node_data, visible_indices, write_child_diff,
+    CollabDoc, RawIndex, common_runs, insert_node, read_node, read_node_data, visible_indices,
+    write_child_diff,
 };
 
 impl CollabDoc {
@@ -118,21 +119,17 @@ impl CollabDoc {
             )));
         }
 
-        // Unchanged leading blocks (Rc identity — O(1) per block).
-        let mut prefix = 0;
-        while prefix < bn && prefix < an && before.child(prefix).same_ref(after.child(prefix)) {
-            prefix += 1;
-        }
-        // Unchanged trailing blocks.
-        let mut suffix = 0;
-        while suffix < bn - prefix
-            && suffix < an - prefix
-            && before
-                .child(bn - 1 - suffix)
-                .same_ref(after.child(an - 1 - suffix))
+        // Unchanged leading and trailing blocks, by Rc identity (O(1) per block). A
+        // before and after that share no block at all carry no identity (a load while
+        // collaborating, a re-base on the CRDT's read-back): there the runs are taken by
+        // the blocks' values, as a nested list does (`reconcile_child_list`).
+        let mut runs = common_runs(bn, an, |i, j| before.child(i).same_ref(after.child(j)));
+        if runs == (0, 0)
+            && !(0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
         {
-            suffix += 1;
+            runs = common_runs(bn, an, |i, j| before.child(i) == after.child(j));
         }
+        let (prefix, suffix) = runs;
 
         let pre_mid = bn - prefix - suffix; // changed pre blocks
         let post_mid = an - prefix - suffix; // changed post blocks

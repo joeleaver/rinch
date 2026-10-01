@@ -225,8 +225,8 @@ use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, NodeType, Schema
 
 use crate::error::{CollabError, Result};
 use crate::table::{
-    TABLE, TableData, is_table_map, read_model_table, read_table, reconcile_table,
-    table_map_is_void, write_table,
+    TABLE, TableData, is_table_map, placeholder_reads, read_model_table, read_table_data,
+    reconcile_table, table_map_is_void, write_table,
 };
 
 /// yrs key/root names used by the projection.
@@ -698,6 +698,9 @@ impl CollabDoc {
     /// CRDT that does not hold it.
     pub fn to_doc(&self, schema: &Schema) -> Result<Node> {
         let mut blocks = {
+            // The model's read: a table past the read's budget is a placeholder here
+            // (and nowhere else), so it reaches the model and can be deleted.
+            let _placeholders = placeholder_reads();
             let txn = self.doc.transact();
             let mut blocks = Vec::new();
             for (_, nd) in read_children(&txn, &self.content)? {
@@ -1114,7 +1117,11 @@ fn reconcile_text(
 ///
 /// Identity needs each model sibling to be its own `Rc`: a model that shared one node
 /// between two siblings would make them indistinguishable again (nothing in the editor
-/// or the projection's read does).
+/// or the projection's read does). And it needs the before and after to be **related**:
+/// a load while collaborating, or the re-base of a stalled outbound on the CRDT's
+/// read-back, hands over two documents that share no node, and identity would pair
+/// every child by index. A level whose before and after share no child therefore
+/// matches by value, and still hands the model down, since a level below may share.
 pub(crate) type Model<'a> = Option<(&'a Node, &'a Node)>;
 
 /// The `i`-th children of a [`Model`] pair, given the before and after index.
@@ -1164,10 +1171,18 @@ pub(crate) fn reconcile_child_list(
     let tn = target.len();
 
     // The model describes this list only when its children line up with it (they
-    // always do: the model is the projection); anything else falls back to values.
+    // always do: the model is the projection).
     let model = model.filter(|(b, a)| b.child_count() == cn && a.child_count() == tn);
-    let (prefix, suffix) = match model {
-        Some((b, a)) => common_runs(cn, tn, |i, j| b.child(i).same_ref(a.child(j))),
+    // A before and after that share no child carry no identity at this level (a load,
+    // a re-base); their children may still.
+    let runs = model.and_then(|(b, a)| {
+        let runs = common_runs(cn, tn, |i, j| b.child(i).same_ref(a.child(j)));
+        let related =
+            runs != (0, 0) || (0..tn).any(|j| (0..cn).any(|i| b.child(i).same_ref(a.child(j))));
+        related.then_some(runs)
+    });
+    let (prefix, suffix) = match runs {
+        Some(runs) => runs,
         None => common_runs(cn, tn, |i, j| cur[i] == target[j]),
     };
 
@@ -1659,7 +1674,7 @@ fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
                 "node `{type_name}` carries a table's `rows`"
             )));
         }
-        Ok(NodeData::Table(read_table(txn, node)?.data))
+        Ok(NodeData::Table(read_table_data(txn, node)?))
     } else if let Some(content) = node_content(txn, node) {
         // Only the visible children: a void child container is not part of this one
         // (see `is_void`), and a container whose every child is void is void itself.

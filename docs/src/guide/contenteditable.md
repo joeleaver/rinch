@@ -1129,10 +1129,12 @@ the first of three empty rows while someone types in the last keeps their typing
 
 A table read from someone else that would be absurdly large for what the shared
 document actually holds (rows and columns cost a few bytes each to send, the empty
-cells between them nothing) is refused, the same way as content an older build cannot
-read: the session stops syncing until the table is deleted. One person's edits never
-make such a table; two people adding hundreds of rows and hundreds of columns at the
-same moment could.
+cells between them nothing) is not built: it
+shows up as a single empty cell instead. Editing inside that cell is refused (the
+session reports it as not syncing, as for any edit it cannot share) until someone
+deletes the table, which any of the editors can do. One person's edits never make such
+a table; two people adding hundreds of rows and hundreds of columns at the same moment
+could.
 
 Two concurrent edits to images can still be lost, and both editors still end up
 with the same document when they are. **Two identical images side by side**
