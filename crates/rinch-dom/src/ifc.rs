@@ -139,6 +139,10 @@ pub struct HangStats {
     /// an overflowing last inline box (#1050) or a final forced break
     /// (#1172): 0 or 1.
     pub phantom_rebreaks: u32,
+    /// Breaks of one line [`unglue`] made to move a break parley put after
+    /// a hung NBSP (#1218): a few per such line, logarithmic in the length
+    /// of a glued chain.
+    pub unglue_rebreaks: u32,
 }
 
 impl HangStats {
@@ -147,6 +151,7 @@ impl HangStats {
         self.passes += other.passes;
         self.lines += other.lines;
         self.phantom_rebreaks += other.phantom_rebreaks;
+        self.unglue_rebreaks += other.unglue_rebreaks;
     }
 
     /// Add these to `perf`'s `ifc_hang_*` counters.
@@ -156,6 +161,10 @@ impl HangStats {
         perf.add(
             crate::perf::Counter::IfcPhantomRebreaks,
             u64::from(self.phantom_rebreaks),
+        );
+        perf.add(
+            crate::perf::Counter::IfcUnglueRebreaks,
+            u64::from(self.unglue_rebreaks),
         );
     }
 }
@@ -798,9 +807,19 @@ fn hang_pass(
                 && units[end - 1].nbsp
             {
                 unglued = true;
-                let Some(again) =
-                    unglue(&mut breaker, &units, cursor, end, &line_start, max, advance)
-                else {
+                let rebreaks = std::cell::Cell::new(0);
+                let again = unglue(
+                    &mut breaker,
+                    &units,
+                    cursor,
+                    end,
+                    &line_start,
+                    max,
+                    advance,
+                    &rebreaks,
+                );
+                stats.unglue_rebreaks += rebreaks.get();
+                let Some(again) = again else {
                     in_step = false;
                     break;
                 };
@@ -898,6 +917,7 @@ fn unglue(
     line_start: &parley::layout::BreakerState,
     max: f32,
     advance: f32,
+    rebreaks: &std::cell::Cell<u32>,
 ) -> Option<(parley::layout::BreakReason, f32)> {
     use parley::layout::{BreakReason, YieldData};
     // No following word fits in this much room: it only decides which side
@@ -912,6 +932,7 @@ fn unglue(
     let run_x = advance - units[run_start..end].iter().map(|u| u.advance).sum::<f32>();
     type Breaker<'b, 'l> = &'b mut parley::layout::BreakLines<'l, Brush>;
     let rebreak = |breaker: Breaker<'_, '_>, line_max: f32| -> Option<(BreakReason, f32)> {
+        rebreaks.set(rebreaks.get() + 1);
         breaker.revert_to(line_start.clone());
         let state = breaker.state_mut();
         state.set_layout_max_advance(line_max);
@@ -943,6 +964,7 @@ fn unglue(
                 return None;
             }
             let n = before.iter().filter(|u| u.counted).count();
+            rebreaks.set(rebreaks.get() + 1);
             breaker.revert_to(line_start.clone());
             breaker.break_next_with_length(u32::try_from(n).ok()?)?;
             breaker.set_prior_line_width(max);
@@ -976,22 +998,81 @@ fn unglue(
             _ => {}
         }
     }
-    let mut through = advance;
+    // No opportunity before the run: the glued word overflows, up to the
+    // first opportunity after the run. Where that is, the breaker answers.
+    // Broken with room for everything before a unit `u` (not an NBSP, space,
+    // tab or newline, and with width), `u` is the first unit to overflow, and
+    // parley breaks at the last opportunity at or before it — so the line
+    // comes back fitting the room exactly when there is an opportunity between
+    // the run and `u`. That is monotone in `u`: a galloping search finds the
+    // first `u` that has one, in O(log d) breaks of a line d units long, each
+    // walking no further than the line does — not one break per glued word,
+    // which is quadratic in a chain of them (review of #1257).
+    let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
+    // (unit index, x where it starts) of every candidate after the run, up to
+    // the forced break that ends the line anyway; extended as the search goes.
+    let mut candidates: Vec<(usize, f32)> = Vec::new();
+    let mut scan = first;
+    let mut scan_x = 0.0f32;
+    let mut more = |upto: usize, candidates: &mut Vec<(usize, f32)>| {
+        while candidates.len() <= upto && scan < units.len() {
+            let u = &units[scan];
+            if u.newline && scan >= end {
+                scan = units.len();
+                break;
+            }
+            if scan >= end && !u.nbsp && !u.hangs && !u.unhung && u.advance > ROOM {
+                candidates.push((scan, scan_x));
+            }
+            scan_x += u.advance;
+            scan += 1;
+        }
+    };
+    // Whether the line broken with room up to candidate `k` fits that room.
+    let fits = |breaker: Breaker<'_, '_>, x: f32| -> Option<bool> {
+        let room = x + ROOM;
+        let c = rebreak(breaker, room)?;
+        Some(!ends_in_hung_nbsp(c, room) && c.1 <= room + 0.005)
+    };
+    let (mut lo, mut hi) = (None::<usize>, None::<usize>);
+    let mut k = 0usize;
     loop {
-        let c = rebreak(breaker, through + ROOM)?;
-        if !ends_in_hung_nbsp(c, through + ROOM) {
-            breaker.set_prior_line_width(max);
-            return Some(c);
+        more(k, &mut candidates);
+        // Past the last candidate: the last one is the last to try.
+        if k >= candidates.len() {
+            match candidates.len().checked_sub(1) {
+                Some(last) if lo.is_none_or(|l| last > l) => k = last,
+                _ => break,
+            }
         }
-        // Nothing more taken in: what ends the line is not a hang but parley
-        // breaking before an inline box that does not fit, which it does
-        // after an NBSP too. Kept as parley breaks it.
-        if c.1 <= through {
-            breaker.set_prior_line_width(max);
-            return Some(c);
+        let x = candidates[k].1;
+        if fits(breaker, x)? {
+            hi = Some(k);
+            break;
         }
-        through = c.1;
+        lo = Some(k);
+        k = 2 * k + 1;
     }
+    let result = match hi {
+        // The first candidate with an opportunity before it is in (lo, hi].
+        Some(mut hi) => {
+            let mut lo = lo;
+            while lo.map_or(0, |l| l + 1) < hi {
+                let mid = (lo.map_or(0, |l| l + 1) + hi) / 2;
+                if fits(breaker, candidates[mid].1)? {
+                    hi = mid;
+                } else {
+                    lo = Some(mid);
+                }
+            }
+            rebreak(breaker, candidates[hi].1 + ROOM)?
+        }
+        // None up to the end of the line: it runs to the forced break or the
+        // end of the text.
+        None => rebreak(breaker, f32::MAX)?,
+    };
+    breaker.set_prior_line_width(max);
+    Some(result)
 }
 
 /// One cluster or inline box of a paragraph, in logical order: what the line

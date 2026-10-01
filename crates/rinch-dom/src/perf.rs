@@ -182,6 +182,11 @@ define_counters! {
     /// ending in a forced break. On the `pre-wrap` route it is the second hanging
     /// pass, which `ifc_hang_passes` does not count again.
     IfcPhantomRebreaks = "ifc_phantom_rebreaks",
+    /// Breaks of a single line `ifc::unglue` made to move a line break
+    /// parley put after a no-break space it hung (#1218): a few per such
+    /// line — logarithmic, not linear, in the length of an NBSP-glued chain,
+    /// which a search over the line's units keeps it.
+    IfcUnglueRebreaks = "ifc_unglue_rebreaks",
 
     // ── Layout ─────────────────────────────────────────────────────────
     /// `resolve_layout` calls.
