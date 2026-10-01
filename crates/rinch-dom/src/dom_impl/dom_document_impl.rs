@@ -714,6 +714,25 @@ impl DomDocument for RinchDocument {
         // written only by `set_attribute("style", …)` and `set_styles`, and both
         // put the `style` attribute in the map first, so a cache with no
         // attribute cannot exist.
+        //
+        // The one removal that is a write whether or not the attribute is
+        // there: a `<textarea>`'s `value`. rinch-web removes it by writing
+        // `.value = ""`, which sets the browser's dirty value flag for good, so
+        // the field empties and stops following its text children — a pristine
+        // field with no attribute included (#1222).
+        if name == "value"
+            && !self.tree.nodes[node.0].value_dirty
+            && self.tree.nodes[node.0].tag() == Some("textarea")
+        {
+            self.tree.nodes[node.0].value_dirty = true;
+            if !self.tree.nodes[node.0].attributes.contains_key(name) {
+                // What the field shows went from its children to `""`; no
+                // attribute changed, so no selector can see it.
+                self.tree.hit_cache.invalidate();
+                self.push_dirty_flags(node.0, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                return;
+            }
+        }
         if !self.tree.nodes[node.0].attributes.contains_key(name) {
             return;
         }
