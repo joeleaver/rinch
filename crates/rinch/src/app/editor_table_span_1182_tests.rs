@@ -154,3 +154,41 @@ fn an_ordinary_merged_table_lays_out_as_before() {
     assert_eq!(r[1].1, r[2].1, "{r:?}");
     assert!(r[2].0 > r[1].0 && r[1].1 > r[0].1, "{r:?}");
 }
+
+/// #1209: a row a rowspan leaves short keeps its cells. In `[[A rowspan=2],
+/// [B]]` the map puts B in row 1, column 1 — beside A's lower half — where CSS
+/// auto-placement, which knows no rows, packed it into row 0 beside A's top.
+#[test]
+fn a_cell_in_a_row_a_rowspan_leaves_short_stays_in_its_row() {
+    let (app, cells, _) = mounted(&[vec![(1, 2)], vec![(1, 1)]]);
+    let r: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
+    assert_eq!(r.len(), 2, "control: two cells mounted");
+    let (ax, ay, aw, ah) = r[0];
+    let (bx, by, _, bh) = r[1];
+    assert!(bx >= ax + aw - 1.0, "B is in column 1: {r:?}");
+    assert!(by > ay + 1.0, "B is in row 1, not beside A's top: {r:?}");
+    assert!(
+        (by + bh - (ay + ah)).abs() <= 1.0,
+        "A spans both rows, ending with B: {r:?}"
+    );
+}
+
+/// Off the one-short-row shape: a three-row rowspan on the left, a colspan 2
+/// in the middle row and two cells in the last. The map is `A B B / A C D`
+/// under an `A . .` first row (left to the right of A empty), so B is in row
+/// 1 and C, D in row 2 under its two columns. Auto-placement lifted the whole
+/// right side a row: B beside A's top, C and D in row 1.
+#[test]
+fn every_row_under_a_short_one_keeps_its_cells() {
+    let (app, cells, _) = mounted(&[vec![(1, 3)], vec![(2, 1)], vec![(1, 1), (1, 1)]]);
+    let r: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
+    assert_eq!(r.len(), 4, "control: four cells mounted");
+    let [a, b, c, d] = [r[0], r[1], r[2], r[3]];
+    assert!(b.1 > a.1 + 1.0, "B is below row 0: {r:?}");
+    assert!(c.1 > b.1 + 1.0 && (c.1 - d.1).abs() < 0.5, "C, D in row 2: {r:?}");
+    assert!((c.0 - b.0).abs() < 0.5 && d.0 > c.0, "C under B's left: {r:?}");
+    assert!(
+        (d.1 + d.3 - (a.1 + a.3)).abs() <= 1.0,
+        "A ends with the last row: {r:?}"
+    );
+}
