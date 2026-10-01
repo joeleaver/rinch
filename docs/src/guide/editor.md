@@ -209,9 +209,14 @@ changes of one node's attribute: the last given wins): it builds the document th
 build, and its step map maps every position as those `ReplaceStep`s did. It differs
 in three places. Each rebuilt node's content is checked once, on the result, so it
 accepts a batch whose sequence would pass through an invalid intermediate state.
-Mapped over another change (`Step::map`, a rebase), two kept replaces that the change
-brings to meet end to end become one replace of both — the same document — unless
-one carries an open slice, where the later is dropped. And a selection a command
+Mapped over another change (`Step::map`, a rebase), each *range* maps as one
+`ReplaceStep` of it would — and inserts at one point, and deletions that meet, are one
+range from construction, so a concurrent insert between two such deletions is deleted
+with them where two separate deletions would keep it. Two kept ranges the change brings
+to meet end to end become one replace of both — the same document — unless one
+carries an open slice: then the later edit is dropped and **its content is lost**,
+where separate steps would apply it. An attribute change the change puts inside a kept
+range is dropped as well. No table command builds an open slice. And a selection a command
 does not set is mapped once through the step and resolved in its result, where a
 step per row mapped it after every step: in about 0.6% of the commands the table
 differential compares, the selection lands somewhere else (the old one was placed in an intermediate document). It rebuilds

@@ -543,16 +543,19 @@ impl Step for BatchStep {
         Box::new(BatchStep::new(edits).expect("invert: the inverse edits are disjoint"))
     }
 
-    /// Each edit mapped as its own [`ReplaceStep`] / [`SetNodeAttrStep`]
-    /// would be, dropping only the edits those would drop. Two kept replaces
-    /// the mapping brings to meet end to end (it deleted what lay between
-    /// them) cannot be two ranges of one step unless they merge, so a pair
-    /// with closed slices becomes one replace of both ranges by both slices
-    /// — the document the two make one after the other — and of a pair
-    /// with an open slice the later one is dropped (separate steps would
-    /// apply both). An attribute change on a node a kept replace now covers
-    /// is dropped: as a step of its own, it would have changed a node that
-    /// replace then removes.
+    /// Each replaced range mapped as one [`ReplaceStep`] of it would be, and
+    /// each attribute change as a [`SetNodeAttrStep`], dropping what those
+    /// would drop. A range is what [`BatchStep::new`] made of the edits:
+    /// inserts at one point, and deletions that meet, are one range, so a
+    /// concurrent insert between two such deletions is deleted with them where
+    /// two separate deletions would keep it. Two kept ranges the mapping brings
+    /// to meet end to end (it deleted what lay between them) are merged when
+    /// [`mergeable`], folded into one replace of both ranges by both slices
+    /// when both slices are closed — the document the two make in turn — and
+    /// otherwise (an open slice) the later one is dropped and **its content is
+    /// lost**, where separate steps would apply it. An attribute change on a
+    /// node a kept range covers after mapping is dropped too; a separate step
+    /// would have set it before the replace removed or kept the node.
     fn map(&self, mapping: &Mapping) -> Option<Box<dyn Step>> {
         let mut reps: Vec<Rep> = Vec::with_capacity(self.reps.len());
         for rep in &self.reps {
@@ -569,7 +572,11 @@ impl Step for BatchStep {
             // Mapping is monotonic, so a kept replace can meet the one
             // before it but never overlap it.
             match reps.last_mut() {
-                Some(last) if last.to == rep.from && !mergeable(last, &rep) => {
+                Some(last) if last.to == rep.from && mergeable(last, &rep) => {
+                    last.to = rep.to;
+                    last.slice = Slice::new(last.slice.content.append(&rep.slice.content), 0, 0);
+                }
+                Some(last) if last.to == rep.from => {
                     if closed(&last.slice) && closed(&rep.slice) {
                         last.to = rep.to;
                         last.slice =
@@ -594,11 +601,11 @@ impl Step for BatchStep {
                 continue;
             }
             // `BatchStep::new`'s rule: the last range starting at or before
-            // the node is the only one that can cover it. Defensive: a
-            // mapping keeps an attribute change at or after the end of a
-            // replace before it, and a fold only reaches over what the
-            // mapping deleted, which drops the change first — but a node
-            // found inside a range would make `new` refuse the whole step.
+            // the node is the only one that can cover it. Reached when one
+            // step map has adjacent ranges: the position ends one range, the
+            // next deletes what follows it, and the result reports no
+            // deletion after it (`tests/batch_step_map.rs`,
+            // `attr_guard_is_reachable`). Without it `new` refuses the step.
             let k = ranges.partition_point(|&(f, _)| f <= pos.pos);
             if k > 0 && pos.pos < ranges[k - 1].1 {
                 continue;
@@ -869,14 +876,15 @@ mod tests {
                         let seq = sequence_mapped(&doc1, &step, &over);
                         match (step.map(&over), seq) {
                             (Some(m), Ok(w)) => {
-                                if let Ok(got) = m.apply(&doc1) {
-                                    assert!(
-                                        got == w,
-                                        "case {case}: mapped over {x}..{y}: {step:?}\n \
-                                         as {m:?}\n got {got:?}\n want {w:?}"
-                                    );
-                                    mapped += 1;
-                                }
+                                let got = m.apply(&doc1).unwrap_or_else(|e| {
+                                    panic!("case {case}: {m:?} refused ({e}); the edits apply")
+                                });
+                                assert!(
+                                    got == w,
+                                    "case {case}: mapped over {x}..{y}: {step:?}\n \
+                                     as {m:?}\n got {got:?}\n want {w:?}"
+                                );
+                                mapped += 1;
                             }
                             (None, Ok(w)) => assert!(
                                 w == doc1,
