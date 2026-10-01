@@ -56,6 +56,14 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     text-final `"\n"`, and in an empty text node, though not at every such position — is drawn
     where what follows it starts: the next character's own box (a newline's is zero-width), else
     the same "what follows" walk (`caret_where_next_starts_at`, #1202; it used to fall back to the block's whole box).
+  - **An overflowing NBSP is hung like a space** (`is_space_or_nbsp` in the breaker's hang
+    branch) and the line committed right after it, where UAX #14 class GL allows no break:
+    `x yyx&nbsp;Wkxxpq` at 40px broke as `x yyx&nbsp;` / `Wkxxpq`. `ifc::unglue` breaks such a
+    line again inside `break_lines_hanging_spaces`' pass (and `break_leaf_lines`, a flex item's
+    own text), where Chrome 153 does: at the last opportunity before the NBSP; right before it
+    after an atomic inline or a hyphen (LB12a), or for `overflow-wrap` with nothing else; and
+    with no opportunity before it, the glued word overflows to the next one (#1218).
+    `crates/rinch-dom/tests/nbsp_glue_line_break_tests.rs` is the pin.
   - **Preserved spaces do not hang in 0.11.1.** At a width a `pre-wrap` space overflows, parley
     hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
     is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC

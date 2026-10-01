@@ -129,10 +129,11 @@ fn push_spacing(b: &mut parley::RangedBuilder<'_, Brush>, letter_spacing: f32, w
 /// `ifc_hang_*` perf counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HangStats {
-    /// Whole-paragraph re-breaks: 0 when no line needed its spaces hung, else
-    /// exactly 1 however many lines did.
+    /// Whole-paragraph re-breaks: 0 when no line needed its spaces hung or
+    /// a hung NBSP undone (#1218), else exactly 1 however many lines did.
     pub passes: u32,
-    /// Lines broken a second time at a widened width to keep their spaces.
+    /// Lines broken a second time: at a widened width to keep their spaces,
+    /// or to undo a hung NBSP ([`unglue`]).
     pub lines: u32,
     /// Extra breaks of the whole paragraph to drop parley's empty line after
     /// an overflowing last inline box (#1050) or a final forced break
@@ -210,7 +211,13 @@ impl HangStats {
 /// hang, and an unconstrained layout has nothing to wrap, so both are broken
 /// exactly as before.
 ///
-/// Whatever the white space, a paragraph that ends in the empty line parley
+/// Whatever the white space, a line parley ended by hanging a no-break space
+/// — which it hangs like a space, though UAX #14 allows no break after one —
+/// is broken again where CSS breaks it ([`unglue`], #1218), in the same pass;
+/// and the pass then hangs preserved spaces on every line, since moving an
+/// NBSP can leave a line ending in spaces parley did not hang.
+///
+/// And whatever the white space, a paragraph that ends in the empty line parley
 /// commits after an overflowing inline box or a final forced break
 /// ([`phantom_last_line`], #1050, #1172) is broken once more, the same way,
 /// without it.
@@ -258,7 +265,9 @@ pub(crate) fn break_lines_hanging_spaces(
 /// Break a text **leaf**'s layout — a flex or grid item's own text, measured
 /// through `NodeContext::Text` rather than an IFC — at `max_width`, without
 /// the empty line parley commits after a final newline ([`phantom_last_line`],
-/// #1172). A leaf hangs no spaces (it never has), so this is the phantom half of [`break_lines_hanging_spaces`] alone.
+/// #1172), and without a break after an NBSP parley hung ([`unglue`], #1218).
+/// A leaf hangs no spaces (it never has), so this is
+/// [`break_lines_hanging_spaces`] without its spaces.
 pub(crate) fn break_leaf_lines(
     layout: &mut parley::Layout<Brush>,
     text: &str,

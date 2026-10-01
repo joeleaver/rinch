@@ -114,7 +114,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `ifc_measure_cache_hits` | IFC measures answered from the per-root measure cache without shaping |
 | | `ifc_measure_invalidations` | Roots whose cached measures a restyle or content change dropped (O(1) each) |
 | | `ifc_signature_changes` | Roots a structural pass found new or changed, and so re-measures; every other root keeps its cached measures and paint layout |
-| | `ifc_hang_passes` / `ifc_hang_lines` | Parley layouts broken a second time to hang preserved (`pre-wrap`, editable) trailing spaces at a soft wrap — at most one per layout, however many lines it fixes — and the lines those passes re-broke |
+| | `ifc_hang_passes` / `ifc_hang_lines` | Parley layouts broken a second time to hang preserved (`pre-wrap`, editable) trailing spaces at a soft wrap, or to move a line break parley put after a no-break space it hung (#1218) — at most one per layout, however many lines it fixes — and the lines those passes re-broke |
 | | `ifc_phantom_rebreaks` | Parley layouts broken once more to drop the empty line parley commits after an inline box too wide for its line (#1050), or after a forced break — a `<br>`, a preserved newline — that ends the text (#1172; CSS makes a line after the last forced break only when something follows it). A min-content measure of a paragraph that ends in an atomic inline pays one, since at width 0 every box is too wide, and so does every layout of a paragraph or text leaf that ends in a forced break |
 | Layout | `layout_resolves`, `layout_skipped_paint_only`, `layout_skipped_text_only` | `resolve_layout` calls, and how many of them took each early return |
 | | `ifc_setup_passes` | IFC structural setup passes, scoped or whole-document |
