@@ -4359,9 +4359,10 @@ impl RinchApp {
             if d.tree.get(node_id).is_none() {
                 return;
             }
-            // Through `control_value`, as focus read it (#1159): a textarea
-            // whose `value` attribute is removed while focused holds its text
-            // children again, as the web's `.value` does — not "".
+            // Through `control_value`, as focus read it (#1159). A textarea
+            // whose `value` attribute is removed holds "" and stays dirty
+            // (#1222), as rinch-web's does; it does not return to its text
+            // children.
             let dom =
                 rinch_dom::form_control::control_value(&d.tree.nodes, node_id).unwrap_or_default();
             let dom: &str = dom.as_ref();

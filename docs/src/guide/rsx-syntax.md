@@ -455,7 +455,7 @@ do not set (#1186); from then on a child change updates only the default value
 is the same on the desktop and on rinch-web, `value` writes included (#1222):
 a write equal to the shown text sets the flag too, as a script `.value` write
 does in Chrome, and removing the `value` attribute is a write of `""` — the
-field empties and stays dirty, since nothing a page does clears the flag again.
+field empties and stays dirty, since no script write clears the flag again (on rinch-web a form reset does; desktop has no form reset).
 (A browser's form reset does; the desktop has no form reset.) A child change while the field is focused and
 unedited keeps the caret at its offset, clamped to the new text, as in Chrome.
 
