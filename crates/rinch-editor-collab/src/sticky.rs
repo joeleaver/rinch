@@ -61,11 +61,12 @@
 //!     position and not `None`.
 //!   - **Backspace that deletes an empty line above a paragraph**: every index into
 //!     that paragraph resolves to `None`.
-//!   - **Toggling a bullet list on a paragraph** (the node's kind changes, so the
-//!     block is replaced whole): `None`.
+//!   - **Toggling a bullet list on a paragraph, or wrapping it in a quote** (the
+//!     node's kind changes, so the block is replaced whole): `None`. Lifting it out of
+//!     a quote or a list is the same replace.
 //!
-//!   Inside a list the child diff compares structurally, so the same Enter at the
-//!   start of a paragraph in a list item keeps its indexes.
+//!   Inside a list or a quote the child diff compares structurally, so the same Enter
+//!   at the start of a paragraph in a list item or a quote keeps its indexes.
 //!
 //! ## Why the model document is a parameter
 //!
@@ -80,6 +81,10 @@
 //! the wrong place. Inline atoms (`image`, `hard_break`) are one char in the CRDT's text
 //! and one position in the model, so they need nothing of their own.
 //!
+//! "Index for index" counts **visible** children: a container emptied by concurrent
+//! deletions stays in the CRDT but reads as absent (see `projection::is_void`), so both
+//! walks skip it, or every index after it would name the wrong block.
+//!
 //! The one block with no CRDT behind it is the starter paragraph of a CRDT holding
 //! zero blocks (see [`CollabDoc::to_doc`]): positions in it have no sticky index.
 
@@ -93,7 +98,8 @@ use yrs::{
 use rinch_editor_core::{Node, Pos};
 
 use crate::projection::{
-    CollabDoc, block_text, child_map, node_content, node_type, read_block, u16_offset,
+    CollabDoc, block_text, child_map, map_is_void, node_content, node_type, read_block, u16_offset,
+    visible_child,
 };
 
 impl CollabDoc {
@@ -124,8 +130,8 @@ impl CollabDoc {
     /// the start of its paragraph moves it into the new empty paragraph above, and
     /// deleting an empty line above its paragraph or toggling a list on it ends it
     /// (tracked in #917): the projection finds unchanged top-level blocks by node
-    /// identity, and a split or join rebuilds both nodes it touches. Inside a list the
-    /// comparison is structural and the same Enter keeps the index.
+    /// identity, and a split or join rebuilds both nodes it touches. Inside a list or
+    /// a quote the comparison is structural and the same Enter keeps the index.
     ///
     /// `doc` must be the model document this CRDT projects (the editor's current
     /// document): the projection mirrors the model's tree index for index, which is
@@ -149,7 +155,7 @@ impl CollabDoc {
         let mut list: ArrayRef = self.content.clone();
         let mut text: Option<TextRef> = None;
         for depth in 0..rp.depth() {
-            let map = child_map(&txn, &list, u32::try_from(rp.index(depth)).ok()?)?;
+            let map = visible_child(&txn, &list, rp.index(depth))?;
             let model_node = rp.node(depth + 1);
             if node_type(&txn, &map)? != model_node.type_name() {
                 return None;
@@ -226,14 +232,23 @@ fn find_text<T: ReadTxn>(
     target: BranchPtr,
     path: &mut Vec<(usize, String)>,
 ) -> Option<TextRef> {
+    // The index recorded is the child's *visible* index, the one the model uses: a
+    // void container is not in the model (see `projection::is_void`), and holds no
+    // text to find.
+    let mut visible = 0usize;
     for i in 0..list.len(txn) {
         let Some(map) = child_map(txn, list, i) else {
             continue;
         };
+        if map_is_void(txn, &map) {
+            continue;
+        }
+        let index = visible;
+        visible += 1;
         let Some(type_name) = node_type(txn, &map) else {
             continue;
         };
-        path.push((i as usize, type_name));
+        path.push((index, type_name));
         if let Some(text) = block_text(txn, &map) {
             if BranchPtr::from(AsRef::<Branch>::as_ref(&text)) == target {
                 return Some(text);

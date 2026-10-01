@@ -14,9 +14,12 @@
 //!    the identity of the leading reconciled blocks (so a split keeps block N's text
 //!    object and only *adds* the tail block).
 //!
-//! A changed top-level *list* reconciles recursively (same diff, one level down), so a
-//! keystroke inside one list item re-splices only that item's text object. Any node
-//! outside the supported scope (a non-list nested block, a table) anywhere in
+//! A changed top-level *container* (a list, a quote) reconciles recursively (same diff,
+//! one level down), so a keystroke inside one list item re-splices only that item's
+//! text object. Every child list, the top level's included, is addressed through its
+//! **visible** children ([`crate::projection::read_children`]): a container emptied by
+//! concurrent deletions reads as absent, so it is skipped by the diff and by the count
+//! gate alike. Any node outside the supported scope (a table, a task list) anywhere in
 //! `before` or `after` fails loud ([`CollabError::Unsupported`], design A22).
 //!
 //! The diff trusts `before` to describe what the CRDT holds — which is the invariant —
@@ -31,14 +34,12 @@
 
 use std::collections::BTreeSet;
 
-use yrs::{Array, Transact};
+use yrs::Transact;
 
 use rinch_editor_core::{Node, Transaction};
 
 use crate::error::{CollabError, Result};
-use crate::projection::{
-    CollabDoc, check_index, insert_node, read_node, read_node_data, reconcile_node,
-};
+use crate::projection::{CollabDoc, insert_node, read_children, read_node, write_child_diff};
 
 impl CollabDoc {
     /// Project a freshly-applied local transaction onto the CRDT. A no-op for a
@@ -66,7 +67,24 @@ impl CollabDoc {
         // to wedge the session permanently: nothing projected, nothing broadcast, no
         // recovery). With no blocks in the CRDT every block of `after` is an insert, and
         // that restores `model ≡ project(model)` exactly.
-        let crdt_blocks = self.content.len(&self.doc.transact());
+        //
+        // "Zero blocks" means zero *visible* blocks: a void container (one emptied by
+        // concurrent deletions, see `projection::is_void`) reads as absent, so a CRDT
+        // holding only those reads as the starter paragraph too.
+        //
+        // The visible blocks are read once, here, with their raw indices: the diff below
+        // runs over what the model sees and writes where each block lives. The read
+        // doubles as pre-pass gate 3 (it reads back every CRDT node, so a CRDT-side
+        // failure surfaces before any write); the read transaction is scoped so it
+        // drops before `transact_mut` opens (yrs cannot nest transaction acquisitions).
+        let raw: Vec<u32> = {
+            let txn = self.doc.transact();
+            read_children(&txn, &self.content)?
+                .into_iter()
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let crdt_blocks = raw.len();
         if crdt_blocks == 0 {
             return self.project_whole_doc(after);
         }
@@ -83,7 +101,7 @@ impl CollabDoc {
         // finding 5). Both directions are the same broken invariant, so both fail loud
         // here, before any write. The zero-block CRDT is the one legitimate mismatch and
         // returned above.
-        if crdt_blocks as usize != bn {
+        if crdt_blocks != bn {
             return Err(CollabError::schema(format!(
                 "model/CRDT out of step: the model document holds {bn} block(s) but the \
                  CRDT holds {crdt_blocks}"
@@ -138,23 +156,13 @@ impl CollabDoc {
             non_inclusive_marks(after.child(prefix + k), &mut per_char);
         }
 
-        // Pre-pass gate 3, CRDT side (issue #194): read back every CRDT node the write
-        // phase will read — the blocks being reconciled in place, recursively (a
-        // container's whole subtree, at least what `reconcile_node` walks: on the
-        // kind-mismatch wholesale-replace path this reads a superset, which is
-        // over-strict in the safe direction, never a hole). This
-        // surfaces every CRDT-side failure the model-side gates cannot see — an embed
-        // parked in a block's text, a corrupt mark value, a node that is neither
-        // text-block nor container — before the first write. Blocks being *deleted*
-        // are not read back: removal never reads their content. The read transaction
-        // is scoped so it drops before `transact_mut` opens (yrs cannot nest
-        // transaction acquisitions).
-        {
-            let txn = self.doc.transact();
-            for k in 0..common {
-                read_node_data(&txn, &self.content, (prefix + k) as u32)?;
-            }
-        }
+        // Pre-pass gate 3, CRDT side (issue #194): every CRDT node the write phase will
+        // read was read back above, with the visible blocks — recursively, a
+        // container's whole subtree, which is a superset of what `reconcile_node`
+        // walks (over-strict in the safe direction, never a hole). That surfaces every
+        // CRDT-side failure the model-side gates cannot see — an embed parked in a
+        // block's text, a corrupt mark value, a node that is neither text-block nor
+        // container — before the first write.
 
         // Writes — one transaction for the whole change, which yrs commits on drop:
         // there is no rollback primitive, so the pre-pass above is the *only*
@@ -165,28 +173,17 @@ impl CollabDoc {
         // error returns below are therefore unreachable for a change the pre-pass
         // admitted; they stay as defense in depth against a projection bug, not as a
         // supported failure path.
+        //
+        // The changed blocks are reconciled in place (keeping identity; a changed
+        // top-level container reconciles recursively, touching only the edited
+        // descendant), then the extra post blocks are inserted (the tail of a split) or
+        // the extra pre blocks deleted (a join, a block deletion) — the same child-list
+        // write a container's own content gets, addressed through the raw indices.
         let content = self.content.clone();
         let mut txn = self.doc.transact_mut();
-        // Reconcile the overlapping changed blocks in place (keeps identity). A changed
-        // top-level list reconciles recursively, touching only the edited descendant.
-        for (k, target) in targets.iter().take(common).enumerate() {
-            reconcile_node(&mut txn, &content, (prefix + k) as u32, target, &per_char)?;
-        }
-        // Insert the extra post blocks (e.g. the tail of a split). `targets` has
-        // exactly `post_mid` entries, so skipping `common` yields indices
-        // `common..post_mid`.
-        for (k, target) in targets.iter().enumerate().skip(common) {
-            insert_node(&mut txn, &content, (prefix + k) as u32, target)?;
-        }
-        // Delete the extra pre blocks (e.g. a join, or a block deletion). `common` is
-        // the min, so at most one of insert/delete runs; when this runs the CRDT
-        // indices still match `before`'s. Delete from the end so earlier indices stay
-        // valid.
-        for idx in (prefix + common..prefix + pre_mid).rev() {
-            check_index(&txn, &content, idx as u32, false)?;
-            content.remove(&mut txn, idx as u32);
-        }
-        Ok(())
+        write_child_diff(
+            &mut txn, &content, &raw, prefix, pre_mid, &targets, &per_char,
+        )
     }
 
     /// Insert every block of `doc` into a CRDT that holds **no** blocks — the recovery

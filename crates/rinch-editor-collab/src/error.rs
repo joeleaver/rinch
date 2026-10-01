@@ -21,7 +21,7 @@ pub enum CollabError {
     Engine(String),
 
     /// The model shape is outside the staged first-milestone scope (nested blocks
-    /// other than the list containers, tables, task lists). **Fail-loud, never a
+    /// other than the list and quote containers: tables, task lists). **Fail-loud, never a
     /// silent drop** (design A22). Leaf block atoms such as `horizontal_rule` and the
     /// inline atoms `image`/`hard_break` are **in** scope and do not reach here.
     #[error("collab does not support this content yet: {0}")]

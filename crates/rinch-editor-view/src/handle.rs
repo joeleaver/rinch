@@ -2998,7 +2998,7 @@ impl EditorHandle {
 
     /// Why this editor's **outbound** collaboration is currently refusing, if it is
     /// (issue #220): a local edit outside the staged A22 scope — a pasted table, a
-    /// `blockquote` wrap — cannot be projected onto the CRDT, so this edit and every
+    /// task list — cannot be projected onto the CRDT, so this edit and every
     /// one after it stays local until that content is removed.
     ///
     /// Unlike [`Self::collab_take_error`] this does **not** clear: it stays `Some` for
@@ -5493,16 +5493,18 @@ mod tests {
             assert_eq!(doc_text(&guest), "hello");
             assert!(host.collab_outbound_stall().is_none(), "healthy to start");
 
-            // Append a blockquote — applied locally, refused by the projection. (A
-            // `horizontal_rule` used to stand here; leaf block atoms are inside the
-            // projected scope now, so the stall needs content that is still outside it.)
+            // Append a task list — applied locally, refused by the projection. (A
+            // `horizontal_rule` and then a `blockquote` used to stand here; both are
+            // inside the projected scope now, so the stall needs content that is still
+            // outside it.)
             assert!(
                 host.update(|state| {
                     let s = state.schema().clone();
                     let inner = s
                         .branch("paragraph", Fragment::from_node(s.text("q").ok()?))
                         .ok()?;
-                    let bq = s.branch("blockquote", Fragment::from_node(inner)).ok()?;
+                    let item = s.branch("task_item", Fragment::from_node(inner)).ok()?;
+                    let bq = s.branch("task_list", Fragment::from_node(item)).ok()?;
                     let at = state.doc.content_size();
                     let mut tr = state.tr();
                     tr.replace(at, at, Slice::new(Fragment::from_node(bq), 0, 0))
@@ -5515,7 +5517,7 @@ mod tests {
                 .collab_outbound_stall()
                 .expect("outbound must report itself stalled");
             assert!(
-                stall.to_string().contains("blockquote"),
+                stall.to_string().contains("task_list"),
                 "the stall must name the content to remove, got: {stall}"
             );
             assert!(
@@ -5528,7 +5530,7 @@ mod tests {
             assert!(host.insert_text("!!"));
             assert!(
                 host.collab_outbound_stall().is_some(),
-                "still stalled while the blockquote is there"
+                "still stalled while the task list is there"
             );
             assert_eq!(
                 doc_text(&guest),
@@ -5536,7 +5538,7 @@ mod tests {
                 "nothing reached the guest during the stall"
             );
 
-            // Delete the blockquote — selecting it and pressing Delete, as an app would. Note
+            // Delete the task list — selecting it and pressing Delete, as an app would. Note
             // this is NOT `undo`: the text typed during the stall stays, which is the
             // half that must survive.
             assert!(
@@ -5549,7 +5551,7 @@ mod tests {
                     tr.delete(from, to).ok()?;
                     Some(tr)
                 }),
-                "the blockquote is deleted"
+                "the task list is deleted"
             );
             assert!(
                 host.collab_outbound_stall().is_none(),
@@ -6089,9 +6091,22 @@ mod tests {
             loopback(&host, &guest);
             assert_eq!(doc_text(&guest), "ok");
 
-            // A blockquote is still outside the projected scope (lists are supported
-            // now, and so are inline atoms; blockquote / tables / task lists are not).
-            assert!(host.load_html("<blockquote><p>quoted</p></blockquote>"));
+            // A task list is still outside the projected scope (lists, quotes and
+            // inline atoms are supported now; tables and task lists are not). HTML has
+            // no task list, so it is inserted directly.
+            assert!(host.update(|state| {
+                let s = state.schema().clone();
+                let inner = s
+                    .branch("paragraph", Fragment::from_node(s.text("todo").ok()?))
+                    .ok()?;
+                let item = s.branch("task_item", Fragment::from_node(inner)).ok()?;
+                let list = s.branch("task_list", Fragment::from_node(item)).ok()?;
+                let at = state.doc.content_size();
+                let mut tr = state.tr();
+                tr.replace(at, at, Slice::new(Fragment::from_node(list), 0, 0))
+                    .ok()?;
+                Some(tr)
+            }));
 
             // The host's model changed locally, but the projection failed loud (the
             // CRDT was left untouched, all-or-nothing) so the peer received nothing.
@@ -6173,7 +6188,7 @@ mod tests {
             assert_eq!(doc_text(&guest), "ok");
 
             // Lists are inside the projected scope, so this must sync rather than
-            // fail loud (the counterpart to the blockquote case above).
+            // fail loud (the counterpart to the task list case above).
             assert!(host.load_html("<ul><li><p>item</p></li></ul>"));
             assert!(
                 host.collab_take_error().is_none(),
@@ -6193,6 +6208,42 @@ mod tests {
                 "ab",
                 "nested list content reaches the peer"
             );
+        }
+
+        #[test]
+        fn quote_edits_sync_to_the_peer() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ok")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            assert_eq!(doc_text(&guest), "ok");
+
+            // Quotes are inside the projected scope: a loaded one syncs.
+            assert!(
+                host.load_html("<blockquote><p>quoted</p><ul><li><p>li</p></li></ul></blockquote>")
+            );
+            assert!(
+                host.collab_take_error().is_none(),
+                "a blockquote is supported and must not fail loud"
+            );
+            assert_eq!(doc_text(&guest), "quotedli");
+            // Compared by shape: each mount builds its own schema, and node types
+            // compare by schema identity.
+            let shape = |h: &EditorHandle| format!("{:?}", h.doc());
+            assert_eq!(
+                shape(&guest),
+                shape(&host),
+                "the guest holds the same quote"
+            );
+
+            // Typing inside it, and lifting the paragraph out, sync as well.
+            host.set_selection(Selection::cursor(Pos(8)));
+            assert!(host.insert_text("!"));
+            assert!(host.command("liftListItem"));
+            assert!(host.collab_take_error().is_none());
+            assert_eq!(doc_text(&guest), "quoted!\nli", "one block per line");
+            assert_eq!(shape(&guest), shape(&host));
+            assert_eq!(guest.doc().child(0).type_name(), "paragraph");
         }
 
         /// Seeded fuzz over the real `EditorHandle` wiring: two handles relay random

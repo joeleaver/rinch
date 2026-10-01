@@ -23,8 +23,8 @@
 //!
 //! ## Outbound stalls (issue #220)
 //!
-//! A local edit outside the staged A22 scope — pasting a table, wrapping in a
-//! `blockquote` — is refused by `record_local` with the CRDT untouched. But the *model*
+//! A local edit outside the staged A22 scope — pasting a table, toggling a task
+//! list — is refused by `record_local` with the CRDT untouched. But the *model*
 //! has already applied it, so from that moment the caller's `before` is a false
 //! description of the CRDT.
 //!
@@ -40,12 +40,12 @@
 //! it fails, the change is re-projected against [`CollabDoc::to_doc`] — the CRDT's own
 //! read-back, which by construction describes what is really there. That heals every
 //! accumulated difference in one write, and it makes the failure honest: if the content
-//! really is out of scope the error names it (`Unsupported: blockquote`) instead of a
+//! really is out of scope the error names it (`Unsupported: task_list`) instead of a
 //! block-count symptom.
 //!
 //! Once stalled, the hint is skipped entirely rather than tried first. The fast diff
 //! verifies only the block *count* and then skips every block the transaction did not
-//! touch, so an out-of-scope block that keeps its index — a `blockquote` wrapped around
+//! touch, so an out-of-scope block that keeps its index — a `task_list` toggled on
 //! a paragraph in place — lets a later edit elsewhere pass, answer `Ok`, and clear the
 //! stall while the model and the CRDT still differ. `before` is known to be false from
 //! the moment of the first refusal; there is nothing left to trust in it.
@@ -260,7 +260,7 @@ impl CollabSession {
     /// which by construction describes what is really there — and that heals every
     /// accumulated difference at once, not just the blocks this edit touched. If *that*
     /// also fails the change really is out of scope, and the error names the actual
-    /// offending content (`Unsupported: blockquote`) rather than the block-count symptom
+    /// offending content (`Unsupported: task_list`) rather than the block-count symptom
     /// the old path reported.
     ///
     /// `schema` is a parameter rather than session state because
@@ -281,7 +281,7 @@ impl CollabSession {
             // the CRDT. A stalled session whose out-of-scope block keeps its index and
             // is left alone by the next edit therefore passes the fast path, answers
             // `Ok`, and clears this very flag while the model and the CRDT still differ:
-            // `<paragraph>Zone<blockquote>two` against `<paragraph>Zone<paragraph>two`,
+            // `<paragraph>Zone<task_list>two` against `<paragraph>Zone<paragraph>two`,
             // silent, with `outbound_stall()` reporting healthy. Go straight to the
             // authoritative base instead — which is also what makes the "a stalled
             // session pays the read-back per edit" note below true.
@@ -317,7 +317,7 @@ impl CollabSession {
     /// Why this replica's **outbound** is currently refusing, if it is (issue #220).
     ///
     /// `Some` from the moment a local edit cannot be projected — content outside the
-    /// staged A22 scope (a table paste, a `blockquote` wrap) — until a later
+    /// staged A22 scope (a table paste, a task list) — until a later
     /// [`Self::record_local`] succeeds. While it is `Some`, local edits are **not**
     /// reaching peers; inbound integration is unaffected and the shared document is
     /// healthy throughout.

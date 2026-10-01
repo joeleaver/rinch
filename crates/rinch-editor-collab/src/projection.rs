@@ -19,7 +19,7 @@
 //!
 //! root Array "content"            // a named root type, holding the top-level blocks
 //!   Node (Map):
-//!     "type"  -> string           // "paragraph" | "heading" | "bullet_list" | …
+//!     "type"  -> string           // "paragraph" | "heading" | "blockquote" | …
 //!     "attrs" -> Map<str, Any>    // e.g. heading {"level": 2}, ordered_list {"start": 3}
 //!     and then EXACTLY ONE of:
 //!       "text"    -> Text         // a textblock's plain text
@@ -100,6 +100,40 @@
 //! document must run a build with inline atoms in scope before any of them inserts an
 //! image or a hard break.
 //!
+//! A **block quote** (`blockquote`, `block+`) is a container exactly as a list is: a
+//! node with a `content` array of child nodes, recursively, so a quote holds paragraphs,
+//! headings, code, scene breaks, lists and other quotes, and sits inside list items.
+//! No wire shape of its own, so [`FORMAT_TAG`] does not move, and it is the leaf atoms'
+//! **coordinated upgrade** again: a peer built before quotes were in scope reads the
+//! container and refuses its type in [`build_node`] (`Unsupported`, "container
+//! `blockquote` is not a supported container type"), so joining from a snapshot holding
+//! a quote fails, and a live older peer that integrates one is poisoned (#196) until the
+//! last quote is gone. Every peer on a shared document must run a build with quotes in
+//! scope before any of them wraps a block in one.
+//!
+//! Two rules keep a converged document one a model can hold, for every container:
+//!
+//! * **A void container reads as absent** ([`is_void`]): a container whose children
+//!   were all deleted concurrently (two peers each deleting one of a quote's two
+//!   paragraphs, or a list's two items) is skipped by the read-back and by every diff
+//!   that writes ([`read_children`] pairs each visible child with its raw index). It
+//!   stays in the CRDT, inert, and a peer's concurrent insert into it makes it visible
+//!   again. Before this rule two peers deleting a two-item list's items one each
+//!   converged on `<ul></ul>`. A peer built before the rule still reads that empty
+//!   list; it addresses its own model consistently, so the CRDT still converges, but
+//!   its model differs from an upgraded peer's by the empty container, which is one
+//!   more reason to upgrade together.
+//! * **A container retyped into one that takes different children is replaced**, never
+//!   retyped in place ([`retype_keeps_identity`]): a list made a quote in place would
+//!   keep its `content` array, and a peer's concurrent `list_item` would land directly
+//!   inside the quote. Only `bullet_list` ↔ `ordered_list` keep their identity.
+//!
+//! Wrapping a block in a quote (or a list) changes the block's kind at its index, which
+//! is a replace: the paragraph is deleted and a quote holding a copy of it inserted. A
+//! peer's concurrent typing in that paragraph lands in the deleted one and is lost
+//! (yrs has no move between arrays); lifting a block out of a quote is the same trade.
+//! Both peers still converge, on the quote.
+//!
 //! One `Text` per textblock with native formatting attributes over it is the
 //! *rich-text* model — text and formatting merge independently, which is exactly the
 //! "concurrent insert/format" convergence the milestone requires. A textblock keeps its
@@ -149,14 +183,14 @@
 //! Supported: **flat text-blocks + marks** (`paragraph`/`heading`/`code_block`), the
 //! **inline atoms** inside them (`image`/`hard_break` — one placeholder char each), the
 //! **leaf block atoms** (`horizontal_rule` — a block-level node with no content at all),
-//! and the **list containers** `bullet_list` / `ordered_list` / `list_item`, nested into
-//! each other and around text-blocks to any depth.
+//! and the **containers** `bullet_list` / `ordered_list` / `list_item` / `blockquote`,
+//! nested into each other and around text-blocks to any depth.
 //!
 //! Everything else still **fails loud** with
 //! [`CollabError::Unsupported`](crate::CollabError::Unsupported) — **never a silent
-//! drop**: any other nested block (`blockquote`, `table`/`table_row`/cells,
-//! `task_list`/`task_item`), and an embedded value in a block's text, which is not how
-//! this projection writes an atom.
+//! drop**: any other nested block (`table`/`table_row`/cells, `task_list`/`task_item`),
+//! and an embedded value in a block's text, which is not how this projection writes an
+//! atom.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
@@ -277,7 +311,7 @@ pub(crate) struct BlockData {
 }
 
 /// One projectable model node: either a flat block ([`BlockData`] — a text-block, or a
-/// leaf block atom with empty text) or a container block (a list / list item) holding
+/// leaf block atom with empty text) or a container block (a list, list item or quote) holding
 /// child nodes recursively. Structural equality is
 /// canonical (marks are sorted in [`read_block`] / [`read_text_data`]), so comparing two
 /// `NodeData` trees is the same as comparing the model nodes they came from — the
@@ -287,7 +321,8 @@ pub(crate) enum NodeData {
     /// A flat text-block (`paragraph`/`heading`/`code_block`): its `text` + marks — or
     /// a leaf block atom (`horizontal_rule`), which is the same thing with no text.
     Block(BlockData),
-    /// A container block (`bullet_list`/`ordered_list`/`list_item`): its child nodes.
+    /// A container block (`bullet_list`/`ordered_list`/`list_item`/`blockquote`): its
+    /// child nodes.
     Container {
         type_name: String,
         attrs: Attrs,
@@ -315,11 +350,48 @@ impl NodeData {
 
 /// The container block types the projection nests (design A22). A container carries a
 /// `content` array of child nodes instead of a `text`. Deliberately a whitelist: every
-/// other non-text-block node (`blockquote`, tables, `task_list`/`task_item`, atoms)
-/// stays [`CollabError::Unsupported`] so an unsupported shape fails loud rather than
-/// being silently mangled.
+/// other non-text-block node (tables, `task_list`/`task_item`, atoms) stays
+/// [`CollabError::Unsupported`] so an unsupported shape fails loud rather than being
+/// silently mangled.
+///
+/// Every container here requires **at least one** child (`block+`, `list_item+`), which
+/// is what [`is_void`] relies on: a container left with no children by concurrent
+/// deletions reads as absent rather than as a node no model can hold.
 fn is_supported_container(type_name: &str) -> bool {
-    matches!(type_name, "bullet_list" | "ordered_list" | "list_item")
+    matches!(
+        type_name,
+        "bullet_list" | "ordered_list" | "list_item" | "blockquote"
+    )
+}
+
+/// Whether a container retyped from `from` to `to` may keep its CRDT identity (its
+/// `type` key rewritten in place, its children reconciled), rather than being replaced.
+///
+/// Only when the two types accept the **same children**: a bullet list toggled to an
+/// ordered one. Anywhere else the in-place retype is a hazard under concurrency. A
+/// `bullet_list` made a `blockquote` in place keeps its `content` array, and a peer
+/// that concurrently appends a `list_item` to that array leaves the converged document
+/// with a list item directly inside a quote, a shape no model can hold. Replacing makes
+/// the conflict structural instead: the peer's item lands in a node that is gone.
+/// Stated over type names because this layer has no schema to ask.
+fn retype_keeps_identity(from: &str, to: &str) -> bool {
+    let is_list = |t: &str| matches!(t, "bullet_list" | "ordered_list");
+    from == to || (is_list(from) && is_list(to))
+}
+
+/// Whether projected node data is **void**: a container with no (non-void) children.
+///
+/// No model can hold one (every [`is_supported_container`] requires a child), and no
+/// local edit writes one, but concurrency can leave one in the CRDT: two peers each
+/// deleting a different one of a quote's two paragraphs, or a list's two items, delete
+/// both. A void container **reads as absent** — [`read_children`] skips it, so it never
+/// reaches the model, and every write path addresses children through the same skip
+/// (raw indices kept beside the visible ones). It stays in the CRDT, inert: deleting it
+/// would race a third peer's concurrent insert into it, and that insert makes it
+/// visible again, holding just what was inserted. The rule is a pure function of the
+/// converged CRDT, so every replica reads the same document.
+fn is_void(nd: &NodeData) -> bool {
+    matches!(nd, NodeData::Container { children, .. } if children.is_empty())
 }
 
 /// A **leaf block atom** — a block-level node type that holds no content of its own and
@@ -579,10 +651,8 @@ impl CollabDoc {
     pub fn to_doc(&self, schema: &Schema) -> Result<Node> {
         let mut blocks = {
             let txn = self.doc.transact();
-            let n = self.content.len(&txn);
-            let mut blocks = Vec::with_capacity(n as usize);
-            for i in 0..n {
-                let nd = read_node_data(&txn, &self.content, i)?;
+            let mut blocks = Vec::new();
+            for (_, nd) in read_children(&txn, &self.content)? {
                 blocks.push(build_node(schema, &nd)?);
             }
             blocks
@@ -630,6 +700,37 @@ pub(crate) fn child_map<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Opt
         Some(Out::YMap(m)) => Some(m),
         _ => None,
     }
+}
+
+/// Whether the node map `node` is a void container ([`is_void`]) — read off the map's
+/// shape alone, without reading any text: a node with no `text` whose `content` holds
+/// only void nodes. A node with neither is not void (it is corrupt, and the read-back
+/// reports it).
+pub(crate) fn map_is_void<T: ReadTxn>(txn: &T, node: &MapRef) -> bool {
+    if block_text(txn, node).is_some() {
+        return false;
+    }
+    let Some(content) = node_content(txn, node) else {
+        return false;
+    };
+    (0..content.len(txn)).all(|i| child_map(txn, &content, i).is_some_and(|m| map_is_void(txn, &m)))
+}
+
+/// The map of **visible** child `index` of `list` (void containers skipped, as
+/// [`read_children`] skips them), if there is one.
+pub(crate) fn visible_child<T: ReadTxn>(txn: &T, list: &ArrayRef, index: usize) -> Option<MapRef> {
+    let mut seen = 0usize;
+    for i in 0..list.len(txn) {
+        let map = child_map(txn, list, i)?;
+        if map_is_void(txn, &map) {
+            continue;
+        }
+        if seen == index {
+            return Some(map);
+        }
+        seen += 1;
+    }
+    None
 }
 
 /// The `text` Text object of a text-block node.
@@ -749,6 +850,14 @@ pub(crate) fn reconcile_node(
     // coarse-grained replace is fine.
     let crdt_is_block = block_text(txn, &node).is_some();
     let target_is_block = matches!(target, NodeData::Block(_));
+    // A container retyped into one that accepts different children (a list made a
+    // quote) is replaced too; see `retype_keeps_identity`.
+    let container_retyped = match target {
+        NodeData::Container { type_name, .. } if !crdt_is_block => {
+            node_type(txn, &node).is_some_and(|current| !retype_keeps_identity(&current, type_name))
+        }
+        _ => false,
+    };
     // A node retyped into something that holds no text — a paragraph becoming a
     // `horizontal_rule`, the scene break — is replaced for the same reason, and it is
     // the guard that keeps a leaf block atom's text empty. Reconciled in place it would
@@ -770,7 +879,7 @@ pub(crate) fn reconcile_node(
         }
         NodeData::Container { .. } => false,
     };
-    if crdt_is_block != target_is_block || retyped_to_empty {
+    if crdt_is_block != target_is_block || retyped_to_empty || container_retyped {
         check_index(txn, list, index, false)?;
         list.remove(txn, index);
         return insert_node(txn, list, index, target);
@@ -864,11 +973,11 @@ fn reconcile_child_list(
     target: &[NodeData],
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
-    let cn = content.len(txn) as usize;
-    let mut cur = Vec::with_capacity(cn);
-    for i in 0..cn {
-        cur.push(read_node_data(txn, content, i as u32)?);
-    }
+    // The visible children, each with its raw index: a void container ([`is_void`]) is
+    // not part of the model's list, so the diff runs over the others and every write
+    // addresses the raw index of the child it means.
+    let (raw, cur): (Vec<u32>, Vec<NodeData>) = read_children(txn, content)?.into_iter().unzip();
+    let cn = cur.len();
     let tn = target.len();
 
     let mut prefix = 0;
@@ -885,28 +994,81 @@ fn reconcile_child_list(
 
     let cur_mid = cn - prefix - suffix;
     let tgt_mid = tn - prefix - suffix;
-    let common = cur_mid.min(tgt_mid);
 
-    // Reconcile the overlapping changed children in place (keeps identity).
-    for k in 0..common {
-        reconcile_node(
-            txn,
-            content,
-            (prefix + k) as u32,
-            &target[prefix + k],
-            per_char,
-        )?;
+    write_child_diff(
+        txn,
+        content,
+        &raw,
+        prefix,
+        cur_mid,
+        &target[prefix..prefix + tgt_mid],
+        per_char,
+    )
+}
+
+/// Apply a child-list diff to `content`. The diff keeps the first `prefix` visible
+/// children and replaces the next `cur_mid` of them with `targets`: the overlapping
+/// changed children are reconciled in place (keeping their identity), then the extra
+/// targets are inserted or the extra current children deleted. At most one of the two
+/// runs, since the overlap is the shorter of the two changed runs.
+///
+/// `raw[i]` is the raw CRDT index of visible child `i` (see [`read_children`]): the
+/// diff is computed over what the model sees, and written where it lives. Extra
+/// children are inserted right before the visible child that follows them (or at the
+/// end of the array), so a void container between two visible children stays where it
+/// was relative to the one after it.
+pub(crate) fn write_child_diff(
+    txn: &mut TransactionMut,
+    content: &ArrayRef,
+    raw: &[u32],
+    prefix: usize,
+    cur_mid: usize,
+    targets: &[NodeData],
+    per_char: &BTreeSet<String>,
+) -> Result<()> {
+    let tgt_mid = targets.len();
+    let common = cur_mid.min(tgt_mid);
+    // Reconcile the overlapping changed children in place (keeps identity). A replace
+    // inside `reconcile_node` removes and re-inserts at the same raw index, so no raw
+    // index moves.
+    for (k, target) in targets.iter().take(common).enumerate() {
+        reconcile_node(txn, content, raw[prefix + k], target, per_char)?;
     }
-    // Insert the extra target children.
-    for k in common..tgt_mid {
-        insert_node(txn, content, (prefix + k) as u32, &target[prefix + k])?;
+    // Insert the extra targets, consecutively, before the visible child that comes
+    // after them.
+    if tgt_mid > common {
+        let at = raw
+            .get(prefix + common)
+            .copied()
+            .unwrap_or_else(|| content.len(txn));
+        for (n, target) in targets.iter().skip(common).enumerate() {
+            insert_node(txn, content, at + n as u32, target)?;
+        }
     }
     // Delete the extra current children (from the end so earlier indices stay valid).
     for idx in (prefix + common..prefix + cur_mid).rev() {
-        check_index(txn, content, idx as u32, false)?;
-        content.remove(txn, idx as u32);
+        let at = raw[idx];
+        check_index(txn, content, at, false)?;
+        content.remove(txn, at);
     }
     Ok(())
+}
+
+/// The **visible** children of a content array — every child except a void container
+/// ([`is_void`]) — each paired with its raw index in the array. This is the one way
+/// the projection reads a child list, so the read-back ([`CollabDoc::to_doc`]), the
+/// diffs that write ([`reconcile_child_list`], `project_change`) and the sticky-index
+/// walk all agree on which child "index `i`" is.
+pub(crate) fn read_children<T: ReadTxn>(txn: &T, list: &ArrayRef) -> Result<Vec<(u32, NodeData)>> {
+    let len = list.len(txn);
+    let mut out = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let nd = read_node_data(txn, list, i)?;
+        if !is_void(&nd) {
+            out.push((i, nd));
+        }
+    }
+    Ok(out)
 }
 
 /// Minimal common-prefix/suffix splice: replace only the changed middle so unchanged
@@ -1290,11 +1452,12 @@ pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -
             marks,
         }))
     } else if let Some(content) = node_content(txn, &node) {
-        let len = content.len(txn);
-        let mut children = Vec::with_capacity(len as usize);
-        for i in 0..len {
-            children.push(read_node_data(txn, &content, i)?);
-        }
+        // Only the visible children: a void child container is not part of this one
+        // (see `is_void`), and a container whose every child is void is void itself.
+        let children = read_children(txn, &content)?
+            .into_iter()
+            .map(|(_, nd)| nd)
+            .collect();
         Ok(NodeData::Container {
             type_name,
             attrs,
@@ -1310,16 +1473,25 @@ pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -
 // --- model → NodeData ----------------------------------------------------------
 
 /// Validate a model node is projectable and extract its [`NodeData`], recursing into
-/// list containers. A flat text-block — or a leaf block atom ([`is_leaf_block_atom`]) —
-/// becomes [`NodeData::Block`]; a supported list container ([`is_supported_container`])
+/// containers. A flat text-block — or a leaf block atom ([`is_leaf_block_atom`]) —
+/// becomes [`NodeData::Block`]; a supported container ([`is_supported_container`])
 /// becomes [`NodeData::Container`] over its recursively-read children. Anything else —
-/// an unsupported nested block (`blockquote`, table, task list) or an *inline* atom —
-/// fails loud (design A22).
+/// an unsupported nested block (table, task list) or an *inline* atom — fails loud
+/// (design A22).
 pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
     if node.is_textblock() || is_leaf_block_atom(node.node_type()) {
         return Ok(NodeData::Block(read_block(node)?));
     }
     if is_supported_container(node.type_name()) {
+        // The read-back never yields an empty container (it reads as absent — see
+        // `is_void`), so one in the model could not round-trip. The schema forbids it,
+        // so only a node built past the schema gets here.
+        if node.child_count() == 0 {
+            return Err(CollabError::schema(format!(
+                "container `{}` holds no children; every projected container requires one",
+                node.type_name()
+            )));
+        }
         let mut children = Vec::with_capacity(node.child_count());
         for i in 0..node.child_count() {
             children.push(read_node(node.child(i))?);
@@ -1331,9 +1503,9 @@ pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
         });
     }
     Err(CollabError::unsupported(format!(
-        "node `{}` is not a flat text-block, a leaf block atom, or a supported list \
-         container (bullet_list/ordered_list/list_item); other nested blocks and tables \
-         are not yet supported",
+        "node `{}` is not a flat text-block, a leaf block atom, or a supported container \
+         (bullet_list/ordered_list/list_item/blockquote); tables and task lists are not \
+         yet supported",
         node.type_name()
     )))
 }
@@ -1512,7 +1684,7 @@ fn atom_span_at(spans: &[SpanMark], i: usize) -> Option<&SpanMark> {
 
 // --- NodeData → model ----------------------------------------------------------
 
-/// Rebuild a model node from projected [`NodeData`], recursing into list containers.
+/// Rebuild a model node from projected [`NodeData`], recursing into containers.
 /// The inbound scope guard (A22) is shared with the outbound [`read_node`]: a container
 /// type must be one [`is_supported_container`] permits, so a peer CRDT can never
 /// materialize an out-of-scope shape here even though [`Schema::create_node`] would
@@ -1527,7 +1699,7 @@ fn build_node(schema: &Schema, nd: &NodeData) -> Result<Node> {
         } => {
             if !is_supported_container(type_name) {
                 return Err(CollabError::unsupported(format!(
-                    "container `{type_name}` is not a supported list type in the CRDT"
+                    "container `{type_name}` is not a supported container type in the CRDT"
                 )));
             }
             let mut kids = Vec::with_capacity(children.len());
