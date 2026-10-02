@@ -146,7 +146,9 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
 /// already knows.
 ///
 /// A dimension known from `known` (Taffy's, border-box) or, when `inherent`,
-/// from the style's `width`/`height` gives the other through the ratio; with
+/// from the style's `width`/`height` gives the other through the ratio — its
+/// value **after** its own axis's `min-*`/`max-*` clamp, so `width: 100%;
+/// max-width: 100px` in 300px is 100x75 for a 4:3 image, not 100x225; with
 /// neither known the natural size is constrained by `min-*`/`max-*` as CSS
 /// 2.1 §10.4's table does, the ratio carrying one axis's clamp to the other
 /// (`max-width: 100px` gives a canvas 100x50, where Taffy's own clamp would
