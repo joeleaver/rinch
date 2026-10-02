@@ -1005,8 +1005,11 @@ fn a_scale_factor_change_restyles_and_repaints_in_full() {
             (SurfacePx, 1920000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 115),
-            (GlyphCacheMisses, 21),
+            // The field's "typed" is in the UA sheet's 13.3333px since #1194,
+            // not the body's 14px, so its `e` and `d` no longer share the
+            // 14px images "side" rasterised: two hits became misses.
+            (GlyphCacheHits, 113),
+            (GlyphCacheMisses, 23),
             (ClipMasks, 1),
             (ClipMaskPx, 132496),
             (PaintSurfaceAllocs, 1),

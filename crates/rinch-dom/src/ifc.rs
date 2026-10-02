@@ -3501,7 +3501,7 @@ impl RinchDocument {
     /// Every violation of the IFC leaf invariant (#466): DOM nodes whose Taffy
     /// node carries [`NodeContext::InlineRoot`] while having Taffy children.
     ///
-    /// Taffy 0.12 consults a measure function only on a node with zero
+    /// Taffy (0.12 and 0.14 alike) consults a measure function only on a node with zero
     /// children, so a non-leaf carrying `InlineRoot` can never be measured —
     /// an auto-height IFC root in that state collapses to `h = 0`. After
     /// [`Self::setup_inline_formatting_contexts`] this must be empty; a
@@ -5229,105 +5229,131 @@ impl RinchDocument {
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
             avail,
-            |known_dims, avail_space, _node_id, context, _style| {
-                let max_width = match avail_space.width {
-                    taffy::AvailableSpace::Definite(w) => Some(w),
-                    taffy::AvailableSpace::MaxContent => None,
-                    taffy::AvailableSpace::MinContent => Some(0.0),
-                };
-                match context {
-                    Some(NodeContext::InlineRoot(root_id)) => {
-                        let root_id = *root_id;
-                        if let Some(est_h) = nodes[root_id].estimated_height {
-                            return taffy::Size {
-                                width: known_dims.width.unwrap_or(0.0),
-                                height: known_dims.height.unwrap_or(est_h),
-                            };
-                        }
-                        perf.bump(crate::perf::Counter::ShapeAtomicInline);
-                        let inline_layout = Self::build_inline_layout(
-                            nodes, root_id, max_width, 1.0, font_cx, layout_cx,
-                        );
-                        inline_layout.hang.record(perf);
-                        taffy::Size {
-                            width: known_dims.width.unwrap_or(inline_layout.measured_width()),
-                            height: known_dims.height.unwrap_or(inline_layout.layout.height()),
-                        }
-                    }
-                    Some(NodeContext::Text(text)) => {
-                        if text.content.is_empty() {
-                            return taffy::Size::ZERO;
-                        }
-                        perf.bump(crate::perf::Counter::ShapeAtomicInline);
-                        let font_family =
-                            crate::fonts::parley_font_family(font_cx, &text.font_family);
-                        let mut builder =
-                            layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
-                        builder
-                            .push_default(parley::style::StyleProperty::FontSize(text.font_size));
-                        if (text.font_weight - 400.0).abs() > 1.0 {
-                            builder.push_default(parley::style::StyleProperty::FontWeight(
-                                parley::style::FontWeight::new(text.font_weight),
-                            ));
-                        }
-                        if let Some(lh) = layout::css_line_height_to_parley(&text.line_height_css) {
-                            builder.push_default(parley::style::StyleProperty::LineHeight(lh));
-                        }
-                        builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
-                        // Apply overflow-wrap for emergency line-breaking
-                        builder.push_default(parley::style::StyleProperty::OverflowWrap(
-                            text.overflow_wrap.to_parley(),
-                        ));
-                        // letter-/word-spacing (#698). The builder's scale is
-                        // 1.0 here, so these are CSS pixels either way.
-                        builder.push_default(parley::style::StyleProperty::LetterSpacing(
-                            text.letter_spacing,
-                        ));
-                        builder.push_default(parley::style::StyleProperty::WordSpacing(
-                            text.word_spacing,
-                        ));
-                        let mut layout = builder.build(&text.content);
-                        // If no_wrap is set (white-space: nowrap), don't constrain width
-                        let wrap_width = if text.no_wrap {
-                            None
-                        } else {
-                            known_dims.width.or(max_width)
+            |inputs, _node_id, context, style| {
+                // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
+                // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
+                // `TaffyView` ran around the size this body returns, with the
+                // same `0.0` calc resolver.
+                taffy::compute_leaf_layout(
+                    inputs,
+                    style,
+                    |_, _| 0.0,
+                    |known_dims, avail_space| {
+                        let max_width = match avail_space.width {
+                            taffy::AvailableSpace::Definite(w) => Some(w),
+                            taffy::AvailableSpace::MaxContent => None,
+                            taffy::AvailableSpace::MinContent => Some(0.0),
                         };
-                        break_leaf_lines(&mut layout, &text.content, wrap_width).record(perf);
-                        let size = taffy::Size {
-                            width: known_dims.width.unwrap_or(layout.width()),
-                            height: known_dims.height.unwrap_or(layout.height()),
-                        };
-                        // Keyed exactly as the root compute keys its own text
-                        // leaves, so `copy_cached_text_layouts` picks between
-                        // them by the same rule.
-                        let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-                        leaf_layouts.insert((text.node_id, wrap_bits), layout);
-                        size
-                    }
-                    Some(NodeContext::Image { width, height, .. }) => {
-                        let iw = *width as f32;
-                        let ih = *height as f32;
-                        if iw == 0.0 || ih == 0.0 {
-                            return taffy::Size::ZERO;
-                        }
-                        taffy::Size {
-                            width: known_dims.width.unwrap_or(iw),
-                            height: known_dims.height.unwrap_or_else(|| {
-                                if let Some(kw) = known_dims.width {
-                                    ih * (kw / iw)
-                                } else {
-                                    ih
+                        match context {
+                            Some(NodeContext::InlineRoot(root_id)) => {
+                                let root_id = *root_id;
+                                if let Some(est_h) = nodes[root_id].estimated_height {
+                                    return taffy::Size {
+                                        width: known_dims.width.unwrap_or(0.0),
+                                        height: known_dims.height.unwrap_or(est_h),
+                                    };
                                 }
-                            }),
+                                perf.bump(crate::perf::Counter::ShapeAtomicInline);
+                                let inline_layout = Self::build_inline_layout(
+                                    nodes, root_id, max_width, 1.0, font_cx, layout_cx,
+                                );
+                                inline_layout.hang.record(perf);
+                                taffy::Size {
+                                    width: known_dims
+                                        .width
+                                        .unwrap_or(inline_layout.measured_width()),
+                                    height: known_dims
+                                        .height
+                                        .unwrap_or(inline_layout.layout.height()),
+                                }
+                            }
+                            Some(NodeContext::Text(text)) => {
+                                if text.content.is_empty() {
+                                    return taffy::Size::ZERO;
+                                }
+                                perf.bump(crate::perf::Counter::ShapeAtomicInline);
+                                let font_family =
+                                    crate::fonts::parley_font_family(font_cx, &text.font_family);
+                                let mut builder =
+                                    layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
+                                builder.push_default(parley::style::StyleProperty::FontSize(
+                                    text.font_size,
+                                ));
+                                if (text.font_weight - 400.0).abs() > 1.0 {
+                                    builder.push_default(parley::style::StyleProperty::FontWeight(
+                                        parley::style::FontWeight::new(text.font_weight),
+                                    ));
+                                }
+                                if let Some(lh) =
+                                    layout::css_line_height_to_parley(&text.line_height_css)
+                                {
+                                    builder
+                                        .push_default(parley::style::StyleProperty::LineHeight(lh));
+                                }
+                                builder.push_default(parley::style::StyleProperty::FontFamily(
+                                    font_family,
+                                ));
+                                // Apply overflow-wrap for emergency line-breaking
+                                builder.push_default(parley::style::StyleProperty::OverflowWrap(
+                                    text.overflow_wrap.to_parley(),
+                                ));
+                                // letter-/word-spacing (#698). The builder's scale is
+                                // 1.0 here, so these are CSS pixels either way.
+                                builder.push_default(parley::style::StyleProperty::LetterSpacing(
+                                    text.letter_spacing,
+                                ));
+                                builder.push_default(parley::style::StyleProperty::WordSpacing(
+                                    text.word_spacing,
+                                ));
+                                let mut layout = builder.build(&text.content);
+                                // If no_wrap is set (white-space: nowrap), don't constrain width
+                                let wrap_width = if text.no_wrap {
+                                    None
+                                } else {
+                                    known_dims.width.or(max_width)
+                                };
+                                break_leaf_lines(&mut layout, &text.content, wrap_width)
+                                    .record(perf);
+                                let size = taffy::Size {
+                                    width: known_dims.width.unwrap_or(layout.width()),
+                                    height: known_dims.height.unwrap_or(layout.height()),
+                                };
+                                // Keyed exactly as the root compute keys its own text
+                                // leaves, so `copy_cached_text_layouts` picks between
+                                // them by the same rule.
+                                let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                                leaf_layouts.insert((text.node_id, wrap_bits), layout);
+                                size
+                            }
+                            Some(NodeContext::Image { width, height, .. }) => {
+                                let iw = *width as f32;
+                                let ih = *height as f32;
+                                if iw == 0.0 || ih == 0.0 {
+                                    return taffy::Size::ZERO;
+                                }
+                                taffy::Size {
+                                    width: known_dims.width.unwrap_or(iw),
+                                    height: known_dims.height.unwrap_or_else(|| {
+                                        if let Some(kw) = known_dims.width {
+                                            ih * (kw / iw)
+                                        } else {
+                                            ih
+                                        }
+                                    }),
+                                }
+                            }
+                            Some(NodeContext::FormControl {
+                                content_width,
+                                content_height,
+                            }) => crate::form_control::measure(
+                                *content_width,
+                                *content_height,
+                                known_dims,
+                            ),
+                            _ => taffy::Size::ZERO,
                         }
-                    }
-                    Some(NodeContext::FormControl {
-                        content_width,
-                        content_height,
-                    }) => crate::form_control::measure(*content_width, *content_height, known_dims),
-                    _ => taffy::Size::ZERO,
-                }
+                    },
+                )
             },
         );
         tree.atomic_leaf_layouts.extend(leaf_layouts);

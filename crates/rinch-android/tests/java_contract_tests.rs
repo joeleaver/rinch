@@ -118,6 +118,37 @@ fn content_uri_streams_are_closed_on_every_path() {
     }
 }
 
+/// The three content-URI readers and writers must let an exception reach JNI
+/// (issue #1215).
+///
+/// Their Rust callers go through `jni_try`, which names a thrown exception in
+/// the `Err` it answers — `java.lang.SecurityException: Permission Denial: …`,
+/// `java.io.FileNotFoundException: No item at …` (#1205). A `catch` here
+/// that logs and returns `null` / `false` turns every one of those into the
+/// same anonymous "returned null", and the app — whose user picked the file —
+/// cannot say which went wrong. Nothing else notices: the code compiles, runs
+/// and fails exactly as before, only less informatively.
+///
+/// So no `catch` at all in their bodies (try-with-resources closes the
+/// streams without one), and the checked `IOException` is declared.
+#[test]
+fn the_content_uri_methods_let_their_exception_reach_jni() {
+    for name in ["readContentUri", "writeContentUri", "readImageUri"] {
+        let body = code_only(&method_body(name));
+        assert!(
+            !body.contains("catch"),
+            "`{name}` catches an exception, so the Rust side's `Err` cannot \
+             name it — let it propagate to `jni_try`"
+        );
+        let decl = &body[..body.find('{').expect("a method body")];
+        assert!(
+            decl.contains("throws IOException"),
+            "`{name}` must declare `throws IOException`: `{}`",
+            decl.trim()
+        );
+    }
+}
+
 /// `getImeInset` must answer `-1`, not `0`, when there are no insets yet.
 ///
 /// The Rust side decodes `-1` as `None` ("ask again") and `0` as `Some(0)`

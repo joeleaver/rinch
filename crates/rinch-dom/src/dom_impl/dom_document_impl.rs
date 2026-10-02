@@ -714,6 +714,25 @@ impl DomDocument for RinchDocument {
         // written only by `set_attribute("style", …)` and `set_styles`, and both
         // put the `style` attribute in the map first, so a cache with no
         // attribute cannot exist.
+        //
+        // The one removal that is a write whether or not the attribute is
+        // there: a `<textarea>`'s `value`. rinch-web removes it by writing
+        // `.value = ""`, which sets the browser's dirty value flag for good, so
+        // the field empties and stops following its text children — a pristine
+        // field with no attribute included (#1222).
+        if name == "value"
+            && !self.tree.nodes[node.0].value_dirty
+            && self.tree.nodes[node.0].tag() == Some("textarea")
+        {
+            self.tree.nodes[node.0].value_dirty = true;
+            if !self.tree.nodes[node.0].attributes.contains_key(name) {
+                // What the field shows went from its children to `""`; no
+                // attribute changed, so no selector can see it.
+                self.tree.hit_cache.invalidate();
+                self.push_dirty_flags(node.0, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                return;
+            }
+        }
         if !self.tree.nodes[node.0].attributes.contains_key(name) {
             return;
         }
@@ -1420,8 +1439,8 @@ impl RinchDocument {
     /// it, so the divergence is observable to a test or a devtools surface
     /// without scraping logs.
     ///
-    /// **What the clamp is worth, measured against taffy 0.12.2 rather than
-    /// assumed.** `insert_child_at_index` returns `Err` for exactly one reason,
+    /// **What the clamp is worth, measured against taffy 0.12.2 (and re-read
+    /// against 0.14.0, unchanged) rather than assumed.** `insert_child_at_index` returns `Err` for exactly one reason,
     /// `ChildIndexOutOfBounds`; its only other fallible call is `mark_dirty`,
     /// which always answers `Ok`. So the clamp does not merely *usually* avoid
     /// the error — it makes this call **total**, and with
