@@ -761,6 +761,150 @@ mod painted {
         assert_eq!(pixel_at(&painter, 105, 60), NOTHING);
     }
 
+    /// #536 review finding: the fixture above uses a **uniform** border
+    /// (`10px` all sides), which is the textbook fixed point — `left` and
+    /// `right` are equal, so a mutant that swaps which border width
+    /// `padding_box_insets` reads for which side (`left` reads
+    /// `border_right_width`, say) survives it undetected. Four different
+    /// widths (2/4/6/8) make every side's own inset distinguishable from
+    /// every other side's.
+    ///
+    /// Probes sit just inside each real edge, in the band a swapped (wrong)
+    /// inset would wrongly exclude — a left/right (or top/bottom) swap turns
+    /// the correct inset *narrower* on one side and *wider* on the other, so
+    /// one swapped pair shows up as an unexpected `NOTHING` (over-tight) and
+    /// the other as an unexpected `RED` bleeding onto the border strip
+    /// (over-loose) once the clip's edge moves the wrong way.
+    #[test]
+    fn an_overflow_clip_respects_asymmetric_border_widths() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; overflow: hidden; \
+             border-left: 2px solid rgb(0, 0, 255); \
+             border-top: 4px solid rgb(0, 0, 255); \
+             border-right: 6px solid rgb(0, 0, 255); \
+             border-bottom: 8px solid rgb(0, 0, 255);",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 300px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+
+        // Sanity: each border strip, well away from any swap's effect.
+        assert_eq!(pixel_at(&painter, 1, 50), BLUE, "left border (2px)");
+        assert_eq!(pixel_at(&painter, 50, 1), BLUE, "top border (4px)");
+
+        // Just past the real left edge (2px): correct shows the child; a
+        // left<->right swap makes the clip's left edge 6 (border-right's
+        // width) instead of 2, wrongly excluding this band.
+        assert_eq!(
+            pixel_at(&painter, 3, 50),
+            RED,
+            "just inside the real 2px left edge — a left/right swap clips \
+             this away (padding box would wrongly start at x=6)"
+        );
+        // Just past the real top edge (4px): the top/bottom analogue.
+        assert_eq!(
+            pixel_at(&painter, 50, 6),
+            RED,
+            "just inside the real 4px top edge — a top/bottom swap clips \
+             this away (padding box would wrongly start at y=8)"
+        );
+
+        // Inside the real right border strip (94..100, since 100-6=94): a
+        // left/right swap makes the clip's right edge 98 (100 - 2, using
+        // border-left's width), which would let the child bleed over the
+        // border here instead of being clipped at the true 94 edge.
+        assert_eq!(
+            pixel_at(&painter, 96, 50),
+            BLUE,
+            "inside the real 6px right border — a swap would let the \
+             child paint over it up to x=98 instead of being clipped at x=94"
+        );
+        // The top/bottom analogue, inside the real bottom border (92..100).
+        assert_eq!(
+            pixel_at(&painter, 50, 94),
+            BLUE,
+            "inside the real 8px bottom border — a swap would let the \
+             child paint over it up to y=96 instead of being clipped at y=92"
+        );
+
+        assert_eq!(pixel_at(&painter, 50, 50), RED, "content area, sanity");
+    }
+
+    /// #536 review finding: the existing rounded-clip fixture
+    /// (`a_rounded_clip_cuts_its_corners`) has no border, so a mutant that
+    /// returns `padding_box_radii`'s corners **unreduced** (`border_radii`
+    /// passed straight through, the clip rect correctly inset but its
+    /// corners left at the outer radius) survives every pixel oracle in
+    /// this file undetected.
+    ///
+    /// Geometry chosen for margin, not minimalism: a correct inner radius of
+    /// 60 at (90, 90) and a wrong (unreduced) one of 90 at (120, 120) put the
+    /// probe below at roughly 5px inside the correct circle and 7px outside
+    /// the wrong one (both diagonal distances from the probe to each
+    /// circle's edge) — comfortably past tiny-skia's one-pixel antialiasing
+    /// band on either side. A tighter (border 10 / radius 30) version of the
+    /// same shape works out to sub-2px margins, which is why this isn't that.
+    #[test]
+    fn an_overflow_clip_with_rounded_corners_uses_the_reduced_radius() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 300px; height: 300px; border: 30px solid rgb(0, 0, 255); \
+             border-radius: 90px; overflow: hidden",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 300px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(400, 400);
+        paint(&mut doc, &mut painter);
+
+        // Straight-edge sanity, away from any corner.
+        assert_eq!(
+            pixel_at(&painter, 1, 150),
+            BLUE,
+            "left border, straight edge"
+        );
+        assert_eq!(pixel_at(&painter, 150, 150), RED, "content area, sanity");
+
+        // The top-left corner: padding box [30, 270] x [30, 270], outer
+        // radius 90 reduced to 90 - (30+30)/2 = 60. Correct circle centres
+        // at (30+60, 30+60) = (90, 90), r = 60. The unreduced mutant's
+        // circle centres at (30+90, 30+90) = (120, 120), r = 90 (neither
+        // clamped: the padding box's half-side is 120, above both 60 and 90).
+        // (51, 51) is ~55.15px from the correct centre (inside by ~4.85) and
+        // ~97.58px from the mutant's (outside by ~7.58).
+        assert_eq!(
+            pixel_at(&painter, 51, 51),
+            RED,
+            "inside the correctly-reduced (r=60) rounded clip; a mutant \
+             using the unreduced outer radius (r=90) would clip this away"
+        );
+    }
+
     /// #408: the culled-node branch paints its children at the **scrolled**
     /// content origin, like every other call in `paint_node`.
     ///
