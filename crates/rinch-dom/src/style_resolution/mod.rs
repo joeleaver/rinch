@@ -1814,9 +1814,10 @@ impl RinchDocument {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
         // A block container does not stretch a replaced element to its width
-        // (CSS 2.1 §10.3.4); Taffy's block layout reads this flag (#1173).
+        // (CSS 2.1 §10.3.4); Taffy's block layout reads this flag (#1173, and
+        // #788 for an `<img>`).
         style.item_is_replaced =
-            crate::replaced::is_replaced_without_content(&self.tree.nodes[node_id]);
+            crate::replaced::is_unstretched_replaced(&self.tree.nodes[node_id]);
         if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
             style.flex_direction = dir;
         }

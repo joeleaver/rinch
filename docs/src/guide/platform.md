@@ -30,6 +30,15 @@ fn app() -> NodeHandle {
 
 Supported formats: PNG, JPEG, GIF, WebP.
 
+An `<img>` is sized as a browser sizes a replaced element: with no CSS size it
+is its natural size — `display: block` included, so `margin: 0 auto` centres
+it rather than it filling its container — and a lone `width` or `height` (or a
+`min-*`/`max-*` clamp) gives the other dimension through the image's aspect
+ratio. A flex container still stretches an `<img>`, as in a browser; a grid
+container also still stretches it, where a browser does not (#1280). The
+`width`/`height` *attributes* are not read (#684): size an image with CSS. An
+image not yet loaded is 0x0.
+
 ### Background layers
 
 A background image — a `url(...)` or a `linear-gradient`/`radial-gradient` —

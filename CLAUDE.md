@@ -3232,6 +3232,18 @@ tile covering the box — is one fill and no clip, as before. `background-positi
 `transition: background-position` expands to both. An image's `auto` size is
 its intrinsic size now; it used to be stretched over the border box.
 
+**A block `<img>` is its natural width, and keeps its ratio** (#788, #1150).
+It is `item_is_replaced` in Taffy, so a block container does not stretch it
+(CSS 2.1 §10.3.4: `img { display: block }` is 40 wide for a 40x30 image, and
+`margin: 0 auto` centres it), and its measure is `replaced::measure`, the
+canvas's (#1173): a lone style `width` or `height`, or a `min-*`/`max-*` clamp,
+gives the other dimension through the image's ratio, inline, block and as a
+flex item. So the `Image` component (`width: 100%; height: auto`) under a block
+parent is now as tall as its ratio says, where it kept the natural height. A
+flex container still stretches an `<img>` (Chrome does too); a grid container
+still stretches it, where Chrome does not (#1280). Presentational
+`width`/`height` attributes are still not read (#684).
+
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 
 **Circular avatars:** a clipping ancestor with `border-radius` clips to a
