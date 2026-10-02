@@ -2812,7 +2812,12 @@ it the overlay now covers the window, as it always has on the web.
 **Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
 not `visible`, and the box is neither a non-atomic `display: inline` element nor
 `display: contents`" (which generates no box to clip to, #1038) — and
-one shape, `paint::clip_shape` (the rounded border box).
+one shape, `paint::clip_shape` (the rounded **padding** box, #536 — CSS clips
+overflowing content to the padding edge, not the border box; `paint::
+padding_box_insets`/`padding_box_radii` are the one place the four border
+widths are measured and the radii reduced for it, and every cross-crate
+consumer below asks one of those three functions rather than re-deriving the
+inset).
 Everything that needs either asks those: paint's clip bracket, its dirty-region
 subtree prune, the layer-bounds walk, a hoisted entry's clip chain, hit
 testing's `check_children` gate, and `RinchApp`'s two viewport clip walks.
@@ -2863,14 +2868,39 @@ it, so `overflow-x: hidden; overflow-y: visible` is **unreachable** — pinned i
 Stylo bump ever changes that. `clip` beside `visible` is the pair the spec
 allows, so it stays asymmetric.
 
-Two deviations from CSS remain **in the predicate and the shape** — this is not
+One deviation from CSS remains **in the predicate and the shape** — this is not
 an inventory of everything rinch gets wrong about `overflow`, which also covers
 scrolling, `text-overflow` and scrollbars. rinch clips both axes with one rect,
-so `overflow-x: clip; overflow-y: visible` clips vertically too (#535). And the
-rect is the **border** box where CSS clips to the padding box, so a clipping
-container with a non-zero `border-width` lets its content paint over its own
-border (#536); with no border the two coincide, which is every clipping box in
-the component library.
+so `overflow-x: clip; overflow-y: visible` clips vertically too (#535).
+
+**#536 is fixed: the rect is the padding box**, not the border box. A clipping
+container with a non-zero `border-width` used to let its content paint over its
+own border — border paints *before* the clip bracket opens
+(`paint_borders`, then `push_clip`, then children), so nothing else caught it.
+With no border the two boxes coincide, which is every clipping box in the
+component library, so this was correctness debt rather than a live visual bug
+until something actually set a border. `paint::padding_box_insets(node)`
+returns `(left, top, right, bottom)` in logical px, clamped so a border wider
+than the box cannot invert the rect; `paint::padding_box_radii(node, scale)` is
+`border_radii` reduced per corner by the *average* of the two adjacent border
+widths (rinch's radii are one scalar per corner, where CSS reduces each of two
+per-axis elliptical components by a single adjacent side — exact for a uniform
+border, an approximation otherwise, matching the choice the per-side arc border
+painter in `paint/borders.rs` already makes). Every consumer of the shape
+agrees: `clip_shape` itself, `layer_bounds`' children-clip intersection and the
+`covers_target`/`clip_cuts_nothing` elision check in `paint_node` (both now
+read `clip`'s own rect rather than the node's plain border-box `rect`), hit
+testing's `check_children` gate (reads `padding_box_insets` directly, in
+`crates/rinch/src/app/hit_testing.rs` — a click on a clipping container's own
+border strip resolves to the container, never to content that paint no longer
+draws there), `RinchApp::viewport_rect_with_radius`/`viewport_clip_rect` (the
+`GameViewport`/video compositor hole, inset and its radii reduced the same
+way), and `paint::clip_chain_bounds` (#909's damage clip chain, below —
+`padding_box_insets_for_size` is the one difference from every other caller:
+a damage-chain ancestor can be asked about its *painted* (`Frame::Painted`,
+`prev_layout`) size rather than its current `node.layout`, and the border
+widths — read from current computed style either way, since nothing records
+a painted one — have to clamp against whichever size is actually in use).
 
 A third one is gone: **clipping no longer forms a stacking context** — see
 **Stacking contexts and the clip chain** below.
@@ -4079,9 +4109,51 @@ surface registered, so an unchanged `scene()` stays a cache hit. The compositor 
 (named `data-viewport` surfaces, video, a `GpuTextureRegistrar` texture) is the
 host's to composite, and IME state is not surfaced to the host at all (#1147).
 
+**`wants_mouse`/`wants_keyboard` decide HUD input routing, and `wants_keyboard`
+does not mean "any node is focused"** (#548). A `<button>`/`<a href>` is
+focusable with no `tabindex` (issue #252's tag-implied set), so a plain mouse
+click on one claims `FocusTarget::Node` exactly like Tabbing onto a custom
+widget — but `wants_keyboard()` used to OR in `has_focused_node()`
+unconditionally, so clicking *any* button made it answer `true` until the next
+click landed off a button, and a host following the documented pattern above
+("route keyboard to rinch while `wants_keyboard()`") silently stopped seeing
+its own Esc/hotkeys. `wants_keyboard()` now asks
+`RinchApp::has_focused_key_consumer()` instead, which follows **how the node
+got focus**, not whether anything is registered (the review of #1311 caught a
+first cut that gated purely on registration, which made Tab-focus on a plain
+button answer `false` exactly like a mouse click — breaking Tab navigation
+and Enter/Space activation of ordinary controls under the documented
+pattern):
+
+- A **mouse-clicked** plain button/link: `false` — it only ever consumes
+  Enter/Space through the runtime's own activation path and does not need
+  the host to give up its keyboard just because a click focused it. This is
+  #548's actual repro.
+- A **Tab-focused** (or programmatic `NodeHandle::focus()`-ed) plain
+  button/link: `true` — matching a browser's `:focus-visible` split, read
+  from [`Node::is_focus_visible`](rinch_dom::node::Node::is_focus_visible):
+  Tab/`request_focus` set it, a mouse press claiming `FocusTarget::Node`
+  never does (`claim_press_focus` in `event_dispatch.rs` only clears the
+  *previous* node's ring on a press).
+- A **registered** custom widget
+  ([`FocusEntry::on_key`](crate::focus_registry::FocusEntry::on_key) via
+  `register_focus_target` — arrow-key navigation, a shortcut of its own):
+  `true` either way, click or Tab — the runtime can't know which keys it
+  wants without seeing them.
+- An open native **`<select>`** popup (`FocusTarget::Select`): `true`
+  unconditionally — a separate, pre-existing gap (neither
+  `has_focused_input`/`has_focused_contenteditable` nor, before or after
+  #548's first cut, the generic-node check ever covered it) folded into the
+  same fix, since its own arrow/Enter/Escape handling needs every key.
+
+`RinchApp::has_focused_node()` keeps its original, broader meaning ("is *any*
+generic node focused") for callers that genuinely want that question; it is
+the wrong one for input routing.
+
 **Source files:**
-- `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`
-- `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`
+- `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`, `wants_keyboard()`
+- `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`, `has_focused_node()`, `has_focused_key_consumer()`, `node_is_focus_visible()` (#548)
+- `crates/rinch/src/focus_registry.rs` — `wants_key_routing()`, the `FocusEntry::on_key` check behind `has_focused_key_consumer()`
 
 **Documentation:** `docs/src/guide/game-engine.md`
 

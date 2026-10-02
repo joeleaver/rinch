@@ -274,6 +274,23 @@ pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
     })
 }
 
+/// Whether the target at `(doc_key, node_id)` registered [`FocusEntry::on_key`]
+/// — i.e. is a custom control that reads keys beyond Enter/Space/Tab (arrow-key
+/// navigation, a shortcut of its own).
+///
+/// This is the question an embed host's keyboard-routing decision should ask
+/// (issue #548, [`crate::app::RinchApp::has_focused_key_consumer`]): a generic
+/// focusable node (`FocusTarget::Node`) is claimed by **any** mousedown on a
+/// plain `<button>`/`<a href>` just as much as by Tab onto a registered custom
+/// widget (issue #252 widened the tag-implied `tabindex` set), but a plain
+/// button with no registered `on_key` only ever consumes Enter/Space through
+/// the runtime's own activation path. `false` for an unregistered node (the
+/// plain-button case) and for a registered one that only asked for
+/// focus/blur/IME notifications, not keys.
+pub(crate) fn wants_key_routing(doc_key: u64, node_id: usize) -> bool {
+    entry_for(doc_key, node_id).is_some_and(|entry| entry.on_key.is_some())
+}
+
 /// Fire `on_focus_gained` for a registered target. A no-op for an unregistered
 /// node — every generic `tabindex` node takes `FocusTarget::Node`, only some of
 /// them registered for the news.

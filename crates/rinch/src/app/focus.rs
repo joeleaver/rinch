@@ -454,12 +454,89 @@ impl RinchApp {
     }
 
     /// Whether a generic focusable node (`tabindex`, `FocusTarget::Node`,
-    /// issue #228) holds focus. It consumes Enter/Space (and anchors Tab), so
-    /// embed hosts must route keyboard input to rinch while one is focused
-    /// (`RinchContext::wants_keyboard` includes it). Public beside
+    /// issue #228) holds focus — **any** one, including a plain `<button>` or
+    /// `<a href>` a mousedown just claimed (issue #252 made every such tag
+    /// focusable with no `tabindex` needed). Public beside
     /// [`Self::has_focused_input`] / [`Self::has_focused_contenteditable`].
+    ///
+    /// This is **not** the right question for "should an embed host hand me
+    /// its keyboard" — see [`Self::has_focused_key_consumer`] (issue #548):
+    /// most generic-node focus is a plain button that only ever consumes
+    /// Enter/Space through the runtime's own activation path, so an embed
+    /// host that withholds every key while *any* node is focused ends up
+    /// swallowing its own Esc/hotkeys the moment the user mouse-clicks a
+    /// button.
     pub fn has_focused_node(&self) -> bool {
         matches!(self.focus_target, FocusTarget::Node(_))
+    }
+
+    /// Whether the focused target is one an embed host should hand its
+    /// keyboard to (issue #548, [`crate::embed::RinchContext::wants_keyboard`]
+    /// is this plus the text targets it already covers).
+    ///
+    /// The real distinction turned out to be **how the node got focus, not
+    /// whether it registered anything** — the review of #1311 caught the
+    /// first cut (registered-`on_key` only) breaking Tab navigation and
+    /// Enter/Space activation of ordinary controls, since Tab-focus and
+    /// mouse-click focus both land on plain `FocusTarget::Node` with
+    /// nothing registered. A browser's own answer to this is
+    /// `:focus-visible`: keyboard-driven focus shows the ring, a mouse click
+    /// does not. rinch already tracks that bit —
+    /// [`Node::is_focus_visible`](rinch_dom::node::Node::is_focus_visible),
+    /// set `true` only by Tab/`request_focus`/programmatic
+    /// [`NodeHandle::focus`](rinch_core::dom::NodeHandle::focus)
+    /// (`RinchApp`'s Tab-handling and `try_focus_node`, `mod.rs`), and
+    /// **not** set by a mouse press claiming the node — `claim_press_focus`
+    /// (`event_dispatch.rs`) only clears the *previous* node's ring, it never
+    /// sets the new one. So:
+    ///
+    /// - A **mouse-clicked** plain `<button>`/`<a href>` (no `tabindex`
+    ///   needed, issue #252): `is_focus_visible` is `false` and nothing is
+    ///   registered ⇒ `false`. This is #548's actual repro, and the one case
+    ///   that must answer `false`.
+    /// - A **Tab-focused** (or `NodeHandle::focus()`-focused) plain control:
+    ///   `is_focus_visible` is `true` ⇒ `true` — so Tab navigation and
+    ///   Enter/Space activation keep reaching rinch under the documented
+    ///   host pattern, exactly as they did before #1311 (`has_focused_node`)
+    ///   and matching a browser's own click-vs-keyboard-focus split.
+    /// - A **registered** custom widget ([`FocusEntry::on_key`][k], arrow-key
+    ///   navigation, a shortcut of its own) ⇒ `true` whether it was clicked
+    ///   or Tabbed to — the runtime cannot know which keys it wants without
+    ///   seeing them.
+    /// - An open native **`<select>`** popup (`FocusTarget::Select`) ⇒
+    ///   `true` unconditionally: its own arrow/Enter/Escape handling needs
+    ///   every key, and this target has no "registered" or "focus-visible"
+    ///   concept of its own (pre-existing gap found in the same review,
+    ///   unrelated to the click-vs-Tab question — `has_focused_node()`
+    ///   never matched `Select` either, before or after #1311).
+    /// - Every other target (`None`, `Surface`, and `Input`/`Editor` — which
+    ///   `wants_keyboard()` already covers through
+    ///   [`Self::has_focused_input`]/[`Self::has_focused_contenteditable`])
+    ///   ⇒ `false`.
+    ///
+    /// [k]: crate::focus_registry::FocusEntry::on_key
+    pub fn has_focused_key_consumer(&self) -> bool {
+        match self.focus_target {
+            FocusTarget::Node(id) => {
+                self.node_is_focus_visible(id)
+                    || crate::focus_registry::wants_key_routing(self.doc_key(), id)
+            }
+            FocusTarget::Select(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether `node_id` currently shows the keyboard focus ring —
+    /// [`Node::is_focus_visible`](rinch_dom::node::Node::is_focus_visible),
+    /// set only by keyboard/programmatic focus, never by a mouse press
+    /// claiming `FocusTarget::Node`. See [`Self::has_focused_key_consumer`].
+    fn node_is_focus_visible(&self, node_id: usize) -> bool {
+        self.doc.as_ref().is_some_and(|doc| {
+            doc.borrow()
+                .tree
+                .get(node_id)
+                .is_some_and(|n| n.is_focus_visible)
+        })
     }
 
     /// The container id of the focused new-editor, if one holds focus. Drives

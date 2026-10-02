@@ -338,8 +338,14 @@ fn enter_splits_a_paragraph() {
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 3),
             (GlyphCacheHits, 286),
+            // #536: the editor's bordered scroll container clips to its
+            // padding box now, a border-width's worth smaller on every side
+            // than the border box the push used to mask — fewer pixels for
+            // the same one push, not an extra one (contrast the `.field`
+            // moves in `perf_regression_tests.rs`, where the clip went from
+            // elided to pushed).
             (ClipMasks, 1),
-            (ClipMaskPx, 303408),
+            (ClipMaskPx, 301702),
         ],
     );
 }
@@ -391,8 +397,9 @@ fn backspace_joins_two_paragraphs() {
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 3),
             (GlyphCacheHits, 324),
+            // #536, see `enter_splits_a_paragraph` above.
             (ClipMasks, 1),
-            (ClipMaskPx, 303408),
+            (ClipMaskPx, 301702),
         ],
     );
 }

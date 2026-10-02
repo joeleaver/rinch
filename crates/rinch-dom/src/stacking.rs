@@ -194,20 +194,22 @@ pub enum PaintKind {
 /// the two cannot drift apart because there is one derivation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipRect {
-    /// The clipping box's border box.
+    /// The clipping box's **padding** box (#536) — CSS clips to the padding
+    /// edge, not the border box; the two coincide with no border.
     pub rect: Rect,
-    /// Its `border-radius`, already resolved and scaled. All-zero for a square
-    /// clip.
+    /// Its (padding-box, i.e. border-inset) `border-radius`, already resolved
+    /// and scaled. All-zero for a square clip.
     pub radii: RoundedRectRadii,
 }
 
 impl ClipRect {
     /// Whether `(x, y)` is inside the clip, **ignoring the radii**.
     ///
-    /// Rect-only on purpose: hit testing's own `check_children` gate has always
-    /// tested a clipping box's plain layout rect, so a rounded chain link that
-    /// cut its corners here would make a hoisted box *less* reachable than the
-    /// unhoisted box beside it. Inclusive on both edges, like that gate.
+    /// Rect-only on purpose: hit testing's own `check_children` gate tests a
+    /// clipping box's plain (padding-box, #536) rect with no radii either, so
+    /// a rounded chain link that cut its corners here would make a hoisted box
+    /// *less* reachable than the unhoisted box beside it. Inclusive on both
+    /// edges, like that gate.
     pub fn contains(&self, x: f64, y: f64) -> bool {
         x >= self.rect.x0 && x <= self.rect.x1 && y >= self.rect.y0 && y <= self.rect.y1
     }
