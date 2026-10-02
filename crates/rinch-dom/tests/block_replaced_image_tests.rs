@@ -132,3 +132,33 @@ fn the_ratio_holds_the_content_box_not_the_padding() {
         (0.0, 90.0, 70.0),
     );
 }
+
+/// The `Image` component's shape: `.rinch-image { display: block; width:
+/// 100%; height: auto }`. Under a block wrapper it fills and keeps its
+/// ratio (Chrome 153: 300x225, where rinch used to keep the natural 30 tall);
+/// under the component's own `inline-block` wrapper it shrink-wraps to its
+/// natural 40x30 in Chrome.
+#[test]
+fn the_image_component_shape_fills_a_block_and_keeps_its_ratio() {
+    let shape = "display: block; width: 100%; height: auto";
+    for (wrapper, want) in [
+        ("display: block", (300.0, 225.0)),
+        ("display: inline-block; position: relative", (40.0, 30.0)),
+    ] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let d = doc.create_element("div");
+        doc.set_attribute(d, "style", &format!("{BASE}; width: 300px"));
+        doc.append_child(body, d);
+        let w = doc.create_element("div");
+        doc.set_attribute(w, "style", &format!("{BASE}; {wrapper}"));
+        doc.append_child(d, w);
+        let img = doc.create_element("img");
+        doc.set_attribute(img, "src", FORTY_BY_THIRTY);
+        doc.set_attribute(img, "style", &format!("{BASE}; {shape}"));
+        doc.append_child(w, img);
+        doc.resolve_layout(800.0, 600.0);
+        let l = doc.tree.get(img.0).unwrap().layout;
+        assert_eq!((l.width, l.height), want, "under [{wrapper}], Chrome 153");
+    }
+}
