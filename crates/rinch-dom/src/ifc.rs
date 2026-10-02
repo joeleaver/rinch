@@ -3102,6 +3102,33 @@ impl RinchDocument {
         self.tree.split_inlines = all;
     }
 
+    /// Whether any ancestor of `id` (not `id` itself) has computed `display:
+    /// none`.
+    ///
+    /// `display` does not inherit, so a node's own computed style says
+    /// nothing about whether an ancestor's `display: none` keeps it from
+    /// being rendered at all — the chain has to be walked, as
+    /// `style_resolution::StyleResolver::ancestors_are_rendered` walks it for
+    /// the transition start gate (#703). This is `setup_inline_formatting_contexts`'s
+    /// own copy rather than a shared call: that one is private to
+    /// `style_resolution` and additionally understands the restyle pass's
+    /// "was hidden before this cascade" list, which has no analogue here —
+    /// a layout pass only ever asks about the *current* tree.
+    fn has_display_none_ancestor(nodes: &slab::Slab<Node>, id: usize) -> bool {
+        use crate::computed_style::values::DisplayValue;
+        let mut current = nodes.get(id).and_then(|n| n.parent);
+        while let Some(pid) = current {
+            let Some(parent) = nodes.get(pid) else {
+                break;
+            };
+            if parent.computed_style.display == DisplayValue::None {
+                return true;
+            }
+            current = parent.parent;
+        }
+        false
+    }
+
     /// Detect IFC roots and mark inline children.
     ///
     /// An element is an IFC root if it's a block container that has any
@@ -3232,6 +3259,22 @@ impl RinchDocument {
             {
                 continue;
             }
+            // A `display: none` element generates no box at all — not even
+            // the degenerate one `Contents` leaves to its nearest real
+            // ancestor — so it establishes no inline formatting context
+            // over its own subtree either. Before this, a hidden block with
+            // inline children (`div{display:none}<span>text</span>`) was
+            // still made an IFC root: its children were detached from Taffy
+            // and a Parley `InlineLayout` was built for text that can never
+            // paint, on every rebuild-all pass (#509). The marking pass's
+            // existing `NoBox` arm (`mark_inline_descendants`,
+            // `inline_flow_role`) already detaches a `display: none`
+            // *child* of some other root the same way `Contents` is
+            // detached above, so skipping here loses no coverage — it only
+            // stops this node from being asked to run that pass on itself.
+            if node.computed_style.display == crate::computed_style::values::DisplayValue::None {
+                continue;
+            }
 
             // Classify the children once. A comment answers `is_inline()`
             // with `true` (it flows with inline content and must not split a
@@ -3359,7 +3402,24 @@ impl RinchDocument {
             let hollow_with_children = !own_children.is_empty()
                 && (crate::form_control::is_value_control(node)
                     || crate::replaced::is_replaced_without_content(node));
-            if has_non_comment_inline || all_children_are_comments || hollow_with_children {
+            if (has_non_comment_inline || all_children_are_comments || hollow_with_children)
+                // A node whose own `display` isn't `none` can still sit under
+                // an ancestor that is: `display` does not inherit, so this
+                // node's own computed style says nothing about whether it is
+                // rendered at all (css-display-3 §2.4, the "not being
+                // rendered" rule #703 reads the same way for transitions).
+                // Such a subtree is never painted and Taffy's own compute
+                // does not descend past the `display: none` ancestor to
+                // begin with, so marking a node here buys nothing but a
+                // Parley `InlineLayout` that this pass rebuilds every time
+                // it runs (#826 measured it growing with the hidden
+                // subtree's text, unboundedly, for as long as the subtree
+                // exists). Walked only here, once per node this loop has
+                // already decided would otherwise be a root — not once per
+                // candidate — so the O(depth) cost lands on the small set
+                // that would otherwise pay far more.
+                && !Self::has_display_none_ancestor(&self.tree.nodes, id)
+            {
                 ifc_roots.push(id);
             }
         }

@@ -13,8 +13,8 @@
 //! counter for the cost claim.
 
 use rinch_core::dom::{DomDocument, NodeId};
-use rinch_dom::perf::Counter;
 use rinch_dom::RinchDocument;
+use rinch_dom::perf::Counter;
 
 const VW: f32 = 800.0;
 const VH: f32 = 600.0;
@@ -43,11 +43,7 @@ fn repaint_pass(doc: &mut RinchDocument, driver: NodeId, wide: bool) {
     doc.set_attribute(
         driver,
         "style",
-        if wide {
-            "width: 290px"
-        } else {
-            "width: 280px"
-        },
+        if wide { "width: 290px" } else { "width: 280px" },
     );
     doc.resolve_layout(VW, VH);
 }
