@@ -216,21 +216,28 @@ on the web — the same escape hatch VS Code's `keyboard.dispatch` setting and
 JetBrains' "use national layout for shortcuts" toggle offer. It affects only
 rinch's own chord matching; see the note on macOS/Windows below.
 
-**On macOS and Windows, a window menu bar's item does not go through rinch's
-own chord matching at all** — the OS already resolves and matches the native
-accelerator muda installs for it (`NSMenu` on macOS, an accelerator table on
-Windows) ahead of rinch ever seeing the key, so matching it a second time
-risked firing the callback twice. `ShortcutMatching::Physical` therefore has
-no effect on those items: the OS, not rinch, decides what counts as "the Z
+**On macOS and Windows, a window menu bar's item stops going through rinch's
+own chord matching once its native accelerator has actually attached to the
+window** — the OS then resolves and matches the accelerator muda installs
+for it (`NSMenu` on macOS, an accelerator table on Windows) ahead of rinch
+ever seeing the key, so matching it a second time would risk firing the
+callback twice. That "actually attached" is a recorded fact, not a guess
+from which platform the build targets: a window whose handle was not a
+Win32 one, whose accelerator table failed to install, or that never attaches
+a native bar at all (a borderless window using the DOM bar instead) keeps
+matching through rinch's own registry, so its shortcuts are never silently
+unreachable. `ShortcutMatching::Physical` has no effect on an item once its
+accelerator has attached: the OS, not rinch, decides what counts as "the Z
 key" there, following its own per-layout accelerator resolution (character-
 based on both platforms, like rinch's default). Linux has no such OS-level
-menu-accelerator integration, so its native bar, every system-tray item, and
-the DOM menu bar (the browser, and Linux's own in-app bar) all go through
-rinch's chord matching — and the override — exactly as described above. See
-issue #1284 for a related, unmeasured gap: a *modifier-less* chord
-(`chord_yields_to_text_input` above) may still be taken by a macOS/Windows
-native accelerator from a focused text field, because that check runs inside
-rinch's own matching, which those items skip.
+menu-accelerator integration and never attaches one, so its native bar,
+every system-tray item, and the DOM menu bar (the browser, and Linux's own
+in-app bar) all go through rinch's chord matching — and the override —
+exactly as described above. See issue #1284 for a related, unmeasured gap: a
+*modifier-less* chord (`chord_yields_to_text_input` above) may still be
+taken by a macOS/Windows native accelerator from a focused text field,
+because that check runs inside rinch's own matching, which an attached item
+skips.
 
 A shortcut string that names no key (`"Ctrl+?"`, a typo) registers no chord and
 logs one `tracing` warning per distinct string. The DOM menu bar (Linux, the

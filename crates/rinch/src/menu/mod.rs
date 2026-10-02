@@ -336,6 +336,12 @@ struct ShortcutEntry {
     serial: u64,
     shortcut: ParsedShortcut,
     menu_id: String,
+    /// Whether this chord was registered for a **window menu bar** item
+    /// (`true` only from [`build_muda_item`]'s `native_bar` parameter — never
+    /// from a tray item or the DOM bar). Read by [`skips_rinch_chord`] at
+    /// match time, alongside [`native_accelerator_attached`], to decide
+    /// whether this entry should fire at all (issue #1170, "B").
+    native_bar: bool,
 }
 
 thread_local! {
@@ -379,6 +385,43 @@ thread_local! {
     /// is what [`MenuBarChords`] closes, and why the slot has to be able to say
     /// *which* build it is holding.
     static MENU_BAR_REGISTRATION: RefCell<Option<MenuRegistration>> = const { RefCell::new(None) };
+
+    /// Whether a window menu bar's native accelerator table has actually
+    /// attached to a window — set by [`mark_native_accelerator_attached`],
+    /// read by [`native_accelerator_attached`] (issue #1170, "B", review
+    /// finding 2). Not a `target_os` guess: `attach_menu_to_window` sets this
+    /// only on the success path it already has — Windows only inside the
+    /// `Ok(Win32(..))` branch, after `init_for_hwnd` itself returns `Ok`; a
+    /// non-Win32 handle, a failed `init_for_hwnd`, or a target with no window
+    /// (a headless host, a borderless window whose chrome is the DOM bar
+    /// instead) leaves this `false`, and a `false`-marked window-bar item's
+    /// chord keeps matching through rinch's own registry rather than going
+    /// silently unreachable. Never reset once set: an app attaches its menu
+    /// bar once, not per-frame.
+    static NATIVE_ACCELERATOR_ATTACHED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// See [`NATIVE_ACCELERATOR_ATTACHED`].
+///
+/// Only `attach_menu_to_window`'s macOS and Windows arms call this in
+/// production, so a normal (non-test) Linux build never reaches it — the
+/// `#[allow]` is for that, not because it is genuinely unused: this crate's
+/// own test suite calls it from every platform to exercise
+/// `skips_rinch_chord`'s fact-based half without needing a macOS or Windows
+/// host (review of #1304).
+#[cfg(feature = "desktop")]
+#[allow(dead_code)]
+pub(crate) fn mark_native_accelerator_attached() {
+    NATIVE_ACCELERATOR_ATTACHED.with(|f| f.set(true));
+}
+
+/// Whether this thread's window menu bar actually has a native accelerator
+/// attached. `false` on every non-desktop build and on Linux (where
+/// `attach_menu_to_window` is a no-op) — which is exactly the set of cases
+/// where nothing but rinch's own chord registry can ever fire the item, so
+/// [`skips_rinch_chord`] must answer `false` for them.
+fn native_accelerator_attached() -> bool {
+    NATIVE_ACCELERATOR_ATTACHED.with(Cell::get)
 }
 
 /// A build number no previous [`register_menu_shortcuts`] call has used.
@@ -420,6 +463,20 @@ fn register_callback_owned(
 /// meantime: [`match_shortcut`] answers `true` only when a callback actually
 /// ran, and [`dispatch_menu_event`] takes a dead item's chords out with it.
 fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
+    register_shortcut_with_native_bar(shortcut_str, menu_id, false)
+}
+
+/// As [`register_shortcut`], but also records whether this chord belongs to
+/// a **window menu bar** item (`native_bar`) — the one extra fact
+/// [`skips_rinch_chord`] needs at match time. Every caller but
+/// [`build_muda_item`] passes `false`, so [`register_shortcut`] is the
+/// shorthand every other registration path (the DOM bar, the registry's own
+/// tests) keeps using unchanged.
+fn register_shortcut_with_native_bar(
+    shortcut_str: &str,
+    menu_id: &str,
+    native_bar: bool,
+) -> Option<u64> {
     let parsed = parse_shortcut_or_warn(shortcut_str)?;
     let serial = NEXT_SHORTCUT_SERIAL.with(|next| {
         let serial = next.get();
@@ -431,6 +488,7 @@ fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
             serial,
             shortcut: parsed,
             menu_id: menu_id.to_string(),
+            native_bar,
         });
     });
     Some(serial)
@@ -719,6 +777,7 @@ pub fn match_shortcut_code(
                     && entry.shortcut.alt == alt
                     && entry.shortcut.shift == shift
                     && chord_key_matches(&entry.shortcut, code, typed_letter)
+                    && !skips_rinch_chord(entry.native_bar, native_accelerator_attached())
             })
             .map(|entry| entry.menu_id.clone())
             .collect()
@@ -871,6 +930,20 @@ impl MenuRegistration {
     /// Register a chord dispatching `menu_id`, recording it for release.
     fn register_shortcut(&mut self, shortcut_str: &str, menu_id: &str) {
         if let Some(serial) = register_shortcut(shortcut_str, menu_id) {
+            self.shortcuts.push(serial);
+        }
+    }
+
+    /// As [`Self::register_shortcut`], but tagging the entry `native_bar` —
+    /// [`build_muda_item`]'s only caller.
+    #[cfg(feature = "desktop")]
+    fn register_shortcut_native_bar(
+        &mut self,
+        shortcut_str: &str,
+        menu_id: &str,
+        native_bar: bool,
+    ) {
+        if let Some(serial) = register_shortcut_with_native_bar(shortcut_str, menu_id, native_bar) {
             self.shortcuts.push(serial);
         }
     }
@@ -1137,15 +1210,23 @@ fn build_muda_entries(
 /// `Accelerator` against the live keyboard layout before winit ever sees the
 /// key — matching muda's own accelerator through rinch's chord registry too
 /// would risk firing the callback twice for one keystroke on those platforms.
-/// So a `native_bar` item there registers **only** the callback (for the
-/// `MenuEvent` muda's own match emits, routed by
-/// [`install_menu_event_handler`]) and never a [`MENU_SHORTCUTS`] entry.
-/// Linux has no such integration (`attach_menu_to_window` is a no-op there —
-/// see the module's platform-attachment section), so its window bar, every
-/// tray menu item (`native_bar: false` — a tray's accelerator is shown only
-/// while the menu is open, not an OS-wide interception) and the DOM menu bar
-/// ([`register_menu_shortcuts_into`], unaffected by this parameter) all keep
-/// registering the chord as before #1170.
+///
+/// This item is tagged `native_bar` either way and **always** gets a
+/// [`MENU_SHORTCUTS`] entry — the skip is decided later, at match time, by
+/// [`skips_rinch_chord`] reading [`native_accelerator_attached`] (review of
+/// #1304: deciding it here from `target_os` alone would leave the chord
+/// unreachable by *either* path whenever the attach itself did not actually
+/// succeed — a non-Win32 window handle, a failed `init_for_hwnd`, a
+/// borderless window whose chrome is the DOM bar instead). So a `native_bar`
+/// item's chord fires through rinch's own registry right up until
+/// `attach_menu_to_window` records a real success, and is silent only from
+/// that point on — never unconditionally. Linux has no such integration
+/// (`attach_menu_to_window` is a no-op there — see the module's
+/// platform-attachment section) and never marks the flag, so its window bar,
+/// every tray menu item (`native_bar: false` — a tray's accelerator is shown
+/// only while the menu is open, not an OS-wide interception) and the DOM
+/// menu bar ([`register_menu_shortcuts_into`], unaffected by this parameter)
+/// all keep matching through the registry exactly as before #1170.
 #[cfg(feature = "desktop")]
 fn build_muda_item(
     item: &MenuItem,
@@ -1169,48 +1250,31 @@ fn build_muda_item(
         registration.register_callback(&muda_item.id().0, cb.clone(), item.callback_owner.clone());
     }
 
-    // Register shortcut for keyboard matching — skipped for a window-bar item
-    // on a platform where the OS already matches muda's own accelerator
-    // (macOS, Windows). See this function's doc.
-    if !skips_rinch_chord(native_bar, os_matches_native_accelerators()) {
-        if let Some(shortcut_str) = &item.shortcut {
-            registration.register_shortcut(shortcut_str, &muda_item.id().0);
-        }
+    // Register the shortcut unconditionally; whether it ever matches is
+    // decided at dispatch time by `skips_rinch_chord` — see this function's
+    // doc.
+    if let Some(shortcut_str) = &item.shortcut {
+        registration.register_shortcut_native_bar(shortcut_str, &muda_item.id().0, native_bar);
     }
 
     muda_item
 }
 
-/// Whether the OS itself resolves and matches a window menu bar's
-/// `Accelerator` against the keyboard, ahead of winit — macOS (`NSMenu`
-/// `performKeyEquivalent`) and Windows (muda's accelerator table hooked into
-/// the window's message proc). Linux has no such integration: a window menu
-/// bar is never attached with a native accelerator table there (see
-/// [`attach_menu_to_window`]'s Linux arm, a no-op), so rinch's own chord
-/// registry is the only thing that ever matches an item's shortcut.
-///
-/// A `cfg!` one-liner rather than a `#[cfg(...)]` item so [`skips_rinch_chord`]
-/// stays a plain function callable from a test on every host; the host this
-/// was written on is Linux, so **the macOS/Windows branch itself cannot be
-/// exercised by this crate's test suite** — only [`skips_rinch_chord`]'s
-/// boolean rule can. A real macOS or Windows host still needs a manual check
-/// that pressing an item's accelerator fires its callback exactly once.
-#[cfg(feature = "desktop")]
-fn os_matches_native_accelerators() -> bool {
-    cfg!(any(target_os = "macos", target_os = "windows"))
-}
-
 /// Whether a window-bar item's chord should be left to the OS alone rather
-/// than also registered in [`MENU_SHORTCUTS`] (issue #1170, "B").
+/// than fire through [`MENU_SHORTCUTS`] too (issue #1170, "B").
 ///
-/// Pulled out of [`build_muda_item`] as a pure function of two bools so the
-/// decision itself — "only a *window-bar* item on a platform whose OS *does*
-/// match the accelerator" — is exhaustively testable on any host, independent
-/// of which platform actually makes `os_has_accelerator` true. See
-/// [`os_matches_native_accelerators`] for that half.
-#[cfg(feature = "desktop")]
-fn skips_rinch_chord(native_bar: bool, os_has_accelerator: bool) -> bool {
-    native_bar && os_has_accelerator
+/// A pure function of two facts, each already recorded for a reason of its
+/// own — `native_bar` on the [`ShortcutEntry`] (is this item even a
+/// candidate: a tray item and the DOM bar never are), and
+/// [`native_accelerator_attached`] (did the OS *actually* end up matching
+/// this window's accelerators: review of #1304 moved this off a `target_os`
+/// guess, so a window whose native bar failed to attach — a non-Win32
+/// handle, a failed `init_for_hwnd` — keeps rinch's own matching instead of
+/// losing the chord to neither side). Exhaustively testable on any host: the
+/// two bools are the whole input, and nothing about *why* either is true or
+/// false matters to this function.
+fn skips_rinch_chord(native_bar: bool, accelerator_attached: bool) -> bool {
+    native_bar && accelerator_attached
 }
 
 /// Set up the global muda event handler. Call once during app init.
@@ -1230,6 +1294,13 @@ pub(crate) fn install_menu_event_handler() {
 // ── Platform-specific menu attachment ───────────────────────────────────────
 
 /// Attach a native menu bar to a window (Windows).
+///
+/// Marks [`NATIVE_ACCELERATOR_ATTACHED`] only on the success path this
+/// already has: `window.window_handle()` answering `Ok`, that handle being
+/// `Win32`, and `init_for_hwnd` itself returning `Ok` — not on `target_os`
+/// alone (review of #1304). Any other window never marks it, so
+/// `skips_rinch_chord` keeps matching a `native_bar` item's chord through
+/// rinch's own registry on one, rather than losing it to neither path.
 #[cfg(all(feature = "desktop", target_os = "windows"))]
 pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::window::Window) {
     use winit::raw_window_handle::HasWindowHandle;
@@ -1237,17 +1308,24 @@ pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::windo
         if let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() {
             let hwnd = win32.hwnd.get() as isize;
             // Safety: hwnd is a valid window handle from winit, and we're on the main thread.
-            unsafe {
-                let _ = menu.init_for_hwnd(hwnd);
+            let attached = unsafe { menu.init_for_hwnd(hwnd) };
+            if attached.is_ok() {
+                mark_native_accelerator_attached();
             }
         }
     }
 }
 
 /// Attach a native menu bar to the application (macOS).
+///
+/// `init_for_nsapp` reports no failure (it returns `()`), so this marks
+/// [`NATIVE_ACCELERATOR_ATTACHED`] right after calling it — still gated on
+/// this function actually running, which is what review of #1304 asked for
+/// in place of a bare `target_os` guess.
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &winit::window::Window) {
     menu.init_for_nsapp();
+    mark_native_accelerator_attached();
 }
 
 /// Attach a native menu bar to a window (Linux — not yet supported).
@@ -2991,34 +3069,112 @@ mod tests {
         assert_eq!(ShortcutMatching::default(), ShortcutMatching::LayoutAware);
     }
 
+    /// The desktop half of #1170's character matching, exercised directly
+    /// (review of #1304, finding 1 — every other fixture hand-fed an
+    /// `Option<char>` straight into `match_shortcut_code`, so a mutant that
+    /// deleted `.to_ascii_lowercase()` here survived the whole suite).
+    ///
+    /// Mutant this kills: that exact deletion — `Character("Z".into())`
+    /// would then answer `Some('Z')`, which disagrees with the lowercase
+    /// `Some('z')` asserted below.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn winit_typed_letter_lowercases_a_shifted_character_and_rejects_everything_else() {
+        use winit::keyboard::{Key, NativeKey};
+
+        assert_eq!(winit_typed_letter(&Key::Character("Z".into())), Some('z'));
+        assert_eq!(winit_typed_letter(&Key::Character("z".into())), Some('z'));
+        assert_eq!(winit_typed_letter(&Key::Character("1".into())), None);
+        // Cyrillic С (U+0421) — not ASCII, so no Latin letter.
+        assert_eq!(winit_typed_letter(&Key::Character("С".into())), None);
+        // More than one character: not a single key's letter.
+        assert_eq!(winit_typed_letter(&Key::Character("ab".into())), None);
+        assert_eq!(
+            winit_typed_letter(&Key::Unidentified(NativeKey::Unidentified)),
+            None
+        );
+    }
+
     // ── Issue #1170, "B": a window-bar item on macOS/Windows skips rinch's
     //    own chord, leaving it to the OS alone ──────────────────────────────
 
-    /// The pure decision [`build_muda_item`] makes, exhaustively: only a
-    /// window-bar item (`native_bar: true`) on a platform whose OS actually
-    /// resolves the accelerator (`os_has_accelerator: true`) skips
-    /// registering rinch's own chord. A tray item, or a window-bar item on a
-    /// platform with no such integration (Linux), always registers it.
+    /// The pure decision [`skips_rinch_chord`] makes, exhaustively: only a
+    /// window-bar item (`native_bar: true`) whose native accelerator has
+    /// actually attached (`accelerator_attached: true`) skips rinch's own
+    /// chord. A tray item, or a window-bar item whose attach did not happen
+    /// or did not succeed, always keeps matching through the registry.
     ///
     /// This is the host-independent half of "B" — see
-    /// [`os_matches_native_accelerators`]'s doc for why its own
-    /// `target_os` branch cannot be exercised from this (Linux) host, and the
-    /// PR this pins is open about that: a macOS and a Windows host both need
-    /// a manual check that an item's native accelerator fires its callback
-    /// exactly once, not twice.
-    #[cfg(feature = "desktop")]
+    /// [`attach_menu_to_window`]'s Windows/macOS docs for where the second
+    /// bool is actually recorded, which this (Linux) host's test suite
+    /// cannot exercise directly — only this boolean rule can. A macOS and a
+    /// Windows host both still need a manual check that an item's native
+    /// accelerator fires its callback exactly once, not twice.
     #[test]
-    fn skips_rinch_chord_is_true_only_for_a_native_bar_item_on_an_os_that_owns_the_accelerator() {
-        assert!(skips_rinch_chord(true, true), "native bar + OS owns it");
+    fn skips_rinch_chord_is_true_only_for_a_native_bar_item_whose_accelerator_attached() {
+        assert!(skips_rinch_chord(true, true), "native bar + attached");
         assert!(
             !skips_rinch_chord(true, false),
-            "native bar, but no OS integration (Linux) — rinch must still match"
+            "native bar, but the attach did not happen or did not succeed \
+             (Linux, a non-Win32 handle, a failed init_for_hwnd) — rinch must still match"
         );
         assert!(
             !skips_rinch_chord(false, true),
-            "a tray item is never attached to the window, so the OS never owns it"
+            "a tray item is never attached to a window at all"
         );
         assert!(!skips_rinch_chord(false, false));
+    }
+
+    /// The fact-based half, end to end (review of #1304, finding 2): a
+    /// `native_bar` chord fires through rinch's own registry right up until
+    /// the native accelerator actually attaches, and only then goes silent —
+    /// never unconditionally from `target_os` alone. This is exactly the
+    /// case a window whose attach failed (a non-Win32 handle, a failed
+    /// `init_for_hwnd`) depends on: without it, such a window's shortcut
+    /// would be unreachable by any path.
+    ///
+    /// Mutant this kills: deciding the skip from `native_bar` alone (ignoring
+    /// [`native_accelerator_attached`]) fires neither assertion below.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_native_bar_chord_fires_until_the_accelerator_actually_attaches_then_goes_silent() {
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("mac-quit-1304", cb, None);
+        registration.register_shortcut_native_bar("Ctrl+Q", "mac-quit-1304", true);
+
+        // Before `attach_menu_to_window` ever records success — the Linux
+        // default, and a Windows window whose handle was not `Win32` — the
+        // chord fires: nothing else is going to.
+        assert!(match_shortcut_code(true, false, false, false, "KeyQ", None));
+        assert_eq!(fired.get(), 1);
+
+        // Once the native accelerator actually attaches, the OS owns this
+        // item and rinch stops matching it.
+        mark_native_accelerator_attached();
+        assert!(!match_shortcut_code(
+            true, false, false, false, "KeyQ", None
+        ));
+        assert_eq!(fired.get(), 1);
+    }
+
+    /// The same attached flag must not silence a non-`native_bar` chord — a
+    /// tray item or the DOM bar's, neither of which `attach_menu_to_window`
+    /// ever touches.
+    ///
+    /// Mutant this kills: reading only `accelerator_attached` in
+    /// `skips_rinch_chord` (dropping the `native_bar &&`) silences this too.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_non_native_bar_chord_keeps_matching_after_the_accelerator_attaches() {
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("tray-quit-1304", cb, None);
+        registration.register_shortcut("Ctrl+Alt+Shift+F9", "tray-quit-1304");
+
+        mark_native_accelerator_attached();
+        assert!(match_shortcut_code(true, false, true, true, "F9", None));
+        assert_eq!(fired.get(), 1);
     }
 }
 
