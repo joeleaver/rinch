@@ -346,3 +346,64 @@ fn no_source_pushes_a_font_family_by_hand() {
     );
     assert!(offenders.is_empty(), "{offenders:#?}");
 }
+
+/// On the host's own fonts: under `sans-serif` and under the theme's default
+/// stack, U+1F600 is drawn in the face the `emoji` generic draws it in, unless
+/// a face that stack names (or a generic's primary face) covers it. At main,
+/// on a Linux desktop with Noto Color Emoji, it was DejaVu Sans. On a host
+/// with no emoji face for it (CI) this asserts nothing and says so.
+#[test]
+fn on_the_host_u1f600_under_sans_serif_is_the_emoji_generics() {
+    let face_of = |family: &str| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            &format!("display: inline-block; font: 40px/48px {family}"),
+        );
+        let t = doc.create_text("\u{1f600}");
+        doc.append_child(div, t);
+        doc.append_child(body, div);
+        doc.resolve_layout(800.0, 600.0);
+        let il = doc.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+        let mut names = Vec::new();
+        for line in il.layout.lines() {
+            for item in line.items() {
+                if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                    use skrifa::MetadataProvider;
+                    let font = run.run().font();
+                    let face = skrifa::FontRef::from_index(font.data.as_ref(), font.index).unwrap();
+                    names.push(
+                        face.localized_strings(skrifa::string::StringId::FAMILY_NAME)
+                            .english_or_first()
+                            .map(|s| s.to_string())
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+        }
+        names
+    };
+    let mut fcx = rinch_dom::fonts::new_font_context();
+    let primary = fcx
+        .collection
+        .generic_families(GenericFamily::SansSerif)
+        .next();
+    let primary = primary.and_then(|id| fcx.collection.family_name(id).map(str::to_owned));
+    let Some(primary) = primary else {
+        eprintln!("host: no sans-serif face, nothing to assert");
+        return;
+    };
+    // The emoji cluster's stack under `sans-serif` is the primary face and
+    // then the `emoji` generic — what a stack naming the primary face draws.
+    let named = face_of(&format!("'{primary}'"));
+    let sans = face_of("sans-serif");
+    eprintln!(
+        "host: U+1F600 under sans-serif {sans:?}, under '{primary}' {named:?}, emoji {:?}",
+        face_of("emoji")
+    );
+    assert!(!sans.is_empty());
+    assert_eq!(sans, named, "under sans-serif against '{primary}'");
+}
