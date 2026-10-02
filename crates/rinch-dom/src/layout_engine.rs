@@ -1264,8 +1264,20 @@ impl RinchDocument {
                     let right = style.right.resolve(vw);
                     let bottom = style.bottom.resolve(vh);
                     let left = style.left.resolve(vw);
-                    let width_auto = style.width.lays_out_as_auto();
-                    let height_auto = style.height.lays_out_as_auto();
+                    // `auto` and `stretch` fill between paired insets; a
+                    // content keyword keeps the width Taffy measured (#691).
+                    let width_auto = style.width.fills_between_insets();
+                    let height_auto = style.height.fills_between_insets();
+                    // A single inset leaves the height to the content —
+                    // except `stretch`, whose height the pre-layout bake
+                    // already took from the viewport (`out_of_flow`).
+                    let height_from_content = style.height.is_auto_or_keyword()
+                        && !matches!(
+                            style.height,
+                            crate::computed_style::DimensionValue::Intrinsic(
+                                crate::computed_style::IntrinsicSize::Stretch
+                            )
+                        );
 
                     // Horizontal positioning
                     if let (Some(l), Some(r)) = (left, right) {
@@ -1293,12 +1305,12 @@ impl RinchDocument {
                         // (their Taffy parent differs from the CSS containing
                         // block which should be the viewport).  Re-derive
                         // content height from children.
-                        if height_auto {
+                        if height_from_content {
                             let _ = node;
                             new_layout.height = self.compute_content_height(node_id, &new_layout);
                         }
                     } else if let Some(b) = bottom {
-                        if height_auto {
+                        if height_from_content {
                             let _ = node;
                             new_layout.height = self.compute_content_height(node_id, &new_layout);
                         }
@@ -1468,7 +1480,7 @@ impl RinchDocument {
                 DimensionValue::Length(v) => Some(*v),
                 DimensionValue::Percent(p) => Some(p * vh),
                 DimensionValue::Calc { px, pct } => Some(px + pct * vh),
-                // An intrinsic keyword lays out as `auto` (#626), so it
+                // A min/max keyword lays out as `auto` (#1275), so it
                 // constrains nothing here either.
                 DimensionValue::Auto | DimensionValue::Intrinsic(_) => None,
             }

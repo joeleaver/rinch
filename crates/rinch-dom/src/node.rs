@@ -2441,6 +2441,13 @@ pub struct NodeTree {
     /// Do not swap it back for a `HashSet`. The set holds a handful of entries
     /// and its `O(log n)` insert is not on any path the cost harness measures.
     pub dirty_atomic_inlines: BTreeSet<RawNodeId>,
+    /// An atomic inline sized by a `fit-content`/`stretch` width (#691), and
+    /// the containing-block inner width it was last sized at by
+    /// `resolve_percentage_inline_blocks`. Any other measure of the box (all
+    /// of which measure it with no containing-block width, as `auto`) removes
+    /// its entry, so an entry still here at the same width means nothing that
+    /// sizes the box moved and it need not be measured again.
+    pub(crate) keyword_inline_cb_width: HashMap<RawNodeId, f32>,
     /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
     /// to clear after the frame's style pass.
     pub styled_unrendered: Vec<RawNodeId>,
@@ -2663,6 +2670,7 @@ impl NodeTree {
             mousemove_handlers: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
+            keyword_inline_cb_width: HashMap::new(),
             styled_unrendered: Vec::new(),
             ifc_measure_cache: HashMap::new(),
             atomic_leaf_layouts: HashMap::new(),
