@@ -273,3 +273,49 @@ fn an_inline_flexs_own_text_reports_its_first_baseline() {
     near(y(&d, b), 0.0, "big");
     near(y(&d, t), 12.5, "text leaf");
 }
+
+/// A percentage top padding resolves against the containing block's **width**
+/// (300px here, so 30px), exactly as `compute_leaf_layout` resolves it.
+/// Chrome: the item (`padding-top: 10%; border-top: 3px`) at 0, `A` (32px in a
+/// 40px line) at 20. If the percentage resolved to 0 instead, `A` would be at
+/// 0.
+#[test]
+fn a_percentage_top_padding_resolves_against_the_width() {
+    let mut d = doc();
+    let c = container(&mut d, "display: flex; align-items: baseline");
+    let m = el(&mut d, c, "span", "font-size: 32px; line-height: 40px");
+    text(&mut d, m, "A");
+    let p = el(&mut d, c, "div", "padding-top: 10%; border-top: 3px solid");
+    text(&mut d, p, "text");
+    d.resolve_layout(VW, VH);
+    near(y(&d, p), 0.0, "padded item");
+    near(y(&d, m), 20.0, "A");
+}
+
+/// **A stated divergence (#663), not a fix.** Chrome sets a line's baseline by
+/// its text, and an `inline-block`'s baseline is its own last line's baseline.
+/// rinch's IFC has no baseline model for atomic inlines: a line holding one is
+/// laid out with its baseline at that box's bottom. Since #1013 a
+/// flex item reports its first line's baseline, so the item is aligned by that
+/// bottom. Chrome puts `A` at 0; rinch puts it at 18. (Before #1013 it was 9,
+/// from the item's bottom edge, which was wrong for a different reason.) The
+/// number to change when #663 lands is the second `assert_eq!`.
+#[test]
+fn an_items_first_line_holding_an_inline_block_is_aligned_by_its_bottom_issue_663() {
+    let mut d = doc();
+    let c = container(&mut d, "display: flex; align-items: baseline");
+    let m = el(&mut d, c, "span", "font-size: 32px; line-height: 40px");
+    text(&mut d, m, "A");
+    let b = el(&mut d, c, "div", "");
+    let ib = el(
+        &mut d,
+        b,
+        "span",
+        "display: inline-block; padding: 10px; border: 2px solid",
+    );
+    text(&mut d, ib, "ok");
+    d.resolve_layout(VW, VH);
+    assert_eq!(y(&d, b), 0.0, "block item");
+    // Chrome 153: 0.
+    assert_eq!(y(&d, m), 18.0, "A (#663)");
+}
