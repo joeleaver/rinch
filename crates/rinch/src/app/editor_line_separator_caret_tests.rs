@@ -11,7 +11,6 @@ use rinch_editor_core::{Pos, Selection};
 
 const VP: (u32, u32) = (800, 600);
 const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
-const LINE: f32 = 24.0;
 
 fn idle(app: &mut RinchApp) {
     for _ in 0..3 {
@@ -204,7 +203,7 @@ fn a_press_after_a_substituted_char_lands_on_the_char_it_hit() {
     for sep in SEPS {
         let (t0, s) = pages(sep);
         let (x, y, _, h) = t0.block_box();
-        let mut t = t0;
+        drop(t0);
         let y = y + h / 2.0;
         let ox = |i: usize| s.local(oracle_char(sep, i)).0;
         let mut presses = vec![
@@ -224,7 +223,7 @@ fn a_press_after_a_substituted_char_lands_on_the_char_it_hit() {
         }
         for (px, want) in presses {
             // A fresh page per press: a second press nearby is a double click.
-            t = pages(sep).0;
+            let mut t = pages(sep).0;
             t.click(x + px, y);
             if t.head() != want {
                 bad.push(format!(
