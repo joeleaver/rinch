@@ -193,6 +193,8 @@ mod text_context_menu;
 mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
+mod text_selection_range_552_tests;
+#[cfg(test)]
 mod textarea_home_end_tests;
 #[cfg(test)]
 mod textarea_newline_tests;
