@@ -868,6 +868,23 @@ impl RinchDocument {
                 new_style.user_select = crate::computed_style::UserSelectValue::Text;
             }
 
+            // A `<textarea>` is a scroll container whatever the author says:
+            // Chrome 153 computes `overflow: visible` on one as `auto` (and
+            // `overflow-x: visible; overflow-y: hidden` as `auto hidden`),
+            // which no UA *rule* can say — `!important` would also override
+            // the author's `hidden`, and Chrome keeps that (issue #1194). So
+            // the adjustment is made after the cascade, as Chrome makes it.
+            // It is what gives a raw textarea a flex item's zero automatic
+            // minimum size: in a 100px row it shrinks to 100px.
+            if node.tag() == Some("textarea") {
+                use crate::computed_style::OverflowValue;
+                for axis in [&mut new_style.overflow_x, &mut new_style.overflow_y] {
+                    if *axis == OverflowValue::Visible {
+                        *axis = OverflowValue::Auto;
+                    }
+                }
+            }
+
             // A closed `<select>` shows one option's label, so browsers size it to
             // fit the *widest* option — the width stays stable when the selection
             // changes. Its `<option>` children are `display:none` and give it no

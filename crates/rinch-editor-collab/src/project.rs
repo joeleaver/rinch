@@ -21,7 +21,7 @@
 //! concurrent deletions reads as absent, so it is skipped by the diff and by the count
 //! gate alike. The top level finds its void containers only when a remote merge has
 //! left one (`CollabDoc::top_void`), so a keystroke in a document without one reads the
-//! block it changed and nothing else (`tests/projection_cost.rs`). Any node outside the supported scope (a table, a task list) anywhere in
+//! block it changed and nothing else (`tests/projection_cost.rs`). Any node outside the supported scope (a task list, a ragged table) anywhere in
 //! `before` or `after` fails loud ([`CollabError::Unsupported`], design A22).
 //!
 //! The diff trusts `before` to describe what the CRDT holds — which is the invariant —
@@ -42,7 +42,8 @@ use rinch_editor_core::{Node, Transaction};
 
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    CollabDoc, RawIndex, insert_node, read_node, read_node_data, visible_indices, write_child_diff,
+    CollabDoc, RawIndex, common_runs, identity_runs, insert_node, read_node, read_node_data,
+    visible_indices, write_child_diff,
 };
 
 impl CollabDoc {
@@ -118,21 +119,17 @@ impl CollabDoc {
             )));
         }
 
-        // Unchanged leading blocks (Rc identity — O(1) per block).
-        let mut prefix = 0;
-        while prefix < bn && prefix < an && before.child(prefix).same_ref(after.child(prefix)) {
-            prefix += 1;
-        }
-        // Unchanged trailing blocks.
-        let mut suffix = 0;
-        while suffix < bn - prefix
-            && suffix < an - prefix
-            && before
-                .child(bn - 1 - suffix)
-                .same_ref(after.child(an - 1 - suffix))
+        // Unchanged leading and trailing blocks, by Rc identity (O(1) per block). A
+        // before and after that share no block at all carry no identity (a load while
+        // collaborating, a re-base on the CRDT's read-back): there the runs are taken by
+        // the blocks' values, as a nested list does (`reconcile_child_list`).
+        let mut runs = identity_runs(before, after);
+        if runs == (0, 0)
+            && !(0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
         {
-            suffix += 1;
+            runs = common_runs(bn, an, |i, j| before.child(i) == after.child(j));
         }
+        let (prefix, suffix) = runs;
 
         let pre_mid = bn - prefix - suffix; // changed pre blocks
         let post_mid = an - prefix - suffix; // changed post blocks
@@ -142,8 +139,8 @@ impl CollabDoc {
         // read and validate EVERY model block this change will touch — the `after`
         // blocks to reconcile/insert, and the `before` blocks to delete — BEFORE
         // issuing any CRDT write, and before the write transaction is even opened. A
-        // mixed in-scope/out-of-scope change (e.g. pasting or loading a table while
-        // collaborating) then leaves the CRDT *exactly* at the prior converged state
+        // mixed in-scope/out-of-scope change (e.g. pasting or loading a task list
+        // while collaborating) then leaves the CRDT *exactly* at the prior converged state
         // and returns `Unsupported`, instead of partially mutating it and wedging the
         // session in a half-projected state.
         //
@@ -203,7 +200,13 @@ impl CollabDoc {
         let content = self.content.clone();
         let mut txn = self.doc.transact_mut();
         write_child_diff(
-            &mut txn, &content, raw, prefix, pre_mid, &targets, &per_char,
+            &mut txn,
+            &content,
+            raw,
+            prefix..prefix + pre_mid,
+            &targets,
+            Some((before, after)),
+            &per_char,
         )
     }
 

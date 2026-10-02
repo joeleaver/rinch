@@ -250,7 +250,7 @@ pub mod prelude {
     // Collaborative editing (M9): the editor's collab error type + the thread-safe
     // inbound route a network transport posts received deltas through.
     #[cfg(feature = "collaboration")]
-    pub use crate::editor::{CollabError, collab_receive_for, post_remote_delta};
+    pub use crate::editor::{CollabError, OversizedTable, collab_receive_for, post_remote_delta};
 
     // Reconciliation for poll/reconnect transports (`EditorHandle::collab_state_vector`
     // / `collab_sync_diff`) needs no extra imports: state vectors and diffs are opaque

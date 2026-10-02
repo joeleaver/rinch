@@ -4,9 +4,8 @@
 //! the shared one, and its first edit in that cell wrote the cap back to the
 //! peers as an edit nobody made.
 //!
-//! Tables enter the collab projection with #1233. Until then the host refuses
-//! the table (`Unsupported`) and this test returns after saying so, so it pins
-//! nothing yet; it pins the join from the moment #1233 lands.
+//! Tables are in the collab projection since #1233, so the host projects the
+//! table and this pins the join.
 #![cfg(feature = "collaboration")]
 
 use rinch_editor_core::*;
@@ -54,13 +53,9 @@ fn a_guest_joins_a_wide_table_as_the_host_has_it() {
         Some(tr)
     }));
     assert_eq!(colspan(&host.doc()), Some(5000));
-    let snap = match host.start_collaboration_host(|_| {}) {
-        Ok(snap) => snap,
-        Err(e) => {
-            eprintln!("tables are not in the collab scope yet (#1233): {e:?}");
-            return;
-        }
-    };
+    let snap = host
+        .start_collaboration_host(|_| {})
+        .expect("a table with a wide cell is in the collab scope (#1233)");
     let to_host: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
     let sink = to_host.clone();
     let guest = create_editor();

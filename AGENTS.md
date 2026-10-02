@@ -40,7 +40,6 @@ list if something looks off.
 | `rinch-macros` | `rsx!` and `#[component]`. |
 | `rinch-platform` | Platform abstraction traits: `PlatformWindow`, `PlatformRenderer`, `PlatformEventLoop`, `PlatformMenu`, plus `PlatformEvent` / `AppAction`. |
 | `rinch-dom` | CSS + layout + paint engine (Stylo, Taffy, Parley, Vello/tiny-skia). The heaviest crate. |
-| `stylo-taffy` | Vendored Stylo↔Taffy interop. Pins Taffy alongside `rinch-dom`. |
 | `rinch-renderer` | Near-empty stub (two empty modules). Optional dep of `rinch` under `gpu`; nothing meaningful lives here yet. |
 
 **UI**
@@ -109,7 +108,7 @@ rinch (facade)
   │                                               image-network)
   └── rinch-editor-view/collaboration            (collaboration → implies desktop)
 
-rinch-dom            → rinch-core + stylo, stylo_taffy, taffy, parley, vello,
+rinch-dom            → rinch-core + stylo, taffy, parley, vello,
                        tiny-skia (software-renderer), cssparser
 rinch-components     → rinch-core, rinch-theme, rinch-macros, rinch-tabler-icons
 rinch-web            → rinch-core, rinch (no default features), rinch-editor-core,
@@ -259,8 +258,9 @@ tiny-skia backends), `layout_engine.rs` + `layout.rs` (Taffy), `computed_style/`
 - Stylo integration has many trait impls with subtle requirements — read before editing.
 - Paint order matters; layout measurement and paint must use the same font stack or
   text clips.
-- Taffy is pinned at **0.12** in two places (`rinch-dom` and the vendored
-  `stylo-taffy`) which must move together.
+- Taffy is pinned at **0.14** in one place, `crates/rinch-dom/Cargo.toml` (its
+  `[dependencies]` and `[dev-dependencies]` lines must agree). The vendored
+  `stylo-taffy` crate that used to pin it too was unused and was deleted (#1236).
 
 ### rinch-macros (proc macros)
 

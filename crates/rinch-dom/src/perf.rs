@@ -164,12 +164,14 @@ define_counters! {
     /// The roots it left alone keep both.
     IfcSignatureChanges = "ifc_signature_changes",
     /// Parley layouts (of any of the kinds above) broken a second time to
-    /// hang preserved trailing spaces at a soft wrap
-    /// (`break_lines_hanging_spaces`). At most one per layout, however many
-    /// lines it fixes — the linearity pin.
+    /// hang preserved trailing spaces at a soft wrap, or to move a break
+    /// parley put after a no-break space it hung (#1218)
+    /// (`break_lines_hanging_spaces`, `break_leaf_lines`). At most one per
+    /// layout, however many lines it fixes — the linearity pin.
     IfcHangPasses = "ifc_hang_passes",
-    /// Lines those passes broke again at a widened width to keep their
-    /// spaces and tabs on the line they hang from.
+    /// Lines those passes broke again: at a widened width to keep their
+    /// spaces and tabs on the line they hang from, or once per line that
+    /// ended after a hung NBSP.
     IfcHangLines = "ifc_hang_lines",
     /// Parley layouts broken once more to drop the empty line parley commits
     /// after an inline box placed by an emergency break (#1050), or after a
@@ -180,6 +182,11 @@ define_counters! {
     /// ending in a forced break. On the `pre-wrap` route it is the second hanging
     /// pass, which `ifc_hang_passes` does not count again.
     IfcPhantomRebreaks = "ifc_phantom_rebreaks",
+    /// Breaks of a single line `ifc::unglue` made to move a line break
+    /// parley put after a no-break space it hung (#1218): a few per such
+    /// line — logarithmic, not linear, in the length of an NBSP-glued chain,
+    /// which a search over the line's units keeps it.
+    IfcUnglueRebreaks = "ifc_unglue_rebreaks",
 
     // ── Layout ─────────────────────────────────────────────────────────
     /// `resolve_layout` calls.

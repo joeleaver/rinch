@@ -51,11 +51,15 @@
 //!   [`crate::project`]). A sticky index on the moved characters then points into a
 //!   deleted `Text` (joined) or at a tombstone at the split point (split, which
 //!   resolves to the end of the first half).
-//! * **An edit next to its block, at the top level of the document**, can end it or
-//!   move it even though the block's own text did not change. The projection finds
-//!   the unchanged top-level blocks by node *identity*, and a split or a join rebuilds
-//!   both nodes it touches, so the untouched paragraph is rewritten through its
-//!   neighbour's `Text` (tracked in #917). Concretely:
+//! * **An edit next to its block** can end it or move it even though the block's own
+//!   text did not change, at the top level and inside a list, a quote or a cell alike.
+//!   The projection finds the unchanged blocks of a level by node *identity* (#1240),
+//!   and a split or a join rebuilds both nodes it touches, so the untouched paragraph
+//!   is rewritten through its neighbour's `Text` (tracked in #917). The exception is a
+//!   level the edit kept **nothing** of — the block was its level's only child, so
+//!   both of its new nodes are new: such a level is matched by value, and an Enter at
+//!   the start of that block keeps its indexes. Concretely, where the level keeps a
+//!   sibling:
 //!   - **Enter at the start of a paragraph** (a new empty paragraph above it): every
 //!     index into that paragraph resolves into the **new empty paragraph**, a wrong
 //!     position and not `None`.
@@ -64,9 +68,7 @@
 //!   - **Toggling a bullet list on a paragraph, or wrapping it in a quote** (the
 //!     node's kind changes, so the block is replaced whole): `None`. Lifting it out of
 //!     a quote or a list is the same replace.
-//!
-//!   Inside a list or a quote the child diff compares structurally, so the same Enter
-//!   at the start of a paragraph in a list item or a quote keeps its indexes.
+
 //!
 //! ## Why the model document is a parameter
 //!
@@ -81,6 +83,11 @@
 //! the wrong place. Inline atoms (`image`, `hard_break`) are one char in the CRDT's text
 //! and one position in the model, so they need nothing of their own.
 //!
+//! A table's rows and cells are not content arrays in the CRDT: the walk reads them
+//! off the table's grid (`table::cell_maps`), in the model's order. A **filler** cell
+//! (one the read supplies for a slot no cell covers, which the CRDT does not hold) has
+//! no text behind it, so a position in one has no sticky index.
+//!
 //! "Index for index" counts **visible** children: a container emptied by concurrent
 //! deletions stays in the CRDT but reads as absent (see `projection::is_void`), so both
 //! walks skip it, or every index after it would name the wrong block.
@@ -88,11 +95,12 @@
 //! The one block with no CRDT behind it is the starter paragraph of a CRDT holding
 //! zero blocks (see [`CollabDoc::to_doc`]): positions in it have no sticky index.
 
+use crate::table::{cell_maps, is_table_map};
 use yrs::branch::{Branch, BranchPtr};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Array, ArrayRef, Assoc, GetString, IndexedSequence, Out, ReadTxn, StickyIndex, TextRef,
+    Array, ArrayRef, Assoc, GetString, IndexedSequence, MapRef, Out, ReadTxn, StickyIndex, TextRef,
     Transact,
 };
 
@@ -153,19 +161,43 @@ impl CollabDoc {
         let txn = self.doc.transact();
         // Walk the child indices from the root to the textblock, which name the same
         // nodes in the projection.
-        let mut list: ArrayRef = self.content.clone();
+        //
+        // A table is the one node whose children are not a content array: its rows and
+        // cells are read off the table's grid (`table::cell_maps`), and a filler cell
+        // (one the CRDT does not hold) has no text to stick to.
+        enum Level {
+            List(ArrayRef),
+            Table(Vec<Vec<Option<MapRef>>>),
+            Row(Vec<Option<MapRef>>),
+        }
+        let mut level = Level::List(self.content.clone());
         let mut text: Option<TextRef> = None;
         for depth in 0..rp.depth() {
-            let map = visible_child(&txn, &list, rp.index(depth))?;
+            let index = rp.index(depth);
             let model_node = rp.node(depth + 1);
+            let map = match level {
+                Level::List(list) => visible_child(&txn, &list, index)?,
+                Level::Table(rows) => {
+                    if model_node.type_name() != "table_row" {
+                        return None;
+                    }
+                    level = Level::Row(rows.into_iter().nth(index)?);
+                    continue;
+                }
+                Level::Row(cells) => cells.into_iter().nth(index)??,
+            };
             if node_type(&txn, &map)? != model_node.type_name() {
                 return None;
             }
             if depth + 1 == rp.depth() {
                 text = Some(block_text(&txn, &map)?);
-            } else {
-                list = node_content(&txn, &map)?;
+                break;
             }
+            level = if is_table_map(&txn, &map) {
+                Level::Table(cell_maps(&txn, &map).ok()?)
+            } else {
+                Level::List(node_content(&txn, &map)?)
+            };
         }
         let text = text?;
         let crdt_text = text.get_string(&txn);
@@ -255,6 +287,29 @@ fn find_text<T: ReadTxn>(
         if let Some(text) = block_text(txn, &map) {
             if BranchPtr::from(AsRef::<Branch>::as_ref(&text)) == target {
                 return Some(text);
+            }
+        } else if is_table_map(txn, &map) {
+            // A table's rows and cells are its grid's, in model order; a filler has
+            // no text and is skipped.
+            // A table too large to read holds no text a model position can name (the
+            // model sees its placeholder), so the walk steps over it.
+            let rows = cell_maps(txn, &map).unwrap_or_default();
+            for (i, row) in rows.into_iter().enumerate() {
+                path.push((i, "table_row".to_string()));
+                for (k, cell) in row.into_iter().enumerate() {
+                    let Some(cell) = cell else { continue };
+                    let (Some(cell_type), Some(children)) =
+                        (node_type(txn, &cell), node_content(txn, &cell))
+                    else {
+                        continue;
+                    };
+                    path.push((k, cell_type));
+                    if let Some(text) = find_text(txn, &children, target, path) {
+                        return Some(text);
+                    }
+                    path.pop();
+                }
+                path.pop();
             }
         } else if let Some(children) = node_content(txn, &map)
             && let Some(text) = find_text(txn, &children, target, path)

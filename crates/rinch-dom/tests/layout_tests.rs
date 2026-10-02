@@ -979,8 +979,8 @@ fn test_blockified_input_keeps_its_height_when_focused() {
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(
         doc.tree.get(input.0).unwrap().layout.height,
-        20.0,
-        "an unfocused input is one line tall"
+        26.0,
+        "an unfocused input is one line tall, plus the UA sheet's 1px padding and 2px border (#1194)"
     );
 
     doc.set_attribute(input, "data-focused", "true");
@@ -989,7 +989,7 @@ fn test_blockified_input_keeps_its_height_when_focused() {
 
     assert_eq!(
         doc.tree.get(input.0).unwrap().layout.height,
-        20.0,
+        26.0,
         "a focused input must keep its height, or nothing about it is painted"
     );
 }
@@ -1269,8 +1269,8 @@ fn test_textarea_rows_sets_intrinsic_height() {
 
     let layout = doc.tree.get(ta.0).unwrap().layout;
     assert_eq!(
-        layout.height, 120.0,
-        "rows=6 at line-height 20px must give a 6-line box"
+        layout.height, 126.0,
+        "rows=6 at line-height 20px must give a 6-line box, plus the UA sheet's 2px padding and 1px border (#1194)"
     );
 }
 
@@ -1286,8 +1286,8 @@ fn test_textarea_default_rows_is_two() {
 
     let layout = doc.tree.get(ta.0).unwrap().layout;
     assert_eq!(
-        layout.height, 40.0,
-        "a <textarea> with no rows attribute defaults to 2 rows"
+        layout.height, 46.0,
+        "a <textarea> with no rows attribute defaults to 2 rows, plus the UA sheet's 2px padding and 1px border (#1194)"
     );
 }
 

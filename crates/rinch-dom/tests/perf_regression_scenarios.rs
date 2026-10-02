@@ -30,6 +30,8 @@
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
+//! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks`] |
+//! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`break_leaf_lines`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way`] |
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //!
@@ -560,7 +562,7 @@ fn a_contents_wrapped_flex_item_ellipsis() {
             (FullStyleWalks, 4),
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 4),
-            (ShapeMeasureIfc, 2),
+            (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
             (EllipsisShapes, 2),
@@ -573,7 +575,7 @@ fn a_contents_wrapped_flex_item_ellipsis() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 3),
+            (TaffyMeasureCalls, 2),
             (PaintNodesVisited, 4),
             (StackingOrderBuilds, 1),
         ],
@@ -1076,6 +1078,90 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 2),
             (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A paragraph of 1600 words all glued by NBSPs (#1218, review of #1257 F1),
+/// at a width parley hangs an NBSP at: one line, overflowing. The re-break
+/// that moves parley's break off the NBSP searches the line by galloping, so
+/// it is a handful of breaks of the line — not one per glued word, which made
+/// this paragraph quadratic (62 ms where main took 4).
+#[test]
+fn an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks() {
+    let mut doc = doc_with(".p { width: 40px; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, &vec!["ab"; 1600].join("\u{a0}"));
+    let s = cold_frame(&mut doc);
+    expect(
+        "nbsp-glued chain",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            // One hang pass, one line re-broken, 15 breaks of it, from each
+            // site (the measure and the paint layout).
+            (IfcHangPasses, 2),
+            (IfcHangLines, 2),
+            (IfcUnglueRebreaks, 30),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The text-leaf site of the same re-break: a flex item's own text.
+#[test]
+fn an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way() {
+    let mut doc = doc_with(".p { width: 40px; display: flex; flex-direction: column; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, &vec!["ab"; 1600].join("\u{a0}"));
+    let s = cold_frame(&mut doc);
+    expect(
+        "nbsp-glued chain, text leaf",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureText, 4),
+            (IfcMeasureInvalidations, 2),
+            // 15 breaks of the one line per measure, four measures.
+            (IfcHangPasses, 4),
+            (IfcHangLines, 4),
+            (IfcUnglueRebreaks, 60),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+            (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
         ],
     );
