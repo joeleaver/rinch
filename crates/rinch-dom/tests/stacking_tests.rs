@@ -1146,3 +1146,263 @@ mod painted_fixed {
         );
     }
 }
+
+/// #542: the filter and flex/grid-item-z-index stacking-context creators,
+/// read in both directions — the forward paint sequence and the reverse hit
+/// test — because that agreement is the whole point of one shared predicate
+/// (this file's own module doc).
+mod new_creators_542 {
+    use super::*;
+
+    /// A `filter`-only box with no `z-index` is a stacking context at
+    /// implicit `z-index: 0` (CSS2 Appendix E: a context-creating element
+    /// with no explicit `z-index` behaves as `z-index: 0`), so it is a step-8
+    /// entry, not a step-4 one. Written *before* a plain in-flow sibling in
+    /// the markup, it now paints *after* it — reversed from DOM order, which
+    /// is what tells this apart from "filter boxes just happen to paint in
+    /// markup order" (the #324 stage B accident the issue's second comment
+    /// names: before this fix, the same markup painted `[filterbox, block]`,
+    /// in DOM order, because `filterbox` was plain in-flow content).
+    ///
+    /// It also keeps its `overflow: hidden` clip — the two questions are
+    /// independent (`Node::clips_overflow` vs `Node::creates_stacking_context`)
+    /// — so a child taller than the box still does not escape it.
+    #[test]
+    fn a_filter_box_with_overflow_is_hoisted_above_in_flow_content_written_after_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let filterbox = doc.create_element("div");
+        doc.set_attribute(
+            filterbox,
+            "style",
+            "filter: brightness(0.5); overflow: hidden; width: 100px; height: 40px",
+        );
+        doc.append_child(body, filterbox);
+        let tall_child = doc.create_element("div");
+        doc.set_attribute(tall_child, "style", "width: 10px; height: 300px");
+        doc.append_child(filterbox, tall_child);
+
+        let block = doc.create_element("div");
+        doc.set_attribute(block, "style", "width: 200px; height: 50px");
+        doc.append_child(body, block);
+
+        doc.resolve_layout(800.0, 600.0);
+        let order = body_order(&doc);
+
+        assert_eq!(
+            ids(&order),
+            vec![raw(block), raw(filterbox)],
+            "in-flow content (step 4) paints before a context-creating box at \
+             implicit z-index 0 (step 8), whatever the markup order says — the \
+             reverse of this markup's DOM order"
+        );
+        assert_eq!(order[1].kind, PaintKind::StackingContext);
+        assert_eq!(
+            order[1].z_index, 0,
+            "no explicit z-index: the filter alone creates the context, at the \
+             implicit level"
+        );
+
+        assert!(
+            doc.tree.get(raw(filterbox)).unwrap().clips_overflow(),
+            "becoming a stacking context does not stop it clipping — the two \
+             questions are independent since #324 stage B"
+        );
+        // A point inside the box but below its own 40px height is covered by
+        // the 300px-tall child in Taffy's eyes but clipped from view; reduced
+        // hit testing here mirrors `clips_overflow`, which the real
+        // `hit_test_node` also gates on, so this is a property of the shared
+        // predicate rather than a claim about the real backend.
+    }
+
+    /// A tap that lands only on `filterbox`'s own box (not on `block`)
+    /// resolves to it — the reverse reading of the same sequence as above, on
+    /// the same shared predicate the module doc describes.
+    #[test]
+    fn a_tap_on_the_filter_box_resolves_to_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let filterbox = doc.create_element("div");
+        doc.set_attribute(
+            filterbox,
+            "style",
+            "filter: brightness(0.5); width: 100px; height: 40px",
+        );
+        doc.append_child(body, filterbox);
+
+        let block = doc.create_element("div");
+        doc.set_attribute(block, "style", "width: 200px; height: 50px");
+        doc.append_child(body, block);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            resolve(&doc.tree, doc.tree.body_id, 0.0, 0.0, 10.0, 10.0),
+            Some(raw(filterbox)),
+        );
+        // `block` sits below `filterbox` in flow (0..40 is filterbox, 40..90
+        // is block) and is unambiguous in its own band.
+        let block_y = doc.tree.get(raw(block)).unwrap().layout.y;
+        assert_eq!(
+            resolve(
+                &doc.tree,
+                doc.tree.body_id,
+                0.0,
+                0.0,
+                10.0,
+                (block_y + 5.0) as f32
+            ),
+            Some(raw(block)),
+        );
+    }
+
+    /// A `position: static` flex item with a negative `z-index` paints
+    /// *below* an in-flow sibling it overlaps — Appendix E step 3 (negative
+    /// `z-index` descendants) under step 4 (in-flow, non-positioned) — and the
+    /// reverse hit test agrees: a tap in the overlap resolves to the sibling
+    /// drawn on top, not to the negative-z item underneath it.
+    ///
+    /// The overlap is forced with a negative `margin-right` on the first flex
+    /// item, which is what gives this a point to probe at all — ordinary flex
+    /// items laid out side by side never overlap, so there would be nothing
+    /// for a hit-test ordering assertion to distinguish.
+    #[test]
+    fn a_negative_z_index_flex_item_stays_below_an_overlapping_in_flow_sibling() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 400px; height: 40px",
+        );
+        doc.append_child(body, container);
+
+        let behind = doc.create_element("div");
+        doc.set_attribute(
+            behind,
+            "style",
+            "z-index: -1; width: 40px; height: 40px; margin-right: -20px",
+        );
+        doc.append_child(container, behind);
+
+        let front = doc.create_element("div");
+        doc.set_attribute(front, "style", "width: 40px; height: 40px");
+        doc.append_child(container, front);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(raw(behind)).unwrap().creates_stacking_context(),
+            "#542: a static flex item with an explicit z-index is a stacking \
+             context"
+        );
+        assert!(
+            !doc.tree.get(raw(front)).unwrap().creates_stacking_context(),
+            "the plain sibling is an ordinary in-flow flex item — no z-index, \
+             so no context"
+        );
+
+        let order = stacking_paint_order(&doc.tree, raw(container), 1.0, 0.0, 0.0);
+        assert_eq!(
+            ids(&order),
+            vec![raw(behind), raw(front)],
+            "negative z-index (step 3) paints below in-flow content (step 4), \
+             exactly as an absolutely positioned negative-z box would"
+        );
+        assert_eq!(order[0].kind, PaintKind::StackingContext);
+        assert_eq!(order[0].z_index, -1);
+        assert_eq!(order[1].kind, PaintKind::InFlow);
+
+        // Find the overlap in actual layout coordinates rather than assuming
+        // the geometry: `behind`'s box ends where its border-box width ends,
+        // `front`'s box starts at its own layout x (margin collapse already
+        // applied by Taffy), and the two must actually overlap for this test
+        // to probe anything.
+        let behind_layout = doc.tree.get(raw(behind)).unwrap().layout;
+        let front_layout = doc.tree.get(raw(front)).unwrap().layout;
+        let overlap_start = front_layout.x;
+        let overlap_end = behind_layout.x + behind_layout.width;
+        assert!(
+            overlap_end > overlap_start,
+            "the negative margin must actually produce an overlap region \
+             (behind ends at {overlap_end}, front starts at {overlap_start}) \
+             or this test is sampling a fixed point that cannot distinguish \
+             the two orderings"
+        );
+        let probe_x = (overlap_start + overlap_end) / 2.0;
+        let probe_y = behind_layout.y + behind_layout.height / 2.0;
+
+        assert_eq!(
+            resolve(&doc.tree, doc.tree.body_id, 0.0, 0.0, probe_x, probe_y),
+            Some(raw(front)),
+            "the overlap resolves to the in-flow sibling painted on top, not \
+             to the negative-z item underneath it"
+        );
+    }
+
+    /// Nested: a flex item's own stacking context (from `z-index` alone, at
+    /// `position: static`) is an entry of its flex container's sequence, and
+    /// that whole container is in turn hoisted into an *outer* positioned
+    /// ancestor's sequence — so the fact has to survive two levels, not just
+    /// be set once at the top.
+    #[test]
+    fn a_flex_items_context_nests_correctly_under_an_outer_stacking_context() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let outer = doc.create_element("div");
+        doc.set_attribute(
+            outer,
+            "style",
+            "position: relative; z-index: 1; width: 400px; height: 100px",
+        );
+        doc.append_child(body, outer);
+
+        let flex_container = doc.create_element("div");
+        doc.set_attribute(
+            flex_container,
+            "style",
+            "display: flex; width: 400px; height: 40px",
+        );
+        doc.append_child(outer, flex_container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 40px; height: 40px; z-index: 5");
+        doc.append_child(flex_container, item);
+
+        let sibling = doc.create_element("div");
+        doc.set_attribute(sibling, "style", "width: 40px; height: 40px");
+        doc.append_child(flex_container, sibling);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(doc.tree.get(raw(item)).unwrap().creates_stacking_context());
+
+        // The item is NOT an entry of the body's own sequence: it is nested
+        // two levels down, under `outer`'s stacking context and inside
+        // `flex_container`'s own tree-order run.
+        assert!(
+            !ids(&body_order(&doc)).contains(&raw(item)),
+            "the item belongs to flex_container's sequence, not the body's — \
+             outer's stacking context does not flatten what is inside it"
+        );
+
+        // `flex_container` itself creates no context (plain `display: flex`,
+        // no positioning, no z-index on it), so it does not appear in outer's
+        // sequence as a hoisted entry either; it is reached as an ordinary
+        // in-flow descendant on the way down to `item`.
+        let item_order = stacking_paint_order(&doc.tree, raw(flex_container), 1.0, 0.0, 0.0);
+        assert_eq!(
+            ids(&item_order),
+            vec![raw(sibling), raw(item)],
+            "inside its own container, the item (step 8, z=5) still paints \
+             after its plain in-flow sibling (step 4)"
+        );
+    }
+}
