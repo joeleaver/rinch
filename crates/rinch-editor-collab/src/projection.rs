@@ -1160,6 +1160,22 @@ pub(crate) fn common_runs(
     (prefix, suffix)
 }
 
+/// [`common_runs`] by identity over two child lists: their common leading and
+/// trailing runs of the same `Rc`s. Walks the slices directly — a keystroke in a long
+/// document pays it once per top-level block, and the index-based closure cost about
+/// two more instructions per block (`editor::collab_keystroke`).
+pub(crate) fn identity_runs(before: &Node, after: &Node) -> (usize, usize) {
+    let (b, a) = (before.content().children(), after.content().children());
+    let prefix = b.iter().zip(a).take_while(|(x, y)| x.same_ref(y)).count();
+    let suffix = b[prefix..]
+        .iter()
+        .rev()
+        .zip(a[prefix..].iter().rev())
+        .take_while(|(x, y)| x.same_ref(y))
+        .count();
+    (prefix, suffix)
+}
+
 /// Reconcile a container's `content` array to `target`. Diffs the CRDT's current
 /// children against `target` by a common leading and trailing run left untouched
 /// (keeping the CRDT identity — and merge behaviour — of every node in it), reconciles
@@ -1189,7 +1205,7 @@ pub(crate) fn reconcile_child_list(
     // A before and after that share no child carry no identity at this level (a load,
     // a re-base); their children may still.
     let runs = model.and_then(|(b, a)| {
-        let runs = common_runs(cn, tn, |i, j| b.child(i).same_ref(a.child(j)));
+        let runs = identity_runs(b, a);
         let related =
             runs != (0, 0) || (0..tn).any(|j| (0..cn).any(|i| b.child(i).same_ref(a.child(j))));
         related.then_some(runs)

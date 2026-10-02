@@ -42,8 +42,8 @@ use rinch_editor_core::{Node, Transaction};
 
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    CollabDoc, RawIndex, common_runs, insert_node, read_node, read_node_data, visible_indices,
-    write_child_diff,
+    CollabDoc, RawIndex, common_runs, identity_runs, insert_node, read_node, read_node_data,
+    visible_indices, write_child_diff,
 };
 
 impl CollabDoc {
@@ -123,7 +123,7 @@ impl CollabDoc {
         // before and after that share no block at all carry no identity (a load while
         // collaborating, a re-base on the CRDT's read-back): there the runs are taken by
         // the blocks' values, as a nested list does (`reconcile_child_list`).
-        let mut runs = common_runs(bn, an, |i, j| before.child(i).same_ref(after.child(j)));
+        let mut runs = identity_runs(before, after);
         if runs == (0, 0)
             && !(0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
         {
