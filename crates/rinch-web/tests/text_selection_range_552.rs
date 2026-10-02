@@ -104,7 +104,8 @@ fn selection(input: &web_sys::HtmlInputElement) -> (Option<u32>, Option<u32>, Op
 fn set_selection_range_reaches_the_control() {
     let f = Fixture::mount(&[("type", "text"), ("value", "hello")]);
 
-    f.handle.set_selection_range(1, 4, SelectionDirection::Backward);
+    f.handle
+        .set_selection_range(1, 4, SelectionDirection::Backward);
 
     let (start, end, direction) = selection(&f.input());
     assert_eq!(
@@ -127,7 +128,8 @@ fn set_selection_range_works_before_the_control_is_focused() {
         "the field must start unfocused for this test"
     );
 
-    f.handle.set_selection_range(2, 5, SelectionDirection::Forward);
+    f.handle
+        .set_selection_range(2, 5, SelectionDirection::Forward);
 
     let (start, end, _) = selection(&f.input());
     assert_eq!((start, end), (Some(2), Some(5)));
