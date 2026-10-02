@@ -503,8 +503,11 @@ impl RinchDocument {
                a Taffy node with children never calls one) nor painted nor hit.
                `!important` so an author `display` cannot bring it back.
                Chrome still lets canvas fallback content take focus by Tab;
-               rinch does not (#1294). */
-            :is(textarea, input, canvas, video, iframe) > * {
+               rinch does not (#1294). Spelled as a plain selector list, not
+               `:is(...)`, which cost ~1.2k instructions per element cascade.
+               Chrome reports such a child's computed `display` as `block`
+               (it has no box either way); rinch reports `none`. */
+            textarea > *, input > *, canvas > *, video > *, iframe > * {
                 display: none !important;
             }
 
