@@ -1069,3 +1069,77 @@ mod nested_read_tests {
         });
     }
 }
+
+/// `SignalStore::get_inner`'s generation filter (issue #546, PR #1312) is the
+/// one check that makes a stale `Signal<T>` handle read as dead after its
+/// slot is recycled by a new signal — every read/write/track/notify call
+/// site goes through it. `a_dep_whose_slot_was_recycled_does_not_disturb_the_new_occupant`
+/// (`effect.rs`) looks like it would catch a dropped filter but does not: it
+/// only exercises `DepKey::unsubscribe`, and `ObserverId`s are never reused,
+/// so a stale key's `.remove()` is a no-op on the new occupant's subscriber
+/// set whether or not `get_inner` filters by generation.
+#[cfg(test)]
+mod slot_reuse_tests {
+    use super::*;
+
+    #[test]
+    fn a_stale_handle_after_slot_reuse_reports_dead_not_the_new_occupant() {
+        let a = Signal::new(100i32);
+        a.free_for_tests();
+        let b = Signal::new(200i32);
+        assert_eq!(
+            b.debug_id(),
+            a.debug_id(),
+            "need slot reuse for this probe to mean anything"
+        );
+        assert!(
+            !a.is_alive(),
+            "a stale handle after slot reuse must report dead"
+        );
+        assert_eq!(
+            a.try_get(),
+            None,
+            "a stale handle must not read the new occupant's value"
+        );
+    }
+}
+
+/// `set_at`'s comment claims the displaced value is dropped strictly after
+/// this signal's own `value` borrow ends, so that a `T` whose `Drop` reads or
+/// writes *the same signal it was just displaced from* does not
+/// `BorrowMutError` (issue #546, PR #1312). Every `TouchesASignalOnDrop`
+/// fixture elsewhere in this file touches a *different* signal, so that
+/// specific claim was unpinned until this module.
+#[cfg(test)]
+mod self_referential_drop_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct ReadsSelfOnDrop(Signal<ReadsSelfOnDrop>, Rc<Cell<bool>>);
+    impl Drop for ReadsSelfOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.try_with(|_| ());
+            self.1.set(true);
+        }
+    }
+
+    #[test]
+    fn a_displaced_value_that_reads_its_own_signal_on_drop_does_not_panic() {
+        let ran = Rc::new(Cell::new(false));
+        // `Signal<T>` is just an id/generation pair with a `PhantomData<T>` —
+        // no invariant beyond that, so an all-zero handle is a valid (if
+        // meaningless) bit pattern to seed the self-reference with before
+        // `holder`'s real id exists.
+        let holder: Signal<ReadsSelfOnDrop> =
+            Signal::new(ReadsSelfOnDrop(unsafe { std::mem::zeroed() }, ran.clone()));
+        holder.set(ReadsSelfOnDrop(holder, ran.clone()));
+        ran.set(false);
+        holder.set(ReadsSelfOnDrop(holder, ran.clone()));
+        assert!(
+            ran.get(),
+            "the self-referential value's Drop must have run and read `holder`"
+        );
+        holder.free_for_tests();
+    }
+}
