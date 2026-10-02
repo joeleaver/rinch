@@ -150,7 +150,9 @@ fn assert_control_font(s: &ComputedStyle, what: &str, family: &str) {
 fn a_raw_text_input_carries_chromes_box_and_font() {
     let (mut doc, c) = setup();
     let plain = el(&mut doc, c, "input", &[]);
-    let typed = ["text", "TEXT", "search", "email", "password", "number", "foo"];
+    let typed = [
+        "text", "TEXT", "search", "email", "password", "number", "foo",
+    ];
     let typed: Vec<NodeId> = typed
         .iter()
         .map(|t| el(&mut doc, c, "input", &[("type", t)]))
@@ -159,10 +161,17 @@ fn a_raw_text_input_carries_chromes_box_and_font() {
 
     for id in std::iter::once(plain).chain(typed) {
         let s = style(&doc, id);
-        let what = format!("input {:?}", doc.tree.get(id.0).unwrap().attributes.get("type"));
+        let what = format!(
+            "input {:?}",
+            doc.tree.get(id.0).unwrap().attributes.get("type")
+        );
         assert_eq!(padding(s), (1.0, 2.0, 1.0, 2.0), "{what}: padding");
         assert_eq!(border(s), (2.0, 2.0, 2.0, 2.0), "{what}: border width");
-        assert_ne!(s.border_top_style, BorderStyleValue::None, "{what}: border style");
+        assert_ne!(
+            s.border_top_style,
+            BorderStyleValue::None,
+            "{what}: border style"
+        );
         assert_eq!(rgb(s.border_top_color), GREY, "{what}: border colour");
         assert_control_font(s, &what, "Arial");
         // Not reset on an input: these two still inherit.
@@ -301,7 +310,10 @@ fn author_declarations_beat_the_new_ua_rules() {
         &mut doc,
         c,
         "textarea",
-        &[("style", "padding: 5px; border-width: 4px; white-space: nowrap")],
+        &[(
+            "style",
+            "padding: 5px; border-width: 4px; white-space: nowrap",
+        )],
     );
     doc.resolve_layout(VW, VH);
     let s = style(&doc, i);
