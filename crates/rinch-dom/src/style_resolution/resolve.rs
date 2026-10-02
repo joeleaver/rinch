@@ -648,13 +648,15 @@ impl RinchDocument {
                 if let Some(root) = self.tree.nodes[cid].ifc_root {
                     self.invalidate_ifc_root(root);
                 }
-                // Remove from taffy parent (use safe version — the child may
-                // have already been detached by setup_inline_formatting_contexts)
-                if let (Some(parent_taffy), Some(child_taffy)) = (
-                    self.tree.nodes[node_id].taffy_id,
-                    self.tree.nodes[cid].taffy_id,
-                ) {
-                    self.taffy_remove_child_safe(parent_taffy, child_taffy);
+                // Detach the pseudo-element's whole Taffy contribution, not
+                // just its own id (#521): a `display: contents` pseudo has
+                // already had its own id spliced out of `node_id`'s Taffy
+                // child list by `sync_display_contents`, with its *effective*
+                // children (any that are themselves genuine Taffy members)
+                // spliced in directly — the same shape `taffy_detach_contribution`
+                // (#515/#517) exists to detach everywhere else.
+                if let Some(parent_taffy) = self.tree.nodes[node_id].taffy_id {
+                    self.taffy_detach_contribution(parent_taffy, cid);
                 }
                 // Remove the pseudo-element's subtree from the slab
                 self.tree.remove_subtree(cid);
