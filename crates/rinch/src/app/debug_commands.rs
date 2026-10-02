@@ -224,6 +224,19 @@ fn debug_key_logical_key(key: &str) -> Option<String> {
     }
 }
 
+/// The key name and flat/array modifiers a debug `key_press`/`key_down`
+/// command carries, bundled so [`RinchApp::dispatch_debug_key_down`] takes a
+/// window-size/scale-factor pair plus one struct rather than nine loose
+/// arguments (clippy's `too_many_arguments`, issue #485).
+#[cfg(feature = "debug")]
+struct DebugKeyDownRequest<'a> {
+    key: &'a str,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    modifiers: &'a [String],
+}
+
 #[cfg(feature = "debug")]
 impl RinchApp {
     // ── Debug commands ───────────────────────────────────────────────────
@@ -281,15 +294,18 @@ impl RinchApp {
     /// `DebugResult::Error` for the caller to return verbatim.
     fn dispatch_debug_key_down(
         &mut self,
-        key: &str,
-        mut shift: bool,
-        mut ctrl: bool,
-        mut alt: bool,
-        modifiers: &[String],
+        req: DebugKeyDownRequest<'_>,
         actions: &mut Vec<AppAction>,
         scale_factor: f64,
         window_size: (u32, u32),
     ) -> Result<Option<(KeyCode, Option<String>, Modifiers)>, DebugResult> {
+        let DebugKeyDownRequest {
+            key,
+            mut shift,
+            mut ctrl,
+            mut alt,
+            modifiers,
+        } = req;
         // Fold the optional `modifiers` name array into the flat booleans
         // (issue #152) — the only path that can request `meta`. An unknown
         // name fails loud instead of silently altering the simulated input.
@@ -724,11 +740,13 @@ impl RinchApp {
                 // two halves for a caller that wants to hold a key across
                 // other commands, mirroring `mouse_down`/`mouse_up`.
                 let resolved = match self.dispatch_debug_key_down(
-                    &key,
-                    shift,
-                    ctrl,
-                    alt,
-                    &modifiers,
+                    DebugKeyDownRequest {
+                        key: &key,
+                        shift,
+                        ctrl,
+                        alt,
+                        modifiers: &modifiers,
+                    },
                     actions,
                     scale_factor,
                     window_size,
@@ -765,11 +783,13 @@ impl RinchApp {
                 // so a caller can drive other commands (or just wait) before
                 // releasing with `key_up`.
                 if let Err(e) = self.dispatch_debug_key_down(
-                    &key,
-                    shift,
-                    ctrl,
-                    alt,
-                    &modifiers,
+                    DebugKeyDownRequest {
+                        key: &key,
+                        shift,
+                        ctrl,
+                        alt,
+                        modifiers: &modifiers,
+                    },
                     actions,
                     scale_factor,
                     window_size,
