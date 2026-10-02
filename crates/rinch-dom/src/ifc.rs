@@ -248,6 +248,39 @@ pub(crate) fn break_lines_hanging_spaces(
     stats
 }
 
+/// Where the first line of `layout` sits its baseline, from the top of the
+/// layout — the content-box top of the box it was measured for. `None` when it
+/// laid out no line.
+pub(crate) fn first_line_baseline(layout: &parley::layout::Layout<Brush>) -> Option<f32> {
+    layout.lines().next().map(|line| line.metrics().baseline)
+}
+
+/// A measure's `LayoutOutput` with its first baseline (#1013).
+///
+/// `compute_leaf_layout` reports `Baselines::NONE` whatever the measure did, so
+/// Taffy synthesized every text leaf's and IFC root's baseline from its bottom
+/// border edge, and `align-items: baseline` in a flex or grid row lined items
+/// up by their bottoms. Taffy measures a baseline from the **border-box** top
+/// (`flexbox.rs` adds only the item's top margin), so the content-box baseline
+/// gets the box's top padding and border, resolved exactly as
+/// `compute_leaf_layout` resolves them. A block container above the leaf needs
+/// nothing: Taffy's block algorithm propagates its first in-flow child's.
+pub(crate) fn with_first_baseline(
+    mut out: taffy::LayoutOutput,
+    inputs: &taffy::LayoutInput,
+    style: &taffy::Style,
+    content_baseline: Option<f32>,
+) -> taffy::LayoutOutput {
+    if let Some(baseline) = content_baseline {
+        use taffy::{CoreStyle, ResolveOrZero};
+        let pw = inputs.parent_size.width;
+        let padding = style.padding().resolve_or_zero(pw, |_, _| 0.0);
+        let border = style.border().resolve_or_zero(pw, |_, _| 0.0);
+        out.baselines.first = Some(padding.top + border.top + baseline);
+    }
+    out
+}
+
 /// Break a text **leaf**'s layout — a flex or grid item's own text, measured
 /// through `NodeContext::Text` rather than an IFC — at `max_width`, without
 /// the empty line parley commits after a final newline ([`phantom_last_line`],
@@ -4889,8 +4922,11 @@ impl RinchDocument {
                 // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
                 // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
                 // `TaffyView` ran around the size this body returns, with the
-                // same `0.0` calc resolver.
-                taffy::compute_leaf_layout(
+                // same `0.0` calc resolver. The first line's baseline goes to
+                // Taffy too (#1013): an `inline-flex` / `inline-grid` with
+                // `align-items: baseline` aligns its own items by it.
+                let mut first_baseline: Option<f32> = None;
+                let out = taffy::compute_leaf_layout(
                     inputs,
                     style,
                     |_, _| 0.0,
@@ -4914,6 +4950,7 @@ impl RinchDocument {
                                     nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                                 );
                                 inline_layout.hang.record(perf);
+                                first_baseline = first_line_baseline(&inline_layout.layout);
                                 taffy::Size {
                                     width: known_dims
                                         .width
@@ -4977,6 +5014,7 @@ impl RinchDocument {
                                 // leaves, so `copy_cached_text_layouts` picks between
                                 // them by the same rule.
                                 let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                                first_baseline = first_line_baseline(&layout);
                                 leaf_layouts.insert((text.node_id, wrap_bits), layout);
                                 size
                             }
@@ -5008,7 +5046,8 @@ impl RinchDocument {
                             _ => taffy::Size::ZERO,
                         }
                     },
-                )
+                );
+                with_first_baseline(out, &inputs, style, first_baseline)
             },
         );
         tree.atomic_leaf_layouts.extend(leaf_layouts);

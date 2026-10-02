@@ -224,3 +224,31 @@ fn an_item_with_no_line_still_aligns_its_bottom_edge() {
     near(y(&d, a), 0.0, "big");
     near(y(&d, b), 1.0, "empty box");
 }
+
+/// An `inline-flex` is sized by its own detached compute
+/// (`compute_atomic_inline_root`), not the root one, and its measure reports
+/// the baseline the same way. Chrome: `Big` at 0, `small` (12px in a 30px line,
+/// 9px bottom padding) at 12; bottom edges put `small` at 1.
+#[test]
+fn an_inline_flex_aligns_its_own_items_by_baseline() {
+    let mut d = doc();
+    let c = container(&mut d, "");
+    let f = el(
+        &mut d,
+        c,
+        "span",
+        "display: inline-flex; align-items: baseline",
+    );
+    let a = el(&mut d, f, "span", "font-size: 32px; line-height: 40px");
+    text(&mut d, a, "Big");
+    let b = el(
+        &mut d,
+        f,
+        "span",
+        "font-size: 12px; line-height: 30px; padding-bottom: 9px",
+    );
+    text(&mut d, b, "small");
+    d.resolve_layout(VW, VH);
+    near(y(&d, a), 0.0, "big");
+    near(y(&d, b), 12.0, "small");
+}
