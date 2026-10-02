@@ -40,15 +40,18 @@
 //!
 //! **Every other `<input>` type [`input_width_factor`] does not size has an
 //! intrinsic width of its own in Chrome 153 too** (#1195):
-//! [`picker_input_content_width`] fits the date/time family and `file` to
-//! the font size (each paints an icon and a string this crate does not
-//! shape, so the fit is measured rather than derived), and
+//! [`picker_input_content_width`] sizes the date/time family and `file` from
+//! a representative string shaped in the control's own font plus a small
+//! font-size-only chrome term (an icon this crate does not paint; review of
+//! #1302 — the font-family blindness a pure font-size fit had), and
 //! [`button_label_content_width`] sizes `submit`/`reset`/`button` to their
-//! label text, shaped like a closed `<select>`'s. `checkbox`, `radio`,
-//! `range`, `color`, `image` and `hidden` are untouched — not line-sized
-//! controls at all ([`form_control_content_height`] already excludes them),
-//! and their own intrinsic sizes (13x13, 16, 27, the image's) stay
-//! unmodelled.
+//! label text the same way. Both cache their shaped width on the node
+//! ([`cached_label_width`]), the way [`cached_char_metrics`] already does
+//! for the `size`/`cols` path, so a restyle that moves neither the label nor
+//! the font reshapes nothing. `checkbox`, `radio`, `range`, `color`, `image`
+//! and `hidden` are untouched — not line-sized controls at all
+//! ([`form_control_content_height`] already excludes them), and their own
+//! intrinsic sizes (13x13, 16, 27, the image's) stay unmodelled.
 
 use crate::computed_style::{ComputedStyle, OverflowValue};
 use crate::node::{Node, NodeContext, NodeTree};
@@ -338,7 +341,7 @@ pub(crate) fn form_control_content_size(
 /// ([`form_control_content_height`]): dispatches to whichever of the three
 /// width rules this module implements applies — a text-like `size`/`cols`
 /// factor times an average character ([`form_control_content_width`]), a
-/// date/time-family or `file` picker's font-size fit
+/// date/time-family or `file` picker's representative-string shape
 /// ([`picker_input_content_width`]), or a button's label text
 /// ([`button_label_content_width`]) — and 0 for the six types
 /// [`form_control_content_height`] excludes (never reached: it already
@@ -370,51 +373,100 @@ fn form_control_content_width_any(
         .map(|t| t.trim().to_ascii_lowercase());
     match ty.as_deref() {
         Some(t @ ("date" | "month" | "week" | "time" | "datetime-local" | "file")) => {
-            picker_input_content_width(t, node.computed_style.font_size)
+            picker_input_content_width(node, t, font_cx, layout_cx, font_generation, perf)
         }
         Some(t @ ("submit" | "reset" | "button")) => {
-            button_label_content_width(node, t, font_cx, layout_cx)
+            button_label_content_width(node, t, font_cx, layout_cx, font_generation, perf)
         }
         _ => 0.0,
     }
 }
 
 /// The content-box width of a date/time-family `<input>` or a `file` input
-/// (#1195) — Chrome 153 paints each with its own control (a calendar icon
-/// plus a locale date/time format string for the first five, a "Choose
-/// File" button plus a "No file chosen" label for `file`) that this crate
-/// does not shape, but that widens close to linearly with the font size.
-/// Measured on this crate's bundled Inter, `padding: 0; border: 0`, every
-/// even font size from 8px to 24px and every multiple of 4 up to 40px;
-/// least-squares fit, worst residual under a pixel over the whole sweep:
+/// (#1195; this formula replaced by the review of #1302 — see below).
+/// Chrome 153 paints each with its own control: a calendar/clock icon plus a
+/// locale date/time format string for the first five, a "Choose File"
+/// button plus a "No file chosen" label for `file`.
+///
+/// **The icon/chrome scales with font-size alone; the text scales with the
+/// actual font.** Rewriting this crate's bundled Inter's OS/2
+/// `xAvgCharWidth` (same trick [`form_control_content_width`]'s own tests
+/// use) changes **nothing** about these widths in Chrome 153 — proof that
+/// Chrome does not size a picker from a statistical average the way it sizes
+/// a text `<input>` (#1177) — while swapping the font-*family* for a
+/// genuinely different face (this crate's bundled Space Grotesk; the system
+/// `serif`/`sans-serif`/`monospace` generics) moves them by up to 19px at
+/// 16px. So the original fit here (a pure font-size affine, calibrated only
+/// against the bundled Inter) was silently wrong for every other
+/// font-family — including rinch's own default theme font, which is the
+/// generic `sans-serif`, not Inter.
+///
+/// This now shapes a representative string per type — [`REPRESENTATIVE`] —
+/// in the control's own font (cached by [`cached_label_width`], the same way
+/// [`button_label_content_width`] below does), and adds a much smaller
+/// **chrome** term that *is* font-size-only (the icon and internal UA
+/// padding, which measurably do not depend on the glyph shapes of whatever
+/// text is shown): `round(a + b × font-size + shape(string))`. Fit by
+/// subtracting [`cached_label_width`]'s own (bundled-Inter) shape from each
+/// Chrome 153 measurement at 8–40px, then least-squares over the residual
+/// against font-size; worst residual ~1px over the sweep — about the same
+/// residual the old pure-affine fit had, so no accuracy was given up for the
+/// Inter case this was calibrated against, while a different font now
+/// actually moves the answer (verified against Space Grotesk and the three
+/// generics; not pixel-exact — matching Chrome's own font-fallback choice
+/// for a generic name is a separate, unmodelled problem — but no longer
+/// flat).
 ///
 /// ```text
-/// date           = round(10.6502 +  8.2591 × font-size)
-/// time           = round(20.5196 +  5.3435 × font-size)
-/// datetime-local = round(16.4520 + 13.1183 × font-size)
-/// month          = round( 8.7503 + 10.0152 × font-size)
-/// week           = round( 8.6502 +  9.2591 × font-size)
-/// file           = round( 0.6178 + 21.4427 × font-size)
+/// date           = round(10.7594 + 2.3112 × font-size + shape("mm/dd/yyyy"))
+/// time           = round(20.5196 + 1.3435 × font-size + shape("--:-- AM"))
+/// datetime-local = round(16.2609 + 2.9022 × font-size + shape("mm/dd/yyyy --:-- AM"))
+/// month          = round( 8.6714 + 5.6581 × font-size + shape("mm/yyyy"))
+/// week           = round( 8.7432 + 2.7155 × font-size + shape("Week -- , ----"))
+/// file           = round( 0.7128 + 8.7705 × font-size + shape("Choose File No file chosen"))
 /// ```
 ///
-/// Not a derivation of Chrome's own layout — each width is Chromium's own
-/// `LayoutUnit` fixed-point arithmetic over an icon and a string this crate
-/// never shapes — so this can be a pixel off either side of Chrome's at a
-/// handful of font sizes (measured: at a font size that is 2 mod 4, `date`'s
-/// and `week`'s own fit lands exactly on a `.5`, and Chrome's actual pixel is
-/// the floor of it, not a round-half-up). `ty` is already lowercased.
-fn picker_input_content_width(ty: &str, font_size: f32) -> f32 {
-    let (a, b): (f64, f64) = match ty {
-        "date" => (10.6502, 8.2591),
-        "time" => (20.5196, 5.3435),
-        "datetime-local" => (16.4520, 13.1183),
-        "month" => (8.7503, 10.0152),
-        "week" => (8.6502, 9.2591),
-        "file" => (0.6178, 21.4427),
-        _ => return 0.0,
+/// Not a derivation of Chrome's own layout, and the representative strings
+/// are a guess at what Chrome's internal `-webkit-datetime-edit` shadow tree
+/// paints (locale-dependent; this crate has no locale support and assumes
+/// `en-US`), checked only by how well they explain the Chrome 153 sweep
+/// above — not by reading Chromium's source or its shadow DOM. Two things
+/// this does not model: Chrome lays the date/time family out as several
+/// separate editable fields with their own letter-spacing edges, where this
+/// shapes one string, so `letter-spacing` (which this *does* read, via
+/// [`cached_label_width`]) under- or over-counts the number of spacing gaps
+/// relative to Chrome; and the per-type `a`/`b` chrome terms are fit against
+/// Inter alone, so they carry whatever Inter-specific residual the
+/// representative-string guess left behind, same as the text-width ceiling
+/// does for `<input>` (#1177). `ty` is already lowercased.
+fn picker_input_content_width(
+    node: &Node,
+    ty: &str,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    font_generation: u64,
+    perf: &crate::perf::PerfCounters,
+) -> f32 {
+    let Some((a, b, s)) = REPRESENTATIVE
+        .iter()
+        .find_map(|&(t, a, b, s)| (t == ty).then_some((a, b, s)))
+    else {
+        return 0.0;
     };
-    (a + b * f64::from(font_size)).round().max(0.0) as f32
+    let chrome = a + b * f64::from(node.computed_style.font_size);
+    let shaped = cached_label_width(node, s, font_cx, layout_cx, font_generation, perf);
+    (chrome + f64::from(shaped)).round().max(0.0) as f32
 }
+
+/// `(type, a, b, representative string)` for [`picker_input_content_width`].
+const REPRESENTATIVE: &[(&str, f64, f64, &str)] = &[
+    ("date", 10.7594, 2.3112, "mm/dd/yyyy"),
+    ("time", 20.5196, 1.3435, "--:-- AM"),
+    ("datetime-local", 16.2609, 2.9022, "mm/dd/yyyy --:-- AM"),
+    ("month", 8.6714, 5.6581, "mm/yyyy"),
+    ("week", 8.7432, 2.7155, "Week -- , ----"),
+    ("file", 0.7128, 8.7705, "Choose File No file chosen"),
+];
 
 /// The content-box width of a `submit` / `reset` / `button` `<input>`
 /// (#1195): the width of its label, shaped in the control's own font —
@@ -445,6 +497,8 @@ fn button_label_content_width(
     ty: &str,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    font_generation: u64,
+    perf: &crate::perf::PerfCounters,
 ) -> f32 {
     use std::borrow::Cow;
     let label: Cow<'_, str> = match node.attributes.get("value") {
@@ -458,7 +512,49 @@ fn button_label_content_width(
     if label.is_empty() {
         return 0.0;
     }
-    label_text_width(node, &label, font_cx, layout_cx).round()
+    cached_label_width(node, &label, font_cx, layout_cx, font_generation, perf).round()
+}
+
+/// [`label_text_width`] from [`Node::form_label_width`], re-shaping only when
+/// the hash of what the label is shaped from — the label text itself, the
+/// font generation (a face registered after layout re-sizes the control,
+/// same as [`cached_char_metrics`]), family, weight, style, letter-spacing
+/// and word-spacing — has moved since the control was last sized (review of
+/// #1302). A restyle that moves none of them shapes nothing: the sibling gap
+/// [`cached_char_metrics`] closed for `size`/`cols` controls under #1177,
+/// left open here until now — `button_label_content_width` and
+/// `picker_input_content_width` used to call [`label_text_width`] on every
+/// cascade of the control, measured costing ~5µs/node/restyle at 2000
+/// `<input type=submit>` nodes.
+fn cached_label_width(
+    node: &Node,
+    label: &str,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    font_generation: u64,
+    perf: &crate::perf::PerfCounters,
+) -> f32 {
+    use std::hash::{Hash, Hasher};
+    let style = &node.computed_style;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    font_generation.hash(&mut h);
+    label.hash(&mut h);
+    style.font_family.hash(&mut h);
+    style.font_size.to_bits().hash(&mut h);
+    style.font_weight.to_bits().hash(&mut h);
+    (style.font_style as u8).hash(&mut h);
+    style.letter_spacing.to_bits().hash(&mut h);
+    style.word_spacing.to_bits().hash(&mut h);
+    let key = h.finish();
+    if let Some((k, w)) = node.form_label_width.get()
+        && k == key
+    {
+        return w;
+    }
+    perf.bump(crate::perf::Counter::ShapeFormControlLabel);
+    let w = label_text_width(node, label, font_cx, layout_cx);
+    node.form_label_width.set(Some((key, w)));
+    w
 }
 
 /// The width of `label` shaped in `node`'s own font, **unquantized** — the
@@ -468,6 +564,10 @@ fn button_label_content_width(
 /// tenths of a pixel off the unquantized one (measured: "Submit" at 16px
 /// Inter is 52.648438 unquantized, 53 quantized — which happens to be where
 /// the unquantized width rounds to anyway, but is not the same number).
+/// Reads `letter-spacing`/`word-spacing` the way `ifc.rs`'s
+/// `push_spacing` does — unconditionally, since 0 is parley's own default —
+/// so a representative multi-word string (`file`'s) or an author's
+/// letter-spacing on a button label is not silently dropped.
 fn label_text_width(
     node: &Node,
     label: &str,
@@ -484,6 +584,12 @@ fn label_text_width(
             parley::style::FontWeight::new(style.font_weight),
         ));
     }
+    builder.push_default(parley::style::StyleProperty::LetterSpacing(
+        style.letter_spacing,
+    ));
+    builder.push_default(parley::style::StyleProperty::WordSpacing(
+        style.word_spacing,
+    ));
     let mut layout: parley::Layout<peniko::Brush> = builder.build(label);
     layout.break_all_lines(None);
     layout.full_width()

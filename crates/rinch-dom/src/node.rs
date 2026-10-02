@@ -1087,6 +1087,12 @@ pub struct Node {
     /// font property shapes nothing to size the control (#1177). `None` until
     /// the control is first sized.
     pub(crate) form_char_metrics: Cell<Option<(u64, crate::form_control::CharMetrics)>>,
+    /// A `submit`/`reset`/`button` `<input>`'s shaped label width, or a
+    /// date/time-family/`file` `<input>`'s shaped representative-string
+    /// width, with the hash of the label text and font properties it was
+    /// shaped under (#1195, review of #1302) — so a restyle that moves
+    /// neither shapes nothing. `None` until the control is first sized.
+    pub(crate) form_label_width: Cell<Option<(u64, f32)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1261,6 +1267,7 @@ impl Node {
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
+            form_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1324,6 +1331,7 @@ impl Node {
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
+            form_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1386,6 +1394,7 @@ impl Node {
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
+            form_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1446,6 +1455,7 @@ impl Node {
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
+            form_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,

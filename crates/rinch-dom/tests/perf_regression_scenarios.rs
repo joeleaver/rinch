@@ -15,6 +15,7 @@
 //! | `shape_paint` | `paint/select.rs` (closed `<select>` label) | [`a_select_label_is_shaped_by_paint`] |
 //! | `shape_select_label` | `select.rs` `widest_select_label` (an auto-width select's size) | [`an_auto_width_select_shapes_its_labels_only_when_they_change`] |
 //! | `shape_form_control_metrics` | `form_control.rs` `cached_char_metrics` (a text control's intrinsic width, #1177) | [`a_text_control_finds_its_font_only_when_the_font_changes`] |
+//! | `shape_form_control_label` | `form_control.rs` `cached_label_width` (a button label or picker representative string, #1195, review of #1302) | [`a_form_control_label_is_shaped_only_when_the_font_changes`] |
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
@@ -1672,6 +1673,68 @@ fn fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change() {
             (TaffyRootComputes, 2),
             (TaffyMeasureCalls, 4),
             (InlineBlockComputes, 40),
+        ],
+    );
+}
+
+/// `shape_form_control_label`: `form_control.rs` `cached_label_width` (a
+/// `submit`/`reset`/`button` label's or a date/time/`file` picker's
+/// representative-string shape, #1195, review of #1302). A colour-only
+/// restyle reshapes neither; a font-size change reshapes both.
+#[test]
+fn a_form_control_label_is_shaped_only_when_the_font_changes() {
+    let mut doc = doc_with("");
+    let body = doc.body();
+    let submit = el(&mut doc, body, "input", "");
+    doc.set_attribute(submit, "type", "submit");
+    let date = el(&mut doc, body, "input", "");
+    doc.set_attribute(date, "type", "date");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+
+    doc.set_style(submit, "color", "red");
+    doc.set_style(date, "color", "red");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "form control label colour restyle",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 2),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 2),
+            (TaffyStyleSyncs, 2),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+        ],
+    );
+
+    doc.set_style(submit, "font-size", "20px");
+    doc.set_style(date, "font-size", "20px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "form control label font-size change",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 2),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 2),
+            (TaffyStyleSyncs, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (ShapeFormControlLabel, 2),
+            (IfcMeasureCacheHits, 2),
+            (IfcMeasureInvalidations, 4),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 3),
+            (InlineBlockComputes, 2),
         ],
     );
 }

@@ -154,6 +154,14 @@ define_counters! {
     /// control when it is first sized and when its font family, weight or
     /// style changes; a restyle that moves none of them shapes none.
     ShapeFormControlMetrics = "shape_form_control_metrics",
+    /// Parley layouts built to shape a `submit`/`reset`/`button` `<input>`'s
+    /// label, or a date/time-family/`file` `<input>`'s representative
+    /// picker string (#1195, review of #1302). Cached the same way
+    /// [`ShapeFormControlMetrics`](Counter::ShapeFormControlMetrics) is — one
+    /// per control when it is first sized and when its label, font family,
+    /// weight, style, letter-spacing or word-spacing changes; a restyle that
+    /// moves none of them shapes none.
+    ShapeFormControlLabel = "shape_form_control_label",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",
     /// Per-root invalidations of the IFC measure cache by a restyle or a
