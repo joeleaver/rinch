@@ -662,6 +662,19 @@ pub trait DomDocument {
         1
     }
 
+    /// The characters of a text node under preserved `white-space` that this
+    /// backend lays out as something of another length, and the bytes each
+    /// then occupies in the flat byte offsets of [`Self::tab_flat_bytes`]
+    /// (#1181). None by default — the browser's DOM ranges count the
+    /// characters themselves. rinch-dom hands parley a substitute for U+2028,
+    /// U+2029, U+0085 and U+000C (its `ifc::PRESERVED_SUBSTITUTES`, the same
+    /// table its layout reads), so the rich-text editor's caret map counts
+    /// each as that many bytes. Like a tab's, the answer holds only where
+    /// `white-space` preserves the text, which the editor's does.
+    fn substituted_char_flat_bytes(&self) -> &'static [(char, usize)] {
+        &[]
+    }
+
     /// The caret beside the atomic inline `box_id` (an `<img>`) that the
     /// text-bearing element `node_id` lays out in its inline layout, as
     /// `(x, y, height)`, layout-local like [`Self::query_caret_position`]:

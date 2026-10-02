@@ -417,7 +417,8 @@ enum IfcOp<'a> {
 ///
 /// U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR and U+0085 NEXT LINE,
 /// in any mode, and U+000C FORM FEED in preserved text, are handed to parley
-/// as what Chrome 153 draws them as ([`laid_out_as`], #1181): parley reads
+/// as substitutes that lay out the way Chrome 153 draws them, `letter-spacing`
+/// and `word-spacing` aside ([`laid_out_as`], #1181): parley reads
 /// the first two as forced line breaks, where Chrome draws an ordinary
 /// space-wide character with a break opportunity after it (`x&#x2028;y` is
 /// one line). The substitute's length differs from the character's, which
@@ -474,19 +475,58 @@ fn offset_map_note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
 ///   break opportunity after it).
 /// - U+0085 NEXT LINE: parley draws a glyph; Chrome draws nothing, with a
 ///   break opportunity — a ZERO WIDTH SPACE.
-/// - U+000C FORM FEED under preserved white space: zero-width in Chrome, and
-///   no break opportunity — a WORD JOINER. Where white space collapses
+/// - U+000C FORM FEED under preserved white space: zero-width in Chrome, with
+///   no break opportunity and no `letter-spacing` (`x\fx` at 10px spacing is
+///   37.47px, as `xx`) — so it is removed. Where white space collapses
 ///   Chrome draws it as a character, which parley does too (13.8px in
 ///   Chrome against parley's 10.3px for the bundled Inter: the glyph differs).
 ///
+/// Preserved text takes [`PRESERVED_SUBSTITUTES`], which is also what the
+/// rich-text editor's caret map is told
+/// ([`DomDocument::substituted_char_flat_bytes`]), so the two count the same
+/// flat bytes for each.
+///
 /// [`InlineLayout::measured_width`]: crate::node::InlineLayout::measured_width
+/// [`DomDocument::substituted_char_flat_bytes`]: rinch_core::dom::DomDocument::substituted_char_flat_bytes
 fn laid_out_as(c: char, preserved: bool) -> Option<&'static str> {
-    match c {
-        '\u{2028}' | '\u{2029}' => Some("\u{a0}\u{200b}"),
-        '\u{85}' => Some("\u{200b}"),
-        '\u{c}' if preserved => Some("\u{2060}"),
-        _ => None,
+    if !preserved && c == '\u{c}' {
+        return None;
     }
+    PRESERVED_SUBSTITUTES
+        .iter()
+        .find(|&&(k, _)| k == c)
+        .map(|&(_, sub)| sub)
+}
+
+/// What [`laid_out_as`] hands parley for each character in preserved text.
+pub(crate) const PRESERVED_SUBSTITUTES: [(char, &str); 4] = [
+    ('\u{2028}', "\u{a0}\u{200b}"),
+    ('\u{2029}', "\u{a0}\u{200b}"),
+    ('\u{85}', "\u{200b}"),
+    ('\u{c}', ""),
+];
+
+/// The flat bytes each of [`PRESERVED_SUBSTITUTES`] occupies.
+pub(crate) const PRESERVED_SUBSTITUTE_FLAT_BYTES: [(char, usize); 4] = {
+    let mut out = [('\0', 0); 4];
+    let mut i = 0;
+    while i < PRESERVED_SUBSTITUTES.len() {
+        out[i] = (PRESERVED_SUBSTITUTES[i].0, PRESERVED_SUBSTITUTES[i].1.len());
+        i += 1;
+    }
+    out
+};
+
+/// Whether preserved text may hold a tab or a character [`laid_out_as`]
+/// substitutes: a vectorisable scan for their UTF-8 lead bytes (`\t`, `\f`,
+/// `0xC2` for U+0085, `0xE2` for U+2028/U+2029), so ordinary text is pushed
+/// as is at about memchr's cost. A hit is checked char by char.
+fn may_rewrite_preserved(raw: &str) -> bool {
+    raw.as_bytes().chunks(32).any(|chunk| {
+        chunk
+            .iter()
+            .fold(false, |a, &b| a | matches!(b, b'\t' | 0x0C | 0xC2 | 0xE2))
+    }) && raw.contains(|c| c == '\t' || laid_out_as(c, true).is_some())
 }
 
 /// Push `sub`, what [`laid_out_as`] lays one DOM character out as, onto
@@ -637,7 +677,7 @@ impl<'a> IfcText<'a> {
                 self.prev_space = false;
                 self.line_start = raw.ends_with('\n');
             }
-            if !raw.contains(|c| c == '\t' || laid_out_as(c, true).is_some()) {
+            if !may_rewrite_preserved(raw.as_ref()) {
                 let n = raw.len();
                 self.ops.push(IfcOp::Text(raw));
                 self.len += n;

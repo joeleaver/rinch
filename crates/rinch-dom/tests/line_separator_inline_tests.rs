@@ -116,6 +116,18 @@ fn a_next_line_is_zero_width() {
 #[test]
 fn a_form_feed_is_zero_width_where_preserved_and_drawn_where_it_collapses() {
     check('\u{c}', &["pre", "pre-wrap"]);
+    // And takes no letter-spacing: `x\fx` at 10px is `xx`'s 37.47 in Chrome
+    // 153 (a zero-width character laid out in its place would add 10px).
+    for ws in ["pre", "pre-wrap"] {
+        let html = format!(
+            "<span id=\"m\" style=\"display:inline-block;letter-spacing:10px;white-space:{ws}\">x\u{c}x</span>"
+        );
+        let (gw, _) = measure("", &html);
+        assert!(
+            (gw - 37.47).abs() <= 0.5 + 1e-3,
+            "U+000C {ws} letter-spacing: Chrome 153 37.47, rinch {gw}"
+        );
+    }
     for ws in ["normal", "nowrap", "pre-line"] {
         let (gw, gh) = measure("", &ib(ws, "x\u{c}x"));
         assert!(
@@ -224,6 +236,38 @@ fn caret_offsets_map_around_them_at_character_boundaries() {
                 assert_eq!(got, o, "{ws} {dom:?}: flat {f}");
                 assert!(dom.is_char_boundary(got));
             }
+        }
+    }
+}
+
+/// What rinch-dom tells the editor's caret map each substituted char is worth
+/// (`DomDocument::substituted_char_flat_bytes`) is what its layout makes of
+/// it in preserved text, and in a `contenteditable` root.
+#[test]
+fn the_flat_bytes_the_host_reports_are_the_ones_it_lays_out() {
+    let mut d = RinchDocument::new();
+    let table = d.substituted_char_flat_bytes();
+    assert_eq!(table.len(), 4, "U+2028, U+2029, U+0085, U+000C");
+    for &(c, n) in table {
+        for attr in [
+            ("style", "white-space:pre-wrap"),
+            ("contenteditable", "true"),
+        ] {
+            let body = d.body();
+            let p = d.create_element("div");
+            d.set_attribute(p, attr.0, attr.1);
+            d.append_child(body, p);
+            let t = d.create_text(&format!("a{c}b"));
+            d.append_child(p, t);
+            d.resolve_layout(800.0, 600.0);
+            let il = d.tree.get(p.0).unwrap().text_layout.as_ref().unwrap();
+            assert_eq!(
+                il.text_content.len(),
+                2 + n,
+                "U+{:04X} under {attr:?}: {:?}",
+                c as u32,
+                il.text_content
+            );
         }
     }
 }
