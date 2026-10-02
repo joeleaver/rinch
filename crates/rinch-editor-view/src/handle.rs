@@ -929,7 +929,14 @@ impl EditorHandle {
     /// used by tests and by [`Self::mount`]). `doc_ref` is a weak handle to the
     /// host document the view patches. Does **not** register the editor with the
     /// runtime — that is [`Self::mount`]'s job. `doc` is loaded as
-    /// [`Self::load_doc`] loads one (a `colspan` past 1000 is capped, #1214).
+    /// [`Self::load_doc`] loads one: re-homed onto `schema` first (#440 — `doc`
+    /// and `schema` are two separate caller-supplied arguments, so a `doc` built
+    /// on a different `Rc<Schema>` is the same latent mismatch `load_doc` had),
+    /// then a `colspan` past 1000 is capped (#1214). A `doc` that cannot be
+    /// re-homed (an unknown node or mark type by name) is used as given rather
+    /// than refused — this constructor has no failure return, and every current
+    /// caller builds `doc` on `schema` already, so that path is a same-schema,
+    /// effectively-free `rebind`.
     pub fn new(
         container: NodeHandle,
         doc_ref: Weak<RefCell<dyn DomDocument>>,
@@ -937,6 +944,7 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
+        let doc = doc.rebind(&schema).unwrap_or(doc);
         // A load: colspans past 1000 are capped (#1214).
         let doc = rinch_editor_core::tables::cap_colspans(&doc);
         // Plugins' `init_state` and `decorations` run here; untracked, as under
