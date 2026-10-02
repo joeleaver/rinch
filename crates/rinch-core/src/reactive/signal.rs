@@ -195,14 +195,18 @@ impl<T: 'static> Signal<T> {
         let Some(observer) = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied()) else {
             return;
         };
-        // The store borrow is released before the observer is touched: nothing
-        // should reach `EFFECTS` while `SIGNAL_STORE` is borrowed mutably.
-        let subscribed = SIGNAL_STORE.with(|store| {
-            store
-                .borrow_mut()
-                .get_slot_mut(self.id, self.generation)
-                .is_some_and(|slot| slot.subscribers.insert(observer))
-        });
+        // Clone the signal's own cell out of the store under a brief shared
+        // borrow (issue #546), then subscribe on *that* cell's own
+        // `RefCell<subscribers>` — never on `SIGNAL_STORE` mutably. That is
+        // what lets this run while another signal's `with`/`update` closure
+        // is on the stack holding only *its own* cell: different signal,
+        // different `RefCell`, no conflict.
+        let Some(inner) =
+            SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))
+        else {
+            return;
+        };
+        let subscribed = inner.subscribers.borrow_mut().insert(observer);
         if subscribed {
             super::effect::record_dep(
                 observer,
@@ -222,13 +226,10 @@ impl<T: 'static> Signal<T> {
     /// section of the [`reactive`](crate::reactive) module docs.
     fn notify(&self) {
         super::count_signal_notify();
-        let subscribers: Vec<ObserverId> = SIGNAL_STORE.with(|store| {
-            store
-                .borrow()
-                .get_slot(self.id, self.generation)
-                .map(|slot| slot.subscribers.iter().copied().collect())
-                .unwrap_or_default()
-        });
+        let subscribers: Vec<ObserverId> = SIGNAL_STORE
+            .with(|store| store.borrow().get_inner(self.id, self.generation))
+            .map(|inner| inner.subscribers.borrow().iter().copied().collect())
+            .unwrap_or_default();
 
         tracing::debug!(
             "Signal({}).notify(): {} subscribers",
@@ -307,16 +308,18 @@ impl<T: Clone + 'static> Signal<T> {
     /// ```
     pub fn try_get(&self) -> Option<T> {
         self.track();
-        SIGNAL_STORE.with(|store| {
-            let store = store.borrow();
-            let slot = store.get_slot(self.id, self.generation)?;
-            Some(
-                slot.value
-                    .downcast_ref::<T>()
-                    .expect("Signal type mismatch (internal error)")
-                    .clone(),
-            )
-        })
+        // The store borrow (taken only to clone `inner` out) is gone by the
+        // time `inner.value` is borrowed — see `SignalCell`'s docs (#546).
+        let inner =
+            SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))?;
+        Some(
+            inner
+                .value
+                .borrow()
+                .downcast_ref::<T>()
+                .expect("Signal type mismatch (internal error)")
+                .clone(),
+        )
     }
 }
 
@@ -333,13 +336,21 @@ impl<T: 'static> Signal<T> {
     /// Does **not** subscribe the current observer — liveness is not reactive,
     /// and tracking it would resurrect the dependency you are trying to drop.
     pub fn is_alive(&self) -> bool {
-        SIGNAL_STORE.with(|store| store.borrow().get_slot(self.id, self.generation).is_some())
+        SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation).is_some())
     }
 
     /// Get a reference to the current value without cloning.
     ///
     /// If called inside an effect, this automatically subscribes the effect
     /// to this signal.
+    ///
+    /// `f` runs under **this signal's own** borrow, not a lock on every
+    /// signal in the store (issue #546): a nested read of a *different*
+    /// signal inside `f` — `a.with(|av| b.get())`, or the same written the
+    /// other way round — is legal, in an effect or out of one. Only a nested
+    /// access to *this same* signal from inside `f` still panics, which is
+    /// genuine reentrancy on one value, not an artifact of a shared store
+    /// lock.
     ///
     /// # Panics
     ///
@@ -355,22 +366,21 @@ impl<T: 'static> Signal<T> {
     /// Borrow the current value, or return `None` if the signal has been freed.
     ///
     /// The non-panicking counterpart to [`with`](Signal::with). `f` is not
-    /// called when the signal is gone.
+    /// called when the signal is gone. See `with`'s docs for what running `f`
+    /// under this signal's own borrow (rather than the whole store's) means
+    /// for nested reads of other signals.
     pub fn try_with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
         self.track();
-        // Hold `f` in an Option so that on the freed path it is dropped *here*,
-        // after the store borrow is released, rather than inside it. `f`'s
-        // captures are user values whose `Drop` may touch signals.
-        let mut f = Some(f);
-        SIGNAL_STORE.with(|store| {
-            let store = store.borrow();
-            let slot = store.get_slot(self.id, self.generation)?;
-            Some(f.take().unwrap()(
-                slot.value
-                    .downcast_ref::<T>()
-                    .expect("Signal type mismatch (internal error)"),
-            ))
-        })
+        // Clone the cell out under a brief shared store borrow, then drop
+        // that borrow before touching `inner.value` at all. `f` therefore
+        // never runs with any borrow of `SIGNAL_STORE` itself held — only
+        // `inner.value`'s own `RefCell`, which is private to this signal.
+        let inner =
+            SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))?;
+        let value = inner.value.borrow();
+        Some(f(value
+            .downcast_ref::<T>()
+            .expect("Signal type mismatch (internal error)")))
     }
 
     /// Set the signal to a new value.
@@ -397,24 +407,26 @@ impl<T: 'static> Signal<T> {
         if !super::is_main_thread() {
             panic_off_main("set", "send");
         }
-        // Both the incoming value (on the freed path) and the outgoing one
-        // (on the live path) must be dropped *outside* the store borrow: a `T`
-        // whose `Drop` touches a signal would otherwise `BorrowMutError`.
-        let mut value = Some(value);
-        let displaced = SIGNAL_STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            let slot = store.get_slot_mut(self.id, self.generation)?;
-            Some(std::mem::replace(
-                &mut slot.value,
-                Box::new(value.take().unwrap()),
-            ))
-        });
-        drop(displaced);
-        if value.is_some() {
+        // Clone the cell out under a brief store borrow (issue #546); the
+        // store borrow is gone before the value is ever touched.
+        let Some(inner) =
+            SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))
+        else {
+            // Nothing was borrowed above, so `value` is just an owned `T` here
+            // — dropping it needs no special placement.
             drop(value);
             warn_write_to_freed("set", loc);
             return;
-        }
+        };
+        // The displaced value is dropped *after* this signal's own
+        // `RefCell<value>` borrow ends (the block below), not inside it: a
+        // `T` whose `Drop` touches this same signal would otherwise
+        // `BorrowMutError` — genuine reentrancy, same as any other `RefCell`.
+        let displaced = {
+            let mut slot_value = inner.value.borrow_mut();
+            std::mem::replace(&mut *slot_value, Box::new(value))
+        };
+        drop(displaced);
         self.notify();
     }
 
@@ -445,39 +457,37 @@ impl<T: 'static> Signal<T> {
             panic_off_main("set_if_changed", "send");
         }
 
-        /// What `set_if_changed` found in the store.
-        enum Outcome {
-            Freed,
-            Unchanged,
-            /// Changed; carries the displaced value so it drops outside the borrow.
+        let Some(inner) =
+            SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))
+        else {
+            drop(value);
+            warn_write_to_freed("set_if_changed", loc);
+            return;
+        };
+
+        /// Whether the comparison found a change, carrying whichever value
+        /// (the displaced old one, or the unchanged incoming one) still needs
+        /// dropping — deferred until this signal's own `value` borrow below
+        /// has ended, same reason as `set_at`.
+        enum Outcome<T> {
             Changed(Box<dyn std::any::Any>),
+            Unchanged(T),
         }
 
-        let mut value = Some(value);
-        let outcome = SIGNAL_STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            let Some(slot) = store.get_slot_mut(self.id, self.generation) else {
-                return Outcome::Freed;
-            };
-            let old = slot
-                .value
+        let outcome = {
+            let mut slot_value = inner.value.borrow_mut();
+            let old = slot_value
                 .downcast_ref::<T>()
                 .expect("Signal type mismatch (internal error)");
-            if old == value.as_ref().unwrap() {
-                return Outcome::Unchanged;
+            if *old == value {
+                Outcome::Unchanged(value)
+            } else {
+                Outcome::Changed(std::mem::replace(&mut *slot_value, Box::new(value)))
             }
-            Outcome::Changed(std::mem::replace(
-                &mut slot.value,
-                Box::new(value.take().unwrap()),
-            ))
-        });
+        };
 
         match outcome {
-            Outcome::Freed => {
-                drop(value);
-                warn_write_to_freed("set_if_changed", loc);
-            }
-            Outcome::Unchanged => drop(value),
+            Outcome::Unchanged(value) => drop(value),
             Outcome::Changed(displaced) => {
                 drop(displaced);
                 self.notify();
@@ -504,28 +514,28 @@ impl<T: 'static> Signal<T> {
 
     /// [`update`](Signal::update) with an explicit reporting location — see
     /// [`set_at`](Signal::set_at).
+    ///
+    /// `f` runs under only this signal's own `value` borrow (issue #546),
+    /// exactly like [`try_with`](Signal::try_with) — no `SIGNAL_STORE` borrow
+    /// is held while `f` runs, so a nested read or write of a *different*
+    /// signal inside `f` is legal, in an effect or out of one.
     pub(crate) fn update_at(&self, f: impl FnOnce(&mut T), loc: &'static Location<'static>) {
         if !super::is_main_thread() {
             panic_off_main("update", "update_send");
         }
-        // As in `try_with`: on the freed path `f` must drop after the borrow.
-        let mut f = Some(f);
-        let applied = SIGNAL_STORE.with(|store| {
-            let mut store = store.borrow_mut();
-            let Some(slot) = store.get_slot_mut(self.id, self.generation) else {
-                return false;
-            };
-            let value = slot
-                .value
-                .downcast_mut::<T>()
-                .expect("Signal type mismatch (internal error)");
-            f.take().unwrap()(value);
-            true
-        });
-        if !applied {
+        let Some(inner) =
+            SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))
+        else {
             drop(f);
             warn_write_to_freed("update", loc);
             return;
+        };
+        {
+            let mut slot_value = inner.value.borrow_mut();
+            let value = slot_value
+                .downcast_mut::<T>()
+                .expect("Signal type mismatch (internal error)");
+            f(value);
         }
         self.notify();
     }
@@ -612,48 +622,38 @@ impl<T: 'static> Signal<T> {
     /// Test-only: the subscriber set is private, and "the set is empty again
     /// once the observers are gone" is the whole contract of issue #171.
     pub(crate) fn subscriber_count_for_tests(&self) -> usize {
-        SIGNAL_STORE.with(|store| {
-            store
-                .borrow()
-                .get_slot(self.id, self.generation)
-                .map_or(0, |slot| slot.subscribers.len())
-        })
+        SIGNAL_STORE
+            .with(|store| store.borrow().get_inner(self.id, self.generation))
+            .map_or(0, |inner| inner.subscribers.borrow().len())
     }
 }
 
 impl<T: fmt::Debug + 'static> fmt::Debug for Signal<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        SIGNAL_STORE.with(|store| {
-            let store = store.borrow();
-            if let Some(slot) = store.get_slot(self.id, self.generation) {
-                if let Some(value) = slot.value.downcast_ref::<T>() {
-                    f.debug_struct("Signal").field("value", value).finish()
-                } else {
-                    f.debug_struct("Signal")
-                        .field("error", &"type mismatch")
-                        .finish()
-                }
-            } else {
-                f.debug_struct("Signal").field("error", &"freed").finish()
-            }
-        })
+        let inner = SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation));
+        match inner {
+            Some(inner) => match inner.value.borrow().downcast_ref::<T>() {
+                Some(value) => f.debug_struct("Signal").field("value", value).finish(),
+                None => f
+                    .debug_struct("Signal")
+                    .field("error", &"type mismatch")
+                    .finish(),
+            },
+            None => f.debug_struct("Signal").field("error", &"freed").finish(),
+        }
     }
 }
 
 impl<T: fmt::Display + 'static> fmt::Display for Signal<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        SIGNAL_STORE.with(|store| {
-            let store = store.borrow();
-            if let Some(slot) = store.get_slot(self.id, self.generation) {
-                if let Some(value) = slot.value.downcast_ref::<T>() {
-                    fmt::Display::fmt(value, f)
-                } else {
-                    write!(f, "<type mismatch>")
-                }
-            } else {
-                write!(f, "<freed signal>")
-            }
-        })
+        let inner = SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation));
+        match inner {
+            Some(inner) => match inner.value.borrow().downcast_ref::<T>() {
+                Some(value) => fmt::Display::fmt(value, f),
+                None => write!(f, "<type mismatch>"),
+            },
+            None => write!(f, "<freed signal>"),
+        }
     }
 }
 
@@ -893,5 +893,179 @@ mod liveness_tests {
         // happen outside the borrow.
         holder.set(TouchesASignalOnDrop(drops));
         assert_eq!(drops.get(), after_free + 1);
+    }
+}
+
+/// Issue #546: `Signal::try_with`/`update` used to hold a shared/mutable
+/// borrow of the **whole** `SIGNAL_STORE` across the user closure. `track()`
+/// needs `SIGNAL_STORE.borrow_mut()` only when an observer is on the stack —
+/// so a nested read of a *different* signal worked outside an effect (two
+/// shared borrows coexist) and `BorrowMutError`'d inside one. These fixtures
+/// pin the fix: the store borrow is released before the per-signal cell is
+/// ever touched, so nested access to a *different* signal is legal, in or out
+/// of an effect, and only genuine same-signal reentrancy still panics.
+#[cfg(test)]
+mod nested_read_tests {
+    use super::*;
+    use crate::reactive::Effect;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn nested_with_of_different_signals_works_outside_an_effect() {
+        let a = Signal::new(1i32);
+        let b = Signal::new(2i32);
+        let sum = a.with(|av| b.with(|bv| av + bv));
+        assert_eq!(sum, 3);
+    }
+
+    #[test]
+    fn nested_with_of_different_signals_works_inside_an_effect() {
+        // The exact repro from #546: outside an effect `track()` never takes
+        // `borrow_mut()`, so this shape passed before the fix too. Only
+        // inside an effect did `b`'s `track()` collide with `a`'s still-live
+        // shared borrow. An observer must be on the stack for `track()` to
+        // reach the mutable path at all, so this has to run inside `Effect`.
+        let a = Signal::new(10i32);
+        let b = Signal::new(20i32);
+        let sum = Rc::new(Cell::new(0));
+        let s = Rc::clone(&sum);
+
+        let _e = Effect::new(move || {
+            let total = a.with(|av| b.with(|bv| *av + *bv));
+            s.set(total);
+        });
+
+        assert_eq!(
+            sum.get(),
+            30,
+            "the nested read must not panic inside an effect"
+        );
+
+        // Changing either source re-runs the effect and both reads still work.
+        a.set(11);
+        assert_eq!(sum.get(), 31);
+        b.set(21);
+        assert_eq!(sum.get(), 32);
+    }
+
+    #[test]
+    fn nested_get_inside_with_works_inside_an_effect() {
+        let a = Signal::new(1i32);
+        let b = Signal::new(2i32);
+        let sum = Rc::new(Cell::new(0));
+        let s = Rc::clone(&sum);
+
+        let _e = Effect::new(move || {
+            // `b.get()` tracks exactly like `b.with()`, from inside `a`'s
+            // closure — the other spelling named in the issue.
+            let total = a.with(|av| *av + b.get());
+            s.set(total);
+        });
+
+        assert_eq!(sum.get(), 3);
+    }
+
+    #[test]
+    fn nested_update_of_a_different_signal_works_inside_update() {
+        // `update` held `borrow_mut()` across its own closure unconditionally
+        // before the fix, so *any* nested signal access inside it panicked,
+        // in or out of an effect. This checks it is fixed outright.
+        let a = Signal::new(1i32);
+        let b = Signal::new(10i32);
+
+        a.update(|av| {
+            b.update(|bv| *bv += *av);
+        });
+
+        assert_eq!(b.get(), 11);
+    }
+
+    #[test]
+    fn nested_update_of_a_different_signal_works_inside_an_effect() {
+        let a = Signal::new(1i32);
+        let b = Signal::new(10i32);
+        let runs = Rc::new(Cell::new(0));
+        let r = Rc::clone(&runs);
+
+        let _e = Effect::new(move || {
+            let _ = a.get();
+            a.update(|av| {
+                b.update(|bv| *bv += *av);
+            });
+            r.set(r.get() + 1);
+        });
+
+        assert_eq!(runs.get(), 1);
+        assert_eq!(b.get(), 11);
+    }
+
+    #[test]
+    fn three_signals_nest_in_an_effect() {
+        // Not just a pairwise coincidence: N independent signals must all be
+        // reachable while the others' borrows are live.
+        let a = Signal::new(1i32);
+        let b = Signal::new(2i32);
+        let c = Signal::new(3i32);
+        let sum = Rc::new(Cell::new(0));
+        let s = Rc::clone(&sum);
+
+        let _e = Effect::new(move || {
+            let total = a.with(|av| b.with(|bv| c.with(|cv| av + bv + cv)));
+            s.set(total);
+        });
+
+        assert_eq!(sum.get(), 6);
+    }
+
+    #[test]
+    fn a_memo_computation_can_nest_reads_of_different_signals() {
+        // A memo's refresh runs with the memo's marker on the observer stack
+        // too, so `track()` takes the mutable path there as well.
+        use crate::reactive::Memo;
+
+        let a = Signal::new(1i32);
+        let b = Signal::new(2i32);
+        let m = Memo::new(move || a.with(|av| b.with(|bv| av + bv)));
+
+        assert_eq!(m.get(), 3);
+        a.set(5);
+        assert_eq!(m.get(), 7);
+    }
+
+    #[test]
+    fn reading_a_signal_inside_its_own_with_does_not_panic() {
+        // Two SHARED borrows of one `RefCell` coexist happily — `with` holds
+        // a shared borrow of `a`'s own value cell, and a nested `a.get()`
+        // takes another shared borrow of that same cell. This is not the
+        // reentrancy case: nothing here ever asks for `borrow_mut()`.
+        let a = Signal::new(1i32);
+        let seen = a.with(|v| *v + a.get());
+        assert_eq!(seen, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn a_signal_writing_itself_inside_its_own_with_still_panics() {
+        // Genuine reentrancy on ONE signal's own cell, not an artifact of a
+        // shared store lock — this must still fail. A fix that makes the
+        // whole class of nested access "just work" without preserving this
+        // is wrong: it would mean `with` no longer borrows the value it
+        // hands out at all. `with` holds a *shared* borrow of `a`'s cell
+        // across the closure; `a.set()` inside it needs `borrow_mut()` on
+        // that very same cell, which must fail.
+        let a = Signal::new(1i32);
+        a.with(|_| {
+            a.set(2);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn a_signal_writing_itself_inside_its_own_update_still_panics() {
+        let a = Signal::new(1i32);
+        a.update(|_| {
+            a.set(2);
+        });
     }
 }
