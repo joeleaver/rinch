@@ -89,6 +89,29 @@ pub(crate) fn wrap(
 /// `match_shortcut_code` answers `false` for a chord nothing is listening to —
 /// an item with no `on_click`, a disabled one, one whose component has since
 /// unmounted — and a keystroke nobody claimed belongs to the page.
+/// Whether the page's focused element types text: a `<textarea>`, an
+/// `<input>` whose type takes text, or anything `contenteditable` — the
+/// rich-text editor's capture `<textarea>` is the first of those, read-only or
+/// not, as it still owns the keys it would type.
+fn text_field_has_focus() -> bool {
+    use wasm_bindgen::JsCast;
+    let Some(active) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.active_element())
+    else {
+        return false;
+    };
+    if let Some(input) = active.dyn_ref::<web_sys::HtmlInputElement>() {
+        return rinch::menu::input_type_takes_text(&input.type_());
+    }
+    if active.tag_name().eq_ignore_ascii_case("textarea") {
+        return true;
+    }
+    active
+        .dyn_ref::<web_sys::HtmlElement>()
+        .is_some_and(|el| el.is_content_editable())
+}
+
 fn install_shortcut_dispatch() {
     if SHORTCUTS_INSTALLED.with(|f| f.replace(true)) {
         return;
@@ -106,6 +129,20 @@ fn install_shortcut_dispatch() {
             // Ctrl+Shift+K reports "K" on one layout and something else on another.
             let code = event.code();
             if code.is_empty() {
+                return;
+            }
+            // A chord with no Ctrl/Cmd/Alt is a keystroke a text field types
+            // or edits with, and it is the field's while one has focus
+            // (#1169): matching it would `preventDefault` the very `/` the
+            // user is typing. The desktop shell asks the same question of its
+            // focus arbiter.
+            if rinch::menu::chord_yields_to_text_input(
+                event.ctrl_key(),
+                event.meta_key(),
+                event.alt_key(),
+                &code,
+            ) && text_field_has_focus()
+            {
                 return;
             }
             if rinch::menu::match_shortcut_code(
