@@ -2961,31 +2961,52 @@ box-less node, so nothing on screen moved and `compute_absolute_position` did.
 That is **not** the whole CSS list, and the shortfall is not only about what
 `ComputedStyle` can hold. `clip-path`, `mask`, `isolation`, `mix-blend-mode`,
 `contain: paint` and `will-change` are absent from `ComputedStyle` altogether
-and need new style plumbing per property. But **two creators are representable
-today and simply missing** (measured, not argued):
+and need new style plumbing per property — tracked separately from #542 (below),
+which closed the two creators that needed none.
+
+**#542 (closed): two creators were representable and simply missing, and now
+aren't.**
 
 - a non-`none` **`filter`** (CSS Filter Effects §2.1) — `filter: brightness(0.5)`
-  reaches `ComputedStyle::filter_brightness` and paint consumes it, and the
-  predicate still answers `false`. (`blur()` really is unexpressed; only the four
-  scalars survive `from_stylo`.)
+  reaches `ComputedStyle::filter_brightness` and paint consumes it.
+  `Node::has_non_identity_filter()` answers `true` when any of the four scalars
+  (`filter_brightness`/`filter_grayscale`/`filter_saturate`/`filter_hue_rotate`)
+  differs from that filter function's identity value, and
+  `creates_stacking_context` now asks it. It is an approximation, not the CSS
+  rule, and stays one: `filter: brightness(1)` is a genuine non-`none` filter
+  that is numerically identical to "no filter" in this storage (`ComputedStyle`
+  has no separate "a filter was declared" bit), so it is still indistinguishable
+  from absent — Chrome creates a stacking context for it anyway. `blur()`
+  really is unexpressed; only the four scalars survive `from_stylo`, so a
+  `blur()`-only filter still answers `false` too. Both are the accepted,
+  pinned boundary of what #542 closed, not a regression.
 - a **flex or grid item with a `z-index`** other than `auto`, even at
-  `position: static` (css-flexbox-1 §5.4, css-grid-1 §6) — both the `z_index`
-  and the parent's `display` are already in `ComputedStyle`.
+  `position: static` (css-flexbox-1 §5.4, css-grid-1 §6) — the `z_index` was
+  already in `ComputedStyle`, but the item's own style can't answer "is my
+  layout parent a flex/grid container". `Node::is_flex_or_grid_item: Cell<bool>`
+  carries that fact, set at every cascade of the node
+  (`style_resolution/resolve.rs`, and the pseudo-element cascade in
+  `style_resolution/pseudo.rs`) from the same `layout_parent_style` Stylo's own
+  adjuster blockifies against (#998's "layout parent": skips a
+  `display: contents` wrapper to the nearest real ancestor) — so it tracks
+  blockification for free, since a container's `display` moving to/from
+  flex/grid already re-cascades its children (`child_cascade` follows a
+  `display` change).
 
-Neither was folded into stage B, because adding a creator changes which boxes
-hoist — the axis stage B is re-founding — and landing both at once would make a
-regression impossible to attribute. **Tracked as #542**; the six properties
-`ComputedStyle` does not carry at all (plus `blur()`, which really is
-unexpressed) need per-property plumbing and are separate work again. **#415** is
-the related one, in this same function and the same class: a `transform` that
-composes to the identity creates no stacking context here, where CSS keys on
-`not none`.
+**#415** is the related, still-open one, in this same function and the same
+class: a `transform` that composes to the identity creates no stacking context
+here, where CSS keys on `not none`.
 
-Stage B slightly **widens** that exposure rather than leaving it untouched: a box
-declaring **both** a filter and a clipping `overflow` used to get a stacking
-context by accident through the `overflow` arm, and no longer does. Its clipping
-survives — the chain carries that — its ordering does not. A filter box with no
-`overflow` was already wrong before.
+Stage B slightly **widened** that exposure rather than leaving it untouched: a
+box declaring **both** a filter (or a static flex/grid item's `z-index`) and a
+clipping `overflow` used to get a stacking context by accident through the
+`overflow` arm, and lost it when that arm went — its clipping survived (the
+chain carries that) but its ordering did not. #542 closes that: such a box now
+gets a real stacking context from its own declared creator, so the ordering is
+correct again rather than merely latent. (Neither was folded into stage B
+itself, because adding a creator changes which boxes hoist — the axis stage B
+was re-founding — and landing both at once with the rest of that change would
+have made a regression impossible to attribute.)
 
 **`overflow` is not on that list** (#324 stage B). It used to be, so that a
 descendant hoisted to an ancestor's paint sequence stayed inside the bracket

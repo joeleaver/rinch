@@ -1298,7 +1298,10 @@ mod new_creators_542 {
         doc.resolve_layout(800.0, 600.0);
 
         assert!(
-            doc.tree.get(raw(behind)).unwrap().creates_stacking_context(),
+            doc.tree
+                .get(raw(behind))
+                .unwrap()
+                .creates_stacking_context(),
             "#542: a static flex item with an explicit z-index is a stacking \
              context"
         );

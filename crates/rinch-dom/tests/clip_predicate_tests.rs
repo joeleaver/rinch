@@ -220,7 +220,10 @@ fn a_static_non_item_box_still_ignores_z_index() {
 #[test]
 fn filter_brightness_one_is_indistinguishable_from_no_filter() {
     assert!(!sc("filter: brightness(1)"));
-    assert!(!sc(""), "and that is exactly the same answer as no filter at all");
+    assert!(
+        !sc(""),
+        "and that is exactly the same answer as no filter at all"
+    );
 }
 
 /// `blur()` is the other named gap: only the four scalar functions survive
@@ -297,11 +300,7 @@ fn a_grandchild_of_a_flex_container_is_not_itself_a_flex_item() {
     doc.set_attribute(item, "style", "width: 100px; height: 100px");
     doc.append_child(container, item);
     let grandchild = doc.create_element("div");
-    doc.set_attribute(
-        grandchild,
-        "style",
-        "width: 20px; height: 20px; z-index: 5",
-    );
+    doc.set_attribute(grandchild, "style", "width: 20px; height: 20px; z-index: 5");
     doc.append_child(item, grandchild);
     doc.resolve_layout(800.0, 600.0);
 
