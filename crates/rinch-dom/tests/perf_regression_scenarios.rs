@@ -1647,12 +1647,13 @@ fn fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change() {
             (ShapeMeasureIfc, 2),
             (ShapeIfcBuild, 21),
             (ShapeAtomicInline, 40),
-            (IfcMeasureCacheHits, 2),
             (IfcMeasureInvalidations, 20),
             (IfcPhantomRebreaks, 11),
             (LayoutResolves, 1),
             (TaffyRootComputes, 2),
-            (TaffyMeasureCalls, 4),
+            // 4 → 2 and the 2 cache hits gone with #1260: `<body>`'s flex
+            // basis is no longer measured, so the content is asked once.
+            (TaffyMeasureCalls, 2),
             (InlineBlockComputes, 40),
         ],
     );
