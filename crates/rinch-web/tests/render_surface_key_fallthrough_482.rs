@@ -24,14 +24,14 @@
 //! "did not propagate", not "nothing ran".
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::Component;
-use rinch_core::dom::RenderScope;
-use rinch_core::element::ThemeProviderProps;
-use rinch_core::events::{KeyEventData, clear_keyboard_interceptor, set_keyboard_interceptor};
 use rinch::render_surface::{
     RenderSurface, RenderSurfaceHandle, SurfaceEvent, SurfaceKeyData, create_render_surface,
     set_focused_surface,
 };
+use rinch_core::Component;
+use rinch_core::dom::RenderScope;
+use rinch_core::element::ThemeProviderProps;
+use rinch_core::events::{KeyEventData, clear_keyboard_interceptor, set_keyboard_interceptor};
 use rinch_web::RootHandle;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -264,7 +264,10 @@ fn the_interceptor_sees_the_key_before_a_focused_surface_does() {
         0,
         "the interceptor claimed the key; the focused surface must never see it"
     );
-    assert!(prevented, "a key the interceptor claims must be defaultPrevented");
+    assert!(
+        prevented,
+        "a key the interceptor claims must be defaultPrevented"
+    );
     assert_eq!(window_listener.hits(), 0);
 
     window_listener.remove();

@@ -3991,7 +3991,7 @@ Rinch owns the window. Your renderer submits frames into a `RenderSurface` compo
 
 | Type | Purpose |
 |------|---------|
-| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()` |
+| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()`, `set_key_handler()` |
 | `RenderSurface` | Component — `RenderSurface { surface: Some(handle) }` |
 | `SurfaceWriter` | Thread-safe CPU pixel submission (`Send + Sync + Clone`) |
 | `GpuTextureRegistrar` | Thread-safe GPU texture registration (`Send + Sync + Clone`) |
@@ -4015,6 +4015,28 @@ registrar.notify_frame_ready();
 
 rsx! { RenderSurface { surface: Some(surface), style: "flex: 1;" } }
 ```
+
+**A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
+still receives every `KeyDown`/`KeyUp` while the surface is focused — that delivery is
+unaffected. `set_key_handler(|key: &SurfaceKeyData| -> bool)` answers a separate, additive
+question asked *after*: should this key stop at the surface, or continue past it? Leave it
+unset (the default) and the surface claims nothing, so a host's own `window`-level
+keybindings (and, on the web, the browser's own shortcuts — reload, find, …) keep working
+the moment a canvas takes focus, and on desktop so do DevTools (F12), inspect mode (Alt+I)
+and Tab. Return `true` only for a key the surface genuinely uses (WASD steering a
+character, Space to jump):
+
+```rust
+surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space"));
+```
+
+Before this existed, a focused surface swallowed **every** key unconditionally — on the web
+via `preventDefault()`/`stopPropagation()` on every `keydown`, on desktop by never falling
+through to the same DevTools/inspect/Tab handling an unfocused canvas always had. The
+document-level keyboard interceptor (`rinch_core::events::set_keyboard_interceptor`) is
+unaffected either way: it already saw every key before a focused surface did, on both
+backends, and still does — a host that wants an app-global chord to win regardless of
+surface focus should register it there rather than through `set_key_handler`.
 
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 

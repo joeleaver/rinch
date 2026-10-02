@@ -1491,9 +1491,7 @@ impl RinchApp {
                         // path and issue #482's fix below does not touch it.
                         crate::render_surface::dispatch_surface_event(
                             surface_id,
-                            crate::render_surface::SurfaceEvent::KeyDown(
-                                surface_key_data.clone(),
-                            ),
+                            crate::render_surface::SurfaceEvent::KeyDown(surface_key_data.clone()),
                         );
                         if let Some(ref t) = text {
                             if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
