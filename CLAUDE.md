@@ -1162,6 +1162,55 @@ unparseable (`Hyper+N` used to arm a bare N). The forward
 table (`parse_shortcut_for_matching`) and `key_code_name` must name the same codes;
 `the_two_key_tables_name_the_same_codes` reads both out of the source.
 
+**A letter chord matches the layout's character, not only the physical key
+(#1170).** `"Ctrl+Z"` fires from whichever key is *labelled* Z, wherever a
+QWERTZ or AZERTY layout put it, not just the US physical `KeyZ`
+(`chord_key_matches`): desktop reads winit's `key_without_modifiers` (ignores
+Shift/Caps), the web reads `KeyboardEvent.key` lowercased
+(`web_typed_letter`/`menu_bar.rs`), and either feeds `match_shortcut_code`'s
+new `typed_letter: Option<char>` parameter. A chord falls back to the
+physical key — the pre-#1170 rule — in two cases: the layout types no single
+Latin letter for the pressed key at all (Cyrillic, Thai, Armenian — the
+GTK/GNOME/Firefox bug class the issue's recon found, where `Ctrl+C` is
+otherwise unreachable), or `ShortcutMatching::Physical` is set
+(`App::shortcut_matching` / `rinch_web::set_shortcut_matching`, off by
+default — the escape hatch VS Code's `keyboard.dispatch` and JetBrains'
+national-layout toggle both ship). Digit and punctuation chords are untouched
+by any of this; `letter_from_code` is the one gate that decides whether a
+chord's key counts as a letter at all. **On macOS and Windows, a window
+menu bar's item stops going through rinch's own chord matching once its
+native accelerator has actually attached — "B".** `attach_menu_to_window`
+wires the bar into the OS there (`NSMenu`/an accelerator table), which then
+resolves and matches the `Accelerator` muda built for the item ahead of rinch
+ever seeing the key; matching it a second time would risk firing the callback
+twice. `build_muda_item`'s `native_bar` parameter (`true` only from
+`build_native_menu_bar`, never from `build_muda_menu`'s tray items, whose
+accelerator is shown only while the menu is open rather than OS-wide) tags
+every window-bar `ShortcutEntry` and is **always registered** — the skip is
+decided at *match* time, not registration time, by
+`skips_rinch_chord(entry.native_bar, native_accelerator_attached())`. The
+second fact is a recorded success, not a `target_os` guess (review of PR
+#1304): `attach_menu_to_window` calls `mark_native_accelerator_attached()`
+only on its own success path — Windows inside the `Ok(Win32(..))` branch,
+after `init_for_hwnd` itself returns `Ok`; macOS unconditionally, since
+`init_for_nsapp` reports no failure. A window whose handle was never
+`Win32`, whose `init_for_hwnd` failed, or that never calls
+`attach_menu_to_window` at all (a headless host, a borderless window using
+the DOM bar instead) never marks it, so that window's chord keeps firing
+through rinch's own registry rather than going unreachable by *either* path.
+`skips_rinch_chord`'s own two-bool rule is what this crate's test suite can
+exercise on a Linux host; the attach call's actual success path still needs
+a human check on a real macOS or Windows host that an item's native
+accelerator fires its callback exactly once. `ShortcutMatching::Physical` has
+no effect on such an item once attached: the OS decides what counts as "the
+Z key" for it, by its own (already character-based) per-layout resolution.
+Linux's window bar (never attaches), every tray item (`native_bar: false` —
+never attached to a window at all), and the DOM menu bar are unaffected by B
+and keep matching through the registry as before. Related, unmeasured: issue
+#1284, where a *modifier-less* chord (`chord_yields_to_text_input`) may still
+be taken by a macOS/Windows native accelerator from a focused text field,
+because that check is inside the matching an attached item now skips.
+
 A **shortcut consumes the keystroke only when a callback actually runs.** A chord
 whose item is disabled, has no `on_click`, or belongs to an unmounted component
 falls through to the app rather than being swallowed, and every chord matching

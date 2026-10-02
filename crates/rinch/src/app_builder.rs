@@ -75,6 +75,9 @@ pub struct App<F> {
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     #[cfg(feature = "desktop")]
     pub(crate) renderer: crate::shell::renderer::Renderer,
+    /// See [`shortcut_matching`](App::shortcut_matching).
+    #[cfg(feature = "desktop")]
+    pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
@@ -96,6 +99,8 @@ where
             menus: None,
             #[cfg(feature = "desktop")]
             renderer: crate::shell::renderer::Renderer::Auto,
+            #[cfg(feature = "desktop")]
+            shortcut_matching: crate::menu::ShortcutMatching::default(),
             #[cfg(feature = "gpu")]
             gpu: None,
         }
@@ -249,6 +254,34 @@ where
         self
     }
 
+    /// Choose how a menu's letter chords are matched against a keystroke
+    /// (issue #1170).
+    ///
+    /// The default, [`ShortcutMatching::LayoutAware`](crate::menu::ShortcutMatching::LayoutAware),
+    /// matches a letter chord (`"Ctrl+Z"`) to the *character* the active
+    /// keyboard layout types for the pressed key — so Ctrl+Z fires from
+    /// whichever key is labelled Z, on QWERTZ and AZERTY as well as QWERTY —
+    /// falling back to the physical key when the layout types no Latin
+    /// letter there at all (Cyrillic, Thai, …). Punctuation and digit chords
+    /// are unaffected either way; they have always matched the physical key.
+    ///
+    /// [`ShortcutMatching::Physical`](crate::menu::ShortcutMatching::Physical)
+    /// turns that off and matches every chord by physical key alone, as rinch
+    /// did before #1170 — the escape hatch for a user who wants shortcut
+    /// *positions* to stay where they are on a remapped or non-Latin layout
+    /// rather than follow the character (the same choice VS Code's
+    /// `keyboard.dispatch` setting and JetBrains' "use national layout for
+    /// shortcuts" toggle offer).
+    ///
+    /// Applied at [`run`](App::run); on the web, call
+    /// [`rinch_web::set_shortcut_matching`](https://docs.rs/rinch-web)
+    /// (`rinch::menu::set_shortcut_matching`) directly before mounting.
+    #[cfg(feature = "desktop")]
+    pub fn shortcut_matching(mut self, mode: crate::menu::ShortcutMatching) -> Self {
+        self.shortcut_matching = mode;
+        self
+    }
+
     /// Run on an embedder-provided GPU device.
     ///
     /// The embedder creates the whole GPU stack with its own `DeviceDescriptor`
@@ -281,6 +314,7 @@ where
             fonts: self.fonts,
             menus: self.menus,
             renderer: self.renderer,
+            shortcut_matching: self.shortcut_matching,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
             component: self.component,
@@ -321,11 +355,13 @@ where
             fonts,
             menus,
             renderer,
+            shortcut_matching,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
 
         crate::shell::renderer::set_requested(renderer);
+        crate::menu::set_shortcut_matching(shortcut_matching);
         #[cfg(feature = "gpu")]
         if let Some(gpu) = gpu {
             crate::shell::desktop::set_gpu_init(gpu);
@@ -543,6 +579,8 @@ pub(crate) struct Startup<F> {
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     /// The renderer the app asked for (`RINCH_RENDERER` still overrides it).
     pub(crate) renderer: crate::shell::renderer::Renderer,
+    /// See [`App::shortcut_matching`].
+    pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
