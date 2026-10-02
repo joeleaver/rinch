@@ -864,6 +864,18 @@ impl RinchDocument {
                                     *content_height,
                                     known_dims,
                                 ),
+                                Some(NodeContext::Replaced {
+                                    width,
+                                    height,
+                                    ratio,
+                                }) => crate::replaced::measure(
+                                    (*width, *height),
+                                    *ratio,
+                                    known_dims,
+                                    style,
+                                    inputs.parent_size,
+                                    inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                ),
                                 _ => taffy::Size::ZERO,
                             }
                         },

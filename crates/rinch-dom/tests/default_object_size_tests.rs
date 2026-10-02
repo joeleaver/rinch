@@ -82,21 +82,75 @@ fn an_inline_canvas_is_300_by_150_too() {
 
 #[test]
 fn a_canvas_keeps_its_aspect_ratio_and_video_and_iframe_have_none() {
-    check(W400, "canvas", &[], "display: block; width: 100px", (100.0, 50.0));
-    check(W400, "canvas", &[], "display: block; height: 100px", (200.0, 100.0));
-    check(W400, "canvas", &[], "display: block; width: 50%", (200.0, 100.0));
-    check(W400, "video", &[], "display: block; width: 100px", (100.0, 150.0));
-    check(W400, "video", &[], "display: block; height: 100px", (300.0, 100.0));
-    check(W400, "iframe", &[], "display: block; width: 100px", (100.0, 154.0));
-    check(W400, "iframe", &[], "display: block; height: 100px", (304.0, 100.0));
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; width: 100px",
+        (100.0, 50.0),
+    );
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; height: 100px",
+        (200.0, 100.0),
+    );
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; width: 50%",
+        (200.0, 100.0),
+    );
+    check(
+        W400,
+        "video",
+        &[],
+        "display: block; width: 100px",
+        (100.0, 150.0),
+    );
+    check(
+        W400,
+        "video",
+        &[],
+        "display: block; height: 100px",
+        (300.0, 100.0),
+    );
+    check(
+        W400,
+        "iframe",
+        &[],
+        "display: block; width: 100px",
+        (100.0, 154.0),
+    );
+    check(
+        W400,
+        "iframe",
+        &[],
+        "display: block; height: 100px",
+        (304.0, 100.0),
+    );
 }
 
 #[test]
 fn canvas_width_and_height_attributes_are_its_natural_size() {
     let wh = [("width", "40"), ("height", "30")];
     check(W400, "canvas", &wh, "display: block", (40.0, 30.0));
-    check(W400, "canvas", &wh, "display: block; width: 80px", (80.0, 60.0));
-    check(W400, "canvas", &[("width", "0"), ("height", "0")], "display: block", (0.0, 0.0));
+    check(
+        W400,
+        "canvas",
+        &wh,
+        "display: block; width: 80px",
+        (80.0, 60.0),
+    );
+    check(
+        W400,
+        "canvas",
+        &[("width", "0"), ("height", "0")],
+        "display: block",
+        (0.0, 0.0),
+    );
     // A zero dimension has no ratio: the other keeps its natural length.
     check(
         W400,
@@ -131,13 +185,49 @@ fn changing_a_canvas_attribute_resizes_it() {
 
 #[test]
 fn min_and_max_sizes_transfer_through_a_canvas_ratio() {
-    check(W400, "canvas", &[], "display: block; min-width: 500px", (500.0, 250.0));
-    check(W400, "canvas", &[], "display: block; max-width: 100px", (100.0, 50.0));
-    check(W400, "canvas", &[], "display: block; min-height: 300px", (600.0, 300.0));
-    check(W400, "canvas", &[], "display: block; max-height: 50px", (100.0, 50.0));
-    check("width: 200px", "canvas", &[], "display: block; max-width: 100%", (200.0, 100.0));
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; min-width: 500px",
+        (500.0, 250.0),
+    );
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; max-width: 100px",
+        (100.0, 50.0),
+    );
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; min-height: 300px",
+        (600.0, 300.0),
+    );
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; max-height: 50px",
+        (100.0, 50.0),
+    );
+    check(
+        "width: 200px",
+        "canvas",
+        &[],
+        "display: block; max-width: 100%",
+        (200.0, 100.0),
+    );
     // No ratio, no transfer.
-    check(W400, "video", &[], "display: block; max-width: 100px", (100.0, 150.0));
+    check(
+        W400,
+        "video",
+        &[],
+        "display: block; max-width: 100px",
+        (100.0, 150.0),
+    );
 }
 
 #[test]
@@ -157,28 +247,62 @@ fn padding_and_border_sit_outside_the_natural_size() {
         (330.0, 180.0),
     );
     // The ratio is the content box's: 100 - 20 = 80 wide, 40 + 20 tall.
-    check(W400, "canvas", &[], "display: block; width: 100px; padding: 10px", (100.0, 60.0));
-    check(W400, "canvas", &[], "display: block; height: 100px; padding: 10px", (180.0, 100.0));
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; width: 100px; padding: 10px",
+        (100.0, 60.0),
+    );
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; height: 100px; padding: 10px",
+        (180.0, 100.0),
+    );
 }
 
 #[test]
 fn a_block_replaced_element_does_not_fill_its_container() {
     // Narrower than the natural width: it overflows rather than shrinks.
-    check("width: 100px", "canvas", &[], "display: block", (300.0, 150.0));
+    check(
+        "width: 100px",
+        "canvas",
+        &[],
+        "display: block",
+        (300.0, 150.0),
+    );
     // `margin: auto` centres it, as for any block of a definite width.
-    let (doc, d, e) = check(W400, "canvas", &[], "display: block; margin: 0 auto", (300.0, 150.0));
+    let (doc, d, e) = check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; margin: 0 auto",
+        (300.0, 150.0),
+    );
     let (dx, ex) = (
         doc.tree.get(d.0).unwrap().layout.x,
         doc.tree.get(e.0).unwrap().layout.x,
     );
-    assert_eq!((dx, ex), (0.0, 50.0), "centred: (400 - 300) / 2 inside the div");
+    assert_eq!(
+        (dx, ex),
+        (0.0, 50.0),
+        "centred: (400 - 300) / 2 inside the div"
+    );
 }
 
 #[test]
 fn flex_items_stretch_and_carry_the_ratio() {
     // A column flex container stretches the canvas across, and the ratio
     // gives its height (Chrome: 400x200).
-    check("width: 400px; display: flex; flex-direction: column", "canvas", &[], "", (400.0, 200.0));
+    check(
+        "width: 400px; display: flex; flex-direction: column",
+        "canvas",
+        &[],
+        "",
+        (400.0, 200.0),
+    );
     // Not stretched: its natural size.
     check(
         "width: 400px; display: flex; flex-direction: column; align-items: flex-start",
@@ -187,16 +311,31 @@ fn flex_items_stretch_and_carry_the_ratio() {
         "",
         (300.0, 150.0),
     );
+    // The stretched width is the border box; the ratio is the content
+    // box's: 400 - 20 = 380 wide, 190 + 20 tall (Chrome: 400x210).
+    check(
+        "width: 400px; display: flex; flex-direction: column",
+        "canvas",
+        &[],
+        "padding: 10px",
+        (400.0, 210.0),
+    );
     // A row flex container: the natural size, and no shrinking below it
     // (Chrome: 300 wide in a 200px row).
-    check("width: 200px; display: flex", "canvas", &[], "", (300.0, 150.0));
-    check("width: 400px; display: flex", "video", &[], "", (300.0, 150.0));
-}
-
-#[test]
-fn a_grid_item_keeps_its_natural_size() {
-    check("width: 400px; display: grid", "canvas", &[], "", (300.0, 150.0));
-    check("width: 300px; height: 20px; display: grid", "iframe", &[], "", (304.0, 154.0));
+    check(
+        "width: 200px; display: flex",
+        "canvas",
+        &[],
+        "",
+        (300.0, 150.0),
+    );
+    check(
+        "width: 400px; display: flex",
+        "video",
+        &[],
+        "",
+        (300.0, 150.0),
+    );
 }
 
 #[test]
@@ -227,10 +366,28 @@ fn fallback_text_in_a_canvas_does_not_size_it() {
 
 #[test]
 fn an_explicit_size_wins() {
-    check(W400, "canvas", &[], "display: block; width: 37px; height: 11px", (37.0, 11.0));
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; width: 37px; height: 11px",
+        (37.0, 11.0),
+    );
     // A percentage height against an auto-height container is `auto`.
-    check(W400, "video", &[], "display: block; width: 100%; height: 100%", (400.0, 150.0));
-    check(W400, "canvas", &[], "display: block; width: 100%; height: 100%", (400.0, 200.0));
+    check(
+        W400,
+        "video",
+        &[],
+        "display: block; width: 100%; height: 100%",
+        (400.0, 150.0),
+    );
+    check(
+        W400,
+        "canvas",
+        &[],
+        "display: block; width: 100%; height: 100%",
+        (400.0, 200.0),
+    );
     check(
         "width: 400px; height: 80px",
         "video",

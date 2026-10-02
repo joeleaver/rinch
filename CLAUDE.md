@@ -2805,8 +2805,12 @@ inline whatever its `display` says, as in Chrome, and its `display_mode` is
 `InlineBlock` (`node::is_atomic_at_display_inline`, #1089 — it used to be a flowed
 inline with a `0x0` box). The same rule covers `video`, `canvas`, `iframe`, `meter`
 and `progress`, which the UA sheet leaves `display: inline`, so their **default**
-rendering changed too: an atomic box, with Chrome's default sizes not modelled and
-fallback content still laid out inside it. The predicate says so, not `clip_shape`, so the
+rendering changed too: an atomic box. `canvas`, `video` and `iframe` take Chrome's
+**300x150** default object size (a canvas's own `width`/`height` attributes, with
+their aspect ratio), are not stretched by a block container (Taffy's
+`item_is_replaced`), and lay out no inline fallback content (`replaced.rs`, #1173;
+a grid item is still stretched, #1280); `meter` and `progress` still have no default
+size and lay out their fallback content. The predicate says so, not `clip_shape`, so the
 bracket, the chain, hit testing's gate and the dirty-region prune all agree. The
 rinch-specific reason it had to be said: a *flowed* inline element owns no box
 (`Node::is_flowed_inline_element` — its `layout` is zeroed and `E ghost box`

@@ -1521,7 +1521,10 @@ impl RinchDocument {
             }
             // A hollow control (#1159): its children are its value, which
             // `paint_input_value` draws; nothing lays them out as content.
-            if crate::form_control::is_value_control(&self.tree.nodes[root_id]) {
+            // A canvas, video or iframe renders none of its children (#1173).
+            if crate::form_control::is_value_control(&self.tree.nodes[root_id])
+                || crate::replaced::is_replaced_without_content(&self.tree.nodes[root_id])
+            {
                 self.tree.nodes[root_id].text_layout = None;
                 continue;
             }
@@ -3430,20 +3433,28 @@ impl RinchDocument {
                 {
                     *ctx = NodeContext::Element;
                 }
-            } else if crate::form_control::is_value_control(&self.tree.nodes[root_id]) {
+            } else if crate::form_control::is_value_control(&self.tree.nodes[root_id])
+                || crate::replaced::is_replaced_without_content(&self.tree.nodes[root_id])
+            {
                 // A hollow control (#1159): its children are its value, not
                 // content, so it is measured exactly as a childless control is
                 // — the context `sync_form_control_measure` gives one — and
                 // `build_ifc_layouts` shapes nothing for it. Written only when
                 // it differs, so a pass that finds it already hollow leaves
                 // Taffy's cache alone.
-                let want = crate::form_control::hollow_control_context(
-                    &self.tree.nodes[root_id],
-                    &mut self.font_cx,
-                    &mut self.layout_cx,
-                    self.tree.font_generation,
-                    &self.tree.perf,
-                );
+                // A canvas, video or iframe is hollow the same way (#1173):
+                // its children are fallback content a browser does not
+                // render, and it keeps its natural-size context.
+                let want =
+                    crate::replaced::replaced_context(&self.tree.nodes[root_id]).or_else(|| {
+                        crate::form_control::hollow_control_context(
+                            &self.tree.nodes[root_id],
+                            &mut self.font_cx,
+                            &mut self.layout_cx,
+                            self.tree.font_generation,
+                            &self.tree.perf,
+                        )
+                    });
                 let have = self.tree.taffy.get_node_context(root_taffy);
                 let same = match (&want, have) {
                     (
@@ -3456,6 +3467,18 @@ impl RinchDocument {
                             content_height: bh,
                         }),
                     ) => aw == bw && ah == bh,
+                    (
+                        Some(NodeContext::Replaced {
+                            width: aw,
+                            height: ah,
+                            ratio: ar,
+                        }),
+                        Some(NodeContext::Replaced {
+                            width: bw,
+                            height: bh,
+                            ratio: br,
+                        }),
+                    ) => aw == bw && ah == bh && ar == br,
                     (None, None) => true,
                     _ => false,
                 };
@@ -5426,6 +5449,18 @@ impl RinchDocument {
                                 *content_width,
                                 *content_height,
                                 known_dims,
+                            ),
+                            Some(NodeContext::Replaced {
+                                width,
+                                height,
+                                ratio,
+                            }) => crate::replaced::measure(
+                                (*width, *height),
+                                *ratio,
+                                known_dims,
+                                style,
+                                inputs.parent_size,
+                                inputs.sizing_mode == taffy::SizingMode::InherentSize,
                             ),
                             _ => taffy::Size::ZERO,
                         }
