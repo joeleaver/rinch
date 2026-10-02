@@ -439,7 +439,7 @@ pub(crate) fn clip_chain_bounds_counted(
         if escaping && a.contains_abs {
             escaping = false;
         }
-        if !escaping && a.clips {
+        if !escaping && (a.clips_x || a.clips_y) {
             let size = match frame {
                 Frame::Current => ancestor.layout,
                 Frame::Painted => ancestor.prev_layout,
@@ -465,11 +465,25 @@ pub(crate) fn clip_chain_bounds_counted(
                     right as f64 * scale,
                     bottom as f64 * scale,
                 );
-                let ix = x + left;
-                let iy = y + top;
-                let iw = (w - left - right).max(0.0);
-                let ih = (h - top - bottom).max(0.0);
-                let r = t.transform_rect_bbox(Rect::new(ix, iy, ix + iw, iy + ih));
+                // Per axis (#535), matching `clip_shape`: an axis this
+                // ancestor does not clip (`a.clips_x`/`clips_y`, read from its
+                // current style either frame, same approximation as the radii
+                // above) is left unbounded rather than cut at its edge.
+                let (x0, x1) = if a.clips_x {
+                    let ix = x + left;
+                    let iw = (w - left - right).max(0.0);
+                    (ix, ix + iw)
+                } else {
+                    (x - clip::AXIS_UNBOUNDED, x + clip::AXIS_UNBOUNDED)
+                };
+                let (y0, y1) = if a.clips_y {
+                    let iy = y + top;
+                    let ih = (h - top - bottom).max(0.0);
+                    (iy, iy + ih)
+                } else {
+                    (y - clip::AXIS_UNBOUNDED, y + clip::AXIS_UNBOUNDED)
+                };
+                let r = t.transform_rect_bbox(Rect::new(x0, y0, x1, y1));
                 clip = Some(clip.map_or(r, |c| c.intersect(r)));
             }
         }
@@ -487,7 +501,10 @@ pub(crate) fn clip_chain_bounds_counted(
 /// The style facts [`clip_chain_bounds`] walks on.
 #[derive(Clone, Copy)]
 struct PaintedStyle {
-    clips: bool,
+    /// Per axis (#535) — [`crate::paint::clip_chain_bounds`] needs to know
+    /// which axis an ancestor bounded, not merely whether it bounded either.
+    clips_x: bool,
+    clips_y: bool,
     position: PositionValue,
     contains_abs: bool,
 }
@@ -500,7 +517,8 @@ impl PaintedStyle {
     /// pushes the node, so between two consumptions nothing it records moves.
     fn then(painted: &crate::node::PaintedState) -> Self {
         Self {
-            clips: painted.clips,
+            clips_x: painted.clips_x,
+            clips_y: painted.clips_y,
             position: painted.position,
             contains_abs: painted.contains_abs,
         }
@@ -508,7 +526,8 @@ impl PaintedStyle {
 
     fn now(node: &Node) -> Self {
         Self {
-            clips: node.clips_overflow(),
+            clips_x: node.clips_overflow_x(),
+            clips_y: node.clips_overflow_y(),
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }
@@ -2299,7 +2318,11 @@ fn paints_nothing_without_visit(
     if inside {
         return false;
     }
-    if node.clips_overflow() {
+    // Both axes, not `clips_overflow()`'s OR (#535): a box open on one axis
+    // lets a child paint past it on exactly that axis, so a box clipping only
+    // one cannot be assumed to confine its children the way a fully clipping
+    // one can — fall through to the recursive check instead of this shortcut.
+    if node.clips_overflow_x() && node.clips_overflow_y() {
         return true;
     }
     let child_x = x - node.scroll_offset.0 * scale;
@@ -2697,7 +2720,12 @@ fn paint_node(
             return;
         }
     } else if node_outside_dirty {
-        if node.clips_overflow() || node.children.is_empty() {
+        // Both axes, not `clips_overflow()`'s OR (#535): a box clipping on
+        // only one axis still lets a child paint past it on the open one, so
+        // this node's own box missing the dirty region does not mean its
+        // children do too — fall through to the recurse below instead of
+        // returning.
+        if (node.clips_overflow_x() && node.clips_overflow_y()) || node.children.is_empty() {
             return;
         }
         // Skip drawing this node but recurse into children.

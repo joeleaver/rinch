@@ -203,12 +203,16 @@ impl HitCache {
     /// is not "which roots is `id` under" but "was anything built".
     ///
     /// `extent_reads_scroll` is whether the scrolled node's own extent reads its scroll
-    /// offset at all. A box that clips confines its extent to its own box and
-    /// never folds its children in, so scrolling one — which is every scroll
-    /// container but a non-atomic inline one — changes no extent anywhere:
-    /// only the sequences go. The hit tester's `flow_extent` is the authority
-    /// on that rule; `NodeTree::mark_scrolled` passes `!clips_overflow()`, the
-    /// same predicate it reads.
+    /// offset at all. A box that clips on **both** axes confines its extent to
+    /// its own box and never folds its children in, so scrolling one — which
+    /// is every such scroll container but a non-atomic inline one — changes no
+    /// extent anywhere: only the sequences go. A box clipping on only one axis
+    /// (#535) still folds its children into the *open* axis, which reads this
+    /// node's own scroll offset exactly as the no-clip case does. The hit
+    /// tester's `flow_extent` is the authority on that rule;
+    /// `NodeTree::mark_scrolled` passes `!clips_overflow_x() ||
+    /// !clips_overflow_y()` — "not fully clipped" — the same condition it
+    /// folds children under.
     ///
     /// A box that does **not** clip and is scrolled anyway (`set_scroll_top`
     /// can give one an offset, and the wheel finds a non-atomic inline

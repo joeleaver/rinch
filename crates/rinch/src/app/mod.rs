@@ -4507,7 +4507,18 @@ impl RinchApp {
                         // this walk works in logical px throughout. With no
                         // border this is identical to the plain `resolve()` of
                         // the computed `border-radius` it replaces.
-                        if clip_radii == [0.0; 4] && n.clips_overflow() {
+                        //
+                        // Both axes, not `clips_overflow()`'s OR (#535): a clip
+                        // open on one axis is an infinite strip with no actual
+                        // box corner inside it, so `clip_shape` itself hands
+                        // back square (all-zero) radii unless both axes clip —
+                        // this walk has to agree, or a hole under an
+                        // `overflow-x: clip; overflow-y: visible` ancestor
+                        // would come back rounded where paint draws it square.
+                        if clip_radii == [0.0; 4]
+                            && n.clips_overflow_x()
+                            && n.clips_overflow_y()
+                        {
                             let r = rinch_dom::paint::padding_box_radii(n, 1.0);
                             if r.top_left > 0.0
                                 || r.top_right > 0.0
@@ -4675,6 +4686,11 @@ impl RinchApp {
     /// every ancestor with `overflow: hidden/scroll/auto/clip`. Returns `None`
     /// if there are no clipping ancestors.
     pub fn viewport_clip_rect(&self, name: &str) -> Option<ViewportRect> {
+        // How far an ancestor's clip is extended past its own box on an axis
+        // whose `overflow` computes to `visible` (#535) — same magnitude as
+        // `rinch_dom::paint::clip::AXIS_UNBOUNDED`, which this cannot
+        // reference directly (it is `pub(crate)` to `rinch-dom`).
+        const VIEWPORT_CLIP_AXIS_UNBOUNDED: f32 = 1.0e7;
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
         for (_node_id, node) in &d.tree.nodes {
@@ -4706,13 +4722,26 @@ impl RinchApp {
                 // insets by the same `padding_box_insets` paint's `clip_shape`
                 // does, or a hole under a bordered clipping ancestor would be
                 // cut a border-width too large on each side.
-                if n.clips_overflow() {
+                //
+                // Per axis (#535), matching `clip_shape`: an ancestor clipping
+                // on only one axis (`overflow-x: clip; overflow-y: visible`)
+                // must not narrow the other — left unbounded by
+                // `VIEWPORT_CLIP_AXIS_UNBOUNDED` rather than cut at its edge.
+                let clip_x = n.clips_overflow_x();
+                let clip_y = n.clips_overflow_y();
+                if clip_x || clip_y {
                     let (ax, ay) = abs_pos(id);
                     let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(n);
-                    let x1 = ax + left;
-                    let y1 = ay + top;
-                    let x2 = ax + n.layout.width - right;
-                    let y2 = ay + n.layout.height - bottom;
+                    let (x1, x2) = if clip_x {
+                        (ax + left, ax + n.layout.width - right)
+                    } else {
+                        (-VIEWPORT_CLIP_AXIS_UNBOUNDED, VIEWPORT_CLIP_AXIS_UNBOUNDED)
+                    };
+                    let (y1, y2) = if clip_y {
+                        (ay + top, ay + n.layout.height - bottom)
+                    } else {
+                        (-VIEWPORT_CLIP_AXIS_UNBOUNDED, VIEWPORT_CLIP_AXIS_UNBOUNDED)
+                    };
                     result = Some(match result {
                         None => (x1, y1, x2, y2),
                         Some((rx1, ry1, rx2, ry2)) => {

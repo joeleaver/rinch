@@ -207,9 +207,15 @@ fn hit_test_node(
     // container (`point_in_bounds`, below, is unaffected and stays the border
     // box — the border itself is still part of the element's own hit target)
     // rather than falling through to content that cannot be drawn there.
-    let check_children = !node.clips_overflow() || {
+    //
+    // Per axis (#535), matching `clip_shape`: an axis whose own `overflow`
+    // computes to `visible` does not bound children at all, so
+    // `overflow-x: clip; overflow-y: visible` only restricts `x`.
+    let check_children = {
         let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(node);
-        x >= nx + left && x <= nx + nw - right && y >= ny + top && y <= ny + nh - bottom
+        let x_ok = !node.clips_overflow_x() || (x >= nx + left && x <= nx + nw - right);
+        let y_ok = !node.clips_overflow_y() || (y >= ny + top && y <= ny + nh - bottom);
+        x_ok && y_ok
     };
 
     let sx = node.scroll_offset.0 as f32;
@@ -420,6 +426,12 @@ fn flow_subtree_may_contain(
 /// — a descendant's extent never reads an ancestor's — and only when `id` does
 /// not clip, which is what lets a scroll of a box that clips keep every extent
 /// (`HitCache::invalidate_scroll`, #911).
+///
+/// Per axis (#535): a box clipping on only one axis still folds its children
+/// into the *open* axis — `overflow-x: clip; overflow-y: visible` confines `x`
+/// to the box but lets `y` grow with whatever a child reaches, which is what a
+/// sibling's `flow_subtree_may_contain` has to see to still walk into a child
+/// overflowing *this* node vertically.
 fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::Extent {
     if let Some(e) = tree.hit_cache.extent(id) {
         return e;
@@ -429,7 +441,9 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::E
         return [0.0; 4];
     };
     let mut e = [0.0, 0.0, node.layout.width, node.layout.height];
-    if !node.clips_overflow() {
+    let clip_x = node.clips_overflow_x();
+    let clip_y = node.clips_overflow_y();
+    if !clip_x || !clip_y {
         let sx = node.scroll_offset.0 as f32;
         let sy = node.scroll_offset.1 as f32;
         for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
@@ -443,10 +457,14 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::E
             let cx = child.layout.x + dx - sx;
             let cy = child.layout.y + dy - sy;
             let [c0, c1, c2, c3] = flow_extent(tree, child_id);
-            e[0] = e[0].min(cx + c0);
-            e[1] = e[1].min(cy + c1);
-            e[2] = e[2].max(cx + c2);
-            e[3] = e[3].max(cy + c3);
+            if !clip_x {
+                e[0] = e[0].min(cx + c0);
+                e[2] = e[2].max(cx + c2);
+            }
+            if !clip_y {
+                e[1] = e[1].min(cy + c1);
+                e[3] = e[3].max(cy + c3);
+            }
         }
     }
     tree.hit_cache.store_extent(id, e);

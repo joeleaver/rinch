@@ -1755,6 +1755,21 @@ impl Node {
     /// down would leave hit testing's `check_children` gate and the dirty-region
     /// prune still believing the span clips.
     pub fn clips_overflow(&self) -> bool {
+        self.clips_overflow_x() || self.clips_overflow_y()
+    }
+
+    /// The same question as [`Self::clips_overflow`], asked of the
+    /// inline/horizontal axis alone (`overflow-x`) — issue #535.
+    ///
+    /// CSS clips per axis; rinch used to clip per box, pushing one bracket
+    /// covering both axes whenever either one asked for it, which is
+    /// indistinguishable from the per-axis answer for `hidden`/`scroll`/`auto`
+    /// (Stylo never pairs one of those with a `visible` on the other axis —
+    /// see `paint::clip`'s module doc) but wrong for `clip`, the one value the
+    /// spec lets stay asymmetric. [`crate::paint::clip_shape`] is what reads
+    /// this and [`Self::clips_overflow_y`] separately to decide which axis, if
+    /// either, actually bounds the clip shape.
+    pub fn clips_overflow_x(&self) -> bool {
         use crate::computed_style::OverflowValue;
 
         if self.is_element() && self.display_mode == DisplayMode::Inline {
@@ -1769,7 +1784,19 @@ impl Node {
             return false;
         }
         !matches!(self.computed_style.overflow_x, OverflowValue::Visible)
-            || !matches!(self.computed_style.overflow_y, OverflowValue::Visible)
+    }
+
+    /// [`Self::clips_overflow_x`], for `overflow-y`.
+    pub fn clips_overflow_y(&self) -> bool {
+        use crate::computed_style::OverflowValue;
+
+        if self.is_element() && self.display_mode == DisplayMode::Inline {
+            return false;
+        }
+        if self.computed_style.display == crate::computed_style::DisplayValue::Contents {
+            return false;
+        }
+        !matches!(self.computed_style.overflow_y, OverflowValue::Visible)
     }
 
     /// Whether this node establishes a containing block for absolutely
@@ -2860,7 +2887,12 @@ impl NodeTree {
     pub fn mark_scrolled(&mut self, id: RawNodeId) {
         if let Some(node) = self.nodes.get_mut(id) {
             node.dirty.insert(DirtyFlags::PAINT);
-            let extent_reads_scroll = !node.clips_overflow();
+            // Per-axis (#535): `flow_extent` folds children into whichever
+            // axis does not clip, so it reads this node's own scroll offset
+            // whenever *either* axis is open, not only when both are —
+            // `!clips_overflow()` (both clip) would under-invalidate a box
+            // clipping on one axis alone.
+            let extent_reads_scroll = !node.clips_overflow_x() || !node.clips_overflow_y();
             self.hit_cache.invalidate_scroll(extent_reads_scroll);
             self.dirty_nodes.insert(id);
             self.paint_dirty_nodes.push(id);
@@ -3138,9 +3170,14 @@ pub struct PaintedState {
     /// The node's own transform, with its origin resolved against the box it
     /// was painted in. `None` for the identity.
     pub transform: Option<Box<PaintedTransform>>,
-    /// Whether the node clipped its content ([`Node::clips_overflow`], and a
-    /// box to clip with: not `display: contents`).
-    pub clips: bool,
+    /// Whether the node clipped its content on the x axis
+    /// ([`Node::clips_overflow_x`], and a box to clip with: not
+    /// `display: contents`). Per-axis (#535) rather than one `clips: bool`,
+    /// because [`crate::paint::clip_chain_bounds`] needs to know which axis a
+    /// painted ancestor bounded, not merely whether it bounded either.
+    pub clips_x: bool,
+    /// [`Self::clips_x`], for `overflow-y`.
+    pub clips_y: bool,
     /// Its `position`, which decides which clippers above it it escapes.
     pub position: crate::computed_style::PositionValue,
     /// Whether it was a containing block for absolute descendants
@@ -3185,7 +3222,8 @@ impl PaintedState {
         Self {
             ink: crate::paint::ink_outsets_in(node, members, get),
             transform,
-            clips: node.clips_overflow(),
+            clips_x: node.clips_overflow_x(),
+            clips_y: node.clips_overflow_y(),
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }
