@@ -513,4 +513,10 @@ impl RinchApp {
             false
         }
     }
+
+    /// HEAD PROBE (temporary): the shell's chord match, as it stands at HEAD.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn try_menu_shortcut(&self, mods: Modifiers, key: winit::keyboard::KeyCode) -> bool {
+        crate::menu::match_shortcut(mods.ctrl, mods.meta, mods.alt, mods.shift, key)
+    }
 }
