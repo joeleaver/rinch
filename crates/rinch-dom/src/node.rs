@@ -1146,6 +1146,51 @@ pub(crate) fn display_contents_taffy_style() -> taffy::Style {
     }
 }
 
+/// The Taffy-style overrides `<body>` carries over what its computed style
+/// says. The **one** copy: the cascade's sync and both tick re-syncs call it.
+///
+/// `<html>` is a fixed flex column the size of the viewport (its Taffy style
+/// is set once, in [`NodeTree::new`], and never rebuilt from its computed
+/// style) and `<body>` is the only child rinch gives it. So `<body>` grows to
+/// fill the viewport (`flex-grow` is at least 1) and is as wide as it
+/// (`width: 100%`).
+///
+/// **And when nothing about `<body>`'s own height depends on its content, its
+/// flex basis is `0`** (#1260). That is the UA sheet's `overflow-y: auto`
+/// body — a scroll container, so its automatic minimum height is `0` — with
+/// `height` and `flex-basis` both `auto` and `flex-shrink` above zero. A sole
+/// flex item of a definite-height column that can both grow and shrink ends at
+/// the column's height less its margins, clamped by its `min-height` and
+/// `max-height`, whatever its basis — so the basis is not worth measuring, and
+/// measuring it costs a whole `ComputeSize` pass over everything in `<body>`,
+/// every compute in which anything inside it is dirty: for a 500-row flex
+/// list, every row's cache probed a second time per edit. Any other `<body>`
+/// (an author `overflow: visible`, `flex-basis`, `height` or
+/// `flex-shrink: 0`) keeps the basis its style gives it.
+/// `tests/body_flex_basis_tests.rs` pins the box. (A second in-flow child of
+/// `<html>` — reachable only by appending to the raw `NodeTree::html_id` —
+/// would share the column with `<body>` by basis, and there the fold would
+/// change the split.)
+pub(crate) fn body_taffy_overrides(style: &mut taffy::Style) {
+    if style.flex_grow == 0.0 {
+        style.flex_grow = 1.0;
+    }
+    if style.size.width == taffy::Dimension::auto() {
+        style.size.width = taffy::Dimension::percent(1.0);
+    }
+    if style.flex_basis == taffy::Dimension::auto()
+        && style.size.height == taffy::Dimension::auto()
+        // Below 1 a factor scales the free space it distributes (flexbox
+        // §9.7.4c), so the basis would show through: `flex-grow: 0.5` over
+        // short content, or `flex-shrink: 0.5` over tall content.
+        && style.flex_grow >= 1.0
+        && style.flex_shrink >= 1.0
+        && style.overflow.y.is_scroll_container()
+    {
+        style.flex_basis = taffy::Dimension::length(0.0);
+    }
+}
+
 impl Node {
     /// Whether this node's Taffy style belongs to `sync_display_contents`
     /// rather than to its computed style: an **author** element computing
@@ -2340,7 +2385,7 @@ pub struct NodeTree {
     pub pending_background_urls: Vec<String>,
     /// IFC roots whose text content changed since last layout.
     /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
-    pub dirty_ifc_text_roots: HashSet<RawNodeId>,
+    pub dirty_ifc_text_roots: rustc_hash::FxHashSet<RawNodeId>,
     /// How many times `run_taffy_compute` has run over this tree.
     ///
     /// Instrumentation, not state: `resolve_layout`'s `!layout_dirty` early
@@ -2472,7 +2517,7 @@ pub struct NodeTree {
     /// An entry is removed outright when its node is freed
     /// ([`NodeTree::remove_subtree`]), so a recycled slab id never inherits a
     /// previous node's sizes.
-    pub ifc_measure_cache: HashMap<RawNodeId, IfcRootMeasures>,
+    pub ifc_measure_cache: rustc_hash::FxHashMap<RawNodeId, IfcRootMeasures>,
     /// The Parley layouts the detached atomic-inline compute
     /// (`RinchDocument::measure_inline_blocks`) built for the text leaves it
     /// measured — the text of an `inline-flex` / `inline-grid`, which is a flex
@@ -2661,7 +2706,7 @@ impl NodeTree {
             image_cache: ImageCache::new(),
             image_loader: None,
             pending_background_urls: Vec::new(),
-            dirty_ifc_text_roots: HashSet::new(),
+            dirty_ifc_text_roots: Default::default(),
             taffy_computes: 0,
             ifc_setup_passes: 0,
             perf: crate::perf::PerfCounters::default(),
@@ -2672,7 +2717,7 @@ impl NodeTree {
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
             styled_unrendered: Vec::new(),
-            ifc_measure_cache: HashMap::new(),
+            ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
