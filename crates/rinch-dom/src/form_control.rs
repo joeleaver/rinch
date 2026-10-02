@@ -33,7 +33,22 @@
 //! and an author `width` (or `max-width`) wins as for any box. A control's
 //! value never sizes it. One difference is left: a `display: block` control
 //! with an `auto` width keeps its intrinsic width in Chrome (248px at 16px
-//! Inter) and fills its container in rinch, which lays it out as any block.
+//! Inter); rinch now matches it (#1195): [`crate::replaced::is_unstretched_replaced`]
+//! marks every line-sized control's Taffy style `item_is_replaced`, the same
+//! flag an `<img>` carries, so a block container no longer stretches it
+//! (CSS 2.1 §10.3.4).
+//!
+//! **Every other `<input>` type [`input_width_factor`] does not size has an
+//! intrinsic width of its own in Chrome 153 too** (#1195):
+//! [`picker_input_content_width`] fits the date/time family and `file` to
+//! the font size (each paints an icon and a string this crate does not
+//! shape, so the fit is measured rather than derived), and
+//! [`button_label_content_width`] sizes `submit`/`reset`/`button` to their
+//! label text, shaped like a closed `<select>`'s. `checkbox`, `radio`,
+//! `range`, `color`, `image` and `hidden` are untouched — not line-sized
+//! controls at all ([`form_control_content_height`] already excludes them),
+//! and their own intrinsic sizes (13x13, 16, 27, the image's) stay
+//! unmodelled.
 
 use crate::computed_style::{ComputedStyle, OverflowValue};
 use crate::node::{Node, NodeContext, NodeTree};
@@ -315,19 +330,163 @@ pub(crate) fn form_control_content_size(
     perf: &crate::perf::PerfCounters,
 ) -> Option<(f32, f32)> {
     let height = form_control_content_height(node)?;
-    let factor = match node.tag() {
-        Some("textarea") => Some(size_attribute(node, "cols")),
-        Some("input") => input_width_factor(node),
-        _ => None,
-    };
-    let width = match factor {
-        Some(factor) => {
-            let metrics = cached_char_metrics(node, font_cx, layout_cx, font_generation, perf);
-            form_control_content_width(node, &node.computed_style, metrics, factor)
-        }
-        None => 0.0,
-    };
+    let width = form_control_content_width_any(node, font_cx, layout_cx, font_generation, perf);
     Some((width, height))
+}
+
+/// The content-box width of any line-sized control
+/// ([`form_control_content_height`]): dispatches to whichever of the three
+/// width rules this module implements applies — a text-like `size`/`cols`
+/// factor times an average character ([`form_control_content_width`]), a
+/// date/time-family or `file` picker's font-size fit
+/// ([`picker_input_content_width`]), or a button's label text
+/// ([`button_label_content_width`]) — and 0 for the six types
+/// [`form_control_content_height`] excludes (never reached: it already
+/// answered `None` for them) and `hidden` (reached, but a `hidden` input is
+/// `display: none` in the UA sheet and never a line-sized control in Chrome
+/// either; #1195 does not change it).
+fn form_control_content_width_any(
+    node: &Node,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    font_generation: u64,
+    perf: &crate::perf::PerfCounters,
+) -> f32 {
+    if node.tag() == Some("textarea") {
+        let factor = size_attribute(node, "cols");
+        let metrics = cached_char_metrics(node, font_cx, layout_cx, font_generation, perf);
+        return form_control_content_width(node, &node.computed_style, metrics, factor);
+    }
+    if node.tag() != Some("input") {
+        return 0.0;
+    }
+    if let Some(factor) = input_width_factor(node) {
+        let metrics = cached_char_metrics(node, font_cx, layout_cx, font_generation, perf);
+        return form_control_content_width(node, &node.computed_style, metrics, factor);
+    }
+    let ty = node
+        .attributes
+        .get("type")
+        .map(|t| t.trim().to_ascii_lowercase());
+    match ty.as_deref() {
+        Some(t @ ("date" | "month" | "week" | "time" | "datetime-local" | "file")) => {
+            picker_input_content_width(t, node.computed_style.font_size)
+        }
+        Some(t @ ("submit" | "reset" | "button")) => {
+            button_label_content_width(node, t, font_cx, layout_cx)
+        }
+        _ => 0.0,
+    }
+}
+
+/// The content-box width of a date/time-family `<input>` or a `file` input
+/// (#1195) — Chrome 153 paints each with its own control (a calendar icon
+/// plus a locale date/time format string for the first five, a "Choose
+/// File" button plus a "No file chosen" label for `file`) that this crate
+/// does not shape, but that widens close to linearly with the font size.
+/// Measured on this crate's bundled Inter, `padding: 0; border: 0`, every
+/// even font size from 8px to 24px and every multiple of 4 up to 40px;
+/// least-squares fit, worst residual under a pixel over the whole sweep:
+///
+/// ```text
+/// date           = round(10.6502 +  8.2591 × font-size)
+/// time           = round(20.5196 +  5.3435 × font-size)
+/// datetime-local = round(16.4520 + 13.1183 × font-size)
+/// month          = round( 8.7503 + 10.0152 × font-size)
+/// week           = round( 8.6502 +  9.2591 × font-size)
+/// file           = round( 0.6178 + 21.4427 × font-size)
+/// ```
+///
+/// Not a derivation of Chrome's own layout — each width is Chromium's own
+/// `LayoutUnit` fixed-point arithmetic over an icon and a string this crate
+/// never shapes — so this can be a pixel off either side of Chrome's at a
+/// handful of font sizes (measured: at a font size that is 2 mod 4, `date`'s
+/// and `week`'s own fit lands exactly on a `.5`, and Chrome's actual pixel is
+/// the floor of it, not a round-half-up). `ty` is already lowercased.
+fn picker_input_content_width(ty: &str, font_size: f32) -> f32 {
+    let (a, b): (f64, f64) = match ty {
+        "date" => (10.6502, 8.2591),
+        "time" => (20.5196, 5.3435),
+        "datetime-local" => (16.4520, 13.1183),
+        "month" => (8.7503, 10.0152),
+        "week" => (8.6502, 9.2591),
+        "file" => (0.6178, 21.4427),
+        _ => return 0.0,
+    };
+    (a + b * f64::from(font_size)).round().max(0.0) as f32
+}
+
+/// The content-box width of a `submit` / `reset` / `button` `<input>`
+/// (#1195): the width of its label, shaped in the control's own font —
+/// unlike the picker types above, such a button has **no** chrome of its own
+/// once the author zeroes its padding and border, so Chrome 153 sizes it to
+/// its label text alone (`padding: 0; border: 0`, measured over every font
+/// size from 8px to 40px).
+///
+/// HTML: the label is the `value` attribute when one is present — even an
+/// empty one, so `value=""` is a 0-wide button in Chrome, not its localized
+/// default — else `"Submit"` for `submit`, `"Reset"` for `reset`, and
+/// nothing for a bare `button` (Chrome 153: 0 wide with no value). `ty` is
+/// already lowercased.
+///
+/// Rounded, because every node's final layout is (`taffy::round_layout`,
+/// called by `compute_layout_with_measure`): leaving this fractional would
+/// still come out whole-pixel at `node.layout.width`, just rounded against
+/// the node's rounded *position* too (`round(x + width) - round(x)`) rather
+/// than against zero here. Rounding here keeps the contract self-contained.
+/// This crate's text shaping is close to Chrome's but not bit-identical —
+/// "Submit" at 16px Inter shapes to 52.648438 here against Chrome's
+/// 52.65625 — and both round to the same whole pixel (53) at every font size
+/// this module's fixtures sample; a font size where the two straddle a
+/// `.5` boundary and round to different pixels is not known to exist but is
+/// not ruled out either.
+fn button_label_content_width(
+    node: &Node,
+    ty: &str,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+) -> f32 {
+    use std::borrow::Cow;
+    let label: Cow<'_, str> = match node.attributes.get("value") {
+        Some(v) => Cow::Borrowed(v.as_str()),
+        None => match ty {
+            "submit" => Cow::Borrowed("Submit"),
+            "reset" => Cow::Borrowed("Reset"),
+            _ => Cow::Borrowed(""),
+        },
+    };
+    if label.is_empty() {
+        return 0.0;
+    }
+    label_text_width(node, &label, font_cx, layout_cx).round()
+}
+
+/// The width of `label` shaped in `node`'s own font, **unquantized** — the
+/// shape [`crate::select::select_label_layout`] does not have: that builder
+/// quantizes (snaps glyph positions to the pixel grid) because it is shared
+/// with paint, where that is wanted, and a quantized width can be a few
+/// tenths of a pixel off the unquantized one (measured: "Submit" at 16px
+/// Inter is 52.648438 unquantized, 53 quantized — which happens to be where
+/// the unquantized width rounds to anyway, but is not the same number).
+fn label_text_width(
+    node: &Node,
+    label: &str,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+) -> f32 {
+    let style = &node.computed_style;
+    let font_family = crate::fonts::parley_text_family(font_cx, &style.font_family, label);
+    let mut builder = layout_cx.ranged_builder(font_cx, label, 1.0, false);
+    builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
+    font_family.push_to(&mut builder);
+    if (style.font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(parley::style::StyleProperty::FontWeight(
+            parley::style::FontWeight::new(style.font_weight),
+        ));
+    }
+    let mut layout: parley::Layout<peniko::Brush> = builder.build(label);
+    layout.break_all_lines(None);
+    layout.full_width()
 }
 
 /// `size` or `cols` by HTML's rules for parsing non-negative integers: the
@@ -348,10 +507,12 @@ fn size_attribute(node: &Node, name: &str) -> u32 {
 /// states, and an absent, empty or unknown `type` is the Text state. `number`
 /// ignores `size` and is 20 characters wide (Chrome 153: 248px at 16px Inter
 /// with or without `size=5`; Chrome narrows it to its `min`/`max` digits,
-/// which this does not model). Every other type — the date/time family, the
-/// buttons, `file`, and the six [`form_control_content_height`] leaves out —
-/// has an intrinsic width of its own in Chrome that is not modelled here, and
-/// stays 0.
+/// which this does not model). The date/time family, `file`, and the three
+/// buttons `None` here are sized by [`form_control_content_width_any`]'s
+/// other two rules instead ([`picker_input_content_width`],
+/// [`button_label_content_width`], #1195); `hidden` and the five
+/// [`form_control_content_height`] leaves out besides it are never reached —
+/// that function already answered `None` for them.
 fn input_width_factor(node: &Node) -> Option<u32> {
     let ty = node
         .attributes
@@ -557,3 +718,4 @@ pub(crate) fn char_metrics(
         from_os2: true,
     }
 }
+
