@@ -297,3 +297,52 @@ fn the_ellipsis_rebuild_takes_the_same_rule() {
     );
     assert!(!faces.contains(&f.text_cover), "{faces:?} {f:?}");
 }
+
+/// Every ranged parley layout rinch builds pushes its families through
+/// `fonts::TextFamily`, so a new site cannot shape an emoji in a generic's
+/// text face again. Scans the non-test sources of `rinch-dom` and `rinch` for
+/// a `FontFamily` style property pushed anywhere else; the IFC's emoji span
+/// is the one allowed outside `fonts.rs`.
+#[test]
+fn no_source_pushes_a_font_family_by_hand() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for krate in ["../rinch-dom/src", "../rinch/src"] {
+        walk(&manifest.join(krate), &mut files);
+    }
+    assert!(files.len() > 50, "the scan found the sources");
+    let mut offenders = Vec::new();
+    let mut allowed = 0;
+    for file in &files {
+        let name = file.file_name().unwrap().to_string_lossy();
+        if name.ends_with("_tests.rs") || name == "tests.rs" || name == "fonts.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(file).unwrap();
+        let text = text.split("#[cfg(test)]").next().unwrap();
+        for (i, line) in text.lines().enumerate() {
+            if line.contains("StyleProperty::FontFamily(") || line.contains("P::FontFamily(") {
+                if name == "ifc.rs" && line.contains("emoji_span") {
+                    allowed += 1;
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", file.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        allowed, 1,
+        "the IFC's emoji span is where the scan expects it"
+    );
+    assert!(offenders.is_empty(), "{offenders:#?}");
+}
