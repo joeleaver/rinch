@@ -401,8 +401,7 @@ enum IfcOp<'a> {
 /// content — any other character, an atomic inline —
 /// confirms it. An out-of-flow box or an empty element is not content. A
 /// space at a *soft* wrap is left to parley, which hangs it (a collapsible
-/// space is never next to another now, though the non-collapsing space a
-/// U+2028/U+2029 becomes can be). The walk's ops are recorded rather than pushed,
+/// space is never next to another now). The walk's ops are recorded rather than pushed,
 /// because a removed trailing space may sit in a span that has already been
 /// closed, and every op is replayed under `Preserve`, so parley trims
 /// nothing: what it lays out is exactly this text.
@@ -416,14 +415,18 @@ enum IfcOp<'a> {
 /// own DOM↔flat correspondence is its `offset_map` (see
 /// [`crate::node::IfcTextRange`]).
 ///
-/// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are laid out as a
-/// space that does not collapse: parley reads either as a forced line break,
-/// where Chrome 153 draws an ordinary 4.5px character with a break
-/// opportunity after it (#1154's review; `x&#x2028;y` is one line).
+/// U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR and U+0085 NEXT LINE,
+/// in any mode, and U+000C FORM FEED in preserved text, are handed to parley
+/// as what Chrome 153 draws them as ([`laid_out_as`], #1181): parley reads
+/// the first two as forced line breaks, where Chrome draws an ordinary
+/// space-wide character with a break opportunity after it (`x&#x2028;y` is
+/// one line). The substitute's length differs from the character's, which
+/// the `offset_map` records like any collapsed run.
 ///
 /// Text under `pre` or `pre-wrap`, and all the text of a `contenteditable`
-/// root, is pushed verbatim, a tab as [`TAB_SPACES`]. It is content to the
-/// collapsible text around it: a preserved space confirms a held space before
+/// root, is pushed verbatim, a tab as [`TAB_SPACES`] and the characters
+/// above as their substitutes. It is content to the collapsible text around
+/// it: a preserved space confirms a held space before
 /// it and is not collapsible, so a collapsible space right after it is kept,
 /// and a preserved newline is a forced break, as a `<br>` is. `pre-line`
 /// collapses spaces and tabs and keeps each segment break as a forced break.
@@ -446,6 +449,57 @@ pub(crate) struct IfcText<'a> {
     /// Flat offsets (in [`Self::len`]'s terms) of the held spaces removed,
     /// ascending.
     dropped: Vec<usize>,
+}
+
+/// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
+/// two have fallen out of step there ([`crate::node::IfcTextRange::offset_map`]).
+fn offset_map_note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
+    let (f, d) = map.last().copied().unwrap_or((0, 0));
+    if d.wrapping_sub(f) != dom.wrapping_sub(flat) {
+        map.push((flat, dom));
+    }
+}
+
+/// What parley is handed for a character it would lay out differently from
+/// Chrome 153 (#1181), or `None` for one it gets right. `preserved`: the
+/// text's white space is preserved (`pre`, `pre-wrap`).
+///
+/// - U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR: parley reads
+///   either as a forced break (`Whitespace::Newline`, and line-break class BK
+///   in the analysis). Chrome draws a space-wide character under every
+///   `white-space` that is never collapsed, never trimmed or hung at a
+///   line's edge, and has a break opportunity after it. That is an NBSP (a
+///   space's advance, no break before it, kept at a line's end by
+///   [`InlineLayout::measured_width`]) followed by a ZERO WIDTH SPACE (the
+///   break opportunity after it).
+/// - U+0085 NEXT LINE: parley draws a glyph; Chrome draws nothing, with a
+///   break opportunity — a ZERO WIDTH SPACE.
+/// - U+000C FORM FEED under preserved white space: zero-width in Chrome, and
+///   no break opportunity — a WORD JOINER. Where white space collapses
+///   Chrome draws it as a character, which parley does too (13.8px in
+///   Chrome against parley's 10.3px for the bundled Inter: the glyph differs).
+///
+/// [`InlineLayout::measured_width`]: crate::node::InlineLayout::measured_width
+fn laid_out_as(c: char, preserved: bool) -> Option<&'static str> {
+    match c {
+        '\u{2028}' | '\u{2029}' => Some("\u{a0}\u{200b}"),
+        '\u{85}' => Some("\u{200b}"),
+        '\u{c}' if preserved => Some("\u{2060}"),
+        _ => None,
+    }
+}
+
+/// Push `sub`, what [`laid_out_as`] lays one DOM character out as, onto
+/// `out`, the character's DOM text ending at `dom_end`. The map's stretch
+/// already starts at the first character; a position after it, inside the
+/// substitute, maps to the DOM character's end — never into its UTF-8 bytes.
+fn push_substitute(out: &mut String, map: &mut Vec<(usize, usize)>, sub: &str, dom_end: usize) {
+    for (k, ch) in sub.char_indices() {
+        if k > 0 {
+            offset_map_note(map, out.len(), dom_end);
+        }
+        out.push(ch);
+    }
 }
 
 /// How a text node's white space is processed: CSS Text 3
@@ -559,12 +613,7 @@ impl<'a> IfcText<'a> {
         raw: std::borrow::Cow<'a, str>,
         mode: SpaceCollapse,
     ) -> (usize, Vec<(usize, usize)>) {
-        fn note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
-            let (f, d) = map.last().copied().unwrap_or((0, 0));
-            if d.wrapping_sub(f) != dom.wrapping_sub(flat) {
-                map.push((flat, dom));
-            }
-        }
+        use offset_map_note as note;
         let mut map = Vec::new();
         let mode = if self.preserve_all {
             SpaceCollapse::Preserve
@@ -588,7 +637,7 @@ impl<'a> IfcText<'a> {
                 self.prev_space = false;
                 self.line_start = raw.ends_with('\n');
             }
-            if !raw.contains('\t') {
+            if !raw.contains(|c| c == '\t' || laid_out_as(c, true).is_some()) {
                 let n = raw.len();
                 self.ops.push(IfcOp::Text(raw));
                 self.len += n;
@@ -599,6 +648,8 @@ impl<'a> IfcText<'a> {
                 note(&mut map, out.len(), i);
                 if c == '\t' {
                     out.push_str(TAB_SPACES);
+                } else if let Some(sub) = laid_out_as(c, true) {
+                    push_substitute(&mut out, &mut map, sub, i + c.len_utf8());
                 } else {
                     out.push(c);
                 }
@@ -642,28 +693,19 @@ impl<'a> IfcText<'a> {
             // and CR, which HTML folds into one). Not U+000C FORM FEED, which
             // `is_ascii_whitespace` includes: Chrome 153 draws it (#1181).
             let space = matches!(c, ' ' | '\t' | '\n' | '\r');
-            let kept = if space {
-                if self.line_start || self.prev_space {
-                    None
-                } else {
-                    self.prev_space = true;
-                    Some(' ')
-                }
+            if space && (self.line_start || self.prev_space) {
+                out.get_or_insert_with(|| raw[..i].to_string());
+                continue;
+            }
+            let sub = laid_out_as(c, false);
+            if space {
+                self.prev_space = true;
             } else {
                 self.prev_space = false;
                 self.line_start = false;
                 self.pending = None;
-                Some(if matches!(c, '\u{2028}' | '\u{2029}') {
-                    ' '
-                } else {
-                    c
-                })
-            };
-            let Some(k) = kept else {
-                out.get_or_insert_with(|| raw[..i].to_string());
-                continue;
-            };
-            if out.is_none() && k != c {
+            }
+            if out.is_none() && ((space && c != ' ') || sub.is_some()) {
                 out = Some(raw[..i].to_string());
             }
             let flat = out.as_ref().map_or(i, String::len);
@@ -672,7 +714,11 @@ impl<'a> IfcText<'a> {
                 self.pending = Some((op, flat, self.len + flat));
             }
             if let Some(o) = out.as_mut() {
-                o.push(k);
+                match sub {
+                    Some(sub) => push_substitute(o, &mut map, sub, i + c.len_utf8()),
+                    None if space => o.push(' '),
+                    None => o.push(c),
+                }
             }
         }
         let text: std::borrow::Cow<'a, str> = match out {

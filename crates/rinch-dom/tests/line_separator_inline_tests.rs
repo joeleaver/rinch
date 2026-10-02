@@ -227,4 +227,3 @@ fn caret_offsets_map_around_them_at_character_boundaries() {
         }
     }
 }
-
