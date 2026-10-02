@@ -89,25 +89,38 @@ pub(crate) fn wrap(
 /// `match_shortcut_code` answers `false` for a chord nothing is listening to —
 /// an item with no `on_click`, a disabled one, one whose component has since
 /// unmounted — and a keystroke nobody claimed belongs to the page.
-/// Whether the page's focused element types text: a `<textarea>`, an
+/// Whether the key event's own target types text: a `<textarea>`, an
 /// `<input>` whose type takes text, or anything `contenteditable` — the
 /// rich-text editor's capture `<textarea>` is the first of those, read-only or
 /// not, as it still owns the keys it would type.
-fn text_field_has_focus() -> bool {
+///
+/// The target is `composedPath()[0]`, the element a keystroke is dispatched at
+/// (the focused one), not `document.activeElement`: for a field inside a shadow
+/// root `activeElement` is the shadow **host**, and the chord ate the `/` typed
+/// into a third-party web component's input (review of #1285, measured in
+/// Chrome 153). `activeElement` is the fallback for an event with no path.
+fn key_target_is_text_field(event: &web_sys::KeyboardEvent) -> bool {
     use wasm_bindgen::JsCast;
-    let Some(active) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.active_element())
-    else {
+    let target = event
+        .composed_path()
+        .get(0)
+        .dyn_into::<web_sys::Element>()
+        .ok()
+        .or_else(|| {
+            web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.active_element())
+        });
+    let Some(target) = target else {
         return false;
     };
-    if let Some(input) = active.dyn_ref::<web_sys::HtmlInputElement>() {
+    if let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>() {
         return rinch::menu::input_type_takes_text(&input.type_());
     }
-    if active.tag_name().eq_ignore_ascii_case("textarea") {
+    if target.tag_name().eq_ignore_ascii_case("textarea") {
         return true;
     }
-    active
+    target
         .dyn_ref::<web_sys::HtmlElement>()
         .is_some_and(|el| el.is_content_editable())
 }
@@ -141,7 +154,7 @@ fn install_shortcut_dispatch() {
                 event.meta_key(),
                 event.alt_key(),
                 &code,
-            ) && text_field_has_focus()
+            ) && key_target_is_text_field(&event)
             {
                 return;
             }

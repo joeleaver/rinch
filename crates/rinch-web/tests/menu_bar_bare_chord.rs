@@ -33,6 +33,8 @@ fn press_at(target: &web_sys::Element, code: &str, key: &str, ctrl: bool, shift:
     let init = web_sys::KeyboardEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
+    // A real keystroke is composed: it crosses shadow boundaries.
+    init.set_composed(true);
     init.set_code(code);
     init.set_key(key);
     init.set_ctrl_key(ctrl);
@@ -170,5 +172,43 @@ fn a_ctrl_chord_a_function_key_and_a_checkbox_still_take_the_key() {
     // A checkbox has no text to type `/` into.
     assert!(fixture.press_in("checkbox", "Slash", "/", false, false));
     assert_eq!(fixture.counts(), vec![1, 1, 1]);
+    fixture.teardown();
+}
+
+/// An input inside an open shadow root keeps its `/` (review of #1285).
+/// `document.activeElement` is the shadow **host** there, a `div`, so a check
+/// that read it let the chord take the key; the event's own target is the input.
+#[wasm_bindgen_test]
+fn an_input_inside_a_shadow_root_keeps_a_bare_key() {
+    let fixture = Fixture::mount(&["/"]);
+    let shadow_host = document().create_element("div").unwrap();
+    shadow_host.set_id("menu-bar-bare-chord-shadow-host");
+    fixture.host.append_child(&shadow_host).unwrap();
+    // `attachShadow` through JS: the crate enables no `ShadowRoot` web-sys
+    // feature, and this is the only fixture that needs one.
+    let inner: web_sys::HtmlElement = js_sys::eval(
+        "(() => { const i = document.createElement('input'); \
+         document.getElementById('menu-bar-bare-chord-shadow-host') \
+           .attachShadow({ mode: 'open' }).appendChild(i); return i; })()",
+    )
+    .unwrap()
+    .dyn_into()
+    .unwrap();
+    inner.focus().unwrap();
+    assert_eq!(
+        document().active_element().as_ref(),
+        Some(&shadow_host),
+        "precondition: the document sees the shadow host as focused"
+    );
+
+    assert!(
+        !press_at(&inner, "Slash", "/", false, false),
+        "the `/` typed into the shadow-root input is the input's"
+    );
+    assert_eq!(fixture.counts(), vec![0]);
+
+    // Positive control: a non-text control in the same page still fires it.
+    assert!(fixture.press_in("plain", "Slash", "/", false, false));
+    assert_eq!(fixture.counts(), vec![1]);
     fixture.teardown();
 }
