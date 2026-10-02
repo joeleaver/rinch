@@ -62,8 +62,13 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     line again inside `break_lines_hanging_spaces`' pass (and `break_leaf_lines`, a flex item's
     own text), where Chrome 153 does: at the last opportunity before the NBSP; right before it
     after an atomic inline or a hyphen (LB12a), or for `overflow-wrap` with nothing else; and
-    with no opportunity before it, the glued word overflows to the next one (#1218).
-    `crates/rinch-dom/tests/nbsp_glue_line_break_tests.rs` is the pin. Upstream fixed it
+    with no opportunity before it, the glued word overflows to the next one (#1218). That last
+    one is found by a galloping search over the line's units, a few breaks of the line each
+    (`ifc_unglue_rebreaks`, 15 for a 1600-word chain) — one re-break per glued word was
+    quadratic in an NBSP chain (review of #1257).
+    `crates/rinch-dom/tests/nbsp_glue_line_break_tests.rs` (Chrome 153) and
+    `nbsp_glue_oracle_tests.rs` (a greedy token oracle) are the pins;
+    `perf_regression_scenarios::an_nbsp_glued_chain_*` pins the cost. Upstream fixed it
     after 0.11.1 (linebender/parley#762, merged 2026-09-07, unreleased as of 2026-10-01:
     `whitespace_hangs` there hangs no NBSP); `unglue` can go when rinch takes that release.
   - **Preserved spaces do not hang in 0.11.1.** At a width a `pre-wrap` space overflows, parley

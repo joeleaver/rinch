@@ -901,14 +901,16 @@ fn hang_pass(
 ///   as in Chrome 153. parley says so by answering the first re-break with
 ///   an emergency break one unit early, and the line is committed by length.
 /// - **At the first opportunity after the glued word**, when there is none
-///   before the run: the word overflows. Broken with room for the run, the
-///   next thing overflows and parley appends it (no opportunity yet) up to
-///   the first one it finds; another NBSP hung further on goes round again.
+///   before the run: the word overflows. Found by a galloping search over
+///   the units after the run (see the code), O(log d) breaks of a line d
+///   units long — not one per glued word, which is quadratic in a chain.
 ///
 /// parley's `main` hangs no NBSP since linebender/parley#762 (merged
 /// 2026-09-07, after 0.11.1): this can go with the release that carries it.
 ///
-/// `None` when the unit table and the breaker disagree.
+/// Every break it makes is counted in `rebreaks`. `None` when the unit table
+/// and the breaker disagree.
+#[allow(clippy::too_many_arguments)]
 fn unglue(
     breaker: &mut parley::layout::BreakLines<'_, Brush>,
     units: &[LineUnit],
