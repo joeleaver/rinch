@@ -494,9 +494,7 @@ impl RinchApp {
     /// [k]: crate::focus_registry::FocusEntry::on_key
     pub fn has_focused_key_consumer(&self) -> bool {
         match self.focus_target {
-            FocusTarget::Node(id) => {
-                crate::focus_registry::wants_key_routing(self.doc_key(), id)
-            }
+            FocusTarget::Node(id) => crate::focus_registry::wants_key_routing(self.doc_key(), id),
             _ => false,
         }
     }
