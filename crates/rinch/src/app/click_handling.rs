@@ -525,6 +525,11 @@ impl RinchApp {
                 if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
                     self.apply_or_repark_focus_request(request);
                 }
+                // Likewise a pending set_selection_range()/select() (issue
+                // #552) — drained *after* the focus request above, so a
+                // selection posted alongside a focus() for the same node
+                // lands on the input the focus request just focused.
+                self.drain_pending_text_selection();
                 actions.push(AppAction::RequestRedraw);
                 return actions;
             }

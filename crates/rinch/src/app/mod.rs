@@ -611,6 +611,17 @@ pub struct RinchApp {
     pub(crate) focused_input_state: Option<EditableState<StringDocument>>,
     /// DOM node ID of the currently focused text input.
     pub(crate) focused_input_node_id: Option<usize>,
+    /// A `NodeHandle::set_selection_range`/`select()` request (issue #552)
+    /// for a node that was **not** the focused input when it arrived,
+    /// keyed by node id: UTF-16 `(start, end, direction)`. Consulted by
+    /// `try_focus_input` when that node next gains the keyboard, the same
+    /// "set now, honoured at the next focus" rule a browser's own
+    /// `setSelectionRange()` follows on an unfocused control. A request for
+    /// the input that is *already* focused never lands here — it is applied
+    /// straight to `focused_input_state` by
+    /// `apply_or_stash_text_selection` and this map is left alone.
+    pub(crate) pending_text_selection:
+        std::collections::HashMap<usize, (usize, usize, rinch_core::dom::SelectionDirection)>,
     /// In-progress IME composition (preedit) for the focused `<input>`: the
     /// composing string and an optional `(begin, end)` byte cursor within it.
     /// Rendered inline at the input caret as an underlined overlay (via the
@@ -813,6 +824,7 @@ impl RinchApp {
             focused_input_baseline: String::new(),
             focused_input_state: None,
             focused_input_node_id: None,
+            pending_text_selection: std::collections::HashMap::new(),
             focused_input_preedit: None,
             input_vertical_goal: None,
             input_caret_generation: std::cell::Cell::new(0),
@@ -3800,6 +3812,54 @@ impl RinchApp {
         }
     }
 
+    /// Drain and apply a pending [`NodeHandle::set_selection_range`]/`select()`
+    /// request (issue #552), at the same points [`take_pending_focus_request`](
+    /// rinch_core::take_pending_focus_request) is drained — including, when
+    /// both were posted from the same effect (`focus()` then
+    /// `set_selection_range()`, the "open a rename box, focused and with its
+    /// name selected" shape), **after** that drain, so a request for a node
+    /// this very turn just focused lands on the live `EditableState` rather
+    /// than finding it not-yet-focused and being stashed.
+    pub(crate) fn drain_pending_text_selection(&mut self) {
+        if let Some((node_id, start, end, direction)) =
+            rinch_core::take_pending_text_selection_request(self.doc_key())
+        {
+            self.apply_or_stash_text_selection(node_id, start, end, direction);
+        }
+    }
+
+    /// Apply a text-selection request (issue #552) to the focused input
+    /// directly if `node_id` already holds the keyboard — converting the
+    /// UTF-16 offsets to the byte offsets `EditableState` keeps, and
+    /// resyncing the caret/selection overlay — or stash it in
+    /// `pending_text_selection` for [`Self::try_focus_input`] to consult the
+    /// next time `node_id` is focused. Mirrors a browser's own
+    /// `setSelectionRange()`/`select()` on an unfocused control: the range is
+    /// set immediately and simply shows up the first time the control is
+    /// focused.
+    pub(crate) fn apply_or_stash_text_selection(
+        &mut self,
+        node_id: usize,
+        start: usize,
+        end: usize,
+        direction: rinch_core::dom::SelectionDirection,
+    ) {
+        if self.focused_input_node_id == Some(node_id)
+            && let Some(state) = self.focused_input_state.as_mut()
+        {
+            let text = state.document.to_text();
+            let start_byte = utf16_units_to_byte_offset(&text, start);
+            let end_byte = utf16_units_to_byte_offset(&text, end);
+            state.selection = selection_for_range(direction, start_byte, end_byte);
+            self.pending_text_selection.remove(&node_id);
+            self.sync_input_cursor_to_dom();
+            self.scene_dirty = true;
+            return;
+        }
+        self.pending_text_selection
+            .insert(node_id, (start, end, direction));
+    }
+
     /// Give the keyboard back now that the overlay rooted at `root` has closed,
     /// or let it go (issue #695) — the apply-time half of
     /// [`DomDocument::restore_focus`](rinch_core::dom::DomDocument::restore_focus),
@@ -4101,6 +4161,9 @@ impl RinchApp {
                 if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
                     self.apply_or_repark_focus_request(request);
                 }
+                // And any pending set_selection_range()/select() (issue #552),
+                // drained after the focus request above for the same reason.
+                self.drain_pending_text_selection();
                 self.scene_dirty = true;
                 return;
             }
@@ -4291,9 +4354,20 @@ impl RinchApp {
             self.focused_input_baseline = value.clone();
         }
 
-        // Create EditableState with cursor at end
+        // Create EditableState with cursor at end — unless a
+        // `set_selection_range()`/`select()` call reached this node before it
+        // was focused (issue #552), stashed in `pending_text_selection`; that
+        // takes priority, as a browser's own pre-armed `setSelectionRange()`
+        // does the first time the control is focused.
         let mut state = EditableState::new(StringDocument::with_text(&value));
-        state.selection = Selection::cursor(value.len());
+        state.selection = match self.pending_text_selection.remove(&node_id) {
+            Some((start, end, direction)) => {
+                let start_byte = utf16_units_to_byte_offset(&value, start);
+                let end_byte = utf16_units_to_byte_offset(&value, end);
+                selection_for_range(direction, start_byte, end_byte)
+            }
+            None => Selection::cursor(value.len()),
+        };
         self.focused_input_state = Some(state);
         self.sync_input_cursor_to_dom();
         self.scene_dirty = true;
@@ -4852,6 +4926,42 @@ fn replace_keeping_offsets(state: &mut EditableState<StringDocument>, new: &str)
     let head = byte_at(utf16_at(state.selection.head.0));
     state.document = StringDocument::with_text(new);
     state.selection = Selection::new(anchor, head);
+}
+
+/// Convert a **UTF-16 code-unit** offset into `text` to a byte offset —
+/// [`DomDocument::set_selection_range`](rinch_core::dom::DomDocument::set_selection_range)'s
+/// unit, matching the DOM's own `setSelectionRange` (issue #552). `units`
+/// past the text's end clamps to `text.len()`, as `byte_at` in
+/// [`replace_keeping_offsets`] does for the same reason.
+fn utf16_units_to_byte_offset(text: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (b, ch) in text.char_indices() {
+        if seen + ch.len_utf16() > units {
+            return b;
+        }
+        seen += ch.len_utf16();
+    }
+    text.len()
+}
+
+/// The [`Selection`] for a `[start, end)` byte range with the given
+/// [`SelectionDirection`](rinch_core::dom::SelectionDirection) (issue #552):
+/// `start`/`end` out of order are swapped first, as a browser's own
+/// `setSelectionRange` does, then `Backward` puts the anchor at the high end
+/// and the head at the low end, `Forward`/`None` the other way around (see
+/// `SelectionDirection`'s doc comment for why `None` is not distinguished from
+/// `Forward` here).
+fn selection_for_range(
+    direction: rinch_core::dom::SelectionDirection,
+    start_byte: usize,
+    end_byte: usize,
+) -> Selection {
+    let lo = start_byte.min(end_byte);
+    let hi = start_byte.max(end_byte);
+    match direction {
+        rinch_core::dom::SelectionDirection::Backward => Selection::new(hi, lo),
+        _ => Selection::new(lo, hi),
+    }
 }
 
 /// The word around a caret, as `(start, end)` byte offsets, or `None` when

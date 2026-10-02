@@ -291,6 +291,53 @@ pub fn take_pending_focus_request(doc_key: u64) -> Option<FocusRequest> {
     })
 }
 
+// --- Text selection request mechanism (issue #552) ---
+// `NodeHandle::select()` / `set_selection_range()`, posted the same way a
+// `focus()` call posts a `FocusRequest` — a separate single-slot channel,
+// never folded into `FocusRequest` itself, because a `focus()` and a
+// `select()`/`set_selection_range()` posted from the same effect (the "open a
+// rename box, focused and with its name selected" shape #552 exists for) must
+// both survive to be applied: one slot holding both would let the later post
+// silently discard the earlier one.
+
+thread_local! {
+    /// `(doc_key, node_id, start, end, direction)` — UTF-16 code-unit offsets,
+    /// [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
+    /// unit.
+    static PENDING_TEXT_SELECTION: Cell<Option<(u64, usize, usize, usize, crate::dom::SelectionDirection)>> =
+        const { Cell::new(None) };
+}
+
+/// Park a text-selection request for `doc_key`/`node_id`, replacing whatever
+/// was parked. Called by [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
+/// desktop implementation; the runtime applies it to the node if it already
+/// holds the keyboard, or stashes it for the next time the node is focused
+/// (issue #552).
+pub fn post_text_selection_request(
+    doc_key: u64,
+    node_id: usize,
+    start: usize,
+    end: usize,
+    direction: crate::dom::SelectionDirection,
+) {
+    PENDING_TEXT_SELECTION.with(|c| c.set(Some((doc_key, node_id, start, end, direction))));
+}
+
+/// Consume the pending text-selection request **if it targets the given
+/// document**, mirroring [`take_pending_focus_request`]'s document scoping
+/// (issue #134).
+pub fn take_pending_text_selection_request(
+    doc_key: u64,
+) -> Option<(usize, usize, usize, crate::dom::SelectionDirection)> {
+    PENDING_TEXT_SELECTION.with(|c| match c.get() {
+        Some((key, node_id, start, end, direction)) if key == doc_key => {
+            c.set(None);
+            Some((node_id, start, end, direction))
+        }
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

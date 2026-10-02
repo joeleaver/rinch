@@ -150,6 +150,30 @@ pub enum FocusIntoPolicy {
     AutofocusOnly,
 }
 
+/// The direction a text selection extends in — [`DomDocument::set_selection_range`]'s
+/// fourth argument, matching the DOM's `HTMLInputElement.setSelectionRange(start,
+/// end, direction)` exactly (issue #552): `"forward"`, `"backward"` and
+/// `"none"` are literally these three variants, lowercased.
+///
+/// `Forward` and `Backward` decide which end is the *anchor* (fixed) and which
+/// is the *head* (what Shift+Arrow would move from) — not merely how the
+/// range paints, since a control's own keyboard handling continues from the
+/// head. `None` — "unspecified", a browser's own default when the third
+/// argument is omitted — is applied the same way [`Forward`](Self::Forward)
+/// is: it selects the same text, and the two differ only in what
+/// `selectionDirection` would read back, which rinch does not model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionDirection {
+    /// The anchor is `start`, the head is `end`.
+    #[default]
+    Forward,
+    /// The anchor is `end`, the head is `start`.
+    Backward,
+    /// Unspecified, as when a browser's `setSelectionRange` is called with no
+    /// third argument. Applied the same way [`Forward`](Self::Forward) is.
+    None,
+}
+
 /// Allocate a fresh process-unique document key for [`DomDocument::doc_key`].
 ///
 /// Call once per document at construction and store the result. Monotonic and
@@ -461,6 +485,52 @@ pub trait DomDocument {
     /// # Arguments
     /// * `node_id` - The ID of the element to focus
     fn focus_element(&mut self, node_id: NodeId);
+
+    /// Select a `[start, end)` range of a text control's text, in **UTF-16
+    /// code units** — matching the DOM's `HTMLInputElement.setSelectionRange`
+    /// exactly, so one offset pair means the same thing on desktop and on the
+    /// web (issue #552). `start`/`end` out of order are swapped, as a
+    /// browser's own `setSelectionRange` does; `direction` decides which end
+    /// becomes the anchor (see [`SelectionDirection`]).
+    ///
+    /// **Applied now if `node_id` already holds the keyboard; stashed for the
+    /// next time it gains it otherwise** — the same thing a browser does for
+    /// `setSelectionRange`/`select()` called on an unfocused control: the
+    /// range is set immediately, before the control is ever focused, and is
+    /// simply what the control shows the first time it is. There is no
+    /// "no-op on an unfocused control" case to document, unlike
+    /// [`focus_element`](Self::focus_element) — a selection has somewhere to
+    /// live even without the keyboard.
+    ///
+    /// [`NodeHandle::set_selection_range`](super::NodeHandle::set_selection_range)
+    /// is the caller-facing spelling. Defaulted to a no-op so a backend with
+    /// no text-control selection to set (and `MockDomDocument`, which
+    /// overrides it) keeps compiling.
+    fn set_selection_range(
+        &mut self,
+        _node_id: NodeId,
+        _start: usize,
+        _end: usize,
+        _direction: SelectionDirection,
+    ) {
+    }
+
+    /// Select a text control's **entire** text — `NodeHandle::select()`
+    /// (issue #552), the DOM's `HTMLInputElement.select()`.
+    ///
+    /// The default is exactly `set_selection_range(node_id, 0, len, Forward)`
+    /// where `len` is [`live_value`](Self::live_value)'s UTF-16 length (`0` if
+    /// the node carries no value this backend can name), so a backend needs
+    /// only to implement [`set_selection_range`](Self::set_selection_range) to
+    /// get this for free — both inherit its "apply now or stash for the next
+    /// focus" rule.
+    fn select_text(&mut self, node_id: NodeId) {
+        let len = self
+            .live_value(node_id)
+            .map(|v| v.encode_utf16().count())
+            .unwrap_or(0);
+        self.set_selection_range(node_id, 0, len, SelectionDirection::Forward);
+    }
 
     /// The node that currently holds keyboard focus in this document, if any
     /// (issue #695).

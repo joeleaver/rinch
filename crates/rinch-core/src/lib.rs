@@ -115,14 +115,16 @@ pub use events::{
     restore_drag_ghost, save_selection_snapshot, set_click_ancestors, set_click_context,
     set_configuration_change_handler, set_input_context, set_keyboard_interceptor,
     set_modifier_state, set_paste_interceptor, set_selection_callback, set_selection_sync_callback,
-    suppress_drag_ghost, take_pending_focus_request, update_drag, update_drag_with_button,
+    suppress_drag_ghost, take_pending_focus_request, take_pending_text_selection_request,
+    post_text_selection_request, update_drag, update_drag_with_button,
 };
 
 // Re-export DOM types for fine-grained rendering
 pub use dom::{
-    DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, StyleProp, UpdateBatch,
-    clear_render_scope, has_render_scope, normalize_property_name, reactive_component_dom,
-    serialize_declarations, set_render_scope, split_declarations, try_with_render_scope,
+    DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, SelectionDirection,
+    StyleProp, UpdateBatch, clear_render_scope, has_render_scope, normalize_property_name,
+    reactive_component_dom, serialize_declarations, set_render_scope, split_declarations,
+    try_with_render_scope,
     with_render_scope,
 };
 

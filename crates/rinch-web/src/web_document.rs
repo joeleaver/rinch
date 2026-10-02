@@ -1904,6 +1904,37 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// `HTMLInputElement`/`HTMLTextAreaElement.setSelectionRange(start, end,
+    /// direction)` directly (issue #552) — `start`/`end` are already UTF-16
+    /// code units on this backend, a JS string's own unit, so no conversion
+    /// is needed the way desktop's `EditableState` (byte offsets) requires.
+    /// The browser itself implements "set now, or honour it the first time
+    /// this control is focused" for an unfocused target, so there is nothing
+    /// here to stash.
+    fn set_selection_range(
+        &mut self,
+        node_id: NodeId,
+        start: usize,
+        end: usize,
+        direction: rinch_core::dom::SelectionDirection,
+    ) {
+        let Some(n) = self.nodes.get(&node_id.0) else {
+            return;
+        };
+        let start = start as u32;
+        let end = end as u32;
+        let direction = match direction {
+            rinch_core::dom::SelectionDirection::Forward => "forward",
+            rinch_core::dom::SelectionDirection::Backward => "backward",
+            rinch_core::dom::SelectionDirection::None => "none",
+        };
+        if let Some(input) = n.dyn_ref::<web_sys::HtmlInputElement>() {
+            let _ = input.set_selection_range_with_direction(start, end, direction);
+        } else if let Some(textarea) = n.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+            let _ = textarea.set_selection_range_with_direction(start, end, direction);
+        }
+    }
+
     /// `document.activeElement`, mapped back through the `__nid` expando
     /// (issue #695).
     ///

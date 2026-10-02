@@ -209,7 +209,8 @@ pub mod prelude {
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
-        NodeHandle, RenderScope, has_render_scope, try_with_render_scope, with_render_scope,
+        NodeHandle, RenderScope, SelectionDirection, has_render_scope, try_with_render_scope,
+        with_render_scope,
     };
     // Component trait for fine-grained components
     pub use rinch_core::Component;
