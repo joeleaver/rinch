@@ -523,6 +523,7 @@ impl RinchApp {
     /// (#1169, [`crate::menu::chord_yields_to_text_input`]). Not
     /// [`Self::ime_state`]: that one is off for a blurred window and a
     /// read-only editor, neither of which makes `/` a menu key.
+    #[cfg(feature = "desktop")]
     pub(crate) fn text_target_holds_keyboard(&self) -> bool {
         match self.focus_target {
             // An `<input type=checkbox>` carrying `data-oninput` takes this
@@ -537,7 +538,6 @@ impl RinchApp {
                             .is_none_or(|t| crate::menu::input_type_takes_text(t))
                 })
             }),
-            #[cfg(feature = "desktop")]
             FocusTarget::Editor(_) => true,
             FocusTarget::Node(id) => crate::focus_registry::wants_ime(self.doc_key(), id),
             FocusTarget::None | FocusTarget::Surface(_) | FocusTarget::Select(_) => false,
