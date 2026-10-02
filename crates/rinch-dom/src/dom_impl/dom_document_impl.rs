@@ -1926,6 +1926,37 @@ impl RinchDocument {
     }
 }
 
+/// The longhands a declaration of `name` sets: itself for a longhand, its
+/// sub-properties for a shorthand, none for a custom or unknown property (a
+/// custom property is one name, and two declarations of it never coexist in a
+/// split attribute).
+fn declared_longhands(name: &str) -> Vec<LonghandId> {
+    match PropertyId::parse_enabled_for_all_content(name) {
+        Ok(id) => match id.as_shorthand() {
+            Ok(shorthand) => shorthand.longhands().collect(),
+            Err(PropertyDeclarationId::Longhand(longhand)) => vec![longhand],
+            Err(PropertyDeclarationId::Custom(_)) => Vec::new(),
+        },
+        Err(()) => Vec::new(),
+    }
+}
+
+/// Whether a declaration setting `later` decides any longhand of one setting
+/// `earlier` when it comes after it (#470): they share a longhand, or — CSSOM's
+/// logical-property-group step, which Stylo's `prepare_for_update` implements —
+/// one is the logical twin of the other (`left` and `inset-inline-start`), a
+/// different longhand that maps onto the same physical side.
+fn declarations_overlap(earlier: &[LonghandId], later: &[LonghandId]) -> bool {
+    earlier.iter().any(|&a| {
+        later.iter().any(|&b| {
+            a == b
+                || (a.is_logical() != b.is_logical()
+                    && a.logical_group().is_some()
+                    && a.logical_group() == b.logical_group())
+        })
+    })
+}
+
 #[cfg(test)]
 mod attach_taffy_child_tests {
     use super::*;
@@ -2032,35 +2063,4 @@ mod attach_taffy_child_tests {
         );
         assert_eq!(doc.tree.taffy_attach_faults, 0);
     }
-}
-
-/// The longhands a declaration of `name` sets: itself for a longhand, its
-/// sub-properties for a shorthand, none for a custom or unknown property (a
-/// custom property is one name, and two declarations of it never coexist in a
-/// split attribute).
-fn declared_longhands(name: &str) -> Vec<LonghandId> {
-    match PropertyId::parse_enabled_for_all_content(name) {
-        Ok(id) => match id.as_shorthand() {
-            Ok(shorthand) => shorthand.longhands().collect(),
-            Err(PropertyDeclarationId::Longhand(longhand)) => vec![longhand],
-            Err(PropertyDeclarationId::Custom(_)) => Vec::new(),
-        },
-        Err(()) => Vec::new(),
-    }
-}
-
-/// Whether a declaration setting `later` decides any longhand of one setting
-/// `earlier` when it comes after it (#470): they share a longhand, or — CSSOM's
-/// logical-property-group step, which Stylo's `prepare_for_update` implements —
-/// one is the logical twin of the other (`left` and `inset-inline-start`), a
-/// different longhand that maps onto the same physical side.
-fn declarations_overlap(earlier: &[LonghandId], later: &[LonghandId]) -> bool {
-    earlier.iter().any(|&a| {
-        later.iter().any(|&b| {
-            a == b
-                || (a.is_logical() != b.is_logical()
-                    && a.logical_group().is_some()
-                    && a.logical_group() == b.logical_group())
-        })
-    })
 }
