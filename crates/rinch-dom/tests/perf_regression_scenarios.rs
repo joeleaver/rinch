@@ -276,8 +276,13 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
             (StyleNodesVisited, 3),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 3),
-            (ShapeIfcBuild, 3),
-            (IfcMeasureInvalidations, 3),
+            // 3 → 1 (#509, #826): each `<option>` is `display: none` by the
+            // UA sheet, so before the fix each one was *also* wrongly
+            // classified as an IFC root over its own label text — a Parley
+            // build nobody ever paints. Only the `<select>` itself (a value
+            // control, root whatever its children are) still builds.
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 1),
             (LayoutResolves, 1),
             (LayoutSkippedTextOnly, 1),
         ],
@@ -295,7 +300,10 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
             (TaffyStyleSyncs, 1),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
-            (ShapeIfcBuild, 2),
+            // 2 → 1 (#509, #826): the edited `<option>`'s label is no
+            // longer its own dead IFC build either — only the `<select>`'s
+            // own root still builds.
+            (ShapeIfcBuild, 1),
             (IfcMeasureCacheHits, 2),
             (IfcMeasureInvalidations, 4),
             (LayoutResolves, 1),
