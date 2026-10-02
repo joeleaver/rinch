@@ -252,3 +252,24 @@ fn an_inline_flex_aligns_its_own_items_by_baseline() {
     near(y(&d, a), 0.0, "big");
     near(y(&d, b), 12.0, "small");
 }
+
+/// An `inline-flex`'s own text is a text leaf of the detached compute. Chrome
+/// draws its glyphs at `y = 15` (line box at 12.5) beside `Big` at 0, exactly
+/// as in a block-level flex row; bottom edges put it at 15.
+#[test]
+fn an_inline_flexs_own_text_reports_its_first_baseline() {
+    let mut d = doc();
+    let c = container(&mut d, "");
+    let f = el(
+        &mut d,
+        c,
+        "span",
+        "display: inline-flex; align-items: baseline",
+    );
+    let t = text(&mut d, f, "Text");
+    let b = el(&mut d, f, "span", "font-size: 32px; line-height: 40px");
+    text(&mut d, b, "Big");
+    d.resolve_layout(VW, VH);
+    near(y(&d, b), 0.0, "big");
+    near(y(&d, t), 12.5, "text leaf");
+}
