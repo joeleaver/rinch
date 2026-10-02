@@ -110,8 +110,11 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     which parley reads as forced newlines, are handed to parley as NBSP + ZERO WIDTH SPACE under
     every `white-space` (Chrome 153 draws a space-wide character that never collapses, trims or
     hangs, with a break opportunity after it), U+0085 as a ZERO WIDTH SPACE, and a preserved
-    U+000C as a WORD JOINER (`ifc::laid_out_as`, #1181; the offset map records the length
-    change). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
+    U+000C as nothing (`ifc::laid_out_as`, #1181; the offset map records the length
+    change; `letter-spacing`/`word-spacing` on the substitutes still differ from Chrome's).
+    The rich-text editor's caret map counts the same bytes for each through
+    `DomDocument::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
+    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
     U+2028/U+2029 and draws U+0085 (#1268).
     **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
