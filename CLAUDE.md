@@ -3603,10 +3603,30 @@ already fell back to; with a claim (`AppFont::sans_serif`) the letters of such a
 stack move to the claimed face too. A stack that resolves to anything is untouched, emoji included, and a
 context with no `sans-serif` face (wasm/embed before any font is registered)
 appends nothing. **Accepted consequence:** on a host whose primary sans is
-DejaVu Sans, an emoji in a missing-only stack is DejaVu's monochrome glyph —
-what every `sans-serif` stack already draws there (#1204 tracks colour emoji,
-which the theme's default stack also loses on this host). Cached per thread by
-(primary `sans-serif` family id, stack).
+DejaVu Sans, an emoji in a missing-only stack is DejaVu's monochrome glyph,
+because the appended face is *named* and a named family that covers an emoji
+draws it (below). Cached per thread by (primary `sans-serif` family id, stack).
+
+**An emoji-presentation cluster counts each generic as its primary face**
+(`rinch_dom::fonts::TextFamily`, #1204). parley shapes an `Emoji`-property
+cluster against the stack and then the `emoji` generic, and a generic expands to
+the platform's whole list (about 180 families on a Linux desktop), so DejaVu Sans
+or FreeSans won U+1F600 / U+2B1C under `sans-serif` and under the theme's
+`DEFAULT_FONT_FAMILY`. Now a cluster holding U+FE0F, or an `Emoji_Presentation`
+character and no U+FE0E (icu grapheme clusters, `fonts::emoji_presentation_ranges`),
+gets a span whose stack is the computed one with every generic but `emoji`
+replaced by its slot's first family; parley appends `emoji` after it. Chrome 153
+measured on this host: a generic is one face, a named family keeps its place
+(`'DejaVu Sans'` draws U+1F600 in DejaVu), and a named emoji face after the
+generic wins (the theme's Segoe UI Emoji). Text-default `Emoji` characters
+(digits, `#`, ©, U+2764 alone) keep the stack as written, so #1198 is
+untouched. Every ranged builder pushes its families through
+`parley_text_family(..).push_to(&mut builder)`
+(`emoji_presentation_family_tests::no_source_pushes_a_font_family_by_hand`); the
+IFC's tree builder wraps each emoji range of a text op in a span of
+`parley_emoji_font_family` (`IfcText::finish`). Every IFC text is shaped in the
+root's family. A cluster split across two text nodes (an emoji and its U+FE0F)
+is not found. The fixtures use bundled stand-ins, not the host's emoji face.
 
 **Window chrome inset (not ThemeProvider-generated).** `--rinch-window-top-inset`
 is published at runtime by whatever chrome rinch draws above your content — the

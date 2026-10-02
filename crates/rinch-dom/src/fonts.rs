@@ -65,8 +65,9 @@ pub fn new_font_context() -> parley::FontContext {
 /// the digits and letters and, where it has no emoji (Noto Sans, Roboto),
 /// leaves an emoji to the `emoji` generic as before. **Accepted consequence:**
 /// on a host whose primary `sans-serif` face is DejaVu Sans, an emoji in such
-/// a stack is drawn in DejaVu's monochrome glyph, which is what every
-/// `sans-serif` stack already does there (#1204 tracks colour emoji).
+/// a stack is drawn in DejaVu's monochrome glyph: the appended face is named,
+/// and a named family that covers an emoji draws it ([`TextFamily`], #1204),
+/// as Chrome draws U+1F600 under `'DejaVu Sans'`.
 ///
 /// A stack that resolves to anything is left alone, emoji included. So is
 /// every stack in a context with no `sans-serif` face at all (wasm or embed
