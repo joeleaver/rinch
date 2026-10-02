@@ -213,7 +213,8 @@ pub fn parley_emoji_font_family(
 }
 
 /// `family` with each generic but `emoji` replaced by the first family of its
-/// slot (dropped when the slot is empty); `None` if it holds no such generic.
+/// slot (dropped when the slot is empty), then the `emoji` generic, then those
+/// generics as written; `None` if it holds no generic but `emoji`.
 fn emoji_stack(
     collection: &mut Collection,
     family: &parley::style::FontFamily<'_>,
@@ -223,7 +224,7 @@ fn emoji_stack(
     let FontFamily::Source(source) = family else {
         return None;
     };
-    let mut replaced = false;
+    let mut replaced: Vec<GenericFamily> = Vec::new();
     let mut out: Vec<FontFamilyName<'static>> = Vec::new();
     for name in FontFamilyName::parse_css_list(source).map_while(Result::ok) {
         match name {
@@ -231,7 +232,7 @@ fn emoji_stack(
                 out.push(FontFamilyName::Generic(GenericFamily::Emoji));
             }
             FontFamilyName::Generic(generic) => {
-                replaced = true;
+                replaced.push(generic);
                 let primary = collection.generic_families(generic).next();
                 if let Some(name) = primary.and_then(|id| collection.family_name(id)) {
                     out.push(FontFamilyName::Named(Cow::Owned(name.to_owned())));
@@ -242,19 +243,25 @@ fn emoji_stack(
             }
         }
     }
-    if !replaced {
+    if replaced.is_empty() {
         return None;
     }
-    if out.is_empty() {
-        out.push(FontFamilyName::Generic(GenericFamily::Emoji));
-    }
+    // Then the `emoji` generic, then each replaced generic whole: the emoji
+    // face wins over a generic's later text faces, and those faces stay
+    // behind it as coverage. Without the tail, a cluster the first face and
+    // the emoji face both lack fell to the script fallback, or to `.notdef`
+    // where there is none (embed and wasm app fonts) — review of #1270.
+    // parley appends `emoji` once more, which changes nothing.
+    out.push(FontFamilyName::Generic(GenericFamily::Emoji));
+    out.extend(replaced.into_iter().map(FontFamilyName::Generic));
     Some(FontFamily::List(Cow::Owned(out)))
 }
 
 /// The byte ranges of `text`'s emoji-presentation grapheme clusters, adjacent
-/// ones merged: a cluster holding U+FE0F (VARIATION SELECTOR-16), or one
-/// holding an `Emoji_Presentation` character and no U+FE0E (VARIATION
-/// SELECTOR-15). That takes in a modifier sequence (`☝🏽`, whose modifier has
+/// ones merged: a cluster whose base has the `Emoji` property and that holds
+/// U+FE0F (VARIATION SELECTOR-16), or one holding an `Emoji_Presentation`
+/// character and no U+FE0E (VARIATION SELECTOR-15). U+FE0F after any other
+/// base (`𝄞`, Thai `ก`) is no emoji variation sequence (UTS #51) and is text. That takes in a modifier sequence (`☝🏽`, whose modifier has
 /// the property), a flag (regional indicators have it) and a keycap written
 /// with U+FE0F; a keycap without it (`1⃣`) is text, as in Chrome.
 ///
@@ -263,12 +270,13 @@ fn emoji_stack(
 /// without segmenting it.
 pub fn emoji_presentation_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     use icu_properties::CodePointSetData;
-    use icu_properties::props::EmojiPresentation;
+    use icu_properties::props::{Emoji, EmojiPresentation};
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
     if text.bytes().all(|b| b < 0xE2) {
         return ranges;
     }
     let presentation = CodePointSetData::new::<EmojiPresentation>();
+    let emoji_property = CodePointSetData::new::<Emoji>();
     if !text
         .chars()
         .any(|c| c == '\u{fe0f}' || presentation.contains(c))
@@ -279,7 +287,11 @@ pub fn emoji_presentation_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     let mut start = 0;
     for end in segmenter.segment_str(text).skip(1) {
         let cluster = &text[start..end];
-        let emoji = cluster.contains('\u{fe0f}')
+        let base_is_emoji = cluster
+            .chars()
+            .next()
+            .is_some_and(|c| emoji_property.contains(c));
+        let emoji = (base_is_emoji && cluster.contains('\u{fe0f}'))
             || (!cluster.contains('\u{fe0e}') && cluster.chars().any(|c| presentation.contains(c)));
         if emoji {
             match ranges.last_mut() {
@@ -996,6 +1008,26 @@ mod tests {
             assert_eq!(ranges("\u{2b1c}\u{2b1c}a"), vec![0..6]);
         }
 
+        /// U+FE0F counts only after a base with the `Emoji` property.
+        #[test]
+        fn a_selector_after_a_non_emoji_base_is_text() {
+            for text in [
+                "\u{1d11e}\u{fe0f}",
+                "\u{e01}\u{fe0f}",
+                "A\u{fe0f}",
+                "\u{416}\u{fe0f}",
+            ] {
+                assert_eq!(
+                    ranges(text),
+                    Vec::<std::ops::Range<usize>>::new(),
+                    "{text:?}"
+                );
+            }
+            // (c) and U+2600 have the property: their VS16 sequences are emoji.
+            assert_eq!(ranges("\u{a9}\u{fe0f}"), vec![0..5]);
+            assert_eq!(ranges("\u{2600}\u{fe0f}"), vec![0..6]);
+        }
+
         #[test]
         fn a_text_variation_selector_makes_a_cluster_text() {
             assert_eq!(ranges("\u{2b1c}\u{fe0e}\u{2b1c}"), vec![6..9]);
@@ -1054,7 +1086,16 @@ mod tests {
         fn each_generic_is_its_primary_face_and_names_keep_their_place() {
             assert_eq!(
                 list("X1204, sans-serif, 'Y 1204', monospace").unwrap(),
-                vec!["\"X1204\"", "\"SansA1204\"", "\"Y 1204\"", "\"MonoA1204\""]
+                vec![
+                    "\"X1204\"",
+                    "\"SansA1204\"",
+                    "\"Y 1204\"",
+                    "\"MonoA1204\"",
+                    // The generics stay behind the emoji face as coverage.
+                    "Emoji",
+                    "SansSerif",
+                    "Monospace",
+                ]
             );
         }
 
@@ -1062,9 +1103,9 @@ mod tests {
         fn an_empty_generic_is_dropped_and_emoji_is_kept() {
             assert_eq!(
                 list("cursive, emoji, sans-serif").unwrap(),
-                vec!["Emoji", "\"SansA1204\""]
+                vec!["Emoji", "\"SansA1204\"", "Emoji", "Cursive", "SansSerif"]
             );
-            assert_eq!(list("cursive").unwrap(), vec!["Emoji"]);
+            assert_eq!(list("cursive").unwrap(), vec!["Emoji", "Cursive"]);
         }
 
         #[test]
