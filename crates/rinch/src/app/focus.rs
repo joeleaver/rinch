@@ -454,12 +454,51 @@ impl RinchApp {
     }
 
     /// Whether a generic focusable node (`tabindex`, `FocusTarget::Node`,
-    /// issue #228) holds focus. It consumes Enter/Space (and anchors Tab), so
-    /// embed hosts must route keyboard input to rinch while one is focused
-    /// (`RinchContext::wants_keyboard` includes it). Public beside
+    /// issue #228) holds focus — **any** one, including a plain `<button>` or
+    /// `<a href>` a mousedown just claimed (issue #252 made every such tag
+    /// focusable with no `tabindex` needed). Public beside
     /// [`Self::has_focused_input`] / [`Self::has_focused_contenteditable`].
+    ///
+    /// This is **not** the right question for "should an embed host hand me
+    /// its keyboard" — see [`Self::has_focused_key_consumer`] (issue #548):
+    /// most generic-node focus is a plain button that only ever consumes
+    /// Enter/Space through the runtime's own activation path, so an embed
+    /// host that withholds every key while *any* node is focused ends up
+    /// swallowing its own Esc/hotkeys the moment the user mouse-clicks a
+    /// button.
     pub fn has_focused_node(&self) -> bool {
         matches!(self.focus_target, FocusTarget::Node(_))
+    }
+
+    /// Whether the focused generic node (`FocusTarget::Node`, issue #228) is a
+    /// custom control whose app registered [`FocusEntry::on_key`][k] — i.e.
+    /// one that reads keys beyond Enter/Space/Tab (arrow-key navigation, a
+    /// shortcut of its own).
+    ///
+    /// This is the half of [`Self::has_focused_node`] an embed host's
+    /// `wants_keyboard()` should actually ask (issue #548,
+    /// [`crate::embed::RinchContext::wants_keyboard`]). A plain `<button>` or
+    /// `<a href>` becomes `FocusTarget::Node` from a mouse click alone (no
+    /// `tabindex` needed since issue #252), but registers nothing — so before
+    /// this method existed, `wants_keyboard()` answered `true` for it anyway,
+    /// and a host following the documented contract ("route keyboard to rinch
+    /// while `wants_keyboard()`") stopped seeing its own Esc/hotkey presses
+    /// the instant the user clicked any button, with no Tab or visible
+    /// keyboard focus involved. `false` for an unregistered node (the plain
+    /// button/link case and the common case for the other focus targets
+    /// too — a text `<input>`/the editor/an open `<select>` popup never reach
+    /// here, since they are not `FocusTarget::Node`), and for a registered one
+    /// that only asked for `on_focus_gained`/`on_focus_lost`/`on_ime`, not
+    /// `on_key`.
+    ///
+    /// [k]: crate::focus_registry::FocusEntry::on_key
+    pub fn has_focused_key_consumer(&self) -> bool {
+        match self.focus_target {
+            FocusTarget::Node(id) => {
+                crate::focus_registry::wants_key_routing(self.doc_key(), id)
+            }
+            _ => false,
+        }
     }
 
     /// The container id of the focused new-editor, if one holds focus. Drives

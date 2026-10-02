@@ -559,17 +559,35 @@ impl RinchContext {
         true
     }
 
-    /// Returns `true` if a text input, contenteditable, or generic focusable
-    /// node (`tabindex`, issue #228) is focused.
+    /// Returns `true` if a text input, contenteditable, or a generic
+    /// focusable node that registered its own key handling
+    /// ([`FocusEntry::on_key`](crate::focus_registry::FocusEntry::on_key),
+    /// issue #228) is focused.
     ///
     /// When this returns `true`, the game should route keyboard events to
-    /// rinch instead of handling them as game input. A Tab-focused generic
-    /// node counts: rinch consumes Enter/Space to activate it, so a host that
-    /// kept the keyboard would double-handle those keys.
+    /// rinch instead of handling them as game input.
+    ///
+    /// **A plain `<button>` or `<a href>` the user just clicked does *not*
+    /// count** (issue #548). Such a tag is focusable with no `tabindex`
+    /// needed (issue #252), so a mouse click alone claims rinch's keyboard
+    /// focus — but with no registered [`on_key`][k], the button only ever
+    /// consumes Enter/Space through the runtime's own activation path, and
+    /// that is not reason enough for a host to give up its own Esc/hotkey
+    /// handling. A *registered* generic node — a custom widget that reads
+    /// arrow keys or its own shortcuts via `on_key` — still counts, Tab-focused
+    /// or mouse-clicked alike: the runtime cannot tell you which keys it
+    /// wants without seeing them. See
+    /// [`RinchApp::has_focused_key_consumer`](crate::app::RinchApp::has_focused_key_consumer)
+    /// for that half on its own, and
+    /// [`RinchApp::has_focused_node`](crate::app::RinchApp::has_focused_node) for
+    /// "is *any* generic node focused" if you need the coarser question for
+    /// something else (it is the wrong one for this).
+    ///
+    /// [k]: crate::focus_registry::FocusEntry::on_key
     pub fn wants_keyboard(&self) -> bool {
         self.app.has_focused_input()
             || self.app.has_focused_contenteditable()
-            || self.app.has_focused_node()
+            || self.app.has_focused_key_consumer()
     }
 
     /// Register font data for text rendering **after** the initial mount.
