@@ -162,7 +162,11 @@ fn an_author_display_or_position_does_not_render_a_control_child() {
                 want_h,
                 "<{tag}> holding a div [{child_style}]: an empty control's height"
             );
-            assert_eq!(wh(&d, b), (0.0, 0.0), "<{tag}> > div [{child_style}]: no box");
+            assert_eq!(
+                wh(&d, b),
+                (0.0, 0.0),
+                "<{tag}> > div [{child_style}]: no box"
+            );
             assert_eq!(ink(&px), 0, "<{tag}> > div [{child_style}]: nothing drawn");
         }
     }
@@ -191,7 +195,11 @@ fn a_child_moved_out_of_a_textarea_is_rendered_again() {
     assert_eq!(wh(&d, b), (0.0, 0.0));
     d.append_child(c, b);
     d.resolve_layout(VW + 1.0, VH);
-    assert_eq!(wh(&d, b), (300.0, 50.0), "out of the textarea, it is a block");
+    assert_eq!(
+        wh(&d, b),
+        (300.0, 50.0),
+        "out of the textarea, it is a block"
+    );
     assert_eq!(wh(&d, t), (200.0, 40.0));
 }
 
@@ -203,7 +211,12 @@ fn a_replaced_elements_element_children_do_not_size_or_draw() {
         for display in ["block", "flex"] {
             let mut d = doc();
             let (_, h) = host(&mut d, tag, &format!("display: {display}; border: 0"));
-            let b = el(&mut d, h, "div", "width: 50px; height: 40px; background: red");
+            let b = el(
+                &mut d,
+                h,
+                "div",
+                "width: 50px; height: 40px; background: red",
+            );
             let px = pixels(&mut d);
             assert_eq!(
                 wh(&d, h),
@@ -241,4 +254,38 @@ fn a_canvas_fallback_button_has_no_box() {
     assert_eq!(wh(&d, h), (300.0, 150.0));
     assert_eq!(wh(&d, btn), (0.0, 0.0), "the fallback button has no box");
     assert_eq!(ink(&px), 0, "nothing drawn");
+}
+
+/// A canvas's `display: flex` is not an inner display (Chrome lays a replaced
+/// element out as one box whatever its inner display): fallback words in a
+/// flex canvas are not a flex item, do not size it and are not drawn.
+#[test]
+fn fallback_text_in_a_flex_canvas_does_not_size_or_draw() {
+    for display in ["flex", "grid", "inline-flex", "inline-grid"] {
+        let mut d = doc();
+        let (_, h) = host(&mut d, "canvas", &format!("display: {display}"));
+        text(&mut d, h, "fallback words");
+        let px = pixels(&mut d);
+        assert_eq!(wh(&d, h), (300.0, 150.0), "canvas display:{display}");
+        assert_eq!(ink(&px), 0, "canvas display:{display}: nothing drawn");
+    }
+}
+
+/// An element child appended after the control was laid out (the scoped
+/// structural pass) is no more rendered than one present from the start.
+#[test]
+fn a_block_child_appended_later_does_not_size_a_textarea() {
+    let mut d = doc();
+    let (_, t) = host(&mut d, "textarea", "width: 200px");
+    d.resolve_layout(VW, VH);
+    assert_eq!(wh(&d, t), (200.0, 40.0), "positive control: empty");
+    let b = el(&mut d, t, "div", "height: 100px; background: red");
+    let px = pixels(&mut d);
+    assert_eq!(wh(&d, t), (200.0, 40.0), "a later block child");
+    assert_eq!(wh(&d, b), (0.0, 0.0));
+    assert_eq!(ink(&px), 0);
+    // And removing it again leaves an empty textarea.
+    d.remove_child(t, b);
+    d.resolve_layout(VW + 1.0, VH);
+    assert_eq!(wh(&d, t), (200.0, 40.0), "after removal");
 }
