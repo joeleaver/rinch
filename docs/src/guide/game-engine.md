@@ -393,6 +393,32 @@ if ctx.wants_keyboard() {
 }
 ```
 
+> **A mouse-clicked plain button does not claim `wants_keyboard()` —
+> a Tab-focused one still does** (issue #548). A `<button>`/`<a href>` is
+> focusable with no `tabindex` needed, so a single click on one (no Tab
+> involved) used to make `wants_keyboard()` answer `true` until the next
+> click landed somewhere else — a host following the pattern above then
+> stopped seeing its own Esc/hotkey presses the moment the user clicked
+> *any* button in a HUD. The fix follows the browser's own `:focus-visible`
+> split rather than "is a node focused" or "did it register anything":
+>
+> - A **mouse click** on a plain button/link only ever consumes Enter/Space
+>   through rinch's own activation path, so it does not need the host's
+>   keyboard — `wants_keyboard()` is `false`.
+> - **Tab** (or a programmatic `NodeHandle::focus()`) onto that same plain
+>   button sets its keyboard-focus ring (`is_focus_visible`), and
+>   `wants_keyboard()` is `true` — so Tab navigation and Enter/Space
+>   activation of ordinary controls keep reaching rinch under the pattern
+>   above, exactly as before #548's fix.
+> - A **custom widget** that registered its own
+>   [`FocusEntry::on_key`](rinch::focus_registry::FocusEntry::on_key)
+>   (`register_focus_target` — arrow-key navigation, a shortcut of its own)
+>   is `true` whichever way it was focused: the runtime can't know which
+>   keys it wants without seeing them.
+> - An open native **`<select>`** popup is always `true` too — its own
+>   arrow/Enter/Escape handling needs every key (a separate, pre-existing
+>   gap folded into the same fix).
+
 > **A viewport hole must stay hittable — that is what routes the mouse.**
 > `wants_mouse` only reports "the game wants this" when the hit-tested node has a
 > `data-viewport` ancestor. A hole that is *not* hittable inverts the routing: the
@@ -682,7 +708,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `set_theme(&props)` | Replace this context's theme (restyles on the next `update()`) |
 | `viewport_rect(name) -> Option<LayoutRect>` | Query a GameViewport's computed rect |
 | `wants_mouse(x, y) -> bool` | True if point hits UI (not viewport hole) |
-| `wants_keyboard() -> bool` | True if a text input is focused |
+| `wants_keyboard() -> bool` | True for a text input, the editor, an open `<select>` popup, a generic node that registered `on_key`, or a *keyboard-focused* (Tab/`NodeHandle::focus()`) generic node — **not** a plain button/link a mouse click merely focused (issue #548; the click-vs-Tab split follows `:focus-visible`) |
 | `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake` or a new `RenderSurface` frame) |
 | `next_wake() -> Option<Instant>` | When to call `update()` again with no input (the caret blink), or `None` |
 | `register_font(data)` | Register font data for text rendering |
