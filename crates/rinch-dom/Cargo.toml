@@ -17,6 +17,12 @@ parley = { workspace = true }
 # The primary font's OS/2 `xAvgCharWidth` and `head` bounds, which size a text
 # control (#1177). The version parley itself depends on, so nothing new is built.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
+# Emoji_Presentation and grapheme clusters, to give an emoji-presentation
+# cluster the `emoji` generic ahead of a generic's text faces (#1204). The
+# versions parley and stylo already build with `compiled_data`, so nothing new
+# is built.
+icu_properties = { version = "2.1", default-features = false, features = ["compiled_data"] }
+icu_segmenter = { version = "2.1", default-features = false, features = ["compiled_data"] }
 vello = { workspace = true }
 peniko = "0.6"
 serde = { version = "1", features = ["derive"] }

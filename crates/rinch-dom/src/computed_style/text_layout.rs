@@ -27,7 +27,7 @@ impl ComputedStyle {
 
         let scaled_font_size = self.font_size * scale;
 
-        let font_family = crate::fonts::parley_font_family(font_cx, &self.font_family);
+        let font_family = crate::fonts::parley_text_family(font_cx, &self.font_family, text);
         let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
 
         // Set font size (scaled for DPI)
@@ -35,7 +35,7 @@ impl ComputedStyle {
 
         // Font family: empty is sans-serif, a stack that resolves to nothing
         // is finished with the primary sans-serif face (#1198).
-        builder.push_default(StyleProperty::FontFamily(font_family));
+        font_family.push_to(&mut builder);
 
         // Set font weight if not normal (400)
         if (self.font_weight - 400.0).abs() > 1.0 {
