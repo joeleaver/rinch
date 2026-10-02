@@ -1182,7 +1182,7 @@ matter; not Escape, Tab or F-keys), asked by both backends before matching.
 Desktop asks the arbiter (`RinchApp::text_target_holds_keyboard`: a text-taking
 `Input`, any `Editor`, a `Node` registered with `on_ime`) through
 `RinchApp::try_menu_shortcut`, which is what the shell calls; the web asks
-`document.activeElement` (`<textarea>`, a text-taking `<input>`,
+the keydown's `composedPath()[0]` — not `activeElement`, the host of a shadow-root field — (`<textarea>`, a text-taking `<input>`,
 `contenteditable`). The `<input>` type list is one function,
 `rinch::menu::input_type_takes_text`. A native muda accelerator on macOS/Windows
 is matched by the OS first and is not covered (#1284, unmeasured). Pins:
