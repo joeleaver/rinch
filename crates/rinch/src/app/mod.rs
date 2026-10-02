@@ -117,6 +117,8 @@ mod key_event_data_tests;
 mod key_repeat_tests;
 #[cfg(test)]
 mod late_children_716_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod menu_chord_text_focus_1169_tests;
 #[cfg(test)]
 mod missed_release_1028_tests;
 #[cfg(test)]
