@@ -209,6 +209,21 @@ fn keyname_typed_letter(key: &str) -> Option<char> {
     c.is_ascii_alphabetic().then(|| c.to_ascii_lowercase())
 }
 
+/// The `logical_key` a debug key name resolves to, shared by
+/// `key_press`/`key_down` (which also derive `text`, press-only) and
+/// `key_up` (issue #485): a release must spell the same `logical_key` as its
+/// press, or a consumer pairing them by that string (issue #337) never sees
+/// them match. A single-character name is its own key value, case and all
+/// (MCP has no layout to consult); a named key stays `None` — its `KeyCode`
+/// spells it, and fabricating the name here would just shadow that table.
+fn debug_key_logical_key(key: &str) -> Option<String> {
+    let mut it = key.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) if !c.is_control() => Some(c.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(feature = "debug")]
 impl RinchApp {
     // ── Debug commands ───────────────────────────────────────────────────
@@ -249,6 +264,100 @@ impl RinchApp {
         );
         self.debug_modifiers_to_restore = remembered;
         actions
+    }
+
+    /// The press half shared by `key_press` and `key_down` (issue #485):
+    /// fold `modifiers`, resolve the key name, check menu shortcuts first
+    /// (issue #533, same as a real `WindowEvent::KeyboardInput`) and dispatch
+    /// a `PlatformEvent::KeyDown` through `handle_event`.
+    ///
+    /// `Ok(Some((key_code, logical_key, modifiers)))` is what the caller owes
+    /// a release — `key_press` uses it to synthesize the matching `KeyUp`
+    /// right away; `key_down` keeps it implicit and leaves the release to a
+    /// later `key_up`. `Ok(None)` means a menu shortcut consumed the press
+    /// outright: no `PlatformEvent::KeyDown` was ever dispatched, so nothing
+    /// was armed and nothing needs releasing — exactly as a real keystroke a
+    /// menu owns outright never reaches the app either. `Err` is a
+    /// `DebugResult::Error` for the caller to return verbatim.
+    fn dispatch_debug_key_down(
+        &mut self,
+        key: &str,
+        mut shift: bool,
+        mut ctrl: bool,
+        mut alt: bool,
+        modifiers: &[String],
+        actions: &mut Vec<AppAction>,
+        scale_factor: f64,
+        window_size: (u32, u32),
+    ) -> Result<Option<(KeyCode, Option<String>, Modifiers)>, DebugResult> {
+        // Fold the optional `modifiers` name array into the flat booleans
+        // (issue #152) — the only path that can request `meta`. An unknown
+        // name fails loud instead of silently altering the simulated input.
+        let mut meta = false;
+        if let Err(name) =
+            rinch_debug::fold_modifier_names(modifiers, &mut shift, &mut ctrl, &mut alt, &mut meta)
+        {
+            return Err(unknown_modifier(&name));
+        }
+        // Unknown multi-char key names fail loud too — a silent no-text
+        // `Other` press would be indistinguishable from a dead key (#151).
+        let Some(key_code) = keyname_to_keycode(key) else {
+            return Err(DebugResult::Error {
+                message: format!("Unknown key name: {key:?}"),
+            });
+        };
+        // Check menu shortcuts first — exactly as the real winit
+        // `WindowEvent::KeyboardInput` arm does in `rinch_runtime.rs`
+        // — so a debug-injected chord that a menu owns is consumed
+        // here rather than falling through to `PlatformEvent::KeyDown`
+        // (issue #533). `text_target_holds_keyboard` lets a
+        // modifier-less chord yield to a focused text field (#1169),
+        // same as a real keystroke; it is desktop-only machinery, and
+        // every real `debug` build pairs with `desktop` (`debug` alone
+        // compiles this module only under `desktop`/`android`/`embed`
+        // via `lib.rs`'s `pub mod app` gate), so the fallback below is
+        // dead code in practice and exists only so a hypothetical
+        // `android`/`embed`-without-`desktop` debug build still
+        // compiles — with shortcuts simply never yielding to text
+        // focus there.
+        #[cfg(feature = "desktop")]
+        let text_focus = self.text_target_holds_keyboard();
+        #[cfg(not(feature = "desktop"))]
+        let text_focus = false;
+        if let Some(code) = keyname_to_w3c_code(key) {
+            let yields =
+                text_focus && crate::menu::chord_yields_to_text_input(ctrl, meta, alt, code);
+            if !yields {
+                let typed_letter = keyname_typed_letter(key);
+                if crate::menu::match_shortcut_code(ctrl, meta, alt, shift, code, typed_letter) {
+                    return Ok(None);
+                }
+            }
+        }
+        let text = match key {
+            "Enter" => Some("\n".to_string()),
+            k if k.chars().count() == 1 => Some(k.to_string()),
+            _ => None,
+        };
+        let logical_key = debug_key_logical_key(key);
+        let resolved_modifiers = rinch_platform::Modifiers {
+            shift,
+            ctrl,
+            alt,
+            meta,
+        };
+        actions.extend(self.handle_event(
+            PlatformEvent::KeyDown {
+                key: key_code,
+                logical_key: logical_key.clone(),
+                text,
+                modifiers: resolved_modifiers,
+                repeat: rinch_platform::KeyRepeat::Fresh,
+            },
+            window_size,
+            scale_factor,
+        ));
+        Ok(Some((key_code, logical_key, resolved_modifiers)))
     }
 
     pub(crate) fn execute_debug_command(
@@ -598,95 +707,111 @@ impl RinchApp {
             }
             DebugCommandKind::KeyPress {
                 key,
+                shift,
+                ctrl,
+                alt,
+                modifiers,
+            } => {
+                // A real keystroke is always a press followed by a release —
+                // issue #485. Before this, `key_press` synthesized only the
+                // `KeyDown` half, so Enter/Space's activation latch
+                // (`node_activation_held`, armed on the way down and cleared
+                // only by a matching `KeyUp`) stayed armed for the rest of the
+                // session: a second `key_press` of the same focused node
+                // silently did nothing, and no release-keyed app behaviour
+                // ("is W still held", a chord that ends on release) could be
+                // driven over MCP at all. `key_down`/`key_up` below are the
+                // two halves for a caller that wants to hold a key across
+                // other commands, mirroring `mouse_down`/`mouse_up`.
+                let resolved = match self.dispatch_debug_key_down(
+                    &key,
+                    shift,
+                    ctrl,
+                    alt,
+                    &modifiers,
+                    actions,
+                    scale_factor,
+                    window_size,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => return e,
+                };
+                if let Some((key_code, logical_key, resolved_modifiers)) = resolved {
+                    // Nothing to release when a menu shortcut consumed the
+                    // press (`resolved` is `None`): no `PlatformEvent::KeyDown`
+                    // was ever dispatched, so nothing was armed either —
+                    // exactly like a real keystroke a menu owns outright.
+                    actions.extend(self.handle_event(
+                        PlatformEvent::KeyUp {
+                            key: key_code,
+                            logical_key,
+                            modifiers: resolved_modifiers,
+                        },
+                        window_size,
+                        scale_factor,
+                    ));
+                }
+                actions.push(AppAction::RequestRedraw);
+                DebugResult::Json { data: json!(null) }
+            }
+            DebugCommandKind::KeyDown {
+                key,
+                shift,
+                ctrl,
+                alt,
+                modifiers,
+            } => {
+                // The held half of #485's pair: synthesizes only the press,
+                // so a caller can drive other commands (or just wait) before
+                // releasing with `key_up`.
+                if let Err(e) = self.dispatch_debug_key_down(
+                    &key,
+                    shift,
+                    ctrl,
+                    alt,
+                    &modifiers,
+                    actions,
+                    scale_factor,
+                    window_size,
+                ) {
+                    return e;
+                }
+                actions.push(AppAction::RequestRedraw);
+                DebugResult::Json { data: json!(null) }
+            }
+            DebugCommandKind::KeyUp {
+                key,
                 mut shift,
                 mut ctrl,
                 mut alt,
                 modifiers,
             } => {
-                // Synthesize a real KeyDown and route through `handle_event` (which
-                // owns Escape/F12/inspect/editor/CE handling) so MCP `key_press`
-                // matches a physical keystroke.
-                //
-                // Fold the optional `modifiers` name array into the flat booleans
-                // (issue #152) — the only path that can request `meta`. An unknown
-                // name fails loud instead of silently altering the simulated input.
+                // The release half of #485's pair. No menu-shortcut check —
+                // a real release never fires one either — and the same
+                // `logical_key` resolution `key_down`/`key_press` use, so a
+                // consumer pairing a press with its release by that string
+                // (issue #337) sees them match.
                 let mut meta = false;
                 if let Err(name) = rinch_debug::fold_modifier_names(
                     &modifiers, &mut shift, &mut ctrl, &mut alt, &mut meta,
                 ) {
                     return unknown_modifier(&name);
                 }
-                // Unknown multi-char key names fail loud too — a silent no-text
-                // `Other` press would be indistinguishable from a dead key (#151).
                 let Some(key_code) = keyname_to_keycode(&key) else {
                     return DebugResult::Error {
                         message: format!("Unknown key name: {key:?}"),
                     };
                 };
-                // Check menu shortcuts first — exactly as the real winit
-                // `WindowEvent::KeyboardInput` arm does in `rinch_runtime.rs`
-                // — so a debug-injected chord that a menu owns is consumed
-                // here rather than falling through to `PlatformEvent::KeyDown`
-                // (issue #533). `text_target_holds_keyboard` lets a
-                // modifier-less chord yield to a focused text field (#1169),
-                // same as a real keystroke; it is desktop-only machinery, and
-                // every real `debug` build pairs with `desktop` (`debug` alone
-                // compiles this module only under `desktop`/`android`/`embed`
-                // via `lib.rs`'s `pub mod app` gate), so the fallback below is
-                // dead code in practice and exists only so a hypothetical
-                // `android`/`embed`-without-`desktop` debug build still
-                // compiles — with shortcuts simply never yielding to text
-                // focus there.
-                #[cfg(feature = "desktop")]
-                let text_focus = self.text_target_holds_keyboard();
-                #[cfg(not(feature = "desktop"))]
-                let text_focus = false;
-                if let Some(code) = keyname_to_w3c_code(&key) {
-                    let yields = text_focus
-                        && crate::menu::chord_yields_to_text_input(ctrl, meta, alt, code);
-                    if !yields {
-                        let typed_letter = keyname_typed_letter(&key);
-                        if crate::menu::match_shortcut_code(
-                            ctrl,
-                            meta,
-                            alt,
-                            shift,
-                            code,
-                            typed_letter,
-                        ) {
-                            actions.push(AppAction::RequestRedraw);
-                            return DebugResult::Json { data: json!(null) };
-                        }
-                    }
-                }
-                let text = match key.as_str() {
-                    "Enter" => Some("\n".to_string()),
-                    k if k.chars().count() == 1 => Some(k.to_string()),
-                    _ => None,
-                };
-                // A single-character key name is its own key value, case and
-                // all (MCP has no layout to consult). Named keys stay `None`:
-                // their `KeyCode` spells them, and fabricating the name here
-                // would just shadow that table.
-                let logical_key = {
-                    let mut it = key.chars();
-                    match (it.next(), it.next()) {
-                        (Some(c), None) if !c.is_control() => Some(c.to_string()),
-                        _ => None,
-                    }
-                };
                 actions.extend(self.handle_event(
-                    PlatformEvent::KeyDown {
+                    PlatformEvent::KeyUp {
                         key: key_code,
-                        logical_key,
-                        text,
+                        logical_key: debug_key_logical_key(&key),
                         modifiers: rinch_platform::Modifiers {
                             shift,
                             ctrl,
                             alt,
                             meta,
                         },
-                        repeat: rinch_platform::KeyRepeat::Fresh,
                     },
                     window_size,
                     scale_factor,
@@ -2031,5 +2156,267 @@ mod key_press_menu_shortcut_533_tests {
             0,
             "a bare N must be the focused input's to type, not the menu's"
         );
+    }
+}
+
+#[cfg(test)]
+mod key_release_485_tests {
+    //! Issue #485: the debug/MCP input channel could only inject
+    //! `PlatformEvent::KeyDown` — there was no way to send a release at all.
+    //!
+    //! The issue named two consequences. (1) a release-aware app (a
+    //! document-level interceptor or a registered node's `on_key`, issue
+    //! #337) had no way to be exercised over MCP at all, since no release
+    //! ever arrived — this is the live bug the fix below addresses. (2)
+    //! `node_activation_held` — the Enter/Space latch a focused
+    //! `FocusTarget::Node` arms on the way down and clears only on a
+    //! matching `KeyUp` (issue #228) or a backend reporting
+    //! `KeyRepeat::Unknown` — was *also* said to be stranded forever by a
+    //! debug `key_press`. That no longer reproduces: #463 (PR #796, merged
+    //! after #485 was filed) made every debug-synthesized press report
+    //! `KeyRepeat::Fresh`, which `press_is_fresh` treats as unconditionally
+    //! fresh regardless of the latch — so a second bare `key_press` of the
+    //! same node already activated again before this fix. See the test
+    //! below for the probe that confirmed this against a pristine checkout
+    //! of this file.
+    //!
+    //! The fix: `key_press` now synthesizes a matching `KeyUp` right after its
+    //! `KeyDown` (one physical keystroke, like `Click` is press+release for
+    //! the mouse — harmless for the activation latch per the above, and what
+    //! makes a release-aware consumer finally observable over MCP), and
+    //! `key_down`/`key_up` are new primitives for holding a key across other
+    //! commands — mirroring `mouse_down`/`mouse_up`.
+
+    use super::*;
+    use crate::focus_registry::{FocusEntry, register_focus_target};
+    use rinch_core::events::KeyEventData;
+    use std::cell::{Cell, RefCell};
+
+    /// A focused, focusable `<div>` that counts how many times it is
+    /// activated (Enter/Space through `FocusTarget::Node`), plus the node's
+    /// id for the caller to focus it.
+    fn activation_counting_app() -> (RinchApp, Rc<Cell<usize>>, usize) {
+        let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let clicks_in = clicks.clone();
+        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let div = scope.create_element("div");
+            div.set_attribute("style", "width: 200px; height: 40px");
+            div.set_attribute("tabindex", "0");
+            let rid = scope.register_handler({
+                let clicks = clicks_in.clone();
+                move || clicks.set(clicks.get() + 1)
+            });
+            div.set_attribute("data-rid", &rid.0.to_string());
+            id_in.set(div.node_id().0);
+            root.append_child(&div);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let node_id = id.get();
+        app.set_focus_target(FocusTarget::Node(node_id));
+        (app, clicks, node_id)
+    }
+
+    fn key_press(app: &mut RinchApp, key: &str) -> DebugResult {
+        let mut actions = Vec::new();
+        app.execute_debug_command(
+            DebugCommandKind::KeyPress {
+                key: key.to_string(),
+                shift: false,
+                ctrl: false,
+                alt: false,
+                modifiers: Vec::new(),
+            },
+            &mut actions,
+            1.0,
+            (800, 600),
+        )
+    }
+
+    fn key_down(app: &mut RinchApp, key: &str) -> DebugResult {
+        let mut actions = Vec::new();
+        app.execute_debug_command(
+            DebugCommandKind::KeyDown {
+                key: key.to_string(),
+                shift: false,
+                ctrl: false,
+                alt: false,
+                modifiers: Vec::new(),
+            },
+            &mut actions,
+            1.0,
+            (800, 600),
+        )
+    }
+
+    fn key_up(app: &mut RinchApp, key: &str) -> DebugResult {
+        let mut actions = Vec::new();
+        app.execute_debug_command(
+            DebugCommandKind::KeyUp {
+                key: key.to_string(),
+                shift: false,
+                ctrl: false,
+                alt: false,
+                modifiers: Vec::new(),
+            },
+            &mut actions,
+            1.0,
+            (800, 600),
+        )
+    }
+
+    /// A focused, focusable `<div>` whose registered `on_key` records every
+    /// `KeyEventData` it is offered (consuming none), plus the sink to read
+    /// them back from.
+    fn key_recording_app() -> (RinchApp, Rc<RefCell<Vec<KeyEventData>>>) {
+        let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = seen.clone();
+        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id_in = id.clone();
+
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let div = scope.create_element("div");
+            div.set_attribute("style", "width: 200px; height: 40px");
+            div.set_attribute("tabindex", "0");
+            let sink = sink.clone();
+            register_focus_target(
+                &div,
+                FocusEntry::new().on_key(move |k| {
+                    sink.borrow_mut().push(k.clone());
+                    false
+                }),
+            );
+            id_in.set(div.node_id().0);
+            root.append_child(&div);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app.set_focus_target(FocusTarget::Node(id.get()));
+        (app, seen)
+    }
+
+    /// Issue #485 point 2's claim — that `key_press` leaves
+    /// `node_activation_held` armed forever because MCP never sends a
+    /// `KeyUp` — no longer reproduces as filed: #463 (PR #796, merged after
+    /// #485 was filed) already made every debug-synthesized `KeyDown` report
+    /// `KeyRepeat::Fresh`, and `press_is_fresh` treats `Fresh` as
+    /// unconditionally fresh regardless of the latch
+    /// (`event_dispatch.rs::press_is_fresh`) — so a second bare `key_press`
+    /// of Enter already activated again before this fix. This is now a
+    /// regression guard, not the bug's reproduction: it protects the real
+    /// fix below (`key_press` sending a matching `KeyUp`) from accidentally
+    /// breaking repeated activation some other way.
+    ///
+    /// Mutant this kills: `dispatch_debug_key_down` reporting
+    /// `KeyRepeat::Unknown` instead of `Fresh` while still never releasing —
+    /// `clicks` would stay at `1` after the second press.
+    #[test]
+    fn a_second_debug_key_press_activates_a_focused_node_again() {
+        let (mut app, clicks, _id) = activation_counting_app();
+
+        key_press(&mut app, "Enter");
+        assert_eq!(clicks.get(), 1, "the first press must activate once");
+
+        key_press(&mut app, "Enter");
+        assert_eq!(
+            clicks.get(),
+            2,
+            "the latch must have cleared, so the second press activates again"
+        );
+    }
+
+    /// `key_down` alone (with no `key_up`) must not itself dispatch a
+    /// release — this is the fixed-point control for the pairing tests
+    /// below: it proves `key_down` is genuinely half of a pair and not
+    /// `key_press` under another name.
+    ///
+    /// Mutant this kills: a `key_down` arm that (wrongly) also dispatches a
+    /// matching `KeyUp` the way `key_press` does — `seen.len()` after the
+    /// bare `key_down` would be `2`, not `1`.
+    #[test]
+    fn key_down_alone_sends_no_release() {
+        let (mut app, seen) = key_recording_app();
+
+        key_down(&mut app, "w");
+
+        let seen = seen.borrow();
+        assert_eq!(
+            seen.len(),
+            1,
+            "key_down alone must send only a Down: {seen:?}"
+        );
+        assert!(seen[0].is_down());
+    }
+
+    /// Issue #485, point 1: a release-aware consumer — here, a registered
+    /// node's `on_key` (issue #337) — can now be exercised over the debug
+    /// channel at all. `key_press` must deliver exactly one `Down` and one
+    /// `Up`, pairing by the same `key` string (as a real press/release do).
+    ///
+    /// Mutant this kills: the `KeyUp` the `KeyPress` arm sends spelling a
+    /// different `key` than the `KeyDown` did (e.g. forgetting the shared
+    /// `debug_key_logical_key` resolution) — `seen[1].key` would not equal
+    /// `seen[0].key`, breaking exactly the pairing a "is this key still held"
+    /// consumer relies on.
+    #[test]
+    fn a_debug_key_press_delivers_a_down_and_a_matching_up_to_a_registered_on_key() {
+        let (mut app, seen) = key_recording_app();
+
+        key_press(&mut app, "w");
+
+        let seen = seen.borrow();
+        assert_eq!(
+            seen.len(),
+            2,
+            "one press, one release must reach the registered node: {seen:?}"
+        );
+        assert!(seen[0].is_down(), "{:?}", seen[0]);
+        assert!(seen[1].is_up(), "{:?}", seen[1]);
+        assert_eq!(
+            seen[0].key, seen[1].key,
+            "a release must spell the same key string as its press"
+        );
+    }
+
+    /// `key_down`/`key_up` as two independent commands, released well after
+    /// the press — the shape a held key (a game's "W" movement) needs and
+    /// `key_press` cannot provide.
+    #[test]
+    fn key_down_and_a_later_key_up_deliver_one_down_and_one_up() {
+        let (mut app, seen) = key_recording_app();
+
+        key_down(&mut app, "w");
+        {
+            let seen = seen.borrow();
+            assert_eq!(seen.len(), 1, "key_down alone: {seen:?}");
+            assert!(seen[0].is_down());
+        }
+
+        key_up(&mut app, "w");
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "key_down then key_up: {seen:?}");
+        assert!(seen[1].is_up(), "{:?}", seen[1]);
+        assert_eq!(seen[0].key, seen[1].key);
+    }
+
+    /// `key_up` of an unknown key name fails loud, like `key_press`/`key_down`
+    /// already do (issue #151) — a silent no-op would be indistinguishable
+    /// from a dead key.
+    #[test]
+    fn key_up_of_an_unknown_key_name_errors() {
+        let mut app = RinchApp::new(|scope| scope.create_element("div"));
+        let result = key_up(&mut app, "NotAKey");
+        match result {
+            DebugResult::Error { message } => {
+                assert!(message.contains("NotAKey"), "{message}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
     }
 }
