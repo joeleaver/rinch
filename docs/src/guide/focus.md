@@ -140,6 +140,43 @@ Focus arrives three ways, and all three go through the same arbiter:
   input — needs [`data-nofocus`](#taking-the-click-without-the-keyboard).
 - **`node.focus()` / `request_focus(node_id)`** — programmatic, also no ring.
 
+### Selecting a text control's text programmatically
+
+`NodeHandle::select()` and `NodeHandle::set_selection_range(start, end, direction)`
+(issue #552) are `focus()`'s selection counterparts, for the "a rename box
+opens with its name filled in **and selected**, so the first keystroke
+replaces it" shape — `set_selection_range` matches the DOM's own
+`HTMLInputElement.setSelectionRange(start, end, direction)` exactly,
+**including its units**: `start`/`end` are UTF-16 code units, not bytes and
+not `char`s, so a component written once targets desktop and
+`rinch-web` with the same offsets (`"🙂".encode_utf16().count()` is `2`, not
+`1`). `direction` is `SelectionDirection::Forward` (the anchor is `start`),
+`Backward` (the anchor is `end`), or `None` (unspecified, applied the same
+way `Forward` is). `select()` selects the control's whole text — exactly
+`set_selection_range(0, <the UTF-16 length>, Forward)`.
+
+```rust
+// `name_input` is the captured `NodeHandle` for the rename `<input>` (built
+// once, outside the handler, the way `email_field` is above).
+button { onclick: move || {
+    editing.set(true);   // an `if` effect mounts the rename input
+    name_input.focus();
+    name_input.select(); // the whole name, ready to be typed over
+}, "Rename" }
+```
+
+That ordering works because [touching the DOM inside a handler](
+reactivity.md#touching-the-dom-inside-a-handler) flushes the queued effects
+first: by the time `name_input.focus()` runs, the `if` effect has already
+mounted the input `editing.set(true)` asked for.
+
+Both calls work on a control that does not hold the keyboard yet, the same
+way a browser's own `setSelectionRange()`/`select()` do: the range is set
+immediately and simply shows up the first time the control *is* focused — a
+component does not need to call `focus()` first, or in any particular order
+relative to `select()`/`set_selection_range()`. Like `focus()`, both are
+no-ops before this handle is mounted.
+
 A focused `<select>` is **closed**, like a browser's: Enter, Space or Alt+Down
 opens its popup, and the popup then owns the keyboard until it commits or is
 dismissed — at which point focus returns to the closed control, so Tab carries

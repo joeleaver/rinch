@@ -1781,6 +1781,29 @@ open `<select>`, the rich-text editor, a render surface, or a generic focusable
 DOM node (`FocusTarget::Node`). Every transition goes through
 `RinchApp::set_focus_target`, which tears the previous owner down first.
 
+**`NodeHandle::select()` / `set_selection_range(start, end, direction)`**
+(issue #552) are `focus()`'s selection counterparts — for a rename box that
+opens with its name filled in **and selected**, so the first keystroke
+replaces it. `set_selection_range` matches `HTMLInputElement
+.setSelectionRange(start, end, direction)` exactly, **UTF-16 code units
+included**, so one offset pair means the same thing on desktop and on
+`rinch-web`; `select()` is `set_selection_range(0, <UTF-16 length>, Forward)`.
+Applied to the control directly if it already holds the keyboard; otherwise
+stashed for the next time it gains it, the same thing a browser's own
+`setSelectionRange()`/`select()` does on an unfocused control — so
+`focus()` and `select()` posted together from one effect do not need to run
+in either particular order. Desktop posts both through a single-slot
+channel per document (`DomDocument::set_selection_range`,
+`rinch_core::post_text_selection_request`/`take_pending_text_selection_request`) —
+**separate** from `FocusRequest`'s own slot, since folding the two together
+would let a `select()` posted right after a `focus()` silently discard the
+focus request — drained at the same points `FocusRequest` is, applied live to
+`RinchApp::focused_input_state`'s `EditableState` (converting UTF-16 to the
+byte offsets it keeps) if the node is the focused input, or stashed in
+`RinchApp::pending_text_selection` for `try_focus_input` to consult the next
+time that node is focused. `rinch-web` calls the element's own
+`setSelectionRange` directly — already UTF-16 units, so nothing to convert.
+
 Focusability on desktop comes from the **tag** or an explicit `tabindex` (or a
 `data-oninput` on a custom control), and an explicit `tabindex` always wins —
 the browser rule (issue #252). Focusable by tag: `<button>`, `<select>`,
