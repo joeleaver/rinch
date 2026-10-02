@@ -4500,17 +4500,26 @@ impl RinchApp {
                         // `clips_overflow` is the shared predicate (#324) — this
                         // site used to read `overflow_y` alone, so a hole under
                         // an `overflow-x: clip` ancestor came back square.
-                        if clip_radii == [0.0; 4] {
-                            let cs = &n.computed_style;
-                            if n.clips_overflow() {
-                                let resolve_size = n.layout.width.min(n.layout.height);
-                                let tl = cs.border_radius_top_left.resolve(resolve_size);
-                                let tr = cs.border_radius_top_right.resolve(resolve_size);
-                                let br = cs.border_radius_bottom_right.resolve(resolve_size);
-                                let bl = cs.border_radius_bottom_left.resolve(resolve_size);
-                                if tl > 0.0 || tr > 0.0 || br > 0.0 || bl > 0.0 {
-                                    clip_radii = [tl, tr, br, bl];
-                                }
+                        //
+                        // The radii are the **padding**-box ones (#536):
+                        // `padding_box_radii` is the same per-corner reduction
+                        // `clip_shape` applies for paint, at scale 1.0 since
+                        // this walk works in logical px throughout. With no
+                        // border this is identical to the plain `resolve()` of
+                        // the computed `border-radius` it replaces.
+                        if clip_radii == [0.0; 4] && n.clips_overflow() {
+                            let r = rinch_dom::paint::padding_box_radii(n, 1.0);
+                            if r.top_left > 0.0
+                                || r.top_right > 0.0
+                                || r.bottom_right > 0.0
+                                || r.bottom_left > 0.0
+                            {
+                                clip_radii = [
+                                    r.top_left as f32,
+                                    r.top_right as f32,
+                                    r.bottom_right as f32,
+                                    r.bottom_left as f32,
+                                ];
                             }
                         }
 
@@ -4692,13 +4701,18 @@ impl RinchApp {
                 // The shared clip predicate (#324): this walk and the paint
                 // bracket it is standing in for must agree about which
                 // ancestors clip, or a viewport hole is cut to a rect the
-                // painter never clipped to.
+                // painter never clipped to. And the shared shape (#536): the
+                // bracket clips to the **padding** box, so this intersection
+                // insets by the same `padding_box_insets` paint's `clip_shape`
+                // does, or a hole under a bordered clipping ancestor would be
+                // cut a border-width too large on each side.
                 if n.clips_overflow() {
                     let (ax, ay) = abs_pos(id);
-                    let x1 = ax;
-                    let y1 = ay;
-                    let x2 = ax + n.layout.width;
-                    let y2 = ay + n.layout.height;
+                    let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(n);
+                    let x1 = ax + left;
+                    let y1 = ay + top;
+                    let x2 = ax + n.layout.width - right;
+                    let y2 = ay + n.layout.height - bottom;
                     result = Some(match result {
                         None => (x1, y1, x2, y2),
                         Some((rx1, ry1, rx2, ry2)) => {

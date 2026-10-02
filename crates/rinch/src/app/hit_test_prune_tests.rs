@@ -740,9 +740,13 @@ fn reference_hit_test_node(
     let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
     // Nodes with overflow clipping must restrict child hit testing to within
-    // bounds — the same predicate paint clips pixels with (#324), so a box
-    // cannot be drawn somewhere it cannot be tapped.
-    let check_children = !node.clips_overflow() || point_in_bounds;
+    // the same box paint clips pixels to (#324) — the **padding** box, not
+    // the border box (#536); see `hit_test_node`'s identical arm, which this
+    // function is a verbatim pre-prune copy of.
+    let check_children = !node.clips_overflow() || {
+        let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(node);
+        x >= nx + left && x <= nx + nw - right && y >= ny + top && y <= ny + nh - bottom
+    };
 
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;

@@ -1002,9 +1002,13 @@ impl Walk<'_> {
         // carry its own copy of paint's `overflow_y`-only spelling and a
         // paragraph explaining that it was deliberately mirroring a deviation.
         //
-        // The rect is the border box, radii and all: a rounded clip is inside
-        // its own square, so intersecting with the square is the conservative
-        // answer and the one an *extent* wants.
+        // The rect is [`super::clip_shape`]'s own — the **padding** box
+        // (#536), not `rect` above (the border box `own`'s box-shadow/outline
+        // reach is measured against, which is unaffected: neither is clipped
+        // by this bracket, since both paint before it opens). Square, radii
+        // dropped: a rounded clip is inside its own square, so intersecting
+        // with the square is the conservative answer and the one an *extent*
+        // wants.
         //
         // Paint also sometimes decides not to push a clip it is entitled to
         // (card K43: a clip that covers the render target, or one nothing
@@ -1016,8 +1020,10 @@ impl Walk<'_> {
         // only**: [`clip_cuts_nothing`] asks what the root's clip would have to
         // cut, so narrowing by that very clip first would answer "nothing" for
         // every clipping box in the document.
-        if node.clips_overflow() && !(is_root && self.skip_root_clip) {
-            children = children.clipped_to(transform.transform_rect_bbox(rect));
+        if !(is_root && self.skip_root_clip)
+            && let Some((clip_rect, _)) = super::clip_shape(node, self.scale, x, y)
+        {
+            children = children.clipped_to(transform.transform_rect_bbox(clip_rect));
         }
 
         extent.union(children)
