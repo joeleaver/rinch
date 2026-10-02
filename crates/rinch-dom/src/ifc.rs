@@ -901,9 +901,11 @@ fn hang_pass(
 ///   as in Chrome 153. parley says so by answering the first re-break with
 ///   an emergency break one unit early, and the line is committed by length.
 /// - **At the first opportunity after the glued word**, when there is none
-///   before the run: the word overflows. Found by a galloping search over
-///   the units after the run (see the code), O(log d) breaks of a line d
-///   units long — not one per glued word, which is quadratic in a chain.
+///   before the run: the word overflows, to the FIRST opportunity after it.
+///   Found by a galloping search over the units after the run (see the
+///   code): O(log d) breaks of a line d units long, plus one per NBSP in the
+///   gap after the glued word — not one per glued word, which is quadratic
+///   in a chain.
 ///
 /// parley's `main` hangs no NBSP since linebender/parley#762 (merged
 /// 2026-09-07, after 0.11.1): this can go with the release that carries it.
@@ -1007,9 +1009,11 @@ fn unglue(
     // parley breaks at the last opportunity at or before it — so the line
     // comes back fitting the room exactly when there is an opportunity between
     // the run and `u`. That is monotone in `u`: a galloping search finds the
-    // first `u` that has one, in O(log d) breaks of a line d units long, each
-    // walking no further than the line does — not one break per glued word,
-    // which is quadratic in a chain of them (review of #1257).
+    // first `u` that has one, in O(log d) breaks of a line d units long (a
+    // probe can walk up to about twice the line, where the gallop overshoots)
+    // — not one break per glued word, which is quadratic in a chain of them
+    // (review of #1257). Where in the gap before that `u` the line breaks is
+    // decided after the search, below.
     let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
     // (unit index, x where it starts) of every candidate after the run, up to
     // the forced break that ends the line anyway; extended as the search goes.
@@ -1055,8 +1059,16 @@ fn unglue(
         lo = Some(k);
         k = 2 * k + 1;
     }
-    let result = match hi {
-        // The first candidate with an opportunity before it is in (lo, hi].
+    // The search finds the first candidate `hi` with an opportunity before
+    // it, but breaking with room up to `hi` would take the LAST opportunity
+    // before it, and the gap between two candidates (spaces, NBSPs, zero-width
+    // units) can hold several: CSS takes the first (review of #1257, round 2:
+    // `aaaa~bbbbbb ~ cc` at 40px is `aaaa~bbbbbb ` / `~ cc` in Chrome 153).
+    // There is none up to the candidate before `hi`, so with room up to where
+    // it ends, the next unit overflows and parley commits at the first
+    // opportunity — unless it hangs an NBSP of the gap, which takes one more
+    // break per NBSP there.
+    let before_hi = match hi {
         Some(mut hi) => {
             let mut lo = lo;
             while lo.map_or(0, |l| l + 1) < hi {
@@ -1067,11 +1079,24 @@ fn unglue(
                     lo = Some(mid);
                 }
             }
-            rebreak(breaker, candidates[hi].1 + ROOM)?
+            hi.checked_sub(1)
         }
-        // None up to the end of the line: it runs to the forced break or the
-        // end of the text.
-        None => rebreak(breaker, f32::MAX)?,
+        // None up to the forced break or the end of the text: start after the
+        // last candidate.
+        None => candidates.len().checked_sub(1),
+    };
+    let mut through = match before_hi {
+        Some(k) => candidates[k].1 + units[candidates[k].0].advance,
+        None => advance,
+    };
+    let result = loop {
+        let c = rebreak(breaker, through + ROOM)?;
+        // Nothing more taken in (a safety net: every round takes in at least
+        // the NBSP it hung last time).
+        if !ends_in_hung_nbsp(c, through + ROOM) || c.1 <= through {
+            break c;
+        }
+        through = c.1;
     };
     breaker.set_prior_line_width(max);
     Some(result)

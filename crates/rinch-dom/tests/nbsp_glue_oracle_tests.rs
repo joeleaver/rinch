@@ -29,7 +29,12 @@ fn paragraph(rng: &mut Rng, multi: bool) -> String {
     let words = 2 + rng.below(14);
     for w in 0..words {
         if w > 0 {
-            if rng.below(3) == 0 {
+            // A space, an NBSP, a space: two break opportunities in one gap
+            // between words, of which CSS takes the first (round 2 of the
+            // review of #1257).
+            if rng.below(6) == 0 {
+                s.push_str(" \u{a0} ");
+            } else if rng.below(3) == 0 {
                 s.push('\u{a0}');
             } else {
                 for _ in 0..if multi { 1 + rng.below(3) } else { 1 } {

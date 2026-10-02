@@ -233,3 +233,30 @@ fn an_atomic_inline_before_the_nbsp_is_an_opportunity() {
         s(&["", "~bb ", "cc"])
     );
 }
+
+/// A gap after a glued word that holds more than one opportunity — a space,
+/// an NBSP, a space; or a zero-width space between two spaces — breaks at the
+/// FIRST of them, so the NBSP starts the next line (round 2 of the review of
+/// #1257; Chrome 153).
+#[test]
+fn a_gap_with_several_opportunities_breaks_at_the_first() {
+    assert_eq!(
+        lines("width: 40px", &"aaaa~bbbbbb ~ cc".replace('~', N)),
+        s(&["aaaa~bbbbbb ", "~ cc"])
+    );
+    assert_eq!(
+        lines("width: 40px", &"aaaa~bbbbbb ~ cc dd".replace('~', N)),
+        s(&["aaaa~bbbbbb ", "~ cc ", "dd"])
+    );
+    assert_eq!(
+        lines("width: 40px", &"aaaa~bbbbbb \u{200b} cc".replace('~', N)),
+        s(&["aaaa~bbbbbb ", "\u{200b} cc"])
+    );
+    assert_eq!(
+        lines(
+            "width: 40px; white-space: pre-wrap",
+            &"aaaa~bbbbbb  ~  cc".replace('~', N)
+        ),
+        s(&["aaaa~bbbbbb  ", "~  cc"])
+    );
+}
