@@ -1185,7 +1185,7 @@ Desktop asks the arbiter (`RinchApp::text_target_holds_keyboard`: a text-taking
 `document.activeElement` (`<textarea>`, a text-taking `<input>`,
 `contenteditable`). The `<input>` type list is one function,
 `rinch::menu::input_type_takes_text`. A native muda accelerator on macOS/Windows
-is matched by the OS first and is not covered (#1170's territory). Pins:
+is matched by the OS first and is not covered (#1284, unmeasured). Pins:
 `app/menu_chord_text_focus_1169_tests.rs`, `rinch-web/tests/menu_bar_bare_chord.rs`.
 
 **The chords a web bar arms come back down when its root unmounts** (issue #805).
