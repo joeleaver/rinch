@@ -222,6 +222,38 @@ fn a_flex_item_text_leaf_takes_the_same_rule() {
     );
 }
 
+/// The same rule on a text leaf inside an `inline-flex` (a `Button` label),
+/// which the detached atomic-inline compute shapes.
+#[test]
+fn an_inline_flex_text_leaf_takes_the_same_rule() {
+    let (mut doc, f) = document();
+    let body = doc.body();
+    let block = doc.create_element("div");
+    let chip = doc.create_element("span");
+    doc.set_attribute(
+        chip,
+        "style",
+        "display: inline-flex; font: 40px/48px sans-serif",
+    );
+    let text = "a\u{2b1c}";
+    let t = doc.create_text(text);
+    doc.append_child(chip, t);
+    doc.append_child(block, chip);
+    doc.append_child(body, block);
+    doc.resolve_layout(800.0, 600.0);
+    let node = doc.tree.get(t.0).unwrap();
+    assert!(node.ifc_root.is_none(), "a text leaf, not an IFC member");
+    let layout = node.cached_text_parley.as_ref().expect("the leaf's layout");
+    assert_eq!(
+        runs(layout, text),
+        vec![
+            (f.primary, "a".to_owned()),
+            (f.emoji, "\u{2b1c}".to_owned())
+        ],
+        "{f:?}"
+    );
+}
+
 /// The `text-overflow: ellipsis` rebuild shapes the cut line with the same
 /// families as the line it replaces.
 #[test]
