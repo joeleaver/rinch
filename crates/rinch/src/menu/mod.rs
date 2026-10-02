@@ -2296,7 +2296,14 @@ mod tests {
         let mut registration = MenuRegistration::default();
         registration.register_callback("space-chord", cb, None);
         registration.register_shortcut("Ctrl+Alt+Space", "space-chord");
-        assert!(match_shortcut(true, false, true, false, KeyCode::Space, false));
+        assert!(match_shortcut(
+            true,
+            false,
+            true,
+            false,
+            KeyCode::Space,
+            false
+        ));
         assert!(match_shortcut_code(true, false, true, false, "Space"));
         assert_eq!(fired.get(), 2);
         assert!(!match_shortcut_code(true, false, true, false, " "));
@@ -2315,7 +2322,14 @@ mod tests {
         let mut registration = MenuRegistration::default();
         registration.register_callback("help", cb, None);
         registration.register_shortcut("Ctrl+Shift+/", "help");
-        assert!(match_shortcut(true, false, false, true, KeyCode::Slash, false));
+        assert!(match_shortcut(
+            true,
+            false,
+            false,
+            true,
+            KeyCode::Slash,
+            false
+        ));
         assert!(match_shortcut_code(true, false, false, true, "Slash"));
         assert_eq!(fired.get(), 2);
 

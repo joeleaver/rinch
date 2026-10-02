@@ -226,7 +226,11 @@ fn a_textarea_keeps_bare_and_shifted_keys_and_its_editing_keys() {
     assert_eq!(value(&app, ids.textarea), "abn?");
     assert!(!shell_key(&mut app, bare(), W::Backspace, None));
     assert!(!shell_key(&mut app, bare(), W::ArrowLeft, None));
-    assert_eq!(value(&app, ids.textarea), "abn", "Backspace edited the field");
+    assert_eq!(
+        value(&app, ids.textarea),
+        "abn",
+        "Backspace edited the field"
+    );
     assert_eq!(
         fired.iter().map(|c| c.get()).collect::<Vec<_>>(),
         vec![0, 0, 0, 0]
