@@ -414,8 +414,11 @@ impl RinchDocument {
                except `overflow` on an `<input>`, which Chrome forces to `clip`
                with `!important` (an author `overflow: auto` still computes
                `clip`), and not on a checkbox, radio or range. A textarea's
-               `visible` → `auto` is not a rule at all: it is Chrome's
-               post-cascade adjustment, made in `apply_stylo_styles_to_taffy`.
+               `overflow: auto` is not a rule at all: Chrome computes `visible`
+               on one as `auto` after the cascade, whoever declared it, and
+               rinch does the same in `apply_stylo_styles_to_taffy` — which
+               covers the default too, so a UA `overflow: auto` here would be
+               dead.
 
                The box rule covers the text states and the date/time family.
                The button types (`submit`, `reset`, `button`) and `color` carry
@@ -463,7 +466,6 @@ impl RinchDocument {
                 border: 1px solid rgb(118, 118, 118);
                 white-space: pre-wrap;
                 overflow-wrap: break-word;
-                overflow: auto;
             }
 
             /* A closed <select> shows the selected option's label (painted by the
