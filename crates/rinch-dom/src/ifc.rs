@@ -84,12 +84,12 @@ impl EllipsisStyle {
         paint: bool,
     ) -> parley::layout::Layout<Brush> {
         use parley::style::StyleProperty as P;
-        let font_family = crate::fonts::parley_font_family(font_cx, &self.font_family);
+        let font_family = crate::fonts::parley_text_family(font_cx, &self.font_family, text);
         let mut b = layout_cx.ranged_builder(font_cx, text, scale, true);
         b.push_default(P::FontSize(self.font_size));
         b.push_default(P::FontWeight(self.font_weight));
         b.push_default(P::FontStyle(self.font_style));
-        b.push_default(P::FontFamily(font_family));
+        font_family.push_to(&mut b);
         push_spacing(&mut b, self.letter_spacing, self.word_spacing);
         if paint {
             b.push_default(P::Brush(Brush::Solid(self.color)));
@@ -271,6 +271,39 @@ pub(crate) fn break_lines_hanging_spaces(
     stats
 }
 
+/// Where the first line of `layout` sits its baseline, from the top of the
+/// layout — the content-box top of the box it was measured for. `None` when it
+/// laid out no line.
+pub(crate) fn first_line_baseline(layout: &parley::layout::Layout<Brush>) -> Option<f32> {
+    layout.lines().next().map(|line| line.metrics().baseline)
+}
+
+/// A measure's `LayoutOutput` with its first baseline (#1013).
+///
+/// `compute_leaf_layout` reports `Baselines::NONE` whatever the measure did, so
+/// Taffy synthesized every text leaf's and IFC root's baseline from its bottom
+/// border edge, and `align-items: baseline` in a flex or grid row lined items
+/// up by their bottoms. Taffy measures a baseline from the **border-box** top
+/// (`flexbox.rs` adds only the item's top margin), so the content-box baseline
+/// gets the box's top padding and border, resolved exactly as
+/// `compute_leaf_layout` resolves them. A block container above the leaf needs
+/// nothing: Taffy's block algorithm propagates its first in-flow child's.
+pub(crate) fn with_first_baseline(
+    mut out: taffy::LayoutOutput,
+    inputs: &taffy::LayoutInput,
+    style: &taffy::Style,
+    content_baseline: Option<f32>,
+) -> taffy::LayoutOutput {
+    if let Some(baseline) = content_baseline {
+        use taffy::{CoreStyle, ResolveOrZero};
+        let pw = inputs.parent_size.width;
+        let padding = style.padding().resolve_or_zero(pw, |_, _| 0.0);
+        let border = style.border().resolve_or_zero(pw, |_, _| 0.0);
+        out.baselines.first = Some(padding.top + border.top + baseline);
+    }
+    out
+}
+
 /// Break a text **leaf**'s layout — a flex or grid item's own text, measured
 /// through `NodeContext::Text` rather than an IFC — at `max_width`, without
 /// the empty line parley commits after a final newline ([`phantom_last_line`],
@@ -401,8 +434,7 @@ enum IfcOp<'a> {
 /// content — any other character, an atomic inline —
 /// confirms it. An out-of-flow box or an empty element is not content. A
 /// space at a *soft* wrap is left to parley, which hangs it (a collapsible
-/// space is never next to another now, though the non-collapsing space a
-/// U+2028/U+2029 becomes can be). The walk's ops are recorded rather than pushed,
+/// space is never next to another now). The walk's ops are recorded rather than pushed,
 /// because a removed trailing space may sit in a span that has already been
 /// closed, and every op is replayed under `Preserve`, so parley trims
 /// nothing: what it lays out is exactly this text.
@@ -416,14 +448,19 @@ enum IfcOp<'a> {
 /// own DOM↔flat correspondence is its `offset_map` (see
 /// [`crate::node::IfcTextRange`]).
 ///
-/// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are laid out as a
-/// space that does not collapse: parley reads either as a forced line break,
-/// where Chrome 153 draws an ordinary 4.5px character with a break
-/// opportunity after it (#1154's review; `x&#x2028;y` is one line).
+/// U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR and U+0085 NEXT LINE,
+/// in any mode, and U+000C FORM FEED in preserved text, are handed to parley
+/// as substitutes that lay out the way Chrome 153 draws them, `letter-spacing`
+/// and `word-spacing` aside ([`laid_out_as`], #1181): parley reads
+/// the first two as forced line breaks, where Chrome draws an ordinary
+/// space-wide character with a break opportunity after it (`x&#x2028;y` is
+/// one line). The substitute's length differs from the character's, which
+/// the `offset_map` records like any collapsed run.
 ///
 /// Text under `pre` or `pre-wrap`, and all the text of a `contenteditable`
-/// root, is pushed verbatim, a tab as [`TAB_SPACES`]. It is content to the
-/// collapsible text around it: a preserved space confirms a held space before
+/// root, is pushed verbatim, a tab as [`TAB_SPACES`] and the characters
+/// above as their substitutes. It is content to the collapsible text around
+/// it: a preserved space confirms a held space before
 /// it and is not collapsible, so a collapsible space right after it is kept,
 /// and a preserved newline is a forced break, as a `<br>` is. `pre-line`
 /// collapses spaces and tabs and keeps each segment break as a forced break.
@@ -446,6 +483,96 @@ pub(crate) struct IfcText<'a> {
     /// Flat offsets (in [`Self::len`]'s terms) of the held spaces removed,
     /// ascending.
     dropped: Vec<usize>,
+}
+
+/// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
+/// two have fallen out of step there ([`crate::node::IfcTextRange::offset_map`]).
+fn offset_map_note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
+    let (f, d) = map.last().copied().unwrap_or((0, 0));
+    if d.wrapping_sub(f) != dom.wrapping_sub(flat) {
+        map.push((flat, dom));
+    }
+}
+
+/// What parley is handed for a character it would lay out differently from
+/// Chrome 153 (#1181), or `None` for one it gets right. `preserved`: the
+/// text's white space is preserved (`pre`, `pre-wrap`).
+///
+/// - U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR: parley reads
+///   either as a forced break (`Whitespace::Newline`, and line-break class BK
+///   in the analysis). Chrome draws a space-wide character under every
+///   `white-space` that is never collapsed, never trimmed or hung at a
+///   line's edge, and has a break opportunity after it. That is an NBSP (a
+///   space's advance, no break before it, kept at a line's end by
+///   [`InlineLayout::measured_width`]) followed by a ZERO WIDTH SPACE (the
+///   break opportunity after it).
+/// - U+0085 NEXT LINE: parley draws a glyph; Chrome draws nothing, with a
+///   break opportunity — a ZERO WIDTH SPACE.
+/// - U+000C FORM FEED under preserved white space: zero-width in Chrome, with
+///   no break opportunity and no `letter-spacing` (`x\fx` at 10px spacing is
+///   37.47px, as `xx`) — so it is removed. Where white space collapses
+///   Chrome draws it as a character, which parley does too (13.8px in
+///   Chrome against parley's 10.3px for the bundled Inter: the glyph differs).
+///
+/// Preserved text takes [`PRESERVED_SUBSTITUTES`], which is also what the
+/// rich-text editor's caret map is told
+/// ([`DomDocument::substituted_char_flat_bytes`]), so the two count the same
+/// flat bytes for each.
+///
+/// [`InlineLayout::measured_width`]: crate::node::InlineLayout::measured_width
+/// [`DomDocument::substituted_char_flat_bytes`]: rinch_core::dom::DomDocument::substituted_char_flat_bytes
+fn laid_out_as(c: char, preserved: bool) -> Option<&'static str> {
+    if !preserved && c == '\u{c}' {
+        return None;
+    }
+    PRESERVED_SUBSTITUTES
+        .iter()
+        .find(|&&(k, _)| k == c)
+        .map(|&(_, sub)| sub)
+}
+
+/// What [`laid_out_as`] hands parley for each character in preserved text.
+pub(crate) const PRESERVED_SUBSTITUTES: [(char, &str); 4] = [
+    ('\u{2028}', "\u{a0}\u{200b}"),
+    ('\u{2029}', "\u{a0}\u{200b}"),
+    ('\u{85}', "\u{200b}"),
+    ('\u{c}', ""),
+];
+
+/// The flat bytes each of [`PRESERVED_SUBSTITUTES`] occupies.
+pub(crate) const PRESERVED_SUBSTITUTE_FLAT_BYTES: [(char, usize); 4] = {
+    let mut out = [('\0', 0); 4];
+    let mut i = 0;
+    while i < PRESERVED_SUBSTITUTES.len() {
+        out[i] = (PRESERVED_SUBSTITUTES[i].0, PRESERVED_SUBSTITUTES[i].1.len());
+        i += 1;
+    }
+    out
+};
+
+/// Whether preserved text may hold a tab or a character [`laid_out_as`]
+/// substitutes: a vectorisable scan for their UTF-8 lead bytes (`\t`, `\f`,
+/// `0xC2` for U+0085, `0xE2` for U+2028/U+2029), so ordinary text is pushed
+/// as is at about memchr's cost. A hit is checked char by char.
+fn may_rewrite_preserved(raw: &str) -> bool {
+    raw.as_bytes().chunks(32).any(|chunk| {
+        chunk
+            .iter()
+            .fold(false, |a, &b| a | matches!(b, b'\t' | 0x0C | 0xC2 | 0xE2))
+    }) && raw.contains(|c| c == '\t' || laid_out_as(c, true).is_some())
+}
+
+/// Push `sub`, what [`laid_out_as`] lays one DOM character out as, onto
+/// `out`, the character's DOM text ending at `dom_end`. The map's stretch
+/// already starts at the first character; a position after it, inside the
+/// substitute, maps to the DOM character's end — never into its UTF-8 bytes.
+fn push_substitute(out: &mut String, map: &mut Vec<(usize, usize)>, sub: &str, dom_end: usize) {
+    for (k, ch) in sub.char_indices() {
+        if k > 0 {
+            offset_map_note(map, out.len(), dom_end);
+        }
+        out.push(ch);
+    }
 }
 
 /// How a text node's white space is processed: CSS Text 3
@@ -559,12 +686,7 @@ impl<'a> IfcText<'a> {
         raw: std::borrow::Cow<'a, str>,
         mode: SpaceCollapse,
     ) -> (usize, Vec<(usize, usize)>) {
-        fn note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
-            let (f, d) = map.last().copied().unwrap_or((0, 0));
-            if d.wrapping_sub(f) != dom.wrapping_sub(flat) {
-                map.push((flat, dom));
-            }
-        }
+        use offset_map_note as note;
         let mut map = Vec::new();
         let mode = if self.preserve_all {
             SpaceCollapse::Preserve
@@ -588,7 +710,7 @@ impl<'a> IfcText<'a> {
                 self.prev_space = false;
                 self.line_start = raw.ends_with('\n');
             }
-            if !raw.contains('\t') {
+            if !may_rewrite_preserved(raw.as_ref()) {
                 let n = raw.len();
                 self.ops.push(IfcOp::Text(raw));
                 self.len += n;
@@ -599,6 +721,8 @@ impl<'a> IfcText<'a> {
                 note(&mut map, out.len(), i);
                 if c == '\t' {
                     out.push_str(TAB_SPACES);
+                } else if let Some(sub) = laid_out_as(c, true) {
+                    push_substitute(&mut out, &mut map, sub, i + c.len_utf8());
                 } else {
                     out.push(c);
                 }
@@ -642,28 +766,19 @@ impl<'a> IfcText<'a> {
             // and CR, which HTML folds into one). Not U+000C FORM FEED, which
             // `is_ascii_whitespace` includes: Chrome 153 draws it (#1181).
             let space = matches!(c, ' ' | '\t' | '\n' | '\r');
-            let kept = if space {
-                if self.line_start || self.prev_space {
-                    None
-                } else {
-                    self.prev_space = true;
-                    Some(' ')
-                }
+            if space && (self.line_start || self.prev_space) {
+                out.get_or_insert_with(|| raw[..i].to_string());
+                continue;
+            }
+            let sub = laid_out_as(c, false);
+            if space {
+                self.prev_space = true;
             } else {
                 self.prev_space = false;
                 self.line_start = false;
                 self.pending = None;
-                Some(if matches!(c, '\u{2028}' | '\u{2029}') {
-                    ' '
-                } else {
-                    c
-                })
-            };
-            let Some(k) = kept else {
-                out.get_or_insert_with(|| raw[..i].to_string());
-                continue;
-            };
-            if out.is_none() && k != c {
+            }
+            if out.is_none() && ((space && c != ' ') || sub.is_some()) {
                 out = Some(raw[..i].to_string());
             }
             let flat = out.as_ref().map_or(i, String::len);
@@ -672,7 +787,11 @@ impl<'a> IfcText<'a> {
                 self.pending = Some((op, flat, self.len + flat));
             }
             if let Some(o) = out.as_mut() {
-                o.push(k);
+                match sub {
+                    Some(sub) => push_substitute(o, &mut map, sub, i + c.len_utf8()),
+                    None if space => o.push(' '),
+                    None => o.push(c),
+                }
             }
         }
         let text: std::borrow::Cow<'a, str> = match out {
@@ -689,17 +808,55 @@ impl<'a> IfcText<'a> {
 
     /// Remove a space held at the IFC's end and replay the ops into
     /// `builder`, all under `Preserve`: the text is already collapsed.
-    pub(crate) fn finish(&mut self, builder: &mut parley::TreeBuilder<'_, Brush>) {
+    ///
+    /// With `emoji_family`, each emoji-presentation cluster of a text is
+    /// pushed in a span of that family ([`crate::fonts::TextFamily`], #1204).
+    /// A cluster is found within one text op; one split across two (an emoji
+    /// and its U+FE0F in two text nodes) is not.
+    pub(crate) fn finish(
+        &mut self,
+        builder: &mut parley::TreeBuilder<'_, Brush>,
+        emoji_family: Option<parley::style::FontFamily<'static>>,
+    ) {
         self.drop_pending();
         builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        let emoji_span = emoji_family.map(|f| [parley::style::StyleProperty::FontFamily(f)]);
         for op in self.ops.drain(..) {
             match op {
                 IfcOp::Span(props) => builder.push_style_modification_span(props.iter()),
                 IfcOp::Pop => builder.pop_style_span(),
-                IfcOp::Text(text) => builder.push_text(&text),
+                IfcOp::Text(text) => match &emoji_span {
+                    Some(span) => {
+                        let mut at = 0;
+                        for range in crate::fonts::emoji_presentation_ranges(&text) {
+                            if range.start > at {
+                                builder.push_text(&text[at..range.start]);
+                            }
+                            builder.push_style_modification_span(span.iter());
+                            builder.push_text(&text[range.clone()]);
+                            builder.pop_style_span();
+                            at = range.end;
+                        }
+                        if at < text.len() {
+                            builder.push_text(&text[at..]);
+                        }
+                    }
+                    None => builder.push_text(&text),
+                },
                 IfcOp::InlineBox(b) => builder.push_inline_box(b),
             }
         }
+    }
+
+    /// Whether any text pushed so far could hold an emoji-presentation
+    /// cluster: a byte at or above 0xE2, the UTF-8 lead byte of U+231A, the
+    /// first `Emoji_Presentation` character (see
+    /// [`crate::fonts::emoji_presentation_ranges`]).
+    pub(crate) fn may_hold_emoji(&self) -> bool {
+        self.ops.iter().any(|op| match op {
+            IfcOp::Text(text) => text.bytes().any(|b| b >= 0xE2),
+            _ => false,
+        })
     }
 
     /// A flat offset recorded during the walk, in the final text: less the
@@ -1450,7 +1607,10 @@ impl RinchDocument {
             }
             // A hollow control (#1159): its children are its value, which
             // `paint_input_value` draws; nothing lays them out as content.
-            if crate::form_control::is_value_control(&self.tree.nodes[root_id]) {
+            // A canvas, video or iframe renders none of its children (#1173).
+            if crate::form_control::is_value_control(&self.tree.nodes[root_id])
+                || crate::replaced::is_replaced_without_content(&self.tree.nodes[root_id])
+            {
                 self.tree.nodes[root_id].text_layout = None;
                 continue;
             }
@@ -3359,20 +3519,28 @@ impl RinchDocument {
                 {
                     *ctx = NodeContext::Element;
                 }
-            } else if crate::form_control::is_value_control(&self.tree.nodes[root_id]) {
+            } else if crate::form_control::is_value_control(&self.tree.nodes[root_id])
+                || crate::replaced::is_replaced_without_content(&self.tree.nodes[root_id])
+            {
                 // A hollow control (#1159): its children are its value, not
                 // content, so it is measured exactly as a childless control is
                 // — the context `sync_form_control_measure` gives one — and
                 // `build_ifc_layouts` shapes nothing for it. Written only when
                 // it differs, so a pass that finds it already hollow leaves
                 // Taffy's cache alone.
-                let want = crate::form_control::hollow_control_context(
-                    &self.tree.nodes[root_id],
-                    &mut self.font_cx,
-                    &mut self.layout_cx,
-                    self.tree.font_generation,
-                    &self.tree.perf,
-                );
+                // A canvas, video or iframe is hollow the same way (#1173):
+                // its children are fallback content a browser does not
+                // render, and it keeps its natural-size context.
+                let want =
+                    crate::replaced::replaced_context(&self.tree.nodes[root_id]).or_else(|| {
+                        crate::form_control::hollow_control_context(
+                            &self.tree.nodes[root_id],
+                            &mut self.font_cx,
+                            &mut self.layout_cx,
+                            self.tree.font_generation,
+                            &self.tree.perf,
+                        )
+                    });
                 let have = self.tree.taffy.get_node_context(root_taffy);
                 let same = match (&want, have) {
                     (
@@ -3385,6 +3553,18 @@ impl RinchDocument {
                             content_height: bh,
                         }),
                     ) => aw == bw && ah == bh,
+                    (
+                        Some(NodeContext::Replaced {
+                            width: aw,
+                            height: ah,
+                            ratio: ar,
+                        }),
+                        Some(NodeContext::Replaced {
+                            width: bw,
+                            height: bh,
+                            ratio: br,
+                        }),
+                    ) => aw == bw && ah == bh && ar == br,
                     (None, None) => true,
                     _ => false,
                 };
@@ -5233,8 +5413,11 @@ impl RinchDocument {
                 // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
                 // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
                 // `TaffyView` ran around the size this body returns, with the
-                // same `0.0` calc resolver.
-                taffy::compute_leaf_layout(
+                // same `0.0` calc resolver. The first line's baseline goes to
+                // Taffy too (#1013): an `inline-flex` / `inline-grid` with
+                // `align-items: baseline` aligns its own items by it.
+                let mut first_baseline: Option<f32> = None;
+                let out = taffy::compute_leaf_layout(
                     inputs,
                     style,
                     |_, _| 0.0,
@@ -5258,6 +5441,7 @@ impl RinchDocument {
                                     nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                                 );
                                 inline_layout.hang.record(perf);
+                                first_baseline = first_line_baseline(&inline_layout.layout);
                                 taffy::Size {
                                     width: known_dims
                                         .width
@@ -5272,8 +5456,11 @@ impl RinchDocument {
                                     return taffy::Size::ZERO;
                                 }
                                 perf.bump(crate::perf::Counter::ShapeAtomicInline);
-                                let font_family =
-                                    crate::fonts::parley_font_family(font_cx, &text.font_family);
+                                let font_family = crate::fonts::parley_text_family(
+                                    font_cx,
+                                    &text.font_family,
+                                    &text.content,
+                                );
                                 let mut builder =
                                     layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
                                 builder.push_default(parley::style::StyleProperty::FontSize(
@@ -5290,9 +5477,7 @@ impl RinchDocument {
                                     builder
                                         .push_default(parley::style::StyleProperty::LineHeight(lh));
                                 }
-                                builder.push_default(parley::style::StyleProperty::FontFamily(
-                                    font_family,
-                                ));
+                                font_family.push_to(&mut builder);
                                 // Apply overflow-wrap for emergency line-breaking
                                 builder.push_default(parley::style::StyleProperty::OverflowWrap(
                                     text.overflow_wrap.to_parley(),
@@ -5322,6 +5507,7 @@ impl RinchDocument {
                                 // leaves, so `copy_cached_text_layouts` picks between
                                 // them by the same rule.
                                 let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                                first_baseline = first_line_baseline(&layout);
                                 leaf_layouts.insert((text.node_id, wrap_bits), layout);
                                 size
                             }
@@ -5350,10 +5536,23 @@ impl RinchDocument {
                                 *content_height,
                                 known_dims,
                             ),
+                            Some(NodeContext::Replaced {
+                                width,
+                                height,
+                                ratio,
+                            }) => crate::replaced::measure(
+                                (*width, *height),
+                                *ratio,
+                                known_dims,
+                                style,
+                                inputs.parent_size,
+                                inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                            ),
                             _ => taffy::Size::ZERO,
                         }
                     },
-                )
+                );
+                with_first_baseline(out, &inputs, style, first_baseline)
             },
         );
         tree.atomic_leaf_layouts.extend(leaf_layouts);
@@ -5853,8 +6052,6 @@ impl RinchDocument {
         // where Chrome breaks before the spaces and rinch does not.
         root_text_style.text_wrap_mode = Self::text_wrap_mode(root_computed);
 
-        let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
-
         // Apply white-space mode from computed style.
         // Contenteditable elements always use Preserve (pre-wrap) to prevent
         // Parley from collapsing trailing whitespace, which would cause cursor
@@ -5892,7 +6089,19 @@ impl RinchDocument {
             &mut flat_pos,
             scale,
         );
-        ifc_text.finish(&mut builder);
+        // An emoji-presentation cluster is shaped with the root's stack, its
+        // generics replaced by their primary face (#1204). Every text in an
+        // IFC is shaped in the root's family (an inline element's own
+        // `font-family` is not pushed), so one emoji family serves them all.
+        // Asked only when some text could hold one, after the walk and before
+        // the builder borrows the font context.
+        let emoji_family = if ifc_text.may_hold_emoji() {
+            crate::fonts::parley_emoji_font_family(font_cx, &root_computed.font_family)
+        } else {
+            None
+        };
+        let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
+        ifc_text.finish(&mut builder, emoji_family);
         // Every offset the walk recorded counted a held space `finish` has
         // since removed; take them all to the final text.
         for r in &mut text_ranges {

@@ -212,6 +212,9 @@ impl RinchDocument {
             // them for the write to matter.
             (Some("textarea"), "rows" | "cols") => self.mark_restyle(node, false),
             (Some("input"), "type" | "size") => self.mark_restyle(node, false),
+            // A canvas's natural size is its `width` and `height` (#1173,
+            // `replaced.rs`), re-read by the same restyle.
+            (Some("canvas"), "width" | "height") => self.mark_restyle(node, false),
             (Some("ol"), "start") => self.mark_element_children(node, false),
             (Some("li"), "value") => {
                 self.mark_restyle(node, false);

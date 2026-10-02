@@ -496,10 +496,10 @@ pub(crate) fn char_metrics(
         max_em: 0.0,
         from_os2: false,
     };
-    let family = crate::fonts::parley_font_family(font_cx, &style.font_family);
+    let family = crate::fonts::parley_text_family(font_cx, &style.font_family, PROBE);
     let mut builder = layout_cx.ranged_builder(font_cx, PROBE, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(16.0));
-    builder.push_default(parley::style::StyleProperty::FontFamily(family));
+    family.push_to(&mut builder);
     if (style.font_weight - 400.0).abs() > 1.0 {
         builder.push_default(parley::style::StyleProperty::FontWeight(
             parley::style::FontWeight::new(style.font_weight),

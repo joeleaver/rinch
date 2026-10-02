@@ -87,11 +87,11 @@ pub(crate) fn select_label_layout(
     brush: peniko::Brush,
     label: &str,
 ) -> parley::Layout<peniko::Brush> {
-    let font_family = crate::fonts::parley_font_family(font_cx, &style.font_family);
+    let font_family = crate::fonts::parley_text_family(font_cx, &style.font_family, label);
     let mut builder = layout_cx.ranged_builder(font_cx, label, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(font_size));
     builder.push_default(parley::style::StyleProperty::Brush(brush));
-    builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
+    font_family.push_to(&mut builder);
     if (style.font_weight - 400.0).abs() > 1.0 {
         builder.push_default(parley::style::StyleProperty::FontWeight(
             parley::style::FontWeight::new(style.font_weight),

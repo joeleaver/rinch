@@ -265,7 +265,8 @@ pub(super) fn paint_input_value(
     // Get font properties from computed style
     let font_size = node.computed_style.font_size;
     let font_weight = node.computed_style.font_weight;
-    let font_family = crate::fonts::parley_font_family(font_cx, &node.computed_style.font_family);
+    let font_family =
+        crate::fonts::parley_text_family(font_cx, &node.computed_style.font_family, text);
 
     // Get text color from computed style - dimmed for placeholder
     let base_color = node
@@ -297,7 +298,7 @@ pub(super) fn paint_input_value(
     let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(scaled_font_size));
     builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-    builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
+    font_family.push_to(&mut builder);
     if (font_weight - 400.0).abs() > 1.0 {
         builder.push_default(parley::style::StyleProperty::FontWeight(
             parley::style::FontWeight::new(font_weight),

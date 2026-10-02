@@ -67,6 +67,8 @@ mod editor_inline_leaf_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_line_edge_scrolled_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_line_separator_caret_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_space_tests;
@@ -965,10 +967,10 @@ impl RinchApp {
             let mut d = doc.borrow_mut();
             let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
             let text = "Test";
-            let family = rinch_dom::fonts::parley_font_family(&mut d.font_cx, font_stack);
+            let family = rinch_dom::fonts::parley_text_family(&mut d.font_cx, font_stack, text);
             let mut builder = layout_cx.ranged_builder(&mut d.font_cx, text, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(16.0));
-            builder.push_default(parley::style::StyleProperty::FontFamily(family));
+            family.push_to(&mut builder);
             let mut layout = builder.build(text);
             layout.break_all_lines(None);
             let mut glyph_count = 0;
@@ -7959,10 +7961,11 @@ mod input_caret_hit_tests {
         let pad_t = style.padding_top.to_px();
 
         let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
-        let family = rinch_dom::fonts::parley_font_family(&mut d.font_cx, &style.font_family);
+        let family =
+            rinch_dom::fonts::parley_text_family(&mut d.font_cx, &style.font_family, VALUE);
         let mut builder = layout_cx.ranged_builder(&mut d.font_cx, VALUE, 1.0, true);
         builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
-        builder.push_default(parley::style::StyleProperty::FontFamily(family));
+        family.push_to(&mut builder);
         let mut layout = builder.build(VALUE);
         layout.break_all_lines(Some(width - pad_l * 2.0));
 

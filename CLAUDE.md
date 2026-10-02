@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, Taffy, Parley, and dual rendering backends (Vello for GPU, tiny-skia for software). The goal is to provide a reactive GUI framework using HTML/CSS for layout.
 
 **Key dependencies:**
-- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.14** in one place, `crates/rinch-dom/Cargo.toml` (its `[dependencies]` and `[dev-dependencies]` lines must agree; the vendored `crates/stylo-taffy` that used to pin it too was unused and was deleted with the 0.14 bump, #1236). 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12 numbered grid lines as `i16` and **panicked** on a grid past 32,767 lines (40,000 auto-placed rows, stacked `span`s, #1210) and on `repeat(auto-fill, 0px)` or `minmax(0px, 1fr)` at any width (#1231); 0.14 clamps each grid axis at **10,000 tracks** instead (css-grid-1 §7.2.4), which is not Chrome's geometry: every item past the 10,000th track lands in the last one and they overlap, so a grid of 10,001–32,767 lines that 0.12 laid out correctly now overlaps too (`crates/rinch-dom/tests/grid_line_overflow_tests.rs`). Both measure closures (`layout_engine.rs`, `ifc.rs`) return a `LayoutOutput` through `taffy::compute_leaf_layout` with the same `0.0` calc resolver 0.12 used, and report no baseline, so flex/grid `align-items: baseline` still aligns every item by its bottom edge (#1013 — 0.14 makes the fix possible, by setting `baselines` in that output). `min_size`/`max_size` are `LengthPercentageAuto` in 0.14 (`DimensionValue::to_taffy_lpa`), and `size`/`flex_basis` carry the intrinsic keywords, which rinch hands over since #691 (see **Common Issues**). The bump itself moved layout in a few shapes, every one to Chrome 153's answer (`crates/rinch-dom/tests/taffy_014_layout_changes_tests.rs`): flex auto margins absorb free space **before** `justify-content` (0.12 justified first and pushed an auto-margin item off the end), a `min-height` parent keeps its last child's bottom margin inside it, and an empty scroll container's margins collapse through it — so a horizontal `Tabs` nested in a vertical `Tabs` now gets an inner panel 44px wide where 0.12 gave 85 (Chrome: 42.9). An editor table of more than 10,000 rows (which #1209 places by auto-placement past 9,999 tracks) now overlaps its rows from the 10,000th on, on desktop.
+- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.14** in one place, `crates/rinch-dom/Cargo.toml` (its `[dependencies]` and `[dev-dependencies]` lines must agree; the vendored `crates/stylo-taffy` that used to pin it too was unused and was deleted with the 0.14 bump, #1236). 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height. 0.12 numbered grid lines as `i16` and **panicked** on a grid past 32,767 lines (40,000 auto-placed rows, stacked `span`s, #1210) and on `repeat(auto-fill, 0px)` or `minmax(0px, 1fr)` at any width (#1231); 0.14 clamps each grid axis at **10,000 tracks** instead (css-grid-1 §7.2.4), which is not Chrome's geometry: every item past the 10,000th track lands in the last one and they overlap, so a grid of 10,001–32,767 lines that 0.12 laid out correctly now overlaps too (`crates/rinch-dom/tests/grid_line_overflow_tests.rs`). Both measure closures (`layout_engine.rs`, `ifc.rs`) return a `LayoutOutput` through `taffy::compute_leaf_layout` with the same `0.0` calc resolver 0.12 used, and set its first baseline (`ifc::with_first_baseline`, #1013): an IFC root's or text leaf's first Parley line's baseline plus the box's top padding and border, since Taffy measures from the border-box top. `ifc_measure_cache` keeps the baseline beside each size (`IfcMeasure`), and Taffy's block algorithm hands a block item its first in-flow child's, so flex/grid `align-items: baseline` lines items up by their first lines (`tests/flex_baseline_tests.rs`). It used to synthesize every item's from its bottom border edge. A **form control** still reports none and is aligned by its bottom edge (an `<input>` beside a 32px line sits 6px higher than Chrome's, #1273), and so is an image, which is right. And an item whose first line holds an atomic inline (an `inline-block`, a `Button`) is aligned by that box's **bottom**, because rinch's IFC puts such a line's baseline there (#663): beside a 32px line Chrome puts the other item at 0 and rinch at 18 (9 before #1013), pinned by `an_items_first_line_holding_an_inline_block_is_aligned_by_its_bottom_issue_663`. `min_size`/`max_size` are `LengthPercentageAuto` in 0.14 (`DimensionValue::to_taffy_lpa`), and `size`/`flex_basis` carry the intrinsic keywords, which rinch hands over since #691 (see **Common Issues**). The bump itself moved layout in a few shapes, every one to Chrome 153's answer (`crates/rinch-dom/tests/taffy_014_layout_changes_tests.rs`): flex auto margins absorb free space **before** `justify-content` (0.12 justified first and pushed an auto-margin item off the end), a `min-height` parent keeps its last child's bottom margin inside it, and an empty scroll container's margins collapse through it — so a horizontal `Tabs` nested in a vertical `Tabs` now gets an inner panel 44px wide where 0.12 gave 85 (Chrome: 42.9). An editor table of more than 10,000 rows (which #1209 places by auto-placement past 9,999 tracks) now overlaps its rows from the 10,000th on, on desktop.
 - **parley** - Text shaping and line breaking, at the **published `0.11.1`**. It was a git `rev`
   on an unmerged 22-commit "Floats WIP" branch off `v0.7.0` until #659; upstream landed that work
   in 0.9.0, so nothing was lost by moving to the release line. Two things about the dependency line
@@ -107,8 +107,15 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `contenteditable` root keeps every node's text verbatim. (Chrome 153 counts a collapsible
     space before a preserved newline in the max-content width while laying it out removed; rinch
     removes it from both.) A space at a soft wrap is still parley's to hang. U+2028/U+2029,
-    which parley reads as forced newlines, are laid out in collapsing text as a non-collapsing
-    space (Chrome draws an ordinary character; in preserved text they are still forced breaks, #1181).
+    which parley reads as forced newlines, are handed to parley as NBSP + ZERO WIDTH SPACE under
+    every `white-space` (Chrome 153 draws a space-wide character that never collapses, trims or
+    hangs, with a break opportunity after it), U+0085 as a ZERO WIDTH SPACE, and a preserved
+    U+000C as nothing (`ifc::laid_out_as`, #1181; the offset map records the length
+    change; `letter-spacing`/`word-spacing` on the substitutes still differ from Chrome's).
+    The rich-text editor's caret map counts the same bytes for each through
+    `DomDocument::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
+    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
+    U+2028/U+2029 and draws U+0085 (#1268).
     **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
     one byte late per collapsed byte — and `IfcTextRange::offset_map` is each text node's
@@ -2805,8 +2812,14 @@ inline whatever its `display` says, as in Chrome, and its `display_mode` is
 `InlineBlock` (`node::is_atomic_at_display_inline`, #1089 — it used to be a flowed
 inline with a `0x0` box). The same rule covers `video`, `canvas`, `iframe`, `meter`
 and `progress`, which the UA sheet leaves `display: inline`, so their **default**
-rendering changed too: an atomic box, with Chrome's default sizes not modelled and
-fallback content still laid out inside it. The predicate says so, not `clip_shape`, so the
+rendering changed too: an atomic box. `canvas`, `video` and `iframe` take Chrome's
+**300x150** default object size (a canvas's own `width`/`height` attributes, with
+their aspect ratio), are not stretched by a block container (Taffy's
+`item_is_replaced`), and lay out no fallback content made only of text and inlines
+(`replaced.rs`, #1173 — a block or atomic-inline child is still laid out, painted
+and sizes the element, #1288;
+a grid item is still stretched, #1280); `meter` and `progress` still have no default
+size and lay out their fallback content. The predicate says so, not `clip_shape`, so the
 bracket, the chain, hit testing's gate and the dirty-region prune all agree. The
 rinch-specific reason it had to be said: a *flowed* inline element owns no box
 (`Node::is_flowed_inline_element` — its `layout` is zeroed and `E ghost box`
@@ -3621,10 +3634,34 @@ already fell back to; with a claim (`AppFont::sans_serif`) the letters of such a
 stack move to the claimed face too. A stack that resolves to anything is untouched, emoji included, and a
 context with no `sans-serif` face (wasm/embed before any font is registered)
 appends nothing. **Accepted consequence:** on a host whose primary sans is
-DejaVu Sans, an emoji in a missing-only stack is DejaVu's monochrome glyph —
-what every `sans-serif` stack already draws there (#1204 tracks colour emoji,
-which the theme's default stack also loses on this host). Cached per thread by
-(primary `sans-serif` family id, stack).
+DejaVu Sans, an emoji in a missing-only stack is DejaVu's monochrome glyph,
+because the appended face is *named* and a named family that covers an emoji
+draws it (below). Cached per thread by (primary `sans-serif` family id, stack).
+
+**An emoji-presentation cluster counts each generic as its primary face**
+(`rinch_dom::fonts::TextFamily`, #1204). parley shapes an `Emoji`-property
+cluster against the stack and then the `emoji` generic, and a generic expands to
+the platform's whole list (about 180 families on a Linux desktop), so DejaVu Sans
+or FreeSans won U+1F600 / U+2B1C under `sans-serif` and under the theme's
+`DEFAULT_FONT_FAMILY`. Now a cluster whose base has the `Emoji` property and
+that holds U+FE0F, or one holding an `Emoji_Presentation` character and no
+U+FE0E (icu grapheme clusters, `fonts::emoji_presentation_ranges`), gets a span
+whose stack is the computed one with every generic but `emoji` replaced by its
+slot's first family, then the `emoji` generic, then the original generics as
+coverage (without that tail, 𝄞️ and Thai ก️ drew `.notdef` on this host, and so
+did U+2B1C in an embed context whose emoji-capable app face was second in
+`sans-serif` — review of #1270). Chrome 153
+measured on this host: a generic is one face, a named family keeps its place
+(`'DejaVu Sans'` draws U+1F600 in DejaVu), and a named emoji face after the
+generic wins (the theme's Segoe UI Emoji). Text-default `Emoji` characters
+(digits, `#`, ©, U+2764 alone) keep the stack as written, so #1198 is
+untouched. Every ranged builder pushes its families through
+`parley_text_family(..).push_to(&mut builder)`
+(`emoji_presentation_family_tests::no_source_pushes_a_font_family_by_hand`); the
+IFC's tree builder wraps each emoji range of a text op in a span of
+`parley_emoji_font_family` (`IfcText::finish`). Every IFC text is shaped in the
+root's family. A cluster split across two text nodes (an emoji and its U+FE0F)
+is not found. The fixtures use bundled stand-ins, not the host's emoji face.
 
 **Window chrome inset (not ThemeProvider-generated).** `--rinch-window-top-inset`
 is published at runtime by whatever chrome rinch draws above your content — the

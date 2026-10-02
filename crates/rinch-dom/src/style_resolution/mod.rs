@@ -1628,6 +1628,12 @@ impl RinchDocument {
                 self.tree.layout_dirty = true;
                 self.mark_atomic_inline_dirty(node_id);
             }
+            // A canvas's natural size is its `width`/`height` attributes
+            // (#1173), which reach no Taffy style either.
+            if crate::replaced::sync_replaced_measure(&mut self.tree, node_id) {
+                self.tree.layout_dirty = true;
+                self.mark_atomic_inline_dirty(node_id);
+            }
         }
         // Children restyled on this pass carry their new table part now.
         self.resolve_table_directions();
@@ -1807,6 +1813,10 @@ impl RinchDocument {
     pub(crate) fn taffy_style_from_computed(&self, node_id: usize) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
+        // A block container does not stretch a replaced element to its width
+        // (CSS 2.1 §10.3.4); Taffy's block layout reads this flag (#1173).
+        style.item_is_replaced =
+            crate::replaced::is_replaced_without_content(&self.tree.nodes[node_id]);
         if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
             style.flex_direction = dir;
         }

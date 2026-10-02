@@ -29,6 +29,7 @@ pub mod node;
 mod out_of_flow;
 pub mod paint;
 pub mod perf;
+pub mod replaced;
 pub mod select;
 pub mod stacking;
 mod style_resolution;

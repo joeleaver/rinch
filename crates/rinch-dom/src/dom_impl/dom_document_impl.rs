@@ -40,7 +40,17 @@ impl DomDocument for RinchDocument {
             flex_wrap: taffy::FlexWrap::NoWrap,
             ..Default::default()
         };
-        let taffy_id = if tag == "img" {
+        let replaced = crate::replaced::replaced_context(&node);
+        let taffy_id = if let Some(context) = replaced {
+            // `<canvas>`, `<video>`, `<iframe>`: sized from their natural or
+            // default object size (#1173). The attributes are not set yet,
+            // so a canvas starts at its 300x150 default; a later
+            // `width`/`height` write re-syncs it through the cascade.
+            self.tree
+                .taffy
+                .new_leaf_with_context(default_style, context)
+                .unwrap()
+        } else if tag == "img" {
             // Image elements use NodeContext::Image for intrinsic sizing
             let context = NodeContext::Image {
                 src: String::new(),
@@ -1021,6 +1031,12 @@ impl DomDocument for RinchDocument {
     /// (`ifc::TAB_SPACES`), four bytes of the same flat offsets (#1109).
     fn tab_flat_bytes(&self) -> usize {
         crate::ifc::TAB_SPACES.len()
+    }
+
+    /// U+2028, U+2029, U+0085 and U+000C as the inline formatting context
+    /// lays them out in preserved text (`ifc::PRESERVED_SUBSTITUTES`, #1181).
+    fn substituted_char_flat_bytes(&self) -> &'static [(char, usize)] {
+        &crate::ifc::PRESERVED_SUBSTITUTE_FLAT_BYTES
     }
 
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {

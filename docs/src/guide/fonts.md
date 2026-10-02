@@ -139,6 +139,21 @@ registered.) A stack that finds any family, or names a generic that has one, is
 used exactly as written — end your stacks in a generic to choose the fallback
 yourself.
 
+## Emoji
+
+An emoji-presentation character — 😀, ⬜, a flag, or an emoji character
+followed by U+FE0F (❤️, ©️) — is drawn from the `emoji` generic unless a family
+in your stack covers it first, where each generic in the stack counts as its
+**first face** only; the generics' other faces come after the `emoji` generic,
+so a character the emoji face lacks still finds them. U+FE0F after a character
+that is not an emoji (𝄞, Thai ก) changes nothing.
+So under `font-family: sans-serif` (or the theme's default stack) an emoji is in
+colour even on a machine whose `sans-serif` list goes on to text faces that
+also have it (DejaVu Sans, FreeSans), as in Chrome; a family you *name* that
+covers the emoji still draws it, as in Chrome, and an emoji face you name after
+a generic (`…, sans-serif, 'Segoe UI Emoji'`) wins it. A character that is text
+by default — ❤ without U+FE0F, ©, the digits — follows the stack as written.
+
 ## Platforms with no fonts at all
 
 Wasm has no system font source: an unregistered app renders **zero glyphs**, not
