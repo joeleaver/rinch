@@ -725,6 +725,15 @@ pub struct Node {
     /// instead: a direct write of `id` fails loudly in every debug test rather
     /// than silently un-fixing #675. The assert is compiled out in release.
     id_atom: Option<Atom>,
+    /// A `<textarea>`'s dirty value flag, for the one state the `value`
+    /// attribute cannot carry: **dirty with no attribute**, which removing the
+    /// attribute leaves (#1222). While the attribute is present its presence
+    /// is the flag ([`crate::form_control::control_value`]); this records that
+    /// it was removed, so the field shows `""` rather than falling back to its
+    /// text children. rinch-web's removal writes `.value = ""`, which sets the
+    /// browser's flag, and only a form reset clears that — which desktop does
+    /// not model — so nothing clears this either.
+    pub value_dirty: bool,
     /// Dirty flags for incremental updates.
     pub dirty: DirtyFlags,
     /// Scroll offset (x, y).
@@ -1193,6 +1202,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            value_dirty: false,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -1255,6 +1265,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            value_dirty: false,
             dirty: DirtyFlags::STYLE | DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -1316,6 +1327,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            value_dirty: false,
             dirty: DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -1375,6 +1387,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            value_dirty: false,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
