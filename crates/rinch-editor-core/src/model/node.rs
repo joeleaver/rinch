@@ -944,10 +944,16 @@ mod tests {
         fn rebind_onto_a_schema_missing_the_node_type_errors() {
             let a = Schema::starter_kit();
             let minimal = Schema::builder()
-                .node("doc", crate::NodeSpec::builder("doc").content("text*").build())
+                .node(
+                    "doc",
+                    crate::NodeSpec::builder("doc").content("text*").build(),
+                )
                 .node(
                     "text",
-                    crate::NodeSpec::builder("text").group("inline").inline().build(),
+                    crate::NodeSpec::builder("text")
+                        .group("inline")
+                        .inline()
+                        .build(),
                 )
                 .build();
             let foreign = bold_para(&a);
