@@ -45,7 +45,12 @@ fn doc(s: &Schema, rows: &[Vec<(i64, i64)>]) -> Node {
         .unwrap()
 }
 
-fn mount(d: Node) -> EditorHandle {
+/// Mounts `d` on `schema` — the SAME `Rc<Schema>` the caller built `d` with,
+/// so this test file's fixtures are about the colspan cap, not about
+/// cross-schema adoption (#440's `rebind` on `EditorHandle::new` otherwise
+/// rebuilds every doc here, since a fresh `Schema::starter_kit()` per `mount`
+/// call is never the same `Rc` as the one `doc()`/`cell()` built with).
+fn mount(schema: &Rc<Schema>, d: Node) -> EditorHandle {
     let mock = Rc::new(RefCell::new(MockDomDocument::new()));
     let dd: Rc<RefCell<dyn DomDocument>> = mock;
     let id = dd.borrow_mut().create_element("div");
@@ -53,7 +58,7 @@ fn mount(d: Node) -> EditorHandle {
     let h = EditorHandle::new(
         container,
         Rc::downgrade(&dd),
-        Rc::new(Schema::starter_kit()),
+        schema.clone(),
         d,
         default_plugins(),
     );
@@ -87,24 +92,24 @@ fn cells(doc: &Node) -> usize {
 /// `rowspan`, are left alone.
 #[test]
 fn a_colspan_past_1000_is_capped_where_a_document_is_loaded() {
-    let s = Schema::starter_kit();
+    let s = Rc::new(Schema::starter_kit());
     let wide = doc(&s, &[vec![(3_000_000, 1), (7, 70_000)], vec![(1000, 2)]]);
     let want = vec![
         vec![(Some(1000), Some(1)), (Some(7), Some(70_000))],
         vec![(Some(1000), Some(2))],
     ];
-    let by_new = mount(wide.clone());
+    let by_new = mount(&s, wide.clone());
     assert_eq!(spans(&by_new.doc()), want, "EditorHandle::new");
-    let by_load = mount(doc(&s, &[vec![(1, 1)]]));
+    let by_load = mount(&s, doc(&s, &[vec![(1, 1)]]));
     by_load.load_doc(wide.clone());
     assert_eq!(spans(&by_load.doc()), want, "load_doc");
     // A table the cap does not touch is the very node it was.
     let fine = doc(&s, &[vec![(1000, 1), (2, 3)], vec![(1, 1)]]);
-    let h = mount(fine.clone());
+    let h = mount(&s, fine.clone());
     assert!(h.doc().same_ref(&fine), "nothing to cap, nothing rebuilt");
 
     for (cmd, added) in [("addRowAfter", 1000), ("splitCell", 999)] {
-        let h = mount(wide.clone());
+        let h = mount(&s, wide.clone());
         h.set_selection(Selection::cursor(Pos(4)));
         let before = cells(&h.doc());
         assert!(h.command(cmd), "{cmd}");
@@ -117,8 +122,8 @@ fn a_colspan_past_1000_is_capped_where_a_document_is_loaded() {
 /// the next command leaves it there.
 #[test]
 fn a_command_is_not_capped() {
-    let s = Schema::starter_kit();
-    let h = mount(doc(&s, &[vec![(1000, 1)], vec![(1, 1)]]));
+    let s = Rc::new(Schema::starter_kit());
+    let h = mount(&s, doc(&s, &[vec![(1000, 1)], vec![(1, 1)]]));
     // In the second row's only cell: the column after it runs through the
     // first row's wide cell, which widens.
     let row0 = h.doc().child(0).child(0).node_size();
@@ -169,8 +174,8 @@ fn untouched_siblings_are_shared() {
 /// on it).
 #[test]
 fn an_update_keeps_an_unbounded_colspan() {
-    let s = Schema::starter_kit();
-    let h = mount(doc(&s, &[vec![(1, 1)]]));
+    let s = Rc::new(Schema::starter_kit());
+    let h = mount(&s, doc(&s, &[vec![(1, 1)]]));
     let wide = doc(&h.state().schema().clone(), &[vec![(1_000_000, 1)]]);
     assert!(h.update(|st| {
         let mut tr = st.tr();

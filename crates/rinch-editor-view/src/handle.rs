@@ -3616,6 +3616,62 @@ mod tests {
         );
     }
 
+    /// #440: `EditorHandle::new` has the identical latent defect `load_doc` had —
+    /// `schema` and `doc` are two separate caller-supplied arguments, and
+    /// `EditorState::create` stores whatever pair it is given with no check they
+    /// match. Builds `doc` with a bold mark on a schema the constructor is never
+    /// given, and hands `EditorHandle::new` a *different* `Rc<Schema>` directly
+    /// (not through the `mount` test helper's own fresh schema, so this is an
+    /// explicit, intentional mismatch rather than every other `mount`-based
+    /// fixture's incidental one). The resulting handle must recognize the
+    /// adopted mark as its own schema's bold, exactly as a `load_doc` adoption
+    /// does.
+    #[test]
+    fn editor_handle_new_rebinds_a_doc_built_on_a_different_schema() {
+        // A "donor" editor on its own schema, bolded — same shape as the
+        // load_doc fixture's A, just to produce a foreign-schema `Node`
+        // without reaching into the Transform/Mark construction API directly.
+        let donor_schema = Schema::starter_kit();
+        let donor = mount(doc_node(&donor_schema, vec![para(&donor_schema, "hello")]));
+        donor.handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(donor.handle.command("toggleBold"));
+        let foreign_doc = donor.handle.doc();
+        assert_eq!(
+            foreign_doc.child(0).child(0).marks().len(),
+            1,
+            "the fixture itself is bold, on the donor's schema"
+        );
+
+        let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+        let dd: Rc<RefCell<dyn DomDocument>> = mock;
+        let container_id = dd.borrow_mut().create_element("div");
+        let container = NodeHandle::new(container_id, Rc::downgrade(&dd));
+        let receiving_schema = Rc::new(Schema::starter_kit());
+        let handle = EditorHandle::new(
+            container,
+            Rc::downgrade(&dd),
+            receiving_schema,
+            foreign_doc,
+            default_plugins(),
+        );
+        std::mem::forget(dd);
+
+        handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(
+            handle.is_mark_active("bold"),
+            "EditorHandle::new re-homed the foreign doc's mark onto its own schema"
+        );
+        assert!(
+            handle.command("toggleBold"),
+            "a re-homed mark is a real mark this schema can toggle"
+        );
+        assert_eq!(
+            handle.doc().child(0).child(0).marks().len(),
+            0,
+            "toggleBold removes it rather than being refused or duplicating it"
+        );
+    }
+
     fn schema() -> Schema {
         Schema::starter_kit()
     }
