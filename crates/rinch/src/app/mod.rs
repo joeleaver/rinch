@@ -5120,6 +5120,98 @@ mod resize_vs_scrollbar_tests {
             "and it must arm the scrollbar drag instead"
         );
     }
+
+    /// #483: once a thumb drag is armed, every subsequent move belongs to it
+    /// until release — including a move that overshoots the track end, where
+    /// the thumb has saturated at `max_scroll` but the pointer keeps going.
+    /// Before the fix the resize-cursor branch ran first and swallowed that
+    /// move: the cursor flipped to a resize arrow and the scroll stayed
+    /// behind where the pointer actually was.
+    #[test]
+    fn a_drag_past_the_track_end_tracks_instead_of_showing_a_resize_cursor() {
+        let mut app = app();
+        let y = thumb_centre(&mut app, 800.0) as f32;
+        let x = 795.0;
+        press(&mut app, x, y);
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "precondition: the press must arm the scrollbar drag"
+        );
+        let node_id = app.scrollbar_drag.as_ref().unwrap().node_id;
+
+        // Far past the thumb's own extent — the content has 1400px of scroll
+        // range and the thumb is short, so this move overshoots it by a wide
+        // margin — but still inside the plain East edge, short of the
+        // bottom-right corner square (`y > 592` there) so the two
+        // reproductions stay distinct.
+        let overshoot_y = 585.0;
+        assert_eq!(
+            super::hit_testing::detect_resize_edge(x, overshoot_y, 800.0, 600.0, 8.0),
+            Some(rinch_platform::ResizeDirection::East),
+            "the probe must be inside the resize zone, or this test proves nothing"
+        );
+
+        let cursor = hover_cursor(&mut app, x, overshoot_y);
+        assert_ne!(
+            cursor,
+            Some(rinch_platform::CursorStyle::EResize),
+            "a live scrollbar drag must not be preempted by the resize cursor"
+        );
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "the drag must still be armed after the overshoot move"
+        );
+
+        let max_scroll = 2000.0 - 600.0;
+        let d = app.doc.as_ref().unwrap().borrow();
+        assert_eq!(
+            d.tree.get(node_id).unwrap().scroll_offset.1,
+            max_scroll,
+            "the scroll must clamp to max_scroll on overshoot, not drop the move"
+        );
+    }
+
+    /// #483's other reproduction: the corner square never yields to the
+    /// thumb by design (#439), so it is exactly where the resize-cursor
+    /// branch used to win over an armed drag.
+    #[test]
+    fn a_drag_into_the_corner_square_tracks_instead_of_resizing() {
+        let mut app = app();
+        let y = thumb_centre(&mut app, 800.0) as f32;
+        let x = 795.0;
+        press(&mut app, x, y);
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "precondition: the press must arm the scrollbar drag"
+        );
+        let node_id = app.scrollbar_drag.as_ref().unwrap().node_id;
+
+        let corner = (795.0, 599.0);
+        assert_eq!(
+            super::hit_testing::detect_resize_edge(corner.0, corner.1, 800.0, 600.0, 8.0),
+            Some(rinch_platform::ResizeDirection::SouthEast),
+            "the probe must be inside the resize corner, or this test proves nothing"
+        );
+
+        let cursor = hover_cursor(&mut app, corner.0, corner.1);
+        assert_ne!(
+            cursor,
+            Some(rinch_platform::CursorStyle::SeResize),
+            "a live scrollbar drag must not show a resize cursor even in the corner square"
+        );
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "the drag must still be armed after the move into the corner"
+        );
+
+        let max_scroll = 2000.0 - 600.0;
+        let d = app.doc.as_ref().unwrap().borrow();
+        assert_eq!(
+            d.tree.get(node_id).unwrap().scroll_offset.1,
+            max_scroll,
+            "the move into the corner must still reach the drag and clamp the scroll"
+        );
+    }
 }
 
 #[cfg(all(test, software_shell))]
