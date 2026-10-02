@@ -1037,31 +1037,29 @@ fn unglue(
             && adv > line_max
             && line_end(units, cursor, adv).is_some_and(|e| e > cursor && units[e - 1].nbsp)
     };
-    // Commit the line up to the NBSP run starting at unit `rs` at `x`, by
-    // length: the line breaker places no break of its own right before an
-    // NBSP.
-    let before = |breaker: Breaker<'_, '_>,
-                  rs: usize,
-                  x: f32,
-                  reason: BreakReason|
-     -> Option<(BreakReason, f32)> {
-        // The table's cursor can sit on the zero-width newline that ended the
-        // line before; a newline is never the first unit of a line.
-        let first = cursor + units[cursor..rs].iter().take_while(|u| u.newline).count();
-        let before = &units[first..rs];
-        let width: f32 = before.iter().map(|u| u.advance).sum();
-        if (width - x).abs() > 0.005 {
-            return None;
-        }
-        let n = before.iter().filter(|u| u.counted).count();
-        rebreaks.set(rebreaks.get() + 1);
-        breaker.revert_to(line_start.clone());
-        breaker.break_next_with_length(u32::try_from(n).ok()?)?;
-        breaker.set_prior_line_width(max);
-        Some((reason, x))
-    };
+    // Commit the line up to the run, by length: the line breaker places no
+    // break of its own right before an NBSP.
     let before_run =
-        |breaker: Breaker<'_, '_>, reason: BreakReason| before(breaker, run_start, run_x, reason);
+        |breaker: Breaker<'_, '_>, reason: BreakReason| -> Option<(BreakReason, f32)> {
+            // The table's cursor can sit on the zero-width newline that ended the
+            // line before; a newline is never the first unit of a line.
+            let first = cursor
+                + units[cursor..run_start]
+                    .iter()
+                    .take_while(|u| u.newline)
+                    .count();
+            let before = &units[first..run_start];
+            let width: f32 = before.iter().map(|u| u.advance).sum();
+            if (width - run_x).abs() > 0.005 {
+                return None;
+            }
+            let n = before.iter().filter(|u| u.counted).count();
+            rebreaks.set(rebreaks.get() + 1);
+            breaker.revert_to(line_start.clone());
+            breaker.break_next_with_length(u32::try_from(n).ok()?)?;
+            breaker.set_prior_line_width(max);
+            Some((reason, run_x))
+        };
     // Right after an inline box (Chrome 153 breaks between an atomic inline
     // and the NBSP after it, as parley does after any box) or a hyphen
     // (LB12a: no break before GL but after a space, BA or HY).
@@ -1184,20 +1182,6 @@ fn unglue(
         if !ends_in_hung_nbsp(c, through + ROOM) || c.1 <= through {
             break c;
         }
-        // The NBSP run it hung follows an opportunity (a ZERO WIDTH SPACE,
-        // LB8, or a hyphen, LB12a): the line breaks there, before the run
-        // (#1181: a U+2028 is laid out as NBSP + ZWSP, and two in a row are
-        // `~Z~Z`).
-        if let Some(e) = line_end(units, cursor, c.1) {
-            let n = units[cursor..e].iter().rev().take_while(|u| u.nbsp).count();
-            let rs = e - n;
-            if rs > run_start && units[rs - 1].breaks_before_glue {
-                let x = c.1 - units[rs..e].iter().map(|u| u.advance).sum::<f32>();
-                if let Some(r) = before(breaker, rs, x, BreakReason::Regular) {
-                    return Some(r);
-                }
-            }
-        }
         through = c.1;
     };
     breaker.set_prior_line_width(max);
@@ -1226,8 +1210,7 @@ struct LineUnit {
     /// An in-flow inline box.
     inline_box: bool,
     /// A hyphen or another UAX #14 class HY/BA character that is not white
-    /// space, or a ZERO WIDTH SPACE: LB12a (LB8) allows a break between it
-    /// and an NBSP after it.
+    /// space: LB12a allows a break between it and an NBSP after it.
     breaks_before_glue: bool,
 }
 
@@ -1389,14 +1372,11 @@ fn is_hanging_space(text: &str, c: &parley::layout::Cluster<'_, Brush>) -> bool 
 
 /// Whether `c` is of UAX #14 class HY or BA and not white space — after
 /// which LB12a allows a break before a no-break space (the common members;
-/// spaces and tabs hang instead) — or ZW, after which LB8 does.
+/// spaces and tabs hang instead).
 fn breaks_before_glue(c: char) -> bool {
     matches!(
         c,
-        // ZW: LB8 breaks after a ZERO WIDTH SPACE before anything (#1181).
-        '\u{200b}'
-            | '-'
-            | '|'
+        '-' | '|'
             | '\u{ad}'
             | '\u{58a}'
             | '\u{5be}'
