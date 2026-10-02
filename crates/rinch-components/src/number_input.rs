@@ -356,9 +356,10 @@ impl Component for NumberInput {
             let controls = rinch_macros::rsx! { div { class: "rinch-number-input__controls" } };
 
             // The stepper write (#501). Uncontrolled, a click computes the
-            // next value from `shown`, clamps it to [min, max], writes it,
-            // and reports the written text through `oninput` — the same
-            // channel a keystroke reports through, and the report is
+            // next value from the field's LIVE text, clamps it to
+            // [min, max], writes it, and reports the written text through
+            // `oninput` AND `onchange` — the same two channels a browser's
+            // own number-input spinner fires (#512) — and the report is
             // deliberately last so it carries the text the field ends on. A
             // clamped click that moves nothing writes nothing and reports
             // nothing (HTML's input event fires only when the value changes);
@@ -373,21 +374,63 @@ impl Component for NumberInput {
                 let shown = shown.clone();
                 let input = input.clone();
                 let oninput = self.oninput.clone();
+                let onchange = self.onchange.clone();
                 let decimal_scale = self.decimal_scale;
                 let disabled = self.disabled;
                 Rc::new(move |delta: f64| {
                     if controlled || disabled {
                         return;
                     }
-                    let base = shown.get().unwrap_or(0.0);
+                    // The base is the field's LIVE value (#511), not
+                    // `shown` alone: on the web the browser lets the user
+                    // type into the native `<input>` regardless of whether
+                    // this component registered a handler for it (a bare
+                    // uncontrolled instance with neither `oninput` nor
+                    // `onchange` registers none, per #244's review), so
+                    // `shown` — this component's own record of what it last
+                    // wrote — can be stale the moment such a keystroke
+                    // lands with nobody listening. `live_value` is the same
+                    // text an `oninput` handler would have seen had one
+                    // been registered. `shown` is still the fallback for an
+                    // unparseable live value (e.g. a field left empty or
+                    // mid-edit) and is what seeds the base before any text
+                    // has ever been live. Desktop never diverges from
+                    // `shown` here: such a field isn't editable there at
+                    // all (#244), so its live value is always exactly what
+                    // this component last wrote.
+                    //
+                    // `current` is kept as an `Option`, distinct from the
+                    // arithmetic `base` below (which defaults a genuinely
+                    // empty field to 0.0), because the no-op skip and the
+                    // arithmetic ask different questions. A field nothing
+                    // has ever written to (`current == None`) must still
+                    // write its first clamped value even when that value
+                    // happens to be 0.0 (`min: Some(0.0)`, decrementing) —
+                    // review of #1323 found `next == base` skipping that
+                    // first write, since the 0.0 *fallback* coincided with
+                    // the clamped target. The skip below is keyed on
+                    // `current`, which is `Some` only when the field
+                    // already, really, shows a number.
+                    let current = input
+                        .live_value()
+                        .and_then(|s| s.trim().parse::<f64>().ok())
+                        .or_else(|| shown.get());
+                    let base = current.unwrap_or(0.0);
                     let next = clamp_to(base + delta, min, max);
-                    if shown.get() == Some(next) {
+                    if current == Some(next) {
                         return;
                     }
                     shown.set(Some(next));
                     let text = format_shown(next, decimal_scale);
                     input.set_attribute("value", &text);
                     if let Some(cb) = &oninput {
+                        cb.invoke(text.clone());
+                    }
+                    // A stepper click never focuses the field, so there is
+                    // no later blur to commit `onchange` through the usual
+                    // #226 boundary; fire it here instead, matching a real
+                    // browser spinner's click (#512).
+                    if let Some(cb) = &onchange {
                         cb.invoke(text);
                     }
                 })
@@ -408,8 +451,12 @@ impl Component for NumberInput {
             // writes the field even with no callback (the docs' bare
             // `NumberInput { label: "Quantity" }` must step); controlled it
             // is callback-only, so with no callback it stays inert like
-            // pre-#501.
-            if !controlled || self.onincrement.is_some() {
+            // pre-#501. Disabled, neither: the field write is already gated
+            // inside `apply_step`, but `onincrement` ran unconditionally
+            // before this (#525) — a disabled stepper must not notify
+            // either, so no `data-rid` is registered at all and a click on
+            // it does nothing, exactly like a disabled HTML spinner.
+            if !self.disabled && (!controlled || self.onincrement.is_some()) {
                 let cb = self.onincrement.clone();
                 let apply_step = apply_step.clone();
                 let handler_id = __scope.register_handler(move || {
@@ -432,7 +479,7 @@ impl Component for NumberInput {
             down_btn.set_attribute("aria-label", "Decrement");
             down_btn.append_child(&crate::icons::chevron_down_small_dom(__scope));
 
-            if !controlled || self.ondecrement.is_some() {
+            if !self.disabled && (!controlled || self.ondecrement.is_some()) {
                 let cb = self.ondecrement.clone();
                 let apply_step = apply_step.clone();
                 let handler_id = __scope.register_handler(move || {

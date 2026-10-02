@@ -291,13 +291,47 @@ fn controlled_steppers_stay_callback_only() {
     );
 }
 
-/// A disabled NumberInput's steppers do not write the field. (The callbacks
-/// still fire, as they always have — changing that is #315's territory, not
-/// this test's.) Proven to fail against the mutant with the `disabled` gate
-/// removed from the stepper write.
+/// A disabled NumberInput's steppers neither write the field nor notify
+/// (#525). The write was already gated inside `apply_step`, but
+/// `onincrement`/`ondecrement` ran unconditionally BEFORE that gate — a
+/// disabled stepper still fired the notification even though nothing moved,
+/// which is worse after #524 made the field itself paint visibly disabled
+/// while the buttons stayed live. Fixed by not registering `data-rid` on the
+/// button at all when disabled, so there is no handler left to fire.
+///
+/// Per the issue's own stated trap ("a fixture where the callback was never
+/// going to fire proves nothing"), this asserts a POSITIVE control first: the
+/// same shape, enabled, still carries a handler and still both writes and
+/// notifies. Kills the mutant that gates registration on `disabled` alone
+/// with no `!controlled ||` term (which would also wrongly disable a
+/// controlled-with-callback stepper), and the mutant that leaves
+/// `cb.invoke()` unconditional inside the handler closure instead of gating
+/// registration.
 #[test]
-fn a_disabled_uncontrolled_stepper_does_not_write() {
-    let f = Fixture::mount(|log| {
+fn a_disabled_uncontrolled_stepper_registers_no_handler_and_does_not_notify() {
+    // Positive control: enabled, the button carries a handler, and clicking
+    // it both notifies onincrement and writes the field.
+    let enabled = Fixture::mount(|log| {
+        let inc = log.clone();
+        NumberInput {
+            value: Some(5.0),
+            step: Some(1.0),
+            onincrement: Some(Callback::new(move || {
+                inc.borrow_mut().push("increment".into());
+            })),
+            ..Default::default()
+        }
+    });
+    enabled.click_stepper("up");
+    assert_eq!(enabled.field_text(), "6", "enabled: the field moves");
+    assert_eq!(
+        enabled.log.borrow().as_slice(),
+        ["increment".to_string()],
+        "enabled: onincrement notifies"
+    );
+
+    // The case under test: disabled, there is no handler to click at all.
+    let disabled = Fixture::mount(|log| {
         let inc = log.clone();
         NumberInput {
             value: Some(5.0),
@@ -309,12 +343,20 @@ fn a_disabled_uncontrolled_stepper_does_not_write() {
             ..Default::default()
         }
     });
-
-    f.click_stepper("up");
+    let up_btn = find_by_class(&disabled.root, "rinch-number-input__control--up")
+        .expect("the up button exists");
+    assert!(
+        up_btn.get_attribute("data-rid").is_none(),
+        "disabled: the button carries no click handler at all"
+    );
     assert_eq!(
-        f.field_text(),
+        disabled.field_text(),
         "5",
-        "a disabled field's number does not move"
+        "disabled: a disabled field's number does not move"
+    );
+    assert!(
+        disabled.log.borrow().is_empty(),
+        "disabled: onincrement never fires — a disabled stepper must not notify either"
     );
 }
 
@@ -426,4 +468,165 @@ fn stepped_writes_do_not_surface_float_dust() {
 
     f.click_stepper("up");
     assert_eq!(f.field_text(), "0.3");
+}
+
+/// #511: on the web, a BARE uncontrolled instance — no `oninput`, no
+/// `onchange`, no `value_fn` — registers no `data-oninput` handler at all
+/// (making it typable/focusable on desktop in that configuration is a real
+/// product decision, #244, not this bug's fix). But the browser owns the
+/// native `<input>` regardless of whether rinch is listening, so a real user
+/// can still type into it — moving the field's LIVE text while this
+/// component's own `shown` record stays at the mount value, with nobody to
+/// tell it otherwise. A stepper click must read the field's live value, not
+/// the stale record, or it clobbers what the user actually typed with
+/// mount+step. `MockDomDocument::__type_into` models exactly that
+/// browser-owned edit: it moves the live value with no handler dispatch,
+/// since a bare instance has none to dispatch. Kills the mutant that
+/// computes the stepping base from `shown` alone (it would write "6": mount
+/// 5 + step 1, clobbering the typed "55").
+#[test]
+fn a_bare_uncontrolled_field_steps_from_what_the_browser_shows_it_typed() {
+    let f = Fixture::mount(|_| NumberInput {
+        value: Some(5.0),
+        step: Some(1.0),
+        ..Default::default()
+    });
+    assert!(
+        f.field().get_attribute("data-oninput").is_none(),
+        "a bare instance registers no input handler at all"
+    );
+
+    let field_id = f.field().node_id();
+    f._doc.borrow_mut().__type_into(field_id, "55");
+
+    f.click_stepper("up");
+    assert_eq!(
+        f.field_text(),
+        "56",
+        "steps from what the user actually typed (55), not the mount value (5)"
+    );
+}
+
+/// #512: a stepper click fires `onchange` too, matching a real browser's
+/// number-input spinner — which fires both `input` and `change` on a click.
+/// A stepper click never focuses the field, so there is no later blur to
+/// commit through the usual #226 boundary; this component fires `onchange`
+/// itself, same click, same text as `oninput`. Kills the mutant that leaves
+/// `onchange` wired only through the focus/blur commit path (never for a
+/// stepper write, so an onchange-only consumer hears nothing from stepping)
+/// and the mutant that invokes it before the field is actually written.
+#[test]
+fn an_uncontrolled_step_also_fires_onchange() {
+    let onchange_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let onchange_for_cb = onchange_log.clone();
+    let f = Fixture::mount(move |log| {
+        let inp = log.clone();
+        NumberInput {
+            value: Some(5.0),
+            step: Some(1.0),
+            oninput: Some(InputCallback::new(move |text: String| {
+                inp.borrow_mut().push(format!("input:{text}"));
+            })),
+            onchange: Some(InputCallback::new(move |text: String| {
+                onchange_for_cb.borrow_mut().push(format!("change:{text}"));
+            })),
+            ..Default::default()
+        }
+    });
+
+    f.click_stepper("up");
+
+    assert_eq!(f.field_text(), "6");
+    assert_eq!(
+        f.log.borrow().as_slice(),
+        ["input:6".to_string()],
+        "oninput still fires with the written text"
+    );
+    assert_eq!(
+        onchange_log.borrow().as_slice(),
+        ["change:6".to_string()],
+        "onchange fires too — a stepper click is a commit, like a browser spinner"
+    );
+}
+
+/// A clamped stepper click that writes nothing fires neither `oninput` nor
+/// `onchange` (HTML's events fire only when the value actually changes).
+/// Kills the mutant that fires `onchange` unconditionally whenever the
+/// button is clicked, rather than gating it on the same "did it move" check
+/// as `oninput`.
+#[test]
+fn a_clamped_step_fires_neither_oninput_nor_onchange() {
+    let onchange_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let onchange_for_cb = onchange_log.clone();
+    let f = Fixture::mount(move |log| {
+        let inp = log.clone();
+        NumberInput {
+            value: Some(6.0),
+            max: Some(6.0),
+            step: Some(1.0),
+            oninput: Some(InputCallback::new(move |text: String| {
+                inp.borrow_mut().push(format!("input:{text}"));
+            })),
+            onchange: Some(InputCallback::new(move |text: String| {
+                onchange_for_cb.borrow_mut().push(format!("change:{text}"));
+            })),
+            ..Default::default()
+        }
+    });
+
+    f.click_stepper("up");
+
+    assert_eq!(f.field_text(), "6", "clamped at max: unchanged");
+    assert!(
+        f.log.borrow().is_empty(),
+        "no write happened, so oninput does not fire"
+    );
+    assert!(
+        onchange_log.borrow().is_empty(),
+        "no write happened, so onchange does not fire either"
+    );
+}
+
+/// Regression found in review of this PR (#1323): an empty, never-touched
+/// field with `min: 0.0` — clicking decrement must still write "0" and
+/// report it, matching pre-#511 behavior. The live-value base computation
+/// defaults a genuinely untouched field (`shown == None`, `live_value()`
+/// empty/unparseable) to 0.0 for arithmetic purposes, and the clamped
+/// decrement lands exactly on that same 0.0 — so comparing the no-op skip
+/// against the arithmetic `base` (rather than against whether the field
+/// EVER actually showed a number) wrongly treated "landed on the fallback"
+/// as "no-op", and the first click silently did nothing. Kills the mutant
+/// that keys the skip on `next == base` instead of `current == Some(next)`.
+#[test]
+fn review_probe_first_decrement_on_empty_field_at_min_zero_writes_zero() {
+    let f = Fixture::mount(|log| {
+        let inp = log.clone();
+        NumberInput {
+            min: Some(0.0),
+            step: Some(1.0),
+            oninput: Some(InputCallback::new(move |text: String| {
+                inp.borrow_mut().push(format!("input:{text}"));
+            })),
+            ..Default::default()
+        }
+    });
+
+    assert_eq!(
+        f.field_text(),
+        "",
+        "mount shows nothing: no value, no default_value"
+    );
+
+    f.click_stepper("down");
+
+    assert_eq!(
+        f.field_text(),
+        "0",
+        "a first decrement clamped to min=0 should still write 0"
+    );
+    assert_eq!(
+        f.log.borrow().as_slice(),
+        ["input:0".to_string()],
+        "the write should be reported through oninput"
+    );
 }

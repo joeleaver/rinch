@@ -929,7 +929,14 @@ impl EditorHandle {
     /// used by tests and by [`Self::mount`]). `doc_ref` is a weak handle to the
     /// host document the view patches. Does **not** register the editor with the
     /// runtime — that is [`Self::mount`]'s job. `doc` is loaded as
-    /// [`Self::load_doc`] loads one (a `colspan` past 1000 is capped, #1214).
+    /// [`Self::load_doc`] loads one: re-homed onto `schema` first (#440 — `doc`
+    /// and `schema` are two separate caller-supplied arguments, so a `doc` built
+    /// on a different `Rc<Schema>` is the same latent mismatch `load_doc` had),
+    /// then a `colspan` past 1000 is capped (#1214). A `doc` that cannot be
+    /// re-homed (an unknown node or mark type by name) is used as given rather
+    /// than refused — this constructor has no failure return, and every current
+    /// caller builds `doc` on `schema` already, so that path is a same-schema,
+    /// effectively-free `rebind`.
     pub fn new(
         container: NodeHandle,
         doc_ref: Weak<RefCell<dyn DomDocument>>,
@@ -937,6 +944,7 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
+        let doc = doc.rebind(&schema).unwrap_or(doc);
         // A load: colspans past 1000 are capped (#1214).
         let doc = rinch_editor_core::tables::cap_colspans(&doc);
         // Plugins' `init_state` and `decorations` run here; untracked, as under
@@ -2210,14 +2218,29 @@ impl EditorHandle {
         self.load_doc_inner(doc, true)
     }
 
-    /// Install `doc` as a load does. With `cap`, a table cell's `colspan` past
-    /// 1000 is capped, as the HTML import reads it (#1214,
+    /// Install `doc` as a load does. `doc` is first re-homed onto this
+    /// editor's own schema (`Node::rebind`, #440): `load_doc`'s documented use
+    /// is moving a document between editors, each minting its own `Schema`
+    /// (and therefore its own `NodeType`/`MarkType` handles, compared by
+    /// `Rc::ptr_eq`), so installing a caller-supplied `Node` verbatim leaves
+    /// its marks and node types unrecognizable to this editor — `toggleBold`
+    /// over already-bold adopted text then takes the *add* branch instead of
+    /// *remove*, duplicating the mark. A document naming a node or mark type
+    /// this schema does not know by name refuses the load (returns `false`),
+    /// same as a `load_html` parse failure. With `cap`, a table cell's
+    /// `colspan` past 1000 is capped, as the HTML import reads it (#1214,
     /// `tables::cap_colspans`). A collaboration guest adopts the shared
     /// document with `cap: false`: what the CRDT holds is its peers' edits,
     /// which are not capped, and a capped model would differ from its own
     /// projection and write the cap back to the peers as an edit nobody made.
+    /// (That guest document is already projected through this editor's own
+    /// schema — `CollabSession::projected_doc` — so its `rebind` here is the
+    /// cheap already-this-schema fast path, not a rebuild.)
     fn load_doc_inner(&self, doc: Node, cap: bool) -> bool {
         let mut core = self.core_mut();
+        let Ok(doc) = doc.rebind(&core.schema) else {
+            return false;
+        };
         let doc = if doc.child_count() == 0 {
             empty_paragraph_doc(&core.schema).unwrap_or(doc)
         } else if cap {
@@ -3551,22 +3574,24 @@ mod tests {
         );
     }
 
-    /// Issue #217 where a user actually meets it. `create_editor` mints a **new**
-    /// `Rc<Schema>` per handle and `NodeType`/`MarkType` equality is `Rc::ptr_eq`, so
-    /// the documented `doc()` → `load_doc()` pair hands one editor a document whose
-    /// marks belong to another editor's schema.
+    /// Issue #217/#440 where a user actually meets it. `create_editor` mints a
+    /// **new** `Rc<Schema>` per handle and `NodeType`/`MarkType` equality is
+    /// `Rc::ptr_eq`, so the documented `doc()` → `load_doc()` pair used to hand
+    /// one editor a document whose marks belong to another editor's schema.
     ///
-    /// On `main` the next `toggleBold` over that text answered `true` and left the run
-    /// carrying **two** `bold` marks — the document's real one plus a freshly added
-    /// foreign twin. That is silent corruption on a first-party path, and it is what
-    /// `Transform::add_mark`'s guard now refuses.
+    /// On unfixed `main` the next `toggleBold` over that text answered `true` and
+    /// left the run carrying **two** `bold` marks — the document's real one plus
+    /// a freshly added foreign twin — until #427's `Transform::add_mark` guard
+    /// turned that into a loud refusal instead (`is_mark_active` still answered
+    /// `false` over bold text, so the command failed rather than corrupting).
     ///
-    /// What the guard does **not** do is make the pair work: `is_mark_active` still
-    /// answers `false` for text that is bold, and the command now simply fails. Fixing
-    /// that means re-interning the adopted document through the receiving schema, which
-    /// belongs to `load_doc` rather than to the transform.
+    /// #440 is the actual fix: `load_doc` re-homes the incoming document onto the
+    /// receiving editor's own schema (`Node::rebind`), matching node and mark
+    /// types by name, so the adopted mark is a real mark B's schema recognizes.
+    /// `is_mark_active` now answers `true`, and `toggleBold` *removes* the mark
+    /// (the correct toggle) rather than being refused or duplicating it.
     #[test]
-    fn a_document_adopted_from_another_handle_never_grows_a_duplicate_mark() {
+    fn a_document_adopted_from_another_handle_is_recognized_not_duplicated() {
         let s = Schema::starter_kit();
         let a = mount(doc_node(&s, vec![para(&s, "hello")]));
         a.handle.set_selection(Selection::text(Pos(1), Pos(6)));
@@ -3576,15 +3601,74 @@ mod tests {
         let b = mount(doc_node(&s, vec![para(&s, "x")]));
         b.handle.load_doc(a.handle.doc());
         b.handle.set_selection(Selection::text(Pos(1), Pos(6)));
-        // The command is refused rather than corrupting the run.
         assert!(
-            !b.handle.command("toggleBold"),
-            "a foreign-schema document must refuse the mark, not accept it"
+            b.handle.is_mark_active("bold"),
+            "the adopted mark is re-homed onto B's schema, so B recognizes it as bold"
+        );
+        assert!(
+            b.handle.command("toggleBold"),
+            "a re-homed mark is a real mark B's schema can toggle (not refused)"
         );
         assert_eq!(
             b.handle.doc().child(0).child(0).marks().len(),
+            0,
+            "toggleBold over already-bold adopted text removes the mark, it does not duplicate it"
+        );
+    }
+
+    /// #440: `EditorHandle::new` has the identical latent defect `load_doc` had —
+    /// `schema` and `doc` are two separate caller-supplied arguments, and
+    /// `EditorState::create` stores whatever pair it is given with no check they
+    /// match. Builds `doc` with a bold mark on a schema the constructor is never
+    /// given, and hands `EditorHandle::new` a *different* `Rc<Schema>` directly
+    /// (not through the `mount` test helper's own fresh schema, so this is an
+    /// explicit, intentional mismatch rather than every other `mount`-based
+    /// fixture's incidental one). The resulting handle must recognize the
+    /// adopted mark as its own schema's bold, exactly as a `load_doc` adoption
+    /// does.
+    #[test]
+    fn editor_handle_new_rebinds_a_doc_built_on_a_different_schema() {
+        // A "donor" editor on its own schema, bolded — same shape as the
+        // load_doc fixture's A, just to produce a foreign-schema `Node`
+        // without reaching into the Transform/Mark construction API directly.
+        let donor_schema = Schema::starter_kit();
+        let donor = mount(doc_node(&donor_schema, vec![para(&donor_schema, "hello")]));
+        donor.handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(donor.handle.command("toggleBold"));
+        let foreign_doc = donor.handle.doc();
+        assert_eq!(
+            foreign_doc.child(0).child(0).marks().len(),
             1,
-            "exactly one bold: the document's own, with no foreign twin added beside it"
+            "the fixture itself is bold, on the donor's schema"
+        );
+
+        let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+        let dd: Rc<RefCell<dyn DomDocument>> = mock;
+        let container_id = dd.borrow_mut().create_element("div");
+        let container = NodeHandle::new(container_id, Rc::downgrade(&dd));
+        let receiving_schema = Rc::new(Schema::starter_kit());
+        let handle = EditorHandle::new(
+            container,
+            Rc::downgrade(&dd),
+            receiving_schema,
+            foreign_doc,
+            default_plugins(),
+        );
+        std::mem::forget(dd);
+
+        handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(
+            handle.is_mark_active("bold"),
+            "EditorHandle::new re-homed the foreign doc's mark onto its own schema"
+        );
+        assert!(
+            handle.command("toggleBold"),
+            "a re-homed mark is a real mark this schema can toggle"
+        );
+        assert_eq!(
+            handle.doc().child(0).child(0).marks().len(),
+            0,
+            "toggleBold removes it rather than being refused or duplicating it"
         );
     }
 

@@ -1067,6 +1067,31 @@ pub struct Node {
     /// elements carrying this flag (and what inherits from them), instead of
     /// the whole document. See `RinchDocument::restyle_for_viewport_change`.
     pub uses_viewport_units: Cell<bool>,
+    /// Whether this element's **layout parent** (its DOM parent, or the
+    /// nearest ancestor that is not `display: contents` when it is — #998)
+    /// is a flex or grid container, by either outside (`flex`/`inline-flex`,
+    /// `grid`/`inline-grid`).
+    ///
+    /// Set at every cascade of this node from `layout_parent_style` — the same
+    /// style Stylo's adjuster blockifies against — so it stays in step with
+    /// blockification for free: a container's `display` moving to or from
+    /// flex/grid re-cascades its children (`child_cascade` follows an inherited
+    /// *or* `display` change), and a `display: contents` wrapper's own move
+    /// reaches its effective children the same way blockification does.
+    ///
+    /// The one thing [`Node::creates_stacking_context`] cannot answer from
+    /// `self.computed_style` alone (#542): per css-flexbox-1 §5.4 and
+    /// css-grid-1 §6, `z-index` applies to a flex or grid *item* as though it
+    /// were positioned, even at `position: static`, and that needs this fact
+    /// about the parent rather than anything the item's own cascade computes.
+    pub is_flex_or_grid_item: Cell<bool>,
+    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
+    /// cached at the same cascade-time moment as [`Self::is_flex_or_grid_item`]
+    /// (#542, perf review). `creates_stacking_context` reads this field
+    /// instead of recomputing the four scalar compares on every hit-test and
+    /// paint walk; see that method's doc for why it is cached rather than
+    /// computed on the hot path.
+    pub filter_creates_stacking_context: Cell<bool>,
     /// Some descendant of this element needs its style recomputed — the path
     /// Stylo's invalidator marks from an invalidated element down to each
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
@@ -1308,6 +1333,8 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -1372,6 +1399,8 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -1435,6 +1464,8 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -1496,6 +1527,8 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -1530,7 +1563,13 @@ impl Node {
     /// A stacking context is formed when any of:
     /// - `position` is not `static` AND `z-index` is explicitly set (not `auto`)
     /// - `position` is `fixed` or `sticky`, whatever the `z-index`
+    /// - this node is a flex or grid **item** — its layout parent's `display`
+    ///   is flex/inline-flex/grid/inline-grid ([`Self::is_flex_or_grid_item`])
+    ///   — with `z-index` explicitly set, even at `position: static`
+    ///   (css-flexbox-1 §5.4, css-grid-1 §6; #542)
     /// - `opacity < 1.0`
+    /// - a non-`none` `filter`, as far as `ComputedStyle` can tell
+    ///   ([`Self::has_non_identity_filter`]; CSS Filter Effects §2.1, #542)
     /// - `transform` is non-identity **and applies** — not on a non-atomic
     ///   `display: inline` element, which is not transformable (#1080; see
     ///   [`Self::transform_applies`])
@@ -1539,36 +1578,31 @@ impl Node {
     /// expressibility one.** `clip-path`, `mask`, `isolation`,
     /// `mix-blend-mode`, `contain: paint` and `will-change` are absent from
     /// `ComputedStyle` altogether, so those need new style plumbing per
-    /// property. But two creators are representable **today** and still
-    /// missing, measured rather than assumed:
+    /// property — tracked separately from #542, which closed the two creators
+    /// that needed none: the filter arm above, and the flex/grid item one.
     ///
-    /// - **a non-`none` `filter`** (CSS Filter Effects §2.1). `filter:
-    ///   brightness(0.5)` reaches `ComputedStyle::filter_brightness` and paint
-    ///   consumes it, and this function still answers `false`. (`blur()` is the
-    ///   genuinely unexpressed part — only the four scalars survive
-    ///   `from_stylo`.)
-    /// - **a flex or grid item with a `z-index` other than `auto`**, even at
-    ///   `position: static` (css-flexbox-1 §5.4, css-grid-1 §6). Both the
-    ///   `z_index` and the parent's `display` are already here.
-    ///
-    /// Neither is folded in here, because adding a creator changes which boxes
-    /// hoist — the very axis stage B is re-founding — and landing both at once
-    /// would make a regression impossible to attribute. **Tracked as #542.**
-    /// The six properties `ComputedStyle` does not carry at all (and `blur()`,
-    /// which really is unexpressed) need per-property style plumbing and are a
-    /// separate piece of work again.
+    /// **The filter arm is an approximation, not the CSS rule**, and
+    /// `has_non_identity_filter`'s own doc says why: `ComputedStyle` stores
+    /// four scalars, each defaulting to its filter's identity value, with no
+    /// separate "a filter was declared" bit. `filter: brightness(1)` is a
+    /// genuine non-`none` filter — Chrome still creates a stacking context for
+    /// it — and is indistinguishable here from no filter at all. `blur()` is
+    /// the other gap: only the four scalars survive `from_stylo`, so a
+    /// `blur()`-only filter answers `false` too. Both need the real "is there a
+    /// filter" plumbing #542 explicitly left alone.
     ///
     /// Related, and probably to be fixed together: **#415**, this same function
     /// answering `false` for a `transform` that composes to the identity, where
     /// CSS keys on `not none`. Same class of gap — a creator this predicate can
     /// see and does not count.
     ///
-    /// One honest consequence of stage B: a box declaring **both** a filter and
-    /// a clipping `overflow` used to get a stacking context by accident, via
-    /// the `overflow` arm this function no longer has. Its clipping survives —
-    /// the chain carries that — but its ordering does not, so stage B slightly
-    /// widens #542's exposure rather than leaving it untouched. A filter box
-    /// without an `overflow` was already wrong before.
+    /// One honest consequence of stage B, closed by #542: a box declaring
+    /// **both** a filter (or a static flex/grid item's `z-index`) and a
+    /// clipping `overflow` used to get a stacking context by accident, via the
+    /// `overflow` arm this function no longer has — its clipping survived (the
+    /// chain carries that) but its ordering did not. Both arms above now make
+    /// such a box a stacking context on its own declared creator, so the
+    /// ordering is correct again rather than merely latent.
     ///
     /// **`overflow` is not on the list.** It used to be, so that a hoisted
     /// descendant stayed inside the clip bracket paint opened around one
@@ -1600,7 +1634,18 @@ impl Node {
             // than being hoisted out into a sequence they no longer share a
             // coordinate space with.
             PositionValue::Fixed | PositionValue::Sticky => return true,
-            PositionValue::Static => {}
+            PositionValue::Static => {
+                // css-flexbox-1 §5.4 / css-grid-1 §6: `z-index` applies to a
+                // flex or grid item as though it were positioned, so a
+                // `position: static` item with a non-`auto` `z-index` is a
+                // stacking context too (#542) — `z_index.is_some()` alone
+                // would be wrong here, since most of this repo's static,
+                // non-item boxes never declare one, but a bare `z-index` on a
+                // plain block does nothing in CSS and must not create one.
+                if self.is_flex_or_grid_item.get() && self.computed_style.z_index.is_some() {
+                    return true;
+                }
+            }
             _ => {
                 if self.computed_style.z_index.is_some() {
                     return true;
@@ -1610,10 +1655,48 @@ impl Node {
         if self.computed_style.opacity < 1.0 {
             return true;
         }
+        if self.has_non_identity_filter() {
+            return true;
+        }
         if self.has_applied_transform() {
             return true;
         }
         false
+    }
+
+    /// Whether this node's `filter` is detectably non-`none`, within what
+    /// `ComputedStyle` stores (#542).
+    ///
+    /// `ComputedStyle` carries `filter_brightness` / `filter_grayscale` /
+    /// `filter_saturate` / `filter_hue_rotate` as four scalars, each defaulting
+    /// to its filter function's **identity** value (`1.0`, `0.0`, `1.0`, `0.0`
+    /// respectively) rather than to "no filter was declared". So this answers
+    /// `true` for any declared value of those four functions that is not
+    /// itself the identity, and — unavoidably, given that storage —
+    /// misses two things a real "is `filter` `none`" check would not:
+    /// `filter: brightness(1)` (a genuine non-`none` filter that happens to
+    /// change no pixel, and so is indistinguishable here from the absent
+    /// case) and a `blur()`-only filter (dropped entirely by `from_stylo`,
+    /// which keeps only the four scalars). Both are the honest boundary of
+    /// what is representable today, not something this predicate can close;
+    /// see [`Self::creates_stacking_context`]'s doc.
+    ///
+    /// **A cached read, not a computation** (#542, perf review). The actual
+    /// four-scalar comparison is
+    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
+    /// run once at cascade time (`style_resolution/mod.rs`,
+    /// `style_resolution/pseudo.rs`) into
+    /// [`Self::filter_creates_stacking_context`]; this method just reads
+    /// that field. `creates_stacking_context` is on the hit-test and paint
+    /// hot paths — walked once per node per pointer move and per frame — so
+    /// four `f32` compares there, however cheap in isolation, showed up as a
+    /// real instruction-count regression in CI's Perf job
+    /// (`shell::pointer_move_warm.warm_x50` +11.95%,
+    /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
+    /// +3.56%, measured against this method computing from
+    /// `self.computed_style` directly on every call).
+    pub fn has_non_identity_filter(&self) -> bool {
+        self.filter_creates_stacking_context.get()
     }
 
     /// Whether `transform` **applies** to this node: it is not a non-atomic

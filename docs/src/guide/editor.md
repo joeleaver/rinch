@@ -110,17 +110,19 @@ handle off the document (or off `state.schema()`, which is the same instance).
 The same pointer identity is why comparing `Node`s across two editor handles fails even
 for structurally identical documents — compare their serialized HTML instead.
 
-**This reaches `EditorHandle` too.** `create_editor` mints a new `Rc<Schema>` per handle,
-and `load_doc` installs the `Node` you give it as-is (but for the `colspan` cap below), so `b.load_doc(a.doc())` hands `b` a
-document built by `a`'s schema. `b` then reports `is_mark_active("bold") == false` over
-text that is bold, and its formatting commands return `false` rather than editing it —
-before the guard above they returned `true` and left the run carrying *two* `bold` marks,
-one per schema. Move a document between handles through a serialization instead:
-
-```rust
-b.load_html(&to_html(&a.doc()));        // or
-b.load_doc(b_schema.node_from_doc(&a.doc().to_doc())?);
-```
+**This used to reach `EditorHandle` too, and no longer does (#440).** `create_editor`
+mints a new `Rc<Schema>` per handle, so `b.load_doc(a.doc())` hands `b` a document built
+by `a`'s schema — but `load_doc` (and therefore `load_html`, and the collaboration guest
+join) now re-homes the incoming document onto the receiving schema first
+(`Node::rebind`), matching every node and mark type by *name* against `b`'s own interned
+handles before installing it. `b.is_mark_active("bold")` then answers `true` over the
+adopted bold text, and `toggleBold` removes the mark rather than returning `false` (the
+pre-#440 guard's refusal) or — on an unfixed build older than #217's guard — duplicating
+it. `b.load_doc(a.doc())` is the documented way to move a document between handles; no
+manual serialization round-trip is needed for it any more. `Node::rebind` costs one
+pointer comparison per node/mark when the document is already on the target schema (the
+guest-join case: `projected_doc` already builds through the guest's own schema), and a
+rebuild only for a genuinely foreign type.
 
 ### Serialization
 

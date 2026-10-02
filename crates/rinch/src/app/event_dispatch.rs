@@ -391,28 +391,6 @@ impl RinchApp {
                     return actions;
                 }
 
-                // Check resize edge for borderless windows
-                if let Some(ref props) = self.window_props {
-                    if props.borderless && props.resizable {
-                        if let Some(inset) = props.resize_inset {
-                            // Compared in one unit — logical (#299). `x`/`y`
-                            // and the viewport are already logical, and
-                            // `resize_inset` is documented as matching a CSS
-                            // margin, so it is a CSS-pixel quantity to begin
-                            // with; the old `inset * scale` against a physical
-                            // `window_size` was compensating for a physical
-                            // pointer.
-                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset)
-                                && !self.scrollbar_thumb_beats_resize(dir, x, y)
-                            {
-                                actions
-                                    .push(AppAction::SetCursor(resize_direction_to_cursor(&dir)));
-                                return actions;
-                            }
-                        }
-                    }
-                }
-
                 // Handle component drag (sliders, floating panels, etc.)
                 //
                 // `PrimaryButton::Unknown`, and honestly so: `PlatformEvent::
@@ -540,6 +518,45 @@ impl RinchApp {
                         actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Text));
                         actions.push(AppAction::RequestRedraw);
                         return actions;
+                    }
+                }
+
+                // Check resize edge for borderless windows. Deliberately AFTER
+                // every live press gesture above, not before (#483): a
+                // scrollbar thumb drag, a pointer-capture `Drag` (even one
+                // forwarding to a captured render surface) and a read-only
+                // text-selection drag each either returned above already or
+                // (the surface-forwarding `Drag` case) left `drag_active`
+                // true, so a stray resize-edge hit mid-gesture must not steal
+                // the move and flip the cursor to a resize arrow instead of
+                // tracking it. That used to drop the frame whenever the
+                // pointer overshot the thumb's own extent (past the track
+                // end) or wandered into the corner square, which never yields
+                // to the thumb by design (#399/#439). Element DnD
+                // (`pending_drag`/`active_dnd`) and the editor's own
+                // drag-select already return above this point and need no
+                // guard here.
+                if self.scrollbar_drag.is_none() && !drag_active && !self.text_selecting {
+                    if let Some(ref props) = self.window_props {
+                        if props.borderless && props.resizable {
+                            if let Some(inset) = props.resize_inset {
+                                // Compared in one unit — logical (#299). `x`/`y`
+                                // and the viewport are already logical, and
+                                // `resize_inset` is documented as matching a CSS
+                                // margin, so it is a CSS-pixel quantity to begin
+                                // with; the old `inset * scale` against a physical
+                                // `window_size` was compensating for a physical
+                                // pointer.
+                                if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset)
+                                    && !self.scrollbar_thumb_beats_resize(dir, x, y)
+                                {
+                                    actions.push(AppAction::SetCursor(resize_direction_to_cursor(
+                                        &dir,
+                                    )));
+                                    return actions;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1678,11 +1695,18 @@ impl RinchApp {
                 //    whatever a handler thinks, or a consumed release strands
                 //    the latch and the next press is swallowed — and the
                 //    surface forward below, which is the surface's own claim.
+                //    A redraw is requested unconditionally (issue #486): a
+                //    handler that writes a `Signal` already gets one through
+                //    the signal-change callback, but one that mutates the DOM
+                //    directly through a `NodeHandle` setter has no such
+                //    fallback, and named damage marks a node dirty with no
+                //    way to ask the shell to paint a frame at all.
                 if let Some(ref ks) = key_str {
                     let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
                         .with_modifiers(ctrl, shift, alt, modifiers.meta)
                         .with_kind(events::KeyEventKind::Up);
                     events::dispatch_keyboard_event(&key_data);
+                    actions.push(AppAction::RequestRedraw);
                 }
 
                 // 2. Then the focus arbiter's holder, again mirroring KeyDown.
@@ -1722,7 +1746,13 @@ impl RinchApp {
                             )
                             .with_modifiers(ctrl, shift, alt, modifiers.meta)
                             .with_kind(events::KeyEventKind::Up);
+                            // Return value ignored for the same reason as the
+                            // interceptor above: a release has nothing
+                            // downstream to suppress, so the redraw is
+                            // requested whether or not the handler claims to
+                            // have consumed it (issue #486).
                             crate::focus_registry::offer_key(self.doc_key(), id, &key_data);
+                            actions.push(AppAction::RequestRedraw);
                         }
                     }
                     _ => {}

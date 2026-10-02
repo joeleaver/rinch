@@ -371,6 +371,14 @@ impl<T: ?Sized> Default for DocScopedSlotMap<T> {
 /// older**. So the single-document app keeps the single slot's rule wherever
 /// it registers from: the last registration wins.
 ///
+/// **Two documents that both register at *initial mount* do not collide**
+/// (issue #500, closed by the mount coverage above): a component body runs
+/// once, outside any `handle_event`, but `RinchApp::mount_component` already
+/// pushes the dispatching-document marker around that build, so the
+/// registration resolves to that document's own entry instead of falling into
+/// the ownerless one. `rinch/tests/multi_context.rs`'s
+/// `issue_500_two_contexts_registering_at_mount_do_not_collide` pins it.
+///
 /// Same growth characteristics as [`install_scoped_slot`] — one entry and one
 /// cleanup per (document, component) registration, written once per component.
 /// The #376 warning about keyed registries is about keys that *churn*; a
