@@ -586,3 +586,47 @@ fn a_clamped_step_fires_neither_oninput_nor_onchange() {
         "no write happened, so onchange does not fire either"
     );
 }
+
+/// Regression found in review of this PR (#1323): an empty, never-touched
+/// field with `min: 0.0` — clicking decrement must still write "0" and
+/// report it, matching pre-#511 behavior. The live-value base computation
+/// defaults a genuinely untouched field (`shown == None`, `live_value()`
+/// empty/unparseable) to 0.0 for arithmetic purposes, and the clamped
+/// decrement lands exactly on that same 0.0 — so comparing the no-op skip
+/// against the arithmetic `base` (rather than against whether the field
+/// EVER actually showed a number) wrongly treated "landed on the fallback"
+/// as "no-op", and the first click silently did nothing. Kills the mutant
+/// that keys the skip on `next == base` instead of `current == Some(next)`.
+#[test]
+fn review_probe_first_decrement_on_empty_field_at_min_zero_writes_zero() {
+    let f = Fixture::mount(|log| {
+        let inp = log.clone();
+        NumberInput {
+            min: Some(0.0),
+            step: Some(1.0),
+            oninput: Some(InputCallback::new(move |text: String| {
+                inp.borrow_mut().push(format!("input:{text}"));
+            })),
+            ..Default::default()
+        }
+    });
+
+    assert_eq!(
+        f.field_text(),
+        "",
+        "mount shows nothing: no value, no default_value"
+    );
+
+    f.click_stepper("down");
+
+    assert_eq!(
+        f.field_text(),
+        "0",
+        "a first decrement clamped to min=0 should still write 0"
+    );
+    assert_eq!(
+        f.log.borrow().as_slice(),
+        ["input:0".to_string()],
+        "the write should be reported through oninput"
+    );
+}

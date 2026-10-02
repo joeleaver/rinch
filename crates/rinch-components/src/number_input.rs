@@ -398,13 +398,26 @@ impl Component for NumberInput {
                     // `shown` here: such a field isn't editable there at
                     // all (#244), so its live value is always exactly what
                     // this component last wrote.
-                    let base = input
+                    //
+                    // `current` is kept as an `Option`, distinct from the
+                    // arithmetic `base` below (which defaults a genuinely
+                    // empty field to 0.0), because the no-op skip and the
+                    // arithmetic ask different questions. A field nothing
+                    // has ever written to (`current == None`) must still
+                    // write its first clamped value even when that value
+                    // happens to be 0.0 (`min: Some(0.0)`, decrementing) —
+                    // review of #1323 found `next == base` skipping that
+                    // first write, since the 0.0 *fallback* coincided with
+                    // the clamped target. The skip below is keyed on
+                    // `current`, which is `Some` only when the field
+                    // already, really, shows a number.
+                    let current = input
                         .live_value()
                         .and_then(|s| s.trim().parse::<f64>().ok())
-                        .or_else(|| shown.get())
-                        .unwrap_or(0.0);
+                        .or_else(|| shown.get());
+                    let base = current.unwrap_or(0.0);
                     let next = clamp_to(base + delta, min, max);
-                    if next == base {
+                    if current == Some(next) {
                         return;
                     }
                     shown.set(Some(next));
