@@ -21,10 +21,13 @@
 //!
 //! A browser renders none of the three elements' children: a canvas's are
 //! fallback content, a video's are `<source>`/`<track>` and fallback, an
-//! iframe's are ignored. So when they form an inline formatting context the
-//! IFC pass leaves the element **hollow**, as it does a `<textarea>`
-//! (#1159): it keeps this context, and no text is shaped or painted. A
-//! block-level element child is still laid out, as for a control (#1178).
+//! iframe's are ignored. rinch matches that only for children that are all
+//! text or non-atomic inlines: their inline formatting context leaves the
+//! element **hollow**, as it does a `<textarea>` (#1159), so it keeps this
+//! context and no text is shaped or painted. A **block-level or atomic
+//! inline** child is still laid out and painted (#1288), and a block child
+//! also takes the element's size away: a Taffy node with children never
+//! calls its measure, so the element is sized by its children.
 //!
 //! **Not modelled:** a desktop `<video>` never holds video data (rinch's
 //! `VideoViewport` is a `div`), so a poster or a loaded video's natural size

@@ -396,3 +396,48 @@ fn an_explicit_size_wins() {
         (400.0, 80.0),
     );
 }
+
+#[test]
+fn a_zero_height_attribute_also_has_no_ratio() {
+    // Chrome 153: 30x50 — the height comes from CSS, the width stays natural.
+    check(
+        W400,
+        "canvas",
+        &[("width", "30"), ("height", "0")],
+        "display: block; height: 50px",
+        (30.0, 50.0),
+    );
+}
+
+#[test]
+fn a_stretched_height_takes_off_the_vertical_padding_only() {
+    // Chrome 153: a row flex stretches the canvas to 100 tall; its content is
+    // 100 - 40 = 60 tall, so 120 wide. Asymmetric padding, off the fixed point.
+    check(
+        "width: 400px; display: flex; height: 100px",
+        "canvas",
+        &[],
+        "padding: 20px 0",
+        (120.0, 100.0),
+    );
+}
+
+#[test]
+fn changing_an_inline_canvas_attribute_resizes_it() {
+    // An inline canvas is an atomic inline, sized outside the root compute.
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let d = doc.create_element("div");
+    doc.set_attribute(d, "style", &format!("{BASE}; {W400}"));
+    doc.append_child(body, d);
+    let t = doc.create_text("x ");
+    doc.append_child(d, t);
+    let c = doc.create_element("canvas");
+    doc.append_child(d, c);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(size(&doc, c), (300.0, 150.0));
+    doc.set_attribute(c, "width", "40");
+    doc.set_attribute(c, "height", "20");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(size(&doc, c), (40.0, 20.0), "Chrome 153: 40x20");
+}

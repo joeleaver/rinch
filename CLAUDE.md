@@ -2808,7 +2808,9 @@ and `progress`, which the UA sheet leaves `display: inline`, so their **default*
 rendering changed too: an atomic box. `canvas`, `video` and `iframe` take Chrome's
 **300x150** default object size (a canvas's own `width`/`height` attributes, with
 their aspect ratio), are not stretched by a block container (Taffy's
-`item_is_replaced`), and lay out no inline fallback content (`replaced.rs`, #1173;
+`item_is_replaced`), and lay out no fallback content made only of text and inlines
+(`replaced.rs`, #1173 — a block or atomic-inline child is still laid out, painted
+and sizes the element, #1288;
 a grid item is still stretched, #1280); `meter` and `progress` still have no default
 size and lay out their fallback content. The predicate says so, not `clip_shape`, so the
 bracket, the chain, hit testing's gate and the dirty-region prune all agree. The
