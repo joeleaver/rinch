@@ -3349,7 +3349,17 @@ impl RinchDocument {
             // no content height, and also carried a blockified `<br>` and the
             // non-text input types; the line-sized ones are measured now (#297,
             // `form_control.rs`).
-            if has_non_comment_inline || all_children_are_comments {
+            //
+            // A control or replaced element is a root whatever its children
+            // are (#1178, #1288): the UA sheet makes every element child of one
+            // `display: none`, the marking pass detaches those from Taffy — one
+            // attached `None` child left the measure unreachable and the
+            // element collapsed to 0x0 — and the hollow arm below gives it its
+            // own measure context.
+            let hollow_with_children = !own_children.is_empty()
+                && (crate::form_control::is_value_control(node)
+                    || crate::replaced::is_replaced_without_content(node));
+            if has_non_comment_inline || all_children_are_comments || hollow_with_children {
                 ifc_roots.push(id);
             }
         }

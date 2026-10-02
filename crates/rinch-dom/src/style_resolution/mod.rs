@@ -1426,6 +1426,20 @@ impl RinchDocument {
                     DisplayMode::InlineBlock
                 }
                 crate::computed_style::DisplayValue::Inline => DisplayMode::Inline,
+                // A control or replaced element has no inner display of its
+                // own (#1288): `replaced::ignores_inner_display`.
+                crate::computed_style::DisplayValue::Flex
+                | crate::computed_style::DisplayValue::Grid
+                    if crate::replaced::ignores_inner_display(&self.tree.nodes[node_id]) =>
+                {
+                    DisplayMode::Block
+                }
+                crate::computed_style::DisplayValue::InlineFlex
+                | crate::computed_style::DisplayValue::InlineGrid
+                    if crate::replaced::ignores_inner_display(&self.tree.nodes[node_id]) =>
+                {
+                    DisplayMode::InlineBlock
+                }
                 crate::computed_style::DisplayValue::InlineBlock => DisplayMode::InlineBlock,
                 crate::computed_style::DisplayValue::InlineFlex => DisplayMode::InlineFlex,
                 crate::computed_style::DisplayValue::Block => DisplayMode::Block,
@@ -1813,6 +1827,13 @@ impl RinchDocument {
     pub(crate) fn taffy_style_from_computed(&self, node_id: usize) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
+        // A control or replaced element has no inner display of its own
+        // (#1288): `display: flex` lays it out as a block.
+        if matches!(style.display, taffy::Display::Flex | taffy::Display::Grid)
+            && crate::replaced::ignores_inner_display(&self.tree.nodes[node_id])
+        {
+            style.display = taffy::Display::Block;
+        }
         // A block container does not stretch a replaced element to its width
         // (CSS 2.1 §10.3.4); Taffy's block layout reads this flag (#1173).
         style.item_is_replaced =
