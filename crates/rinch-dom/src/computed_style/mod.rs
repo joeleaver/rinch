@@ -476,6 +476,34 @@ impl ComputedStyle {
             LineHeightValue::Absolute(px) => px,
         }
     }
+
+    /// Whether `filter` is detectably non-`none`, within what this struct
+    /// stores (#542; the real computation behind
+    /// [`crate::node::Node::has_non_identity_filter`], which this cascade is
+    /// the **only** caller of — see that method's doc for the two accepted
+    /// gaps, `filter: brightness(1)` and a `blur()`-only filter, neither of
+    /// which this can see). `true` when any of the four scalars
+    /// (`filter_brightness`/`filter_grayscale`/`filter_saturate`/
+    /// `filter_hue_rotate`) differs from that filter function's identity
+    /// value.
+    ///
+    /// Cascade-time only (#729 perf review): four `f32` compares per call
+    /// is cheap in isolation, but `Node::creates_stacking_context` is on the
+    /// hit-test and paint hot paths — walked once per node per pointer move
+    /// and per frame — so paying it again on every walk measured as a real
+    /// regression (CI Perf: `shell::pointer_move_warm.warm_x50` +11.95%,
+    /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
+    /// +3.56%). Call this once, at the point a node's `ComputedStyle` is
+    /// finalized (`style_resolution/mod.rs`'s `apply_stylo_styles_to_taffy`,
+    /// and the pseudo-element cascade in `style_resolution/pseudo.rs`), and
+    /// cache the answer in `Node::filter_creates_stacking_context`; nothing
+    /// else should call this per-frame.
+    pub fn has_non_identity_filter(&self) -> bool {
+        self.filter_brightness != 1.0
+            || self.filter_grayscale != 0.0
+            || self.filter_saturate != 1.0
+            || self.filter_hue_rotate != 0.0
+    }
 }
 
 #[cfg(test)]

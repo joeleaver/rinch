@@ -846,6 +846,17 @@ impl RinchDocument {
             // Convert Stylo ComputedValues to our ComputedStyle
             let mut new_style = ComputedStyle::from_stylo(&computed_values);
 
+            // #542 (perf review): cache the filter-identity check here, once
+            // per cascade of this node, rather than let
+            // `Node::creates_stacking_context` recompute it on every
+            // hit-test/paint walk. Nothing below here ever assigns a filter
+            // scalar (`filter` is not transition-animatable — it has no
+            // `TransitionProperty` variant — so the transition-overwrite loop
+            // further down never touches it either), so `new_style`'s filter
+            // fields are already final.
+            node.filter_creates_stacking_context
+                .set(new_style.has_non_identity_filter());
+
             // `user-select` has no UA rule and this Stylo build does not parse
             // the property at all (which is also why the inline `style`
             // attribute is re-read for it further down), so the presentational
