@@ -548,14 +548,24 @@ impl RinchApp {
     /// app, answering whether one ran — in which case the shell swallows the
     /// key. A chord with no Ctrl/Cmd/Alt yields its key to a focused text
     /// target and runs nothing (#1169).
+    ///
+    /// `key_without_modifiers` is winit's layout-resolved key for this press,
+    /// ignoring Shift/Caps — issue #1170's letter-by-character matching reads
+    /// it to answer "what does this layout type for the key the user pressed".
     #[cfg(feature = "desktop")]
-    pub(crate) fn try_menu_shortcut(&self, mods: Modifiers, key: winit::keyboard::KeyCode) -> bool {
+    pub(crate) fn try_menu_shortcut(
+        &self,
+        mods: Modifiers,
+        key: winit::keyboard::KeyCode,
+        key_without_modifiers: &winit::keyboard::Key,
+    ) -> bool {
         crate::menu::match_shortcut(
             mods.ctrl,
             mods.meta,
             mods.alt,
             mods.shift,
             key,
+            key_without_modifiers,
             self.text_target_holds_keyboard(),
         )
     }

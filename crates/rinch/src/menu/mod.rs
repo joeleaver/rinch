@@ -544,6 +544,15 @@ fn prune_callback(menu_id: &str, entry: &Rc<MenuCallback>) {
 ///
 /// `text_focus` says whether a text target holds the keyboard; a chord that
 /// [`chord_yields_to_text_input`] then matches nothing (#1169).
+///
+/// `key_without_modifiers` is winit's layout-resolved, modifier-ignoring key
+/// for this physical press (issue #1170): a **letter** chord matches the
+/// *character* the layout types for the pressed key (so Ctrl+Z fires from the
+/// key labelled Z on a QWERTZ keyboard, which is physically `KeyY`), falling
+/// back to the physical code when the layout types no single Latin letter
+/// there (Cyrillic, Thai, …) — see [`chord_key_matches`]. Punctuation and
+/// digit chords are unaffected and keep matching by physical code alone, as
+/// before #1170.
 #[cfg(feature = "desktop")]
 pub(crate) fn match_shortcut(
     ctrl: bool,
@@ -551,6 +560,7 @@ pub(crate) fn match_shortcut(
     alt: bool,
     shift: bool,
     key: KeyCode,
+    key_without_modifiers: &winit::keyboard::Key,
     text_focus: bool,
 ) -> bool {
     let Some(code) = key_code_name(key) else {
@@ -559,7 +569,29 @@ pub(crate) fn match_shortcut(
     if text_focus && chord_yields_to_text_input(ctrl, meta, alt, code) {
         return false;
     }
-    match_shortcut_code(ctrl, meta, alt, shift, code)
+    let typed_letter = winit_typed_letter(key_without_modifiers);
+    match_shortcut_code(ctrl, meta, alt, shift, code, typed_letter)
+}
+
+/// The single ASCII letter `key` types, lowercased — or `None` when it is
+/// anything else (a non-character key, a dead key, more than one character,
+/// or a character outside `a..=z`/`A..=Z`, which is what a non-Latin layout
+/// — Cyrillic, Thai, Armenian — produces for every letter position).
+///
+/// Feeds [`chord_key_matches`]'s layout-character branch; `None` is exactly
+/// the "this layout types no Latin letter here" case issue #1170 falls back
+/// from to the physical key.
+#[cfg(feature = "desktop")]
+fn winit_typed_letter(key: &winit::keyboard::Key) -> Option<char> {
+    let winit::keyboard::Key::Character(s) = key else {
+        return None;
+    };
+    let mut chars = s.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    c.is_ascii_alphabetic().then(|| c.to_ascii_lowercase())
 }
 
 /// Whether a keystroke belongs to a focused text field rather than to a menu
@@ -659,7 +691,21 @@ pub fn input_type_takes_text(ty: &str) -> bool {
 /// creating component has since unmounted must not shadow a live duplicate, and
 /// a chord registered for an item with no callback at all must fall through to
 /// the app instead of eating that key combination forever.
-pub fn match_shortcut_code(ctrl: bool, meta: bool, alt: bool, shift: bool, code: &str) -> bool {
+///
+/// `typed_letter` is the single lowercase ASCII letter the layout types for
+/// this physical key, ignoring Shift/Caps — a browser gives `event.key`
+/// lowercased, desktop gives winit's `key_without_modifiers` through
+/// [`match_shortcut`] — or `None` when the layout types no such letter there
+/// (a digit, a punctuation mark, a non-Latin character, a dead key). See
+/// [`chord_key_matches`] for how it is used.
+pub fn match_shortcut_code(
+    ctrl: bool,
+    meta: bool,
+    alt: bool,
+    shift: bool,
+    code: &str,
+    typed_letter: Option<char>,
+) -> bool {
     let ctrl_or_cmd = ctrl || meta;
 
     // `collect` on an empty iterator does not allocate, so the overwhelmingly
@@ -672,13 +718,106 @@ pub fn match_shortcut_code(ctrl: bool, meta: bool, alt: bool, shift: bool, code:
                 entry.shortcut.ctrl_or_cmd == ctrl_or_cmd
                     && entry.shortcut.alt == alt
                     && entry.shortcut.shift == shift
-                    && entry.shortcut.code == code
+                    && chord_key_matches(&entry.shortcut, code, typed_letter)
             })
             .map(|entry| entry.menu_id.clone())
             .collect()
     });
 
     matched.iter().any(|menu_id| dispatch_menu_event(menu_id))
+}
+
+/// How a letter chord's key is matched against a keystroke (issue #1170).
+///
+/// `LayoutAware` (the default) is **A** from the issue: a letter chord
+/// (`"Ctrl+Z"`) matches the character the active keyboard layout types for the
+/// pressed key — so Ctrl+Z fires from the key labelled Z wherever the layout
+/// put it (QWERTZ's Y/Z swap, AZERTY's A/Q) — falling back to the physical
+/// key when the layout types no Latin letter there (Cyrillic, Thai, …), which
+/// is what makes Ctrl+C/Ctrl+V reachable at all on those layouts. Punctuation
+/// and digit chords are never affected by this setting; they always match the
+/// physical key, as rinch has always done.
+///
+/// `Physical` forces every chord — letters included — back to matching the
+/// physical key alone, exactly as rinch matched before #1170: the escape
+/// hatch every framework that ships a user-facing override for this ships
+/// (VS Code's `keyboard.dispatch`, JetBrains' "use national layout for
+/// shortcuts") — for an app, or a user, who wants shortcut *positions* to stay
+/// put under a remapped or non-Latin layout rather than follow the character.
+///
+/// Set with [`set_shortcut_matching`] — `App::shortcut_matching` on desktop,
+/// or call it directly before mounting on the web.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShortcutMatching {
+    #[default]
+    LayoutAware,
+    Physical,
+}
+
+thread_local! {
+    /// The active [`ShortcutMatching`] mode. Thread-local like every other
+    /// piece of this module's state: the reactive system and the chord
+    /// registry are both per-thread, so the override is too.
+    static SHORTCUT_MATCHING: Cell<ShortcutMatching> = const { Cell::new(ShortcutMatching::LayoutAware) };
+}
+
+/// Set how letter chords are matched against a keystroke for the rest of the
+/// session (or until the next call). See [`ShortcutMatching`].
+///
+/// Global and thread-local, like the registry it governs — one app, one
+/// answer. Takes effect on the next keystroke; there is nothing to rebuild,
+/// since matching reads this at dispatch time, not at registration time.
+pub fn set_shortcut_matching(mode: ShortcutMatching) {
+    SHORTCUT_MATCHING.with(|m| m.set(mode));
+}
+
+/// The active [`ShortcutMatching`] mode. See [`set_shortcut_matching`].
+pub fn shortcut_matching() -> ShortcutMatching {
+    SHORTCUT_MATCHING.with(Cell::get)
+}
+
+/// The lowercase letter a `"KeyX"` physical-code name stands for, or `None`
+/// for anything else (`"Digit1"`, `"Slash"`, `"F5"`, …).
+///
+/// The one place that decides "is this chord's key a letter" — [`chord_key_matches`]
+/// only takes the layout-character branch for a chord this answers `Some` for,
+/// which is what keeps digit and punctuation chords on physical-only matching.
+fn letter_from_code(code: &str) -> Option<char> {
+    let rest = code.strip_prefix("Key")?;
+    let mut chars = rest.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    Some(c.to_ascii_lowercase())
+}
+
+/// Whether `shortcut`'s key matches this keystroke's physical `code` and/or
+/// its `typed_letter` — the matching rule issue #1170 adds.
+///
+/// [`ShortcutMatching::Physical`] (the override) short-circuits to the
+/// pre-#1170 rule: physical code only, whatever the chord's key.
+///
+/// Otherwise: a **non-letter** chord (digit, punctuation, navigation, …)
+/// still matches physical-only — Joe's decision keeps the existing,
+/// already-correct behaviour there. A **letter** chord matches `typed_letter`
+/// when the keystroke typed one (Latin a–z under the active layout,
+/// regardless of *which* physical key produced it — the QWERTZ/AZERTY case),
+/// and falls back to the physical code when it did not (the layout types no
+/// Latin letter for the pressed key at all — Cyrillic, Thai, Armenian — which
+/// is the GTK/GNOME bug class #1170's recon found: matching the physical
+/// position there is the only way Ctrl+C is reachable).
+fn chord_key_matches(shortcut: &ParsedShortcut, code: &str, typed_letter: Option<char>) -> bool {
+    if shortcut_matching() == ShortcutMatching::Physical {
+        return shortcut.code == code;
+    }
+    match letter_from_code(shortcut.code) {
+        Some(letter) => match typed_letter {
+            Some(typed) => typed == letter,
+            None => shortcut.code == code,
+        },
+        None => shortcut.code == code,
+    }
 }
 
 // ── Registration token ──────────────────────────────────────────────────────
@@ -913,7 +1052,10 @@ pub(crate) fn build_native_menu_bar(menus: Vec<(&str, Menu)>) -> muda::Menu {
     let menu_bar = muda::Menu::new();
     for (label, menu) in menus {
         let submenu = muda::Submenu::new(label, true);
-        build_muda_entries(&submenu, menu, &mut registration);
+        // `true`: this bar is attached to the window (`attach_menu_to_window`)
+        // on macOS and Windows, so the OS already matches each item's
+        // accelerator — see `build_muda_item`'s `native_bar` param (#1170, B).
+        build_muda_entries(&submenu, menu, &mut registration, true);
         let _ = menu_bar.append(&submenu);
     }
     // Bound outside the borrow: dropping the displaced token drops user
@@ -934,7 +1076,13 @@ pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
     for entry in menu.entries {
         match entry {
             MenuEntryInner::Item(item) => {
-                let muda_item = build_muda_item(&item, &mut registration);
+                // `false`: a tray context menu is never attached to a window
+                // (`attach_menu_to_window`), so its accelerators are shown
+                // only while the menu is open and are not the OS-wide
+                // interception a window menu bar's are — rinch's own chord
+                // matching is the only thing that fires these from the
+                // keyboard (#1170, B).
+                let muda_item = build_muda_item(&item, &mut registration, false);
                 let _ = muda_menu.append(&muda_item);
             }
             MenuEntryInner::Separator => {
@@ -942,7 +1090,7 @@ pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
             }
             MenuEntryInner::Submenu { label, menu } => {
                 let submenu = muda::Submenu::new(&label, true);
-                build_muda_entries(&submenu, menu, &mut registration);
+                build_muda_entries(&submenu, menu, &mut registration, false);
                 let _ = muda_menu.append(&submenu);
             }
         }
@@ -951,12 +1099,22 @@ pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
 }
 
 /// Recursively populate a muda Submenu from a unified Menu.
+///
+/// `native_bar` says whether this submenu ends up in the window menu bar built
+/// by [`build_native_menu_bar`] (and so attached to the window with
+/// [`attach_menu_to_window`]) rather than a tray context menu's — see
+/// [`build_muda_item`].
 #[cfg(feature = "desktop")]
-fn build_muda_entries(submenu: &muda::Submenu, menu: Menu, registration: &mut MenuRegistration) {
+fn build_muda_entries(
+    submenu: &muda::Submenu,
+    menu: Menu,
+    registration: &mut MenuRegistration,
+    native_bar: bool,
+) {
     for entry in menu.entries {
         match entry {
             MenuEntryInner::Item(item) => {
-                let muda_item = build_muda_item(&item, registration);
+                let muda_item = build_muda_item(&item, registration, native_bar);
                 let _ = submenu.append(&muda_item);
             }
             MenuEntryInner::Separator => {
@@ -964,7 +1122,7 @@ fn build_muda_entries(submenu: &muda::Submenu, menu: Menu, registration: &mut Me
             }
             MenuEntryInner::Submenu { label, menu } => {
                 let nested = muda::Submenu::new(&label, true);
-                build_muda_entries(&nested, menu, registration);
+                build_muda_entries(&nested, menu, registration, native_bar);
                 let _ = submenu.append(&nested);
             }
         }
@@ -972,8 +1130,28 @@ fn build_muda_entries(submenu: &muda::Submenu, menu: Menu, registration: &mut Me
 }
 
 /// Build a single muda MenuItem, register its callback and shortcut.
+///
+/// `native_bar` is issue #1170's "B": on macOS and Windows, a window menu bar
+/// is wired into the OS (`attach_menu_to_window` calls `init_for_nsapp` /
+/// `init_for_hwnd`), so the OS itself resolves and matches each item's
+/// `Accelerator` against the live keyboard layout before winit ever sees the
+/// key — matching muda's own accelerator through rinch's chord registry too
+/// would risk firing the callback twice for one keystroke on those platforms.
+/// So a `native_bar` item there registers **only** the callback (for the
+/// `MenuEvent` muda's own match emits, routed by
+/// [`install_menu_event_handler`]) and never a [`MENU_SHORTCUTS`] entry.
+/// Linux has no such integration (`attach_menu_to_window` is a no-op there —
+/// see the module's platform-attachment section), so its window bar, every
+/// tray menu item (`native_bar: false` — a tray's accelerator is shown only
+/// while the menu is open, not an OS-wide interception) and the DOM menu bar
+/// ([`register_menu_shortcuts_into`], unaffected by this parameter) all keep
+/// registering the chord as before #1170.
 #[cfg(feature = "desktop")]
-fn build_muda_item(item: &MenuItem, registration: &mut MenuRegistration) -> muda::MenuItem {
+fn build_muda_item(
+    item: &MenuItem,
+    registration: &mut MenuRegistration,
+    native_bar: bool,
+) -> muda::MenuItem {
     let accelerator = item.shortcut.as_ref().and_then(|s| parse_shortcut(s));
     let muda_item = muda::MenuItem::new(&item.label, item.enabled, accelerator);
 
@@ -991,12 +1169,48 @@ fn build_muda_item(item: &MenuItem, registration: &mut MenuRegistration) -> muda
         registration.register_callback(&muda_item.id().0, cb.clone(), item.callback_owner.clone());
     }
 
-    // Register shortcut for keyboard matching
-    if let Some(shortcut_str) = &item.shortcut {
-        registration.register_shortcut(shortcut_str, &muda_item.id().0);
+    // Register shortcut for keyboard matching — skipped for a window-bar item
+    // on a platform where the OS already matches muda's own accelerator
+    // (macOS, Windows). See this function's doc.
+    if !skips_rinch_chord(native_bar, os_matches_native_accelerators()) {
+        if let Some(shortcut_str) = &item.shortcut {
+            registration.register_shortcut(shortcut_str, &muda_item.id().0);
+        }
     }
 
     muda_item
+}
+
+/// Whether the OS itself resolves and matches a window menu bar's
+/// `Accelerator` against the keyboard, ahead of winit — macOS (`NSMenu`
+/// `performKeyEquivalent`) and Windows (muda's accelerator table hooked into
+/// the window's message proc). Linux has no such integration: a window menu
+/// bar is never attached with a native accelerator table there (see
+/// [`attach_menu_to_window`]'s Linux arm, a no-op), so rinch's own chord
+/// registry is the only thing that ever matches an item's shortcut.
+///
+/// A `cfg!` one-liner rather than a `#[cfg(...)]` item so [`skips_rinch_chord`]
+/// stays a plain function callable from a test on every host; the host this
+/// was written on is Linux, so **the macOS/Windows branch itself cannot be
+/// exercised by this crate's test suite** — only [`skips_rinch_chord`]'s
+/// boolean rule can. A real macOS or Windows host still needs a manual check
+/// that pressing an item's accelerator fires its callback exactly once.
+#[cfg(feature = "desktop")]
+fn os_matches_native_accelerators() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
+/// Whether a window-bar item's chord should be left to the OS alone rather
+/// than also registered in [`MENU_SHORTCUTS`] (issue #1170, "B").
+///
+/// Pulled out of [`build_muda_item`] as a pure function of two bools so the
+/// decision itself — "only a *window-bar* item on a platform whose OS *does*
+/// match the accelerator" — is exhaustively testable on any host, independent
+/// of which platform actually makes `os_has_accelerator` true. See
+/// [`os_matches_native_accelerators`] for that half.
+#[cfg(feature = "desktop")]
+fn skips_rinch_chord(native_bar: bool, os_has_accelerator: bool) -> bool {
+    native_bar && os_has_accelerator
 }
 
 /// Set up the global muda event handler. Call once during app init.
@@ -1442,6 +1656,16 @@ mod tests {
         (fired, Rc::new(move || seen.set(seen.get() + 1)))
     }
 
+    /// A `key_without_modifiers` that types no Latin letter at all — the
+    /// `match_shortcut` tests below that predate #1170 pass this, which makes
+    /// `chord_key_matches` fall back to the physical key exactly as it always
+    /// matched, so none of them has to know what a US layout types for the
+    /// key under test.
+    #[cfg(feature = "desktop")]
+    fn no_latin_letter() -> winit::keyboard::Key {
+        winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified)
+    }
+
     /// Register under the ambient owner, the way a caller that both creates and
     /// registers a callback in one place would. The builders instead carry the
     /// item's own owner, which is what
@@ -1603,7 +1827,7 @@ mod tests {
         );
         register_shortcut("Ctrl+Shift+J", "chord-1");
 
-        assert!(match_shortcut_code(true, false, false, true, "KeyJ"));
+        assert!(match_shortcut_code(true, false, false, true, "KeyJ", None));
     }
 
     /// `MENU_SHORTCUTS` leaks identically to `MENU_CALLBACKS` — the issue names
@@ -1636,7 +1860,7 @@ mod tests {
 
         scope.dispose();
         assert!(
-            !match_shortcut_code(true, false, true, false, "KeyY"),
+            !match_shortcut_code(true, false, true, false, "KeyY", None),
             "a disposed component's chord must fall through"
         );
         assert_eq!(
@@ -1663,7 +1887,7 @@ mod tests {
         register_shortcut("Ctrl+Alt+U", "no-callback-here");
 
         assert!(
-            !match_shortcut_code(true, false, true, false, "KeyU"),
+            !match_shortcut_code(true, false, true, false, "KeyU", None),
             "nothing ran, so the keystroke belongs to the app"
         );
     }
@@ -1686,7 +1910,7 @@ mod tests {
 
         dead.dispose();
 
-        assert!(match_shortcut_code(true, false, true, false, "KeyI"));
+        assert!(match_shortcut_code(true, false, true, false, "KeyI", None));
         assert_eq!(
             fired.get(),
             1,
@@ -1914,10 +2138,10 @@ mod tests {
 
         let _chords = register_menu_shortcuts(&[("File", &file)]);
 
-        assert!(match_shortcut_code(true, false, false, true, "KeyF"));
+        assert!(match_shortcut_code(true, false, false, true, "KeyF", None));
         assert_eq!(top_fired.get(), 1);
         assert!(
-            match_shortcut_code(true, false, false, true, "KeyT"),
+            match_shortcut_code(true, false, false, true, "KeyT", None),
             "a submenu's items declare chords like any other"
         );
         assert_eq!(nested_fired.get(), 1);
@@ -1948,10 +2172,10 @@ mod tests {
             shortcuts,
             "neither item may arm a chord: one is disabled, the other runs nothing"
         );
-        assert!(!match_shortcut_code(true, false, true, false, "KeyB"));
+        assert!(!match_shortcut_code(true, false, true, false, "KeyB", None));
         assert_eq!(fired.get(), 0);
         assert!(
-            !match_shortcut_code(true, false, true, false, "KeyM"),
+            !match_shortcut_code(true, false, true, false, "KeyM", None),
             "an item with no on_click must not eat its key combination"
         );
     }
@@ -2003,7 +2227,7 @@ mod tests {
 
         let chords = register_menu_shortcuts(&[("View", &menu)]);
         assert!(
-            match_shortcut_code(true, false, true, false, "KeyK"),
+            match_shortcut_code(true, false, true, false, "KeyK", None),
             "control: armed while the bar is up"
         );
         assert_eq!(fired.get(), 1);
@@ -2011,7 +2235,7 @@ mod tests {
         drop(chords);
 
         assert!(
-            !match_shortcut_code(true, false, true, false, "KeyK"),
+            !match_shortcut_code(true, false, true, false, "KeyK", None),
             "an unmounted bar must not go on eating its chord"
         );
         assert_eq!(fired.get(), 1, "nor go on running its item");
@@ -2043,19 +2267,19 @@ mod tests {
         drop(first);
 
         assert!(
-            match_shortcut_code(true, false, true, false, "KeyZ"),
+            match_shortcut_code(true, false, true, false, "KeyZ", None),
             "the second build is the one the slot holds; a stale token must not take it"
         );
         assert_eq!(second_fired.get(), 1);
         assert!(
-            !match_shortcut_code(true, false, true, false, "KeyY"),
+            !match_shortcut_code(true, false, true, false, "KeyY", None),
             "the first build was released by the replacement, not by its token"
         );
         assert_eq!(first_fired.get(), 0);
 
         drop(second);
         assert!(
-            !match_shortcut_code(true, false, true, false, "KeyZ"),
+            !match_shortcut_code(true, false, true, false, "KeyZ", None),
             "and the live token still disarms its own"
         );
     }
@@ -2268,16 +2492,16 @@ mod tests {
             registration.register_shortcut(&chord, &id);
 
             assert!(
-                match_shortcut(true, false, true, false, key, false),
+                match_shortcut(true, false, true, false, key, &no_latin_letter(), false),
                 "{chord}: the desktop keystroke ({key:?}) must fire the item"
             );
             assert!(
-                match_shortcut_code(true, false, true, false, code),
+                match_shortcut_code(true, false, true, false, code, None),
                 "{chord}: the browser keystroke (code {code}) must fire the item"
             );
             assert_eq!(fired.get(), 2, "{chord}");
             assert!(
-                !match_shortcut_code(true, false, true, true, code),
+                !match_shortcut_code(true, false, true, true, code, None),
                 "{chord}: Shift is part of the chord, so Ctrl+Alt+Shift+{ch} is another one"
             );
             drop(registration);
@@ -2302,11 +2526,12 @@ mod tests {
             true,
             false,
             KeyCode::Space,
+            &no_latin_letter(),
             false
         ));
-        assert!(match_shortcut_code(true, false, true, false, "Space"));
+        assert!(match_shortcut_code(true, false, true, false, "Space", None));
         assert_eq!(fired.get(), 2);
-        assert!(!match_shortcut_code(true, false, true, false, " "));
+        assert!(!match_shortcut_code(true, false, true, false, " ", None));
     }
 
     /// A shortcut string's key is a **key**, not the character Shift makes of
@@ -2328,9 +2553,10 @@ mod tests {
             false,
             true,
             KeyCode::Slash,
+            &no_latin_letter(),
             false
         ));
-        assert!(match_shortcut_code(true, false, false, true, "Slash"));
+        assert!(match_shortcut_code(true, false, false, true, "Slash", None));
         assert_eq!(fired.get(), 2);
 
         assert!(
@@ -2572,6 +2798,228 @@ mod tests {
             "the later build still owns the id it registered"
         );
     }
+
+    // ── Issue #1170: letter chords match the layout's character ───────────
+
+    /// Reset the override after a test that touches it, so a later test on
+    /// this same thread (and `cargo test` gives each test its own thread, but
+    /// a future runner change must not make this test order-dependent) sees
+    /// the documented default.
+    struct RestoreMatching;
+    impl Drop for RestoreMatching {
+        fn drop(&mut self) {
+            set_shortcut_matching(ShortcutMatching::LayoutAware);
+        }
+    }
+
+    /// QWERTZ's Y/Z swap (#1170, option A): a chord declared `"Ctrl+Z"` is
+    /// stored under the *US* physical code `"KeyZ"`, but on a German layout
+    /// the key labelled Z sits where a US keyboard has Y — physical `"KeyY"`,
+    /// typing the character `'z'`. The chord must fire from that physical key,
+    /// not from the US-position `"KeyZ"` (which German labels Y and types
+    /// `'y'`).
+    ///
+    /// Mutant this kills: matching only `shortcut.code == code` (the pre-#1170
+    /// rule, or `chord_key_matches` with the layout-character branch deleted)
+    /// never fires here, since `code` is `"KeyY"`, not `"KeyZ"`.
+    #[test]
+    fn a_letter_chord_matches_the_layouts_character_on_a_qwertz_keyboard() {
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("qwertz-undo", cb, None);
+        registration.register_shortcut("Ctrl+Z", "qwertz-undo");
+
+        // The physical key labelled Z on German QWERTZ is `KeyY`, typing 'z'.
+        assert!(
+            match_shortcut_code(true, false, false, false, "KeyY", Some('z')),
+            "the key labelled Z (physical KeyY, typing 'z') must fire Ctrl+Z"
+        );
+        assert_eq!(fired.get(), 1);
+
+        // The US physical position of Z types 'y' on German QWERTZ and must
+        // not fire Ctrl+Z — it is labelled Y there.
+        assert!(
+            !match_shortcut_code(true, false, false, false, "KeyZ", Some('y')),
+            "the key labelled Y (physical KeyZ, typing 'y') must not fire Ctrl+Z"
+        );
+        assert_eq!(fired.get(), 1);
+    }
+
+    /// AZERTY's A/Q swap, the other direction from the QWERTZ case above: the
+    /// key labelled Q on a French keyboard is physical `KeyA` (US position),
+    /// typing `'q'`.
+    ///
+    /// Mutant this kills: comparing `typed_letter` against `code`'s own US
+    /// letter by physical position instead of by [`letter_from_code`] of the
+    /// *chord's* key would get this backwards — this chord is declared `"Q"`,
+    /// not `"A"`.
+    #[test]
+    fn a_letter_chord_matches_the_layouts_character_on_an_azerty_keyboard() {
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("azerty-quit", cb, None);
+        registration.register_shortcut("Ctrl+Q", "azerty-quit");
+
+        assert!(
+            match_shortcut_code(true, false, false, false, "KeyA", Some('q')),
+            "the key labelled Q (physical KeyA, typing 'q') must fire Ctrl+Q"
+        );
+        assert_eq!(fired.get(), 1);
+
+        assert!(
+            !match_shortcut_code(true, false, false, false, "KeyQ", Some('a')),
+            "the key labelled A (physical KeyQ, typing 'a') must not fire Ctrl+Q"
+        );
+        assert_eq!(fired.get(), 1);
+    }
+
+    /// A Cyrillic (or Thai, Armenian, …) layout types no Latin letter at all
+    /// for the physical `Ctrl+C`/`Ctrl+V` position — the GTK/GNOME/Firefox bug
+    /// class #1170's recon found. `typed_letter` is then `None`, and the
+    /// chord must fall back to matching the physical key, or Ctrl+C would be
+    /// unreachable on such a layout exactly as it is in those toolkits today.
+    ///
+    /// Mutant this kills: a layout-character branch with no `None` fallback
+    /// (`typed_letter.is_some_and(|t| t == letter)`, dropping the `None` arm
+    /// that falls back to `shortcut.code == code`) never fires here.
+    #[test]
+    fn a_letter_chord_falls_back_to_the_physical_key_when_the_layout_types_no_latin_letter() {
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("cyrillic-copy", cb, None);
+        registration.register_shortcut("Ctrl+C", "cyrillic-copy");
+
+        assert!(
+            match_shortcut_code(true, false, false, false, "KeyC", None),
+            "with no Latin letter typed, the physical key must still fire the chord"
+        );
+        assert_eq!(fired.get(), 1);
+
+        // A different physical key, still no Latin letter: must not fire.
+        assert!(!match_shortcut_code(
+            true, false, false, false, "KeyV", None
+        ));
+        assert_eq!(fired.get(), 1);
+    }
+
+    /// Digit and punctuation chords are untouched by #1170: they match the
+    /// physical key alone whatever `typed_letter` says, because
+    /// [`chord_key_matches`] only reads it for a chord whose key
+    /// [`letter_from_code`] answers `Some` for.
+    ///
+    /// Mutant this kills: applying the layout-character branch to every
+    /// chord (dropping the `letter_from_code` guard) would make `"Ctrl+1"`
+    /// match `typed_letter == Some('q')` on `"Digit1"` and refuse to match a
+    /// physical `"Digit1"` press reporting `typed_letter: None` — neither of
+    /// which this test allows.
+    #[test]
+    fn a_digit_chord_matches_the_physical_key_regardless_of_typed_letter() {
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("digit-one", cb, None);
+        registration.register_shortcut("Ctrl+1", "digit-one");
+
+        // No Latin letter at all — the ordinary case for a digit key — still
+        // matches by physical code.
+        assert!(match_shortcut_code(
+            true, false, false, false, "Digit1", None
+        ));
+        assert_eq!(fired.get(), 1);
+
+        // The wrong physical key, even carrying a letter that happens to equal
+        // nothing of this chord's, must not fire.
+        assert!(!match_shortcut_code(
+            true,
+            false,
+            false,
+            false,
+            "Digit2",
+            Some('q')
+        ));
+        assert_eq!(fired.get(), 1);
+    }
+
+    /// [`ShortcutMatching::Physical`] turns the layout-character branch off
+    /// entirely: every chord, letters included, matches physical-only — the
+    /// pre-#1170 rule, and the override's whole point (a user who wants
+    /// shortcut *positions* to stay fixed under a remapped layout).
+    ///
+    /// Mutant this kills: `chord_key_matches` not checking
+    /// `shortcut_matching()` at all (always taking the layout-aware branch)
+    /// would fire on `"KeyA"` below and refuse `"KeyQ"`, the opposite of what
+    /// this test asserts.
+    #[test]
+    fn the_physical_override_matches_every_chord_by_physical_key_only() {
+        let _restore = RestoreMatching;
+        let (fired, cb) = probe();
+        let mut registration = MenuRegistration::default();
+        registration.register_callback("azerty-quit-physical", cb, None);
+        registration.register_shortcut("Ctrl+Q", "azerty-quit-physical");
+
+        set_shortcut_matching(ShortcutMatching::Physical);
+
+        // Under the override, the AZERTY character match from
+        // `a_letter_chord_matches_the_layouts_character_on_an_azerty_keyboard`
+        // must NOT fire: the override cares only about the physical code.
+        assert!(!match_shortcut_code(
+            true,
+            false,
+            false,
+            false,
+            "KeyA",
+            Some('q')
+        ));
+        assert_eq!(fired.get(), 0);
+
+        // The chord's own physical key still fires, whatever character it
+        // types under the override.
+        assert!(match_shortcut_code(
+            true,
+            false,
+            false,
+            false,
+            "KeyQ",
+            Some('a')
+        ));
+        assert_eq!(fired.get(), 1);
+    }
+
+    /// The default is layout-aware — [`ShortcutMatching::default`] and
+    /// [`shortcut_matching`] agree with no override ever having been set.
+    #[test]
+    fn shortcut_matching_defaults_to_layout_aware() {
+        assert_eq!(ShortcutMatching::default(), ShortcutMatching::LayoutAware);
+    }
+
+    // ── Issue #1170, "B": a window-bar item on macOS/Windows skips rinch's
+    //    own chord, leaving it to the OS alone ──────────────────────────────
+
+    /// The pure decision [`build_muda_item`] makes, exhaustively: only a
+    /// window-bar item (`native_bar: true`) on a platform whose OS actually
+    /// resolves the accelerator (`os_has_accelerator: true`) skips
+    /// registering rinch's own chord. A tray item, or a window-bar item on a
+    /// platform with no such integration (Linux), always registers it.
+    ///
+    /// This is the host-independent half of "B" — see
+    /// [`os_matches_native_accelerators`]'s doc for why its own
+    /// `target_os` branch cannot be exercised from this (Linux) host, and the
+    /// PR this pins is open about that: a macOS and a Windows host both need
+    /// a manual check that an item's native accelerator fires its callback
+    /// exactly once, not twice.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn skips_rinch_chord_is_true_only_for_a_native_bar_item_on_an_os_that_owns_the_accelerator() {
+        assert!(skips_rinch_chord(true, true), "native bar + OS owns it");
+        assert!(
+            !skips_rinch_chord(true, false),
+            "native bar, but no OS integration (Linux) — rinch must still match"
+        );
+        assert!(
+            !skips_rinch_chord(false, true),
+            "a tray item is never attached to the window, so the OS never owns it"
+        );
+        assert!(!skips_rinch_chord(false, false));
+    }
 }
 
 #[cfg(all(test, feature = "desktop"))]
@@ -2597,8 +3045,8 @@ mod modifier_spelling_tests {
             let id = format!("r1166-{s}");
             reg.register_callback(&id, cb, None);
             reg.register_shortcut(s, &id);
-            let bare = match_shortcut_code(false, false, false, false, "KeyS");
-            let with_ctrl = match_shortcut_code(true, false, false, false, "KeyS");
+            let bare = match_shortcut_code(false, false, false, false, "KeyS", None);
+            let with_ctrl = match_shortcut_code(true, false, false, false, "KeyS", None);
             drop(reg);
             assert_eq!(with_ctrl, s != "Hyper+S", "{s}: Ctrl+S");
             assert!(

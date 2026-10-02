@@ -90,6 +90,12 @@ pub use event_delegation::{set_suppress_native_context_menu, suppresses_native_c
 /// (`rinch_web::{Menu, MenuItem}`) while its desktop twin builds the very same
 /// values from `rinch::menu`. They are the same types, not a parallel set.
 pub use rinch::menu::{Menu, MenuEntryRef, MenuItem};
+/// How a letter chord's key is matched against a keystroke (issue #1170), and
+/// the setter for it. The desktop twin is `App::shortcut_matching`; on the
+/// web there is no builder to hang it off, so call
+/// `rinch_web::set_shortcut_matching` directly before mounting (it takes
+/// effect on the next keystroke either way — there is nothing to rebuild).
+pub use rinch::menu::{ShortcutMatching, set_shortcut_matching};
 pub use web_document::WebDocument;
 /// Test-only handles on the page scroll lock (#474), so a fixture that fails
 /// between a lock and its unlock cannot leave `<html>` hidden for every test

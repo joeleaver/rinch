@@ -64,14 +64,24 @@ fn purge_stale_hosts() {
 /// exactly as a real keystroke does. Returns whether anything called
 /// `preventDefault`.
 fn press(code: &str) -> bool {
+    // `key: "Unidentified"` is not a single Latin letter, so `web_typed_letter`
+    // answers `None` for it and every chord here falls back to matching
+    // `code` alone (issue #1170) — the physical-key path every fixture in
+    // this file predating #1170 wants, and the one punctuation/digit chords
+    // always take regardless. [`press_with_key`] exercises the
+    // layout-character path for letter chords instead.
+    press_with_key(code, "Unidentified")
+}
+
+/// [`press`], but with an explicit `key` — the browser's layout-resolved
+/// character for the physical key named by `code`. Used to simulate a
+/// non-US layout: `press_with_key("KeyY", "z")` is the QWERTZ key labelled Z.
+fn press_with_key(code: &str, key: &str) -> bool {
     let init = web_sys::KeyboardEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
     init.set_code(code);
-    // The *typed character* is deliberately not the code: `match_shortcut_code`
-    // reads `KeyboardEvent.code`, so a fixture whose `key` disagreed would still
-    // pass — and would stop failing if the listener ever switched to `key`.
-    init.set_key("Unidentified");
+    init.set_key(key);
     init.set_ctrl_key(true);
     init.set_alt_key(true);
     let event =
@@ -446,5 +456,57 @@ fn a_shifted_punctuation_chord_is_spelled_with_its_key() {
         "\"?\" names no key, so nothing is armed and the page keeps the keystroke"
     );
     assert_eq!(fixture.fired.get(), 0);
+    fixture.teardown();
+}
+
+// ── Issue #1170: letter chords match the layout's character ───────────────
+
+/// QWERTZ's Y/Z swap: a `"Ctrl+Alt+Z"` chord fires from the key labelled Z,
+/// which on a German keyboard is physically where a US keyboard has Y
+/// (`code: "KeyY"`, typing `key: "z"`) — not from the US physical position of
+/// Z (`code: "KeyZ"`, which German labels Y and types `"y"`).
+#[wasm_bindgen_test]
+fn a_letter_chord_fires_from_the_layouts_character_on_a_simulated_qwertz_keyboard() {
+    let fixture = Fixture::mount("Ctrl+Alt+Z");
+
+    assert!(
+        press_with_key("KeyY", "z"),
+        "the key labelled Z (physical KeyY, typing 'z') must fire and be claimed"
+    );
+    assert_eq!(fixture.fired.get(), 1);
+
+    assert!(
+        !press_with_key("KeyZ", "y"),
+        "the key labelled Y (physical KeyZ, typing 'y') must not fire Ctrl+Z"
+    );
+    assert_eq!(fixture.fired.get(), 1);
+
+    fixture.teardown();
+}
+
+/// A Cyrillic (or Thai, Armenian, …) layout types no Latin letter at all for
+/// the physical `Ctrl+Alt+C` position. `key` then reports the non-Latin
+/// character the layout produces, which `web_typed_letter` answers `None`
+/// for, falling back to the physical `code` — the only way such a layout can
+/// reach a letter chord at all (the GTK/GNOME/Firefox bug class #1170's recon
+/// found).
+#[wasm_bindgen_test]
+fn a_letter_chord_falls_back_to_the_physical_key_on_a_simulated_cyrillic_layout() {
+    let fixture = Fixture::mount("Ctrl+Alt+C");
+
+    // 'с' (U+0441 CYRILLIC SMALL LETTER ES) is what a Russian layout's "C"
+    // position types; not ASCII, so it falls back to physical-key matching.
+    assert!(
+        press_with_key("KeyC", "с"),
+        "the physical C key must still fire Ctrl+C with no Latin letter typed"
+    );
+    assert_eq!(fixture.fired.get(), 1);
+
+    assert!(
+        !press_with_key("KeyV", "м"),
+        "a different physical key, still with no Latin letter, must not fire"
+    );
+    assert_eq!(fixture.fired.get(), 1);
+
     fixture.teardown();
 }
