@@ -1127,6 +1127,87 @@ mod tests {
         );
     }
 
+    /// #535: `check_children`'s bounds test is per axis. A container holding
+    /// `overflow-x: clip; overflow-y: visible` must still let a click reach an
+    /// overflowing child **below** it (the open axis), while a click to its
+    /// **right** (the clipping axis) still falls through to the body — paint
+    /// and hit testing have to agree on both halves of that, not just the one
+    /// #536 already covers (clipping on both axes at once).
+    ///
+    /// The mutant this kills: reverting `check_children` to the pre-#535 `!
+    /// node.clips_overflow() || <border-box-both-axes test>` shape makes the
+    /// vertical probe miss (it tests `y` against the container's own height
+    /// even though `overflow-y: visible` says not to) and return the body
+    /// instead of the child.
+    #[test]
+    fn a_click_past_an_open_axis_still_reaches_overflowing_content_but_the_clipped_axis_does_not() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; overflow-x: clip; overflow-y: visible",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", "width: 200px; height: 200px");
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        // (50, 150): inside the container's columns, below its rows — the
+        // open (y) axis's overhang. `overflow-y: visible` says this is
+        // reachable, as CSS paints it.
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 150.0),
+            Some(child.0),
+            "overflow-y: visible lets a click reach the vertical overhang"
+        );
+        // (150, 50): right of the container's columns — the clipping (x)
+        // axis's overhang. `overflow-x: clip` still cuts this, whatever y
+        // says, so the click falls through to the body.
+        assert_eq!(
+            hit_test(&doc.tree, 150.0, 50.0),
+            Some(body.0),
+            "overflow-x: clip still cuts the horizontal overhang"
+        );
+        // Sanity: inside the container's own box either way.
+        assert_eq!(hit_test(&doc.tree, 50.0, 50.0), Some(child.0));
+    }
+
+    /// [`a_click_past_an_open_axis_still_reaches_overflowing_content_but_the_clipped_axis_does_not`],
+    /// mirrored: `overflow-y: clip; overflow-x: visible` reaches its
+    /// *horizontal* overhang and still cuts its vertical one. Pins that the
+    /// per-axis fix is symmetric and not an `x`-only special case.
+    #[test]
+    fn a_click_past_an_open_x_axis_still_reaches_overflowing_content_but_clipped_y_does_not() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; overflow-y: clip; overflow-x: visible",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", "width: 200px; height: 200px");
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 150.0, 50.0),
+            Some(child.0),
+            "overflow-x: visible lets a click reach the horizontal overhang"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 150.0),
+            Some(body.0),
+            "overflow-y: clip still cuts the vertical overhang"
+        );
+        assert_eq!(hit_test(&doc.tree, 50.0, 50.0), Some(child.0));
+    }
+
     /// Regression (found while fixing #61): an inline-block button laid out in a
     /// text flow (an IFC) inside a padded block container must be hit-testable
     /// across its whole *painted* box. Two pre-existing bugs conspired to swallow
