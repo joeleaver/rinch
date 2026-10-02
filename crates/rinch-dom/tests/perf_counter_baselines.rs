@@ -271,6 +271,11 @@ fn every_rinch_dom_counter_fires_somewhere() {
     let input = doc.create_element("input");
     doc.set_attribute(input, "value", "typed");
     doc.append_child(body, input);
+    // A submit button (#1195, review of #1302): exercises
+    // `shape_form_control_label`'s `cached_label_width`.
+    let submit = doc.create_element("input");
+    doc.set_attribute(submit, "type", "submit");
+    doc.append_child(body, submit);
     // An auto-width select (sized from its option label, #1098).
     let select = doc.create_element("select");
     let option = doc.create_element("option");
@@ -370,6 +375,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         ShapePaint,
         ShapeSelectLabel,
         ShapeFormControlMetrics,
+        ShapeFormControlLabel,
         IfcMeasureCacheHits,
         IfcMeasureInvalidations,
         IfcSignatureChanges,
