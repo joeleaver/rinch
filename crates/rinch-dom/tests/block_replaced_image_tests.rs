@@ -113,7 +113,11 @@ fn a_clamped_style_size_transfers_its_clamped_value() {
         "display: block; width: 100%; max-width: 100px; min-height: 90px",
         (0.0, 100.0, 90.0),
     );
-    check(column, "display: block; max-width: 100px", (0.0, 100.0, 75.0));
+    check(
+        column,
+        "display: block; max-width: 100px",
+        (0.0, 100.0, 75.0),
+    );
     check(flex, "display: block; max-height: 45px", (0.0, 60.0, 45.0));
 }
 
