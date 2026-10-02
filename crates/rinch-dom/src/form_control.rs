@@ -212,8 +212,10 @@ pub(crate) fn measure(
 /// [`NodeContext::FormControl`] (or no context) instead of `InlineRoot`, so it
 /// is measured exactly as a childless control is, and `build_ifc_layouts`
 /// shapes no text for it, so nothing lays its children out or paints them.
-/// `paint_input_value` draws the value. Only inline children reach that: a
-/// block-level element child is still laid out as content (#1178).
+/// `paint_input_value` draws the value. An **element** child of either is
+/// `display: none !important` by the UA sheet and the control is a hollow root
+/// whatever its children are, so a block, atomic-inline or out-of-flow child
+/// is not laid out or painted either (#1178).
 pub fn is_value_control(node: &Node) -> bool {
     matches!(node.tag(), Some("input" | "textarea"))
 }

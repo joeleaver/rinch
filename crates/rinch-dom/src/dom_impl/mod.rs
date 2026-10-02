@@ -491,6 +491,26 @@ impl RinchDocument {
                 display: none;
             }
 
+            /* A browser renders no child of a text control or of a replaced
+               element (#1178, #1288). A `<textarea>`'s text children are its
+               default value (`form_control::control_value`) and an `<input>`
+               is void, so only the DOM can put an element in one; a canvas's
+               children are fallback content, a video's `<source>`/`<track>`,
+               an iframe's ignored. Text and non-atomic inline children leave
+               the element hollow (#1159, #1173); an **element** child gets no
+               box at all here, so a block, atomic-inline or out-of-flow child
+               is neither laid out (where it replaced the element's measure:
+               a Taffy node with children never calls one) nor painted nor hit.
+               `!important` so an author `display` cannot bring it back.
+               Chrome still lets canvas fallback content take focus by Tab;
+               rinch does not (#1294). Spelled as a plain selector list, not
+               `:is(...)`, which cost ~1.2k instructions per element cascade.
+               Chrome reports such a child's computed `display` as `block`
+               (it has no box either way); rinch reports `none`. */
+            textarea > *, input > *, canvas > *, video > *, iframe > * {
+                display: none !important;
+            }
+
             select {
                 padding: 0;
                 border: 1px solid rgb(118, 118, 118);

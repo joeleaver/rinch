@@ -484,7 +484,9 @@ rsx! {
 ```
 
 It sizes the field no more than a value does. An `<input>`'s
-children are not shown at all. A control with no `width` is as wide as its
+children are not shown at all, and neither is an **element** child of a
+`<textarea>` — a `div` built into one through rsx or `append_child` has no
+box, draws nothing and does not size the field (#1178), as in a browser. A control with no `width` is as wide as its
 `cols` (a textarea, default 20) or `size` (a text `<input>`, default 20)
 average characters of its font, as in a browser, and a textarea reserves a
 scrollbar's width beside them (#1177). A

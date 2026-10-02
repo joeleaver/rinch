@@ -2828,10 +2828,13 @@ and `progress`, which the UA sheet leaves `display: inline`, so their **default*
 rendering changed too: an atomic box. `canvas`, `video` and `iframe` take Chrome's
 **300x150** default object size (a canvas's own `width`/`height` attributes, with
 their aspect ratio), are not stretched by a block container (Taffy's
-`item_is_replaced`), and lay out no fallback content made only of text and inlines
-(`replaced.rs`, #1173 — a block or atomic-inline child is still laid out, painted
-and sizes the element, #1288;
-a grid item is still stretched, #1280); `meter` and `progress` still have no default
+`item_is_replaced`), and lay out no fallback content (`replaced.rs`, #1173; a grid item is still
+stretched, #1280). Their element children — and an `<input>`'s or `<textarea>`'s —
+are `display: none !important` by the UA sheet, and the element is always a hollow
+IFC root, so no child is laid out, painted or hit and none takes the element's
+measure away (#1178, #1288); its own `flex`/`grid` is laid out as block
+(`replaced::ignores_inner_display`). Chrome lets canvas fallback content take Tab
+focus; rinch does not (#1294); `meter` and `progress` still have no default
 size and lay out their fallback content. The predicate says so, not `clip_shape`, so the
 bracket, the chain, hit testing's gate and the dirty-region prune all agree. The
 rinch-specific reason it had to be said: a *flowed* inline element owns no box
@@ -5034,8 +5037,8 @@ Make changes, rebuild, launch again. The full cycle:
   that leaves it set — on the web `.value = ""`, on desktop
   `Node::value_dirty`, the one dirty state the attribute cannot carry, so
   `control_value` answers `""` with no attribute. Nothing clears it again; a
-  browser's form reset does, and desktop models none. An `<input>`'s children are not drawn. A block-level element
-  child is still laid out as content (#1178). **Its width comes from `size`
+  browser's form reset does, and desktop models none. An `<input>`'s children are not drawn, and an element child of either
+  control has no box at all (UA `display: none !important`, #1178). **Its width comes from `size`
   / `cols`** (#1177), as in Chrome 153 at a device scale factor of 1 (Chrome
   computes in device px, so at 1.5 it can differ by several px): the primary
   font — the face the stack resolves a Latin `x` to, never a lone digit, which
