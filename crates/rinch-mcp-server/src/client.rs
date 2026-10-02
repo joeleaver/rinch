@@ -91,6 +91,34 @@ pub enum DebugCommandKind {
         #[serde(default)]
         modifiers: Vec<String>,
     },
+    /// Press without releasing (issue #485's `key_down`/`key_up` pair).
+    /// Mirrored from rinch-debug in lockstep.
+    #[serde(rename = "key_down")]
+    KeyDown {
+        key: String,
+        #[serde(default)]
+        shift: bool,
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        alt: bool,
+        #[serde(default)]
+        modifiers: Vec<String>,
+    },
+    /// Release a key held with `key_down` (issue #485). Mirrored from
+    /// rinch-debug in lockstep.
+    #[serde(rename = "key_up")]
+    KeyUp {
+        key: String,
+        #[serde(default)]
+        shift: bool,
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        alt: bool,
+        #[serde(default)]
+        modifiers: Vec<String>,
+    },
     #[serde(rename = "get_caret_position")]
     GetCaretPosition { node_id: usize, byte_offset: usize },
     #[serde(rename = "get_glyph_bounds")]
