@@ -111,6 +111,104 @@ fn keyname_to_keycode(key: &str) -> Option<KeyCode> {
     })
 }
 
+/// The W3C `KeyboardEvent.code` name for a debug `key_press` key name — the
+/// same string [`crate::menu::match_shortcut_code`] (and the winit shell's own
+/// `KeyboardInput` translation) key menu-chord matching off of.
+///
+/// Issue #533: `key_press` used to build a `PlatformEvent::KeyDown` directly
+/// and hand it to `handle_event`, entering the pipeline *downstream* of the
+/// menu-shortcut check the real winit `WindowEvent::KeyboardInput` arm makes
+/// first — so an injected `Ctrl+D` never reached a registered "Ctrl+D" menu
+/// item, whether or not the app's real shortcut worked. Mirrors
+/// [`keyname_to_keycode`]'s table exactly (named keys verbatim, a single
+/// character through [`char_to_w3c_code`]) so the two stay in lockstep; a
+/// punctuation character has no entry here either, since `char_to_keycode`
+/// never gave it a dedicated `KeyCode` and a debug `key_press` could not
+/// reach a punctuation-bound chord before this change and still cannot.
+fn keyname_to_w3c_code(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "ArrowLeft" => "ArrowLeft",
+        "ArrowRight" => "ArrowRight",
+        "ArrowUp" => "ArrowUp",
+        "ArrowDown" => "ArrowDown",
+        "Home" => "Home",
+        "End" => "End",
+        "PageUp" => "PageUp",
+        "PageDown" => "PageDown",
+        "Enter" => "Enter",
+        "Backspace" => "Backspace",
+        "Delete" => "Delete",
+        "Tab" => "Tab",
+        "Escape" => "Escape",
+        "Space" => "Space",
+        "F12" => "F12",
+        k if k.chars().count() == 1 => char_to_w3c_code(k.chars().next().unwrap())?,
+        _ => return None,
+    })
+}
+
+/// The W3C `code` name for a single character, mirroring [`char_to_keycode`]'s
+/// table one-for-one (and returning `None` exactly where that one falls back
+/// to `KeyCode::Other`).
+fn char_to_w3c_code(c: char) -> Option<&'static str> {
+    Some(match c.to_ascii_lowercase() {
+        ' ' => "Space",
+        'a' => "KeyA",
+        'b' => "KeyB",
+        'c' => "KeyC",
+        'd' => "KeyD",
+        'e' => "KeyE",
+        'f' => "KeyF",
+        'g' => "KeyG",
+        'h' => "KeyH",
+        'i' => "KeyI",
+        'j' => "KeyJ",
+        'k' => "KeyK",
+        'l' => "KeyL",
+        'm' => "KeyM",
+        'n' => "KeyN",
+        'o' => "KeyO",
+        'p' => "KeyP",
+        'q' => "KeyQ",
+        'r' => "KeyR",
+        's' => "KeyS",
+        't' => "KeyT",
+        'u' => "KeyU",
+        'v' => "KeyV",
+        'w' => "KeyW",
+        'x' => "KeyX",
+        'y' => "KeyY",
+        'z' => "KeyZ",
+        '0' => "Digit0",
+        '1' => "Digit1",
+        '2' => "Digit2",
+        '3' => "Digit3",
+        '4' => "Digit4",
+        '5' => "Digit5",
+        '6' => "Digit6",
+        '7' => "Digit7",
+        '8' => "Digit8",
+        '9' => "Digit9",
+        _ => return None,
+    })
+}
+
+/// The single lowercase ASCII letter a debug `key_press`'s `key` name spells,
+/// or `None` for anything else — the debug equivalent of winit's
+/// `key_without_modifiers` / a browser's lowercased `event.key()` that
+/// [`crate::menu::chord_key_matches`] reads for issue #1170's layout-character
+/// matching. MCP has no layout to consult, so (as `logical_key` below already
+/// assumes) the key name IS the character: `key_press(key: "D", shift: true)`
+/// types the same letter a QWERTY `Shift+D` does.
+fn keyname_typed_letter(key: &str) -> Option<char> {
+    let mut chars = key.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    c.is_ascii_alphabetic().then(|| c.to_ascii_lowercase())
+}
+
 #[cfg(feature = "debug")]
 impl RinchApp {
     // ── Debug commands ───────────────────────────────────────────────────
@@ -525,6 +623,42 @@ impl RinchApp {
                         message: format!("Unknown key name: {key:?}"),
                     };
                 };
+                // Check menu shortcuts first — exactly as the real winit
+                // `WindowEvent::KeyboardInput` arm does in `rinch_runtime.rs`
+                // — so a debug-injected chord that a menu owns is consumed
+                // here rather than falling through to `PlatformEvent::KeyDown`
+                // (issue #533). `text_target_holds_keyboard` lets a
+                // modifier-less chord yield to a focused text field (#1169),
+                // same as a real keystroke; it is desktop-only machinery, and
+                // every real `debug` build pairs with `desktop` (`debug` alone
+                // compiles this module only under `desktop`/`android`/`embed`
+                // via `lib.rs`'s `pub mod app` gate), so the fallback below is
+                // dead code in practice and exists only so a hypothetical
+                // `android`/`embed`-without-`desktop` debug build still
+                // compiles — with shortcuts simply never yielding to text
+                // focus there.
+                #[cfg(feature = "desktop")]
+                let text_focus = self.text_target_holds_keyboard();
+                #[cfg(not(feature = "desktop"))]
+                let text_focus = false;
+                if let Some(code) = keyname_to_w3c_code(&key) {
+                    let yields = text_focus
+                        && crate::menu::chord_yields_to_text_input(ctrl, meta, alt, code);
+                    if !yields {
+                        let typed_letter = keyname_typed_letter(&key);
+                        if crate::menu::match_shortcut_code(
+                            ctrl,
+                            meta,
+                            alt,
+                            shift,
+                            code,
+                            typed_letter,
+                        ) {
+                            actions.push(AppAction::RequestRedraw);
+                            return DebugResult::Json { data: json!(null) };
+                        }
+                    }
+                }
                 let text = match key.as_str() {
                     "Enter" => Some("\n".to_string()),
                     k if k.chars().count() == 1 => Some(k.to_string()),
@@ -1749,5 +1883,153 @@ mod text_geometry_units_tests {
         assert_eq!(glyph(&mut app, p, 6, 1.0), glyph(&mut app, p, 6, 2.0));
         let (x, y) = caret(&mut app, p, 0, 1.0);
         assert!(close(x, 40.0) && close(y, 300.0), "got ({x}, {y})");
+    }
+}
+
+#[cfg(test)]
+mod key_press_menu_shortcut_533_tests {
+    //! Issue #533: the real winit `WindowEvent::KeyboardInput` arm in
+    //! `shell/rinch_runtime.rs` checks menu shortcuts *before* ever building a
+    //! `PlatformEvent::KeyDown`, but the debug `KeyPress` command used to build
+    //! one directly and hand it to `handle_event`, entering the pipeline
+    //! downstream of that check. A debug-injected `key_press` for a registered
+    //! menu chord therefore never ran the menu's callback, whether or not the
+    //! app's real shortcut worked (the issue's own repro:
+    //! `key_press(key: "d", ctrl: true)` for a "Ctrl+D" menu item did nothing
+    //! through MCP while the same item fired correctly when clicked).
+    //!
+    //! `crate::menu::register_menu_shortcuts` is the platform-independent entry
+    //! point rinch-web's own keydown listener drives through
+    //! `match_shortcut_code` — no muda/winit/window needed — so these fixtures
+    //! exercise `execute_debug_command` directly with no live app or mount.
+
+    use super::*;
+    use crate::menu::{Menu, MenuItem, register_menu_shortcuts};
+    use std::cell::Cell;
+
+    fn counting_menu(shortcut: &str) -> (Rc<Cell<u32>>, crate::menu::MenuBarChords) {
+        let fired = Rc::new(Cell::new(0));
+        let fired_cb = fired.clone();
+        let menu = Menu::new().item(
+            MenuItem::new("Probe")
+                .shortcut(shortcut)
+                .on_click(move || fired_cb.set(fired_cb.get() + 1)),
+        );
+        let chords = register_menu_shortcuts(&[("Test", &menu)]);
+        (fired, chords)
+    }
+
+    fn key_press(app: &mut RinchApp, key: &str, shift: bool, ctrl: bool, alt: bool) -> DebugResult {
+        let mut actions = Vec::new();
+        app.execute_debug_command(
+            DebugCommandKind::KeyPress {
+                key: key.to_string(),
+                shift,
+                ctrl,
+                alt,
+                modifiers: Vec::new(),
+            },
+            &mut actions,
+            1.0,
+            (800, 600),
+        )
+    }
+
+    /// The bug itself, at the `execute_debug_command` level: a debug
+    /// `key_press` for a letter chord must fire the menu callback, not just
+    /// synthesize a `PlatformEvent::KeyDown` nothing is listening for.
+    ///
+    /// Kills reverting the `KeyPress` arm to its pre-#533 shape (straight to
+    /// `handle_event`, no `match_shortcut_code` call): `fired` stays `0`.
+    #[test]
+    fn a_debug_key_press_fires_a_registered_letter_chord() {
+        let (fired, _chords) = counting_menu("Ctrl+D");
+        let mut app = RinchApp::new(|scope| scope.create_element("div"));
+        key_press(&mut app, "d", false, true, false);
+        assert_eq!(fired.get(), 1, "Ctrl+D must fire the menu callback once");
+    }
+
+    /// The issue's second repro: a non-letter chord (`Alt+ArrowRight`) must
+    /// also route through the matcher — pinned separately from the letter case
+    /// because #1170's layout-character branch only applies to `"Key*"` codes,
+    /// so this exercises `keyname_to_w3c_code`'s named-key arm instead of its
+    /// single-character one.
+    #[test]
+    fn a_debug_key_press_fires_a_registered_named_key_chord() {
+        let (fired, _chords) = counting_menu("Alt+ArrowRight");
+        let mut app = RinchApp::new(|scope| scope.create_element("div"));
+        key_press(&mut app, "ArrowRight", false, false, true);
+        assert_eq!(
+            fired.get(),
+            1,
+            "Alt+ArrowRight must fire the menu callback once"
+        );
+    }
+
+    /// A debug `key_press` with no matching chord still falls through to a
+    /// plain keystroke dispatch (unchanged behaviour) — not a universal
+    /// "shortcuts always win" regression. Fixed-point guard: without this, a
+    /// mutant that made `match_shortcut_code` (or the new `KeyPress` wiring)
+    /// unconditionally consume every press would pass the two tests above but
+    /// break ordinary typing.
+    #[test]
+    fn a_debug_key_press_with_no_matching_chord_still_dispatches_a_keydown() {
+        let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let clicks_in = clicks.clone();
+        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let div = scope.create_element("div");
+            div.set_attribute("style", "width: 200px; height: 40px");
+            div.set_attribute("tabindex", "0");
+            let rid = scope.register_handler({
+                let clicks = clicks_in.clone();
+                move || clicks.set(clicks.get() + 1)
+            });
+            div.set_attribute("data-rid", &rid.0.to_string());
+            id_in.set(div.node_id().0);
+            root.append_child(&div);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app.set_focus_target(FocusTarget::Node(id.get()));
+
+        key_press(&mut app, "Enter", false, false, false);
+        assert_eq!(
+            clicks.get(),
+            1,
+            "an unclaimed Enter must still activate the focused node"
+        );
+    }
+
+    /// Issue #1169: a modifier-less chord yields to a focused text field, on
+    /// the debug path exactly as it does on a real keystroke — a `key_press`
+    /// of a bare letter chord with a text input focused must type the letter,
+    /// not fire the menu.
+    #[test]
+    fn a_debug_key_press_yields_a_bare_chord_to_a_focused_text_input() {
+        let (fired, _chords) = counting_menu("N");
+        let id: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let input = scope.create_element("input");
+            input.set_attribute("value", "");
+            id_in.set(input.node_id().0);
+            root.append_child(&input);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app.set_focus_target(FocusTarget::Input(id.get()));
+
+        key_press(&mut app, "n", false, false, false);
+        assert_eq!(
+            fired.get(),
+            0,
+            "a bare N must be the focused input's to type, not the menu's"
+        );
     }
 }
