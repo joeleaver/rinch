@@ -429,12 +429,15 @@ fn text_after_a_hidden_inline_sibling_is_still_painted() {
         None,
         "the hidden span is detached, not marked — it is not this IFC's content"
     );
-    // Note: `hidden_text` may carry a mark from the hidden span's *own* IFC —
-    // the decision loop filters Inline/InlineBlock/Flex/Contents root
-    // candidates but not `display: none`, a pre-existing (and unpainted)
-    // oddity this PR leaves alone. What matters here is that the *container's*
-    // IFC claims nothing under the hidden subtree.
-    assert_ne!(ifc_root_of(&doc, hidden_text), Some(container.0));
+    // The decision loop now skips `display: none` the same way it skips
+    // `display: contents` (#509), so the hidden span is never an IFC root
+    // over its own text either — `hidden_text` carries no mark at all, not
+    // merely one that belongs to a different (unpainted) IFC.
+    assert_eq!(
+        ifc_root_of(&doc, hidden_text),
+        None,
+        "a display:none element establishes no IFC over its own subtree (#509)"
+    );
     assert!(!flowed_by(&doc, container.0, hidden.0));
     assert!(!flowed_by(&doc, container.0, hidden_text.0));
     assert_marks_match_flow(&doc);

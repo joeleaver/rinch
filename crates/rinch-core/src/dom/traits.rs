@@ -357,6 +357,14 @@ pub trait DomDocument {
     }
 
     /// Set a CSS style property on an element.
+    ///
+    /// CSSOM's `setProperty`: afterwards the element's inline style gives
+    /// `property` this value however the attribute declared it before. A
+    /// backend that keeps the attribute as a string of declarations must not
+    /// leave the write in front of a later declaration that covers it — a
+    /// shorthand, or a logical twin — or that later declaration wins the
+    /// cascade and the attribute names a value the element is not laid out
+    /// with (#470).
     fn set_style(&mut self, node: NodeId, property: &str, value: &str);
 
     /// Set multiple CSS style properties on an element in a single operation.

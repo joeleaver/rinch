@@ -187,17 +187,57 @@ Modifiers come first and the key last, and a shortcut has exactly one key: `"Ctr
 - `/`, `Slash` · `,`, `Comma` · `.`, `Period` · `;`, `Semicolon` · `'`, `Quote`
 - `[`, `BracketLeft` · `]`, `BracketRight` · `\`, `Backslash` · `` ` ``, `Backquote`
 
-**A shortcut names a key, not the character it types.** Chords are matched by
-the physical key and the modifiers held — the desktop by winit's `KeyCode`, the
-browser by `KeyboardEvent.code` — so a character that needs Shift is spelled as
-its key plus `Shift`: `"Ctrl+Shift+/"`, not `"Ctrl+?"`. (Chrome 153 reports that
-keystroke as `key: "?"`, `code: "Slash"`, `shiftKey: true`; `code` is what
-rinch reads.) The same holds for `Plus`, which is the `=` key *without* Shift.
-Punctuation is named by where it sits on a US layout, and so are letters: on
-another layout the chord follows the key, not the printed character.
-On macOS and Windows the native menu also installs the accelerator, and the OS
-matches it by character (macOS) or virtual key (Windows), so on a non-US layout
-the native accelerator and rinch's chord can sit on different keys.
+**A shortcut names a key, not the character it types.** A character that needs
+Shift is spelled as its key plus `Shift`: `"Ctrl+Shift+/"`, not `"Ctrl+?"`.
+(Chrome 153 reports that keystroke as `key: "?"`, `code: "Slash"`,
+`shiftKey: true`.) The same holds for `Plus`, which is the `=` key *without*
+Shift. Punctuation and digit chords are always matched by the physical key and
+the modifiers held — the desktop by winit's `KeyCode`, the browser by
+`KeyboardEvent.code` — named by where it sits on a US layout; on another
+layout such a chord follows the key position, not the printed character.
+
+**A letter chord follows the character, not the physical position (issue
+#1170).** `"Ctrl+Z"` fires from whichever key is *labelled* Z, wherever the
+active keyboard layout put it — QWERTZ's Y/Z swap, AZERTY's A/Q swap — not
+necessarily from the US physical `KeyZ` position. Desktop reads this from
+winit's `key_without_modifiers` (ignoring Shift and Caps Lock); the browser
+reads `KeyboardEvent.key`, lowercased. When the active layout types no Latin
+letter at all for the pressed key — Cyrillic, Thai, Armenian, … — the chord
+falls back to the physical key instead, which is the only way such a layout
+can reach `Ctrl+C`/`Ctrl+V` at all (the same fix GNOME/GTK have discussed for
+their own non-Latin-layout bug). Digit and punctuation chords are never
+affected by any of this.
+
+An app (or a user) who wants shortcut *positions* to stay fixed regardless of
+the active layout can turn the character matching off:
+`App::shortcut_matching(ShortcutMatching::Physical)` on desktop, or
+`rinch_web::set_shortcut_matching(ShortcutMatching::Physical)` before mounting
+on the web — the same escape hatch VS Code's `keyboard.dispatch` setting and
+JetBrains' "use national layout for shortcuts" toggle offer. It affects only
+rinch's own chord matching; see the note on macOS/Windows below.
+
+**On macOS and Windows, a window menu bar's item stops going through rinch's
+own chord matching once its native accelerator has actually attached to the
+window** — the OS then resolves and matches the accelerator muda installs
+for it (`NSMenu` on macOS, an accelerator table on Windows) ahead of rinch
+ever seeing the key, so matching it a second time would risk firing the
+callback twice. That "actually attached" is a recorded fact, not a guess
+from which platform the build targets: a window whose handle was not a
+Win32 one, whose accelerator table failed to install, or that never attaches
+a native bar at all (a borderless window using the DOM bar instead) keeps
+matching through rinch's own registry, so its shortcuts are never silently
+unreachable. `ShortcutMatching::Physical` has no effect on an item once its
+accelerator has attached: the OS, not rinch, decides what counts as "the Z
+key" there, following its own per-layout accelerator resolution (character-
+based on both platforms, like rinch's default). Linux has no such OS-level
+menu-accelerator integration and never attaches one, so its native bar,
+every system-tray item, and the DOM menu bar (the browser, and Linux's own
+in-app bar) all go through rinch's chord matching — and the override —
+exactly as described above. See issue #1284 for a related, unmeasured gap: a
+*modifier-less* chord (`chord_yields_to_text_input` above) may still be
+taken by a macOS/Windows native accelerator from a focused text field,
+because that check runs inside rinch's own matching, which an attached item
+skips.
 
 A shortcut string that names no key (`"Ctrl+?"`, a typo) registers no chord and
 logs one `tracing` warning per distinct string. The DOM menu bar (Linux, the

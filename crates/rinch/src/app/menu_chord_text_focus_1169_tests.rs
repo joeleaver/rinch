@@ -125,6 +125,14 @@ fn bare() -> Modifiers {
     Modifiers::default()
 }
 
+/// A `key_without_modifiers` that types no Latin letter at all, so
+/// `try_menu_shortcut` falls back to physical-key matching (issue #1170) —
+/// what every chord here matched on before #1170, and all this suite's keys
+/// (`/`, Backspace, arrows, F5, Escape) still do regardless.
+fn no_latin_letter() -> winit::keyboard::Key {
+    winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified)
+}
+
 /// The key the shell hands the app for winit's `key` once no chord ran
 /// (`RinchRuntime::translate_key`): punctuation has no variant of its own.
 fn platform_key(key: W) -> KeyCode {
@@ -142,7 +150,7 @@ fn platform_key(key: W) -> KeyCode {
 /// What the shell does with one press: the chord first, and the key to the app
 /// only if no chord ran. Answers whether the chord ran.
 fn shell_key(app: &mut RinchApp, mods: Modifiers, key: W, text: Option<&str>) -> bool {
-    if app.try_menu_shortcut(mods, key) {
+    if app.try_menu_shortcut(mods, key, &no_latin_letter()) {
         return true;
     }
     let key = platform_key(key);
@@ -280,16 +288,16 @@ fn an_editor_and_a_registered_text_target_keep_a_bare_key() {
     let (_chords, fired) = arm(&["/"]);
 
     app.set_focus_target(FocusTarget::Editor(ids.other));
-    assert!(!app.try_menu_shortcut(bare(), W::Slash));
+    assert!(!app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
 
     // A generic focusable node is not a text target…
     app.set_focus_target(FocusTarget::Node(ids.other));
-    assert!(app.try_menu_shortcut(bare(), W::Slash));
+    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
     assert_eq!(fired[0].get(), 1);
 
     // …but one registered for composition is (#176).
     app.set_focus_target(FocusTarget::Node(ids.ime));
-    assert!(!app.try_menu_shortcut(bare(), W::Slash));
+    assert!(!app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
     assert_eq!(fired[0].get(), 1);
 }
 
@@ -301,10 +309,10 @@ fn a_surface_or_an_open_select_does_not_take_a_bare_key() {
     let (mut app, ids) = page();
     let (_chords, fired) = arm(&["/"]);
     app.focus_target = FocusTarget::Surface(1);
-    assert!(app.try_menu_shortcut(bare(), W::Slash));
+    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
     app.focus_target = FocusTarget::Select(ids.other);
-    assert!(app.try_menu_shortcut(bare(), W::Slash));
+    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
     app.focus_target = FocusTarget::None;
-    assert!(app.try_menu_shortcut(bare(), W::Slash));
+    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
     assert_eq!(fired[0].get(), 3);
 }

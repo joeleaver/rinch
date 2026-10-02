@@ -125,6 +125,21 @@ fn key_target_is_text_field(event: &web_sys::KeyboardEvent) -> bool {
         .is_some_and(|el| el.is_content_editable())
 }
 
+/// The single ASCII letter `key` (a `KeyboardEvent.key`) spells, lowercased —
+/// or `None` for anything else: a non-letter key, a multi-character name
+/// (`"Enter"`, `"ArrowLeft"`), or a non-Latin character (Cyrillic, Thai, …).
+/// Feeds `match_shortcut_code`'s layout-character branch (#1170); `None` is
+/// exactly "this layout types no Latin letter for the pressed key", which is
+/// what falls back to physical-key matching there.
+fn web_typed_letter(key: &str) -> Option<char> {
+    let mut chars = key.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    c.is_ascii_alphabetic().then(|| c.to_ascii_lowercase())
+}
+
 fn install_shortcut_dispatch() {
     if SHORTCUTS_INSTALLED.with(|f| f.replace(true)) {
         return;
@@ -138,8 +153,11 @@ fn install_shortcut_dispatch() {
         |event: web_sys::KeyboardEvent| {
             // `code` is the physical key's W3C name — "KeyK", "Digit0", "F5" — which
             // is exactly what a shortcut string parses into, so no translation.
-            // `key` would be wrong here: it carries the *typed character*, so
-            // Ctrl+Shift+K reports "K" on one layout and something else on another.
+            // It is still the only thing a *digit or punctuation* chord
+            // matches against (unaffected by #1170 below): `key` for those
+            // carries the shifted character, so Ctrl+Shift+K reports "K" on
+            // every layout and tells punctuation nothing about which key was
+            // pressed.
             let code = event.code();
             if code.is_empty() {
                 return;
@@ -158,12 +176,23 @@ fn install_shortcut_dispatch() {
             {
                 return;
             }
+            // `key` *is* what a letter chord matches against (issue #1170):
+            // lowercased, it is the layout's character for the pressed key —
+            // "z" from the key labelled Z wherever the layout put it — so
+            // `rinch::menu::match_shortcut_code` tries it first and falls back
+            // to `code` only when it names no single Latin letter (a digit, a
+            // punctuation mark, or a non-Latin character on a Cyrillic/Thai/…
+            // layout). Shift does not change it: the browser's `key` for a
+            // letter under Ctrl is already unshifted on every tested layout,
+            // and lowercasing covers Caps Lock.
+            let typed_letter = web_typed_letter(&event.key());
             if rinch::menu::match_shortcut_code(
                 event.ctrl_key(),
                 event.meta_key(),
                 event.alt_key(),
                 event.shift_key(),
                 &code,
+                typed_letter,
             ) {
                 event.prevent_default();
                 // The app must not *also* act on a key the menu consumed — the
