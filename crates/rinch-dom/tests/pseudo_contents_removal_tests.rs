@@ -154,7 +154,10 @@ fn replacing_a_display_contents_before_rule_self_heals_via_the_next_structural_p
     doc.set_attribute(w, "class", "w two");
     doc.resolve_layout(VW, VH);
 
-    assert!(has_pseudo_child(&doc, w), "sanity: the new pseudo generated");
+    assert!(
+        has_pseudo_child(&doc, w),
+        "sanity: the new pseudo generated"
+    );
     assert_eq!(
         taffy_child_count(&doc, w),
         1,
