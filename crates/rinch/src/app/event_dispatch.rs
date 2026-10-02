@@ -1477,18 +1477,22 @@ impl RinchApp {
                         }
                     }
                     FocusTarget::Surface(surface_id) => {
+                        let surface_key_data = crate::render_surface::SurfaceKeyData {
+                            key: key_str.clone().unwrap_or_default(),
+                            code: format!("{:?}", key),
+                            ctrl,
+                            shift,
+                            alt,
+                            meta: modifiers.meta,
+                        };
                         // Forward KeyDown + text input to the focused surface.
+                        // Always delivered, whatever the key turns out to be
+                        // claimed by below — `set_event_handler` is the input
+                        // path and issue #482's fix below does not touch it.
                         crate::render_surface::dispatch_surface_event(
                             surface_id,
                             crate::render_surface::SurfaceEvent::KeyDown(
-                                crate::render_surface::SurfaceKeyData {
-                                    key: key_str.clone().unwrap_or_default(),
-                                    code: format!("{:?}", key),
-                                    ctrl,
-                                    shift,
-                                    alt,
-                                    meta: modifiers.meta,
-                                },
+                                surface_key_data.clone(),
                             ),
                         );
                         if let Some(ref t) = text {
@@ -1499,7 +1503,36 @@ impl RinchApp {
                                 );
                             }
                         }
-                        actions.push(AppAction::RequestRedraw);
+                        // Issue #482: a focused surface used to swallow every
+                        // key unconditionally, deafening a host's own
+                        // window-level keybindings (undo, delete, …) and
+                        // rinch's own DevTools/inspect/Tab handling the moment
+                        // a user clicked the canvas — whether or not the
+                        // surface did anything with the key. Now it stops
+                        // here only for a key the surface's own
+                        // `set_key_handler` claims (default: none); anything
+                        // else falls through to exactly the global fallback an
+                        // unfocused canvas already gets.
+                        if crate::render_surface::dispatch_surface_key_event(
+                            surface_id,
+                            &surface_key_data,
+                        ) {
+                            actions.push(AppAction::RequestRedraw);
+                        } else if self.handle_unclaimed_key_fallback(
+                            key,
+                            key_str.as_ref(),
+                            text.as_ref(),
+                            shift,
+                            ctrl,
+                            alt,
+                            modifiers.meta,
+                            repeat,
+                            vp_w,
+                            vp_h,
+                            &mut actions,
+                        ) {
+                            return actions;
+                        }
                     }
                     // A native <select> popup owns the keyboard while open:
                     // navigate / commit / dismiss / type-ahead.
@@ -1517,124 +1550,20 @@ impl RinchApp {
                     // inspect / Tab navigation / read-only text-selection caret
                     // motion.
                     FocusTarget::Input(_) | FocusTarget::None | FocusTarget::Node(_) => {
-                        // Self-heal a stale Node claim before routing, exactly
-                        // like the Editor arm's unmount handling above: node ids
-                        // are recycled slab indices (see
-                        // `live_focused_input_handler`), so a claim whose node
-                        // was unmounted must not swallow Enter/Space, anchor
-                        // Tab, or — worst — activate whatever unrelated node
-                        // reused the slot.
-                        if let FocusTarget::Node(id) = self.focus_target
-                            && !self.node_target_is_live(id)
-                        {
-                            self.set_focus_target(FocusTarget::None);
-                        }
-
-                        // A registered custom widget (issue #147) gets first
-                        // refusal on its own keys, ahead of every global
-                        // handler below — that is what "owns the keyboard"
-                        // means. `true` consumes; `false` falls through to
-                        // DevTools / inspect / Tab / Enter-Space activation
-                        // exactly as before, so registering costs an
-                        // unregistered node nothing.
-                        //
-                        // The `key` string matches the document-level
-                        // interceptor's spelling (`hook_key_str`), which names
-                        // every key rinch has a `KeyCode` for regardless of the
-                        // modifiers held (issue #336). The physical-code
-                        // fallback is left in for the one remaining hole — a
-                        // `KeyCode::Other` carrying no printable text — so a
-                        // widget always sees a non-empty key.
-                        if let FocusTarget::Node(id) = self.focus_target {
-                            let key_data = events::KeyEventData::new(
-                                key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
-                                format!("{:?}", key),
-                            )
-                            .with_modifiers(
-                                ctrl,
-                                shift,
-                                alt,
-                                modifiers.meta,
-                            );
-                            if crate::focus_registry::offer_key(self.doc_key(), id, &key_data) {
-                                actions.push(AppAction::RequestRedraw);
-                                return actions;
-                            }
-                        }
-
-                        #[cfg(feature = "desktop")]
-                        if key == KeyCode::F12 {
-                            actions.push(AppAction::ToggleDevTools);
+                        if self.handle_unclaimed_key_fallback(
+                            key,
+                            key_str.as_ref(),
+                            text.as_ref(),
+                            shift,
+                            ctrl,
+                            alt,
+                            modifiers.meta,
+                            repeat,
+                            vp_w,
+                            vp_h,
+                            &mut actions,
+                        ) {
                             return actions;
-                        }
-
-                        // Alt+I: toggle inspect mode
-                        if key == KeyCode::KeyI && alt && !ctrl && !shift {
-                            actions.push(AppAction::ToggleInspectMode);
-                            return actions;
-                        }
-
-                        match key {
-                            KeyCode::Tab => self.handle_tab(shift),
-                            KeyCode::Backspace => self.handle_backspace(),
-                            KeyCode::Delete => self.handle_delete(),
-                            KeyCode::ArrowLeft => self.handle_arrow_left(shift, ctrl),
-                            KeyCode::ArrowRight => self.handle_arrow_right(shift, ctrl),
-                            KeyCode::Home => self.handle_line_edge(false, shift, ctrl),
-                            KeyCode::End => self.handle_line_edge(true, shift, ctrl),
-                            KeyCode::KeyA if ctrl => self.handle_select_all(),
-                            KeyCode::KeyC if ctrl => self.handle_copy(),
-                            KeyCode::KeyV if ctrl => {
-                                self.handle_paste();
-                            }
-                            KeyCode::KeyX if ctrl => self.handle_cut(),
-                            // Undo / redo on a focused `<input>`/`<textarea>`
-                            // (issue #288), the browser's chords: Ctrl+Z,
-                            // Ctrl+Shift+Z and Ctrl+Y (Cmd on macOS — `ctrl`
-                            // is `Modifiers::primary`). Not with Alt: Windows
-                            // reports AltGr as Ctrl+Alt, and AltGr+Z types a
-                            // character on some layouts (Polish `ż`).
-                            KeyCode::KeyZ if ctrl && !alt && shift => self.handle_redo(),
-                            KeyCode::KeyZ if ctrl && !alt => self.handle_undo(),
-                            KeyCode::KeyY if ctrl && !alt => self.handle_redo(),
-                            KeyCode::Enter | KeyCode::Space
-                                if !ctrl && matches!(self.focus_target, FocusTarget::Node(_)) =>
-                            {
-                                if let FocusTarget::Node(id) = self.focus_target
-                                    && self.press_is_fresh(key, repeat)
-                                {
-                                    self.node_activation_held = Some(key);
-                                    self.activate_focused_node(id, vp_w, vp_h);
-                                    actions.push(AppAction::RequestRedraw);
-                                }
-                            }
-                            KeyCode::Enter if !ctrl => self.handle_enter(shift),
-                            // Space with no Node target falls through to the `_`
-                            // arm below — the one text-input path (pre-#228), so
-                            // a future change to that gate can't miss Space.
-                            // Alt+Down on a focused `<select>` opens its popup,
-                            // the browser's third way in beside Enter and Space
-                            // (issue #314). Anything else falls through.
-                            KeyCode::ArrowDown
-                                if alt
-                                    && matches!(self.focus_target, FocusTarget::Node(_))
-                                    && self.focused_node_is_select() =>
-                            {
-                                if let FocusTarget::Node(id) = self.focus_target {
-                                    self.open_select_popup(id, vp_w, vp_h);
-                                    actions.push(AppAction::RequestRedraw);
-                                }
-                            }
-                            KeyCode::ArrowUp => self.handle_arrow_up(shift),
-                            KeyCode::ArrowDown => self.handle_arrow_down(shift),
-                            _ => {
-                                if !ctrl
-                                    && let Some(t) = &text
-                                    && !t.is_empty()
-                                {
-                                    self.handle_text_input(t);
-                                }
-                            }
                         }
                     }
                 }
@@ -1975,6 +1904,153 @@ impl RinchApp {
         }
 
         actions
+    }
+
+    /// The global `KeyDown` fallback — DevTools (F12) / inspect mode (Alt+I) /
+    /// Tab navigation / clipboard chords / Enter-Space activation / the
+    /// catch-all text-input path.
+    ///
+    /// Shared by two callers of the focus arbiter's match in
+    /// [`Self::handle_event`]: `FocusTarget::Input/None/Node`, where it always
+    /// ran, and — since issue #482 — `FocusTarget::Surface` once the surface
+    /// itself has declined the key (`set_key_handler`, default: declines
+    /// everything). A focused `RenderSurface` used to swallow every key
+    /// unconditionally; routing an unclaimed one through here instead means a
+    /// game canvas with focus still lets DevTools, inspect mode, Tab and the
+    /// rest work, exactly as an unfocused canvas always did.
+    ///
+    /// `focus_target` reads inside this function (the `FocusTarget::Node`
+    /// guards) correctly do nothing when called from the `Surface` arm, since
+    /// `self.focus_target` is `Surface(_)` there — no caller-specific branching
+    /// needed.
+    ///
+    /// Returns `true` if the caller should return `actions` immediately
+    /// (an action already fully answers this key); `false` if the key fell
+    /// through everything (including plain text input, already attempted),
+    /// in which case the caller's match arm ends normally.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_unclaimed_key_fallback(
+        &mut self,
+        key: KeyCode,
+        key_str: Option<&String>,
+        text: Option<&String>,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+        repeat: KeyRepeat,
+        vp_w: f32,
+        vp_h: f32,
+        actions: &mut Vec<AppAction>,
+    ) -> bool {
+        // Self-heal a stale Node claim before routing, exactly like the
+        // Editor arm's unmount handling in `handle_event`: node ids are
+        // recycled slab indices (see `live_focused_input_handler`), so a
+        // claim whose node was unmounted must not swallow Enter/Space, anchor
+        // Tab, or — worst — activate whatever unrelated node reused the slot.
+        if let FocusTarget::Node(id) = self.focus_target
+            && !self.node_target_is_live(id)
+        {
+            self.set_focus_target(FocusTarget::None);
+        }
+
+        // A registered custom widget (issue #147) gets first refusal on its
+        // own keys, ahead of every global handler below — that is what "owns
+        // the keyboard" means. `true` consumes; `false` falls through to
+        // DevTools / inspect / Tab / Enter-Space activation exactly as
+        // before, so registering costs an unregistered node nothing.
+        //
+        // The `key` string matches the document-level interceptor's spelling
+        // (`hook_key_str`), which names every key rinch has a `KeyCode` for
+        // regardless of the modifiers held (issue #336). The physical-code
+        // fallback is left in for the one remaining hole — a `KeyCode::Other`
+        // carrying no printable text — so a widget always sees a non-empty
+        // key.
+        if let FocusTarget::Node(id) = self.focus_target {
+            let key_data = events::KeyEventData::new(
+                key_str.cloned().unwrap_or_else(|| format!("{:?}", key)),
+                format!("{:?}", key),
+            )
+            .with_modifiers(ctrl, shift, alt, meta);
+            if crate::focus_registry::offer_key(self.doc_key(), id, &key_data) {
+                actions.push(AppAction::RequestRedraw);
+                return true;
+            }
+        }
+
+        #[cfg(feature = "desktop")]
+        if key == KeyCode::F12 {
+            actions.push(AppAction::ToggleDevTools);
+            return true;
+        }
+
+        // Alt+I: toggle inspect mode
+        if key == KeyCode::KeyI && alt && !ctrl && !shift {
+            actions.push(AppAction::ToggleInspectMode);
+            return true;
+        }
+
+        match key {
+            KeyCode::Tab => self.handle_tab(shift),
+            KeyCode::Backspace => self.handle_backspace(),
+            KeyCode::Delete => self.handle_delete(),
+            KeyCode::ArrowLeft => self.handle_arrow_left(shift, ctrl),
+            KeyCode::ArrowRight => self.handle_arrow_right(shift, ctrl),
+            KeyCode::Home => self.handle_line_edge(false, shift, ctrl),
+            KeyCode::End => self.handle_line_edge(true, shift, ctrl),
+            KeyCode::KeyA if ctrl => self.handle_select_all(),
+            KeyCode::KeyC if ctrl => self.handle_copy(),
+            KeyCode::KeyV if ctrl => {
+                self.handle_paste();
+            }
+            KeyCode::KeyX if ctrl => self.handle_cut(),
+            // Undo / redo on a focused `<input>`/`<textarea>` (issue #288),
+            // the browser's chords: Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y (Cmd on
+            // macOS — `ctrl` is `Modifiers::primary`). Not with Alt: Windows
+            // reports AltGr as Ctrl+Alt, and AltGr+Z types a character on
+            // some layouts (Polish `ż`).
+            KeyCode::KeyZ if ctrl && !alt && shift => self.handle_redo(),
+            KeyCode::KeyZ if ctrl && !alt => self.handle_undo(),
+            KeyCode::KeyY if ctrl && !alt => self.handle_redo(),
+            KeyCode::Enter | KeyCode::Space
+                if !ctrl && matches!(self.focus_target, FocusTarget::Node(_)) =>
+            {
+                if let FocusTarget::Node(id) = self.focus_target
+                    && self.press_is_fresh(key, repeat)
+                {
+                    self.node_activation_held = Some(key);
+                    self.activate_focused_node(id, vp_w, vp_h);
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
+            KeyCode::Enter if !ctrl => self.handle_enter(shift),
+            // Space with no Node target falls through to the `_` arm below —
+            // the one text-input path (pre-#228), so a future change to that
+            // gate can't miss Space. Alt+Down on a focused `<select>` opens
+            // its popup, the browser's third way in beside Enter and Space
+            // (issue #314). Anything else falls through.
+            KeyCode::ArrowDown
+                if alt
+                    && matches!(self.focus_target, FocusTarget::Node(_))
+                    && self.focused_node_is_select() =>
+            {
+                if let FocusTarget::Node(id) = self.focus_target {
+                    self.open_select_popup(id, vp_w, vp_h);
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
+            KeyCode::ArrowUp => self.handle_arrow_up(shift),
+            KeyCode::ArrowDown => self.handle_arrow_down(shift),
+            _ => {
+                if !ctrl
+                    && let Some(t) = text
+                    && !t.is_empty()
+                {
+                    self.handle_text_input(t);
+                }
+            }
+        }
+        false
     }
 
     /// Cancel an element-to-element drag in flight: a render surface under it

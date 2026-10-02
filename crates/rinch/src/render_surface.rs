@@ -325,6 +325,13 @@ pub struct RenderSurfaceHandle {
     /// Event handler (main-thread only).
     #[allow(clippy::type_complexity)]
     pub(crate) event_handler: std::rc::Rc<RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>>,
+    /// Key-claim handler (main-thread only), set by
+    /// [`set_key_handler`](RenderSurfaceHandle::set_key_handler). Issue #482:
+    /// additive and separate from `event_handler` — the ordinary handler keeps
+    /// receiving every `KeyDown`/`KeyUp` for input, this one only answers
+    /// whether the key should stop at the surface.
+    #[allow(clippy::type_complexity)]
+    pub(crate) key_handler: std::rc::Rc<RefCell<Option<Box<dyn Fn(&SurfaceKeyData) -> bool>>>>,
     /// Viewport name for hole-punch compositing.
     pub(crate) viewport_name: String,
     /// Whether this surface carries decoded **video** frames.
@@ -388,6 +395,34 @@ impl RenderSurfaceHandle {
     /// The handler runs on the main thread. Only one handler per surface.
     pub fn set_event_handler(&self, handler: impl Fn(SurfaceEvent) + 'static) {
         *self.event_handler.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// Declares which keys this focused surface actually uses (issue #482).
+    ///
+    /// Additive and independent of [`set_event_handler`](Self::set_event_handler):
+    /// every `KeyDown`/`KeyUp` the surface receives while focused is *still*
+    /// delivered there first, exactly as before — this handler answers a
+    /// narrower question asked afterward: should the key stop at the surface,
+    /// or continue past it?
+    ///
+    /// Before this existed, a focused surface swallowed **every** key
+    /// unconditionally — a host's own `window`-level keybindings (undo,
+    /// delete, a browser reload shortcut) and rinch's own DevTools/inspect/Tab
+    /// handling all went deaf the moment a user clicked the canvas, whether or
+    /// not the surface did anything with the key. Return `true` for a key the
+    /// surface genuinely consumes (WASD steering a character, Space to jump);
+    /// return `false` — or leave this unset — for everything else, and it
+    /// continues: on desktop to the document-level keyboard interceptor and
+    /// the built-in DevTools/inspect-mode/Tab handling, on web to
+    /// `preventDefault`/`stopPropagation` being skipped so the event reaches
+    /// `window` listeners and the browser's own shortcuts.
+    ///
+    /// **The default, with no handler set, is "claims nothing."** A focused
+    /// surface with no `set_key_handler` call no longer swallows any key — the
+    /// fail-safe direction, since a host that never opts in should not lose
+    /// its keybindings to a canvas it clicked.
+    pub fn set_key_handler(&self, handler: impl Fn(&SurfaceKeyData) -> bool + 'static) {
+        *self.key_handler.borrow_mut() = Some(Box::new(handler));
     }
 
     /// Get the unique surface ID.
@@ -626,6 +661,7 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
+        key_handler: std::rc::Rc::new(RefCell::new(None)),
         viewport_name,
         is_video,
         layout_size: Arc::new(Mutex::new((0, 0))),
@@ -1392,6 +1428,24 @@ pub fn dispatch_surface_event(id: usize, event: SurfaceEvent) {
             }
         }
     });
+}
+
+/// Asks the surface's [`RenderSurfaceHandle::set_key_handler`] whether `key`
+/// is claimed (issue #482). This is independent of, and runs in addition to,
+/// the normal [`dispatch_surface_event`] delivery of `KeyDown`/`KeyUp` — call
+/// both, not one instead of the other.
+///
+/// Answers `false` — the fail-safe "not claimed" default — when the surface
+/// has no key handler registered, or no surface with this id exists, so an
+/// unclaimed key is never swallowed by a surface that never opted in.
+pub fn dispatch_surface_key_event(id: usize, key: &SurfaceKeyData) -> bool {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        reg.iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.key_handler.borrow().as_ref().map(|handler| handler(key)))
+            .unwrap_or(false)
+    })
 }
 
 /// Set the currently focused render surface.

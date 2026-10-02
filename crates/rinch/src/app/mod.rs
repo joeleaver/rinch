@@ -183,6 +183,8 @@ mod shared_hit_tests;
 #[cfg(test)]
 mod stepper_state_709_tests;
 #[cfg(test)]
+mod surface_key_fallthrough_tests;
+#[cfg(test)]
 mod tab_order_tests;
 #[cfg(test)]
 mod text_action_word_tests;
