@@ -453,7 +453,8 @@ impl RinchDocument {
             input:is([type=date i], [type=month i], [type=week i], [type=time i],
                      [type=datetime-local i]) {
                 font-family: monospace;
-                padding: 0 1px;
+                padding: 0;
+                padding-inline-start: 1px;
             }
 
             input:not([type=checkbox i], [type=radio i], [type=range i]) {

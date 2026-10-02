@@ -24,7 +24,7 @@
 //! | overflow | `clip`, whatever the author says | `auto`; an author `visible` computes `auto` |
 //!
 //! Per type: `checkbox`, `radio`, `range`, `file`, `image`, `hidden` have no
-//! padding and no border; the date/time family has `0 1px` padding, the
+//! padding and no border; the date/time family has `0 0 0 1px` padding (inline start only), the
 //! `2px inset` border and **monospace**; `checkbox`, `radio` and `range` are
 //! not forced to `clip` (an author `overflow: hidden` on a checkbox computes
 //! `hidden`). Every type has the 13.3333px font.
@@ -284,7 +284,8 @@ fn non_text_input_types_get_their_own_box() {
     for id in dates {
         let s = style(&doc, id);
         let what = format!("{:?}", doc.tree.get(id.0).unwrap().attributes.get("type"));
-        assert_eq!(padding(s), (0.0, 1.0, 0.0, 1.0), "{what}: padding");
+        // Chrome 153: `padding: 0px 0px 0px 1px` -- the inline start only.
+        assert_eq!(padding(s), (0.0, 0.0, 0.0, 1.0), "{what}: padding");
         assert_eq!(border(s), (2.0, 2.0, 2.0, 2.0), "{what}: border");
         assert_control_font(s, &what, "monospace");
     }
@@ -344,4 +345,27 @@ fn a_raw_textarea_shrinks_in_a_narrow_flex_row() {
     doc.resolve_layout(VW, VH);
     let w = doc.tree.get(t.0).unwrap().layout.width;
     assert!(close(w, 100.0), "textarea border-box width {w}, Chrome 100");
+}
+
+/// Review of #1265: `range` is outside the `clip !important` rule like the
+/// checkbox (Chrome 153: an author `overflow: auto` on a range computes
+/// `auto`), and a textarea's author `clip` is kept (Chrome: `clip clip`) —
+/// only `visible` is adjusted.
+#[test]
+fn a_range_is_not_clipped_and_a_textarea_keeps_an_author_clip() {
+    let (mut doc, c) = setup();
+    let range = el(
+        &mut doc,
+        c,
+        "input",
+        &[("type", "range"), ("style", "overflow: auto")],
+    );
+    let ta = el(&mut doc, c, "textarea", &[("style", "overflow: clip")]);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(style(&doc, range).overflow_y, OverflowValue::Auto);
+    let s = style(&doc, ta);
+    assert_eq!(
+        (s.overflow_x, s.overflow_y),
+        (OverflowValue::Clip, OverflowValue::Clip)
+    );
 }

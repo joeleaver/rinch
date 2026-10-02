@@ -184,8 +184,9 @@ border, padding and font size, so this is about controls you write by hand:
 | control | box | font and text |
 |---------|-----|---------------|
 | text-state `<input>` (no `type`, `text`, `search`, `email`, `password`, `number`, …) | `padding: 1px 2px`, `border: 2px inset` grey | `13.3333px` Arial, weight and style `normal`, `line-height: normal` |
-| date/time `<input>` | `padding: 0 1px`, the same border | the same, in monospace |
-| `checkbox`, `radio`, `range`, `file`, `image`, `hidden`, the button types, `color` | none | the same 13.3333px font |
+| date/time `<input>` | `padding: 0 0 0 1px` (inline start only), the same border | the same, in monospace |
+| `checkbox`, `radio`, `range`, `file`, `image`, `hidden` | none | the same 13.3333px font |
+| the button types, `color` | none in rinch — Chrome gives `submit`/`reset`/`button` `1px 6px` and a `2px outset` border, `color` `1px 2px` and a `1px solid` one (not modelled yet) | the same 13.3333px font |
 | `<textarea>` | `padding: 2px`, `border: 1px solid` grey | `13.3333px` monospace, `white-space: pre-wrap`, `overflow-wrap: break-word` |
 
 Both controls also reset `letter-spacing`, `word-spacing`, `text-transform`,
@@ -195,9 +196,11 @@ font wide.
 
 Overflow follows Chrome too. An `<input>` other than a checkbox, radio or range
 is `overflow: clip`, and stays `clip` whatever you declare (the UA rule is
-`!important`). A `<textarea>` is a scroll container: `overflow: auto`, and a
-`visible` you declare on either axis computes `auto`, so a raw textarea shrinks
-as a flex item instead of holding its full width.
+`!important`). A `<textarea>`'s computed overflow is `auto`, and a `visible` you
+declare on either axis computes `auto` (a `hidden` or `clip` is kept), so a raw
+textarea shrinks as a flex item instead of holding its full width. rinch does
+not yet lay out or scroll a textarea's text, so it shows no scrollbar and takes
+no wheel even when its value overflows.
 
 Everything else is an ordinary UA rule your own declaration beats. The theme's
 `button, input, select, textarea { font-family: inherit }` is one such
