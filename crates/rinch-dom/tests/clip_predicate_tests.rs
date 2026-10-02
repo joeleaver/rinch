@@ -692,6 +692,71 @@ mod painted {
         assert_eq!(pixel_at(&painter, 100, 200), NOTHING);
     }
 
+    /// #536: the clip is the **padding** box (css-overflow-3 §3: "the box's
+    /// content is clipped to the box's padding edge"), not the border box —
+    /// a clipping container with a non-zero `border-width` must not let its
+    /// content paint over its own border.
+    ///
+    /// The exact repro from the issue: a 100x100 container with a 10px solid
+    /// border and `overflow: hidden`, holding a 300x300 red child. The left
+    /// and top border strips would survive even the broken (border-box) clip,
+    /// because the child starts at the content origin and cannot reach
+    /// backward into them — it is the **right and bottom** strips where the
+    /// clip actually decides, and border paints *before* the clip bracket
+    /// opens (`paint_borders` then `push_clip` then children), so a clip that
+    /// reaches the border box lets the child paint directly over the border
+    /// that was already drawn there. The mutant that kills this is reverting
+    /// `clip_shape`'s inset to the plain border box (`#536`'s pre-fix shape):
+    /// run by hand, it paints RED at (95, 60) and (60, 95) instead of BLUE.
+    #[test]
+    fn an_overflow_clip_container_does_not_paint_over_its_own_border() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; border: 10px solid rgb(0, 0, 255); \
+             overflow: hidden",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 300px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+
+        // Left/top border strips: survive even the broken clip, since the
+        // child cannot reach backward past its own content origin.
+        assert_eq!(pixel_at(&painter, 5, 60), BLUE, "left border strip");
+        assert_eq!(pixel_at(&painter, 60, 5), BLUE, "top border strip");
+
+        // Right/bottom border strips: where the clip rect actually decides.
+        assert_eq!(
+            pixel_at(&painter, 95, 60),
+            BLUE,
+            "right border strip must show the border, not the overflowing \
+             red child — the fixed point a border-box clip cannot reach"
+        );
+        assert_eq!(
+            pixel_at(&painter, 60, 95),
+            BLUE,
+            "bottom border strip, same reasoning"
+        );
+
+        // Just inside the padding edge, the child still shows.
+        assert_eq!(pixel_at(&painter, 50, 50), RED, "content area is unaffected");
+
+        // Outside the border box entirely: nothing painted there at all.
+        assert_eq!(pixel_at(&painter, 105, 60), NOTHING);
+    }
+
     /// #408: the culled-node branch paints its children at the **scrolled**
     /// content origin, like every other call in `paint_node`.
     ///
