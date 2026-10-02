@@ -2615,4 +2615,105 @@ mod modifier_spelling_tests {
             "two keys"
         );
     }
+
+    /// Every code a modifier-less chord leaves to a focused text field
+    /// (#1169), bare and with Shift — and none of them with Ctrl, Cmd or Alt
+    /// held alone. Each is listed, not sampled: a code dropped from the list
+    /// would take its key from every field again.
+    #[test]
+    fn every_text_key_yields_bare_and_shifted_and_never_with_a_modifier() {
+        let mut yielding: Vec<String> = Vec::new();
+        yielding.extend(('A'..='Z').map(|c| format!("Key{c}")));
+        yielding.extend(('0'..='9').map(|c| format!("Digit{c}")));
+        yielding.extend(
+            [
+                "Equal",
+                "Minus",
+                "Backquote",
+                "Backslash",
+                "BracketLeft",
+                "BracketRight",
+                "Comma",
+                "Period",
+                "Quote",
+                "Semicolon",
+                "Slash",
+                "IntlBackslash",
+                "Space",
+                "Enter",
+                "Backspace",
+                "Delete",
+                "Home",
+                "End",
+                "PageUp",
+                "PageDown",
+                "ArrowUp",
+                "ArrowDown",
+                "ArrowLeft",
+                "ArrowRight",
+            ]
+            .map(String::from),
+        );
+        for code in &yielding {
+            // Shift is not an argument: it never changes the answer.
+            assert!(
+                chord_yields_to_text_input(false, false, false, code),
+                "{code}"
+            );
+            assert!(
+                !chord_yields_to_text_input(true, false, false, code),
+                "Ctrl+{code}"
+            );
+            assert!(
+                !chord_yields_to_text_input(false, true, false, code),
+                "Cmd+{code}"
+            );
+            assert!(
+                !chord_yields_to_text_input(false, false, true, code),
+                "Alt+{code}"
+            );
+        }
+        for code in [
+            "Escape", "Tab", "F1", "F5", "F12", "KeyAB", "Digit10", "Key", "",
+        ] {
+            assert!(
+                !chord_yields_to_text_input(false, false, false, code),
+                "{code}"
+            );
+        }
+    }
+
+    /// The `<input>` types with no text to type into, in any case, and the
+    /// ones that do take text — an absent or unknown type is `text` (#1169).
+    #[test]
+    fn input_type_takes_text_refuses_exactly_the_non_text_types_in_any_case() {
+        for ty in [
+            "checkbox", "radio", "range", "color", "file", "hidden", "image", "button", "submit",
+            "reset",
+        ] {
+            assert!(!input_type_takes_text(ty), "{ty}");
+            assert!(
+                !input_type_takes_text(&ty.to_ascii_uppercase()),
+                "{ty} upper"
+            );
+            let mixed: String = ty
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i % 2 == 0 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            assert!(!input_type_takes_text(&mixed), "{mixed}");
+        }
+        for ty in [
+            "", "text", "TEXT", "search", "number", "email", "password", "url", "tel", "date",
+            "bogus",
+        ] {
+            assert!(input_type_takes_text(ty), "{ty:?}");
+        }
+    }
 }

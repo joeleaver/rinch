@@ -292,3 +292,19 @@ fn an_editor_and_a_registered_text_target_keep_a_bare_key() {
     assert!(!app.try_menu_shortcut(bare(), W::Slash));
     assert_eq!(fired[0].get(), 1);
 }
+
+/// A render surface and an open `<select>` popup are not text targets: a bare
+/// chord still fires while either holds the keyboard. (Whether they should
+/// keep keys of their own is a separate question from #1169's.)
+#[test]
+fn a_surface_or_an_open_select_does_not_take_a_bare_key() {
+    let (mut app, ids) = page();
+    let (_chords, fired) = arm(&["/"]);
+    app.focus_target = FocusTarget::Surface(1);
+    assert!(app.try_menu_shortcut(bare(), W::Slash));
+    app.focus_target = FocusTarget::Select(ids.other);
+    assert!(app.try_menu_shortcut(bare(), W::Slash));
+    app.focus_target = FocusTarget::None;
+    assert!(app.try_menu_shortcut(bare(), W::Slash));
+    assert_eq!(fired[0].get(), 3);
+}
