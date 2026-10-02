@@ -1180,7 +1180,11 @@ pub(crate) fn body_taffy_overrides(style: &mut taffy::Style) {
     }
     if style.flex_basis == taffy::Dimension::auto()
         && style.size.height == taffy::Dimension::auto()
-        && style.flex_shrink > 0.0
+        // Below 1 a factor scales the free space it distributes (flexbox
+        // §9.7.4c), so the basis would show through: `flex-grow: 0.5` over
+        // short content, or `flex-shrink: 0.5` over tall content.
+        && style.flex_grow >= 1.0
+        && style.flex_shrink >= 1.0
         && style.overflow.y.is_scroll_container()
     {
         style.flex_basis = taffy::Dimension::length(0.0);

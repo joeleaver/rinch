@@ -93,3 +93,20 @@ fn a_visible_overflow_body_is_as_tall_as_its_content() {
     let (doc, body) = body_with("overflow: visible;", 13);
     assert_eq!(body_box(&doc, body), (0.0, 0.0, 800.0, 1300.0));
 }
+
+/// A grow factor below 1 distributes only that share of the free space
+/// (flexbox §9.7.4c), so the basis still sets the height: 200px of content
+/// plus half of the remaining 400px. The fold must leave such a body alone.
+#[test]
+fn a_fractional_flex_grow_keeps_its_content_basis() {
+    let (doc, body) = body_with("flex-grow: 0.5;", 2);
+    assert_eq!(body_box(&doc, body), (0.0, 0.0, 800.0, 400.0));
+}
+
+/// Likewise a shrink factor below 1 removes only that share of the overflow:
+/// 1300px of content less half of the 700px excess.
+#[test]
+fn a_fractional_flex_shrink_keeps_its_content_basis() {
+    let (doc, body) = body_with("flex-shrink: 0.5;", 13);
+    assert_eq!(body_box(&doc, body), (0.0, 0.0, 800.0, 950.0));
+}
