@@ -4515,10 +4515,7 @@ impl RinchApp {
                         // this walk has to agree, or a hole under an
                         // `overflow-x: clip; overflow-y: visible` ancestor
                         // would come back rounded where paint draws it square.
-                        if clip_radii == [0.0; 4]
-                            && n.clips_overflow_x()
-                            && n.clips_overflow_y()
-                        {
+                        if clip_radii == [0.0; 4] && n.clips_overflow_x() && n.clips_overflow_y() {
                             let r = rinch_dom::paint::padding_box_radii(n, 1.0);
                             if r.top_left > 0.0
                                 || r.top_right > 0.0
