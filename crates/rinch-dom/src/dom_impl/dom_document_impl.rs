@@ -7,7 +7,7 @@ use rinch_core::dom::{
 use peniko::color::{AlphaColor, Srgb};
 
 use style::properties::{
-    LonghandId, PropertyDeclaration, PropertyDeclarationBlock, PropertyDeclarationId,
+    LonghandId, PropertyDeclaration, PropertyDeclarationBlock, PropertyDeclarationId, PropertyId,
 };
 use style::values::generics::position::GenericInset;
 use style::values::specified::{LengthPercentage, NoCalcLength};
@@ -1578,19 +1578,21 @@ impl RinchDocument {
     /// `assert` could pass all day and fail in CI. A `Vec` makes it a fact
     /// about the input instead of a fact about the process.
     ///
-    /// **Residual divergence from a browser**, deliberately accepted here: a
-    /// longhand *already in the attribute* before a shorthand that covers it
-    /// still loses to that shorthand — `"left: 5px; inset: 0"` plus
-    /// `set_style("left", "10px")` yields `"left: 10px; inset: 0"`, so `inset`
-    /// still wins and `left` computes to `0`. CSSOM expands `inset` into its
-    /// four longhands at parse time, so a browser answers `10px`. Closing that
-    /// gap means keeping Stylo's `PropertyDeclarationBlock` as the source of
-    /// truth (`prepare_for_update`/`update`, then `to_css` for the attribute)
-    /// rather than the string — a bigger change that inverts the
-    /// `merged → parse_inline_style → cache` invariant `inset_fast_path_values`
-    /// rests on, and canonicalises `get_attribute("style")` output. The
-    /// reported shape — shorthand first, longhand written later — is correct
-    /// with the `Vec`, and *every* shape is now deterministic.
+    /// **A written property moves past a later declaration that covers it**
+    /// (#470). CSSOM keeps a list of longhands — a shorthand is expanded when
+    /// it is parsed — so `style.left = "10px"` on `"left: 5px; inset: 0"`
+    /// replaces the one `left` longhand and `left` computes to `10px`.
+    /// Rewritten in place in this string, `left: 10px` would still sit before
+    /// the `inset: 0` that covers it, and lose the cascade to it. So a property
+    /// that a declaration *after* its slot overlaps ([`declarations_overlap`])
+    /// is taken out of its slot and appended, where it wins as it does in a
+    /// browser; every other rewrite stays where it stands. The string stays the
+    /// source of truth and keeps the author's spelling — what moves is one
+    /// declaration, and only when its position decides the cascade.
+    ///
+    /// Still not a browser: a later overlapping declaration that is
+    /// `!important` keeps beating a normal write, where CSSOM's write replaces
+    /// the important longhand outright (#1298).
     fn merged_inline_style(&self, node_id: usize, properties: &[(&str, &str)]) -> String {
         let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
@@ -1603,8 +1605,21 @@ impl RinchDocument {
             // `set_style("COLOR", …)` overwrites an existing `color` rather
             // than declaring the property a second time.
             let property = rinch_core::dom::normalize_property_name(property);
-            match decls.iter_mut().find(|(k, _)| k.as_str() == &*property) {
-                Some(slot) => slot.1 = value.to_string(),
+            match decls.iter().position(|(k, _)| k.as_str() == &*property) {
+                Some(slot) => {
+                    let covered_later = slot + 1 < decls.len() && {
+                        let written = declared_longhands(&property);
+                        decls[slot + 1..]
+                            .iter()
+                            .any(|(k, _)| declarations_overlap(&written, &declared_longhands(k)))
+                    };
+                    if covered_later {
+                        let (name, _) = decls.remove(slot);
+                        decls.push((name, value.to_string()));
+                    } else {
+                        decls[slot].1 = value.to_string();
+                    }
+                }
                 None => decls.push((property.into_owned(), value.to_string())),
             }
         }
@@ -1909,6 +1924,37 @@ impl RinchDocument {
         let (_, cy2) = fwd(pad_l + local_x, pad_t + local_y + height);
         Some((cx as f32, cy as f32, (cy2 - cy).abs() as f32))
     }
+}
+
+/// The longhands a declaration of `name` sets: itself for a longhand, its
+/// sub-properties for a shorthand, none for a custom or unknown property (a
+/// custom property is one name, and two declarations of it never coexist in a
+/// split attribute).
+fn declared_longhands(name: &str) -> Vec<LonghandId> {
+    match PropertyId::parse_enabled_for_all_content(name) {
+        Ok(id) => match id.as_shorthand() {
+            Ok(shorthand) => shorthand.longhands().collect(),
+            Err(PropertyDeclarationId::Longhand(longhand)) => vec![longhand],
+            Err(PropertyDeclarationId::Custom(_)) => Vec::new(),
+        },
+        Err(()) => Vec::new(),
+    }
+}
+
+/// Whether a declaration setting `later` decides any longhand of one setting
+/// `earlier` when it comes after it (#470): they share a longhand, or — CSSOM's
+/// logical-property-group step, which Stylo's `prepare_for_update` implements —
+/// one is the logical twin of the other (`left` and `inset-inline-start`), a
+/// different longhand that maps onto the same physical side.
+fn declarations_overlap(earlier: &[LonghandId], later: &[LonghandId]) -> bool {
+    earlier.iter().any(|&a| {
+        later.iter().any(|&b| {
+            a == b
+                || (a.is_logical() != b.is_logical()
+                    && a.logical_group().is_some()
+                    && a.logical_group() == b.logical_group())
+        })
+    })
 }
 
 #[cfg(test)]
