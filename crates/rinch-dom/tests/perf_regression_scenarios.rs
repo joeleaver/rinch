@@ -1720,11 +1720,12 @@ fn a_form_control_label_is_shaped_only_when_the_font_changes() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (ShapeFormControlLabel, 2),
-            (IfcMeasureCacheHits, 2),
             (IfcMeasureInvalidations, 4),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 3),
+            // 3 → 1 and no cache hits since #1260: `<body>`'s flex basis is
+            // no longer measured.
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 2),
         ],
     );
