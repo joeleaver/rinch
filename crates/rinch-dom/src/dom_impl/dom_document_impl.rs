@@ -40,7 +40,17 @@ impl DomDocument for RinchDocument {
             flex_wrap: taffy::FlexWrap::NoWrap,
             ..Default::default()
         };
-        let taffy_id = if tag == "img" {
+        let replaced = crate::replaced::replaced_context(&node);
+        let taffy_id = if let Some(context) = replaced {
+            // `<canvas>`, `<video>`, `<iframe>`: sized from their natural or
+            // default object size (#1173). The attributes are not set yet,
+            // so a canvas starts at its 300x150 default; a later
+            // `width`/`height` write re-syncs it through the cascade.
+            self.tree
+                .taffy
+                .new_leaf_with_context(default_style, context)
+                .unwrap()
+        } else if tag == "img" {
             // Image elements use NodeContext::Image for intrinsic sizing
             let context = NodeContext::Image {
                 src: String::new(),

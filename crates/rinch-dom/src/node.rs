@@ -124,6 +124,20 @@ pub enum NodeContext {
         /// Content-box height: `rows × line-height` (one row for an `<input>`).
         content_height: f32,
     },
+    /// A `<canvas>`, `<video>` or `<iframe>` (#1173): a replaced element with
+    /// no content of its own, sized from its natural dimensions —
+    /// `width`/`height` attributes on a canvas, the 300x150 default object
+    /// size otherwise. The measure is [`crate::replaced::measure`]; written
+    /// and kept current by [`crate::replaced::sync_replaced_measure`].
+    Replaced {
+        /// Natural content-box width.
+        width: f32,
+        /// Natural content-box height.
+        height: f32,
+        /// Whether `width / height` is a natural aspect ratio (a canvas
+        /// with both dimensions non-zero; a video or iframe has none).
+        ratio: bool,
+    },
 }
 
 /// Text measurement context for Parley.

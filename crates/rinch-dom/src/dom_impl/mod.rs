@@ -392,6 +392,13 @@ impl RinchDocument {
                 display: inline-block;
             }
 
+            /* Chrome's UA sheet: an iframe's 2px inset border (#1173). It sits
+               outside its 300x150 default object size, so a bare iframe
+               measures 304x154 there. */
+            iframe {
+                border: 2px inset;
+            }
+
             /* The text controls' own box and font (issue #1194). Every value is
                Chrome 153's, measured with `getComputedStyle` under a parent
                declaring `font: italic bold 20px/40px serif`, letter- and
