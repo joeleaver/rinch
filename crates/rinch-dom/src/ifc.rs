@@ -5415,19 +5415,21 @@ impl RinchDocument {
                 height: taffy::AvailableSpace::MaxContent,
             };
 
-            let Ok(declared) = self.tree.taffy.style(taffy_id).cloned() else {
+            let Ok(mut original) = self.tree.taffy.style(taffy_id).cloned() else {
                 continue;
             };
             // A Taffy root ignores a sizing keyword on its own `size` (#691),
             // so a keyword width is resolved here and handed to the passes
-            // below as the length (or `auto`) it means.
-            let mut original = declared.clone();
+            // below as the length (or `auto`) it means; `declared` is what
+            // goes back afterwards. No clone for a box without one.
             let keyword_width =
-                self.resolve_root_width_keyword(taffy_id, &declared, available_width);
-            if let Some(w) = keyword_width {
+                self.resolve_root_width_keyword(taffy_id, &original, available_width);
+            let declared = keyword_width.map(|w| {
+                let declared = original.clone();
                 original.size.width = w;
                 let _ = self.tree.taffy.set_style(taffy_id, original.clone());
-            }
+                declared
+            });
             let block_root = original.display == taffy::Display::Block;
             let auto_width = original.size.width.is_auto();
             let clampable = !original.max_size.width.is_auto();
@@ -5510,7 +5512,10 @@ impl RinchDocument {
             }
 
             if pinned {
-                let _ = self.tree.taffy.set_style(taffy_id, declared);
+                let _ = self
+                    .tree
+                    .taffy
+                    .set_style(taffy_id, declared.unwrap_or(original));
             }
         }
     }
