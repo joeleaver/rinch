@@ -3618,9 +3618,10 @@ fn paint_node(
 
             let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
             let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
-            let font_family = crate::fonts::parley_font_family(
+            let font_family = crate::fonts::parley_text_family(
                 font_cx,
                 parent_computed.map_or("", |s| s.font_family.as_str()),
+                &text_data.content,
             );
 
             let color = parent_computed
@@ -3639,7 +3640,7 @@ fn paint_node(
             let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-            builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
+            font_family.push_to(&mut builder);
             if (font_weight - 400.0).abs() > 1.0 {
                 builder.push_default(parley::style::StyleProperty::FontWeight(
                     parley::style::FontWeight::new(font_weight),

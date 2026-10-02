@@ -720,9 +720,6 @@ impl RinchApp {
         // Build a Parley layout matching paint_input_value's parameters
         let font_size = node.computed_style.font_size;
         let font_weight = node.computed_style.font_weight;
-        let font_family =
-            rinch_dom::fonts::parley_font_family(font_cx, &node.computed_style.font_family);
-
         // Password masking: the layout is built over bullet text
         let is_password = node.attributes.get("type").map(|s| s.as_str()) == Some("password");
         let password_display;
@@ -733,6 +730,11 @@ impl RinchApp {
         } else {
             value
         };
+        let font_family = rinch_dom::fonts::parley_text_family(
+            font_cx,
+            &node.computed_style.font_family,
+            display_text,
+        );
 
         // Both contexts are the app's own, never fresh ones: a
         // `FontContext::new()` here would re-scan the system on every click and
@@ -742,7 +744,7 @@ impl RinchApp {
         // click for no gain.
         let mut builder = layout_cx.ranged_builder(font_cx, display_text, 1.0, true);
         builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-        builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
+        font_family.push_to(&mut builder);
         if (font_weight - 400.0).abs() > 1.0 {
             builder.push_default(parley::style::StyleProperty::FontWeight(
                 parley::style::FontWeight::new(font_weight),

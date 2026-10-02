@@ -84,12 +84,12 @@ impl EllipsisStyle {
         paint: bool,
     ) -> parley::layout::Layout<Brush> {
         use parley::style::StyleProperty as P;
-        let font_family = crate::fonts::parley_font_family(font_cx, &self.font_family);
+        let font_family = crate::fonts::parley_text_family(font_cx, &self.font_family, text);
         let mut b = layout_cx.ranged_builder(font_cx, text, scale, true);
         b.push_default(P::FontSize(self.font_size));
         b.push_default(P::FontWeight(self.font_weight));
         b.push_default(P::FontStyle(self.font_style));
-        b.push_default(P::FontFamily(font_family));
+        font_family.push_to(&mut b);
         push_spacing(&mut b, self.letter_spacing, self.word_spacing);
         if paint {
             b.push_default(P::Brush(Brush::Solid(self.color)));
@@ -656,17 +656,55 @@ impl<'a> IfcText<'a> {
 
     /// Remove a space held at the IFC's end and replay the ops into
     /// `builder`, all under `Preserve`: the text is already collapsed.
-    pub(crate) fn finish(&mut self, builder: &mut parley::TreeBuilder<'_, Brush>) {
+    ///
+    /// With `emoji_family`, each emoji-presentation cluster of a text is
+    /// pushed in a span of that family ([`crate::fonts::TextFamily`], #1204).
+    /// A cluster is found within one text op; one split across two (an emoji
+    /// and its U+FE0F in two text nodes) is not.
+    pub(crate) fn finish(
+        &mut self,
+        builder: &mut parley::TreeBuilder<'_, Brush>,
+        emoji_family: Option<parley::style::FontFamily<'static>>,
+    ) {
         self.drop_pending();
         builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        let emoji_span = emoji_family.map(|f| [parley::style::StyleProperty::FontFamily(f)]);
         for op in self.ops.drain(..) {
             match op {
                 IfcOp::Span(props) => builder.push_style_modification_span(props.iter()),
                 IfcOp::Pop => builder.pop_style_span(),
-                IfcOp::Text(text) => builder.push_text(&text),
+                IfcOp::Text(text) => match &emoji_span {
+                    Some(span) => {
+                        let mut at = 0;
+                        for range in crate::fonts::emoji_presentation_ranges(&text) {
+                            if range.start > at {
+                                builder.push_text(&text[at..range.start]);
+                            }
+                            builder.push_style_modification_span(span.iter());
+                            builder.push_text(&text[range.clone()]);
+                            builder.pop_style_span();
+                            at = range.end;
+                        }
+                        if at < text.len() {
+                            builder.push_text(&text[at..]);
+                        }
+                    }
+                    None => builder.push_text(&text),
+                },
                 IfcOp::InlineBox(b) => builder.push_inline_box(b),
             }
         }
+    }
+
+    /// Whether any text pushed so far could hold an emoji-presentation
+    /// cluster: a byte at or above 0xE2, the UTF-8 lead byte of U+231A, the
+    /// first `Emoji_Presentation` character (see
+    /// [`crate::fonts::emoji_presentation_ranges`]).
+    pub(crate) fn may_hold_emoji(&self) -> bool {
+        self.ops.iter().any(|op| match op {
+            IfcOp::Text(text) => text.bytes().any(|b| b >= 0xE2),
+            _ => false,
+        })
     }
 
     /// A flat offset recorded during the walk, in the final text: less the
@@ -4915,8 +4953,11 @@ impl RinchDocument {
                             return taffy::Size::ZERO;
                         }
                         perf.bump(crate::perf::Counter::ShapeAtomicInline);
-                        let font_family =
-                            crate::fonts::parley_font_family(font_cx, &text.font_family);
+                        let font_family = crate::fonts::parley_text_family(
+                            font_cx,
+                            &text.font_family,
+                            &text.content,
+                        );
                         let mut builder =
                             layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
                         builder
@@ -4929,7 +4970,7 @@ impl RinchDocument {
                         if let Some(lh) = layout::css_line_height_to_parley(&text.line_height_css) {
                             builder.push_default(parley::style::StyleProperty::LineHeight(lh));
                         }
-                        builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
+                        font_family.push_to(&mut builder);
                         // Apply overflow-wrap for emergency line-breaking
                         builder.push_default(parley::style::StyleProperty::OverflowWrap(
                             text.overflow_wrap.to_parley(),
@@ -5358,8 +5399,6 @@ impl RinchDocument {
         // where Chrome breaks before the spaces and rinch does not.
         root_text_style.text_wrap_mode = Self::text_wrap_mode(root_computed);
 
-        let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
-
         // Apply white-space mode from computed style.
         // Contenteditable elements always use Preserve (pre-wrap) to prevent
         // Parley from collapsing trailing whitespace, which would cause cursor
@@ -5397,7 +5436,19 @@ impl RinchDocument {
             &mut flat_pos,
             scale,
         );
-        ifc_text.finish(&mut builder);
+        // An emoji-presentation cluster is shaped with the root's stack, its
+        // generics replaced by their primary face (#1204). Every text in an
+        // IFC is shaped in the root's family (an inline element's own
+        // `font-family` is not pushed), so one emoji family serves them all.
+        // Asked only when some text could hold one, after the walk and before
+        // the builder borrows the font context.
+        let emoji_family = if ifc_text.may_hold_emoji() {
+            crate::fonts::parley_emoji_font_family(font_cx, &root_computed.font_family)
+        } else {
+            None
+        };
+        let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
+        ifc_text.finish(&mut builder, emoji_family);
         // Every offset the walk recorded counted a held space `finish` has
         // since removed; take them all to the final text.
         for r in &mut text_ranges {

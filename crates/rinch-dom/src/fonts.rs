@@ -134,6 +134,163 @@ pub fn parley_font_family(
     FontFamily::Source(Cow::Owned(finished.unwrap_or_else(|| stack.to_owned())))
 }
 
+/// The families a text is shaped with: [`parley_font_family`]'s for the whole
+/// text, and for each emoji-presentation cluster in it the same stack with
+/// every generic replaced by its primary face (#1204).
+///
+/// Why: parley shapes a cluster with the Unicode `Emoji` property against the
+/// stack and then the `emoji` generic, and a generic such as `sans-serif`
+/// expands to the platform's whole list (fontconfig's trimmed sort list:
+/// about 180 families on a Linux desktop). Its text faces cover many emoji —
+/// DejaVu Sans has U+1F600, FreeSans U+2B1C — so they won the emoji ahead of
+/// the `emoji` generic, and U+1F600 under `sans-serif` (and under the theme's
+/// `DEFAULT_FONT_FAMILY`) was drawn as a monochrome text glyph.
+///
+/// Chrome 153 on the same host treats a generic as its one primary face and
+/// keeps a named family in its place: U+1F600 is Noto Color Emoji under
+/// `sans-serif`, DejaVu Sans under `'DejaVu Sans'`, and Segoe UI Emoji under
+/// the theme's stack, which names it after `sans-serif`. That is what the
+/// rewritten stack gives an emoji cluster: named families in order, each
+/// generic as its primary face, then parley's `emoji` generic. An `emoji`
+/// generic written in the stack is kept as it is.
+///
+/// Only an emoji-presentation cluster gets it ([`emoji_presentation_ranges`]).
+/// A text-default `Emoji` character — the digits, `#`, `*`, ©, U+2764 alone —
+/// keeps the stack as written, so #1198's digits stay in the text face, and
+/// U+2764 is a text glyph as it is in Chrome.
+pub struct TextFamily {
+    family: parley::style::FontFamily<'static>,
+    emoji: Option<(
+        parley::style::FontFamily<'static>,
+        Vec<std::ops::Range<usize>>,
+    )>,
+}
+
+impl TextFamily {
+    /// Push the families onto a ranged builder of `text` (the text this was
+    /// made for): the stack as the default, the emoji stack over each
+    /// emoji-presentation cluster.
+    pub fn push_to<B: parley::style::Brush>(self, builder: &mut parley::RangedBuilder<'_, B>) {
+        use parley::style::StyleProperty;
+        builder.push_default(StyleProperty::FontFamily(self.family));
+        if let Some((family, ranges)) = self.emoji {
+            for range in ranges {
+                builder.push(StyleProperty::FontFamily(family.clone()), range);
+            }
+        }
+    }
+}
+
+/// [`TextFamily`] for `text` under the computed `stack`. Every ranged parley
+/// layout rinch builds from a computed `font-family` takes its families from
+/// here.
+pub fn parley_text_family(
+    font_cx: &mut parley::FontContext,
+    stack: &str,
+    text: &str,
+) -> TextFamily {
+    let family = parley_font_family(font_cx, stack);
+    let ranges = emoji_presentation_ranges(text);
+    let emoji = if ranges.is_empty() {
+        None
+    } else {
+        emoji_stack(&mut font_cx.collection, &family).map(|f| (f, ranges))
+    };
+    TextFamily { family, emoji }
+}
+
+/// The family an emoji-presentation cluster under `stack` is shaped with, or
+/// `None` when it is the stack itself (no generic other than `emoji` in it).
+/// For a builder that pushes its text piece by piece (the IFC's tree
+/// builder); see [`TextFamily`].
+pub fn parley_emoji_font_family(
+    font_cx: &mut parley::FontContext,
+    stack: &str,
+) -> Option<parley::style::FontFamily<'static>> {
+    let family = parley_font_family(font_cx, stack);
+    emoji_stack(&mut font_cx.collection, &family)
+}
+
+/// `family` with each generic but `emoji` replaced by the first family of its
+/// slot (dropped when the slot is empty); `None` if it holds no such generic.
+fn emoji_stack(
+    collection: &mut Collection,
+    family: &parley::style::FontFamily<'_>,
+) -> Option<parley::style::FontFamily<'static>> {
+    use parley::style::{FontFamily, FontFamilyName};
+    use std::borrow::Cow;
+    let FontFamily::Source(source) = family else {
+        return None;
+    };
+    let mut replaced = false;
+    let mut out: Vec<FontFamilyName<'static>> = Vec::new();
+    for name in FontFamilyName::parse_css_list(source).map_while(Result::ok) {
+        match name {
+            FontFamilyName::Generic(GenericFamily::Emoji) => {
+                out.push(FontFamilyName::Generic(GenericFamily::Emoji));
+            }
+            FontFamilyName::Generic(generic) => {
+                replaced = true;
+                let primary = collection.generic_families(generic).next();
+                if let Some(name) = primary.and_then(|id| collection.family_name(id)) {
+                    out.push(FontFamilyName::Named(Cow::Owned(name.to_owned())));
+                }
+            }
+            FontFamilyName::Named(name) => {
+                out.push(FontFamilyName::Named(Cow::Owned(name.into_owned())));
+            }
+        }
+    }
+    if !replaced {
+        return None;
+    }
+    if out.is_empty() {
+        out.push(FontFamilyName::Generic(GenericFamily::Emoji));
+    }
+    Some(FontFamily::List(Cow::Owned(out)))
+}
+
+/// The byte ranges of `text`'s emoji-presentation grapheme clusters, adjacent
+/// ones merged: a cluster holding U+FE0F (VARIATION SELECTOR-16), or one
+/// holding an `Emoji_Presentation` character and no U+FE0E (VARIATION
+/// SELECTOR-15). That takes in a modifier sequence (`☝🏽`, whose modifier has
+/// the property), a flag (regional indicators have it) and a keycap written
+/// with U+FE0F; a keycap without it (`1⃣`) is text, as in Chrome.
+///
+/// Every `Emoji_Presentation` character and U+FE0F is at or above U+231A,
+/// whose UTF-8 lead byte is 0xE2, so a text with no byte that high is answered
+/// without segmenting it.
+pub fn emoji_presentation_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    use icu_properties::CodePointSetData;
+    use icu_properties::props::EmojiPresentation;
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    if text.bytes().all(|b| b < 0xE2) {
+        return ranges;
+    }
+    let presentation = CodePointSetData::new::<EmojiPresentation>();
+    if !text
+        .chars()
+        .any(|c| c == '\u{fe0f}' || presentation.contains(c))
+    {
+        return ranges;
+    }
+    let segmenter = icu_segmenter::GraphemeClusterSegmenter::new();
+    let mut start = 0;
+    for end in segmenter.segment_str(text).skip(1) {
+        let cluster = &text[start..end];
+        let emoji = cluster.contains('\u{fe0f}')
+            || (!cluster.contains('\u{fe0e}') && cluster.chars().any(|c| presentation.contains(c)));
+        if emoji {
+            match ranges.last_mut() {
+                Some(last) if last.end == start => last.end = end,
+                _ => ranges.push(start..end),
+            }
+        }
+        start = end;
+    }
+    ranges
+}
+
 /// The generic an empty stack means, and whose primary face finishes a stack
 /// that resolves to nothing.
 pub const STACK_FALLBACK_GENERIC: &str = "sans-serif";
@@ -794,6 +951,125 @@ mod tests {
                 source(parley_font_family(&mut cx, "Gone1198")),
                 r#"Gone1198, "SecondPrimary1198""#
             );
+        }
+    }
+
+    /// Which clusters count as emoji presentation (#1204).
+    mod emoji_presentation {
+        use super::super::emoji_presentation_ranges as ranges;
+
+        #[test]
+        fn text_with_no_emoji_presentation_has_no_ranges() {
+            for text in [
+                "",
+                "abc 123 #*",
+                "\u{a9}\u{ae}\u{2122}\u{2194}",
+                // U+2764 is `Emoji` but text-default; U+2026 is neither.
+                "\u{2764}\u{2026}",
+                // A keycap without U+FE0F is text.
+                "1\u{20e3}",
+                // CJK takes the slow path (lead bytes >= 0xE2) and finds nothing.
+                "\u{6f22}\u{5b57}",
+            ] {
+                assert_eq!(
+                    ranges(text),
+                    Vec::<std::ops::Range<usize>>::new(),
+                    "{text:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn emoji_presentation_clusters_are_found_whole() {
+            // U+2B1C (3 bytes), U+1F600 (4), with text around.
+            assert_eq!(ranges("a\u{2b1c}b\u{1f600}"), vec![1..4, 5..9]);
+            // U+2764 U+FE0F: emoji by its selector.
+            assert_eq!(ranges("x\u{2764}\u{fe0f}"), vec![1..7]);
+            // A keycap written with U+FE0F.
+            assert_eq!(ranges("1\u{fe0f}\u{20e3}"), vec![0..7]);
+            // A modifier sequence on a text-default base (U+261D, U+1F3FD).
+            assert_eq!(ranges("\u{261d}\u{1f3fd}"), vec![0..7]);
+            // A flag: two regional indicators, one cluster.
+            assert_eq!(ranges("\u{1f1ef}\u{1f1f5}"), vec![0..8]);
+            // Adjacent clusters merge into one range.
+            assert_eq!(ranges("\u{2b1c}\u{2b1c}a"), vec![0..6]);
+        }
+
+        #[test]
+        fn a_text_variation_selector_makes_a_cluster_text() {
+            assert_eq!(ranges("\u{2b1c}\u{fe0e}\u{2b1c}"), vec![6..9]);
+        }
+    }
+
+    /// The stack an emoji cluster is shaped with (#1204).
+    mod emoji_stack {
+        use super::super::{emoji_stack, quote_family};
+        use parley::fontique::{
+            Blob, Collection, CollectionOptions, FontInfoOverride, GenericFamily,
+        };
+        use parley::style::{FontFamily, FontFamilyName};
+
+        const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+
+        fn collection() -> Collection {
+            let mut c = Collection::new(CollectionOptions {
+                shared: false,
+                system_fonts: false,
+            });
+            let mut reg = |name: &str| {
+                c.register_fonts(
+                    Blob::new(std::sync::Arc::new(FACE)),
+                    Some(FontInfoOverride {
+                        family_name: Some(name),
+                        ..Default::default()
+                    }),
+                )[0]
+                .0
+            };
+            let (a, b, m) = (reg("SansA1204"), reg("Sans B 1204"), reg("MonoA1204"));
+            c.set_generic_families(GenericFamily::SansSerif, [a, b].into_iter());
+            c.set_generic_families(GenericFamily::Monospace, core::iter::once(m));
+            c
+        }
+
+        fn list(stack: &str) -> Option<Vec<String>> {
+            let family = FontFamily::Source(stack.to_owned().into());
+            let out = emoji_stack(&mut collection(), &family)?;
+            let FontFamily::List(names) = out else {
+                panic!("a list: {out:?}");
+            };
+            Some(
+                names
+                    .iter()
+                    .map(|n| match n {
+                        FontFamilyName::Named(n) => quote_family(n).unwrap(),
+                        FontFamilyName::Generic(g) => format!("{g:?}"),
+                    })
+                    .collect(),
+            )
+        }
+
+        #[test]
+        fn each_generic_is_its_primary_face_and_names_keep_their_place() {
+            assert_eq!(
+                list("X1204, sans-serif, 'Y 1204', monospace").unwrap(),
+                vec!["\"X1204\"", "\"SansA1204\"", "\"Y 1204\"", "\"MonoA1204\""]
+            );
+        }
+
+        #[test]
+        fn an_empty_generic_is_dropped_and_emoji_is_kept() {
+            assert_eq!(
+                list("cursive, emoji, sans-serif").unwrap(),
+                vec!["Emoji", "\"SansA1204\""]
+            );
+            assert_eq!(list("cursive").unwrap(), vec!["Emoji"]);
+        }
+
+        #[test]
+        fn a_stack_with_no_generic_but_emoji_is_left_alone() {
+            assert_eq!(list("X1204, 'Y 1204'"), None);
+            assert_eq!(list("X1204, emoji"), None);
         }
     }
 }

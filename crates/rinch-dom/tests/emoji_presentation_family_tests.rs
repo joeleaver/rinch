@@ -31,7 +31,7 @@
 //! playing Segoe UI Emoji. The copies are told apart by blob id.
 
 use parley::fontique::{Blob, FontInfoOverride, GenericFamily};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 
 const SPACE_GROTESK: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-VariableFont_wght.ttf");
@@ -50,7 +50,11 @@ struct Faces {
     named_emoji: u64,
 }
 
-fn register(doc: &mut RinchDocument, bytes: &'static [u8], name: &'static str) -> (u64, parley::fontique::FamilyId) {
+fn register(
+    doc: &mut RinchDocument,
+    bytes: &'static [u8],
+    name: &'static str,
+) -> (u64, parley::fontique::FamilyId) {
     let blob = Blob::new(std::sync::Arc::new(bytes));
     let id = blob.id();
     let fams = doc.font_cx.collection.register_fonts(
@@ -199,11 +203,7 @@ fn a_flex_item_text_leaf_takes_the_same_rule() {
     let (mut doc, f) = document();
     let body = doc.body();
     let flex = doc.create_element("div");
-    doc.set_attribute(
-        flex,
-        "style",
-        "display: flex; font: 40px/48px sans-serif",
-    );
+    doc.set_attribute(flex, "style", "display: flex; font: 40px/48px sans-serif");
     let text = "a\u{2b1c}";
     let t = doc.create_text(text);
     doc.append_child(flex, t);
@@ -214,7 +214,10 @@ fn a_flex_item_text_leaf_takes_the_same_rule() {
     let layout = node.cached_text_parley.as_ref().expect("the leaf's layout");
     assert_eq!(
         runs(layout, text),
-        vec![(f.primary, "a".to_owned()), (f.emoji, "\u{2b1c}".to_owned())],
+        vec![
+            (f.primary, "a".to_owned()),
+            (f.emoji, "\u{2b1c}".to_owned())
+        ],
         "{f:?}"
     );
 }

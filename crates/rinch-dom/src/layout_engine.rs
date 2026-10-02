@@ -655,8 +655,11 @@ impl RinchDocument {
                             }
 
                             shape_text.set(shape_text.get() + 1);
-                            let font_family =
-                                crate::fonts::parley_font_family(font_cx, &text.font_family);
+                            let font_family = crate::fonts::parley_text_family(
+                                font_cx,
+                                &text.font_family,
+                                &text.content,
+                            );
                             let mut builder =
                                 layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
                             builder.push_default(parley::style::StyleProperty::FontSize(
@@ -672,9 +675,7 @@ impl RinchDocument {
                             {
                                 builder.push_default(parley::style::StyleProperty::LineHeight(lh));
                             }
-                            builder.push_default(parley::style::StyleProperty::FontFamily(
-                                font_family,
-                            ));
+                            font_family.push_to(&mut builder);
                             // Add brush so the cached layout can be rendered with color
                             builder.push_default(parley::style::StyleProperty::Brush(
                                 Brush::Solid(text.color),
