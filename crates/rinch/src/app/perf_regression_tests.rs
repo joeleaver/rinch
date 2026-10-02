@@ -992,8 +992,16 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536, see `full_repaint_resize` above: `.field`'s UA `overflow:
+            // clip` now clips to its padding box, 2px inset for its `border:
+            // 2px inset`, tight enough that `clip_cuts_nothing`'s elision no
+            // longer applies — one extra `push_clip` (the field's own) and
+            // the extra pixels are that bracket's own area. This fixture is
+            // `theme`-gated so it was not caught by the original PR's
+            // `--features desktop` run; a merge-with-main CI failure under
+            // `--features desktop,embed,theme,clipboard,debug` found it.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
         ],
     );
 }
