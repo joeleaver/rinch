@@ -1139,3 +1139,339 @@ fn a_split_inline_never_clips_either() {
         "and so has no clip shape"
     );
 }
+
+/// #542 review follow-up: `Node::is_flex_or_grid_item` is set at cascade
+/// time, and every fixture above only ever cascades a tree once before
+/// asking it anything. These probe the dynamic cases — a mutant that sets
+/// the field only on a node's *first* cascade (`old_style.is_none()`, never
+/// re-derived on a later restyle) passes every test above, because none of
+/// them restyle a tree that has already been laid out once.
+mod dynamic_flex_item_tracking_542 {
+    use super::*;
+
+    /// An item created under a block parent (static `z-index` does nothing),
+    /// then moved into a flex container with `append_child`. A move to a
+    /// different parent re-cascades the subtree (#914), so the flag must
+    /// follow.
+    #[test]
+    fn moving_a_static_z_index_item_into_a_flex_container_flips_the_flag() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let block_parent = doc.create_element("div");
+        doc.set_attribute(block_parent, "style", "width: 200px; height: 100px");
+        doc.append_child(body, block_parent);
+
+        let flex_parent = doc.create_element("div");
+        doc.set_attribute(
+            flex_parent,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, flex_parent);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(block_parent, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "under a block parent, static z-index does nothing"
+        );
+
+        doc.append_child(flex_parent, item);
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "after moving into a flex container, the item's static z-index \
+             should now create a stacking context"
+        );
+    }
+
+    /// The reverse: an item starts as a flex item (a context, from its static
+    /// `z-index`), then is moved out to a plain block parent. The flag must
+    /// clear.
+    #[test]
+    fn moving_a_static_z_index_item_out_of_a_flex_container_clears_the_flag() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let flex_parent = doc.create_element("div");
+        doc.set_attribute(
+            flex_parent,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, flex_parent);
+
+        let block_parent = doc.create_element("div");
+        doc.set_attribute(block_parent, "style", "width: 200px; height: 100px");
+        doc.append_child(body, block_parent);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(flex_parent, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "flex item with z-index is a context"
+        );
+
+        doc.append_child(block_parent, item);
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "after moving to a block parent, static z-index should do \
+             nothing again"
+        );
+    }
+
+    /// The **container's** own `display` flips from `block` to `flex`
+    /// dynamically, with the item never moving or restyled. `display`
+    /// participates in `child_cascade`'s inherited-change check, so a
+    /// `display` change on the parent re-cascades its children — the item
+    /// should pick up the new fact without itself being touched. This is
+    /// exactly what a "first cascade only" mutant of `is_flex_or_grid_item`
+    /// cannot see.
+    #[test]
+    fn flipping_the_containers_display_from_block_to_flex_updates_children() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 200px; height: 100px");
+        doc.append_child(body, container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(container, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "block parent: no effect"
+        );
+
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "container flipped to flex; the item's static z-index should \
+             now create a stacking context"
+        );
+    }
+
+    /// The reverse direction: flex -> block.
+    #[test]
+    fn flipping_the_containers_display_from_flex_to_block_updates_children() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(container, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "flex parent: z-index applies"
+        );
+
+        doc.set_attribute(container, "style", "width: 200px; height: 100px");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "container flipped to block; static z-index should stop \
+             mattering"
+        );
+    }
+
+    /// A `display: contents` wrapper is inserted *between* an
+    /// already-rendered flex container and its item (the item was a direct
+    /// child; it is now re-parented under the wrapper). The item's layout
+    /// parent should still be the flex container, right through the wrapper.
+    #[test]
+    fn inserting_a_contents_wrapper_between_container_and_item_after_render() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(container, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "direct flex item: context"
+        );
+
+        let wrapper = doc.create_element("div");
+        doc.set_attribute(wrapper, "style", "display: contents");
+        doc.append_child(container, wrapper);
+        doc.append_child(wrapper, item);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "item moved under a display:contents wrapper whose parent is \
+             still the flex container; should still count as a flex item"
+        );
+    }
+
+    /// A `display: contents` wrapper that *was* between a flex container and
+    /// the item is bypassed — the item is re-parented directly under a plain
+    /// block sibling instead. The flag must clear.
+    #[test]
+    fn removing_the_contents_wrapper_after_render_clears_the_flag() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+
+        let wrapper = doc.create_element("div");
+        doc.set_attribute(wrapper, "style", "display: contents");
+        doc.append_child(container, wrapper);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(wrapper, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "item through contents wrapper: context"
+        );
+
+        let plain = doc.create_element("div");
+        doc.set_attribute(plain, "style", "width: 200px; height: 100px");
+        doc.append_child(body, plain);
+        doc.append_child(plain, item);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "item re-parented to a plain block; static z-index should no \
+             longer create a stacking context"
+        );
+    }
+
+    /// Same parent throughout, but `z-index` is added to the item only
+    /// *after* the container already flipped to flex. A "first cascade
+    /// only" mutant updates the item's `is_flex_or_grid_item` on its own
+    /// first cascade (before the flip) and never again, so by the time the
+    /// item gets a `z-index` the flag is still stale — this is the case the
+    /// mutant breaks most directly.
+    #[test]
+    fn item_gains_z_index_after_container_already_flipped_to_flex() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 200px; height: 100px");
+        doc.append_child(body, container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px");
+        doc.append_child(container, item);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "no z-index yet"
+        );
+
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "item now has z-index under an already-flex parent"
+        );
+    }
+
+    /// A `::before` pseudo-element whose *originator* is itself the flex/grid
+    /// container (so the generated box is directly a flex item) becomes a
+    /// stacking context when it carries a static `z-index` — the pseudo
+    /// cascade's own `is_flex_or_grid_item` wiring
+    /// (`style_resolution/pseudo.rs`) was otherwise untested.
+    #[test]
+    fn a_before_pseudo_that_is_itself_a_flex_item_with_z_index_is_a_stacking_context() {
+        // `::before` is a child of its *originator*, so for the generated box
+        // to be a flex item, the originator itself (not some ancestor
+        // further up) must be the flex/grid container.
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "class", "probe-container");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+
+        doc.load_css(
+            ".probe-container::before { content: \"x\"; z-index: 7; width: 2px; height: 2px; }",
+        );
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let before_id = doc
+            .tree
+            .get(container.0)
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .find(|&cid| doc.tree.get(cid).is_some_and(|n| n.is_pseudo_element));
+
+        let before_id = before_id.expect("a ::before box should have been generated");
+        assert!(
+            doc.tree.get(before_id).unwrap().creates_stacking_context(),
+            "the ::before's layout parent is `container` itself, which is \
+             flex, so its own static z-index should create a context"
+        );
+    }
+}
