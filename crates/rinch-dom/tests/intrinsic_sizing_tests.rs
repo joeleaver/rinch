@@ -721,14 +721,12 @@ fn a_content_sized_box_keeps_its_one_pixel_wrap_tolerance() {
 /// A witness for one sentence in the guide, which would otherwise be prose
 /// nothing checks.
 ///
-/// `docs/src/guide/theming.md`'s "when `auto` happens to be the right answer"
-/// table lists the boxes where `auto` already shrink-wraps. A browser would put
-/// **floats** in that row; rinch must not, because it implements no CSS float
-/// at all — a floated box fills its containing block where Chrome 150 gives it
-/// 300 for the same content. So a float is not a way to reach shrink-to-fit
-/// here, and `display: inline-block` is.
+/// `docs/src/guide/theming.md` says a float is not a way to shrink-wrap a box
+/// in rinch, because it implements no CSS float at all — a floated box fills
+/// its containing block where Chrome 150 gives it 300 for the same content —
+/// and points at `width: fit-content` instead.
 ///
-/// Not a #626 behaviour. It guards the guidance #626's docs give.
+/// Not a keyword behaviour. It guards the guidance the keyword docs give.
 #[test]
 fn rinch_has_no_css_float_so_a_float_does_not_shrink_wrap() {
     let (doc, t) = build("width: 800px", "float: left", "width", "auto");
