@@ -463,6 +463,95 @@ mod painted {
         );
     }
 
+    /// [`overflow_x_clip_clips_without_the_other_axis_saying_anything`],
+    /// mirrored: `overflow-y: clip; overflow-x: visible`. Pins that the fix is
+    /// symmetric — the same assertions with x and y swapped — and not an
+    /// `overflow-x` special case: `clip_shape` asks `clips_overflow_x()` and
+    /// `clips_overflow_y()` independently, so a mutant that hard-codes which
+    /// axis is "the clipping one" passes the first test and fails this one.
+    #[test]
+    fn overflow_y_clip_clips_without_the_other_axis_saying_anything() {
+        let (mut doc, container, _child) = overhang("overflow-y: clip");
+        assert_eq!(
+            doc.tree.get(container).unwrap().computed_style.overflow_x,
+            OverflowValue::Visible,
+            "the fixture is only interesting while the x axis stays visible"
+        );
+
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+
+        assert_eq!(pixel_at(&painter, 50, 50), RED);
+        assert_eq!(
+            pixel_at(&painter, 50, 150),
+            NOTHING,
+            "the y axis says clip, so the vertical overhang goes"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 50),
+            RED,
+            "the x axis says visible, so CSS paints the horizontal overhang \
+             (#535)"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            NOTHING,
+            "y alone is enough to cut this corner, whatever x says"
+        );
+    }
+
+    /// Rounded corners on a clip open on one axis draw **no curve at all** —
+    /// measured in Chrome 153, not assumed: an infinite strip bounded on only
+    /// one axis has no actual box corner for a radius to round against, so
+    /// `clip_shape` must hand back square (all-zero) radii even though the
+    /// box's own `border-radius` is large. (The *border* itself still paints
+    /// rounded, unaffected — it is drawn before any clip bracket opens.)
+    ///
+    /// This asks `clip_shape` directly rather than reading a painted pixel:
+    /// the unbounded axis is extended by [`AXIS_UNBOUNDED`]-ish magnitude (see
+    /// `paint::clip`'s module doc), which pushes every corner of the clip
+    /// rect's **geometry** tens of millions of px from the visible box either
+    /// way — so a rounded corner there changes nothing any painter draws on
+    /// screen, and a pixel oracle cannot tell a wrongly-rounded clip from a
+    /// correctly-square one. The `radii` value itself is still observable,
+    /// and is what every consumer that reads it (`paint_node`'s `RoundedRect`
+    /// branch, `stacking::ClipRect`) receives.
+    ///
+    /// The mutant this kills: making `clip_shape` call `padding_box_radii`
+    /// unconditionally (dropping the `clip_x && clip_y` gate) hands back the
+    /// box's real (non-zero) corners here instead of all-zero ones.
+    #[test]
+    fn an_overflow_clip_open_on_one_axis_has_square_radii() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; border-radius: 40px; \
+             overflow-x: clip; overflow-y: visible",
+        );
+        doc.append_child(body, container);
+        doc.resolve_layout(800.0, 600.0);
+
+        let node = doc.tree.get(container.0).unwrap();
+        let (_, radii) =
+            rinch_dom::paint::clip_shape(node, 1.0, 0.0, 0.0).expect("the container clips on x");
+        assert_eq!(
+            (
+                radii.top_left,
+                radii.top_right,
+                radii.bottom_right,
+                radii.bottom_left
+            ),
+            (0.0, 0.0, 0.0, 0.0),
+            "a clip open on one axis has no real corner for a radius to \
+             round against — clip_shape must not hand back the box's own \
+             rounded corners here, even though it is holding a legitimate \
+             40px border-radius"
+        );
+    }
+
     /// Paint and hit testing now answer the same question at every probe. Read
     /// as a pair rather than as two assertions: before the predicates were
     /// unified, (150, 50) was painted red *and* unreachable, which is the
