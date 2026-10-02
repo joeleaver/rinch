@@ -23,7 +23,9 @@ pub mod vello_painter;
 pub mod skia_painter;
 
 use borders::*;
-pub use clip::{border_radii, clip_shape, padding_box_insets, padding_box_radii};
+pub use clip::{
+    border_radii, clip_shape, padding_box_insets, padding_box_insets_for_size, padding_box_radii,
+};
 use contenteditable::*;
 pub use damage::{DamageRegion, MAX_DAMAGE_RECTS};
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
@@ -445,7 +447,29 @@ pub(crate) fn clip_chain_bounds_counted(
             let (w, h) = (size.width as f64 * scale, size.height as f64 * scale);
             if w > 0.0 && h > 0.0 {
                 let (x, y, t) = position_and_transform_in(tree, id, scale, frame);
-                let r = t.transform_rect_bbox(Rect::new(x, y, x + w, y + h));
+                // #536: this is the module doc's own claim that "the current
+                // state is exactly what that paint clips with" — so it has to
+                // ask the same (padding-box) shape `clip_shape` does for
+                // paint, not the ancestor's plain border box. There is no
+                // record of a *painted* border width to ask for the
+                // `Frame::Painted` arm, so both frames read the ancestor's
+                // current computed style, clamped against *this* frame's own
+                // size (`padding_box_insets_for_size`) rather than its current
+                // `node.layout` — the same approximation `clip_shape`'s radii
+                // already make for every caller.
+                let (left, top, right, bottom) =
+                    padding_box_insets_for_size(ancestor, size.width, size.height);
+                let (left, top, right, bottom) = (
+                    left as f64 * scale,
+                    top as f64 * scale,
+                    right as f64 * scale,
+                    bottom as f64 * scale,
+                );
+                let ix = x + left;
+                let iy = y + top;
+                let iw = (w - left - right).max(0.0);
+                let ih = (h - top - bottom).max(0.0);
+                let r = t.transform_rect_bbox(Rect::new(ix, iy, ix + iw, iy + ih));
                 clip = Some(clip.map_or(r, |c| c.intersect(r)));
             }
         }
@@ -4203,6 +4227,90 @@ mod tests {
             super::point_in_painted_box(&doc.tree, overlay, 1.0, 100.0, 80.0),
             Some((60.0, 170.0)),
             "the page's scroll must not be added back in"
+        );
+    }
+
+    /// #536 review finding: `clip_chain_bounds` (#909's damage clip chain)
+    /// used to compute a clipping ancestor's rect from its plain border box,
+    /// while `clip_shape` (paint's own bracket) clips to the padding box —
+    /// one function left reading `ancestor.layout` raw after the rest of the
+    /// module moved. CLAUDE.md's #909 section claims the current chain "is
+    /// exactly what the next paint clips with"; this is the fixture that
+    /// claim rests on.
+    ///
+    /// The container is the issue's own repro geometry (100x100, `border:
+    /// 10px solid`, `overflow: hidden`, with a 300x300 overflowing child) so
+    /// the expected rect is the same `10..90` square #536's pixel oracle
+    /// pins by colour.
+    ///
+    /// Mutant this kills: reverting the `padding_box_insets_for_size` inset
+    /// in `clip_chain_bounds_counted` back to the plain border-box rect
+    /// (`Rect::new(x, y, x + w, y + h)`, #536's pre-fix shape) makes this
+    /// fail — `clip_now(child)` would answer `0..100`, not `10..90`.
+    #[test]
+    fn clip_chain_bounds_agrees_with_clip_shape_on_a_bordered_ancestor() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 100px; height: 100px; border: 10px solid blue; overflow: hidden",
+        );
+        let child = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(container),
+            "width: 300px; height: 300px; background: red",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        let container_node = doc.tree.get(container).unwrap();
+        let (expected_rect, _radii) =
+            super::clip_shape(container_node, 1.0, 0.0, 0.0).expect("container clips");
+        assert_eq!(
+            expected_rect,
+            peniko::kurbo::Rect::new(10.0, 10.0, 90.0, 90.0),
+            "sanity: the padding box of a 100x100 box with a 10px border"
+        );
+
+        let chain = super::clip_chain_bounds(&doc.tree, child, 1.0, false)
+            .expect("child has a clipping ancestor");
+        assert_eq!(
+            chain, expected_rect,
+            "the damage chain's clip for `child` must be exactly the clip \
+             `paint_node` opens for `container` — the padding box, not the \
+             border box `container.layout` alone would give"
+        );
+    }
+
+    /// The asymmetric half of the fixture above: a left/right (or top/bottom)
+    /// swap in `padding_box_insets`/`padding_box_insets_for_size` survives a
+    /// uniform-border fixture (left == right there), so this one uses four
+    /// different widths and checks each edge lands at its own side's width,
+    /// not its mirror's.
+    #[test]
+    fn clip_chain_bounds_respects_asymmetric_border_widths() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 100px; height: 100px; overflow: hidden; \
+             border-left-width: 2px; border-top-width: 4px; \
+             border-right-width: 6px; border-bottom-width: 8px; border-style: solid;",
+        );
+        let child = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(container),
+            "width: 300px; height: 300px; background: red",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        let chain = super::clip_chain_bounds(&doc.tree, child, 1.0, false)
+            .expect("child has a clipping ancestor");
+        assert_eq!(
+            chain,
+            peniko::kurbo::Rect::new(2.0, 4.0, 94.0, 92.0),
+            "left=2 (not 6), top=4 (not 8), right=100-6=94, bottom=100-8=92"
         );
     }
 }

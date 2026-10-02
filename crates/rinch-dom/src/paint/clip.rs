@@ -170,10 +170,27 @@ pub fn border_radii(node: &Node, scale: f64) -> RoundedRectRadii {
 /// Logical units so a caller already working in CSS px (hit testing, and
 /// `RinchApp`'s viewport-clip walks, neither of which carries a DPI scale)
 /// uses this as-is; [`clip_shape`] is the one caller that scales it.
+///
+/// Clamps against `node.layout`'s **current** border-box size. A caller
+/// clipping against a *different* size for the same node — `clip_chain_bounds`
+/// asks about a `Frame::Painted` ancestor's `prev_layout`, since the damage
+/// chain can be built against either frame — wants that size's own clamp
+/// instead, which [`padding_box_insets_for_size`] gives it.
 pub fn padding_box_insets(node: &Node) -> (f32, f32, f32, f32) {
+    padding_box_insets_for_size(node, node.layout.width, node.layout.height)
+}
+
+/// [`padding_box_insets`], clamped against an explicit `(width, height)`
+/// rather than `node.layout`'s own — for a caller clipping against a border
+/// box it is *not* reading from `node.layout` itself (a painted/previous
+/// frame's size, say). The border widths still come from `node`'s **current**
+/// computed style either way: there is no record of a painted border width to
+/// ask for instead, the same approximation [`clip_shape`]'s radii already make
+/// for every caller.
+pub fn padding_box_insets_for_size(node: &Node, width: f32, height: f32) -> (f32, f32, f32, f32) {
     let cs = &node.computed_style;
-    let w = node.layout.width.max(0.0);
-    let h = node.layout.height.max(0.0);
+    let w = width.max(0.0);
+    let h = height.max(0.0);
     let left = cs.border_left_width.to_px().max(0.0).min(w);
     let right = cs
         .border_right_width

@@ -2893,9 +2893,14 @@ read `clip`'s own rect rather than the node's plain border-box `rect`), hit
 testing's `check_children` gate (reads `padding_box_insets` directly, in
 `crates/rinch/src/app/hit_testing.rs` — a click on a clipping container's own
 border strip resolves to the container, never to content that paint no longer
-draws there), and `RinchApp::viewport_rect_with_radius`/`viewport_clip_rect`
-(the `GameViewport`/video compositor hole, inset and its radii reduced the same
-way).
+draws there), `RinchApp::viewport_rect_with_radius`/`viewport_clip_rect` (the
+`GameViewport`/video compositor hole, inset and its radii reduced the same
+way), and `paint::clip_chain_bounds` (#909's damage clip chain, below —
+`padding_box_insets_for_size` is the one difference from every other caller:
+a damage-chain ancestor can be asked about its *painted* (`Frame::Painted`,
+`prev_layout`) size rather than its current `node.layout`, and the border
+widths — read from current computed style either way, since nothing records
+a painted one — have to clamp against whichever size is actually in use).
 
 A third one is gone: **clipping no longer forms a stacking context** — see
 **Stacking contexts and the clip chain** below.
