@@ -4067,20 +4067,41 @@ unconditionally, so clicking *any* button made it answer `true` until the next
 click landed off a button, and a host following the documented pattern above
 ("route keyboard to rinch while `wants_keyboard()`") silently stopped seeing
 its own Esc/hotkeys. `wants_keyboard()` now asks
-`RinchApp::has_focused_key_consumer()` instead: `true` for a text `<input>`/
-the editor, or for a generic node whose app registered its own
-[`FocusEntry::on_key`](crate::focus_registry::FocusEntry::on_key) via
-`register_focus_target` (a widget that reads arrow keys or a shortcut of its
-own) — `false` for a plain button or link, which only ever consumes
-Enter/Space through the runtime's own activation path and does not need the
-host to give up its keyboard just because a click focused it.
+`RinchApp::has_focused_key_consumer()` instead, which follows **how the node
+got focus**, not whether anything is registered (the review of #1311 caught a
+first cut that gated purely on registration, which made Tab-focus on a plain
+button answer `false` exactly like a mouse click — breaking Tab navigation
+and Enter/Space activation of ordinary controls under the documented
+pattern):
+
+- A **mouse-clicked** plain button/link: `false` — it only ever consumes
+  Enter/Space through the runtime's own activation path and does not need
+  the host to give up its keyboard just because a click focused it. This is
+  #548's actual repro.
+- A **Tab-focused** (or programmatic `NodeHandle::focus()`-ed) plain
+  button/link: `true` — matching a browser's `:focus-visible` split, read
+  from [`Node::is_focus_visible`](rinch_dom::node::Node::is_focus_visible):
+  Tab/`request_focus` set it, a mouse press claiming `FocusTarget::Node`
+  never does (`claim_press_focus` in `event_dispatch.rs` only clears the
+  *previous* node's ring on a press).
+- A **registered** custom widget
+  ([`FocusEntry::on_key`](crate::focus_registry::FocusEntry::on_key) via
+  `register_focus_target` — arrow-key navigation, a shortcut of its own):
+  `true` either way, click or Tab — the runtime can't know which keys it
+  wants without seeing them.
+- An open native **`<select>`** popup (`FocusTarget::Select`): `true`
+  unconditionally — a separate, pre-existing gap (neither
+  `has_focused_input`/`has_focused_contenteditable` nor, before or after
+  #548's first cut, the generic-node check ever covered it) folded into the
+  same fix, since its own arrow/Enter/Escape handling needs every key.
+
 `RinchApp::has_focused_node()` keeps its original, broader meaning ("is *any*
 generic node focused") for callers that genuinely want that question; it is
 the wrong one for input routing.
 
 **Source files:**
 - `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`, `wants_keyboard()`
-- `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`, `has_focused_node()`, `has_focused_key_consumer()` (#548)
+- `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`, `has_focused_node()`, `has_focused_key_consumer()`, `node_is_focus_visible()` (#548)
 - `crates/rinch/src/focus_registry.rs` — `wants_key_routing()`, the `FocusEntry::on_key` check behind `has_focused_key_consumer()`
 
 **Documentation:** `docs/src/guide/game-engine.md`
