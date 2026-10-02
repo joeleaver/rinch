@@ -3538,7 +3538,7 @@ impl RinchApp {
     /// copies has changed the clipboard while appearing to do nothing.
     #[cfg(feature = "clipboard")]
     pub(super) fn editor_cut(&self, handle: &crate::editor::EditorHandle) -> bool {
-        if handle.is_read_only() {
+        if handle.refuses_edits() {
             return false;
         }
         match handle.selection_clipboard() {
@@ -3619,7 +3619,7 @@ impl RinchApp {
     fn dispatch_editor_paste(handle: &crate::editor::EditorHandle, plain_only: bool) -> bool {
         use rinch_clipboard::{ClipboardResult, RichPaste};
 
-        if handle.is_read_only() {
+        if handle.refuses_edits() {
             return false;
         }
         let handle = handle.clone();

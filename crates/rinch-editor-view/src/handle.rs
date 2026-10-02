@@ -32,7 +32,7 @@ use rinch_editor_core::{
 };
 
 #[cfg(feature = "collaboration")]
-use rinch_editor_collab::{CollabError, CollabSession};
+use rinch_editor_collab::{CollabError, CollabSession, OversizedTable};
 
 #[cfg(feature = "collaboration")]
 use super::collab::CollabBridge;
@@ -526,8 +526,15 @@ impl EditorCore {
     /// caller of [`Self::commit`] there is or will be. Remote integration
     /// ([`EditorHandle::collab_receive`]) never reaches `commit` and so is never
     /// asked.
+    ///
+    /// A collaboration **freeze** ([`EditorHandle::collab_oversized_tables`]: the
+    /// shared document holds a table too large to read) refuses exactly what the
+    /// switch does, loads included, so the model never runs ahead of the CRDT while
+    /// outbound cannot carry it. The freeze is not the switch: `is_read_only` does not
+    /// report it, so the other places that read the switch (the OS input method, the
+    /// context menu's Cut and Paste, the web capture textarea) do not follow it.
     fn refuses(&self, prev: &EditorState, next: &EditorState, is_load: bool) -> bool {
-        if !self.read_only {
+        if !self.locked() {
             return false;
         }
         if is_load {
@@ -538,6 +545,16 @@ impl EditorCore {
         }
         !prev.doc.same_ref(&next.doc)
             || (next.stored_marks.is_some() && next.stored_marks != prev.stored_marks)
+    }
+
+    /// Whether local document changes are refused: the read-only switch, or a
+    /// collaboration freeze (see [`Self::refuses`]).
+    fn locked(&self) -> bool {
+        #[cfg(feature = "collaboration")]
+        if self.collab.as_ref().is_some_and(|b| b.session.is_frozen()) {
+            return true;
+        }
+        self.read_only
     }
 
     /// Carry every live [`SelectionAnchor`] across a document change, so an
@@ -1594,7 +1611,7 @@ impl EditorHandle {
     /// one. Tracked for a cheaper answer.
     pub fn can_run(&self, name: &str) -> bool {
         let core = self.core();
-        if !core.read_only {
+        if !core.locked() {
             return core.state.can_run(name);
         }
         core.state
@@ -2141,6 +2158,15 @@ impl EditorHandle {
         self.inner.try_borrow().is_ok_and(|core| core.read_only)
     }
 
+    /// Whether every local edit is refused right now: the editor is
+    /// [read-only](Self::set_read_only), or frozen by a collaboration freeze
+    /// ([`Self::collab_oversized_tables`]). What a platform asks to behave as it does
+    /// for a `readonly` field (input method off, no Cut/Paste, the web capture field
+    /// `readonly`, printable keys still owned). Soft like [`Self::is_read_only`].
+    pub fn refuses_edits(&self) -> bool {
+        self.inner.try_borrow().is_ok_and(|core| core.locked())
+    }
+
     /// Switch the editor between the light (default) and dark color schemes of the
     /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
     /// afterward (toolbar/keyboard handlers already do).
@@ -2677,12 +2703,12 @@ impl EditorHandle {
     /// now (the platform candidate box is placed from the model caret instead). A
     /// no-op before mount.
     ///
-    /// A [read-only](Self::set_read_only) editor shows no composition: the commit
-    /// it would lead to is refused, so the overlay would be text that can never
-    /// land.
+    /// A [read-only](Self::set_read_only) editor, or one frozen by a collaboration
+    /// freeze ([`Self::collab_oversized_tables`]), shows no composition: the commit it
+    /// would lead to is refused, so the overlay would be text that can never land.
     pub fn ime_set_preedit(&self, text: &str, _cursor: Option<(usize, usize)>) {
         let mut core = self.core_mut();
-        let text = if core.read_only { "" } else { text };
+        let text = if core.locked() { "" } else { text };
         if let Some(view) = core.view.as_mut() {
             view.set_preedit(text);
         }
@@ -3021,13 +3047,13 @@ impl EditorHandle {
     }
 
     /// Why this editor's **outbound** collaboration is currently refusing, if it is
-    /// (issue #220): a local edit outside the staged A22 scope — a pasted table, a
-    /// task list — cannot be projected onto the CRDT, so this edit and every
+    /// (issue #220): a local edit outside the staged A22 scope — a pasted ragged
+    /// table, a task list — cannot be projected onto the CRDT, so this edit and every
     /// one after it stays local until that content is removed.
     ///
     /// Unlike [`Self::collab_take_error`] this does **not** clear: it stays `Some` for
     /// as long as the condition holds, so it is what an app should drive a persistent
-    /// "not syncing — remove the table to resume" indicator from. It clears itself the
+    /// "not syncing — remove the task list to resume" indicator from. It clears itself the
     /// moment a local edit projects again, and that same edit broadcasts everything
     /// that accumulated meanwhile.
     ///
@@ -3037,11 +3063,77 @@ impl EditorHandle {
     ///
     /// Uses `try_borrow` — soft, like [`Self::collab_receive`] — so an `outbound`
     /// callback may call it re-entrantly.
+    ///
+    /// [`CollabError::OversizedTable`] is the **freeze** (see
+    /// [`Self::collab_oversized_tables`]): reported as soon as such a table arrives,
+    /// and cleared only by [`Self::collab_delete_oversized_table`] or a peer removing
+    /// or shrinking the table, not by an edit.
     pub fn collab_outbound_stall(&self) -> Option<CollabError> {
         let core = self.inner.try_borrow().ok()?;
         core.collab
             .as_ref()
             .and_then(|b| b.session.outbound_stall().cloned())
+    }
+
+    /// The tables in the shared document too large to read: a peer grew each past
+    /// the read's budget, and the model shows it as a one-cell placeholder. While
+    /// any exists, the editor is **frozen**: every local edit is refused, as a
+    /// [read-only](Self::set_read_only) editor refuses it (typing, commands, paste,
+    /// undo and loads answer `false`; the caret, selection and copy still work), and
+    /// [`Self::collab_outbound_stall`] reports [`CollabError::OversizedTable`] naming
+    /// the tables — because no diff against a placeholder can be trusted not to delete
+    /// real content, and an edit kept to ship later is lost to the next inbound change.
+    /// An app should say so ("a collaborator added a table too large to load — delete
+    /// it to keep editing"). Cure it with [`Self::collab_delete_oversized_table`], or wait for a
+    /// peer to delete or shrink the table. Empty when not collaborating.
+    pub fn collab_oversized_tables(&self) -> Vec<OversizedTable> {
+        let Ok(core) = self.inner.try_borrow() else {
+            return Vec::new();
+        };
+        core.collab
+            .as_ref()
+            .map(|b| b.session.oversized_tables())
+            .unwrap_or_default()
+    }
+
+    /// Delete the table too large to read named `id` (an [`OversizedTable::id`] from
+    /// [`Self::collab_oversized_tables`]) from the shared document, for every peer:
+    /// the one change that may touch it, and it works while frozen (it is not a model
+    /// edit). Its placeholder leaves the model, and once no such table is left editing
+    /// works again. Not undoable. `Ok(false)` when `id` is not in
+    /// [`Self::collab_oversized_tables`] **now** (a peer deleted the table, or shrank
+    /// it back into a readable one) or this editor is not collaborating.
+    #[cfg(feature = "collaboration")]
+    pub fn collab_delete_oversized_table(&self, id: &str) -> Result<bool, CollabError> {
+        let mut core = self.core_mut();
+        // A read-only editor writes nothing to the shared document (as its loads).
+        if core.collab.is_none() || core.read_only {
+            return Ok(false);
+        }
+        let prev = core.state.clone();
+        let bridge = core.collab.as_mut().unwrap();
+        let Some(next) = bridge.session.delete_oversized_table(&prev, id)? else {
+            return Ok(false);
+        };
+        match bridge.session.save_incremental() {
+            Ok(delta) if !delta.is_empty() => untracked_handler(|| (bridge.outbound)(delta)),
+            Ok(_) => {}
+            Err(e) => bridge.last_error = Some(e),
+        }
+        if !prev.doc.same_ref(&next.doc) {
+            core.carry_anchors(&next.doc, None);
+            core.carry_caret_hint(&prev, &next);
+            core.note_selection(&prev.selection, &next.selection);
+            core.state = next.clone();
+            if let Some(view) = core.view.as_mut() {
+                view.update_dom(&prev, &next);
+            }
+        }
+        drop(core);
+        // The freeze may have lifted: a runtime keeping per-editor input state (the
+        // web capture field's `readonly`) hears it here, as from `set_read_only`.
+        crate::registry::request_overlay_refresh();
+        Ok(true)
     }
 
     /// Take (and clear) the most recent collaboration error — e.g. an edit outside
@@ -6310,6 +6402,39 @@ mod tests {
             assert_eq!(doc_text(&guest), "quoted!\nli", "one block per line");
             assert_eq!(shape(&guest), shape(&host));
             assert_eq!(guest.doc().child(0).type_name(), "paragraph");
+        }
+
+        #[test]
+        fn table_edits_sync_to_the_peer() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ok")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            let shape = |h: &EditorHandle| format!("{:?}", h.doc());
+
+            // A table, typing in a cell, a column and a merge: every one syncs.
+            host.set_selection(Selection::cursor(Pos(3)));
+            assert!(host.command("insertTable"));
+            assert!(
+                host.collab_take_error().is_none(),
+                "a table is supported and must not fail loud"
+            );
+            let doc = host.doc();
+            let table_at = (0..doc.child_count())
+                .take_while(|&i| doc.child(i).type_name() != "table")
+                .map(|i| doc.child(i).node_size())
+                .sum::<usize>();
+            // table, row, cell, paragraph: the first cell's text starts four in.
+            host.set_selection(Selection::cursor(Pos(table_at + 4)));
+            assert!(host.insert_text("cell"));
+            assert!(host.command("addColumnAfter"));
+            assert!(host.collab_take_error().is_none());
+            assert_eq!(
+                shape(&guest),
+                shape(&host),
+                "the guest holds the same table"
+            );
+            assert!(doc_text(&guest).contains("cell"));
         }
 
         /// Seeded fuzz over the real `EditorHandle` wiring: two handles relay random

@@ -320,7 +320,7 @@ fn schedule_overlay_pass() {
 /// which `set_read_only` requests through the overlay refresher.
 fn sync_capture_read_only(handle: &EditorHandle) {
     if let Some(ta) = capture_target() {
-        let read_only = handle.is_read_only();
+        let read_only = handle.refuses_edits();
         if ta.read_only() != read_only {
             ta.set_read_only(read_only);
         }
@@ -1266,7 +1266,7 @@ fn on_cut(event: &web_sys::ClipboardEvent) {
         return;
     };
     event.prevent_default();
-    if handle.is_read_only() {
+    if handle.refuses_edits() {
         return;
     }
     if let Some((html, text)) = handle.selection_clipboard()
@@ -2268,7 +2268,7 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
                 // A read-only editor refuses the text but still owns the key, as
                 // on desktop: left unconsumed, a typed letter would go on to the
                 // page's own shortcuts and Space would scroll it.
-                handle.insert_text(&key) || handle.is_read_only()
+                handle.insert_text(&key) || handle.refuses_edits()
             } else {
                 false
             }

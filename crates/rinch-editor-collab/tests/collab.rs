@@ -949,22 +949,33 @@ fn concurrent_list_item_edit_and_appended_item_converge() {
 }
 
 #[test]
-fn table_still_fails_loud() {
-    // The scope is narrowed, not removed: lists project, but a table (and its rows/cells)
-    // is still out of scope and must fail loud rather than be silently mangled.
+fn a_ragged_table_fails_loud() {
+    // Tables are in scope, but only ones whose cells tile a rectangle: a ragged row
+    // has no cell for a slot, which the projection cannot carry (its read always
+    // yields a full grid). The editor's commands never make one; a paste can.
     let schema = Rc::new(Schema::starter_kit());
-    let cell = schema
-        .branch("table_cell", Fragment::from_node(para(&schema, "x")))
+    let cell = |t: &str| {
+        schema
+            .branch("table_cell", Fragment::from_node(para(&schema, t)))
+            .unwrap()
+    };
+    let wide = schema
+        .branch(
+            "table_row",
+            Fragment::from_children(vec![cell("a"), cell("b")]),
+        )
         .unwrap();
-    let row = schema
-        .branch("table_row", Fragment::from_node(cell))
+    let short = schema
+        .branch("table_row", Fragment::from_node(cell("c")))
         .unwrap();
-    let table = schema.branch("table", Fragment::from_node(row)).unwrap();
+    let table = schema
+        .branch("table", Fragment::from_children(vec![wide, short]))
+        .unwrap();
     let doc = doc_of(&schema, vec![table]);
     let err = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap_err();
     assert!(
         matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
-        "a table must still fail loud, got {err:?}"
+        "a ragged table must fail loud, got {err:?}"
     );
 }
 

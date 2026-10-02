@@ -1224,3 +1224,78 @@ fn stall_and_heal_with_a_void_container_present() {
     assert_eq!(html(&b.state.doc), "<p>p0A</p><p>p1B</p>");
     assert_eq!(a.state.doc, b.state.doc);
 }
+
+// --- equal siblings (#1240) ------------------------------------------------------------
+
+/// A container's children are matched by the model's identity, not their value: with
+/// three empty paragraphs in a quote, deleting the first deletes the first, and a
+/// peer's typing in the third survives. By value, the third was the one deleted.
+#[test]
+fn deleting_one_of_several_equal_paragraphs_in_a_quote_keeps_a_peers_typing() {
+    for doc in concurrently(
+        |s| {
+            vec![
+                quote(s, vec![para(s, ""), para(s, ""), para(s, "")]),
+                para(s, "tail"),
+            ]
+        },
+        |a| a.delete(1, 3),
+        |b| b.type_at(6, "keep"),
+    ) {
+        let q = doc.child(0);
+        assert_eq!(q.child_count(), 2, "{}", html(&doc));
+        assert!(html(q.child(1)).contains("keep"), "{}", html(&doc));
+    }
+}
+
+#[test]
+fn deleting_one_of_several_equal_list_items_keeps_a_peers_typing() {
+    for doc in concurrently(
+        |s| vec![bullets(s, vec!["", "", ""]), para(s, "tail")],
+        |a| a.delete(1, 5),
+        |b| b.type_at(11, "keep"),
+    ) {
+        let list = doc.child(0);
+        assert_eq!(list.child_count(), 2, "{}", html(&doc));
+        assert!(html(list.child(1)).contains("keep"), "{}", html(&doc));
+    }
+}
+
+/// The same inside a quote nested in a list item: identity is carried down through
+/// every level, not only the first.
+#[test]
+fn equal_paragraphs_two_levels_down_keep_a_peers_typing() {
+    for doc in concurrently(
+        |s| {
+            let item = branch(
+                s,
+                "list_item",
+                vec![
+                    para(s, "item"),
+                    quote(s, vec![para(s, ""), para(s, ""), para(s, "")]),
+                ],
+            );
+            vec![branch(s, "bullet_list", vec![item]), para(s, "tail")]
+        },
+        // list(0) > item(1) > p"item"(2..8) > quote(8) > p(9..11) p(11..13) p(13..15)
+        |a| a.delete(9, 11),
+        |b| b.type_at(14, "keep"),
+    ) {
+        let q = doc.child(0).child(0).child(1);
+        assert_eq!(q.child_count(), 2, "{}", html(&doc));
+        assert!(html(q.child(1)).contains("keep"), "{}", html(&doc));
+    }
+}
+
+/// The top-level twin: the document's own blocks match by identity too.
+#[test]
+fn deleting_one_of_several_equal_top_level_paragraphs_keeps_a_peers_typing() {
+    for doc in concurrently(
+        |s| vec![para(s, ""), para(s, ""), para(s, ""), para(s, "tail")],
+        |a| a.delete(0, 2),
+        |b| b.type_at(5, "keep"),
+    ) {
+        assert_eq!(doc.child_count(), 3, "{}", html(&doc));
+        assert!(html(doc.child(1)).contains("keep"), "{}", html(&doc));
+    }
+}
