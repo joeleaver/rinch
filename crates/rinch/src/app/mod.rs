@@ -116,6 +116,8 @@ mod key_event_data_tests;
 #[cfg(test)]
 mod key_repeat_tests;
 #[cfg(test)]
+mod key_up_redraw_486_tests;
+#[cfg(test)]
 mod late_children_716_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod menu_chord_text_focus_1169_tests;
