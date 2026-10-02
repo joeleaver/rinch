@@ -107,7 +107,7 @@ fn layout_xy(doc: &RinchDocument, node: NodeId) -> (f32, f32) {
 /// rect. Neither half of that is what happens.
 ///
 /// CSS resolves an absolute box against its containing block's **padding box**,
-/// and Taffy 0.12 already does: `compute/block.rs` subtracts `resolved_border`
+/// and Taffy already does: `compute/block.rs` subtracts `resolved_border`
 /// from the containing block and nothing else. Paint then descends into a block
 /// child at the parent's *border-box* origin and adds the child's own
 /// `layout.{x,y}`, into which Taffy has already baked border + inset — so the

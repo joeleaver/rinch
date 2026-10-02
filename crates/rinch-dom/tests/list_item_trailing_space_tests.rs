@@ -17,7 +17,7 @@
 //!    so what is left — nothing, or the rest of the spaces — makes one more line.
 //!    Any `pre-wrap` block does this when a space is typed at the right edge.
 //!
-//! The paragraph came out two lines tall, and the marker, which Taffy 0.12
+//! The paragraph came out two lines tall, and the marker, which rinch
 //! baseline-aligns by its bottom edge (see
 //! [`a_multi_line_flex_items_baseline_is_its_bottom_edge_not_its_first_line`]),
 //! went down with it (#1013).
@@ -244,14 +244,15 @@ fn right_aligned_text_hangs_its_spaces_past_the_edge() {
 }
 
 /// **A stated divergence, not a fix.** Baseline alignment in a flex row should
-/// line the items' *first* baselines up (css-flexbox-1 §8.3). Taffy 0.12 cannot
-/// be told a leaf's baseline: its measure function returns a size, and
-/// `compute_leaf_layout` reports `first_baselines: Point::NONE`, so every item's
-/// baseline is synthesized from its bottom border edge (block containers report
-/// none either). A marker beside a three-line paragraph is aligned with the
-/// paragraph's **bottom**, at `y = 50`; Chrome puts it on the first line, at
-/// `y = 0`. Taffy 0.14 lets the measure return a `LayoutOutput` with baselines
-/// (#1013).
+/// line the items' *first* baselines up (css-flexbox-1 §8.3). rinch's measure
+/// closures report no baseline: they return `compute_leaf_layout`'s output,
+/// whose `baselines` are `Baselines::NONE`, so every text leaf's and IFC root's
+/// baseline is synthesized from its bottom border edge — and a block container
+/// around one, which on Taffy 0.14 does report its first child's first
+/// baseline, inherits that synthesized one. A marker beside a three-line
+/// paragraph is aligned with the paragraph's **bottom**, at `y = 50`; Chrome
+/// puts it on the first line, at `y = 0`. Taffy 0.14 lets the measure set
+/// `baselines` in the `LayoutOutput` it returns; doing so is #1013.
 ///
 /// `flex: 1 1 0` keeps the paragraph beside the marker (Chrome: paragraph
 /// `19.5,0,180.5x75`, marker `0,0,13.5x25`).

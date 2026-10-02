@@ -606,9 +606,13 @@ matches a browser only where `auto` already gives the same used size (issue
 browser does — measured, an item whose content is 300px wide gets 300px in such
 a track and 800px in an `auto` one — because Taffy implements intrinsic sizing
 for track sizing functions. (`fit-content(<length-percentage>)` is converted for
-tracks too.) It is only a *box's own* `width`/`height`/`min-*`/`max-*` that
-cannot carry one, so this is not a missing line in a conversion table —
-implementing it needs a measurement pass of rinch's own.
+tracks too.) A *box's own* `width`/`height`/`min-*`/`max-*` is where it stops.
+Taffy 0.14, which rinch has used since #1236, can lay the keywords out on a
+box's `width`, `height` and `flex-basis`, but rinch does not hand them over yet
+(#691) — the upgrade deliberately kept every keyword at `auto`. `min-*`/`max-*` cannot
+carry a keyword in Taffy at all, and an `inline-block` is laid out as a Taffy
+root, where the keyword has no effect, so those still need a measurement pass
+of rinch's own.
 
 ### When `auto` happens to be the right answer
 

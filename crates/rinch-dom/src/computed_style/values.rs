@@ -272,20 +272,22 @@ pub enum DimensionValue {
     /// An intrinsic sizing keyword, which **does not lay out yet** (#626): it
     /// reaches Taffy as `auto`, so the used size is whatever `auto` would give.
     ///
-    /// Taffy 0.12 cannot be handed one. `taffy::Dimension` is a newtype over
-    /// `CompactLength`, and while that type does carry `MIN_CONTENT_TAG` /
-    /// `MAX_CONTENT_TAG` / `FIT_CONTENT_*_TAG`, only the **grid track sizing**
-    /// functions ever read them: `Dimension`'s own resolver
-    /// (`MaybeResolve for Dimension`, taffy-0.12.2 `src/util/resolve.rs:57`)
-    /// matches `AUTO`/`LENGTH`/`PERCENT`/calc and ends `_ => unreachable!()`,
-    /// and `Dimension` exposes no safe constructor for the intrinsic tags at
-    /// all. So a `size`/`min_size`/`max_size` carrying one **panics** in
-    /// layout rather than shrink-wrapping — pinned by
-    /// `tests/intrinsic_sizing_tests.rs`, which is what fails if a future
-    /// Taffy bump makes this representable.
+    /// Until #1236 rinch used Taffy 0.12, which could not be handed one: its
+    /// `Dimension` had no safe constructor for the intrinsic tags and its
+    /// resolver ended `_ => unreachable!()`, so a size carrying one panicked.
+    /// Taffy 0.14 lays the keywords out on `size` and `flex_basis` — of a box
+    /// that is not a Taffy root — and has no representation for them at all on
+    /// `min_size`/`max_size`, which are `LengthPercentageAuto`. rinch still
+    /// hands Taffy `auto` — the bump itself changed layout only in a handful
+    /// of Chrome-ward shapes, pinned in `tests/taffy_014_layout_changes_tests.rs`,
+    /// none of them a keyword — and making
+    /// [`DimensionValue::to_taffy`] the mapping for `width`/`height`/
+    /// `flex-basis` is #691. `tests/intrinsic_sizing_tests.rs` pins both
+    /// halves.
     ///
-    /// Implementing them therefore needs a rinch-side measurement pass, not a
-    /// mapping. In the meantime the declaration is at least *inspectable* —
+    /// The `min-*`/`max-*` keywords, and a keyword on a box rinch computes as
+    /// a Taffy root (an atomic inline), still need a rinch-side measurement
+    /// pass. In the meantime the declaration is at least *inspectable* —
     /// the MCP's `GetComputedStyles` serializes this enum, so it now reports
     /// `{"Intrinsic": "MaxContent"}` where it used to say `"Auto"` — and
     /// `from_stylo` prints one line per property and keyword per process, so
@@ -308,25 +310,43 @@ pub enum DimensionValue {
 impl DimensionValue {
     /// Convert to Taffy Dimension.
     ///
-    /// A `Calc` cannot be represented in a Taffy value — Taffy 0.12's calc
-    /// pointer (`CompactLength::calc`) only works for callers implementing the
+    /// A `Calc` cannot be represented in a Taffy value — Taffy's calc pointer
+    /// (`CompactLength::calc`) only works for callers implementing the
     /// layout-tree traits themselves; `TaffyTree`'s `resolve_calc_value` is
-    /// hardcoded to `0.0` (taffy-0.12.2, `src/tree/taffy_tree.rs:391`). So the
+    /// hardcoded to `0.0` (taffy-0.14.0, `src/tree/taffy_tree.rs:387`). So the
     /// length part goes in as a *seed* and `resolve_layout_calcs`
     /// (`calc_layout.rs`) overwrites it with the resolved length before a
     /// layout result is read — on the converged path; a run that hits the
     /// fixpoint's iteration cap reads the last iterate (see `calc_layout.rs`).
     /// An [`Intrinsic`](Self::Intrinsic) keyword has no Taffy representation
-    /// either, and unlike a `Calc` no later pass repairs it: it goes in as
-    /// `auto` and stays `auto` (#626). See that variant for why Taffy 0.12
-    /// cannot be handed one.
+    /// in this conversion yet, and unlike a `Calc` no later pass repairs it:
+    /// it goes in as `auto` and stays `auto` (#626). Taffy 0.14 could take one
+    /// here (`Dimension::max_content()` and siblings); mapping it is #691,
+    /// deliberately left out of the Taffy bump (#1236), which kept every
+    /// keyword at `auto`.
     pub fn to_taffy(&self) -> taffy::Dimension {
         match self {
             Self::Auto => taffy::Dimension::auto(),
             Self::Length(v) => taffy::Dimension::length(*v),
             Self::Percent(v) => taffy::Dimension::percent(*v),
             Self::Calc { px, .. } => taffy::Dimension::length(px.max(0.0)),
+            // TODO(#691): map to `Dimension::{max_content, min_content,
+            // fit_content, stretch}()` — Taffy 0.14 lays them out.
             Self::Intrinsic(_) => taffy::Dimension::auto(),
+        }
+    }
+
+    /// Convert to the `LengthPercentageAuto` Taffy 0.14 stores `min_size` and
+    /// `max_size` as. Same mapping as [`Self::to_taffy`]; an
+    /// [`Intrinsic`](Self::Intrinsic) keyword goes in as `auto` here for good,
+    /// since Taffy's min/max sizes have no keyword representation at all.
+    pub fn to_taffy_lpa(&self) -> taffy::LengthPercentageAuto {
+        match self {
+            Self::Auto => taffy::LengthPercentageAuto::auto(),
+            Self::Length(v) => taffy::LengthPercentageAuto::length(*v),
+            Self::Percent(v) => taffy::LengthPercentageAuto::percent(*v),
+            Self::Calc { px, .. } => taffy::LengthPercentageAuto::length(px.max(0.0)),
+            Self::Intrinsic(_) => taffy::LengthPercentageAuto::auto(),
         }
     }
 
