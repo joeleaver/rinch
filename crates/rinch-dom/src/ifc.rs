@@ -397,7 +397,14 @@ fn phantom_last_line(layout: &parley::Layout<Brush>) -> Option<usize> {
 /// One step of an IFC's parley tree-builder program, recorded by
 /// [`IfcText`] and replayed once the whole IFC has been walked (#1180).
 enum IfcOp<'a> {
-    Span(Vec<parley::style::StyleProperty<'a, Brush>>),
+    // 'static, not 'a: every property `inline_style_props` pushes is a Copy
+    // value or (since #677) an owned `FontFamily` resolved through
+    // `fonts::parley_font_family` — nothing in a span borrows from the node
+    // slab's `'a`. `parley::TreeBuilder::push_style_modification_span` takes
+    // its own independent `'s: 'iter` generic pair and resolves each property
+    // within the call, so a `'static` item costs nothing at the replay site
+    // in [`IfcText::finish`].
+    Span(Vec<parley::style::StyleProperty<'static, Brush>>),
     Pop,
     Text(std::borrow::Cow<'a, str>),
     InlineBox(parley::InlineBox),
@@ -627,7 +634,7 @@ impl<'a> IfcText<'a> {
         self.len
     }
 
-    pub(crate) fn push_span(&mut self, props: Vec<parley::style::StyleProperty<'a, Brush>>) {
+    pub(crate) fn push_span(&mut self, props: Vec<parley::style::StyleProperty<'static, Brush>>) {
         self.ops.push(IfcOp::Span(props));
     }
 
@@ -6157,13 +6164,16 @@ impl RinchDocument {
             &mut decoration_spans,
             &mut flat_pos,
             scale,
+            font_cx,
         );
         // An emoji-presentation cluster is shaped with the root's stack, its
-        // generics replaced by their primary face (#1204). Every text in an
-        // IFC is shaped in the root's family (an inline element's own
-        // `font-family` is not pushed), so one emoji family serves them all.
-        // Asked only when some text could hold one, after the walk and before
-        // the builder borrows the font context.
+        // generics replaced by their primary face (#1204), whatever family an
+        // enclosing inline element pushed for its own text (#677): emoji
+        // handling is root-wide, not per-span, so one emoji family serves the
+        // whole IFC even though a `<code>` or `<kbd>` span now shapes its own
+        // ordinary glyphs in its own family. Asked only when some text could
+        // hold one, after the walk and before the builder borrows the font
+        // context.
         let emoji_family = if ifc_text.may_hold_emoji() {
             crate::fonts::parley_emoji_font_family(font_cx, &root_computed.font_family)
         } else {
@@ -6644,6 +6654,7 @@ impl RinchDocument {
         };
         a.font_size == b.font_size
             && a.font_weight == b.font_weight
+            && a.font_family == b.font_family
             && a.font_style == b.font_style
             && a.color == b.color
             && a.text_decoration == b.text_decoration
@@ -6677,11 +6688,31 @@ impl RinchDocument {
     /// box but is still in the inheritance chain, so the two arms owe their
     /// children the same properties; only the *box*-shaped work (the background
     /// span) is the inline element's alone.
-    fn inline_style_props<'a>(
-        computed: &'a crate::computed_style::ComputedStyle,
+    ///
+    /// **Includes `font-family` (#677).** Without it a span inherited the IFC
+    /// root's family whatever its own computed style said — `<code>`'s
+    /// `font-family: monospace` inside a paragraph rendered in the paragraph's
+    /// proportional face. Resolved through [`crate::fonts::parley_font_family`],
+    /// the same generic/fallback resolution the root's own family goes through
+    /// in [`Self::build_inline_layout`], so a generic such as `monospace` on a
+    /// span is resolved identically to one on the root. One known gap stays
+    /// open: an emoji-presentation cluster inside such a span is still shaped
+    /// with the *root's* emoji family ([`Self::build_inline_layout`]'s
+    /// `emoji_family`, computed once from `root_computed.font_family`), not the
+    /// span's — out of scope for #677, which is about text glyphs, not emoji.
+    // The leading unconditional pushes (`FontFamily` through `FontStyle`) read
+    // as a `vec![]` candidate in isolation, but the conditional pushes further
+    // down mean the whole function cannot be one literal.
+    #[allow(clippy::vec_init_then_push)]
+    fn inline_style_props(
+        computed: &crate::computed_style::ComputedStyle,
         scale: f32,
-    ) -> Vec<parley::style::StyleProperty<'a, Brush>> {
-        let mut props: Vec<parley::style::StyleProperty<'a, Brush>> = Vec::new();
+        font_cx: &mut parley::FontContext,
+    ) -> Vec<parley::style::StyleProperty<'static, Brush>> {
+        let mut props: Vec<parley::style::StyleProperty<'static, Brush>> = Vec::new();
+        props.push(parley::style::StyleProperty::FontFamily(
+            crate::fonts::parley_font_family(font_cx, &computed.font_family),
+        ));
         props.push(parley::style::StyleProperty::FontSize(
             computed.font_size * scale,
         ));
@@ -6866,6 +6897,7 @@ impl RinchDocument {
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
         flat_pos: &mut usize,
         scale: f32,
+        font_cx: &mut parley::FontContext,
     ) {
         // As in `mark_inline_descendants`: an anonymous box's content is its
         // recorded run, not its (empty) `children` (#566). The two must walk
@@ -6972,7 +7004,7 @@ impl RinchDocument {
             };
             let bridged = bridged_style.is_some();
             if let Some(owner_style) = bridged_style {
-                builder.push_span(Self::inline_style_props(owner_style, scale));
+                builder.push_span(Self::inline_style_props(owner_style, scale, font_cx));
             }
             match &child.kind {
                 NodeKind::Text(text_data) => {
@@ -7046,7 +7078,7 @@ impl RinchDocument {
                     let bg_start = *flat_pos;
                     let has_bg = child_computed.background_color().is_some();
 
-                    builder.push_span(Self::inline_style_props(child_computed, scale));
+                    builder.push_span(Self::inline_style_props(child_computed, scale, font_cx));
                     child_positions.push((child_id, LayoutResult::default()));
 
                     // Recurse into inline element's children
@@ -7060,6 +7092,7 @@ impl RinchDocument {
                         decoration_spans,
                         flat_pos,
                         scale,
+                        font_cx,
                     );
 
                     builder.pop_span();
@@ -7118,7 +7151,11 @@ impl RinchDocument {
                         &nodes[parent_id].computed_style,
                     );
                     if styled {
-                        builder.push_span(Self::inline_style_props(&child.computed_style, scale));
+                        builder.push_span(Self::inline_style_props(
+                            &child.computed_style,
+                            scale,
+                            font_cx,
+                        ));
                     }
                     Self::walk_inline_children(
                         nodes,
@@ -7130,6 +7167,7 @@ impl RinchDocument {
                         decoration_spans,
                         flat_pos,
                         scale,
+                        font_cx,
                     );
                     if styled {
                         builder.pop_span();
