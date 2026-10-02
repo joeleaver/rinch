@@ -170,6 +170,10 @@ fn two_separators_wrap_after_each_and_nowrap_does_not_wrap() {
     for (ws, text, h) in [
         ("normal", "xxx\u{2028}\u{2028}xxx", 75.0),
         ("pre-wrap", "xxx\u{2028}\u{2028}xxx", 75.0),
+        // What U+2028 is laid out as, written out: a ZERO WIDTH SPACE is a
+        // break opportunity before the NBSP after it (UAX #14 LB8), 75 in
+        // Chrome 153 too.
+        ("normal", "xxx\u{a0}\u{200b}\u{a0}\u{200b}xxx", 75.0),
         ("nowrap", "xxx\u{2028}xxx", 25.0),
         ("pre", "xxx\u{2028}xxx", 25.0),
     ] {
