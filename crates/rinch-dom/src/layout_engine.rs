@@ -719,8 +719,11 @@ impl RinchDocument {
                                     } else {
                                         known_dims.width.or(max_width)
                                     };
-                                    let leaf =
-                                        crate::ifc::break_leaf_lines(&mut layout, wrap_width);
+                                    let leaf = crate::ifc::break_leaf_lines(
+                                        &mut layout,
+                                        &text.content,
+                                        wrap_width,
+                                    );
                                     let mut h = hang.get();
                                     h.add(leaf);
                                     hang.set(h);

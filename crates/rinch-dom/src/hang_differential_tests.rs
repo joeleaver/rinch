@@ -8,8 +8,10 @@
 //! drifts from the breaker would put a line's spaces on the wrong line with
 //! nothing else noticing. So the old loop is kept here, verbatim apart from
 //! NBSP (which the review's F2 made not hang in both), as the oracle: on
-//! random paragraphs of words, spaces, tabs, NBSPs, newlines and inline boxes
-//! at random widths, both must commit the same lines.
+//! random paragraphs of words, spaces, tabs, newlines and inline boxes at
+//! random widths, both must commit the same lines. (Not NBSPs any more: the
+//! linear pass also breaks again a line parley ended by hanging one, #1218,
+//! which the old loop did not; the invariant test keeps them.)
 
 use peniko::Brush;
 
@@ -204,6 +206,11 @@ fn the_linear_pass_commits_the_lines_the_restarting_loop_did() {
     let (mut fixed, mut lines_fixed, mut dropped) = (0u32, 0u32, 0u32);
     for case in 0..1200 {
         let (text, boxes) = paragraph(&mut rng, false);
+        // The restarting loop keeps parley's break after an NBSP it hung (or
+        // widens past it), which the linear pass breaks again (#1218), so it
+        // is no oracle for an NBSP: each becomes a letter here. The test
+        // below keeps them, and checks that no line ends in a hung one.
+        let text = text.replace('\u{a0}', "n");
         let max = 8.0 + rng.below(160) as f32 + rng.below(100) as f32 / 100.0;
         let mut want = build(&mut fcx, &mut lcx, &text, &boxes);
         reference(&mut want, &text, max);
@@ -263,6 +270,7 @@ fn with_inline_boxes_every_line_is_in_step_and_none_is_left_unhung() {
     let mut lcx = parley::LayoutContext::new();
     let mut rng = Rng(0x1018_b0c5_0000_0001);
     let mut fixed_lines = 0u32;
+    let mut overflowing_checked = 0u32;
     for case in 0..1200 {
         let (text, boxes) = paragraph(&mut rng, true);
         let max = 8.0 + rng.below(160) as f32 + rng.below(100) as f32 / 100.0;
@@ -294,6 +302,15 @@ fn with_inline_boxes_every_line_is_in_step_and_none_is_left_unhung() {
                     None,
                     "case {case} line {i} left unhung: {text:?} {boxes:?} at {max}"
                 );
+                // #1218: and no line ends right after an NBSP parley hung —
+                // only before an inline box (parley breaks before a box that
+                // does not fit whatever precedes it).
+                let before_box = boxes.iter().any(|&(at, _)| at == line.text_range().end);
+                assert!(
+                    before_box || !units[..end].last().is_some_and(|u| u.nbsp),
+                    "case {case} line {i} hung an NBSP: {text:?} {boxes:?} at {max}"
+                );
+                overflowing_checked += 1;
             }
             cursor = end;
         }
@@ -301,5 +318,10 @@ fn with_inline_boxes_every_line_is_in_step_and_none_is_left_unhung() {
     assert!(
         fixed_lines > 800,
         "positive control: {fixed_lines} lines fixed"
+    );
+    // Positive control for the NBSP check: overflowing Regular lines reached.
+    assert!(
+        overflowing_checked > 1000,
+        "{overflowing_checked} lines checked"
     );
 }
