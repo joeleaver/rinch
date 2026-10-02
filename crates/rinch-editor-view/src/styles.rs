@@ -120,9 +120,9 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    line of its own, leaving the bullet alone above it (#1246; Chrome does the
    same with that CSS). As blocks, the text wraps beside the marker, a second
    paragraph and a nested list start their own lines under the text, and no
-   alignment rule is involved — rinch-dom's Taffy baseline-aligns a multi-line
-   flex item by its bottom edge (#1013), which put a flex marker beside the
-   paragraph's last line. */
+   alignment rule is involved (rinch-dom used to baseline-align a multi-line
+   flex item by its bottom edge, which put a flex marker beside the paragraph's
+   last line; fixed by #1013). */
 [data-pm-editor] ul, [data-pm-editor] ol { padding-left: 1.6em; margin: 0 0 0.75em; }
 [data-pm-editor] li { position: relative; margin: 0.15em 0; }
 [data-pm-editor] li > span:not([data-pm-type]) { position: absolute; top: 0; right: 100%; white-space: pre; }

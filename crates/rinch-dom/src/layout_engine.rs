@@ -632,8 +632,11 @@ impl RinchDocument {
                     // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
                     // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
                     // `TaffyView` ran around the size this body returns, with the
-                    // same `0.0` calc resolver.
-                    taffy::compute_leaf_layout(
+                    // same `0.0` calc resolver. The body also says where its
+                    // first line's baseline is, from the content-box top, and
+                    // `with_first_baseline` hands it to Taffy (#1013).
+                    let mut first_baseline: Option<f32> = None;
+                    let out = taffy::compute_leaf_layout(
                         inputs,
                         style,
                         |_, _| 0.0,
@@ -731,6 +734,7 @@ impl RinchDocument {
                                     // Use wrap_width bits as part of the key since layout depends on it
                                     let wrap_bits =
                                         wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                                    first_baseline = crate::ifc::first_line_baseline(&layout);
                                     text_layout_cache
                                         .borrow_mut()
                                         .insert((text.node_id, wrap_bits), layout);
@@ -809,11 +813,12 @@ impl RinchDocument {
                                             .borrow()
                                             .get(&root_id)
                                             .and_then(|e| e.get(wrap_bits));
-                                        if let Some((cached_w, cached_h)) = cached {
+                                        if let Some(m) = cached {
                                             cache_hits.set(cache_hits.get() + 1);
+                                            first_baseline = m.first_baseline;
                                             return taffy::Size {
-                                                width: known_dims.width.unwrap_or(cached_w),
-                                                height: known_dims.height.unwrap_or(cached_h),
+                                                width: known_dims.width.unwrap_or(m.width),
+                                                height: known_dims.height.unwrap_or(m.height),
                                             };
                                         }
                                     }
@@ -828,13 +833,22 @@ impl RinchDocument {
                                     hang.set(h);
                                     let w = inline_layout.measured_width();
                                     let h = inline_layout.layout.height();
+                                    first_baseline =
+                                        crate::ifc::first_line_baseline(&inline_layout.layout);
 
                                     // Store in persistent cache
                                     ifc_measure_cache
                                         .borrow_mut()
                                         .entry(root_id)
                                         .or_default()
-                                        .insert(wrap_bits, (w, h));
+                                        .insert(
+                                            wrap_bits,
+                                            crate::node::IfcMeasure {
+                                                width: w,
+                                                height: h,
+                                                first_baseline,
+                                            },
+                                        );
 
                                     // Measure callback for IFC root
                                     taffy::Size {
@@ -853,7 +867,8 @@ impl RinchDocument {
                                 _ => taffy::Size::ZERO,
                             }
                         },
-                    )
+                    );
+                    crate::ifc::with_first_baseline(out, &inputs, style, first_baseline)
                 },
             )
             .unwrap();

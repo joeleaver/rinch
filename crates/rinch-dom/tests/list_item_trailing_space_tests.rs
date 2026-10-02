@@ -17,10 +17,11 @@
 //!    so what is left — nothing, or the rest of the spaces — makes one more line.
 //!    Any `pre-wrap` block does this when a space is typed at the right edge.
 //!
-//! The paragraph came out two lines tall, and the marker, which rinch
-//! baseline-aligns by its bottom edge (see
-//! [`a_multi_line_flex_items_baseline_is_its_bottom_edge_not_its_first_line`]),
-//! went down with it (#1013).
+//! The paragraph came out two lines tall, and the marker, which rinch then
+//! baseline-aligned by the paragraph's bottom edge, went down with it. Since
+//! #1013 a measure reports its first line's baseline (see
+//! [`a_multi_line_flex_items_baseline_is_its_first_line`]), so a two-line
+//! paragraph would no longer move the marker; the two fixes are independent.
 //!
 //! Every expected number below is Chrome 153's, measured with the same markup and
 //! the same face (the bundled Inter, registered here under an override name so
@@ -243,21 +244,16 @@ fn right_aligned_text_hangs_its_spaces_past_the_edge() {
     assert!((at.0 - 46.67).abs() < 0.1, "`text` x {}", at.0);
 }
 
-/// **A stated divergence, not a fix.** Baseline alignment in a flex row should
-/// line the items' *first* baselines up (css-flexbox-1 §8.3). rinch's measure
-/// closures report no baseline: they return `compute_leaf_layout`'s output,
-/// whose `baselines` are `Baselines::NONE`, so every text leaf's and IFC root's
-/// baseline is synthesized from its bottom border edge — and a block container
-/// around one, which on Taffy 0.14 does report its first child's first
-/// baseline, inherits that synthesized one. A marker beside a three-line
-/// paragraph is aligned with the paragraph's **bottom**, at `y = 50`; Chrome
-/// puts it on the first line, at `y = 0`. Taffy 0.14 lets the measure set
-/// `baselines` in the `LayoutOutput` it returns; doing so is #1013.
+/// Baseline alignment in a flex row lines the items' *first* baselines up
+/// (css-flexbox-1 §8.3), so a marker beside a three-line paragraph sits on its
+/// first line. Until #1013 rinch's measures reported no baseline, Taffy
+/// synthesized each item's from its bottom border edge, and the marker sat on
+/// the paragraph's last line, at `y = 50`.
 ///
 /// `flex: 1 1 0` keeps the paragraph beside the marker (Chrome: paragraph
 /// `19.5,0,180.5x75`, marker `0,0,13.5x25`).
 #[test]
-fn a_multi_line_flex_items_baseline_is_its_bottom_edge_not_its_first_line() {
+fn a_multi_line_flex_items_baseline_is_its_first_line() {
     let mut d = doc();
     let body = d.body();
     let li = el(
@@ -278,7 +274,7 @@ fn a_multi_line_flex_items_baseline_is_its_bottom_edge_not_its_first_line() {
     d.resolve_layout(VW, VH);
     assert_eq!(boxof(&d, p), (20.0, 0.0, 180.0, 3.0 * LINE));
     // Chrome: (0, 0, 13.5, 25).
-    assert_eq!(boxof(&d, marker), (0.0, 2.0 * LINE, 14.0, LINE));
+    assert_eq!(boxof(&d, marker), (0.0, 0.0, 14.0, LINE));
 }
 
 /// The space counts only as far as the available width reaches; past it, it

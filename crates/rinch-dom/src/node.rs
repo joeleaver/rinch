@@ -2043,10 +2043,26 @@ pub struct IfcRootMeasures {
     /// looked at it, or `None` if it has not seen it since the entry was
     /// created. See `RinchDocument::refresh_ifc_signatures`.
     pub signature: Option<u64>,
-    /// `(available-width bits, (width, height))`, one per available space the
+    /// `(available-width bits, measure)`, one per available space the
     /// measure function was asked about, newest last, at most
     /// [`IfcRootMeasures::MAX_SIZES`].
-    pub sizes: Vec<(u32, (f32, f32))>,
+    pub sizes: Vec<(u32, IfcMeasure)>,
+}
+
+/// What an IFC root's measure answered under one available width: the content
+/// size Taffy was given and the first line's baseline (#1013), both from the
+/// same Parley build.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IfcMeasure {
+    /// The content-box width (`InlineLayout::measured_width`).
+    pub width: f32,
+    /// The content-box height.
+    pub height: f32,
+    /// The first line's baseline, from the top of the **content** box, or
+    /// `None` when the root laid out no line. The measure closure adds the
+    /// box's top padding and border before handing it to Taffy, which
+    /// measures baselines from the border-box top.
+    pub first_baseline: Option<f32>,
 }
 
 impl IfcRootMeasures {
@@ -2057,8 +2073,8 @@ impl IfcRootMeasures {
     /// as the root lived.
     pub const MAX_SIZES: usize = 8;
 
-    /// The size measured under `bits`, if any.
-    pub fn get(&self, bits: u32) -> Option<(f32, f32)> {
+    /// The measure answered under `bits`, if any.
+    pub fn get(&self, bits: u32) -> Option<IfcMeasure> {
         self.sizes
             .iter()
             .rev()
@@ -2066,8 +2082,8 @@ impl IfcRootMeasures {
             .map(|&(_, s)| s)
     }
 
-    /// Record the size measured under `bits`, replacing an older one.
-    pub fn insert(&mut self, bits: u32, size: (f32, f32)) {
+    /// Record the measure answered under `bits`, replacing an older one.
+    pub fn insert(&mut self, bits: u32, size: IfcMeasure) {
         self.sizes.retain(|(b, _)| *b != bits);
         if self.sizes.len() >= Self::MAX_SIZES {
             self.sizes.remove(0);
