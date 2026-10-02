@@ -14,7 +14,7 @@
 //! (`getBoundingClientRect`). The image is 40x30 — a ratio off 1:1, a width
 //! off the container's, so neither a stretch nor a square answer passes.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 
 /// A 40x30 PNG.
