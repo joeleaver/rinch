@@ -1033,6 +1033,12 @@ impl DomDocument for RinchDocument {
         crate::ifc::TAB_SPACES.len()
     }
 
+    /// U+2028, U+2029, U+0085 and U+000C as the inline formatting context
+    /// lays them out in preserved text (`ifc::PRESERVED_SUBSTITUTES`, #1181).
+    fn substituted_char_flat_bytes(&self) -> &'static [(char, usize)] {
+        &crate::ifc::PRESERVED_SUBSTITUTE_FLAT_BYTES
+    }
+
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
         use crate::text_query::caret_position_for_offset;
         caret_position_for_offset(self, node_id, byte_offset)
