@@ -186,6 +186,163 @@ fn the_stacking_context_creators_are_the_css_ones() {
          coordinate space with"
     );
     assert!(sc("position: sticky"));
+
+    assert!(
+        sc("filter: brightness(0.5)"),
+        "#542: a non-identity filter scalar is a stacking-context creator"
+    );
+    assert!(sc("filter: grayscale(1)"));
+    assert!(sc("filter: saturate(2)"));
+    assert!(sc("filter: hue-rotate(90deg)"));
+}
+
+/// A plain `div` — no flex/grid parent — ignores `z-index` at `position:
+/// static` whatever other creator it might look like it is missing. This is
+/// the sibling check to the `z-index: 5` row above: #542 adds a
+/// *conditional* static-position creator, and this pins that the condition
+/// (being a flex/grid item) is actually load-bearing, not a no-op that would
+/// make every static `z-index` count.
+#[test]
+fn a_static_non_item_box_still_ignores_z_index() {
+    assert!(!sc("z-index: 5"));
+    assert!(!sc("z-index: -1"));
+    assert!(!sc("z-index: 0"));
+}
+
+/// #542's filter arm is an approximation, not the CSS rule, and this is the
+/// fixed point the issue itself names: `filter: brightness(1)` is a genuine
+/// non-`none` filter (Chrome still makes it a stacking context) that happens
+/// to be numerically identical to "no filter" in how `ComputedStyle` stores
+/// it — four scalars defaulting to their function's identity value, with no
+/// separate "was a filter declared" bit. So this answers `false` here, which
+/// is the documented, accepted gap (`Node::has_non_identity_filter`'s doc),
+/// not something a `#542` fix is expected to close.
+#[test]
+fn filter_brightness_one_is_indistinguishable_from_no_filter() {
+    assert!(!sc("filter: brightness(1)"));
+    assert!(!sc(""), "and that is exactly the same answer as no filter at all");
+}
+
+/// `blur()` is the other named gap: only the four scalar functions survive
+/// `from_stylo`, so a filter that is *only* `blur()` leaves every scalar at
+/// its identity and this predicate cannot see it declared at all.
+#[test]
+fn a_blur_only_filter_is_not_detected() {
+    assert!(!sc("filter: blur(4px)"));
+}
+
+/// A flex or grid **item** at `position: static` with a non-`auto` `z-index`
+/// is a stacking context (css-flexbox-1 §5.4, css-grid-1 §6, #542) — the
+/// second creator the issue named, and the one that needs the item's layout
+/// parent rather than anything on the item's own `ComputedStyle`.
+fn item_sc(container_display: &str, item_style: &str) -> bool {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        &format!("display: {container_display}; width: 200px; height: 100px"),
+    );
+    doc.append_child(body, container);
+    let item = doc.create_element("div");
+    doc.set_attribute(
+        item,
+        "style",
+        &format!("width: 20px; height: 20px; {item_style}"),
+    );
+    doc.append_child(container, item);
+    doc.resolve_layout(800.0, 600.0);
+    doc.tree.get(item.0).unwrap().creates_stacking_context()
+}
+
+/// `z-index: 0` is deliberately avoided for the positive rows (the issue's
+/// own warning): the `(z_index, dom_order)` sort key decides nothing at `0`,
+/// so a fixture there would pass whether or not the item actually became a
+/// stacking context.
+#[test]
+fn a_static_flex_item_with_z_index_is_a_stacking_context() {
+    assert!(item_sc("flex", "z-index: 5"));
+    assert!(item_sc("flex", "z-index: -1"));
+    assert!(item_sc("inline-flex", "z-index: 5"));
+}
+
+#[test]
+fn a_static_grid_item_with_z_index_is_a_stacking_context() {
+    assert!(item_sc("grid", "z-index: 5"));
+    assert!(item_sc("inline-grid", "z-index: 5"));
+}
+
+#[test]
+fn a_static_flex_item_with_z_index_auto_is_not_a_stacking_context() {
+    assert!(!item_sc("flex", ""), "no z-index at all: auto, by default");
+}
+
+/// The condition is genuinely about the item, not about any box inside a flex
+/// container: a non-item descendant (one more level down, an ordinary block
+/// child of the item) must not pick this up just because *its* ancestor chain
+/// passes through a flex container somewhere above.
+#[test]
+fn a_grandchild_of_a_flex_container_is_not_itself_a_flex_item() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; width: 200px; height: 100px",
+    );
+    doc.append_child(body, container);
+    let item = doc.create_element("div");
+    doc.set_attribute(item, "style", "width: 100px; height: 100px");
+    doc.append_child(container, item);
+    let grandchild = doc.create_element("div");
+    doc.set_attribute(
+        grandchild,
+        "style",
+        "width: 20px; height: 20px; z-index: 5",
+    );
+    doc.append_child(item, grandchild);
+    doc.resolve_layout(800.0, 600.0);
+
+    assert!(
+        !doc.tree
+            .get(grandchild.0)
+            .unwrap()
+            .creates_stacking_context(),
+        "the grandchild's layout parent is `item`, a plain block, not the \
+         flex container two levels up"
+    );
+}
+
+/// A `display: contents` wrapper between a flex container and its would-be
+/// item does not block the fact (#998's own blockification rule, reused
+/// here): the item's *layout* parent skips straight past the boxless wrapper
+/// to the flex container.
+#[test]
+fn a_flex_item_behind_a_display_contents_wrapper_still_counts() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; width: 200px; height: 100px",
+    );
+    doc.append_child(body, container);
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", "display: contents");
+    doc.append_child(container, wrapper);
+    let item = doc.create_element("div");
+    doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+    doc.append_child(wrapper, item);
+    doc.resolve_layout(800.0, 600.0);
+
+    assert!(
+        doc.tree.get(item.0).unwrap().creates_stacking_context(),
+        "the wrapper generates no box, so the item's layout parent is the \
+         flex container right through it"
+    );
 }
 
 /// The trap dropping the `overflow` arm springs, stated as a test rather than a

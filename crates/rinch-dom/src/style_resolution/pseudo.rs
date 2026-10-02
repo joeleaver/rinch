@@ -7,6 +7,8 @@ use style::properties::ComputedValues;
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
 
+use super::resolve::style_is_flex_or_grid_container;
+
 impl RinchDocument {
     /// Resolve a pseudo-element (::before or ::after) for a given parent node.
     ///
@@ -34,6 +36,19 @@ impl RinchDocument {
         use crate::stylo_impl::RinchNode;
 
         let is_before = matches!(pseudo, PseudoElement::Before);
+
+        // #542: the generated box's flex/grid-item-ness, from the same layout
+        // parent `layout_parent` below blockifies against — computed ahead of
+        // that (narrower-scoped) local so it survives to where the box is
+        // created.
+        let layout_parent_is_flex_or_grid = if parent_style.clone_display().is_contents() {
+            let start = self.tree.nodes[parent_id].parent;
+            self.nearest_non_contents_style(start)
+                .map(|s| style_is_flex_or_grid_container(&s))
+                .unwrap_or_else(|| style_is_flex_or_grid_container(parent_style))
+        } else {
+            style_is_flex_or_grid_container(parent_style)
+        };
 
         // Query Stylo for pseudo-element declarations
         let pseudo_computed = {
@@ -203,6 +218,12 @@ impl RinchDocument {
             let span_raw = span_id.0;
             self.tree.nodes[span_raw].computed_style = pseudo_style;
             self.tree.nodes[span_raw].is_pseudo_element = true;
+            // #542: the same layout parent that blockified this generated box
+            // decides whether it is a flex/grid item for
+            // `Node::creates_stacking_context`'s flex/grid z-index creator.
+            self.tree.nodes[span_raw]
+                .is_flex_or_grid_item
+                .set(layout_parent_is_flex_or_grid);
             let mut data = style::data::ElementData::default();
             data.styles.primary = Some(pseudo_computed);
             *self.tree.nodes[span_raw].stylo_element_data.borrow_mut() = Some(data);

@@ -10,6 +10,20 @@ use style::invalidation::element::restyle_hints::RestyleHint;
 use crate::RinchDocument;
 use crate::node::DirtyFlags;
 
+/// Whether `style`'s **inside** is a flex or grid formatting context, by
+/// either outside — `flex`/`inline-flex`/`grid`/`inline-grid` all answer
+/// `true` (#542). `none` and `contents` generate no box and so no formatting
+/// context for anything to be an item of.
+pub(super) fn style_is_flex_or_grid_container(style: &ComputedValues) -> bool {
+    use style::values::specified::box_::DisplayInside;
+
+    let display = style.get_box().clone_display();
+    if display.is_none() || display.is_contents() {
+        return false;
+    }
+    matches!(display.inside(), DisplayInside::Flex | DisplayInside::Grid)
+}
+
 /// What an element's new style requires of its children's styles.
 ///
 /// Ordered: each variant asks for at least what the one before it does.
@@ -678,6 +692,16 @@ impl RinchDocument {
         // the parent is `display: contents` (#998). See
         // [`Self::layout_parent_style`].
         let layout_parent_style = self.layout_parent_style(node_id, parent_style.as_ref());
+
+        // #542: the same style decides whether this node is a flex/grid item
+        // for `Node::creates_stacking_context`'s flex/grid z-index creator —
+        // see [`Node::is_flex_or_grid_item`]'s doc for why this is the right
+        // place to read it.
+        self.tree.nodes[node_id].is_flex_or_grid_item.set(
+            layout_parent_style
+                .as_deref()
+                .is_some_and(style_is_flex_or_grid_container),
+        );
 
         // Compute styles in a block so borrows are dropped before recursion
         let computed = {
