@@ -409,13 +409,25 @@ fn form_control_content_width_any(
 /// text is shown): `round(a + b × font-size + shape(string))`. Fit by
 /// subtracting [`cached_label_width`]'s own (bundled-Inter) shape from each
 /// Chrome 153 measurement at 8–40px, then least-squares over the residual
-/// against font-size; worst residual ~1px over the sweep — about the same
-/// residual the old pure-affine fit had, so no accuracy was given up for the
-/// Inter case this was calibrated against, while a different font now
-/// actually moves the answer (verified against Space Grotesk and the three
-/// generics; not pixel-exact — matching Chrome's own font-fallback choice
-/// for a generic name is a separate, unmodelled problem — but no longer
-/// flat).
+/// against font-size; worst residual ~1px over the sweep for **Inter, the
+/// font this was calibrated against** — about the same residual the old
+/// pure-affine fit had, so no accuracy was given up there.
+///
+/// **A different font now moves the answer, but is not pixel-exact.**
+/// Measured against real Chrome 153 (a fresh page per measurement, this
+/// crate's bundled Space Grotesk loaded through `@font-face`, 16px): `date`
+/// is 143 in Chrome and 147 here (+4px), `week` is 154 in Chrome and 151
+/// here (−3px) — the representative-string guess shapes close to, but not
+/// exactly as, whatever Chrome's own `-webkit-datetime-edit` shadow tree
+/// actually lays out in a face that isn't the calibration one. The system
+/// `serif`/`sans-serif`/`monospace` generics are worse — up to several tens
+/// of pixels off at `file` — because a generic name's own font-fallback
+/// resolution is a separate, unmodelled problem on top of the
+/// representative-string guess (this crate's own fallback choice for a bare
+/// generic name is not guaranteed to be the same physical font Chrome
+/// picks). None of this is pixel-exact for anything but the bundled Inter;
+/// what changed from the font-size-only fit is that a different font now
+/// moves the number *at all*, not that it moves to the right one.
 ///
 /// ```text
 /// date           = round(10.7594 + 2.3112 × font-size + shape("mm/dd/yyyy"))
@@ -431,14 +443,17 @@ fn form_control_content_width_any(
 /// paints (locale-dependent; this crate has no locale support and assumes
 /// `en-US`), checked only by how well they explain the Chrome 153 sweep
 /// above — not by reading Chromium's source or its shadow DOM. Two things
-/// this does not model: Chrome lays the date/time family out as several
-/// separate editable fields with their own letter-spacing edges, where this
-/// shapes one string, so `letter-spacing` (which this *does* read, via
-/// [`cached_label_width`]) under- or over-counts the number of spacing gaps
-/// relative to Chrome; and the per-type `a`/`b` chrome terms are fit against
-/// Inter alone, so they carry whatever Inter-specific residual the
-/// representative-string guess left behind, same as the text-width ceiling
-/// does for `<input>` (#1177). `ty` is already lowercased.
+/// this does not model, both measured rather than estimated: Chrome lays the
+/// date/time family out as several separate editable fields with their own
+/// letter-spacing edges, where this shapes one string, so `letter-spacing`
+/// (which this *does* read, via [`cached_label_width`] — it used to be
+/// silently dropped) under-counts the number of spacing gaps relative to
+/// Chrome — `letter-spacing: 2px` at 16px Inter: `month` is 201 in Chrome
+/// and 183 here (−18px), `file` 412 and 396 (−16px); and the per-type
+/// `a`/`b` chrome terms are fit against Inter alone, so they carry whatever
+/// Inter-specific residual the representative-string guess left behind,
+/// same as the text-width ceiling does for `<input>` (#1177). `ty` is
+/// already lowercased.
 fn picker_input_content_width(
     node: &Node,
     ty: &str,

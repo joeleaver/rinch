@@ -28,7 +28,10 @@
 //! through `@font-face` under the override name the fixtures register it
 //! with, `padding: 0; border: 0`; [`a_different_font_moves_the_picker_width`]
 //! additionally loads the bundled Space Grotesk to pin the font-sensitivity
-//! fix itself.
+//! fix itself — its `_sg` values are this crate's own computed output, and
+//! its doc comment states separately, and honestly, how far that is from
+//! real Chrome 153 (a few px; Inter is the only font this crate's picker fit
+//! is calibrated against).
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -217,23 +220,44 @@ fn a_bare_button_is_zero_wide() {
 /// Finding A, review of #1302: swapping the control's font-family moves the
 /// picker width, because the representative string is shaped in the
 /// control's own font rather than a font-size-only affine fit calibrated
-/// once against the bundled Inter. Values are this crate's own bundled
-/// Space Grotesk (also measured in Chrome 153: 147 and 151, within a couple
-/// px of these — the small residual is the per-type chrome term, fit only
-/// against Inter, carrying it). Before the fix, swapping the font changed
-/// nothing (the old formula read only `font_size`).
+/// once against the bundled Inter. The `_sg` values below are what **this
+/// crate** computes for its bundled Space Grotesk, not Chrome's — round 2 of
+/// the review caught an earlier version of this comment claiming they were
+/// "also measured in Chrome 153", which was false (it was this crate's own
+/// output, copied into the wrong slot). **Freshly re-measured against real
+/// Chrome 153** (a `data:` page per measurement, `document.fonts.check`
+/// before reading, Space Grotesk loaded through `@font-face`, 16px): `date`
+/// is **143** in Chrome (this crate: 147, +4px) and `week` is **154** in
+/// Chrome (this crate: 151, −3px) — so for a real, non-calibration font this
+/// is still a few px off, same order of residual as the letter-spacing and
+/// generic-font-fallback gaps `form_control.rs`'s own doc comment discloses.
+/// What the fix buys is that a different font moves the number *at all* —
+/// before it, swapping the font changed nothing (the old formula read only
+/// `font_size`), identically for every font including Chrome's own.
 #[test]
 fn a_different_font_moves_the_picker_width() {
     let date_inter = w_type_family("input", "ProbeFace", 16.0, "date", &[]);
     let date_sg = w_type_family("input", "ProbeFaceSG", 16.0, "date", &[]);
-    assert_eq!(date_inter, 143.0);
-    assert_eq!(date_sg, 147.0);
+    assert_eq!(
+        date_inter, 143.0,
+        "Chrome 153 and this crate agree on Inter"
+    );
+    assert_eq!(
+        date_sg, 147.0,
+        "this crate's own output for Space Grotesk — Chrome 153 measures 143 (+4px off)"
+    );
     assert_ne!(date_inter, date_sg);
 
     let week_inter = w_type_family("input", "ProbeFace", 16.0, "week", &[]);
     let week_sg = w_type_family("input", "ProbeFaceSG", 16.0, "week", &[]);
-    assert_eq!(week_inter, 157.0);
-    assert_eq!(week_sg, 151.0);
+    assert_eq!(
+        week_inter, 157.0,
+        "Chrome 153 and this crate agree on Inter"
+    );
+    assert_eq!(
+        week_sg, 151.0,
+        "this crate's own output for Space Grotesk — Chrome 153 measures 154 (-3px off)"
+    );
     assert_ne!(week_inter, week_sg);
 }
 
@@ -297,4 +321,92 @@ fn an_unrelated_restyle_reshapes_neither_a_label_nor_a_picker_string() {
         before + 1,
         "a font-size change reshapes its control"
     );
+}
+
+fn register_face(doc: &mut RinchDocument, family: &str) {
+    use parley::fontique::{Blob, FontInfoOverride};
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(FACE)),
+        Some(FontInfoOverride {
+            family_name: Some(family),
+            ..Default::default()
+        }),
+    );
+}
+
+/// Round-2 review of #1302 (mutant M3): a face registered **after** the
+/// control was first sized is picked up for its label shaping too —
+/// `cached_label_width`'s hash includes `font_generation`, mirroring
+/// `cached_char_metrics`'s own pin for the `size`/`cols` path
+/// (`a_face_registered_after_layout_resizes_the_control`,
+/// `form_control_intrinsic_width_tests.rs`). Before this test existed,
+/// dropping `font_generation.hash(&mut h)` from `cached_label_width`
+/// survived the whole crate's test suite unnoticed.
+#[test]
+fn a_late_registered_face_resizes_a_submit_label() {
+    let css = "font: 16px/20px LateFace, monospace; padding: 0; border: 0";
+    let fresh = {
+        let mut doc = RinchDocument::new();
+        register_face(&mut doc, "LateFace");
+        let body = doc.body();
+        let c = doc.create_element("input");
+        doc.set_attribute(c, "type", "submit");
+        doc.set_attribute(c, "style", css);
+        doc.append_child(body, c);
+        doc.resolve_layout(800.0, 600.0);
+        width(&doc, c)
+    };
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = doc.create_element("input");
+    doc.set_attribute(c, "type", "submit");
+    doc.set_attribute(c, "style", css);
+    doc.append_child(body, c);
+    doc.resolve_layout(800.0, 600.0);
+    let before = width(&doc, c);
+    assert_ne!(
+        before, fresh,
+        "sized from the monospace fallback before LateFace exists"
+    );
+
+    register_face(&mut doc, "LateFace");
+    doc.note_fonts_registered();
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        width(&doc, c),
+        fresh,
+        "now sized from LateFace, like `fresh`"
+    );
+}
+
+/// Round-2 review of #1302 (coverage gap flagged alongside M3): a
+/// `letter-spacing`-only change — no font family/size/weight/style move —
+/// does reshape a button label, because `letter_spacing` is in
+/// `cached_label_width`'s hash. Before this test existed, dropping
+/// `style.letter_spacing.to_bits().hash(&mut h)` from `cached_label_width`
+/// survived the whole crate's test suite unnoticed.
+#[test]
+fn a_letter_spacing_only_change_reshapes_a_button_label() {
+    use rinch_dom::perf::Counter;
+    let mut doc = document();
+    let body = doc.body();
+    let submit = el(
+        &mut doc,
+        body,
+        "input",
+        "font: 16px/20px ProbeFace; padding: 0; border: 0",
+    );
+    doc.set_attribute(submit, "type", "submit");
+    doc.resolve_layout(800.0, 600.0);
+    let w1 = width(&doc, submit);
+    let before = doc.tree.perf.frame().get(Counter::ShapeFormControlLabel);
+
+    doc.set_style(submit, "letter-spacing", "4px");
+    doc.resolve_layout(800.0, 600.0);
+    let w2 = width(&doc, submit);
+    let after = doc.tree.perf.frame().get(Counter::ShapeFormControlLabel);
+
+    assert_ne!(w1, w2, "letter-spacing widens the shaped label");
+    assert_eq!(after, before + 1, "the letter-spacing change reshapes it");
 }
