@@ -216,6 +216,10 @@ impl RinchDocument {
         // with a fresh pseudo cascade, whenever its originator is cascaded.
         {
             let span_raw = span_id.0;
+            // #542 (perf review): read before `pseudo_style` moves into the
+            // node below — the cached filter check, same reasoning as the
+            // main cascade in `style_resolution/mod.rs`.
+            let filter_creates_stacking_context = pseudo_style.has_non_identity_filter();
             self.tree.nodes[span_raw].computed_style = pseudo_style;
             self.tree.nodes[span_raw].is_pseudo_element = true;
             // #542: the same layout parent that blockified this generated box
@@ -224,6 +228,9 @@ impl RinchDocument {
             self.tree.nodes[span_raw]
                 .is_flex_or_grid_item
                 .set(layout_parent_is_flex_or_grid);
+            self.tree.nodes[span_raw]
+                .filter_creates_stacking_context
+                .set(filter_creates_stacking_context);
             let mut data = style::data::ElementData::default();
             data.styles.primary = Some(pseudo_computed);
             *self.tree.nodes[span_raw].stylo_element_data.borrow_mut() = Some(data);

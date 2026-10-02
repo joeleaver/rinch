@@ -1085,6 +1085,13 @@ pub struct Node {
     /// were positioned, even at `position: static`, and that needs this fact
     /// about the parent rather than anything the item's own cascade computes.
     pub is_flex_or_grid_item: Cell<bool>,
+    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
+    /// cached at the same cascade-time moment as [`Self::is_flex_or_grid_item`]
+    /// (#542, perf review). `creates_stacking_context` reads this field
+    /// instead of recomputing the four scalar compares on every hit-test and
+    /// paint walk; see that method's doc for why it is cached rather than
+    /// computed on the hot path.
+    pub filter_creates_stacking_context: Cell<bool>,
     /// Some descendant of this element needs its style recomputed — the path
     /// Stylo's invalidator marks from an invalidated element down to each
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
@@ -1327,6 +1334,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -1392,6 +1400,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -1456,6 +1465,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -1518,6 +1528,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -1669,11 +1680,23 @@ impl Node {
     /// which keeps only the four scalars). Both are the honest boundary of
     /// what is representable today, not something this predicate can close;
     /// see [`Self::creates_stacking_context`]'s doc.
+    ///
+    /// **A cached read, not a computation** (#542, perf review). The actual
+    /// four-scalar comparison is
+    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
+    /// run once at cascade time (`style_resolution/mod.rs`,
+    /// `style_resolution/pseudo.rs`) into
+    /// [`Self::filter_creates_stacking_context`]; this method just reads
+    /// that field. `creates_stacking_context` is on the hit-test and paint
+    /// hot paths — walked once per node per pointer move and per frame — so
+    /// four `f32` compares there, however cheap in isolation, showed up as a
+    /// real instruction-count regression in CI's Perf job
+    /// (`shell::pointer_move_warm.warm_x50` +11.95%,
+    /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
+    /// +3.56%, measured against this method computing from
+    /// `self.computed_style` directly on every call).
     pub fn has_non_identity_filter(&self) -> bool {
-        self.computed_style.filter_brightness != 1.0
-            || self.computed_style.filter_grayscale != 0.0
-            || self.computed_style.filter_saturate != 1.0
-            || self.computed_style.filter_hue_rotate != 0.0
+        self.filter_creates_stacking_context.get()
     }
 
     /// Whether `transform` **applies** to this node: it is not a non-atomic
