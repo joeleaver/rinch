@@ -100,3 +100,35 @@ fn a_block_image_with_no_source_is_zero_wide() {
         "Chrome 153: 0x0"
     );
 }
+
+/// #1150: a style width (or height) alone gives the other dimension through
+/// the image's ratio — inline, block, `inline-block` and as a flex item —
+/// and a `max-width` clamp carries over to the height. The image's measure
+/// used to see neither, so a lone `width: 100px` kept the natural 30 tall.
+#[test]
+fn one_style_dimension_gives_the_other_through_the_ratio() {
+    let flex = "width: 300px; display: flex; align-items: flex-start";
+    check(W300, "width: 100px", (0.0, 100.0, 75.0));
+    check(W300, "height: 60px", (0.0, 80.0, 60.0));
+    check(W300, "max-width: 20px", (0.0, 20.0, 15.0));
+    check(W300, "display: inline-block; width: 100px", (0.0, 100.0, 75.0));
+    check(W300, "display: block; width: 100px", (0.0, 100.0, 75.0));
+    check("width: 320px", "display: block; width: 50%", (0.0, 160.0, 120.0));
+    check(W300, "display: block; max-height: 15px", (0.0, 20.0, 15.0));
+    check(flex, "width: 100px", (0.0, 100.0, 75.0));
+    check(flex, "height: 60px", (0.0, 80.0, 60.0));
+    check(flex, "", (0.0, 40.0, 30.0));
+}
+
+/// The ratio applies to the content box: Chrome 153 gives `width: 90px;
+/// padding: 5px` (border-box) 90x70 — an 80x60 image inside 5px of padding.
+/// (Sized so no answer is a half pixel: rinch rounds its layout to whole
+/// pixels. `content-box` is not asserted: rinch reads no `box-sizing`, #1278.)
+#[test]
+fn the_ratio_holds_the_content_box_not_the_padding() {
+    check(
+        W300,
+        "display: block; width: 90px; padding: 5px",
+        (0.0, 90.0, 70.0),
+    );
+}

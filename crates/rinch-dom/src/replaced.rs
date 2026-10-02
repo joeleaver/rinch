@@ -54,6 +54,15 @@ pub fn is_replaced_without_content(node: &Node) -> bool {
     node.tag().is_some_and(has_default_object_size)
 }
 
+/// Whether a block container sizes `node` as a replaced element rather than
+/// stretching it to its own width (CSS 2.1 §10.3.4): an `<img>` (#788) and
+/// [`is_replaced_without_content`]'s three. Read into Taffy's
+/// `item_is_replaced`.
+pub fn is_unstretched_replaced(node: &Node) -> bool {
+    node.tag()
+        .is_some_and(|tag| tag == "img" || has_default_object_size(tag))
+}
+
 /// The measure context `node` is owed, or `None` for any other element.
 pub fn replaced_context(node: &Node) -> Option<NodeContext> {
     let tag = node.tag()?;

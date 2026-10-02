@@ -763,24 +763,18 @@ impl RinchDocument {
                                         // Image still loading — return zero size
                                         return taffy::Size::ZERO;
                                     }
-                                    let aspect = iw / ih;
-                                    // Use intrinsic dimensions as default, but respect
-                                    // CSS width/height if set (via known_dims from Taffy style).
-                                    // Maintain aspect ratio when only one dimension is constrained.
-                                    let w = match (known_dims.width, known_dims.height) {
-                                        (Some(kw), _) => kw,
-                                        (None, Some(kh)) => kh * aspect,
-                                        (None, None) => iw,
-                                    };
-                                    let h = match (known_dims.height, known_dims.width) {
-                                        (Some(kh), _) => kh,
-                                        (None, Some(kw)) => kw / aspect,
-                                        (None, None) => ih,
-                                    };
-                                    taffy::Size {
-                                        width: w,
-                                        height: h,
-                                    }
+                                    // A replaced element with a natural size and
+                                    // ratio (#788, #1150): a style width or height
+                                    // gives the other through the ratio, and so do
+                                    // `min-*`/`max-*` clamps.
+                                    crate::replaced::measure(
+                                        (iw, ih),
+                                        true,
+                                        known_dims,
+                                        style,
+                                        inputs.parent_size,
+                                        inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                    )
                                 }
                                 Some(NodeContext::InlineRoot(root_id)) => {
                                     let root_id = *root_id;
