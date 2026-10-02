@@ -89,6 +89,47 @@ fn explicit_and_clamped_widths_still_apply() {
     );
 }
 
+/// A style size **and** a clamp on the same axis: the other dimension follows
+/// the clamped size, not the declared one (review of #1292). The `Image`
+/// component's shape with a cap, `width: 100%; max-width: 100px` in a 300px
+/// block, is 100x75 in Chrome 153; taking the height from the unclamped 300
+/// gave 100x225, an image painted 2.25x too tall.
+#[test]
+fn a_clamped_style_size_transfers_its_clamped_value() {
+    let flex = "display: flex; width: 300px; height: 200px";
+    let column = "display: flex; flex-direction: column; width: 300px";
+    check(
+        W300,
+        "display: block; width: 100%; height: auto; max-width: 100px",
+        (0.0, 100.0, 75.0),
+    );
+    check(
+        W300,
+        "display: block; height: 100px; max-height: 45px",
+        (0.0, 60.0, 45.0),
+    );
+    check(
+        W300,
+        "display: block; width: 100%; max-width: 100px; min-height: 90px",
+        (0.0, 100.0, 90.0),
+    );
+    check(column, "display: block; max-width: 100px", (0.0, 100.0, 75.0));
+    check(flex, "display: block; max-height: 45px", (0.0, 60.0, 45.0));
+}
+
+/// A width the parent hands the image (a column flex item's stretch) is a
+/// border-box width: the ratio holds the content box inside the padding.
+/// Chrome 153: a 330px column stretches a `padding: 5px` image to 330x250
+/// (a 320x240 image).
+#[test]
+fn a_stretched_padded_image_keeps_the_ratio_of_its_content_box() {
+    check(
+        "display: flex; flex-direction: column; width: 330px",
+        "display: block; padding: 5px",
+        (0.0, 330.0, 250.0),
+    );
+}
+
 #[test]
 fn a_column_flex_item_image_is_still_stretched() {
     // `item_is_replaced` is the block algorithm's flag; a flex container
