@@ -164,7 +164,15 @@ fn an_idle_app_redraws_nothing() {
             (ClipMaskPx, 25600),
             (HitTests, 1),
             (HitTestNodesVisited, 3),
-            (HitExtentsComputed, 14),
+            // 14 → 15 (#509, #826): `static_page`'s `<style>` element is
+            // `display: none` by the UA sheet and carries its CSS source as
+            // a text child — the exact #509 shape. Before the fix that text
+            // was wrongly flowed by the `<style>` element's own (dead) IFC,
+            // so `flow_extent`'s `child.is_text() && child.ifc_root.is_some()`
+            // skip excused it from a `hit_extents_computed` bump of its own;
+            // fixed, it carries no `ifc_root` and is walked as an ordinary
+            // (0x0, harmless) child once.
+            (HitExtentsComputed, 15),
         ],
     );
 }
@@ -741,9 +749,16 @@ fn mount_scroller() -> (RinchApp, NodeHandle) {
 /// **One hit test** routes the notch (#911 — the render-surface check and the
 /// scroll routing used to run one each). It finds the hit cache **cold** — the
 /// mount's layout dropped it and nothing has probed since — so it computes
-/// **498** extents, once: the next notch keeps them (see
+/// **499** extents, once: the next notch keeps them (see
 /// `a_second_wheel_notch_recomputes_no_extent`). Paint visits **24** nodes for
 /// the ~20 rows on screen; it visited all 504 until #910.
+///
+/// 498 → 499 (#509, #826): `mount_scroller`'s `<style>` element is
+/// `display: none` with its CSS source as a text child, the #509 shape —
+/// before the fix that text was wrongly flowed by the `<style>` element's
+/// own (dead) IFC, so `flow_extent`'s text-with-an-`ifc_root` skip excused it
+/// from its own extent computation; fixed, it is walked once as an ordinary
+/// (0x0) child.
 #[test]
 fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
     let (mut app, scroller) = mount_scroller();
@@ -779,7 +794,7 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (PaintSurfaceAllocs, 1),
             (HitTests, 1),
             (HitTestNodesVisited, 4),
-            (HitExtentsComputed, 498),
+            (HitExtentsComputed, 499),
         ],
     );
 }
@@ -1160,6 +1175,13 @@ fn full_repaint_region_too_large() {
 
 /// A `<style>` element was added: a whole-document restyle, which can change
 /// any node's paint without naming one.
+///
+/// `shape_ifc_build` and `ifc_signature_changes` are 0, not 1 (#509, #826):
+/// the appended `<style>` is `display: none` with its CSS text as a child —
+/// the #509 shape — and no longer establishes an IFC over that text at all,
+/// so it is never queued for a Parley build or counted as a changed
+/// signature. Before the fix it was wrongly flowed by its own (dead,
+/// unpainted) IFC and paid both.
 #[test]
 fn full_repaint_restyle() {
     let mut app = static_page();
@@ -1183,10 +1205,8 @@ fn full_repaint_restyle() {
             (FullRestyleStylesheet, 1),
             (FullStyleWalks, 1),
             (TaffyStyleSyncs, 217),
-            (ShapeIfcBuild, 1),
             (ShapePaint, 1),
             (IfcMeasureInvalidations, 2),
-            (IfcSignatureChanges, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
