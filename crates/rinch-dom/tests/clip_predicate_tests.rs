@@ -420,14 +420,18 @@ mod painted {
         assert_eq!(pixel_at(&painter, 150, 150), NOTHING);
     }
 
-    /// One axis is enough, and it is the axis the old predicate could not see.
+    /// One axis is enough, and it is the axis the old predicate could not see
+    /// — and, since #535, the *other* axis staying `visible` really does leave
+    /// its overhang unclipped, matching CSS rather than contradicting it.
     ///
-    /// The vertical assertion pins a **known deviation, not the CSS answer**:
     /// `overflow-y` computes to `visible` here (css-overflow-3 pairs `clip`
-    /// with `visible`), so CSS would paint the vertical overhang. rinch clips
-    /// both axes with one rect, which hit testing has always done and paint now
-    /// matches. Per-axis clipping is #535; when it lands, this assertion
-    /// becomes `RED` and the comment goes away.
+    /// with `visible`, measured by `stylo_pairs_a_non_visible_axis_with_auto`
+    /// below), so a correct per-axis clip paints the vertical overhang and
+    /// only the vertical one: (150, 50) is overhanging in x alone and still
+    /// goes, (150, 150) overhangs in x (which alone is enough to cut it,
+    /// whatever y says), and (50, 150) — x inside the container, y
+    /// overhanging — is the one pixel this test exists to flip from `NOTHING`
+    /// to `RED`.
     #[test]
     fn overflow_x_clip_clips_without_the_other_axis_saying_anything() {
         let (mut doc, container, _child) = overhang("overflow-x: clip");
@@ -448,9 +452,14 @@ mod painted {
         );
         assert_eq!(
             pixel_at(&painter, 50, 150),
+            RED,
+            "the y axis says visible, so CSS paints the vertical overhang — \
+             and so must rinch (#535)"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
             NOTHING,
-            "known deviation: rinch clips both axes with one rect, so the \
-             vertical overhang goes too. CSS would paint it."
+            "x alone is enough to cut this corner, whatever y says"
         );
     }
 
