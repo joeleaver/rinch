@@ -1991,10 +1991,11 @@ impl ApplicationHandler for RinchRuntime {
                     },
                 ..
             } => {
-                // Check menu shortcuts first — if matched, consume the event
+                // Check menu shortcuts first — if matched, consume the event.
+                // A chord with no Ctrl/Cmd/Alt leaves its key to a focused
+                // text field (#1169).
                 let mods = self.translate_modifiers();
-                if crate::menu::match_shortcut(mods.ctrl, mods.meta, mods.alt, mods.shift, key_code)
-                {
+                if self.app.try_menu_shortcut(mods, key_code) {
                     // Shortcut matched and callback dispatched; request redraw
                     if let Some(w) = &self.window {
                         w.request_redraw();

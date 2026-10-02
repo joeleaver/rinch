@@ -541,12 +541,106 @@ fn prune_callback(menu_id: &str, entry: &Rc<MenuCallback>) {
 /// (pruned by [`dispatch_menu_event`]) must not shadow a live duplicate, and a
 /// chord registered for an item with no callback at all must fall through to the
 /// app instead of eating that key combination forever.
+///
+/// `text_focus` says whether a text target holds the keyboard; a chord that
+/// [`chord_yields_to_text_input`] then matches nothing (#1169).
 #[cfg(feature = "desktop")]
-pub(crate) fn match_shortcut(ctrl: bool, meta: bool, alt: bool, shift: bool, key: KeyCode) -> bool {
+pub(crate) fn match_shortcut(
+    ctrl: bool,
+    meta: bool,
+    alt: bool,
+    shift: bool,
+    key: KeyCode,
+    text_focus: bool,
+) -> bool {
     let Some(code) = key_code_name(key) else {
         return false;
     };
+    if text_focus && chord_yields_to_text_input(ctrl, meta, alt, code) {
+        return false;
+    }
     match_shortcut_code(ctrl, meta, alt, shift, code)
+}
+
+/// Whether a keystroke belongs to a focused text field rather than to a menu
+/// chord (issue #1169).
+///
+/// A chord with no Ctrl, Cmd or Alt is the same keystroke a text field types
+/// or edits with: `"/"`, `"N"`, `"Shift+/"`, `"Space"`, `"Backspace"`,
+/// `"ArrowLeft"`. Matched first, it took that key from every field while its
+/// item was live — typing `/` into an `<input>` inserted nothing. So while a
+/// text target holds the keyboard such a keystroke is the field's: both
+/// backends ask this before matching, and the chord answers only when focus is
+/// elsewhere. Shift does not change the answer (it types `?` or extends a
+/// selection).
+///
+/// The keys that yield are the ones a field acts on: letters, digits,
+/// punctuation, `Space`, and the editing keys `Enter`, `Backspace`, `Delete`,
+/// `Home`, `End`, `PageUp`, `PageDown` and the arrows. `Escape`, `Tab` and
+/// `F1`–`F12` do not: a field types nothing with them, so a bare `"F5"` or
+/// `"Escape"` item still fires from inside one. A chord holding Ctrl, Cmd or
+/// Alt never yields.
+///
+/// `code` is the W3C `KeyboardEvent.code` name, as [`match_shortcut_code`]
+/// takes it.
+pub fn chord_yields_to_text_input(ctrl: bool, meta: bool, alt: bool, code: &str) -> bool {
+    if ctrl || meta || alt {
+        return false;
+    }
+    let letter_or_digit = code
+        .strip_prefix("Key")
+        .or_else(|| code.strip_prefix("Digit"))
+        .is_some_and(|rest| rest.len() == 1);
+    letter_or_digit
+        || matches!(
+            code,
+            "Space"
+                | "Equal"
+                | "Minus"
+                | "Backquote"
+                | "Backslash"
+                | "BracketLeft"
+                | "BracketRight"
+                | "Comma"
+                | "Period"
+                | "Quote"
+                | "Semicolon"
+                | "Slash"
+                | "IntlBackslash"
+                | "Enter"
+                | "Backspace"
+                | "Delete"
+                | "Home"
+                | "End"
+                | "PageUp"
+                | "PageDown"
+                | "ArrowUp"
+                | "ArrowDown"
+                | "ArrowLeft"
+                | "ArrowRight"
+        )
+}
+
+/// Whether an `<input>` of this `type` takes typed text — the half of "is a
+/// text target focused" that [`chord_yields_to_text_input`]'s callers share
+/// (#1169). Every type does but the ones with no text to type into:
+/// `checkbox`, `radio`, `range`, `color`, `file`, `hidden`, `image` and the
+/// three buttons. Case-insensitive, as HTML reads the attribute; an absent or
+/// unknown type is `text`.
+pub fn input_type_takes_text(ty: &str) -> bool {
+    !matches!(
+        ty.to_ascii_lowercase().as_str(),
+        "checkbox"
+            | "radio"
+            | "range"
+            | "color"
+            | "file"
+            | "hidden"
+            | "image"
+            | "button"
+            | "submit"
+            | "reset"
+    )
 }
 
 /// Check whether a keyboard event matches a registered menu shortcut, keyed by
@@ -2174,7 +2268,7 @@ mod tests {
             registration.register_shortcut(&chord, &id);
 
             assert!(
-                match_shortcut(true, false, true, false, key),
+                match_shortcut(true, false, true, false, key, false),
                 "{chord}: the desktop keystroke ({key:?}) must fire the item"
             );
             assert!(
@@ -2202,7 +2296,14 @@ mod tests {
         let mut registration = MenuRegistration::default();
         registration.register_callback("space-chord", cb, None);
         registration.register_shortcut("Ctrl+Alt+Space", "space-chord");
-        assert!(match_shortcut(true, false, true, false, KeyCode::Space));
+        assert!(match_shortcut(
+            true,
+            false,
+            true,
+            false,
+            KeyCode::Space,
+            false
+        ));
         assert!(match_shortcut_code(true, false, true, false, "Space"));
         assert_eq!(fired.get(), 2);
         assert!(!match_shortcut_code(true, false, true, false, " "));
@@ -2221,7 +2322,14 @@ mod tests {
         let mut registration = MenuRegistration::default();
         registration.register_callback("help", cb, None);
         registration.register_shortcut("Ctrl+Shift+/", "help");
-        assert!(match_shortcut(true, false, false, true, KeyCode::Slash));
+        assert!(match_shortcut(
+            true,
+            false,
+            false,
+            true,
+            KeyCode::Slash,
+            false
+        ));
         assert!(match_shortcut_code(true, false, false, true, "Slash"));
         assert_eq!(fired.get(), 2);
 
@@ -2506,5 +2614,106 @@ mod modifier_spelling_tests {
             parse_shortcut_for_matching("Ctrl+Shift+C+A").is_none(),
             "two keys"
         );
+    }
+
+    /// Every code a modifier-less chord leaves to a focused text field
+    /// (#1169), bare and with Shift — and none of them with Ctrl, Cmd or Alt
+    /// held alone. Each is listed, not sampled: a code dropped from the list
+    /// would take its key from every field again.
+    #[test]
+    fn every_text_key_yields_bare_and_shifted_and_never_with_a_modifier() {
+        let mut yielding: Vec<String> = Vec::new();
+        yielding.extend(('A'..='Z').map(|c| format!("Key{c}")));
+        yielding.extend(('0'..='9').map(|c| format!("Digit{c}")));
+        yielding.extend(
+            [
+                "Equal",
+                "Minus",
+                "Backquote",
+                "Backslash",
+                "BracketLeft",
+                "BracketRight",
+                "Comma",
+                "Period",
+                "Quote",
+                "Semicolon",
+                "Slash",
+                "IntlBackslash",
+                "Space",
+                "Enter",
+                "Backspace",
+                "Delete",
+                "Home",
+                "End",
+                "PageUp",
+                "PageDown",
+                "ArrowUp",
+                "ArrowDown",
+                "ArrowLeft",
+                "ArrowRight",
+            ]
+            .map(String::from),
+        );
+        for code in &yielding {
+            // Shift is not an argument: it never changes the answer.
+            assert!(
+                chord_yields_to_text_input(false, false, false, code),
+                "{code}"
+            );
+            assert!(
+                !chord_yields_to_text_input(true, false, false, code),
+                "Ctrl+{code}"
+            );
+            assert!(
+                !chord_yields_to_text_input(false, true, false, code),
+                "Cmd+{code}"
+            );
+            assert!(
+                !chord_yields_to_text_input(false, false, true, code),
+                "Alt+{code}"
+            );
+        }
+        for code in [
+            "Escape", "Tab", "F1", "F5", "F12", "KeyAB", "Digit10", "Key", "",
+        ] {
+            assert!(
+                !chord_yields_to_text_input(false, false, false, code),
+                "{code}"
+            );
+        }
+    }
+
+    /// The `<input>` types with no text to type into, in any case, and the
+    /// ones that do take text — an absent or unknown type is `text` (#1169).
+    #[test]
+    fn input_type_takes_text_refuses_exactly_the_non_text_types_in_any_case() {
+        for ty in [
+            "checkbox", "radio", "range", "color", "file", "hidden", "image", "button", "submit",
+            "reset",
+        ] {
+            assert!(!input_type_takes_text(ty), "{ty}");
+            assert!(
+                !input_type_takes_text(&ty.to_ascii_uppercase()),
+                "{ty} upper"
+            );
+            let mixed: String = ty
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i % 2 == 0 {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            assert!(!input_type_takes_text(&mixed), "{mixed}");
+        }
+        for ty in [
+            "", "text", "TEXT", "search", "number", "email", "password", "url", "tel", "date",
+            "bogus",
+        ] {
+            assert!(input_type_takes_text(ty), "{ty:?}");
+        }
     }
 }
