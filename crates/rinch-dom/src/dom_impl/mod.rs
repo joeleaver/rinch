@@ -392,6 +392,83 @@ impl RinchDocument {
                 display: inline-block;
             }
 
+            /* The text controls' own box and font (issue #1194). Every value is
+               Chrome 153's, measured with `getComputedStyle` under a parent
+               declaring `font: italic bold 20px/40px serif`, letter- and
+               word-spacing, `text-transform: uppercase` and `text-align:
+               right` — so each one here is a value the control does *not*
+               inherit. Chrome writes the font as `-webkit-small-control`,
+               which computes `normal 400 13.3333px/normal`, family Arial for an
+               `<input>` and monospace for a `<textarea>` and the date/time
+               inputs. `white-space` and `overflow-wrap` still inherit on an
+               `<input>` and are reset on a `<textarea>`.
+
+               With #1177 a control's width is its font's average character
+               width times `size`/`cols`, so the font is not cosmetic: a raw
+               input under a 16px serif body is 158px wide in Chrome, from its
+               own 13.3333px Arial. The rinch theme's `font-family: inherit` on
+               form controls still wins (an author rule), and keeps the size,
+               as it does in Chrome under the same sheet.
+
+               Cascade rules, so an author declaration beats every one of them —
+               except `overflow` on an `<input>`, which Chrome forces to `clip`
+               with `!important` (an author `overflow: auto` still computes
+               `clip`), and not on a checkbox, radio or range. A textarea's
+               `overflow: auto` is not a rule at all: Chrome computes `visible`
+               on one as `auto` after the cascade, whoever declared it, and
+               rinch does the same in `apply_stylo_styles_to_taffy` — which
+               covers the default too, so a UA `overflow: auto` here would be
+               dead.
+
+               The box rule covers the text states and the date/time family.
+               The button types (`submit`, `reset`, `button`) and `color` carry
+               padding and borders of their own in Chrome that rinch does not
+               model, and keep none here; `<button>` and `<select>` are not
+               touched by the font rule (#1194 is about the text controls). */
+            input, textarea {
+                font-style: normal;
+                font-weight: normal;
+                font-size: 13.333333px;
+                line-height: normal;
+                letter-spacing: normal;
+                word-spacing: normal;
+                text-transform: none;
+                text-indent: 0;
+                text-align: start;
+            }
+
+            input {
+                font-family: Arial;
+                padding: 1px 2px;
+                border: 2px inset rgb(118, 118, 118);
+            }
+
+            input:is([type=checkbox i], [type=radio i], [type=range i], [type=file i],
+                     [type=image i], [type=hidden i], [type=submit i], [type=reset i],
+                     [type=button i], [type=color i]) {
+                padding: 0;
+                border: 0 none;
+            }
+
+            input:is([type=date i], [type=month i], [type=week i], [type=time i],
+                     [type=datetime-local i]) {
+                font-family: monospace;
+                padding: 0;
+                padding-inline-start: 1px;
+            }
+
+            input:not([type=checkbox i], [type=radio i], [type=range i]) {
+                overflow: clip !important;
+            }
+
+            textarea {
+                font-family: monospace;
+                padding: 2px;
+                border: 1px solid rgb(118, 118, 118);
+                white-space: pre-wrap;
+                overflow-wrap: break-word;
+            }
+
             /* A closed <select> shows the selected option's label (painted by the
                backend) plus a dropdown arrow — its <option>/<optgroup> children are
                not laid out, so its size comes from its widest option label

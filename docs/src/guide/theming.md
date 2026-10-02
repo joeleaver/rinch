@@ -174,6 +174,41 @@ Four things about that set are worth knowing before they surprise you.
   per-family default size, so `<code>` keeps the size it inherits. Only the
   family comes from the UA sheet.
 
+#### Text controls
+
+A raw `<input>` or `<textarea>` carries the browser's own box and font (issue
+#1194, every value measured in Chrome 153). The input components (`TextInput`,
+`Textarea`, `NumberInput`, `PasswordInput`, `ColorInput`) declare their own
+border, padding and font size, so this is about controls you write by hand:
+
+| control | box | font and text |
+|---------|-----|---------------|
+| text-state `<input>` (no `type`, `text`, `search`, `email`, `password`, `number`, …) | `padding: 1px 2px`, `border: 2px inset` grey | `13.3333px` Arial, weight and style `normal`, `line-height: normal` |
+| date/time `<input>` | `padding: 0 0 0 1px` (inline start only), the same border | the same, in monospace |
+| `checkbox`, `radio`, `range`, `file`, `image`, `hidden` | none | the same 13.3333px font |
+| the button types, `color` | none in rinch — Chrome gives `submit`/`reset`/`button` `1px 6px` and a `2px outset` border, `color` `1px 2px` and a `1px solid` one (not modelled yet) | the same 13.3333px font |
+| `<textarea>` | `padding: 2px`, `border: 1px solid` grey | `13.3333px` monospace, `white-space: pre-wrap`, `overflow-wrap: break-word` |
+
+Both controls also reset `letter-spacing`, `word-spacing`, `text-transform`,
+`text-indent` and `text-align` rather than inheriting them. The font is not
+cosmetic: a control is `size` (or `cols`) average characters of its **own**
+font wide.
+
+Overflow follows Chrome too. An `<input>` other than a checkbox, radio or range
+is `overflow: clip`, and stays `clip` whatever you declare (the UA rule is
+`!important`). A `<textarea>`'s computed overflow is `auto`, and a `visible` you
+declare on either axis computes `auto` (a `hidden` or `clip` is kept), so a raw
+textarea shrinks as a flex item instead of holding its full width. rinch does
+not yet lay out or scroll a textarea's text, so it shows no scrollbar and takes
+no wheel even when its value overflows.
+
+Everything else is an ordinary UA rule your own declaration beats. The theme's
+`button, input, select, textarea { font-family: inherit }` is one such
+declaration, so under the theme a raw control takes the page's family and keeps
+the 13.3333px size — as it does in a browser under the same sheet. The colours
+(`FieldText` on `Field`) are **not** copied: the theme gives form controls
+`color: inherit` on purpose, so they stay readable in dark mode.
+
 `vertical-align: sub`/`super` on `<sub>`/`<sup>` (issue #724) and list markers on
 `<li>` (issue #725) are **not** part of this: neither is a stylesheet line —
 `ComputedStyle` carries no `vertical_align` field and `DisplayValue` no
