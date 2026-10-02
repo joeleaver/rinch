@@ -718,4 +718,3 @@ pub(crate) fn char_metrics(
         from_os2: true,
     }
 }
-

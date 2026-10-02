@@ -183,10 +183,7 @@ fn submit_and_reset_default_to_their_label_text() {
 fn a_value_attribute_is_the_label_even_when_empty() {
     assert_eq!(w_type("input", 16.0, "submit", &[("value", "")]), 0.0);
     assert_eq!(w_type("input", 16.0, "reset", &[("value", "")]), 0.0);
-    assert_eq!(
-        w_type("input", 16.0, "submit", &[("value", "Click")]),
-        37.0
-    );
+    assert_eq!(w_type("input", 16.0, "submit", &[("value", "Click")]), 37.0);
 }
 
 /// A bare `button` (no `value`) has no default label and is 0 wide (Chrome
@@ -195,8 +192,5 @@ fn a_value_attribute_is_the_label_even_when_empty() {
 #[test]
 fn a_bare_button_is_zero_wide() {
     assert_eq!(w_type("input", 16.0, "button", &[]), 0.0);
-    assert_eq!(
-        w_type("input", 16.0, "button", &[("value", "Click")]),
-        37.0
-    );
+    assert_eq!(w_type("input", 16.0, "button", &[("value", "Click")]), 37.0);
 }
