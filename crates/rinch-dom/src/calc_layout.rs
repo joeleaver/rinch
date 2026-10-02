@@ -190,10 +190,9 @@ impl RinchDocument {
                     None => true, // the root resolves against the viewport
                 }
             }
-            // `Intrinsic` rides with `Auto` because that is what it lays out
-            // as (#626) — Taffy never sees the keyword. When the keywords are
-            // implemented this arm splits: a `max-content` axis is definite
-            // once measured, where `auto` may not be.
+            // `Intrinsic` rides with `Auto`: a keyword is not a declared
+            // length, so this walk proves nothing about it. Conservative for
+            // a content keyword, whose axis is definite once measured (#691).
             DimensionValue::Auto | DimensionValue::Intrinsic(_) => {
                 // An auto-sized absolute shrinks to fit its content.
                 if matches!(

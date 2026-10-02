@@ -398,7 +398,33 @@ const CHROME: &[(&str, &str, [f32; 5])] = &[
 /// rinch's answer). Every entry is a known deviation with its reason; the test
 /// fails if one of these is fixed (so the list must shrink with it) or if any
 /// other cell disagrees.
-const KNOWN: &[(&str, &str, &str, f32)] = &[];
+const KNOWN: &[(&str, &str, &str, f32)] = &[
+    // #1277: Taffy's automatic minimum size clamps a flex item's min-content
+    // by its *definite* size, and `stretch` is not definite there.
+    ("block", "flex-row cb150", "stretch", 300.0),
+    // Pre-existing, not a keyword: a fixed box with unpaired insets fills
+    // the viewport (`out_of_flow.rs`), where Chrome shrinks it to fit.
+    ("block", "fixed l", "auto", 800.0),
+    ("two", "fixed l", "auto", 800.0),
+    // #1277: an atomic inline is a Taffy root, which ignores its own size
+    // keyword; rinch resolves the *width* keywords there, not `height: stretch`.
+    ("block", "inline-block h cb300", "stretch", 20.0),
+    ("two", "inline-block h cb300", "stretch", 20.0),
+    // #1276: a wrapped IFC measured at a definite width answers its widest
+    // line (100), not `max(min-content, available)` (150). `fit-content` is
+    // that measure wherever Taffy lays it out, and so is an absolute's
+    // shrink-to-fit `auto` (pre-existing).
+    ("two", "block cb150", "fit-content", 100.0),
+    ("two", "flex-row cb150", "fit-content", 100.0),
+    ("two", "flex-col cb150", "fit-content", 100.0),
+    ("two", "grid 1fr cb150", "fit-content", 100.0),
+    ("two", "abs cb150", "auto", 100.0),
+    ("two", "abs cb150", "fit-content", 100.0),
+    // #658, pre-existing: an auto-width atomic inline is sized at max-content,
+    // never capped at its containing block. (`fit-content` spelled out is
+    // capped — `resolve_root_width_keyword`.)
+    ("two", "inline-block cb150", "auto", 200.0),
+];
 
 fn rinch_table() -> Vec<(&'static str, &'static str, &'static str, f32, f32)> {
     let mut cells = Vec::new();
@@ -431,7 +457,7 @@ fn intrinsic_keywords_match_chrome_153() {
             None if !agrees => wrong.push(format!(
                 "{kind} | {label} | {k}: rinch {got}, Chrome 153 {want}"
             )),
-            Some(e) if agrees => wrong.push(format!(
+            Some(_) if agrees => wrong.push(format!(
                 "{kind} | {label} | {k}: now agrees with Chrome ({got}) — remove it from KNOWN"
             )),
             Some(e) if (got - e.3).abs() >= 0.5 => wrong.push(format!(

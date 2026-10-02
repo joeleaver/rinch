@@ -168,7 +168,7 @@ fn an_inline_style_does_not_reach_the_pseudo_elements() {
         .expect("the ::before is generated");
     let ps = &doc.tree.nodes[pseudo].computed_style;
     assert!(
-        ps.width.lays_out_as_auto(),
+        ps.width.is_auto(),
         "the ::before took the element's inline width: {:?}",
         ps.width
     );

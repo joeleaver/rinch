@@ -1,53 +1,25 @@
-//! #626 — `max-content`, `min-content`, `fit-content` and `stretch`.
+//! #626 / #691 — `max-content`, `min-content`, `fit-content` and `stretch`.
 //!
-//! All four parse, and none of them lays out: each reaches Taffy as `auto`.
-//! This file is the record of what that costs and of why it is not a one-line
-//! mapping, so it is **two** kinds of test at once and they must not be confused
-//! with each other:
+//! All four parse (#626). Since #691 they **lay out** on `width`, `height` and
+//! `flex-basis`: `DimensionValue::to_taffy` hands Taffy 0.14 its own keyword,
+//! and rinch resolves the keyword itself on the two kinds of box Taffy cannot
+//! see it on — an atomic inline, which rinch computes as a Taffy *root*
+//! (`ifc.rs`, `resolve_root_width_keyword`), and an out-of-flow box whose
+//! containing block is the viewport (`out_of_flow.rs`, `stretch` only).
+//! `intrinsic_sizing_twin_tests.rs` is the Chrome 153 twin for all of that.
 //!
-//! - `taffy_0_14_lays_out_an_intrinsic_dimension_rinch_still_maps_it_to_auto`
-//!   and the computed-style fixtures assert behaviour that is **established**
-//!   (the first one rewritten for Taffy 0.14 by #1236; #690 established the
-//!   rest). Against
-//!   `main` this file does not compile at all — the API is new — so what was
-//!   actually run is the mutant that keeps the API and puts the keyword arms
-//!   back to `DimensionValue::Auto`. Two of the twelve fail there, exactly
-//!   `the_keyword_survives_into_the_computed_style` and
-//!   `the_two_function_and_alias_spellings_land_where_they_should`.
-//! - `every_intrinsic_keyword_lays_out_exactly_like_auto` and the two headline
-//!   fixtures under it are **deviation records**. They pass on `main` too,
-//!   because this PR does not change layout. They exist so the day someone
-//!   implements the keywords they have to delete or flip them deliberately,
-//!   with Chrome's number sitting right there to flip them to.
+//! This file keeps what the twin does not cover:
 //!
-//! # Why `auto` — and why, since Taffy 0.14, it is a mapping not yet made
-//!
-//! Until #1236 rinch used Taffy 0.12, where a box's size could not carry an
-//! intrinsic keyword at all: `Dimension` had no safe constructor for one, and
-//! `impl MaybeResolve for Dimension` ended `_ => unreachable!()`, so a
-//! `size`/`min_size`/`max_size` holding one **panicked** during layout. Only
-//! grid track sizing read the keyword tags. Implementing #626 meant a
-//! rinch-side measurement pass.
-//!
-//! Taffy 0.14 changed that, for part of the property set:
-//!
-//! - `Dimension::{min_content, max_content, fit_content, fit_content_px,
-//!   fit_content_percent, stretch}` exist, and `size` and `flex_basis` lay them
-//!   out — for a box that is **not a Taffy root** (at a root Taffy ignores the
-//!   keyword, and rinch computes atomic inlines as roots). The pin is
-//!   `taffy_0_14_lays_out_an_intrinsic_dimension_rinch_still_maps_it_to_auto`.
-//! - `min_size` and `max_size` became `LengthPercentageAuto`, which has **no**
-//!   keyword representation, so on `min-*`/`max-*` the keyword stays `auto`
-//!   whatever rinch does.
-//!
-//! The Taffy bump deliberately left the keywords alone: `DimensionValue::to_taffy`
-//! still maps every keyword to `auto`. (The bump does change layout in a
-//! handful of Chrome-ward shapes unrelated to keywords — auto margins before
-//! `justify-content`, margin collapsing — pinned in
-//! `taffy_014_layout_changes_tests.rs`.) making it the mapping for
-//! `width`/`height`/`flex-basis` is #691. Everything below this section is
-//! unchanged by the bump and still true: the deviation records pass, and the
-//! day #691 lands they flip.
+//! - the **computed-style** fixtures — the keyword survives conversion, the two
+//!   function/alias spellings land where they should;
+//! - the **`min-*`/`max-*`** half, which still lays out as `auto`: Taffy 0.14
+//!   stores `min_size`/`max_size` as `LengthPercentageAuto`, which has no
+//!   keyword at all (`min_and_max_keywords_still_lay_out_exactly_like_auto`
+//!   is the deviation record, with Chrome's numbers in the table below);
+//! - two used-size gates that must treat a keyword as "no declared length"
+//!   (the IFC wrap tolerance and the `<textarea rows>` floor);
+//! - the oracle table for the eleven #626 contexts, Chrome 150, now asserted
+//!   for every keyword row rinch implements (`width_and_height_rows_match_the_oracle`).
 //!
 //! # All four spellings really do parse
 //!
@@ -89,21 +61,20 @@
 //! | flex-column item, cb 800 | `width` | 800 | **300** | **300** | **300** | 800 |
 //! | grid item, cb 800 | `width` | 800 | **300** | **300** | **300** | 800 |
 //!
-//! Bold is where Chrome and `auto` disagree, i.e. where rinch is wrong today.
-//! The two halves are **mirror images**: the three intrinsic keywords are
-//! already correct wherever `auto` is content-sized, and `stretch` is already
-//! correct wherever `auto` fills. That is the useful thing to know when reading
-//! the diagnostic `from_stylo` prints, and it is why the diagnostic says "which
-//! matches a browser only where `auto` already gives the same used size" rather
-//! than claiming the layout is wrong.
+//! Bold is where Chrome and `auto` disagree. The two halves are **mirror
+//! images**: the three content keywords agree with `auto` wherever `auto` is
+//! content-sized, and `stretch` wherever `auto` fills. Since #691 rinch gives
+//! the bold numbers on every `width`/`height` row; on the `min-*`/`max-*` rows
+//! it still gives `auto`'s, and that is what the diagnostic `from_stylo` prints
+//! for those properties is about.
 //!
 //! `min-content` and `max-content` coincide in this table because a single
 //! declared block offers no break opportunity. A second Chrome run with two
 //! 100px `inline-block`s in a `font-size: 0` parent — so the space between them
 //! has no width, and the numbers stay font-free — separates them: `max-content`
 //! 200, `min-content` 100, `fit-content` 200 in an 800px containing block and
-//! 150 in a 150px one. No fixture uses that shape, because rinch answers the
-//! containing block's width for all of them either way.
+//! 150 in a 150px one. That shape is the `two` content of
+//! `intrinsic_sizing_twin_tests.rs`.
 //!
 //! # The fixed point stepped off on purpose
 //!
@@ -218,7 +189,7 @@ const CASES: &[(&str, &str, &str, &str)] = &[
 // What this PR established
 // ---------------------------------------------------------------------------
 
-/// What Taffy 0.14 can do and what rinch still does with it (#1236).
+/// What Taffy 0.14 does with a keyword, and what rinch hands it (#691).
 ///
 /// Taffy 0.12 panicked on this tree (`MaybeResolve for Dimension`'s
 /// `_ => unreachable!()`, reached through `unsafe from_raw` — there was no safe
@@ -226,15 +197,15 @@ const CASES: &[(&str, &str, &str, &str)] = &[
 /// block child to its 300px content where `auto` fills the 800px container —
 /// Chrome's answer in the oracle table's first row.
 ///
-/// rinch does not hand it the keyword yet: `DimensionValue::to_taffy` still
-/// answers `auto` for every intrinsic keyword, so the Taffy bump changes no
-/// keyword's layout (it does change a few others, see
-/// `taffy_014_layout_changes_tests.rs`). Making that a mapping is #691, and when it lands the last assertion
-/// here and `every_intrinsic_keyword_lays_out_exactly_like_auto` flip together.
-/// The min/max half cannot flip: `min_size`/`max_size` are a
-/// `LengthPercentageAuto`, which has no keyword at all.
+/// The second half pins the **root** limit that `resolve_root_width_keyword`
+/// exists for: the same keyword on the box Taffy computes as a root is
+/// ignored, and the root fills its definite available space as `auto` does.
+///
+/// The last half is rinch's mapping: `to_taffy` (`size`, `flex_basis`) hands
+/// over the keyword, `to_taffy_lpa` (`min_size`, `max_size`) cannot — Taffy's
+/// `LengthPercentageAuto` has no keyword at all.
 #[test]
-fn taffy_0_14_lays_out_an_intrinsic_dimension_rinch_still_maps_it_to_auto() {
+fn taffy_lays_out_a_keyword_on_a_child_not_a_root_and_rinch_hands_it_over() {
     use taffy::prelude::*;
     use taffy::{Dimension, Style};
 
@@ -295,6 +266,49 @@ fn taffy_0_14_lays_out_an_intrinsic_dimension_rinch_still_maps_it_to_auto() {
     assert_eq!(child_width(Dimension::min_content()), 300.0);
     assert_eq!(child_width(Dimension::fit_content()), 300.0);
 
+    // The same keyword on a root: ignored, so a definite available width
+    // stretches the block root exactly as `auto` would.
+    let root_width = |width: Dimension| {
+        let mut t: TaffyTree<()> = TaffyTree::new();
+        let content = t
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(300.0),
+                    height: Dimension::length(20.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        let root = t
+            .new_with_children(
+                Style {
+                    display: Display::Block,
+                    size: Size {
+                        width,
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+                &[content],
+            )
+            .unwrap();
+        t.compute_layout(
+            root,
+            Size {
+                width: AvailableSpace::Definite(800.0),
+                height: AvailableSpace::MaxContent,
+            },
+        )
+        .unwrap();
+        t.layout(root).unwrap().size.width
+    };
+    assert_eq!(root_width(Dimension::auto()), 800.0);
+    assert_eq!(
+        root_width(Dimension::max_content()),
+        800.0,
+        "Taffy ignores a root's own size keyword — why rinch resolves it for an atomic inline"
+    );
+
     for k in [
         IntrinsicSize::MaxContent,
         IntrinsicSize::MinContent,
@@ -302,10 +316,12 @@ fn taffy_0_14_lays_out_an_intrinsic_dimension_rinch_still_maps_it_to_auto() {
         IntrinsicSize::Stretch,
     ] {
         let v = DimensionValue::Intrinsic(k);
-        assert!(
-            v.to_taffy().is_auto(),
-            "{k:?}: rinch still hands Taffy `auto` (#691 makes this a mapping)"
+        assert_eq!(
+            v.to_taffy(),
+            k.to_taffy(),
+            "{k:?}: rinch hands Taffy the keyword itself"
         );
+        assert!(v.to_taffy().is_sizing_keyword(), "{k:?}");
         assert!(
             v.to_taffy_lpa().is_auto(),
             "{k:?}: a min/max size has no keyword representation in Taffy 0.14"
@@ -371,29 +387,41 @@ fn an_invalid_value_is_still_just_auto() {
     assert_eq!(computed_width("wibble").intrinsic(), None);
 }
 
-/// `is_auto` is the *specified* question and `lays_out_as_auto` the *used* one.
-/// Every caller that means the second was switched to it, so this PR changes no
-/// layout; the split exists so the day the keywords are implemented, the call
-/// sites needing review are the ones this method names.
+/// `is_auto` asks what the author wrote, `is_auto_or_keyword` whether a length
+/// was declared at all, and `fills_between_insets` whether a positioned box
+/// with both insets fills them. A keyword answers each differently.
 #[test]
-fn is_auto_and_lays_out_as_auto_are_different_questions() {
+fn the_three_auto_questions_differ_for_a_keyword() {
     let k = DimensionValue::Intrinsic(IntrinsicSize::MaxContent);
     assert!(!k.is_auto(), "the author did not write `auto`");
-    assert!(k.lays_out_as_auto(), "but it reaches Taffy as `auto`");
+    assert!(k.is_auto_or_keyword(), "nor a length");
+    assert!(
+        !k.fills_between_insets(),
+        "a content keyword keeps its measure"
+    );
+
+    let s = DimensionValue::Intrinsic(IntrinsicSize::Stretch);
+    assert!(s.fills_between_insets(), "`stretch` fills, as `auto` does");
 
     assert!(DimensionValue::Auto.is_auto());
-    assert!(DimensionValue::Auto.lays_out_as_auto());
-    assert!(!DimensionValue::Length(10.0).lays_out_as_auto());
-    assert!(!DimensionValue::Percent(0.5).lays_out_as_auto());
-    assert!(!DimensionValue::Calc { px: 1.0, pct: 0.5 }.lays_out_as_auto());
+    assert!(DimensionValue::Auto.is_auto_or_keyword());
+    assert!(DimensionValue::Auto.fills_between_insets());
+    for v in [
+        DimensionValue::Length(10.0),
+        DimensionValue::Percent(0.5),
+        DimensionValue::Calc { px: 1.0, pct: 0.5 },
+    ] {
+        assert!(!v.is_auto_or_keyword(), "{v:?}");
+        assert!(!v.fills_between_insets(), "{v:?}");
+    }
 }
 
 /// The one place where telling the two apart would silently change layout.
 ///
 /// `<textarea rows=N>` gets an intrinsic `min-height` of N lines because its
 /// value lives in an attribute and gives it no content height. That is gated on
-/// the author having left the height auto — and a height of `max-content` is
-/// *laid out as* auto, so the gate must still open. Reading `is_auto()` there
+/// the author having declared no height length — and a height of `max-content`
+/// declares none, so the gate must still open. Reading `is_auto()` there
 /// instead collapses the control.
 ///
 /// `line-height` and `font-size` are declared and padding and border zeroed, so
@@ -420,26 +448,139 @@ fn a_textarea_with_an_intrinsic_height_still_gets_its_rows() {
         assert_eq!(
             height_of(&format!("height: {k}")),
             control,
-            "`height: {k}` lays out as auto, so the rows minimum must still apply"
+            "`height: {k}` declares no length, so the rows minimum must still apply"
         );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Deviation records — these pass on `main` too. See the module doc.
+// The oracle table, asserted
 // ---------------------------------------------------------------------------
 
-/// The defect, stated once: in every context, all four keywords give **exactly
-/// what `auto` gives**. Compare with the oracle table in the module doc, where
-/// seven of those eleven contexts disagree with `auto` in Chrome.
-///
-/// This is a rinch-against-rinch comparison, so it pins no absolute number and
-/// cannot drift with a font or a Taffy bump. It is the test a future
-/// implementation must flip.
+/// Chrome 150's numbers from the module doc's table, per case, for
+/// `KEYWORDS` in order: (width, height) of the box under test.
+const ORACLE: [[(f32, f32); 5]; 11] = [
+    // block in block, cb 800, width
+    [
+        (800.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (800.0, 20.0),
+    ],
+    // block in block, cb 150, width
+    [
+        (150.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (150.0, 20.0),
+    ],
+    // max-width, cb 800
+    [
+        (800.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (800.0, 20.0),
+    ],
+    // min-width, cb 150
+    [
+        (150.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (150.0, 20.0),
+    ],
+    // height, cb h 300
+    [
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 300.0),
+    ],
+    // min-height, cb h 300
+    [
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 300.0),
+    ],
+    // max-height, cb h 300
+    [
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 20.0),
+        (800.0, 20.0),
+    ],
+    // inline-block, cb 800, width
+    [
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (800.0, 20.0),
+    ],
+    // flex-row item, cb 800, width
+    [
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (800.0, 20.0),
+    ],
+    // flex-column item, cb 800, width
+    [
+        (800.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (800.0, 20.0),
+    ],
+    // grid item, cb 800, width
+    [
+        (800.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (300.0, 20.0),
+        (800.0, 20.0),
+    ],
+];
+
+/// Every `width`/`height` row of the table, every keyword, Chrome's number.
+/// The 15 bold cells among these 35 were `auto`'s number before #691.
 #[test]
-fn every_intrinsic_keyword_lays_out_exactly_like_auto() {
+fn width_and_height_rows_match_the_oracle() {
+    let mut checked = 0;
+    for ((label, cb, ts, prop), want) in CASES.iter().zip(ORACLE) {
+        if prop.starts_with("min-") || prop.starts_with("max-") {
+            continue;
+        }
+        for (k, want) in KEYWORDS.iter().zip(want) {
+            let (doc, t) = build(cb, ts, prop, k);
+            assert_eq!(size(&doc, t), want, "{label}, `{prop}: {k}`");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 7 * 5, "seven width/height rows, five values each");
+}
+
+/// The half #691 could not implement through Taffy: on `min-*`/`max-*` every
+/// keyword still lays out **exactly like `auto`**, because Taffy 0.14 stores
+/// `min_size`/`max_size` as `LengthPercentageAuto`, which has no keyword.
+/// A deviation record: three of these four rows disagree with Chrome (bold in
+/// the module doc's table), and this is the test that flips when they are
+/// implemented — a rinch-side measurement pass, #1275.
+#[test]
+fn min_and_max_keywords_still_lay_out_exactly_like_auto() {
     let mut same = 0;
     for (label, cb, ts, prop) in CASES {
+        if !(prop.starts_with("min-") || prop.starts_with("max-")) {
+            continue;
+        }
         let (doc, t) = build(cb, ts, prop, "auto");
         let control = size(&doc, t);
         for k in &KEYWORDS[1..] {
@@ -447,18 +588,14 @@ fn every_intrinsic_keyword_lays_out_exactly_like_auto() {
             assert_eq!(
                 size(&doc, t),
                 control,
-                "{label}, `{prop}: {k}`: rinch does not implement the keyword, so it must \
-                 still be indistinguishable from `auto`. If this now differs, #626 is being \
-                 fixed — flip this file against the oracle table in its module doc."
+                "{label}, `{prop}: {k}`: a min/max keyword reaches Taffy as `auto`. If this \
+                 now differs, the min/max half is being implemented — flip this against the \
+                 oracle table."
             );
             same += 1;
         }
     }
-    assert_eq!(
-        same,
-        CASES.len() * 4,
-        "every case and keyword was exercised"
-    );
+    assert_eq!(same, 4 * 4, "four min/max rows, four keywords each");
 }
 
 /// rinch's `auto` agrees with Chrome's `auto` in **all eleven** contexts.
@@ -631,29 +768,6 @@ fn an_intrinsic_grid_track_does_work() {
     );
     assert_eq!(item_width("max-content"), 300.0);
     assert_eq!(item_width("min-content"), 300.0);
-}
-
-/// The issue's own headline, with the number Chrome gives beside it.
-///
-/// `width: max-content` on a block box fills its containing block (800) where a
-/// browser shrink-wraps it to its content (300).
-#[test]
-fn deviation_width_max_content_on_a_block_fills_its_container() {
-    let (doc, t) = build("width: 800px", "", "width", "max-content");
-    assert_eq!(size(&doc, t).0, 800.0, "rinch today; Chrome 150 gives 300");
-}
-
-/// The mirror-image half, which the issue did not cover: `stretch` is wrong in
-/// exactly the places the other three are right.
-///
-/// `height: stretch` in a 300px-tall containing block is the content height (20)
-/// where a browser fills the block (300). This is the `-webkit-fill-available`
-/// use case, and it is the one of the four with no workaround short of
-/// `height: 100%` plus a zero margin/border/padding on that axis.
-#[test]
-fn deviation_height_stretch_does_not_fill_a_definite_containing_block() {
-    let (doc, t) = build("width: 800px; height: 300px", "", "height", "stretch");
-    assert_eq!(size(&doc, t).1, 20.0, "rinch today; Chrome 150 gives 300");
 }
 
 /// Prints the whole measured table. Not an assertion — it is how the oracle in
