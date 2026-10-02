@@ -361,7 +361,7 @@ impl RinchApp {
                 // A read-only editor (`EditorHandle::set_read_only`) is a
                 // `readonly` field: it copies and selects, and offers neither
                 // Cut (copy plus a delete it would refuse) nor Paste.
-                let writable = !handle.is_read_only();
+                let writable = !handle.refuses_edits();
                 Some(TextEditState {
                     can_cut: can_copy && writable,
                     can_copy,

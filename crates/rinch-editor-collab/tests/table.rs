@@ -3649,6 +3649,7 @@ fn rv5_trial(seed: u64, rounds: usize) -> (usize, usize, usize, usize) {
     let (mut cures, mut stale_cures, mut grows) = (0, 0, 0);
     let mut fcid = 5_000_000 + seed * 1000;
     let mut n = 0;
+    let mut stalled_ins = 0usize;
     let push = |p: usize,
                 reps: &mut Vec<Peer>,
                 log: &mut Vec<Vec<u8>>,
@@ -3785,12 +3786,15 @@ fn rv5_trial(seed: u64, rounds: usize) -> (usize, usize, usize, usize) {
             tr.replace_with(pos, pos, Fragment::from_node(para(&s, &text)))
                 .unwrap();
             let next = reps[p].state.apply(tr);
+            let before_ins = reps[p].state.doc.clone();
             let ok = rv4_soft_commit(&mut reps[p], next);
             relabel_check(&reps, "insert");
             if ok {
                 accepted.insert(text);
-            } else {
+            } else if reps[p].state.doc.same_ref(&before_ins) {
                 refused_ins.insert(text);
+            } else {
+                stalled_ins += 1;
             }
             push(p, &mut reps, &mut log, &mut prod, &mut order);
         } else if roll < 32 && cn > 1 {
@@ -3816,10 +3820,14 @@ fn rv5_trial(seed: u64, rounds: usize) -> (usize, usize, usize, usize) {
             tr.delete(starts[i], starts[i] + doc.child(i).node_size())
                 .unwrap();
             let next = reps[p].state.apply(tr);
+            let applied_before = reps[p].state.doc.clone();
             rv4_soft_commit(&mut reps[p], next);
             relabel_check(&reps, "delete");
-            // accepted or refused: either may delete it in the end
-            deleted.extend(gone);
+            // rv6: only a delete the model actually took (accepted, or a stall's
+            // model-ahead) may excuse a disappearance; a frozen-refused one may not.
+            if !reps[p].state.doc.same_ref(&applied_before) || std::env::var("RV6_LOOSE").is_ok() {
+                deleted.extend(gone);
+            }
             push(p, &mut reps, &mut log, &mut prod, &mut order);
         } else if roll < 38 {
             let pos = if rng.below(2) == 0 { 0 } else { at };
@@ -4016,7 +4024,17 @@ fn rv5_trial(seed: u64, rounds: usize) -> (usize, usize, usize, usize) {
         .iter()
         .filter(|t| !deleted.contains(*t) && !present.contains(*t))
         .count();
+    // rv6: a refused (frozen) insert never reached the model, so it must never appear.
+    for t in &refused_ins {
+        assert!(
+            !present.contains(t),
+            "seed {seed}: refused insert {t} appeared"
+        );
+    }
     let _ = grows;
+    if std::env::var("RV6_STALLS").is_ok() {
+        eprintln!("seed {seed}: stalled inserts {stalled_ins}");
+    }
     (cures, stale_cures, refused_ins.len(), lost_refused)
 }
 

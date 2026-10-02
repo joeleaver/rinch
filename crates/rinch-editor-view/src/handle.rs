@@ -2158,6 +2158,15 @@ impl EditorHandle {
         self.inner.try_borrow().is_ok_and(|core| core.read_only)
     }
 
+    /// Whether every local edit is refused right now: the editor is
+    /// [read-only](Self::set_read_only), or frozen by a collaboration freeze
+    /// ([`Self::collab_oversized_tables`]). What a platform asks to behave as it does
+    /// for a `readonly` field (input method off, no Cut/Paste, the web capture field
+    /// `readonly`, printable keys still owned). Soft like [`Self::is_read_only`].
+    pub fn refuses_edits(&self) -> bool {
+        self.inner.try_borrow().is_ok_and(|core| core.locked())
+    }
+
     /// Switch the editor between the light (default) and dark color schemes of the
     /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
     /// afterward (toolbar/keyboard handlers already do).
@@ -3097,7 +3106,8 @@ impl EditorHandle {
     #[cfg(feature = "collaboration")]
     pub fn collab_delete_oversized_table(&self, id: &str) -> Result<bool, CollabError> {
         let mut core = self.core_mut();
-        if core.collab.is_none() {
+        // A read-only editor writes nothing to the shared document (as its loads).
+        if core.collab.is_none() || core.read_only {
             return Ok(false);
         }
         let prev = core.state.clone();
@@ -3119,6 +3129,10 @@ impl EditorHandle {
                 view.update_dom(&prev, &next);
             }
         }
+        drop(core);
+        // The freeze may have lifted: a runtime keeping per-editor input state (the
+        // web capture field's `readonly`) hears it here, as from `set_read_only`.
+        crate::registry::request_overlay_refresh();
         Ok(true)
     }
 

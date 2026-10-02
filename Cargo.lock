@@ -5274,6 +5274,7 @@ dependencies = [
  "rinch-clipboard",
  "rinch-core",
  "rinch-editable",
+ "rinch-editor-collab",
  "rinch-editor-core",
  "rinch-editor-view",
  "wasm-bindgen",

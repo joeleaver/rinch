@@ -352,7 +352,7 @@ impl RinchApp {
                 // refuses the commit and shows no preedit), so the OS input method
                 // stays off for it: no candidate window over text that cannot take
                 // the result. Re-read on every reconcile, so it follows the switch.
-                let enabled = !handle.as_ref().is_some_and(|h| h.is_read_only());
+                let enabled = !handle.as_ref().is_some_and(|h| h.refuses_edits());
                 let cursor_area = handle.and_then(|handle| {
                     let head = handle.selection().head();
                     self.editor_caret_point(&handle, head)
