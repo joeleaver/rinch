@@ -407,3 +407,126 @@ fn on_the_host_u1f600_under_sans_serif_is_the_emoji_generics() {
     assert!(!sans.is_empty());
     assert_eq!(sans, named, "under sans-serif against '{primary}'");
 }
+
+/// Review #1270: every emoji range of one text op gets the span, not only the
+/// first (kills "break after the first range" in `IfcText::finish`).
+#[test]
+fn review_1270_two_emoji_in_one_text_node_both_move() {
+    let (runs, f) = ifc_runs("sans-serif", "a\u{2b1c}b\u{2b1c}");
+    assert_eq!(
+        runs,
+        vec![
+            (f.primary, "a".to_owned()),
+            (f.emoji, "\u{2b1c}".to_owned()),
+            (f.primary, "b".to_owned()),
+            (f.emoji, "\u{2b1c}".to_owned()),
+        ],
+        "{f:?}"
+    );
+}
+
+/// Review #1270: the emoji split happens after white-space collapse and
+/// across an inline element, and leaves the flat text (and so every byte
+/// offset) exactly as it was.
+#[test]
+fn review_1270_collapsed_text_and_an_inline_span_keep_their_bytes() {
+    let (mut doc, f) = document();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "display: inline-block; font: 40px/48px sans-serif",
+    );
+    let t1 = doc.create_text("  a   \u{2b1c}   ");
+    let span = doc.create_element("span");
+    let t2 = doc.create_text("\u{2b1c}b");
+    doc.append_child(span, t2);
+    doc.append_child(div, t1);
+    doc.append_child(div, span);
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    let il = doc.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    let expected = "a \u{2b1c} \u{2b1c}b";
+    let r = runs(&il.layout, expected);
+    let joined: String = r.iter().map(|x| x.1.as_str()).collect();
+    assert_eq!(joined, expected);
+    assert_eq!(
+        r.iter()
+            .filter(|x| x.1.contains('\u{2b1c}'))
+            .map(|x| x.0)
+            .collect::<Vec<_>>(),
+        vec![f.emoji, f.emoji],
+        "{r:?} {f:?}"
+    );
+}
+
+/// U+FE0F after a base with no `Emoji` property is not an emoji (UTS #51:
+/// only emoji variation sequences take it), so the cluster keeps the stack as
+/// written: `Ж` U+FE0F is drawn where `Ж` is, the second `sans-serif` face,
+/// not the `emoji` generic. Review of #1270: 𝄞 U+FE0F and Thai ก U+FE0F
+/// were drawn as `.notdef` on this host when every such cluster was moved.
+#[test]
+fn a_selector_after_a_non_emoji_base_keeps_the_stack_as_written() {
+    use skrifa::MetadataProvider;
+    let sg = skrifa::FontRef::new(SPACE_GROTESK).unwrap().charmap();
+    let inter = skrifa::FontRef::new(INTER).unwrap().charmap();
+    assert!(sg.map('\u{416}').is_none() && inter.map('\u{416}').is_some());
+    let (runs, f) = ifc_runs("sans-serif", "\u{416}\u{fe0f}");
+    assert_eq!(faces_only(&runs), vec![f.text_cover], "{runs:?} {f:?}");
+}
+
+/// Review of #1270: an emoji span keeps the rest of each generic behind the
+/// `emoji` generic. A context with no system fonts and no script fallback
+/// (embed or wasm with app fonts) and no `emoji` face, whose `sans-serif` is
+/// [Space Grotesk, Inter]: U+2B1C and U+2764 U+FE0F are Inter's, never glyph 0
+/// in Space Grotesk, which is what the first face alone gave.
+#[test]
+fn an_emoji_falls_back_to_the_rest_of_the_generic_not_to_notdef() {
+    use parley::fontique::{Collection, CollectionOptions};
+    let mut doc = RinchDocument::new();
+    doc.font_cx.collection = Collection::new(CollectionOptions {
+        shared: false,
+        system_fonts: false,
+    });
+    let (primary, primary_f) = register(&mut doc, SPACE_GROTESK, "Primary1204");
+    let (second, second_f) = register(&mut doc, INTER, "Second1204");
+    doc.font_cx
+        .collection
+        .set_generic_families(GenericFamily::SansSerif, [primary_f, second_f].into_iter());
+    let body = doc.body();
+    let mut divs = Vec::new();
+    for text in ["\u{2b1c}", "x\u{2764}\u{fe0f}"] {
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            "display: inline-block; font: 40px/48px sans-serif",
+        );
+        let t = doc.create_text(text);
+        doc.append_child(div, t);
+        doc.append_child(body, div);
+        divs.push((text, div));
+    }
+    doc.resolve_layout(800.0, 600.0);
+    for (text, div) in divs {
+        let il = doc.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+        let mut seen = Vec::new();
+        for line in il.layout.lines() {
+            for item in line.items() {
+                if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                    let id = run.run().font().data.id();
+                    for g in run.glyphs() {
+                        assert_ne!(g.id, 0, "{text:?}: .notdef in {id} (primary {primary})");
+                    }
+                    seen.push(id);
+                }
+            }
+        }
+        assert_eq!(
+            seen.last(),
+            Some(&second),
+            "{text:?}: {seen:?}, primary {primary}"
+        );
+    }
+}
