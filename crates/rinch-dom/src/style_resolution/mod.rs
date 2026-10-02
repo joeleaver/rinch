@@ -911,7 +911,7 @@ impl RinchDocument {
                     + new_style.padding_bottom.to_px()
                     + new_style.border_top_width.to_px()
                     + new_style.border_bottom_width.to_px();
-                if new_style.width.lays_out_as_auto() {
+                if new_style.width.is_auto_or_keyword() {
                     let model = crate::select::resolve_select_model(&self.tree, node_id);
                     let labels: Vec<&str> =
                         model.options.iter().map(|o| o.label.as_str()).collect();
@@ -935,7 +935,7 @@ impl RinchDocument {
                     new_style.min_width =
                         crate::computed_style::DimensionValue::Length(intrinsic.max(author_min));
                 }
-                if new_style.height.lays_out_as_auto() {
+                if new_style.height.is_auto_or_keyword() {
                     let intrinsic = new_style.line_height_px()
                         + 2.0 * crate::select::SELECT_INNER_BLOCK
                         + border_padding_y;
@@ -1426,6 +1426,20 @@ impl RinchDocument {
                     DisplayMode::InlineBlock
                 }
                 crate::computed_style::DisplayValue::Inline => DisplayMode::Inline,
+                // A control or replaced element has no inner display of its
+                // own (#1288): `replaced::ignores_inner_display`.
+                crate::computed_style::DisplayValue::Flex
+                | crate::computed_style::DisplayValue::Grid
+                    if crate::replaced::ignores_inner_display(&self.tree.nodes[node_id]) =>
+                {
+                    DisplayMode::Block
+                }
+                crate::computed_style::DisplayValue::InlineFlex
+                | crate::computed_style::DisplayValue::InlineGrid
+                    if crate::replaced::ignores_inner_display(&self.tree.nodes[node_id]) =>
+                {
+                    DisplayMode::InlineBlock
+                }
                 crate::computed_style::DisplayValue::InlineBlock => DisplayMode::InlineBlock,
                 crate::computed_style::DisplayValue::InlineFlex => DisplayMode::InlineFlex,
                 crate::computed_style::DisplayValue::Block => DisplayMode::Block,

@@ -1680,14 +1680,14 @@ impl RinchDocument {
             // (`natural - content_width == frac(natural) < 1.0`). Explicit-
             // width elements get no tolerance — they should wrap at their width.
             //
-            // The question is about the **used** size, not the declared
-            // one, so it is `lays_out_as_auto` (#626): `width:
-            // max-content` shrink-wraps exactly as `auto` does today,
-            // so its box was measured and floored the same way and it
-            // needs the same slack. Reading `is_auto()` here gave such a
-            // box 0px and re-wrapped its text inside a box sized for one
-            // line — the box unchanged, the glyphs on two.
-            let tolerance = if cs.width.lays_out_as_auto() {
+            // The question is whether the width was *derived* rather than
+            // declared, so it is `is_auto_or_keyword` (#626, #691): a
+            // `width: max-content` box is measured and floored the same
+            // way `auto` is and needs the same slack. Reading `is_auto()`
+            // here gave such a box 0px and re-wrapped its text inside a
+            // box sized for one line — the box unchanged, the glyphs on
+            // two.
+            let tolerance = if cs.width.is_auto_or_keyword() {
                 1.0
             } else {
                 0.0
@@ -3349,7 +3349,17 @@ impl RinchDocument {
             // no content height, and also carried a blockified `<br>` and the
             // non-text input types; the line-sized ones are measured now (#297,
             // `form_control.rs`).
-            if has_non_comment_inline || all_children_are_comments {
+            //
+            // A control or replaced element is a root whatever its children
+            // are (#1178, #1288): the UA sheet makes every element child of one
+            // `display: none`, the marking pass detaches those from Taffy — one
+            // attached `None` child left the measure unreachable and the
+            // element collapsed to 0x0 — and the hollow arm below gives it its
+            // own measure context.
+            let hollow_with_children = !own_children.is_empty()
+                && (crate::form_control::is_value_control(node)
+                    || crate::replaced::is_replaced_without_content(node));
+            if has_non_comment_inline || all_children_are_comments || hollow_with_children {
                 ifc_roots.push(id);
             }
         }
@@ -5604,6 +5614,14 @@ impl RinchDocument {
     /// computed style, which is what the next pass re-derives from, is untouched.
     fn measure_inline_blocks(&mut self, targets: &[(taffy::NodeId, Option<f32>)]) {
         for &(taffy_id, available_width) in targets {
+            // Measured as `auto` (no containing-block width): a keyword box's
+            // cached size no longer stands (#691).
+            if available_width.is_none()
+                && !self.tree.keyword_inline_cb_width.is_empty()
+                && let Some(&nid) = self.tree.taffy_map.get(&taffy_id)
+            {
+                self.tree.keyword_inline_cb_width.remove(&nid);
+            }
             let definite = |w: f32| taffy::Size {
                 width: taffy::AvailableSpace::Definite(w),
                 height: taffy::AvailableSpace::MaxContent,
@@ -5613,13 +5631,25 @@ impl RinchDocument {
                 height: taffy::AvailableSpace::MaxContent,
             };
 
-            let Ok(original) = self.tree.taffy.style(taffy_id).cloned() else {
+            let Ok(mut original) = self.tree.taffy.style(taffy_id).cloned() else {
                 continue;
             };
+            // A Taffy root ignores a sizing keyword on its own `size` (#691),
+            // so a keyword width is resolved here and handed to the passes
+            // below as the length (or `auto`) it means; `declared` is what
+            // goes back afterwards. No clone for a box without one.
+            let keyword_width =
+                self.resolve_root_width_keyword(taffy_id, &original, available_width);
+            let declared = keyword_width.map(|w| {
+                let declared = original.clone();
+                original.size.width = w;
+                let _ = self.tree.taffy.set_style(taffy_id, original.clone());
+                declared
+            });
             let block_root = original.display == taffy::Display::Block;
             let auto_width = original.size.width.is_auto();
             let clampable = !original.max_size.width.is_auto();
-            let mut pinned = false;
+            let mut pinned = keyword_width.is_some();
 
             // Pass A — the content's own width, so the definite pass below can
             // be given a basis without being given a stretch.
@@ -5698,16 +5728,101 @@ impl RinchDocument {
             }
 
             if pinned {
-                let _ = self.tree.taffy.set_style(taffy_id, original);
+                let _ = self
+                    .tree
+                    .taffy
+                    .set_style(taffy_id, declared.unwrap_or(original));
             }
         }
     }
 
-    /// Whether any of this style's inline-axis sizes is a percentage, and so needs
-    /// a containing-block width to resolve against.
+    /// The width a detached atomic-inline root takes for a **sizing keyword**
+    /// on its own `width` (#691), as a length — or `auto` where the keyword
+    /// needs a containing-block width this pass was not given. `None` when the
+    /// width is not a keyword.
+    ///
+    /// Taffy lays the keywords out on a box it computes as a child, but a
+    /// *root*'s own size keyword is resolved to nothing, so the root falls
+    /// back to `auto` under whatever available space it is handed — and every
+    /// atomic inline is a root here. So:
+    ///
+    /// - `max-content` and `min-content` are a compute of the box with an
+    ///   `auto` width under `AvailableSpace::MaxContent` / `MinContent`. With no
+    ///   containing-block width, `max-content` needs no compute at all: `auto`
+    ///   under max-content space is exactly what pass B does with it.
+    /// - `fit-content` is `min(max-content, max(min-content, stretch))` and
+    ///   `stretch` is the containing block's inner width less the box's
+    ///   margins, so both need `available_width`. Without one (the pass before
+    ///   the root compute) they lay out as `auto`, and
+    ///   [`Self::resolve_percentage_inline_blocks`] measures them again once
+    ///   the containing block has a width.
+    ///
+    /// Widths are the unrounded border-box widths, for the reason pass A pins
+    /// unrounded: a rounded-down width is one the content does not fit in.
+    /// (rinch hands Taffy no `box-sizing`, so every box is border-box to it.)
+    fn resolve_root_width_keyword(
+        &mut self,
+        taffy_id: taffy::NodeId,
+        declared: &taffy::Style,
+        available_width: Option<f32>,
+    ) -> Option<taffy::Dimension> {
+        use taffy::CompactLength as C;
+        use taffy::ResolveOrZero;
+        let width = declared.size.width;
+        if !width.is_sizing_keyword() {
+            return None;
+        }
+        let measure = |this: &mut Self, space: taffy::AvailableSpace| -> f32 {
+            let mut probe = declared.clone();
+            probe.size.width = taffy::Dimension::auto();
+            let _ = this.tree.taffy.set_style(taffy_id, probe);
+            Self::compute_atomic_inline_root(
+                &mut this.tree,
+                &mut this.font_cx,
+                &mut this.layout_cx,
+                taffy_id,
+                taffy::Size {
+                    width: space,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            );
+            this.tree.taffy.unrounded_layout(taffy_id).size.width
+        };
+        let stretch = available_width.map(|cb| {
+            let margin = declared.margin.resolve_or_zero(Some(cb), |_, _| 0.0);
+            (cb - margin.left - margin.right).max(0.0)
+        });
+        let resolved = match width.tag() {
+            C::MAX_CONTENT_TAG if available_width.is_none() => None,
+            C::MAX_CONTENT_TAG => Some(measure(self, taffy::AvailableSpace::MaxContent)),
+            C::MIN_CONTENT_TAG => Some(measure(self, taffy::AvailableSpace::MinContent)),
+            C::FIT_CONTENT_KEYWORD_TAG => stretch.map(|stretch| {
+                let max = measure(self, taffy::AvailableSpace::MaxContent);
+                let min = measure(self, taffy::AvailableSpace::MinContent);
+                max.min(stretch.max(min))
+            }),
+            C::STRETCH_TAG => stretch,
+            // `fit-content(<length-percentage>)` — rinch never produces one.
+            _ => None,
+        };
+        Some(resolved.map_or(taffy::Dimension::auto(), taffy::Dimension::length))
+    }
+
+    /// Whether any of this style's inline-axis sizes is a percentage.
     fn has_percentage_inline_size(style: &crate::computed_style::ComputedStyle) -> bool {
         use crate::computed_style::DimensionValue::Percent;
         matches!(style.width, Percent(_))
+            || matches!(style.min_width, Percent(_))
+            || matches!(style.max_width, Percent(_))
+    }
+
+    /// Whether any of this style's inline-axis sizes needs a containing-block
+    /// width to resolve against: a percentage, or a `fit-content` or `stretch`
+    /// width (#691 — see [`Self::resolve_root_width_keyword`]).
+    fn needs_containing_block_width(style: &crate::computed_style::ComputedStyle) -> bool {
+        use crate::computed_style::DimensionValue::{Intrinsic, Percent};
+        use crate::computed_style::IntrinsicSize::{FitContent, Stretch};
+        matches!(style.width, Percent(_) | Intrinsic(FitContent | Stretch))
             || matches!(style.min_width, Percent(_))
             || matches!(style.max_width, Percent(_))
     }
@@ -5734,6 +5849,7 @@ impl RinchDocument {
         // affected = (node id, IFC root id, width before, height before)
         let mut targets: Vec<(taffy::NodeId, Option<f32>)> = Vec::new();
         let mut affected: Vec<(usize, usize, f32, f32)> = Vec::new();
+        let mut keyword_cached: Vec<(usize, f32)> = Vec::new();
 
         // The registry, not the slab (layout audit F8/F12): this runs after
         // every root compute, and only an atomic inline in an IFC qualifies.
@@ -5755,7 +5871,7 @@ impl RinchDocument {
                 continue;
             };
             if !node.display_mode.is_atomic_inline()
-                || !Self::has_percentage_inline_size(&node.computed_style)
+                || !Self::needs_containing_block_width(&node.computed_style)
             {
                 continue;
             }
@@ -5782,6 +5898,24 @@ impl RinchDocument {
             if !inner_width.is_finite() || inner_width <= 0.0 {
                 continue;
             }
+            // A box that needs the width only for a `fit-content`/`stretch`
+            // keyword (#691) is sized from that width and its own content
+            // alone. Its content changing re-measures it as `auto` first,
+            // which drops this entry, so an entry at the same width means
+            // nothing moved: skip the two or three computes. (A percentage
+            // size is left re-measured every pass, as before.)
+            let keyword_only = !Self::has_percentage_inline_size(&node.computed_style);
+            if keyword_only {
+                if self
+                    .tree
+                    .keyword_inline_cb_width
+                    .get(&id)
+                    .is_some_and(|&w| (w - inner_width).abs() < 0.01)
+                {
+                    continue;
+                }
+                keyword_cached.push((id, inner_width));
+            }
             targets.push((taffy_id, Some(inner_width)));
             affected.push((id, root_id, node.layout.width, node.layout.height));
         }
@@ -5796,6 +5930,7 @@ impl RinchDocument {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
         }
         self.measure_inline_blocks(&targets);
+        self.tree.keyword_inline_cb_width.extend(keyword_cached);
 
         let mut changed = false;
         for &(id, root_id, prev_w, prev_h) in &affected {

@@ -21,13 +21,13 @@
 //!
 //! A browser renders none of the three elements' children: a canvas's are
 //! fallback content, a video's are `<source>`/`<track>` and fallback, an
-//! iframe's are ignored. rinch matches that only for children that are all
-//! text or non-atomic inlines: their inline formatting context leaves the
-//! element **hollow**, as it does a `<textarea>` (#1159), so it keeps this
-//! context and no text is shaped or painted. A **block-level or atomic
-//! inline** child is still laid out and painted (#1288), and a block child
-//! also takes the element's size away: a Taffy node with children never
-//! calls its measure, so the element is sized by its children.
+//! iframe's are ignored. rinch matches that: every **element** child of one
+//! is `display: none !important` by the UA sheet (#1288), and the element is
+//! always an inline formatting root that the IFC pass leaves **hollow**, as it
+//! does a `<textarea>` (#1159), so its children are detached from Taffy, it
+//! keeps this context and no fallback text is shaped or painted. Its own
+//! inner `display` is ignored ([`ignores_inner_display`]), so `display: flex`
+//! lays it out as `block`.
 //!
 //! An **`<img>`** is the fourth replaced element here, for sizing only
 //! (#788, #1150): its natural size is the decoded image's and it always has a
@@ -61,6 +61,21 @@ pub fn has_default_object_size(tag: &str) -> bool {
 /// render none of their children.
 pub fn is_replaced_without_content(node: &Node) -> bool {
     node.tag().is_some_and(has_default_object_size)
+}
+
+/// Whether `node` renders none of its children and so has no inner display
+/// of its own — a text control ([`crate::form_control::is_value_control`]) or
+/// one of [`has_default_object_size`]'s elements (#1178, #1288). A browser
+/// lays such an element out as a replaced box whatever its `display` says
+/// inside: `display: flex` on a canvas is a block-level box, `inline-grid` an
+/// inline-level one. rinch maps `flex`/`grid` to block and
+/// `inline-flex`/`inline-grid` to inline-block in its
+/// [`crate::node::DisplayMode`], so it stays a block container: the IFC pass
+/// makes it a hollow root, which detaches its children from Taffy and so
+/// reaches its measure. Its Taffy `display` may still say `Flex`; Taffy runs
+/// the measure of any childless node whatever its display.
+pub fn ignores_inner_display(node: &Node) -> bool {
+    crate::form_control::is_value_control(node) || is_replaced_without_content(node)
 }
 
 /// Whether a block container sizes `node` as a replaced element rather than

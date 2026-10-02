@@ -438,6 +438,11 @@ impl DomDocument for MockDomDocument {
     /// `dom_tests::set_style_replaces_a_declaration_in_place`, and `property`
     /// is matched ASCII case-insensitively unless it is a custom property
     /// ([`normalize_property_name`](crate::dom::normalize_property_name), #711).
+    ///
+    /// The mock has no property table, so it does **not** move a write past a
+    /// later declaration that covers it (`left` before `inset`), which
+    /// `RinchDocument` does and CSSOM's longhand list makes moot (#470); the
+    /// strings agree everywhere else.
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
         if let Some(n) = self.nodes.get_mut(&node) {
             let style = n.attributes.entry("style".to_string()).or_default();

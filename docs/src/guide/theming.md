@@ -611,71 +611,68 @@ properties work there.
 
 For `width`, `height`, `min-width`/`min-height`, `max-width`/`max-height` and
 `flex-basis`, rinch supports lengths, percentages, `calc()` mixing the two,
-`auto` and `none`. It supports **no intrinsic sizing keyword** on any of them
-(issue #626): every one parses and is then laid out as `auto`.
+`auto` and `none`. The intrinsic sizing keywords are supported on **`width`,
+`height` and `flex-basis`** (#691), and parse but lay out as `auto` on
+**`min-*`/`max-*`** (#1275).
 
-| Value | What rinch does |
-|---|---|
-| `<length>` (`px`, `em`, `rem`, …) | Supported |
-| `<percentage>` | Supported |
-| `calc()` mixing a length and a percentage | Supported |
-| `auto`, `none` | Supported |
-| `max-content` | Laid out as `auto` |
-| `min-content` | Laid out as `auto` |
-| `fit-content` | Laid out as `auto` |
-| `fit-content(<length-percentage>)` | Laid out as `auto` |
-| `stretch`, `-webkit-fill-available` | Laid out as `auto` |
-| `anchor-size(…)` | Laid out as `auto` |
+| Value | `width` / `height` / `flex-basis` | `min-*` / `max-*` |
+|---|---|---|
+| `<length>`, `<percentage>`, `calc()` of the two | Supported | Supported |
+| `auto`, `none` | Supported | Supported |
+| `max-content` | Supported | Laid out as `auto` |
+| `min-content` | Supported | Laid out as `auto` |
+| `fit-content` | Supported | Laid out as `auto` |
+| `stretch`, `-webkit-fill-available` | Supported | Laid out as `auto` |
+| `fit-content(<length-percentage>)` | `auto` — Chrome 153 does not accept it on these properties either | Laid out as `auto` |
+| `anchor-size(…)` | Laid out as `auto` | Laid out as `auto` |
 
-rinch prints one line on stderr per property and keyword per process, so the
-substitution is visible rather than silent:
+They are checked against Chrome 153 in block, flex (both axes, and
+`flex-basis`), grid, `inline-block`/`inline-flex`, `absolute` and `fixed`
+contexts (`crates/rinch-dom/tests/intrinsic_sizing_twin_tests.rs`). What still
+differs, each with its issue:
+
+- **`fit-content` around content that wraps** comes out as wide as its widest
+  wrapped line rather than the available width (#1276) — the same measurement
+  that makes an `auto`-width absolute too narrow. It is right whenever the
+  content fits on one line, or cannot wrap at all.
+- **`height: stretch` on an `inline-block`** lays out as `auto`, and
+  **`width: stretch` on a flex item** whose content is wider than the
+  container is not capped by it (#1277).
+- An `inline-block` whose width is **`auto`** is still sized at max-content and
+  never capped at its containing block (#658). Spelling it `width:
+  fit-content` gets the capped, browser answer.
+
+For `min-*`/`max-*` rinch prints one line on stderr per property and keyword
+per process, so the substitution is visible rather than silent:
 
 ```text
-[rinch] `width: max-content` is not implemented; it lays out as `auto`, which
-matches a browser only where `auto` already gives the same used size (issue
-#626). Reported once per property and value per process.
+[rinch] `min-width: max-content` is not implemented; it lays out as `auto`,
+which matches a browser only where `auto` already gives the same used size
+(issues #626, #1275). Reported once per property and value per process.
 ```
 
-**Grid tracks are a different story and they do work.**
-`grid-template-columns: max-content` and `min-content` size a column the way a
-browser does — measured, an item whose content is 300px wide gets 300px in such
-a track and 800px in an `auto` one — because Taffy implements intrinsic sizing
-for track sizing functions. (`fit-content(<length-percentage>)` is converted for
-tracks too.) A *box's own* `width`/`height`/`min-*`/`max-*` is where it stops.
-Taffy 0.14, which rinch has used since #1236, can lay the keywords out on a
-box's `width`, `height` and `flex-basis`, but rinch does not hand them over yet
-(#691) — the upgrade deliberately kept every keyword at `auto`. `min-*`/`max-*` cannot
-carry a keyword in Taffy at all, and an `inline-block` is laid out as a Taffy
-root, where the keyword has no effect, so those still need a measurement pass
-of rinch's own.
+**Grid tracks** take the keywords too: `grid-template-columns: max-content`
+and `min-content` size a column the way a browser does, and
+`fit-content(<length-percentage>)` is converted for tracks.
 
-### When `auto` happens to be the right answer
+### When `auto` is the right answer for `min-*`/`max-*`
 
-Whether the substitution changes anything depends on the box, and the two
-halves are mirror images. Measured against Chrome 150, for a box whose content
-is 300px wide inside an 800px containing block:
+On `min-*`/`max-*`, where every keyword is still laid out as `auto`, whether
+that changes anything depends on the box. Measured against
+Chrome 150, for a box whose content is 300px wide inside an 800px containing
+block:
 
 | The box | `auto` gives | `max-content`/`min-content`/`fit-content` | `stretch` |
 |---|---|---|---|
-| block-level `width` | fills (800) | **wrong** — should shrink-wrap (300) | correct (800) |
 | `min-width` / `max-width` | no constraint | **wrong** — should constrain to 300 | correct |
-| `inline-block` `width` | shrink-wraps (300) | correct (300) | **wrong** — should fill (800) |
-| flex-row item `width` (main axis) | content (300) | correct (300) | **wrong** — should fill (800) |
-| flex-column or grid item `width` (cross axis) | stretches (800) | **wrong** — should be 300 | correct (800) |
-| block `height` | content height | correct | **wrong** — should fill the containing block |
 | `min-height` | none | correct | **wrong** — should fill the containing block |
+| `max-height` | none | correct | correct |
 
-So the three intrinsic keywords are already right wherever `auto` is
-content-sized, and `stretch` is already right wherever `auto` fills.
+A browser shrink-wraps a float too. rinch does not, because **rinch implements
+no CSS float at all** — measured, `float: left` on the same box gives 800, the
+full containing block, where a browser gives 300. So a float is not a way to
+shrink-wrap a box here; `width: fit-content` (or `display: inline-block`) is.
 
-A browser would put floats in the shrink-wrapping row. rinch does not, because
-**rinch implements no CSS float at all** — measured, `float: left` on the same
-box gives 800, the full containing block, where a browser gives 300. So a float
-is not a way to reach the shrink-to-fit behaviour here; `display: inline-block`
-is.
-
-**The workaround in both directions is a declared length or percentage.** Where
-you reached for `width: fit-content` on a block, `display: inline-block` gives
-the same shrink-to-fit today; where you reached for `height: stretch`, `height:
-100%` gives the same used size as long as the box has no margin, border or
-padding on that axis.
+Where a `min-*`/`max-*` keyword is wrong, a declared length or percentage is
+the workaround: `min-height: 100%` gives `min-height: stretch`'s used size as
+long as the box has no margin, border or padding on that axis.
