@@ -1695,11 +1695,18 @@ impl RinchApp {
                 //    whatever a handler thinks, or a consumed release strands
                 //    the latch and the next press is swallowed — and the
                 //    surface forward below, which is the surface's own claim.
+                //    A redraw is requested unconditionally (issue #486): a
+                //    handler that writes a `Signal` already gets one through
+                //    the signal-change callback, but one that mutates the DOM
+                //    directly through a `NodeHandle` setter has no such
+                //    fallback, and named damage marks a node dirty with no
+                //    way to ask the shell to paint a frame at all.
                 if let Some(ref ks) = key_str {
                     let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
                         .with_modifiers(ctrl, shift, alt, modifiers.meta)
                         .with_kind(events::KeyEventKind::Up);
                     events::dispatch_keyboard_event(&key_data);
+                    actions.push(AppAction::RequestRedraw);
                 }
 
                 // 2. Then the focus arbiter's holder, again mirroring KeyDown.
@@ -1739,7 +1746,13 @@ impl RinchApp {
                             )
                             .with_modifiers(ctrl, shift, alt, modifiers.meta)
                             .with_kind(events::KeyEventKind::Up);
+                            // Return value ignored for the same reason as the
+                            // interceptor above: a release has nothing
+                            // downstream to suppress, so the redraw is
+                            // requested whether or not the handler claims to
+                            // have consumed it (issue #486).
                             crate::focus_registry::offer_key(self.doc_key(), id, &key_data);
+                            actions.push(AppAction::RequestRedraw);
                         }
                     }
                     _ => {}
