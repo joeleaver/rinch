@@ -38,6 +38,12 @@
 //! the ratio. Its context stays `NodeContext::Image`, which the image cache
 //! writes; an image not yet loaded measures 0x0.
 //!
+//! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
+//! `<textarea>` (#1195): it is not sized here (its measure stays
+//! [`NodeContext::FormControl`], in [`crate::form_control`]), only unstretched
+//! — a `display: block` text control keeps its `size`/`cols` width in Chrome
+//! instead of filling its container.
+//!
 //! **Not modelled:** a desktop `<video>` never holds video data (rinch's
 //! `VideoViewport` is a `div`), so a poster or a loaded video's natural size
 //! never applies; the `width`/`height` attributes of a `<video>` or an
@@ -79,12 +85,19 @@ pub fn ignores_inner_display(node: &Node) -> bool {
 }
 
 /// Whether a block container sizes `node` as a replaced element rather than
-/// stretching it to its own width (CSS 2.1 §10.3.4): an `<img>` (#788) and
-/// [`is_replaced_without_content`]'s three. Read into Taffy's
-/// `item_is_replaced`.
+/// stretching it to its own width (CSS 2.1 §10.3.4): an `<img>` (#788),
+/// [`is_replaced_without_content`]'s three, and a line-sized `<input>` /
+/// `<textarea>` (#1195) — Chrome treats a text-entry control as "auto width
+/// fits content" even at `display: block`.
+/// [`crate::form_control::form_control_content_height`] answers `Some` for
+/// exactly the controls this applies to: not `checkbox`/`radio`/`range`/
+/// `color`/`image`/`hidden`, whose own intrinsic sizes this crate does not
+/// model and whose block-stretch behaviour is out of scope for #1195. Read
+/// into Taffy's `item_is_replaced`.
 pub fn is_unstretched_replaced(node: &Node) -> bool {
     node.tag()
         .is_some_and(|tag| tag == "img" || has_default_object_size(tag))
+        || crate::form_control::form_control_content_height(node).is_some()
 }
 
 /// The measure context `node` is owed, or `None` for any other element.
