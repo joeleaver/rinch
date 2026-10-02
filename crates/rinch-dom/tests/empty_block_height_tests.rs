@@ -71,9 +71,8 @@ fn an_empty_grid_container_is_zero_tall() {
 
 /// #296 item 3. `img { display: block }` is the commonest image reset. A block
 /// `<img>` whose natural height is under a line keeps it: Chrome 153 gives the
-/// 10x1 image 1px, in a block container and as a flex item. Only the height is
-/// asserted in block flow — a block `<img>`'s *width* fills its container in
-/// rinch, which is #788.
+/// 10x1 image 1px, in a block container and as a flex item. Its natural width
+/// (10) is asserted in block flow too: it used to fill the container (#788).
 #[test]
 fn a_block_image_keeps_a_natural_height_under_one_line() {
     let mut doc = RinchDocument::new();
@@ -85,6 +84,11 @@ fn a_block_image_keeps_a_natural_height_under_one_line() {
     doc.set_attribute(item, "src", TEN_BY_ONE);
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(height(&doc, block), 1.0, "Chrome 153: 1");
+    assert_eq!(
+        doc.tree.get(block.0).unwrap().layout.width,
+        10.0,
+        "Chrome 153: 10"
+    );
     assert_eq!(height(&doc, item), 1.0, "Chrome 153: 1");
     assert_eq!(doc.tree.get(item.0).unwrap().layout.width, 10.0);
 }

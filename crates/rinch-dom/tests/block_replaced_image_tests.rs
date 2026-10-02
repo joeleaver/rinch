@@ -61,7 +61,11 @@ fn a_block_image_takes_its_natural_width() {
 #[test]
 fn auto_margins_centre_and_right_align_a_block_image() {
     check(W300, "display: block; margin: 0 auto", (130.0, 40.0, 30.0));
-    check(W300, "display: block; margin-left: auto", (260.0, 40.0, 30.0));
+    check(
+        W300,
+        "display: block; margin-left: auto",
+        (260.0, 40.0, 30.0),
+    );
 }
 
 #[test]
@@ -78,7 +82,11 @@ fn padding_and_border_sit_outside_the_natural_width() {
 fn explicit_and_clamped_widths_still_apply() {
     check(W300, "display: block; height: 60px", (0.0, 80.0, 60.0));
     check(W300, "display: block; min-width: 100px", (0.0, 100.0, 75.0));
-    check("width: 20px", "display: block; max-width: 100%", (0.0, 20.0, 15.0));
+    check(
+        "width: 20px",
+        "display: block; max-width: 100%",
+        (0.0, 20.0, 15.0),
+    );
 }
 
 #[test]
@@ -111,9 +119,17 @@ fn one_style_dimension_gives_the_other_through_the_ratio() {
     check(W300, "width: 100px", (0.0, 100.0, 75.0));
     check(W300, "height: 60px", (0.0, 80.0, 60.0));
     check(W300, "max-width: 20px", (0.0, 20.0, 15.0));
-    check(W300, "display: inline-block; width: 100px", (0.0, 100.0, 75.0));
+    check(
+        W300,
+        "display: inline-block; width: 100px",
+        (0.0, 100.0, 75.0),
+    );
     check(W300, "display: block; width: 100px", (0.0, 100.0, 75.0));
-    check("width: 320px", "display: block; width: 50%", (0.0, 160.0, 120.0));
+    check(
+        "width: 320px",
+        "display: block; width: 50%",
+        (0.0, 160.0, 120.0),
+    );
     check(W300, "display: block; max-height: 15px", (0.0, 20.0, 15.0));
     check(flex, "width: 100px", (0.0, 100.0, 75.0));
     check(flex, "height: 60px", (0.0, 80.0, 60.0));

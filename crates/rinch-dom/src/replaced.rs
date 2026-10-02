@@ -29,6 +29,15 @@
 //! also takes the element's size away: a Taffy node with children never
 //! calls its measure, so the element is sized by its children.
 //!
+//! An **`<img>`** is the fourth replaced element here, for sizing only
+//! (#788, #1150): its natural size is the decoded image's and it always has a
+//! ratio, so both of its measure arms answer through [`measure`], and it is
+//! `item_is_replaced` too ([`is_unstretched_replaced`]). A block `<img>` is
+//! its natural width, `margin: 0 auto` centres it, and a lone style `width`
+//! or `height` (or a `min-*`/`max-*` clamp) gives the other dimension through
+//! the ratio. Its context stays `NodeContext::Image`, which the image cache
+//! writes; an image not yet loaded measures 0x0.
+//!
 //! **Not modelled:** a desktop `<video>` never holds video data (rinch's
 //! `VideoViewport` is a `div`), so a poster or a loaded video's natural size
 //! never applies; the `width`/`height` attributes of a `<video>` or an
