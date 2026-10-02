@@ -105,16 +105,44 @@
 //! would not — the direction hit testing has always erred in, now matched by
 //! paint rather than contradicted by it. Tracked as #535 and pinned as the
 //! known-wrong answer in `clip_predicate_tests`.
+//!
+//! ## The box: padding, not border (#536)
+//!
+//! CSS clips overflowing content to a box's **padding** box (css-overflow-3
+//! §3: "the box's content is clipped to the box's padding edge"), and
+//! [`clip_shape`] now does too — it used to clip to the border box, which let
+//! a clipping container with a non-zero `border-width` paint its content over
+//! its own border (border paints *before* the clip bracket opens, so nothing
+//! else caught it). With no border the two boxes coincide, which is every
+//! clipping box in the component library, so this was correctness debt rather
+//! than a live visual bug until something actually set a border.
+//!
+//! [`padding_box_insets`] is the one place that measures the four border
+//! widths for this; [`clip_shape`] scales and applies them, and so does every
+//! cross-crate consumer the module doc above names — `layer_bounds`, the
+//! viewport-clip walks in `RinchApp`, and hit testing's `check_children` gate,
+//! which reads [`padding_box_insets`] directly rather than re-deriving it
+//! (`crates/rinch/src/app/hit_testing.rs`). The radii shrink to match:
+//! [`padding_box_radii`] reduces each of [`border_radii`]'s (outer) corners by
+//! the two border widths that meet there. rinch's radii are one scalar per
+//! corner rather than CSS's per-axis elliptical pair (see
+//! [`peniko::kurbo::RoundedRectRadii`]), so each corner is reduced by the
+//! *average* of its two adjacent widths — exact when the border is uniform
+//! (the arc-per-side border painter in `paint/borders.rs` makes the same
+//! choice, there called `half`), an approximation otherwise.
 
 use peniko::kurbo::{Rect, RoundedRectRadii};
 
 use crate::computed_style::LengthPercentageValue;
 use crate::node::Node;
 
-/// This box's `border-radius`, resolved and scaled to painter units.
+/// This box's **outer** `border-radius` — the border box's corners — resolved
+/// and scaled to painter units.
 ///
 /// The percentage basis is the shorter side of the border box, which is what
 /// every corner of every rounded box in `paint_node` already resolved against.
+/// This is the radii the background and border paint with; [`clip_shape`]'s
+/// own (smaller, padding-box) radii come from [`padding_box_radii`].
 pub fn border_radii(node: &Node, scale: f64) -> RoundedRectRadii {
     let cs = &node.computed_style;
     let basis = node.layout.width.min(node.layout.height);
@@ -127,19 +155,75 @@ pub fn border_radii(node: &Node, scale: f64) -> RoundedRectRadii {
     )
 }
 
+/// How far the padding box sits inside the border box on each side, in
+/// logical (unscaled) CSS px — the same unit as `node.layout` — as
+/// `(left, top, right, bottom)`.
+///
+/// Clamped so the four widths can never claim more than the box itself has:
+/// a `left + right` (or `top + bottom`) past the box's own width (or height)
+/// is scaled back proportionally-by-side as a hard clamp (right/bottom give
+/// up whatever left/top already claimed) rather than left to produce a
+/// negative-size padding box. `border-width` takes no percentage in CSS, so
+/// `to_px()` — the same resolution `paint/borders.rs` uses for the border
+/// stroke itself — needs no basis.
+///
+/// Logical units so a caller already working in CSS px (hit testing, and
+/// `RinchApp`'s viewport-clip walks, neither of which carries a DPI scale)
+/// uses this as-is; [`clip_shape`] is the one caller that scales it.
+pub fn padding_box_insets(node: &Node) -> (f32, f32, f32, f32) {
+    let cs = &node.computed_style;
+    let w = node.layout.width.max(0.0);
+    let h = node.layout.height.max(0.0);
+    let left = cs.border_left_width.to_px().max(0.0).min(w);
+    let right = cs
+        .border_right_width
+        .to_px()
+        .max(0.0)
+        .min((w - left).max(0.0));
+    let top = cs.border_top_width.to_px().max(0.0).min(h);
+    let bottom = cs
+        .border_bottom_width
+        .to_px()
+        .max(0.0)
+        .min((h - top).max(0.0));
+    (left, top, right, bottom)
+}
+
+/// [`border_radii`] (the border box's corners) reduced to the padding box's —
+/// each corner shrunk by the average of the two border widths that meet
+/// there, clamped at zero. See the module doc's "The box: padding, not
+/// border" section for why an average: rinch's radii are circular, one scalar
+/// per corner, where CSS reduces each of two per-corner elliptical
+/// components by a single adjacent side's width.
+pub fn padding_box_radii(node: &Node, scale: f64) -> RoundedRectRadii {
+    let outer = border_radii(node, scale);
+    let (left, top, right, bottom) = padding_box_insets(node);
+    let (left, top, right, bottom) = (
+        left as f64 * scale,
+        top as f64 * scale,
+        right as f64 * scale,
+        bottom as f64 * scale,
+    );
+    RoundedRectRadii::new(
+        (outer.top_left - (top + left) * 0.5).max(0.0),
+        (outer.top_right - (top + right) * 0.5).max(0.0),
+        (outer.bottom_right - (bottom + right) * 0.5).max(0.0),
+        (outer.bottom_left - (bottom + left) * 0.5).max(0.0),
+    )
+}
+
 /// The shape `node` clips its content to, or `None` if it clips nothing.
 ///
 /// `x`/`y` is the node's painted origin and `scale` the DPI scale, i.e. exactly
 /// what `paint_node` holds when it opens the clip bracket.
 ///
-/// The rect is the **border** box — the box paint has always clipped to, and
-/// the one `layer_bounds` and the viewport hole punch intersect against, so
-/// this preserves their agreement rather than choosing anew. Note that CSS
-/// clips to the *padding* box (css-overflow-3 §3), so a clipping container with
-/// a non-zero `border-width` lets its content paint over its own border. That
-/// deviation predates this function and is #536, not something it introduces;
-/// with no border the two boxes coincide, which is every clipping box in the
-/// component library.
+/// The rect is the **padding** box (#536) — CSS clips overflowing content to
+/// a box's padding edge (css-overflow-3 §3), inset from the border box by
+/// [`padding_box_insets`] and scaled here; with no border the two boxes
+/// coincide; see the module doc. `layer_bounds` and the viewport-clip walks in
+/// `RinchApp` ask this same function (or, where they work in unscaled logical
+/// px, [`padding_box_insets`]/[`padding_box_radii`] directly) so nothing can
+/// drift back out of agreement with it.
 ///
 /// The radii come back alongside rather than baked in because the caller picks
 /// the shape: `paint_node` pushes a `RoundedRect` when any corner is rounded
@@ -150,5 +234,17 @@ pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, Roun
     }
     let w = node.layout.width as f64 * scale;
     let h = node.layout.height as f64 * scale;
-    Some((Rect::new(x, y, x + w, y + h), border_radii(node, scale)))
+    let (left, top, right, bottom) = padding_box_insets(node);
+    let (left, top, right, bottom) = (
+        left as f64 * scale,
+        top as f64 * scale,
+        right as f64 * scale,
+        bottom as f64 * scale,
+    );
+    let ix = x + left;
+    let iy = y + top;
+    let iw = (w - left - right).max(0.0);
+    let ih = (h - top - bottom).max(0.0);
+    let radii = padding_box_radii(node, scale);
+    Some((Rect::new(ix, iy, ix + iw, iy + ih), radii))
 }

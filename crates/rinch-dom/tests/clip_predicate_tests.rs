@@ -751,7 +751,11 @@ mod painted {
         );
 
         // Just inside the padding edge, the child still shows.
-        assert_eq!(pixel_at(&painter, 50, 50), RED, "content area is unaffected");
+        assert_eq!(
+            pixel_at(&painter, 50, 50),
+            RED,
+            "content area is unaffected"
+        );
 
         // Outside the border box entirely: nothing painted there at all.
         assert_eq!(pixel_at(&painter, 105, 60), NOTHING);

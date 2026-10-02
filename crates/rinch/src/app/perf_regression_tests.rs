@@ -197,6 +197,16 @@ fn a_focused_input_idles_for_free() {
     assert_eq!(redraws, 0);
     expect_frame("idle, input focused", &total, &[]);
 
+    // #536 moved these two: `.field`'s UA `input { border: 2px inset; }`
+    // alongside its `overflow: clip !important` means the clip is now the
+    // padding box, 2px inset from the border box on every side. That is a
+    // tighter clip than before, so `clip_cuts_nothing`'s elision (card K43 —
+    // a clip that provably removes nothing is never pushed) stops applying:
+    // the field's own content used to fit inside the old (border-box) clip
+    // with enough slack to elide the push outright, and no longer fits inside
+    // the new (smaller) one. One extra `push_clip` — the field's own, where
+    // before only something else in this frame's damage pushed one — and the
+    // extra pixels are that bracket's own area.
     let typed = interaction(&mut app, |app| key(app, KeyCode::KeyX, Some("x")));
     expect_frame(
         "type one character into an input",
@@ -214,8 +224,8 @@ fn a_focused_input_idles_for_free() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 5),
             (GlyphCacheMisses, 1),
-            (ClipMasks, 1),
-            (ClipMaskPx, 7632),
+            (ClipMasks, 2),
+            (ClipMaskPx, 12432),
         ],
     );
 }
@@ -1025,8 +1035,12 @@ fn a_scale_factor_change_restyles_and_repaints_in_full() {
             // 14px images "side" rasterised: two hits became misses.
             (GlyphCacheHits, 113),
             (GlyphCacheMisses, 23),
-            (ClipMasks, 1),
-            (ClipMaskPx, 132496),
+            // #536: the field's UA `overflow: clip` now clips to its padding
+            // box (2px inset for its `border: 2px inset`), which is tight
+            // enough that `clip_cuts_nothing` no longer elides the push — see
+            // the comment on the same move in `a_focused_input_idles_for_free`.
+            (ClipMasks, 2),
+            (ClipMaskPx, 149920),
             (PaintSurfaceAllocs, 1),
         ],
     );
@@ -1099,8 +1113,13 @@ fn full_repaint_resize() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536: `.field`'s UA `overflow: clip` now clips to its padding
+            // box, 2px inset on every side for its `border: 2px inset` — tight
+            // enough that `clip_cuts_nothing` no longer elides the push (see
+            // `a_focused_input_idles_for_free`). All four `full_repaint_*`
+            // fixtures below share `static_page()` and move identically.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
             (PaintSurfaceAllocs, 1),
         ],
     );
@@ -1126,8 +1145,9 @@ fn full_repaint_unattributed() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536, see `full_repaint_resize` above.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
         ],
     );
 }
@@ -1221,8 +1241,9 @@ fn full_repaint_restyle() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536, see `full_repaint_resize` above.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
         ],
     );
 }
@@ -1247,8 +1268,9 @@ fn full_repaint_invalidated() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536, see `full_repaint_resize` above.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
         ],
     );
 }

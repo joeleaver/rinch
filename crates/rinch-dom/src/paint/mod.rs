@@ -23,7 +23,7 @@ pub mod vello_painter;
 pub mod skia_painter;
 
 use borders::*;
-pub use clip::{border_radii, clip_shape};
+pub use clip::{border_radii, clip_shape, padding_box_insets, padding_box_radii};
 use contenteditable::*;
 pub use damage::{DamageRegion, MAX_DAMAGE_RECTS};
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
@@ -2494,10 +2494,11 @@ fn paint_node(
             // zero-area rect, so both spellings arrive at square corners.
             // Checked against `10px` and `50%`, not reasoned from the type.
             //
-            // #536 (paint clips to the border box where CSS clips to the
-            // padding box) cannot interact here either: `layout.height` *is*
-            // the border box, so a collapsed box carrying a `border-width`
-            // never reaches this branch at all.
+            // #536 (the clip is the padding box, not the border box) cannot
+            // interact here either: `padding_box_insets` clamps each border
+            // width to the box's own (zero) size, so a collapsed box carrying
+            // a `border-width` still gets the same zero-area clip this branch
+            // has always pushed.
             //
             // Built once and handed down, exactly like the full-size bracket's
             // `root_clip` below, because opening a bracket and telling
@@ -3117,12 +3118,22 @@ fn paint_node(
             // not exist when this was written, so the guard is now on the whole
             // suppression rather than on one arm of it.
             let mut useless = false;
-            if clips && radius <= 0.0 {
+            // #536: the clip's own rect is the **padding** box, which can be
+            // smaller than `rect` (the border box) once a border has width.
+            // `covers_target` and `clip_cuts_nothing` both ask what the clip
+            // itself would cut, so they take `clip`'s rect — never `rect` —
+            // or a box covering the viewport right up to its own border
+            // (common: an app-shell root at the window size) could still
+            // decide "nothing to clip" from the larger border box while its
+            // smaller padding-box clip was the one actually in question.
+            if radius <= 0.0
+                && let Some((clip_rect, _)) = clip
+            {
                 // A rotated or skewed clip is not its own bounding box, so
                 // only an axis-aligned one may be tested this way.
                 let m = node_transform.as_coeffs();
                 let axis_aligned = m[1].abs() < 1e-9 && m[2].abs() < 1e-9;
-                let bbox = node_transform.transform_rect_bbox(rect);
+                let bbox = node_transform.transform_rect_bbox(clip_rect);
                 let covers_target = axis_aligned
                     && VIEWPORT.with(|v| match v.get() {
                         None => false,
@@ -3133,7 +3144,7 @@ fn paint_node(
                                 && bbox.y1 >= vp.target.y1 - 0.5
                         }
                     });
-                if covers_target || clip_cuts_nothing(tree, node_id, scale, x, y, rect) {
+                if covers_target || clip_cuts_nothing(tree, node_id, scale, x, y, clip_rect) {
                     useless = true;
                 }
             }

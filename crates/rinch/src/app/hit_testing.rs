@@ -200,9 +200,17 @@ fn hit_test_node(
     let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
     // Nodes with overflow clipping must restrict child hit testing to within
-    // bounds — the same predicate paint clips pixels with (#324), so a box
-    // cannot be drawn somewhere it cannot be tapped.
-    let check_children = !node.clips_overflow() || point_in_bounds;
+    // the same box paint clips pixels to (#324) — the **padding** box, not
+    // the border box (#536): `rinch_dom::paint::padding_box_insets` is the
+    // one function that measures it, the same one `clip_shape` scales for
+    // paint, so a click on the container's own border resolves to the
+    // container (`point_in_bounds`, below, is unaffected and stays the border
+    // box — the border itself is still part of the element's own hit target)
+    // rather than falling through to content that cannot be drawn there.
+    let check_children = !node.clips_overflow() || {
+        let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(node);
+        x >= nx + left && x <= nx + nw - right && y >= ny + top && y <= ny + nh - bottom
+    };
 
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
@@ -1050,6 +1058,55 @@ mod tests {
             cur = n.parent;
         }
         (x, y)
+    }
+
+    /// #536: paint and hit testing must agree on which box a clipping
+    /// container clips to. The container's own border strip is drawn, never
+    /// clipped, and (since this fix) never reachable by an overflowing
+    /// child's content either — so a click there must resolve to the
+    /// container, not fall through to clipped content that happens to still
+    /// be geometrically under the border-box point.
+    ///
+    /// The mutant this kills: reverting `check_children`'s bounds test from
+    /// the padding box back to the plain border box (`hit_test_node`'s
+    /// pre-#536 shape) makes this click descend into the overflowing child —
+    /// whose own border box covers the whole container including the border
+    /// strip — and return the child's id instead of the container's.
+    #[test]
+    fn a_click_on_a_clipping_containers_own_border_hits_the_container_not_overflowing_content() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; border: 10px solid blue; overflow: hidden",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", "width: 300px; height: 300px");
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        // (95, 60): inside the border box, inside the right border strip,
+        // outside the padding box — the point #536's issue measured as
+        // visually red (the child) against a browser's blue (the border).
+        assert_eq!(
+            hit_test(&doc.tree, 95.0, 60.0),
+            Some(container.0),
+            "a click on the right border strip must hit the container"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 60.0, 95.0),
+            Some(container.0),
+            "...and the bottom border strip"
+        );
+        // Sanity: well inside the padding box, the child is still what's hit.
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 50.0),
+            Some(child.0),
+            "content area is unaffected — the child is still reachable there"
+        );
     }
 
     /// Regression (found while fixing #61): an inline-block button laid out in a
