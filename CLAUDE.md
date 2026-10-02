@@ -4058,9 +4058,30 @@ surface registered, so an unchanged `scene()` stays a cache hit. The compositor 
 (named `data-viewport` surfaces, video, a `GpuTextureRegistrar` texture) is the
 host's to composite, and IME state is not surfaced to the host at all (#1147).
 
+**`wants_mouse`/`wants_keyboard` decide HUD input routing, and `wants_keyboard`
+does not mean "any node is focused"** (#548). A `<button>`/`<a href>` is
+focusable with no `tabindex` (issue #252's tag-implied set), so a plain mouse
+click on one claims `FocusTarget::Node` exactly like Tabbing onto a custom
+widget — but `wants_keyboard()` used to OR in `has_focused_node()`
+unconditionally, so clicking *any* button made it answer `true` until the next
+click landed off a button, and a host following the documented pattern above
+("route keyboard to rinch while `wants_keyboard()`") silently stopped seeing
+its own Esc/hotkeys. `wants_keyboard()` now asks
+`RinchApp::has_focused_key_consumer()` instead: `true` for a text `<input>`/
+the editor, or for a generic node whose app registered its own
+[`FocusEntry::on_key`](crate::focus_registry::FocusEntry::on_key) via
+`register_focus_target` (a widget that reads arrow keys or a shortcut of its
+own) — `false` for a plain button or link, which only ever consumes
+Enter/Space through the runtime's own activation path and does not need the
+host to give up its keyboard just because a click focused it.
+`RinchApp::has_focused_node()` keeps its original, broader meaning ("is *any*
+generic node focused") for callers that genuinely want that question; it is
+the wrong one for input routing.
+
 **Source files:**
-- `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`
-- `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`
+- `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`, `wants_keyboard()`
+- `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`, `has_focused_node()`, `has_focused_key_consumer()` (#548)
+- `crates/rinch/src/focus_registry.rs` — `wants_key_routing()`, the `FocusEntry::on_key` check behind `has_focused_key_consumer()`
 
 **Documentation:** `docs/src/guide/game-engine.md`
 

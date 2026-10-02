@@ -393,6 +393,19 @@ if ctx.wants_keyboard() {
 }
 ```
 
+> **A mouse-clicked plain button does not claim `wants_keyboard()`** (issue
+> #548). A `<button>`/`<a href>` is focusable with no `tabindex` needed, so a
+> single click on one (no Tab involved) used to make `wants_keyboard()`
+> answer `true` until the next click landed somewhere else — a host
+> following the pattern above then stopped seeing its own Esc/hotkey
+> presses the moment the user clicked *any* button in a HUD. `wants_keyboard`
+> only counts a generic focusable node when the app registered its own
+> [`FocusEntry::on_key`](rinch::focus_registry::FocusEntry::on_key) for it
+> (`register_focus_target` — a custom widget that reads arrow keys or a
+> shortcut of its own); a plain button that activates only through
+> Enter/Space does not need the host to give up its keyboard just because the
+> mouse focused it.
+
 > **A viewport hole must stay hittable — that is what routes the mouse.**
 > `wants_mouse` only reports "the game wants this" when the hit-tested node has a
 > `data-viewport` ancestor. A hole that is *not* hittable inverts the routing: the
@@ -682,7 +695,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `set_theme(&props)` | Replace this context's theme (restyles on the next `update()`) |
 | `viewport_rect(name) -> Option<LayoutRect>` | Query a GameViewport's computed rect |
 | `wants_mouse(x, y) -> bool` | True if point hits UI (not viewport hole) |
-| `wants_keyboard() -> bool` | True if a text input is focused |
+| `wants_keyboard() -> bool` | True if a text input, the editor, or a generic node that registered `on_key` is focused — **not** a plain button a click merely focused (issue #548) |
 | `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake` or a new `RenderSurface` frame) |
 | `next_wake() -> Option<Instant>` | When to call `update()` again with no input (the caret blink), or `None` |
 | `register_font(data)` | Register font data for text rendering |
