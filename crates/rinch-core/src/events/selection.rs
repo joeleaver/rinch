@@ -300,11 +300,14 @@ pub fn take_pending_focus_request(doc_key: u64) -> Option<FocusRequest> {
 // both survive to be applied: one slot holding both would let the later post
 // silently discard the earlier one.
 
+/// `(node_id, start, end, direction)` — UTF-16 code-unit offsets,
+/// [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
+/// unit.
+type TextSelectionRequest = (usize, usize, usize, crate::dom::SelectionDirection);
+
 thread_local! {
-    /// `(doc_key, node_id, start, end, direction)` — UTF-16 code-unit offsets,
-    /// [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
-    /// unit.
-    static PENDING_TEXT_SELECTION: Cell<Option<(u64, usize, usize, usize, crate::dom::SelectionDirection)>> =
+    /// `(doc_key, request)`, the same shape `PENDING_FOCUS_REQUEST` scopes by.
+    static PENDING_TEXT_SELECTION: Cell<Option<(u64, TextSelectionRequest)>> =
         const { Cell::new(None) };
 }
 
@@ -320,19 +323,17 @@ pub fn post_text_selection_request(
     end: usize,
     direction: crate::dom::SelectionDirection,
 ) {
-    PENDING_TEXT_SELECTION.with(|c| c.set(Some((doc_key, node_id, start, end, direction))));
+    PENDING_TEXT_SELECTION.with(|c| c.set(Some((doc_key, (node_id, start, end, direction)))));
 }
 
 /// Consume the pending text-selection request **if it targets the given
 /// document**, mirroring [`take_pending_focus_request`]'s document scoping
 /// (issue #134).
-pub fn take_pending_text_selection_request(
-    doc_key: u64,
-) -> Option<(usize, usize, usize, crate::dom::SelectionDirection)> {
+pub fn take_pending_text_selection_request(doc_key: u64) -> Option<TextSelectionRequest> {
     PENDING_TEXT_SELECTION.with(|c| match c.get() {
-        Some((key, node_id, start, end, direction)) if key == doc_key => {
+        Some((key, request)) if key == doc_key => {
             c.set(None);
-            Some((node_id, start, end, direction))
+            Some(request)
         }
         _ => None,
     })
