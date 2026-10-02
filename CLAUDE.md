@@ -1175,6 +1175,19 @@ leaves same-node listeners running, so a focused editor acted on `Ctrl+Z` twice
 (issue #806). The pointer-gesture observer is on `window` for the other half of
 that reason — it must go on seeing a consumed chord.
 
+**A chord with no Ctrl/Cmd/Alt yields its key to a focused text target** (#1169):
+`rinch::menu::chord_yields_to_text_input` (letters, digits, punctuation, Space,
+Enter, Backspace, Delete, Home/End, PageUp/PageDown, arrows; Shift does not
+matter; not Escape, Tab or F-keys), asked by both backends before matching.
+Desktop asks the arbiter (`RinchApp::text_target_holds_keyboard`: a text-taking
+`Input`, any `Editor`, a `Node` registered with `on_ime`) through
+`RinchApp::try_menu_shortcut`, which is what the shell calls; the web asks
+`document.activeElement` (`<textarea>`, a text-taking `<input>`,
+`contenteditable`). The `<input>` type list is one function,
+`rinch::menu::input_type_takes_text`. A native muda accelerator on macOS/Windows
+is matched by the OS first and is not covered (#1170's territory). Pins:
+`app/menu_chord_text_focus_1169_tests.rs`, `rinch-web/tests/menu_bar_bare_chord.rs`.
+
 **The chords a web bar arms come back down when its root unmounts** (issue #805).
 `register_menu_shortcuts` returns a `MenuBarChords` token that
 `rinch-web`'s `menu_bar::wrap` holds through `scope.on_cleanup`; dropping it
