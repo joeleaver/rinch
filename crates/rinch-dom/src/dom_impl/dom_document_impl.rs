@@ -1592,7 +1592,7 @@ impl RinchDocument {
     ///
     /// Still not a browser: a later overlapping declaration that is
     /// `!important` keeps beating a normal write, where CSSOM's write replaces
-    /// the important longhand outright.
+    /// the important longhand outright (#1298).
     fn merged_inline_style(&self, node_id: usize, properties: &[(&str, &str)]) -> String {
         let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes

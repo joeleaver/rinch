@@ -55,7 +55,11 @@ fn xy(doc: &RinchDocument, node: NodeId) -> (f32, f32) {
 fn a_longhand_declared_before_a_covering_shorthand_wins_when_written() {
     let (mut doc, child) =
         positioned("position: absolute; left: 5px; inset: 0; width: 10px; height: 10px");
-    assert_eq!(xy(&doc, child), (5.0, 7.0), "baseline: `inset: 0` wins the parse");
+    assert_eq!(
+        xy(&doc, child),
+        (5.0, 7.0),
+        "baseline: `inset: 0` wins the parse"
+    );
 
     doc.set_style(child, "left", "25px");
     doc.resolve_layout(800.0, 600.0);
@@ -79,7 +83,11 @@ fn a_longhand_declared_before_a_covering_shorthand_wins_when_written() {
 fn a_shorthand_written_over_a_later_longhand_covers_it() {
     let (mut doc, child) =
         positioned("position: absolute; inset: 0; left: 15px; width: 10px; height: 10px");
-    assert_eq!(xy(&doc, child), (20.0, 7.0), "baseline: the later `left` wins");
+    assert_eq!(
+        xy(&doc, child),
+        (20.0, 7.0),
+        "baseline: the later `left` wins"
+    );
 
     doc.set_style(child, "inset", "3px");
     doc.resolve_layout(800.0, 600.0);
@@ -101,7 +109,11 @@ fn a_physical_longhand_written_before_its_logical_twin_wins() {
         "position: absolute; left: 5px; inset-inline-start: 0; top: 0; \
          width: 10px; height: 10px",
     );
-    assert_eq!(xy(&doc, child), (5.0, 7.0), "baseline: the later logical twin wins");
+    assert_eq!(
+        xy(&doc, child),
+        (5.0, 7.0),
+        "baseline: the later logical twin wins"
+    );
 
     doc.set_style(child, "left", "25px");
     doc.resolve_layout(800.0, 600.0);
@@ -148,9 +160,12 @@ fn a_later_declaration_that_covers_nothing_leaves_the_write_in_place() {
 /// before a `margin` shorthand. Chrome: x = 5 + 25.
 #[test]
 fn a_margin_longhand_declared_before_the_margin_shorthand_wins_when_written() {
-    let (mut doc, child) =
-        positioned("margin-left: 5px; margin: 0; width: 10px; height: 10px");
-    assert_eq!(xy(&doc, child), (5.0, 7.0), "baseline: `margin: 0` wins the parse");
+    let (mut doc, child) = positioned("margin-left: 5px; margin: 0; width: 10px; height: 10px");
+    assert_eq!(
+        xy(&doc, child),
+        (5.0, 7.0),
+        "baseline: `margin: 0` wins the parse"
+    );
 
     doc.set_style(child, "margin-left", "25px");
     doc.resolve_layout(800.0, 600.0);
@@ -177,5 +192,23 @@ fn a_batch_moves_only_the_overlapped_write() {
     assert_eq!(
         doc.get_attribute(child, "style").unwrap(),
         "position: absolute; width: 20px; inset: 0; height: 10px; left: 25px",
+    );
+}
+
+/// **Pinned divergence, #1298.** A later covering shorthand marked
+/// `!important` still beats the moved write: a normal declaration does not
+/// override an important one in the same block. Chrome 153 answers x = 30,
+/// because `setProperty` replaces the `left` longhand outright and drops its
+/// importance. Fixing #1298 flips this to `(30.0, 7.0)`.
+#[test]
+fn a_later_important_shorthand_still_beats_a_normal_write() {
+    let (mut doc, child) =
+        positioned("position: absolute; left: 5px; inset: 0 !important; width: 10px; height: 10px");
+    doc.set_style(child, "left", "25px");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        xy(&doc, child),
+        (5.0, 7.0),
+        "#1298: Chrome 153 gives (30, 7)"
     );
 }

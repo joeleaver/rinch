@@ -225,6 +225,18 @@ div.set_style("display", "flex");
 div.set_style("color", "");  // Empty string removes
 ```
 
+`set_style` means what `style.setProperty` means in a browser: afterwards the
+element's inline style gives the property that value, whatever the attribute
+declared before. On the web it *is* `setProperty`. On desktop the attribute is
+a string of declarations and a property already in it is rewritten where it
+stands — unless a declaration **after** it covers it (a shorthand such as
+`inset` after `left`, a longhand after a shorthand, or a logical twin such as
+`inset-inline-start` after `left`), in which case the write moves to the end so
+that it wins, as the browser's longhand list makes it win
+([issue #470](https://github.com/joeleaver/rinch/issues/470)). One case still
+differs: a later covering declaration marked `!important` keeps beating a
+normal desktop write ([issue #1298](https://github.com/joeleaver/rinch/issues/1298)).
+
 ### Classes
 
 ```rust
