@@ -4,7 +4,9 @@
 //! representation: Taffy's calc pointer (`CompactLength::calc`) is only
 //! resolvable by callers implementing the layout-tree traits themselves —
 //! `TaffyTree`'s `LayoutPartialTree::resolve_calc_value` is hardcoded to
-//! `0.0` (taffy-0.14.0, `src/tree/taffy_tree.rs:387`; 0.12 did the same), with no hook. So rinch
+//! `0.0` (taffy-0.14.0, `src/tree/taffy_tree.rs:387`; 0.12 did the same), with no hook — and
+//! since #1260 rinch builds Taffy without its `calc` feature, so the pointer
+//! does not exist in this build at all. So rinch
 //! resolves these itself with the two-pass shape
 //! `ifc::resolve_percentage_inline_blocks` (#120) already uses:
 //!

@@ -1532,15 +1532,7 @@ impl RinchDocument {
 
             // Body node needs flex_grow: 1 and height: auto to fill the viewport
             if node_id == self.tree.body_id {
-                if taffy_style.flex_grow == 0.0 {
-                    taffy_style.flex_grow = 1.0;
-                }
-                if taffy_style.size.height == taffy::Dimension::auto() {
-                    taffy_style.size.height = taffy::Dimension::auto();
-                }
-                if taffy_style.size.width == taffy::Dimension::auto() {
-                    taffy_style.size.width = taffy::Dimension::percent(1.0);
-                }
+                crate::node::body_taffy_overrides(&mut taffy_style);
             }
 
             // An out-of-flow box whose containing block is not the Taffy parent

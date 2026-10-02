@@ -969,12 +969,7 @@ impl RinchDocument {
 
                 // Body node needs the same overrides as apply_stylo_styles_to_taffy
                 if node_id == self.tree.body_id {
-                    if taffy_style.flex_grow == 0.0 {
-                        taffy_style.flex_grow = 1.0;
-                    }
-                    if taffy_style.size.width == taffy::Dimension::auto() {
-                        taffy_style.size.width = taffy::Dimension::percent(1.0);
-                    }
+                    crate::node::body_taffy_overrides(&mut taffy_style);
                 }
 
                 // Same as apply_stylo_styles_to_taffy: an out-of-flow box
@@ -1125,12 +1120,7 @@ impl RinchDocument {
 
                 // Body node needs the same overrides as apply_stylo_styles_to_taffy
                 if node_id == self.tree.body_id {
-                    if taffy_style.flex_grow == 0.0 {
-                        taffy_style.flex_grow = 1.0;
-                    }
-                    if taffy_style.size.width == taffy::Dimension::auto() {
-                        taffy_style.size.width = taffy::Dimension::percent(1.0);
-                    }
+                    crate::node::body_taffy_overrides(&mut taffy_style);
                 }
 
                 // Same as apply_stylo_styles_to_taffy: an out-of-flow box
