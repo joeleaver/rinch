@@ -29,6 +29,15 @@
 //! inner `display` is ignored ([`ignores_inner_display`]), so `display: flex`
 //! lays it out as `block`.
 //!
+//! An **`<img>`** is the fourth replaced element here, for sizing only
+//! (#788, #1150): its natural size is the decoded image's and it always has a
+//! ratio, so both of its measure arms answer through [`measure`], and it is
+//! `item_is_replaced` too ([`is_unstretched_replaced`]). A block `<img>` is
+//! its natural width, `margin: 0 auto` centres it, and a lone style `width`
+//! or `height` (or a `min-*`/`max-*` clamp) gives the other dimension through
+//! the ratio. Its context stays `NodeContext::Image`, which the image cache
+//! writes; an image not yet loaded measures 0x0.
+//!
 //! **Not modelled:** a desktop `<video>` never holds video data (rinch's
 //! `VideoViewport` is a `div`), so a poster or a loaded video's natural size
 //! never applies; the `width`/`height` attributes of a `<video>` or an
@@ -67,6 +76,15 @@ pub fn is_replaced_without_content(node: &Node) -> bool {
 /// the measure of any childless node whatever its display.
 pub fn ignores_inner_display(node: &Node) -> bool {
     crate::form_control::is_value_control(node) || is_replaced_without_content(node)
+}
+
+/// Whether a block container sizes `node` as a replaced element rather than
+/// stretching it to its own width (CSS 2.1 §10.3.4): an `<img>` (#788) and
+/// [`is_replaced_without_content`]'s three. Read into Taffy's
+/// `item_is_replaced`.
+pub fn is_unstretched_replaced(node: &Node) -> bool {
+    node.tag()
+        .is_some_and(|tag| tag == "img" || has_default_object_size(tag))
 }
 
 /// The measure context `node` is owed, or `None` for any other element.
@@ -143,7 +161,9 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
 /// already knows.
 ///
 /// A dimension known from `known` (Taffy's, border-box) or, when `inherent`,
-/// from the style's `width`/`height` gives the other through the ratio; with
+/// from the style's `width`/`height` gives the other through the ratio — its
+/// value **after** its own axis's `min-*`/`max-*` clamp, so `width: 100%;
+/// max-width: 100px` in 300px is 100x75 for a 4:3 image, not 100x225; with
 /// neither known the natural size is constrained by `min-*`/`max-*` as CSS
 /// 2.1 §10.4's table does, the ratio carrying one axis's clamp to the other
 /// (`max-width: 100px` gives a canvas 100x50, where Taffy's own clamp would
@@ -204,8 +224,8 @@ pub(crate) fn measure(
         let r = nw / nh;
         match (w, h) {
             (Some(w), Some(h)) => (w, h),
-            (Some(w), None) => (w, clamp_h(w / r)),
-            (None, Some(h)) => (clamp_w(h * r), h),
+            (Some(w), None) => (w, clamp_h(clamp_w(w) / r)),
+            (None, Some(h)) => (clamp_w(clamp_h(h) * r), h),
             (None, None) => {
                 let w = clamp_w(nw);
                 let h = w / r;

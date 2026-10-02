@@ -513,4 +513,50 @@ impl RinchApp {
             false
         }
     }
+
+    /// Whether a widget that types text holds the keyboard: a text-taking
+    /// `<input>` or `<textarea>`, the rich-text editor (read-only too — it
+    /// still owns the keys it would type), or a registered target that
+    /// consumes composition (`FocusEntry::on_ime`, #176).
+    ///
+    /// The question a modifier-less menu chord asks before it takes a key
+    /// (#1169, [`crate::menu::chord_yields_to_text_input`]). Not
+    /// [`Self::ime_state`]: that one is off for a blurred window and a
+    /// read-only editor, neither of which makes `/` a menu key.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn text_target_holds_keyboard(&self) -> bool {
+        match self.focus_target {
+            // An `<input type=checkbox>` carrying `data-oninput` takes this
+            // claim too, and has no text to type `/` into.
+            FocusTarget::Input(id) => self.doc.as_ref().is_none_or(|doc| {
+                let d = doc.borrow();
+                d.tree.get(id).is_none_or(|node| {
+                    node.tag() != Some("input")
+                        || node
+                            .attributes
+                            .get("type")
+                            .is_none_or(|t| crate::menu::input_type_takes_text(t))
+                })
+            }),
+            FocusTarget::Editor(_) => true,
+            FocusTarget::Node(id) => crate::focus_registry::wants_ime(self.doc_key(), id),
+            FocusTarget::None | FocusTarget::Surface(_) | FocusTarget::Select(_) => false,
+        }
+    }
+
+    /// Try the menu chords for a key press the shell has not yet handed the
+    /// app, answering whether one ran — in which case the shell swallows the
+    /// key. A chord with no Ctrl/Cmd/Alt yields its key to a focused text
+    /// target and runs nothing (#1169).
+    #[cfg(feature = "desktop")]
+    pub(crate) fn try_menu_shortcut(&self, mods: Modifiers, key: winit::keyboard::KeyCode) -> bool {
+        crate::menu::match_shortcut(
+            mods.ctrl,
+            mods.meta,
+            mods.alt,
+            mods.shift,
+            key,
+            self.text_target_holds_keyboard(),
+        )
+    }
 }

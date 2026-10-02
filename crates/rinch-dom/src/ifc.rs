@@ -5527,16 +5527,15 @@ impl RinchDocument {
                                 if iw == 0.0 || ih == 0.0 {
                                     return taffy::Size::ZERO;
                                 }
-                                taffy::Size {
-                                    width: known_dims.width.unwrap_or(iw),
-                                    height: known_dims.height.unwrap_or_else(|| {
-                                        if let Some(kw) = known_dims.width {
-                                            ih * (kw / iw)
-                                        } else {
-                                            ih
-                                        }
-                                    }),
-                                }
+                                // As the root compute measures one (#788, #1150).
+                                crate::replaced::measure(
+                                    (iw, ih),
+                                    true,
+                                    known_dims,
+                                    style,
+                                    inputs.parent_size,
+                                    inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                )
                             }
                             Some(NodeContext::FormControl {
                                 content_width,

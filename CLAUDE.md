@@ -1175,6 +1175,19 @@ leaves same-node listeners running, so a focused editor acted on `Ctrl+Z` twice
 (issue #806). The pointer-gesture observer is on `window` for the other half of
 that reason — it must go on seeing a consumed chord.
 
+**A chord with no Ctrl/Cmd/Alt yields its key to a focused text target** (#1169):
+`rinch::menu::chord_yields_to_text_input` (letters, digits, punctuation, Space,
+Enter, Backspace, Delete, Home/End, PageUp/PageDown, arrows; Shift does not
+matter; not Escape, Tab or F-keys), asked by both backends before matching.
+Desktop asks the arbiter (`RinchApp::text_target_holds_keyboard`: a text-taking
+`Input`, any `Editor`, a `Node` registered with `on_ime`) through
+`RinchApp::try_menu_shortcut`, which is what the shell calls; the web asks
+the keydown's `composedPath()[0]` — not `activeElement`, the host of a shadow-root field — (`<textarea>`, a text-taking `<input>`,
+`contenteditable`). The `<input>` type list is one function,
+`rinch::menu::input_type_takes_text`. A native muda accelerator on macOS/Windows
+is matched by the OS first and is not covered (#1284, unmeasured). Pins:
+`app/menu_chord_text_focus_1169_tests.rs`, `rinch-web/tests/menu_bar_bare_chord.rs`.
+
 **The chords a web bar arms come back down when its root unmounts** (issue #805).
 `register_menu_shortcuts` returns a `MenuBarChords` token that
 `rinch-web`'s `menu_bar::wrap` holds through `scope.on_cleanup`; dropping it
@@ -3221,6 +3234,18 @@ tile covering the box — is one fill and no clip, as before. `background-positi
 `TransitionProperty`s (paint-only: `affects_layout` is `false`), and
 `transition: background-position` expands to both. An image's `auto` size is
 its intrinsic size now; it used to be stretched over the border box.
+
+**A block `<img>` is its natural width, and keeps its ratio** (#788, #1150).
+It is `item_is_replaced` in Taffy, so a block container does not stretch it
+(CSS 2.1 §10.3.4: `img { display: block }` is 40 wide for a 40x30 image, and
+`margin: 0 auto` centres it), and its measure is `replaced::measure`, the
+canvas's (#1173): a lone style `width` or `height`, or a `min-*`/`max-*` clamp,
+gives the other dimension through the image's ratio, inline, block and as a
+flex item. So the `Image` component (`width: 100%; height: auto`) under a block
+parent is now as tall as its ratio says, where it kept the natural height. A
+flex container still stretches an `<img>` (Chrome does too); a grid container
+still stretches it, where Chrome does not (#1280). Presentational
+`width`/`height` attributes are still not read (#684).
 
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 
