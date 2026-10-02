@@ -130,7 +130,15 @@ fn a_hover_repaints_a_region_and_counts_its_hit_tests() {
         // computes the extents it consults once (the body's in-flow children
         // and what is under them) and builds the body's sequence once; paint
         // builds its own: 1 + 1.
-        (Counter::HitExtentsComputed, 14),
+        //
+        // 14 → 15 (#509, #826): `mount`'s `<style>` element is `display:
+        // none` with its CSS source as a text child — the #509 shape.
+        // Before the fix that text was wrongly flowed by the `<style>`
+        // element's own (dead) IFC, so `flow_extent`'s
+        // `child.is_text() && child.ifc_root.is_some()` skip excused it from
+        // its own extent computation; fixed, it is walked once as an
+        // ordinary (0x0) child.
+        (Counter::HitExtentsComputed, 15),
         (Counter::StackingOrderBuilds, 2),
         (Counter::PaintNodesVisited, 5),
         // The software painter. One clip: the dirty region's own, whose

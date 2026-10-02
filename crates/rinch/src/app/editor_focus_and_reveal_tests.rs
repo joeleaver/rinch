@@ -572,15 +572,26 @@ fn a_virtualized_one_block_range_is_revealed() {
     assert!(on_screen(&p, start_of(120)));
 }
 
-/// A reveal in an editor that is not rendered (`display: none`, an inactive
-/// tab) does not wait to scroll the view when the editor is shown much later:
-/// the hidden editor's boxes are laid out at zero size, so the first pass
-/// consumes the request and its scroll moves nothing, as on the web. (A
-/// reveal whose start has no geometry at all expires after
-/// `REVEAL_PATIENCE` passes instead; `rinch-editor-view`'s
-/// `an_unfulfillable_reveal_expires_after_its_patience` pins that.)
+/// A reveal requested while an editor is not rendered (`display: none`, an
+/// inactive tab) waits — rather than being consumed on the spot — and is
+/// fulfilled for real once the editor is shown.
+///
+/// A `display: none` subtree establishes no inline formatting context at all
+/// now (#509, #826) — rinch-dom never builds even a zero-size layout for it
+/// — so the one overlay pass `scroll_into_view` wakes while hidden finds no
+/// geometry whatsoever (a miss, `reveal_misses == 1`) rather than the
+/// degenerate zero-size hit it used to find, and nothing re-wakes that pass
+/// on its own while nothing else is dirty (an unfulfillable reveal owes
+/// itself no more frames — `registry::owe_overlay_pass`'s doc). The request
+/// is still pending, well short of `REVEAL_PATIENCE`, when the editor is
+/// shown; showing it is itself a real layout pass, `update_all_carets` runs
+/// `reveal_pass` on it as it does on every mounted editor, and this time
+/// there is real geometry to scroll to — so it now reaches the target
+/// instead of silently consuming nothing, which is the more correct
+/// behaviour: the #509 bug's degenerate geometry threw this request away
+/// instead of honouring it.
 #[test]
-fn a_reveal_in_a_hidden_editor_is_dropped_and_scrolls_nothing_when_shown() {
+fn a_reveal_in_a_hidden_editor_waits_and_is_fulfilled_when_shown() {
     use rinch_core::dom::{DomDocument, NodeId};
     let mut p = page();
     let style = |p: &mut Page, style: &str| {
@@ -592,18 +603,31 @@ fn a_reveal_in_a_hidden_editor_is_dropped_and_scrolls_nothing_when_shown() {
     style(&mut p, "display: none");
     p.handle.scroll_into_view(start_of(30), end_of(30));
     idle(&mut p.app);
-    assert_eq!(p.handle.pending_reveal(), None, "not kept pending");
+    assert_eq!(
+        p.handle.pending_reveal(),
+        Some(start_of(30)),
+        "hidden: the one pass it gets finds no geometry at all and misses, \
+         well short of REVEAL_PATIENCE, so the request is kept rather than \
+         dropped"
+    );
     assert_eq!(scroll_of(&p), 0.0);
     style(
         &mut p,
         "width: 400px; height: 160px; overflow-y: auto; font-size: 16px; \
          line-height: 24px; font-family: sans-serif",
     );
-    assert_eq!(scroll_of(&p), 0.0, "shown later, it scrolls nothing");
-    assert!(
-        !on_screen(&p, start_of(30)),
-        "control: the range is off screen"
+    assert_eq!(
+        p.handle.pending_reveal(),
+        None,
+        "shown: the first real layout pass has geometry, so it fulfils the \
+         still-pending request"
     );
+    assert!(
+        scroll_of(&p) > 0.0,
+        "and actually scrolls to the target, instead of the #509 bug's \
+         degenerate zero-size geometry quietly consuming the request"
+    );
+    assert!(on_screen(&p, start_of(30)), "the target is now on screen");
 }
 
 /// A bordered, padded scroller: the visible area is its **padding** box, the
