@@ -4038,6 +4038,12 @@ unaffected either way: it already saw every key before a focused surface did, on
 backends, and still does — a host that wants an app-global chord to win regardless of
 surface focus should register it there rather than through `set_key_handler`.
 
+**On `rinch-web`, an unclaimed key also keeps the browser's own default action** — no
+longer `preventDefault()`ed just because the surface is focused, matching how an unfocused
+`<canvas>` already behaves. Space, PageUp/Down and the arrow keys can scroll the page, and
+Tab leaves the canvas for the next tab stop. A web game that steers with any of those must
+claim them through `set_key_handler`, or the page scrolls under it.
+
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 
 | Entry point | Ownership | Use when |

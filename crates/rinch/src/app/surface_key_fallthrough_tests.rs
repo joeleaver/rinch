@@ -176,3 +176,36 @@ fn an_interceptor_that_claims_a_key_still_wins_over_a_focused_surface() {
         "and the fallback must not run either: {actions:?}"
     );
 }
+
+#[test]
+fn tab_moves_focus_off_an_unclaimed_focused_surface_when_another_tab_stop_exists() {
+    let surface = create_render_surface();
+    let surface_id = surface.id();
+    let mounted = surface.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let child = crate::render_surface::RenderSurface {
+            surface: Some(mounted.clone()),
+        }
+        .render(scope, &[]);
+        root.append_child(&child);
+        let btn = scope.create_element("button");
+        btn.set_attribute("style", "width: 40px; height: 20px;");
+        let label = scope.create_text("ok");
+        btn.append_child(&label);
+        root.append_child(&btn);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.focus_target = FocusTarget::Surface(surface_id);
+
+    let _actions = press(&mut app, KeyCode::Tab, Modifiers::default());
+
+    assert!(
+        !matches!(app.focus_target, FocusTarget::Surface(_)),
+        "Tab should move focus off the surface onto the button when the \
+         surface has not claimed Tab: focus_target = {:?}",
+        app.focus_target
+    );
+}

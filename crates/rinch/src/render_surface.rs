@@ -421,6 +421,14 @@ impl RenderSurfaceHandle {
     /// surface with no `set_key_handler` call no longer swallows any key — the
     /// fail-safe direction, since a host that never opts in should not lose
     /// its keybindings to a canvas it clicked.
+    ///
+    /// **On the web, that also means an unclaimed key keeps the browser's own
+    /// default action** — the same thing that no longer `preventDefault()`s —
+    /// matching how an unfocused `<canvas>` already behaves: Space,
+    /// PageUp/PageDown and the arrow keys can scroll the page, and Tab leaves
+    /// the canvas for the next tab stop. A web game steering with any of
+    /// those keys must claim them here, or the page scrolls out from under
+    /// it.
     pub fn set_key_handler(&self, handler: impl Fn(&SurfaceKeyData) -> bool + 'static) {
         *self.key_handler.borrow_mut() = Some(Box::new(handler));
     }

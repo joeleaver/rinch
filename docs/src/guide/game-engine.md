@@ -192,6 +192,12 @@ surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "Key
 The document-level keyboard interceptor (`set_keyboard_interceptor`) is unaffected either
 way — it already sees every key before a focused surface does, on both backends.
 
+**On the web, an unclaimed key also keeps the browser's default action** — no longer
+`preventDefault()`ed just because the surface is focused, matching an unfocused `<canvas>`.
+Space, PageUp/Down and the arrow keys can scroll the page, and Tab leaves the canvas. A web
+game steering with any of those must claim them via `set_key_handler`, or the page scrolls
+under it.
+
 ### Web (canvas viewport)
 
 The **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted. On the web the **browser** composites, so rinch only creates and manages a real `<canvas>` "viewport hole" sized by layout; the **app owns the GPU context** (rinch links no wgpu on web). This mirrors desktop symmetrically: **desktop** = rinch owns the window and you submit frames; **web** = you own the canvas surface.
