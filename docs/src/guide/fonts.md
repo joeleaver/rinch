@@ -141,9 +141,12 @@ yourself.
 
 ## Emoji
 
-An emoji-presentation character — 😀, ⬜, a flag, or anything followed by
-U+FE0F — is drawn from the `emoji` generic unless a family in your stack covers
-it first, where each generic in the stack counts as its **first face** only.
+An emoji-presentation character — 😀, ⬜, a flag, or an emoji character
+followed by U+FE0F (❤️, ©️) — is drawn from the `emoji` generic unless a family
+in your stack covers it first, where each generic in the stack counts as its
+**first face** only; the generics' other faces come after the `emoji` generic,
+so a character the emoji face lacks still finds them. U+FE0F after a character
+that is not an emoji (𝄞, Thai ก) changes nothing.
 So under `font-family: sans-serif` (or the theme's default stack) an emoji is in
 colour even on a machine whose `sans-serif` list goes on to text faces that
 also have it (DejaVu Sans, FreeSans), as in Chrome; a family you *name* that

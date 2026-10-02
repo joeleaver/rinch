@@ -3612,10 +3612,14 @@ draws it (below). Cached per thread by (primary `sans-serif` family id, stack).
 cluster against the stack and then the `emoji` generic, and a generic expands to
 the platform's whole list (about 180 families on a Linux desktop), so DejaVu Sans
 or FreeSans won U+1F600 / U+2B1C under `sans-serif` and under the theme's
-`DEFAULT_FONT_FAMILY`. Now a cluster holding U+FE0F, or an `Emoji_Presentation`
-character and no U+FE0E (icu grapheme clusters, `fonts::emoji_presentation_ranges`),
-gets a span whose stack is the computed one with every generic but `emoji`
-replaced by its slot's first family; parley appends `emoji` after it. Chrome 153
+`DEFAULT_FONT_FAMILY`. Now a cluster whose base has the `Emoji` property and
+that holds U+FE0F, or one holding an `Emoji_Presentation` character and no
+U+FE0E (icu grapheme clusters, `fonts::emoji_presentation_ranges`), gets a span
+whose stack is the computed one with every generic but `emoji` replaced by its
+slot's first family, then the `emoji` generic, then the original generics as
+coverage (without that tail, 𝄞️ and Thai ก️ drew `.notdef` on this host, and so
+did U+2B1C in an embed context whose emoji-capable app face was second in
+`sans-serif` — review of #1270). Chrome 153
 measured on this host: a generic is one face, a named family keeps its place
 (`'DejaVu Sans'` draws U+1F600 in DejaVu), and a named emoji face after the
 generic wins (the theme's Segoe UI Emoji). Text-default `Emoji` characters

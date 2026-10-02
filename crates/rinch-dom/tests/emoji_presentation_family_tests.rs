@@ -472,8 +472,10 @@ fn a_selector_after_a_non_emoji_base_keeps_the_stack_as_written() {
     let inter = skrifa::FontRef::new(INTER).unwrap().charmap();
     assert!(sg.map('\u{416}').is_none() && inter.map('\u{416}').is_some());
     // Shaped as text, parley wants a face for the selector too, which Inter
-    // lacks, so the face that answers is the host's; what is pinned is that it
-    // is not the `emoji` generic's, which an emoji span draws `Ж` in.
+    // lacks, so the face that answers is the host's. The rule itself is pinned
+    // by `fonts::tests::emoji_presentation::a_selector_after_a_non_emoji_base_is_text`;
+    // this is the end-to-end shape (an emoji span would not reach the
+    // `emoji` stand-in either, since it lacks U+FE0F too).
     let (runs, f) = ifc_runs("sans-serif", "\u{416}\u{fe0f}");
     assert!(!runs.is_empty());
     assert!(!faces_only(&runs).contains(&f.emoji), "{runs:?} {f:?}");
