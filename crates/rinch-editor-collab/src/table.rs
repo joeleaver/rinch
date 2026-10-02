@@ -85,15 +85,18 @@
 //!
 //!    **No diff ever runs against a placeholder.** While the shared document holds a
 //!    table too large to read, `CollabSession::record_local` refuses every local
-//!    change (`CollabError::OversizedTable`): outbound is frozen, inbound keeps
-//!    integrating. Every narrower rule was a route the next review found around — a
+//!    change (`CollabError::OversizedTable`), and an editor refuses the edit itself, as
+//!    read-only does, so the model never runs ahead of the CRDT: outbound is frozen,
+//!    inbound keeps integrating. Every narrower rule was a route the next review found around — a
 //!    position-paired middle, two equal placeholders matched by value, an app export
 //!    (HTML, markdown, `DocNode`) loaded back, which cannot carry the mark — each of
 //!    which deleted the real table for every peer with `Ok`. The cure is
 //!    `CollabSession::delete_oversized_table` by id ([`CollabDoc::delete_table`] removes
-//!    the map wherever it is, without reading it), or a peer deleting or shrinking the
-//!    table; the edits made meanwhile are then re-based on the CRDT's read, which holds
-//!    no placeholder, and ship. [`read_model_table`] still refuses a marked table (an
+//!    the map wherever it is, without reading it; an id not listed now is refused),
+//!    or a peer deleting or shrinking the table. No backlog of frozen edits exists, so
+//!    nothing is re-based and nothing is lost when it lifts (review round 5: a kept
+//!    backlog was wiped by any inbound change, and its re-base turned a peer's delete
+//!    into the delete of another block — #1263, #1264 for the #220 stall's own). [`read_model_table`] still refuses a marked table (an
 //!    undo, a paste of a copy), so a placeholder is never written either. It was a
 //!    poison (#196) at first, which no peer that had seen the table could cure: a
 //!    poisoned session sends nothing.

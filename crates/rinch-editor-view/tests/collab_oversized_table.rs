@@ -1,7 +1,8 @@
 //! The freeze over a table too large to read, through `EditorHandle` (#1233 review
-//! round 4): a peer's update grows a table past the read's budget; the guest shows a
-//! placeholder, reports the freeze, keeps its edits local, and
-//! `collab_delete_oversized_table` deletes the table for everybody and ships them.
+//! rounds 4–5): a peer's update grows a table past the read's budget; the guest shows
+//! a placeholder, reports the freeze and **refuses every edit**, as read-only does
+//! (the selection still moves); `collab_delete_oversized_table` deletes the table for
+//! everybody and edits work again.
 #![cfg(feature = "collaboration")]
 
 use rinch_editor_core::*;
@@ -92,14 +93,32 @@ fn an_over_budget_table_freezes_the_guest_until_it_is_deleted_by_id() {
         Some(CollabError::OversizedTable(_))
     ));
 
-    // An edit while frozen stays local: nothing is sent.
+    // An edit while frozen is refused outright: the model never runs ahead.
+    let before = guest.doc();
+    let end = before.content_size() - 1;
+    guest.set_selection(Selection::cursor(Pos(end)));
+    assert_eq!(
+        guest.selection(),
+        Selection::cursor(Pos(end)),
+        "the caret moves"
+    );
+    assert!(!guest.insert_text("!"), "typing is refused");
+    assert!(!guest.can_run("toggleBold"));
+    assert!(!guest.command("selectAll") || guest.doc().same_ref(&before));
+    assert!(guest.doc().same_ref(&before), "the model did not change");
+    assert!(to_host.borrow().is_empty(), "frozen: nothing broadcast");
+    assert!(
+        !guest.is_read_only(),
+        "the freeze is not the read-only switch"
+    );
+    // A stale or made-up id deletes nothing.
+    assert_eq!(guest.collab_delete_oversized_table("1:2"), Ok(false));
+
+    // The cure, then the edit.
+    assert_eq!(guest.collab_delete_oversized_table(&tables[0].id), Ok(true));
     let end = guest.doc().content_size() - 1;
     guest.set_selection(Selection::cursor(Pos(end)));
-    guest.insert_text("!");
-    assert!(to_host.borrow().is_empty(), "frozen: nothing broadcast");
-
-    // The cure: one delta carries the deletion and the edit.
-    assert_eq!(guest.collab_delete_oversized_table(&tables[0].id), Ok(true));
+    assert!(guest.insert_text("!"));
     assert!(guest.collab_outbound_stall().is_none());
     assert!(guest.collab_oversized_tables().is_empty());
     let sent: Vec<Vec<u8>> = to_host.borrow_mut().drain(..).collect();

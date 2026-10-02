@@ -1352,9 +1352,9 @@ fn a_span_over_more_slots_than_the_model_allows_reads_as_a_placeholder() {
 /// While the shared document holds a table too large to read, outbound is frozen:
 /// every local edit is refused with `OversizedTable` — typing inside the placeholder,
 /// typing elsewhere, even deleting the table with the editor's own command — and
-/// nothing reaches the CRDT. The cure is `delete_oversized_table`, by id: the table
-/// leaves the CRDT and the model, the edits made meanwhile ship with it, and every
-/// peer converges without the table.
+/// nothing reaches the CRDT or the model (an editor refuses the edit, as read-only
+/// does). The cure is `delete_oversized_table`, by id: the table leaves the CRDT and
+/// the model, every peer converges without it, and edits project again.
 #[test]
 fn an_over_budget_table_freezes_outbound_until_it_is_deleted_by_id() {
     let s = schema();
@@ -1404,16 +1404,7 @@ fn an_over_budget_table_freezes_outbound_until_it_is_deleted_by_id() {
     // The model is ahead of the CRDT now: no sticky index can be trusted.
     assert!(b.session.sticky_index(&b.state.doc, tail_pos).is_none());
 
-    // Start over from the frozen model with the "!" kept, and cure by id.
-    let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
-    integrate_healthy(&mut a, &update);
-    integrate_healthy(&mut b, &update);
-    let tail = pos_of(&b.state.doc, "tail") + 4;
-    let mut tr = b.state.tr();
-    tr.set_selection(Selection::cursor(Pos(tail)));
-    tr.insert_text("!").unwrap();
-    let typed = b.state.apply(tr);
-    assert!(!rv4_soft_commit(&mut b, typed));
+    // The cure, by id.
     let id = b.session.oversized_tables()[0].id.clone();
     let next = b
         .session
@@ -1430,9 +1421,14 @@ fn an_over_budget_table_freezes_outbound_until_it_is_deleted_by_id() {
     assert_eq!(a.state.doc, b.state.doc);
     assert_eq!(
         inline_text(a.state.doc.child(0)),
-        "tail!",
-        "the frozen edit shipped"
+        "tail",
+        "the refused edits were never applied, so nothing ships"
     );
+    // Unfrozen: an edit projects again.
+    b.type_after("tail", "!");
+    let delta = b.send();
+    a.receive(&delta);
+    assert_eq!(inline_text(a.state.doc.child(0)), "tail!");
     assert!(a.session.oversized_tables().is_empty());
     assert!(a.session.outbound_stall().is_none());
     // A second delete finds nothing.
@@ -2354,9 +2350,7 @@ fn over_budget_pair(s: &Rc<Schema>) -> (Peer, Peer) {
 
 /// Commit `next` on `b`, send it to `a`, and return whether the projection took it.
 fn commit_and_send(a: &mut Peer, b: &mut Peer, next: EditorState) -> bool {
-    let s = b.schema.clone();
-    let ok = b.session.record_local(&s, &b.state.doc, &next.doc).is_ok();
-    b.state = next;
+    let ok = rv4_soft_commit(b, next);
     let delta = b.send();
     if let Some(n) = a.session.integrate_incremental(&a.state, &delta).unwrap() {
         a.state = n;
@@ -2406,19 +2400,25 @@ fn a_load_that_moves_the_placeholder_is_refused() {
 }
 
 /// Select all and type over it (a paste or a replace-all) while frozen: refused, the
-/// real table kept; only `delete_oversized_table` removes it.
+/// real table kept, nothing applied; only `delete_oversized_table` removes it, and
+/// the replace-all made afterwards ships.
 #[test]
 fn replacing_everything_while_frozen_deletes_nothing() {
     let s = schema();
     let (mut a, mut b) = over_budget_pair(&s);
-    let end = b.state.doc.content_size();
-    let mut tr = b.state.tr();
-    tr.replace_with(0, end, Fragment::from_node(para(&s, "pasted")))
-        .unwrap();
-    let next = b.state.apply(tr);
+    let replace_all = |b: &Peer| {
+        let end = b.state.doc.content_size();
+        let mut tr = b.state.tr();
+        tr.replace_with(0, end, Fragment::from_node(para(&s, "pasted")))
+            .unwrap();
+        b.state.apply(tr)
+    };
+    let before = b.state.doc.clone();
+    let next = replace_all(&b);
     assert!(!commit_and_send(&mut a, &mut b, next));
+    assert_eq!(b.state.doc, before, "the model never ran ahead");
     assert!(rv3_real_table_alive(&b) && rv3_real_table_alive(&a));
-    // The cure, then the replace-all ships.
+    // The cure, then the replace-all.
     let id = b.session.oversized_tables()[0].id.clone();
     let next = b
         .session
@@ -2426,8 +2426,8 @@ fn replacing_everything_while_frozen_deletes_nothing() {
         .unwrap()
         .unwrap();
     b.state = next;
-    let delta = b.send();
-    a.receive(&delta);
+    let next = replace_all(&b);
+    assert!(commit_and_send(&mut a, &mut b, next));
     assert!(!rv3_real_table_alive(&b) && !rv3_real_table_alive(&a));
     assert_eq!(a.state.doc, b.state.doc);
     assert_eq!(inline_text(&a.state.doc), "pasted");
@@ -2569,13 +2569,24 @@ fn a_guest_joining_past_the_line_budget_sees_the_placeholder() {
 
 // --- rv4 fuzz: over-budget tables among random multi-peer edits --------------------
 
+/// Commit `next` the way an editor does: a stalled edit (#220) is applied to the
+/// model; one refused by the freeze is not (`EditorCore::commit` refuses it, as
+/// read-only does, so the model never runs ahead of the CRDT).
 fn rv4_soft_commit(peer: &mut Peer, next: EditorState) -> bool {
-    let ok = peer
+    match peer
         .session
         .record_local(&peer.schema, &peer.state.doc, &next.doc)
-        .is_ok();
-    peer.state = next;
-    ok
+    {
+        Ok(()) => {
+            peer.state = next;
+            true
+        }
+        Err(CollabError::OversizedTable(_)) => false,
+        Err(_) => {
+            peer.state = next;
+            false
+        }
+    }
 }
 
 /// A foreign writer (client `cid`) grows the `k`th top-level table of `p`'s CRDT by
@@ -3115,23 +3126,23 @@ fn nested_over_budget(s: &Rc<Schema>) -> (Peer, Peer) {
 }
 
 /// Review round 4, F3: a placeholder nested in a quote. Typing beside it, or deleting
-/// it with the editor, is frozen (nothing deleted); `delete_oversized_table` reaches
-/// it inside the quote, the typing beside it ships, and the quote stays.
+/// it with the editor, is refused (nothing deleted, nothing applied);
+/// `delete_oversized_table` reaches it inside the quote, the quote stays, and typing
+/// beside it projects afterwards.
 #[test]
-fn a_nested_over_budget_table_is_deleted_by_id_and_typing_beside_it_ships() {
+fn a_nested_over_budget_table_is_deleted_by_id_and_typing_beside_it_projects() {
     let s = schema();
     let (mut a, mut b) = nested_over_budget(&s);
     let snapshot = b.session.snapshot();
+    let before = b.state.doc.clone();
     let at = pos_of(&b.state.doc, "beside") + 6;
-    b.state = {
-        let mut tr = b.state.tr();
-        tr.set_selection(Selection::cursor(Pos(at)));
-        tr.insert_text("!").unwrap();
-        let next = b.state.apply(tr);
-        assert!(!rv4_soft_commit(&mut b, next.clone()));
-        next
-    };
+    let mut tr = b.state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("!").unwrap();
+    let next = b.state.apply(tr);
+    assert!(!rv4_soft_commit(&mut b, next));
     assert_eq!(b.session.snapshot(), snapshot, "frozen");
+    assert_eq!(b.state.doc, before);
     let id = b.session.oversized_tables()[0].id.clone();
     let next = b
         .session
@@ -3141,6 +3152,7 @@ fn a_nested_over_budget_table_is_deleted_by_id_and_typing_beside_it_ships() {
     b.state = next;
     assert!(b.session.outbound_stall().is_none());
     b.assert_model_is_projection("after deleting the nested table");
+    b.type_after("beside", "!");
     let delta = b.send();
     a.receive(&delta);
     assert_eq!(a.state.doc, b.state.doc);
@@ -3255,4 +3267,951 @@ fn no_sticky_index_once_an_edit_is_refused_during_a_freeze() {
     let next = b.state.apply(tr);
     assert!(!rv4_soft_commit(&mut b, next));
     assert!(b.session.sticky_index(&b.state.doc, Pos(2)).is_none());
+}
+
+// --- rv5 (review round 5) probes ------------------------------------------------------
+
+/// Type `text` after `after` in `p`'s model; the session must refuse it (frozen).
+fn rv5_type_frozen(p: &mut Peer, after: &str, text: &str) {
+    let at = pos_of(&p.state.doc, after) + after.chars().count();
+    let mut tr = p.state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text(text).unwrap();
+    let next = p.state.apply(tr);
+    assert!(!rv4_soft_commit(p, next), "refused while frozen");
+}
+
+fn rv5_texts(doc: &Node) -> Vec<String> {
+    (0..doc.child_count())
+        .map(|i| inline_text(doc.child(i)))
+        .collect()
+}
+
+/// Review round 5, F2 (re-pinned): a peer cures the freeze while this one was frozen.
+/// Its typing was refused — never applied, so there is nothing for the cure's delta
+/// to discard — and once the cure arrives it types and it ships.
+#[test]
+fn rv5_a_peers_cure_lifts_my_freeze_and_nothing_i_typed_is_lost() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let u = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut a, &u);
+    integrate_healthy(&mut b, &u);
+    rv5_type_frozen(&mut b, "tail", "MINE");
+    assert_eq!(rv5_texts(&b.state.doc)[1], "tail", "refused, not applied");
+    let id = a.session.oversized_tables()[0].id.clone();
+    a.state = a
+        .session
+        .delete_oversized_table(&a.state, &id)
+        .unwrap()
+        .unwrap();
+    let d = a.send();
+    b.receive(&d);
+    assert!(b.session.outbound_stall().is_none());
+    b.type_after("tail", "MINE");
+    let db = b.send();
+    a.receive(&db);
+    assert_eq!(rv5_texts(&a.state.doc), ["tailMINE"]);
+    assert_eq!(a.state.doc, b.state.doc);
+}
+
+/// Review round 5, F2 (re-pinned): a foreign writer types while this peer is frozen.
+/// The refused typing was never applied, the foreign edit arrives, nothing is lost.
+#[test]
+fn rv5_an_inbound_delta_while_frozen_loses_nothing() {
+    let s = schema();
+    let (mut a, mut b) = pair(
+        &s,
+        vec![grid(&s, 1, 1), para(&s, "tail"), para(&s, "other")],
+        (1, 2),
+    );
+    let u = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut a, &u);
+    integrate_healthy(&mut b, &u);
+    rv5_type_frozen(&mut b, "tail", "MINE");
+    let foreign = {
+        use yrs::updates::decoder::Decode;
+        use yrs::{Array, ArrayRef, Map, Out, ReadTxn, Text, Transact, Update};
+        let doc = yrs::Doc::with_client_id(4242);
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(Update::decode_v1(&a.session.snapshot()).unwrap())
+                .unwrap();
+        }
+        let sv = doc.transact().state_vector();
+        let content: ArrayRef = doc.get_or_insert_array("content");
+        {
+            let mut txn = doc.transact_mut();
+            let Some(Out::YMap(block)) = content.get(&txn, 2) else {
+                panic!()
+            };
+            let Some(Out::YText(t)) = block.get(&txn, "text") else {
+                panic!("no text")
+            };
+            t.insert(&mut txn, 0, "X");
+        }
+        doc.transact().encode_state_as_update_v1(&sv)
+    };
+    b.receive(&foreign);
+    assert_eq!(rv5_texts(&b.state.doc)[1..], ["tail", "Xother"]);
+    assert!(b.session.is_frozen());
+}
+
+/// Pre-existing comparison: a #220 stall (task list) then an inbound delta.
+#[test]
+fn rv5_report_a_stall_then_an_inbound_delta() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, vec![para(&s, "tail"), para(&s, "other")], (1, 2));
+    let task = branch(
+        &s,
+        "task_list",
+        vec![branch(&s, "task_item", vec![para(&s, "t")])],
+    );
+    let end = b.state.doc.content_size();
+    let mut tr = b.state.tr();
+    tr.replace_with(end, end, Fragment::from_node(task))
+        .unwrap();
+    let next = b.state.apply(tr);
+    assert!(!rv4_soft_commit(&mut b, next));
+    rv5_type_frozen(&mut b, "tail", "MINE");
+    a.type_after("other", "X");
+    let d = a.send();
+    if let Some(n) = b.session.integrate_incremental(&b.state, &d).unwrap() {
+        b.state = n;
+    }
+    eprintln!(
+        "stall case b model: {:?} stall {:?}",
+        rv5_texts(&b.state.doc),
+        b.session.outbound_stall()
+    );
+}
+
+/// A stale id: the freeze lifted because a peer shrank the table (now readable, real
+/// content). The app's "delete oversized table" button still holds the old id.
+#[test]
+fn rv5_a_stale_id_after_a_shrink_does_not_delete_the_real_table() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 2, 2), (1, 2));
+    a.type_in_cell(0, 0, "REAL");
+    exchange(&mut a, &mut b);
+    let u = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut a, &u);
+    integrate_healthy(&mut b, &u);
+    let id = b.session.oversized_tables()[0].id.clone();
+    let shrink = rv4_foreign(&b, 0, 0, true, 777).expect("a shrink");
+    integrate_healthy(&mut b, &shrink);
+    integrate_healthy(&mut a, &shrink);
+    assert!(b.session.oversized_tables().is_empty());
+    // a peer types in the (now real) table concurrently
+    a.type_in_cell(0, 0, "+PEER");
+    let r = b.session.delete_oversized_table(&b.state, &id);
+    eprintln!(
+        "stale delete returned {:?}",
+        r.as_ref().map(|o| o.is_some())
+    );
+    if let Ok(Some(n)) = r {
+        b.state = n;
+    }
+    exchange(&mut a, &mut b);
+    eprintln!("a: {:?}", rv5_texts(&a.state.doc));
+    eprintln!("b: {:?}", rv5_texts(&b.state.doc));
+    assert!(
+        rv5_texts(&a.state.doc)
+            .iter()
+            .any(|t| t.contains("REAL+PEER")),
+        "a stale id must not delete the real table or the peer's typing in it"
+    );
+}
+
+/// Review round 5, F4 (re-pinned): the placeholder is a quote's only block. The cure
+/// takes the CRDT's read, where the emptied quote is void, so the quote goes with
+/// the table; the refused typing was never applied; the model is the projection.
+#[test]
+fn rv5_curing_a_placeholder_alone_in_a_quote_removes_the_quote() {
+    let s = schema();
+    let quote = branch(&s, "blockquote", vec![grid(&s, 1, 1)]);
+    let (_a, mut b) = pair(&s, vec![quote, para(&s, "tail")], (1, 2));
+    let u = {
+        use yrs::updates::decoder::Decode;
+        use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+        let doc = yrs::Doc::with_client_id(999);
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(Update::decode_v1(&b.session.snapshot()).unwrap())
+                .unwrap();
+        }
+        let sv = doc.transact().state_vector();
+        {
+            let content: ArrayRef = doc.get_or_insert_array("content");
+            let mut txn = doc.transact_mut();
+            let Some(Out::YMap(quote)) = content.get(&txn, 0) else {
+                panic!()
+            };
+            let Some(Out::YArray(inner)) = quote.get(&txn, "content") else {
+                panic!()
+            };
+            let Some(Out::YMap(table)) = inner.get(&txn, 0) else {
+                panic!()
+            };
+            let Some(Out::YArray(cols)) = table.get(&txn, "cols") else {
+                panic!()
+            };
+            let Some(Out::YArray(rows)) = table.get(&txn, "rows") else {
+                panic!()
+            };
+            for i in 0..2000 {
+                let m = cols.insert(&mut txn, 1, MapPrelim::default());
+                m.insert(&mut txn, "id", Any::String(format!("c{i}").into()));
+                let r = rows.insert(&mut txn, 1, MapPrelim::default());
+                r.insert(&mut txn, "id", Any::String(format!("r{i}").into()));
+            }
+        }
+        doc.transact().encode_state_as_update_v1(&sv)
+    };
+    integrate_healthy(&mut b, &u);
+    rv5_type_frozen(&mut b, "tail", "MINE");
+    let id = b.session.oversized_tables()[0].id.clone();
+    b.state = b
+        .session
+        .delete_oversized_table(&b.state, &id)
+        .unwrap()
+        .unwrap();
+    b.assert_model_is_projection("after the cure");
+    assert_eq!(rv5_texts(&b.state.doc), ["tail"]);
+    assert!(b.session.outbound_stall().is_none());
+}
+
+/// Two oversized tables: curing the first leaves the freeze on (the second is still
+/// there) and edits still refused; curing the second lifts it, and edits ship.
+#[test]
+fn rv5_two_tables_cured_one_at_a_time() {
+    let s = schema();
+    let (mut a, mut b, ids) = two_over_budget(&s);
+    rv5_type_frozen(&mut b, "tail", "ONE");
+    b.state = b
+        .session
+        .delete_oversized_table(&b.state, &ids[0])
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        b.session.outbound_stall(),
+        Some(CollabError::OversizedTable(_))
+    ));
+    rv5_type_frozen(&mut b, "tail", "TWO");
+    b.state = b
+        .session
+        .delete_oversized_table(&b.state, &ids[1])
+        .unwrap()
+        .unwrap();
+    assert!(b.session.outbound_stall().is_none());
+    b.type_after("tail", "THREE");
+    let d = b.send();
+    a.receive(&d);
+    assert_eq!(a.state.doc, b.state.doc);
+    assert_eq!(rv5_texts(&a.state.doc), ["tailTHREE"]);
+}
+
+/// After stop_collaboration the model still holds a placeholder: hosting a new session
+/// from it must not write the placeholder as a real 1x1 table.
+#[test]
+fn rv5_hosting_from_a_model_with_a_placeholder_is_refused() {
+    let s = schema();
+    let (_a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let u = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut b, &u);
+    let r = CollabSession::new(&b.state);
+    eprintln!("host from placeholder: {:?}", r.as_ref().err());
+    assert!(r.is_err());
+}
+
+/// Undo after a cure: the frozen edits are undoable, the cure is not; undoing past the
+/// cure must not delete anything real nor put the placeholder back into the CRDT.
+#[test]
+fn rv5_undo_after_a_cure() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let u = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut a, &u);
+    integrate_healthy(&mut b, &u);
+    // delete the placeholder with the editor (refused, model ahead)
+    let at = cell_pos(&b.state.doc, 0, 0) + 2;
+    let mut tr = b.state.tr();
+    tr.set_selection(Selection::near(&b.state.doc, Pos(at), 1));
+    let placed = b.state.apply(tr);
+    let gone = placed.run("deleteTable").unwrap();
+    assert!(!rv4_soft_commit(&mut b, gone));
+    rv5_type_frozen(&mut b, "tail", "MINE");
+    let id = b.session.oversized_tables()[0].id.clone();
+    b.state = b
+        .session
+        .delete_oversized_table(&b.state, &id)
+        .unwrap()
+        .unwrap();
+    assert!(b.session.outbound_stall().is_none());
+    let d = b.send();
+    a.receive(&d);
+    for k in 0..3 {
+        let Some(next) = b.state.run("undo") else {
+            break;
+        };
+        let ok = rv4_soft_commit(&mut b, next);
+        eprintln!(
+            "undo {k}: ok={ok} model {:?} stall {:?}",
+            rv5_texts(&b.state.doc),
+            b.session.outbound_stall()
+        );
+        let d = b.send();
+        a.receive(&d);
+    }
+    let snap = String::from_utf8_lossy(&a.session.snapshot()).to_string();
+    assert!(
+        !snap.contains("rinch-collab-unreadable-table"),
+        "no placeholder in the CRDT"
+    );
+    eprintln!("a: {:?}", rv5_texts(&a.state.doc));
+}
+
+fn rv5_dump_ids(snapshot: &[u8]) -> Vec<String> {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Array, ArrayRef, GetString, Map, Out, Transact, Update};
+    let doc = yrs::Doc::new();
+    {
+        let mut t = doc.transact_mut();
+        t.apply_update(Update::decode_v1(snapshot).unwrap())
+            .unwrap();
+    }
+    let content: ArrayRef = doc.get_or_insert_array("content");
+    let txn = doc.transact();
+    content
+        .iter(&txn)
+        .map(|o| match o {
+            Out::YMap(m) => {
+                let b: &yrs::branch::Branch = m.as_ref();
+                let t = match m.get(&txn, "text") {
+                    Some(Out::YText(t)) => t.get_string(&txn),
+                    _ => "<tbl>".into(),
+                };
+                format!("{:?}={t}", b.id())
+            }
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+/// All texts of top-level paragraphs (and nested ones) that start with `U`.
+fn rv5_unique_texts(doc: &Node, out: &mut Vec<String>) {
+    for i in 0..doc.child_count() {
+        let c = doc.child(i);
+        if c.type_name() == "paragraph" {
+            let t = inline_text(c);
+            if t.starts_with('U') {
+                out.push(t);
+            }
+        } else if !c.is_text() {
+            rv5_unique_texts(c, out);
+        }
+    }
+}
+
+/// The review's data-survival fuzz: three peers (FIFO per sender), unique paragraphs
+/// inserted and deleted, tables inserted, foreign grow/shrink making tables appear and
+/// disappear past the budget, cures by id (current and stale ids) from random peers.
+/// Oracle: every unique paragraph that reached the CRDT (an accepted record_local) is in
+/// the converged CRDT unless some peer deleted it (accepted, or refused and possibly
+/// re-based at a cure). Refused (frozen) insertions are counted, not asserted: F1.
+#[allow(clippy::needless_range_loop)]
+fn rv5_trial(seed: u64, rounds: usize) -> (usize, usize, usize, usize) {
+    use std::collections::HashSet;
+    let peers = 3;
+    let s = schema();
+    let mut rng = Rng::new(seed ^ 0xA5A5);
+    let blocks = vec![
+        grid(&s, 2, 2),
+        para(&s, "mid"),
+        grid(&s, 1, 2),
+        para(&s, "tail"),
+    ];
+    let host = Peer::host(&s, blocks, seed * 16 + 1);
+    let mut reps: Vec<Peer> = (1..peers)
+        .map(|p| host.join(seed * 16 + 1 + p as u64))
+        .collect();
+    reps.insert(0, host);
+    let _ = reps[0].send();
+    let mut log: Vec<Vec<u8>> = Vec::new();
+    let mut prod: Vec<usize> = Vec::new();
+    let mut order: Vec<HashSet<usize>> = vec![HashSet::new(); peers];
+    let mut seqs: Vec<Vec<usize>> = vec![Vec::new(); peers];
+    let initial = reps[0].session.snapshot();
+    let mut accepted: HashSet<String> = HashSet::new();
+    let mut refused_ins: HashSet<String> = HashSet::new();
+    let mut deleted: HashSet<String> = HashSet::new();
+    let mut seen_ids: Vec<String> = Vec::new();
+    let (mut cures, mut stale_cures, mut grows) = (0, 0, 0);
+    let mut fcid = 5_000_000 + seed * 1000;
+    let mut n = 0;
+    let push = |p: usize,
+                reps: &mut Vec<Peer>,
+                log: &mut Vec<Vec<u8>>,
+                prod: &mut Vec<usize>,
+                order: &mut Vec<HashSet<usize>>| {
+        if let Ok(d) = reps[p].session.save_incremental()
+            && !d.is_empty()
+        {
+            log.push(d);
+            prod.push(p);
+            order[p].insert(log.len() - 1);
+            if std::env::var("RV5_TRACE").is_ok() {
+                eprintln!(
+                    "  PUSH log {} from {p} ({} bytes)",
+                    log.len() - 1,
+                    log[log.len() - 1].len()
+                );
+                if std::env::var("RV5_RAWAT")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    == Some(log.len() - 1)
+                {
+                    use yrs::Update;
+                    use yrs::updates::decoder::Decode;
+                    let sch = reps[p].schema.clone();
+                    eprintln!(
+                        "  PRODUCER ids: {:?}",
+                        rv5_dump_ids(&reps[p].session.snapshot())
+                    );
+                    eprintln!(
+                        "  PRODUCER crdt now: {:?}",
+                        rv5_texts(&reps[p].session.projected_doc(&sch).unwrap())
+                    );
+                    let u = Update::decode_v1(&log[log.len() - 1]).unwrap();
+                    eprintln!("  UPDATE: {u:?}");
+                    {
+                        use yrs::updates::decoder::Decode;
+                        use yrs::{ReadTxn, Transact};
+                        let doc = yrs::Doc::new();
+                        {
+                            let mut t = doc.transact_mut();
+                            t.apply_update(Update::decode_v1(&initial).unwrap())
+                                .unwrap();
+                        }
+                        let mut all: Vec<usize> = order[p].iter().copied().collect();
+                        all.sort();
+                        for &j in &all {
+                            let mut t = doc.transact_mut();
+                            t.apply_update(Update::decode_v1(&log[j]).unwrap()).unwrap();
+                        }
+                        let bytes = doc
+                            .transact()
+                            .encode_state_as_update_v1(&yrs::StateVector::default());
+                        let sess = session_from_bytes_with_client_id(&bytes, 79).unwrap();
+                        eprintln!(
+                            "  PRODUCER RAW replay of its set {all:?}: {:?} missing {}",
+                            rv5_texts(&sess.projected_doc(&sch).unwrap()),
+                            doc.transact().has_missing_updates()
+                        );
+                    }
+                }
+            }
+        }
+    };
+    let trace = std::env::var("RV5_TRACE").ok();
+    let trace_end = ();
+    for round in 0..rounds {
+        if let Some(t) = &trace {
+            let line: Vec<String> = (0..peers)
+                .map(|q| {
+                    let m = reps[q].state.doc.clone();
+                    let mut mv = Vec::new();
+                    rv5_unique_texts(&m, &mut mv);
+                    let c = reps[q].session.projected_doc(&s).unwrap();
+                    let mut cv = Vec::new();
+                    rv5_unique_texts(&c, &mut cv);
+                    format!(
+                        "p{q}[m{} c{} st{}]",
+                        mv.contains(t) as u8,
+                        cv.contains(t) as u8,
+                        reps[q]
+                            .session
+                            .outbound_stall()
+                            .map(|e| format!("{e:?}").chars().take(12).collect::<String>())
+                            .unwrap_or_default()
+                    )
+                })
+                .collect();
+            eprintln!("r{round} log{} {}", log.len(), line.join(" "));
+        }
+        let p = rng.below(peers);
+        let roll = rng.below(100);
+        if trace.is_some() {
+            eprintln!("  op peer {p} roll {roll}");
+        }
+        let ids_before: std::collections::HashMap<String, String> = if trace.is_none() {
+            Default::default()
+        } else {
+            rv5_dump_ids(&reps[p].session.snapshot())
+        }
+        .into_iter()
+        .filter_map(|e| {
+            e.split_once('=')
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+        })
+        .collect();
+        let relabel_check = |reps: &Vec<Peer>, what: &str| {
+            if ids_before.is_empty() {
+                return;
+            }
+            for e in rv5_dump_ids(&reps[p].session.snapshot()) {
+                if let Some((a, b)) = e.split_once('=')
+                    && let Some(old) = ids_before.get(a)
+                    && old != b
+                {
+                    eprintln!("  RELABEL by peer {p} ({what}): {a} {old:?} -> {b:?}");
+                }
+            }
+        };
+        let doc = reps[p].state.doc.clone();
+        let cn = doc.child_count();
+        let mut starts = Vec::new();
+        let mut at = 0;
+        for i in 0..cn {
+            starts.push(at);
+            at += doc.child(i).node_size();
+        }
+        if roll < 22 {
+            n += 1;
+            let text = format!("U{p}x{n}");
+            let j = rng.below(cn + 1);
+            let pos = if j == cn { at } else { starts[j] };
+            let mut tr = reps[p].state.tr();
+            tr.replace_with(pos, pos, Fragment::from_node(para(&s, &text)))
+                .unwrap();
+            let next = reps[p].state.apply(tr);
+            let ok = rv4_soft_commit(&mut reps[p], next);
+            relabel_check(&reps, "insert");
+            if ok {
+                accepted.insert(text);
+            } else {
+                refused_ins.insert(text);
+            }
+            push(p, &mut reps, &mut log, &mut prod, &mut order);
+        } else if roll < 32 && cn > 1 {
+            let i = rng.below(cn);
+            if trace.is_some() {
+                let before_c = reps[p].session.projected_doc(&s).unwrap();
+                eprintln!(
+                    "  DELETE block {i} type {} text {:?}; model {:?}; crdt {:?}",
+                    doc.child(i).type_name(),
+                    inline_text(doc.child(i)),
+                    rv5_texts(&doc),
+                    rv5_texts(&before_c)
+                );
+            }
+            let mut gone = Vec::new();
+            let blk = doc.child(i);
+            if blk.type_name() == "paragraph" && inline_text(blk).starts_with('U') {
+                gone.push(inline_text(blk));
+            } else {
+                rv5_unique_texts(blk, &mut gone);
+            }
+            let mut tr = reps[p].state.tr();
+            tr.delete(starts[i], starts[i] + doc.child(i).node_size())
+                .unwrap();
+            let next = reps[p].state.apply(tr);
+            rv4_soft_commit(&mut reps[p], next);
+            relabel_check(&reps, "delete");
+            // accepted or refused: either may delete it in the end
+            deleted.extend(gone);
+            push(p, &mut reps, &mut log, &mut prod, &mut order);
+        } else if roll < 38 {
+            let pos = if rng.below(2) == 0 { 0 } else { at };
+            let mut tr = reps[p].state.tr();
+            tr.replace_with(pos, pos, Fragment::from_node(grid(&s, 1, 2)))
+                .unwrap();
+            let next = reps[p].state.apply(tr);
+            rv4_soft_commit(&mut reps[p], next);
+            push(p, &mut reps, &mut log, &mut prod, &mut order);
+        } else if roll < 46 {
+            fcid += 1;
+            let shrink = rng.below(3) == 0 || std::env::var("RV5_NOGROW").is_ok();
+            if let Some(u) = rv4_foreign(&reps[p], rng.below(3), 2100, shrink, fcid) {
+                grows += usize::from(!shrink);
+                log.push(u);
+                prod.push(usize::MAX);
+            }
+        } else if roll < 54 {
+            let ids: Vec<String> = reps[p]
+                .session
+                .oversized_tables()
+                .into_iter()
+                .map(|t| t.id)
+                .collect();
+            seen_ids.extend(ids.iter().cloned());
+            let (id, stale) = if !ids.is_empty() && rng.below(4) != 0 {
+                (ids[rng.below(ids.len())].clone(), false)
+            } else if !seen_ids.is_empty() && std::env::var("RV5_NOSTALE").is_err() {
+                (seen_ids[rng.below(seen_ids.len())].clone(), true)
+            } else {
+                continue;
+            };
+            let st = reps[p].state.clone();
+            match reps[p].session.delete_oversized_table(&st, &id) {
+                Ok(Some(next)) => {
+                    relabel_check(&reps, "cure");
+                    if trace.is_some() {
+                        eprintln!(
+                            "  CURE {id} model before {:?} after {:?} crdt {:?}",
+                            rv5_texts(&reps[p].state.doc),
+                            rv5_texts(&next.doc),
+                            rv5_texts(&reps[p].session.projected_doc(&s).unwrap())
+                        );
+                    }
+                    reps[p].state = next;
+                    if stale && !ids.contains(&id) {
+                        stale_cures += 1;
+                    } else {
+                        cures += 1;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => panic!("seed {seed}: cure failed {e:?}"),
+            }
+            push(p, &mut reps, &mut log, &mut prod, &mut order);
+        } else {
+            let pending: Vec<usize> = (0..log.len())
+                .filter(|i| !order[p].contains(i))
+                .filter(|&i| {
+                    prod[i] == usize::MAX
+                        || (0..i).all(|j| prod[j] != prod[i] || order[p].contains(&j))
+                })
+                .collect();
+            if !pending.is_empty() {
+                let i = pending[rng.below(pending.len())];
+                order[p].insert(i);
+                seqs[p].push(i);
+                if trace.is_some() {
+                    eprintln!("  DELIVER log {i} (from {}) to {p}", prod[i] as isize);
+                    if std::env::var("RV5_RAWAT")
+                        .ok()
+                        .and_then(|v| v.parse::<usize>().ok())
+                        == Some(i)
+                    {
+                        eprintln!(
+                            "  RECEIVER ids before: {:?}",
+                            rv5_dump_ids(&reps[p].session.snapshot())
+                        );
+                        use yrs::updates::decoder::Decode;
+                        use yrs::{ReadTxn, Transact, Update};
+                        let doc = yrs::Doc::new();
+                        {
+                            let mut t = doc.transact_mut();
+                            t.apply_update(Update::decode_v1(&initial).unwrap())
+                                .unwrap();
+                        }
+                        // own pushes count too: replay everything this peer holds (order set) in index order and in delivery order
+                        let mut all: Vec<usize> = order[p].iter().copied().collect();
+                        all.sort();
+                        for &j in &all {
+                            let mut t = doc.transact_mut();
+                            t.apply_update(Update::decode_v1(&log[j]).unwrap()).unwrap();
+                        }
+                        let bytes = doc
+                            .transact()
+                            .encode_state_as_update_v1(&yrs::StateVector::default());
+                        let sess = session_from_bytes_with_client_id(&bytes, 77).unwrap();
+                        eprintln!(
+                            "  RAW (index order, incl {i}): {:?} missing {}",
+                            rv5_texts(&sess.projected_doc(&s).unwrap()),
+                            doc.transact().has_missing_updates()
+                        );
+                        let doc2 = yrs::Doc::new();
+                        {
+                            let mut t = doc2.transact_mut();
+                            t.apply_update(Update::decode_v1(&initial).unwrap())
+                                .unwrap();
+                        }
+                        for &j in all.iter().filter(|&&j| j != i) {
+                            let mut t = doc2.transact_mut();
+                            t.apply_update(Update::decode_v1(&log[j]).unwrap()).unwrap();
+                        }
+                        let bytes = doc2
+                            .transact()
+                            .encode_state_as_update_v1(&yrs::StateVector::default());
+                        let sess = session_from_bytes_with_client_id(&bytes, 78).unwrap();
+                        eprintln!(
+                            "  RAW (index order, excl {i}): {:?}",
+                            rv5_texts(&sess.projected_doc(&s).unwrap())
+                        );
+                        // and the producer of i, at the moment: replay what producer had
+                    }
+                }
+                let st = reps[p].state.clone();
+                match reps[p].session.integrate_incremental(&st, &log[i]) {
+                    Ok(Some(nx)) => reps[p].state = nx,
+                    Ok(None) => {}
+                    Err(e) => panic!("seed {seed}: integrate {e:?}"),
+                }
+                assert!(!reps[p].session.is_poisoned(), "seed {seed}: poisoned");
+            }
+        }
+    }
+    // Cure everything left on peer 0 (after a full flush), then flush again.
+    let _ = &trace_end;
+    let flush = |reps: &mut Vec<Peer>, log: &Vec<Vec<u8>>, order: &mut Vec<HashSet<usize>>| {
+        for p in 0..peers {
+            for i in 0..log.len() {
+                if order[p].insert(i) {
+                    let st = reps[p].state.clone();
+                    if let Some(nx) = reps[p].session.integrate_incremental(&st, &log[i]).unwrap() {
+                        reps[p].state = nx;
+                    }
+                }
+            }
+        }
+    };
+    flush(&mut reps, &log, &mut order);
+    loop {
+        let ids: Vec<String> = reps[0]
+            .session
+            .oversized_tables()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        let Some(id) = ids.first() else { break };
+        let st = reps[0].state.clone();
+        reps[0].state = reps[0]
+            .session
+            .delete_oversized_table(&st, id)
+            .unwrap()
+            .unwrap();
+        push(0, &mut reps, &mut log, &mut prod, &mut order);
+        flush(&mut reps, &log, &mut order);
+    }
+    let proj = reps[0].session.projected_doc(&s).unwrap();
+    for q in 0..peers {
+        assert_eq!(
+            reps[q].session.projected_doc(&s).unwrap(),
+            proj,
+            "seed {seed}: diverged"
+        );
+    }
+    let mut present = Vec::new();
+    rv5_unique_texts(&proj, &mut present);
+    let present: HashSet<String> = present.into_iter().collect();
+    let lost_accepted = accepted
+        .iter()
+        .filter(|t| !deleted.contains(*t) && !present.contains(*t))
+        .count();
+    if std::env::var("RV5_COUNT").is_ok() {
+        if lost_accepted > 0 {
+            eprintln!("LOSS seed {seed}: {lost_accepted} accepted paragraph(s) lost");
+        }
+    } else {
+        for t in &accepted {
+            assert!(
+                deleted.contains(t) || present.contains(t),
+                "seed {seed}: accepted paragraph {t} lost (cures {cures}, stale {stale_cures})"
+            );
+        }
+    }
+    let lost_refused = refused_ins
+        .iter()
+        .filter(|t| !deleted.contains(*t) && !present.contains(*t))
+        .count();
+    let _ = grows;
+    (cures, stale_cures, refused_ins.len(), lost_refused)
+}
+
+#[test]
+fn rv5_fuzz_authored_paragraphs_survive_unless_deleted() {
+    let seeds: u64 = std::env::var("RV5_SEEDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let (mut c, mut sc, mut r, mut l) = (0, 0, 0, 0);
+    for seed in 1..=seeds {
+        let (a, b, x, y) = rv5_trial(seed, 220);
+        c += a;
+        sc += b;
+        r += x;
+        l += y;
+    }
+    eprintln!(
+        "REPORT rv5: cures {c}, stale cures {sc}, refused inserts {r}, refused inserts lost {l}"
+    );
+    assert!(
+        c > 0 || std::env::var("RV5_NOGROW").is_ok(),
+        "positive control: cures happened"
+    );
+}
+
+/// Review round 5, F1 (re-pinned): the cure no longer re-bases anything — A's edits
+/// while frozen were refused, never applied — so B's concurrent delete of "bravo"
+/// deletes "bravo" and nothing else, and A's paragraphs, typed after its cure, land.
+#[test]
+fn rv5_a_cure_does_not_turn_a_peers_delete_into_deleting_another_block() {
+    for ids in [(1u64, 2u64), (2, 1)] {
+        let s = schema();
+        let blocks = vec![
+            para(&s, "alpha"),
+            para(&s, "bravo"),
+            para(&s, "charlie"),
+            grid(&s, 1, 1),
+            para(&s, "tail"),
+        ];
+        let (mut a, mut b) = pair(&s, blocks, ids);
+        let u = rv3_grown_at(&b, 3, 2000);
+        integrate_healthy(&mut a, &u);
+        integrate_healthy(&mut b, &u);
+        let id = a.session.oversized_tables()[0].id.clone();
+        let add = |a: &mut Peer, text: &str, at_end: bool| {
+            let pos = if at_end {
+                a.state.doc.content_size()
+            } else {
+                0
+            };
+            let mut tr = a.state.tr();
+            tr.replace_with(pos, pos, Fragment::from_node(para(&s, text)))
+                .unwrap();
+            let next = a.state.apply(tr);
+            rv4_soft_commit(a, next)
+        };
+        assert!(!add(&mut a, "NEWTOP", false), "refused while frozen");
+        assert!(!add(&mut a, "NEWEND", true), "refused while frozen");
+        // B cures first, then (unfrozen) deletes "bravo".
+        b.state = b
+            .session
+            .delete_oversized_table(&b.state, &id)
+            .unwrap()
+            .unwrap();
+        let i = (0..b.state.doc.child_count())
+            .find(|&i| inline_text(b.state.doc.child(i)) == "bravo")
+            .unwrap();
+        let start: usize = (0..i).map(|j| b.state.doc.child(j).node_size()).sum();
+        let size = b.state.doc.child(i).node_size();
+        b.local(|tr| {
+            tr.delete(start, start + size).unwrap();
+        });
+        // A cures concurrently, then adds its paragraphs.
+        a.state = a
+            .session
+            .delete_oversized_table(&a.state, &id)
+            .unwrap()
+            .unwrap();
+        assert!(add(&mut a, "NEWTOP", false));
+        assert!(add(&mut a, "NEWEND", true));
+        exchange(&mut a, &mut b);
+        assert_eq!(a.state.doc, b.state.doc, "ids {ids:?}");
+        assert_eq!(
+            rv5_texts(&a.state.doc),
+            ["NEWTOP", "alpha", "charlie", "tail", "NEWEND"],
+            "ids {ids:?}"
+        );
+    }
+}
+
+/// The same through a #220 stall (a task list), for comparison: is the re-base's
+/// relabelling pre-existing?
+#[test]
+fn rv5_report_a_stall_rebase_and_a_peers_delete() {
+    let s = schema();
+    let blocks = vec![
+        para(&s, "alpha"),
+        para(&s, "bravo"),
+        para(&s, "charlie"),
+        para(&s, "tail"),
+    ];
+    let (mut a, mut b) = pair(&s, blocks, (1, 2));
+    let task = branch(
+        &s,
+        "task_list",
+        vec![branch(&s, "task_item", vec![para(&s, "t")])],
+    );
+    let mut tr = a.state.tr();
+    tr.replace_with(0, 0, Fragment::from_node(task)).unwrap();
+    let next = a.state.apply(tr);
+    assert!(!rv4_soft_commit(&mut a, next));
+    let pos = a.state.doc.child(0).node_size();
+    let mut tr = a.state.tr();
+    tr.replace_with(pos, pos, Fragment::from_node(para(&s, "NEWTOP")))
+        .unwrap();
+    let next = a.state.apply(tr);
+    assert!(!rv4_soft_commit(&mut a, next));
+    let end = a.state.doc.content_size();
+    let mut tr = a.state.tr();
+    tr.replace_with(end, end, Fragment::from_node(para(&s, "NEWEND")))
+        .unwrap();
+    let next = a.state.apply(tr);
+    assert!(!rv4_soft_commit(&mut a, next));
+    // B deletes bravo
+    let start = b.state.doc.child(0).node_size();
+    let size = b.state.doc.child(1).node_size();
+    b.local(|tr| {
+        tr.delete(start, start + size).unwrap();
+    });
+    // A removes the task list: re-base
+    let size = a.state.doc.child(0).node_size();
+    let mut tr = a.state.tr();
+    tr.delete(0, size).unwrap();
+    let next = a.state.apply(tr);
+    assert!(rv4_soft_commit(&mut a, next));
+    exchange(&mut a, &mut b);
+    eprintln!("STALL REBASE result: {:?}", rv5_texts(&a.state.doc));
+}
+
+/// After curing a table that was a quote's only block (the quote is void in the CRDT
+/// now), the next edit still projects: `top_void` must be recomputed by the delete.
+#[test]
+fn rv5_typing_after_curing_a_table_alone_in_a_quote_projects() {
+    let s = schema();
+    let quote = branch(&s, "blockquote", vec![grid(&s, 1, 1)]);
+    let (mut a, mut b) = pair(&s, vec![quote, para(&s, "tail")], (1, 2));
+    let u = {
+        use yrs::updates::decoder::Decode;
+        use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+        let doc = yrs::Doc::with_client_id(999);
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(Update::decode_v1(&b.session.snapshot()).unwrap())
+                .unwrap();
+        }
+        let sv = doc.transact().state_vector();
+        {
+            let content: ArrayRef = doc.get_or_insert_array("content");
+            let mut txn = doc.transact_mut();
+            let Some(Out::YMap(quote)) = content.get(&txn, 0) else {
+                panic!()
+            };
+            let Some(Out::YArray(inner)) = quote.get(&txn, "content") else {
+                panic!()
+            };
+            let Some(Out::YMap(table)) = inner.get(&txn, 0) else {
+                panic!()
+            };
+            let Some(Out::YArray(cols)) = table.get(&txn, "cols") else {
+                panic!()
+            };
+            let Some(Out::YArray(rows)) = table.get(&txn, "rows") else {
+                panic!()
+            };
+            for i in 0..2000 {
+                let m = cols.insert(&mut txn, 1, MapPrelim::default());
+                m.insert(&mut txn, "id", Any::String(format!("c{i}").into()));
+                let r = rows.insert(&mut txn, 1, MapPrelim::default());
+                r.insert(&mut txn, "id", Any::String(format!("r{i}").into()));
+            }
+        }
+        doc.transact().encode_state_as_update_v1(&sv)
+    };
+    integrate_healthy(&mut b, &u);
+    integrate_healthy(&mut a, &u);
+    let id = b.session.oversized_tables()[0].id.clone();
+    b.state = b
+        .session
+        .delete_oversized_table(&b.state, &id)
+        .unwrap()
+        .unwrap();
+    assert!(b.session.outbound_stall().is_none());
+    b.type_after("tail", "!");
+    let d = b.send();
+    a.receive(&d);
+    assert_eq!(rv5_texts(&a.state.doc), ["tail!"]);
 }

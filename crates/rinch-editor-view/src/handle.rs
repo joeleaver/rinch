@@ -526,8 +526,15 @@ impl EditorCore {
     /// caller of [`Self::commit`] there is or will be. Remote integration
     /// ([`EditorHandle::collab_receive`]) never reaches `commit` and so is never
     /// asked.
+    ///
+    /// A collaboration **freeze** ([`EditorHandle::collab_oversized_tables`]: the
+    /// shared document holds a table too large to read) refuses exactly what the
+    /// switch does, loads included, so the model never runs ahead of the CRDT while
+    /// outbound cannot carry it. The freeze is not the switch: `is_read_only` does not
+    /// report it, so the other places that read the switch (the OS input method, the
+    /// context menu's Cut and Paste, the web capture textarea) do not follow it.
     fn refuses(&self, prev: &EditorState, next: &EditorState, is_load: bool) -> bool {
-        if !self.read_only {
+        if !self.locked() {
             return false;
         }
         if is_load {
@@ -538,6 +545,16 @@ impl EditorCore {
         }
         !prev.doc.same_ref(&next.doc)
             || (next.stored_marks.is_some() && next.stored_marks != prev.stored_marks)
+    }
+
+    /// Whether local document changes are refused: the read-only switch, or a
+    /// collaboration freeze (see [`Self::refuses`]).
+    fn locked(&self) -> bool {
+        #[cfg(feature = "collaboration")]
+        if self.collab.as_ref().is_some_and(|b| b.session.is_frozen()) {
+            return true;
+        }
+        self.read_only
     }
 
     /// Carry every live [`SelectionAnchor`] across a document change, so an
@@ -1594,7 +1611,7 @@ impl EditorHandle {
     /// one. Tracked for a cheaper answer.
     pub fn can_run(&self, name: &str) -> bool {
         let core = self.core();
-        if !core.read_only {
+        if !core.locked() {
             return core.state.can_run(name);
         }
         core.state
@@ -2677,12 +2694,12 @@ impl EditorHandle {
     /// now (the platform candidate box is placed from the model caret instead). A
     /// no-op before mount.
     ///
-    /// A [read-only](Self::set_read_only) editor shows no composition: the commit
-    /// it would lead to is refused, so the overlay would be text that can never
-    /// land.
+    /// A [read-only](Self::set_read_only) editor, or one frozen by a collaboration
+    /// freeze ([`Self::collab_oversized_tables`]), shows no composition: the commit it
+    /// would lead to is refused, so the overlay would be text that can never land.
     pub fn ime_set_preedit(&self, text: &str, _cursor: Option<(usize, usize)>) {
         let mut core = self.core_mut();
-        let text = if core.read_only { "" } else { text };
+        let text = if core.locked() { "" } else { text };
         if let Some(view) = core.view.as_mut() {
             view.set_preedit(text);
         }
@@ -3051,10 +3068,14 @@ impl EditorHandle {
 
     /// The tables in the shared document too large to read: a peer grew each past
     /// the read's budget, and the model shows it as a one-cell placeholder. While
-    /// any exists, outbound is **frozen** — every local edit stays local and
+    /// any exists, the editor is **frozen**: every local edit is refused, as a
+    /// [read-only](Self::set_read_only) editor refuses it (typing, commands, paste,
+    /// undo and loads answer `false`; the caret, selection and copy still work), and
     /// [`Self::collab_outbound_stall`] reports [`CollabError::OversizedTable`] naming
-    /// them — because no diff against a placeholder can be trusted not to delete real
-    /// content. Cure it with [`Self::collab_delete_oversized_table`], or wait for a
+    /// the tables — because no diff against a placeholder can be trusted not to delete
+    /// real content, and an edit kept to ship later is lost to the next inbound change.
+    /// An app should say so ("a collaborator added a table too large to load — delete
+    /// it to keep editing"). Cure it with [`Self::collab_delete_oversized_table`], or wait for a
     /// peer to delete or shrink the table. Empty when not collaborating.
     pub fn collab_oversized_tables(&self) -> Vec<OversizedTable> {
         let Ok(core) = self.inner.try_borrow() else {
@@ -3068,10 +3089,11 @@ impl EditorHandle {
 
     /// Delete the table too large to read named `id` (an [`OversizedTable::id`] from
     /// [`Self::collab_oversized_tables`]) from the shared document, for every peer:
-    /// the one change that may touch it. Its placeholder leaves the model, and once
-    /// no such table is left, the edits made while frozen are projected and broadcast
-    /// with the deletion. Not undoable. `Ok(false)` when there is no such table (a
-    /// peer deleted it first) or this editor is not collaborating.
+    /// the one change that may touch it, and it works while frozen (it is not a model
+    /// edit). Its placeholder leaves the model, and once no such table is left editing
+    /// works again. Not undoable. `Ok(false)` when `id` is not in
+    /// [`Self::collab_oversized_tables`] **now** (a peer deleted the table, or shrank
+    /// it back into a readable one) or this editor is not collaborating.
     #[cfg(feature = "collaboration")]
     pub fn collab_delete_oversized_table(&self, id: &str) -> Result<bool, CollabError> {
         let mut core = self.core_mut();

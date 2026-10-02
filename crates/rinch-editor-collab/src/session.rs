@@ -101,7 +101,7 @@ use rinch_editor_core::{EditorState, Node, Pos, Schema};
 use crate::error::{CollabError, Result};
 use crate::projection::CollabDoc;
 use crate::remote::build_remote_transaction;
-use crate::table::{OversizedTable, PLACEHOLDER_ATTR};
+use crate::table::OversizedTable;
 
 /// An update that carries nothing, in the lib0 v1 encoding: zero blocks followed by a
 /// zero-length delete set. A peer can legitimately send one (a reconciliation diff for a
@@ -228,49 +228,42 @@ impl CollabSession {
 
     /// Delete the table too large to read named `id` ([`OversizedTable::id`]) from the
     /// shared document — the cure for the freeze, since no local edit may touch it.
-    /// The CRDT node is removed without being read, its placeholder is removed from
-    /// `state`'s model, and, once no such table is left, the edits made while frozen
-    /// are projected against the CRDT's read (as a stall's are): one
-    /// [`Self::save_incremental`] then carries the deletion and that backlog. Returns
-    /// the new state (`None` when there was no such table, e.g. a peer deleted it
-    /// first). The model change is not undoable: undoing it would put back a
-    /// placeholder that stands for nothing.
+    /// The CRDT node is removed without being read, and the model is brought to the
+    /// CRDT's read (as an inbound change is), which removes the placeholder — with the
+    /// container it was alone in, if any; one [`Self::save_incremental`] carries the
+    /// deletion to peers. Returns the new state, or `None` when `id` is not a table
+    /// too large to read **now** ([`Self::oversized_tables`]): a peer deleted it, or
+    /// shrank it back into a real table nobody asked to delete.
+    ///
+    /// No backlog is shipped: an editor refuses every edit while frozen
+    /// (`EditorCore::commit`), so its model never runs ahead of the CRDT. A caller
+    /// driving the session directly that applied edits [`Self::record_local`] refused
+    /// loses them here, as it would on any inbound change. The model change is not
+    /// undoable.
     pub fn delete_oversized_table(
         &mut self,
         state: &EditorState,
         id: &str,
     ) -> Result<Option<EditorState>> {
         self.guard()?;
-        if !self.cdoc.delete_table(id) {
+        if !self.cdoc.oversized_tables().iter().any(|t| t.id == id) || !self.cdoc.delete_table(id) {
             return Ok(None);
         }
         let base = self.cdoc.to_doc(state.schema())?;
-        let next = match placeholder_position(&state.doc, id) {
-            Some((at, size)) => {
-                let mut tr = state.tr();
-                tr.set_add_to_history(false);
-                match tr.delete(at, at + size) {
-                    Ok(_) => Some(state.apply(tr)),
-                    // A deletion the model cannot express in place: take the
-                    // CRDT's read for the blocks that differ.
-                    Err(_) => None,
-                }
-            }
-            None => Some(state.clone()),
+        let next = match build_remote_transaction(state, &base)? {
+            Some(tr) => state.apply(tr),
+            None => state.clone(),
         };
-        let next = match next {
-            Some(next) => next,
-            None => match build_remote_transaction(state, &base)? {
-                Some(tr) => state.apply(tr),
-                None => state.clone(),
-            },
-        };
-        self.stalled = match self.frozen() {
-            Some(frozen) => Some(frozen),
-            None => self.cdoc.project_change(&base, &next.doc).err(),
-        };
-        self.model_ahead = self.stalled.is_some() && self.model_ahead;
+        self.stalled = self.frozen();
+        self.model_ahead = false;
         Ok(Some(next))
+    }
+
+    /// Whether outbound is frozen: the shared document holds a table too large to
+    /// read ([`Self::oversized_tables`]). An editor refuses every local edit while it
+    /// is (`EditorCore::commit`), as a read-only one does.
+    pub fn is_frozen(&self) -> bool {
+        !self.cdoc.oversized_tables().is_empty()
     }
 
     /// Fail with the sticky poison error if this session is poisoned.
@@ -374,9 +367,10 @@ impl CollabSession {
         // Frozen while the shared document holds a table too large to read: the model
         // shows a placeholder for it, and a diff that touches a placeholder can delete
         // real content (a value-matched pairing, an export loaded back, …), so no diff
-        // runs at all. The edit stays local, as a stall's does, and ships when the
-        // freeze lifts — re-based on the CRDT's read, which by then holds no
-        // placeholder.
+        // runs at all. An editor never gets here with a real edit: it refuses the edit
+        // itself while frozen (`EditorCore::commit`). A caller driving the session
+        // directly that applies a refused edit anyway has a model ahead of the CRDT,
+        // which the next inbound change or the cure discards.
         if let Some(frozen) = self.frozen() {
             self.stalled = Some(frozen.clone());
             self.model_ahead = true;
@@ -653,26 +647,4 @@ impl CollabSession {
         self.guard()?;
         self.cdoc.to_doc(schema)
     }
-}
-
-/// Where the placeholder standing for the CRDT table `id` sits in `doc`: its position
-/// and size.
-fn placeholder_position(doc: &Node, id: &str) -> Option<(usize, usize)> {
-    fn walk(node: &Node, start: usize, id: &str) -> Option<(usize, usize)> {
-        let mut at = start;
-        for i in 0..node.child_count() {
-            let child = node.child(i);
-            if child.type_name() == "table" && child.attrs().get_str(PLACEHOLDER_ATTR) == Some(id) {
-                return Some((at, child.node_size()));
-            }
-            if !child.is_text()
-                && let Some(found) = walk(child, at + 1, id)
-            {
-                return Some(found);
-            }
-            at += child.node_size();
-        }
-        None
-    }
-    walk(doc, 0, id)
 }
