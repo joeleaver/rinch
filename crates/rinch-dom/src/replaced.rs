@@ -207,8 +207,8 @@ pub(crate) fn measure(
         let r = nw / nh;
         match (w, h) {
             (Some(w), Some(h)) => (w, h),
-            (Some(w), None) => (w, clamp_h(w / r)),
-            (None, Some(h)) => (clamp_w(h * r), h),
+            (Some(w), None) => (w, clamp_h(clamp_w(w) / r)),
+            (None, Some(h)) => (clamp_w(clamp_h(h) * r), h),
             (None, None) => {
                 let w = clamp_w(nw);
                 let h = w / r;
