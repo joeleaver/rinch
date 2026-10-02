@@ -5406,6 +5406,14 @@ impl RinchDocument {
     /// computed style, which is what the next pass re-derives from, is untouched.
     fn measure_inline_blocks(&mut self, targets: &[(taffy::NodeId, Option<f32>)]) {
         for &(taffy_id, available_width) in targets {
+            // Measured as `auto` (no containing-block width): a keyword box's
+            // cached size no longer stands (#691).
+            if available_width.is_none()
+                && !self.tree.keyword_inline_cb_width.is_empty()
+                && let Some(&nid) = self.tree.taffy_map.get(&taffy_id)
+            {
+                self.tree.keyword_inline_cb_width.remove(&nid);
+            }
             let definite = |w: f32| taffy::Size {
                 width: taffy::AvailableSpace::Definite(w),
                 height: taffy::AvailableSpace::MaxContent,
@@ -5592,6 +5600,14 @@ impl RinchDocument {
         Some(resolved.map_or(taffy::Dimension::auto(), taffy::Dimension::length))
     }
 
+    /// Whether any of this style's inline-axis sizes is a percentage.
+    fn has_percentage_inline_size(style: &crate::computed_style::ComputedStyle) -> bool {
+        use crate::computed_style::DimensionValue::Percent;
+        matches!(style.width, Percent(_))
+            || matches!(style.min_width, Percent(_))
+            || matches!(style.max_width, Percent(_))
+    }
+
     /// Whether any of this style's inline-axis sizes needs a containing-block
     /// width to resolve against: a percentage, or a `fit-content` or `stretch`
     /// width (#691 — see [`Self::resolve_root_width_keyword`]).
@@ -5625,6 +5641,7 @@ impl RinchDocument {
         // affected = (node id, IFC root id, width before, height before)
         let mut targets: Vec<(taffy::NodeId, Option<f32>)> = Vec::new();
         let mut affected: Vec<(usize, usize, f32, f32)> = Vec::new();
+        let mut keyword_cached: Vec<(usize, f32)> = Vec::new();
 
         // The registry, not the slab (layout audit F8/F12): this runs after
         // every root compute, and only an atomic inline in an IFC qualifies.
@@ -5673,6 +5690,24 @@ impl RinchDocument {
             if !inner_width.is_finite() || inner_width <= 0.0 {
                 continue;
             }
+            // A box that needs the width only for a `fit-content`/`stretch`
+            // keyword (#691) is sized from that width and its own content
+            // alone. Its content changing re-measures it as `auto` first,
+            // which drops this entry, so an entry at the same width means
+            // nothing moved: skip the two or three computes. (A percentage
+            // size is left re-measured every pass, as before.)
+            let keyword_only = !Self::has_percentage_inline_size(&node.computed_style);
+            if keyword_only {
+                if self
+                    .tree
+                    .keyword_inline_cb_width
+                    .get(&id)
+                    .is_some_and(|&w| (w - inner_width).abs() < 0.01)
+                {
+                    continue;
+                }
+                keyword_cached.push((id, inner_width));
+            }
             targets.push((taffy_id, Some(inner_width)));
             affected.push((id, root_id, node.layout.width, node.layout.height));
         }
@@ -5687,6 +5722,7 @@ impl RinchDocument {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
         }
         self.measure_inline_blocks(&targets);
+        self.tree.keyword_inline_cb_width.extend(keyword_cached);
 
         let mut changed = false;
         for &(id, root_id, prev_w, prev_h) in &affected {

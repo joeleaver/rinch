@@ -474,3 +474,151 @@ fn intrinsic_keywords_match_chrome_153() {
         wrong.join("\n")
     );
 }
+
+/// Three cells off the twin table's fixed points, measured in Chrome 153 by
+/// the review of #1281: the table's margins are symmetric and its insets are
+/// px, so a `stretch` that subtracts one margin twice, resolves a percentage
+/// margin against nothing, or resolves a horizontal inset against the
+/// viewport's *height* passes every row of it. Each of those mutants gives
+/// the number in the comment instead.
+#[test]
+fn stretch_off_the_tables_fixed_points() {
+    // Asymmetric margins: 800 - 50 - 10. (Left margin twice: 780.)
+    assert_eq!(
+        measure(
+            "block",
+            "width: 800px",
+            "display: inline-block; margin: 0 50px 0 10px",
+            "width",
+            "stretch"
+        ),
+        740.0
+    );
+    // Percentage margins, against the containing block: 800 - 2 * 80.
+    // (Resolved with no basis: 800.)
+    assert_eq!(
+        measure(
+            "block",
+            "width: 800px",
+            "display: inline-block; margin: 0 10%",
+            "width",
+            "stretch"
+        ),
+        640.0
+    );
+    // A percentage inset on a fixed box, against the viewport *width*:
+    // 800 - 80. (Against its height, 513: 748.7.)
+    assert_eq!(
+        measure(
+            "block",
+            "width: 300px",
+            "position: fixed; left: 10%; top: 0",
+            "width",
+            "stretch"
+        ),
+        720.0
+    );
+}
+
+/// A `fit-content` / `stretch` atomic inline keeps its size between layouts
+/// until its content or its containing block's width moves (the cache the
+/// review of #1281 asked for). Each step here changes one of those, and each
+/// must land exactly where a fresh layout of the same state does — an
+/// append (a structural pass), a chip restyle (`dirty_atomic_inlines`), an
+/// unrelated restyle elsewhere, and a resize of the containing block.
+#[test]
+fn a_keyword_inline_block_follows_its_content_and_containing_block() {
+    fn build(
+        cb_width: &str,
+        chips: &[&str],
+        keyword: &str,
+    ) -> (RinchDocument, NodeId, Vec<NodeId>, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let cb = doc.create_element("div");
+        doc.set_attribute(
+            cb,
+            "style",
+            &format!("width: {cb_width}; font-size: 0; line-height: 0"),
+        );
+        doc.append_child(body, cb);
+        let t = doc.create_element("span");
+        doc.set_attribute(
+            t,
+            "style",
+            &format!("display: inline-block; width: {keyword}"),
+        );
+        doc.append_child(cb, t);
+        let mut ids = Vec::new();
+        for w in chips {
+            let c = doc.create_element("span");
+            doc.set_attribute(
+                c,
+                "style",
+                &format!("display: inline-block; height: 20px; width: {w}"),
+            );
+            doc.append_child(t, c);
+            ids.push(c);
+        }
+        let other = doc.create_element("div");
+        doc.set_attribute(other, "style", "height: 10px");
+        doc.append_child(body, other);
+        doc.resolve_layout(VW, VH);
+        (doc, t, ids, cb)
+    }
+    let width = |doc: &RinchDocument, t: NodeId| doc.tree.get(t.0).unwrap().layout.width;
+    for (keyword, steps) in [
+        // fit-content: min(max-content, max(min-content, cb)).
+        ("fit-content", [100.0, 150.0, 140.0, 140.0, 120.0]),
+        // stretch: the containing block, whatever the content.
+        ("stretch", [150.0, 150.0, 150.0, 150.0, 120.0]),
+    ] {
+        let (mut doc, t, chips, cb) = build("150px", &["100px"], keyword);
+        assert_eq!(width(&doc, t), steps[0], "{keyword}: one chip");
+
+        let c = doc.create_element("span");
+        doc.set_attribute(
+            c,
+            "style",
+            "display: inline-block; height: 20px; width: 100px",
+        );
+        doc.append_child(t, c);
+        doc.resolve_layout(VW, VH);
+        assert_eq!(
+            width(&doc, t),
+            steps[1],
+            "{keyword}: a second chip appended"
+        );
+        let (fresh, ft, ..) = build("150px", &["100px", "100px"], keyword);
+        assert_eq!(width(&doc, t), width(&fresh, ft));
+
+        doc.set_style(chips[0], "width", "40px");
+        doc.resolve_layout(VW, VH);
+        assert_eq!(width(&doc, t), steps[2], "{keyword}: a chip narrowed");
+        let (fresh, ft, ..) = build("150px", &["40px", "100px"], keyword);
+        assert_eq!(width(&doc, t), width(&fresh, ft));
+
+        let other = doc
+            .tree
+            .get(doc.body().0)
+            .unwrap()
+            .children
+            .last()
+            .copied()
+            .unwrap();
+        doc.set_style(NodeId(other), "width", "50px");
+        doc.resolve_layout(VW, VH);
+        assert_eq!(width(&doc, t), steps[3], "{keyword}: an unrelated restyle");
+
+        doc.set_style(cb, "width", "120px");
+        doc.resolve_layout(VW, VH);
+        assert_eq!(
+            width(&doc, t),
+            steps[4],
+            "{keyword}: the containing block narrowed"
+        );
+        let (fresh, ft, ..) = build("120px", &["40px", "100px"], keyword);
+        assert_eq!(width(&doc, t), width(&fresh, ft));
+    }
+}

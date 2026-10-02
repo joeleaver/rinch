@@ -34,6 +34,7 @@
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`break_leaf_lines`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way`] |
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
+//! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
 //! exact, anything unlisted `0` (`support/perf_expect.rs`). A failure prints the
@@ -1592,4 +1593,85 @@ fn a_detached_atomic_inline_is_sized_again_when_reattached() {
             }
         }
     }
+}
+
+// ── inline_block_computes: keyword atomic inlines (#691) ─────────────────────
+
+/// A `fit-content` atomic inline is sized by three computes (its max-content,
+/// its min-content, and the pinned pass) and a `stretch` one by one, once its
+/// containing block has a width (`resolve_percentage_inline_blocks`). Before
+/// the review of #1281 that ran after **every** root compute, so twenty such
+/// boxes cost 60 + 20 detached computes on a frame that changed something
+/// else entirely. They are cached on the containing block's width now: the
+/// unrelated change pays **none**, and a change of that width (the second
+/// frame, the positive control) pays them all again.
+#[test]
+fn fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change() {
+    const N: usize = 10;
+    let mut doc = doc_with(
+        ".cb { width: 300px; font-size: 0; line-height: 0 }
+         .fit { display: inline-block; width: fit-content }
+         .str { display: inline-block; width: stretch }
+         .c { display: inline-block; width: 100px; height: 20px }
+         .other { height: 10px }",
+    );
+    let body = doc.body();
+    let cb = el(&mut doc, body, "div", "cb");
+    for class in ["fit", "str"] {
+        for _ in 0..N {
+            let k = el(&mut doc, cb, "span", class);
+            el(&mut doc, k, "span", "c");
+            el(&mut doc, k, "span", "c");
+        }
+    }
+    let other = el(&mut doc, body, "div", "other");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+
+    doc.set_style(other, "width", "50px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "an unrelated width change",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+        ],
+    );
+
+    doc.set_style(cb, "width", "150px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    // 10 fit-content boxes x 3 + 10 stretch boxes x 1.
+    expect(
+        "the containing block's width changes",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 21),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 2),
+            (ShapeIfcBuild, 21),
+            (ShapeAtomicInline, 40),
+            (IfcMeasureCacheHits, 2),
+            (IfcMeasureInvalidations, 20),
+            (IfcPhantomRebreaks, 11),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 4),
+            (InlineBlockComputes, 40),
+        ],
+    );
 }
