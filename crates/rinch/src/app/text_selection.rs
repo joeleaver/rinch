@@ -126,3 +126,126 @@ impl RinchApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RinchApp;
+    use rinch_core::dom::{DomDocument, NodeId};
+    use rinch_dom::RinchDocument;
+
+    fn child_of(doc: &mut RinchDocument, parent: NodeId, tag: &str, style: &str) -> NodeId {
+        let el = doc.create_element(tag);
+        doc.set_attribute(el, "style", style);
+        doc.append_child(parent, el);
+        el
+    }
+
+    fn text_in(doc: &mut RinchDocument, parent: NodeId, text: &str) -> NodeId {
+        let t = doc.create_text(text);
+        doc.append_child(parent, t);
+        t
+    }
+
+    /// #505 — `user_select` is on `ComputedStyle::for_anonymous_box`'s
+    /// inherited copy list, justified in prose only: dropping it from the
+    /// literal (falling through to `..Self::default()`) passed the entire
+    /// workspace. `find_selectable_ifc` is its only consumer, and it requires
+    /// **both** `user_select.is_selectable()` **and** `text_layout.is_some()`
+    /// on the *same* node — which for an anonymous IFC root is exactly the
+    /// struct `for_anonymous_box` builds.
+    ///
+    /// Sampling the drop at `user-select: none` would sit on a fixed point
+    /// (CLAUDE.md "fixed-point blindness"): `UserSelectValue::default()` is
+    /// `Auto`, and `Auto.is_selectable()` is `false` — the same answer `None`
+    /// gives — so a dropped copy and a correct copy of `none` agree. `text`
+    /// is the value that discriminates: copied, the anonymous root answers
+    /// selectable; dropped, it silently falls back to `Auto` and does not,
+    /// however the real parent declared it.
+    ///
+    /// Mixed content (a trailing block sibling) forces the text into an
+    /// anonymous block box rather than the container's own IFC — the shape
+    /// `for_anonymous_box` exists for.
+    #[test]
+    fn an_anonymous_roots_selectability_comes_from_its_parents_user_select() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "div",
+            "width: 400px; font-size: 16px; line-height: 20px; user-select: text",
+        );
+        let text = text_in(&mut doc, container, "select me");
+        child_of(&mut doc, container, "div", "height: 20px");
+        doc.resolve_layout(800.0, 600.0);
+
+        let anon = doc
+            .tree
+            .get(text.0)
+            .unwrap()
+            .ifc_root
+            .expect("mixed content must put the inline run in an anonymous block box");
+        assert!(
+            doc.tree.get(anon).unwrap().is_anonymous_block_box,
+            "the IFC root must be the synthetic anonymous box, or this test \
+             is not exercising the shape it claims to"
+        );
+        assert!(
+            doc.tree.get(anon).unwrap().text_layout.is_some(),
+            "the anonymous root must carry the IFC's inline layout, or \
+             find_selectable_ifc's second condition is vacuous here"
+        );
+
+        // Hitting the anonymous root directly is what a real hit test
+        // resolves to for text painted inside one — same node `paint` and
+        // `ifc_content_box_offset` treat as the drawn box
+        // (`ifc_anonymous_box_tests.rs`).
+        assert_eq!(
+            RinchApp::find_selectable_ifc(&doc.tree, anon),
+            Some(anon),
+            "the anonymous root must inherit `user-select: text` from its \
+             real parent and answer selectable at itself — `None` here means \
+             the copy list dropped `user_select` (it falls back to `Auto`, \
+             not selectable), and no ancestor of an anonymous root both \
+             carries the inline layout and a `user_select` to fall back on \
+             (#505)"
+        );
+    }
+
+    /// The fixed-point control named above: `none` does not discriminate,
+    /// and both the real and the hypothetically-dropped copy must agree it
+    /// is not selectable — matching what a real (non-anonymous) root with
+    /// the same declaration does.
+    #[test]
+    fn user_select_none_is_not_selectable_inside_or_outside_an_anonymous_box() {
+        let mut mixed = RinchDocument::new();
+        let body = mixed.body();
+        let container = child_of(
+            &mut mixed,
+            body,
+            "div",
+            "width: 400px; font-size: 16px; line-height: 20px; user-select: none",
+        );
+        let text = text_in(&mut mixed, container, "not selectable");
+        child_of(&mut mixed, container, "div", "height: 20px");
+        mixed.resolve_layout(800.0, 600.0);
+        let anon = mixed.tree.get(text.0).unwrap().ifc_root.unwrap();
+        assert_eq!(RinchApp::find_selectable_ifc(&mixed.tree, anon), None);
+
+        let mut plain = RinchDocument::new();
+        let body = plain.body();
+        let container = child_of(
+            &mut plain,
+            body,
+            "div",
+            "width: 400px; font-size: 16px; line-height: 20px; user-select: none",
+        );
+        text_in(&mut plain, container, "not selectable either");
+        plain.resolve_layout(800.0, 600.0);
+        assert_eq!(
+            RinchApp::find_selectable_ifc(&plain.tree, container.0),
+            None,
+            "a real root with the same declaration must agree"
+        );
+    }
+}

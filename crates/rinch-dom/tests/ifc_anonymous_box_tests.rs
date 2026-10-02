@@ -573,3 +573,92 @@ fn the_selection_highlight_starts_inside_the_padding() {
         "the highlight is painted at all, starting at the content origin"
     );
 }
+
+// ── #505: text-decoration and user-select on the anonymous box ─────────────
+
+/// `text_decoration` and `user_select` are on `for_anonymous_box`'s inherited
+/// copy list (see its doc comment), justified in prose only — #505: dropping
+/// either from the literal (falling through to `..Self::default()`) passed
+/// the entire workspace. `line_height`, by contrast, is pinned by five tests,
+/// which is what made the gap visible: the list is partly covered and partly
+/// not, with nothing distinguishing which.
+///
+/// `text-decoration` is not itself an inherited CSS property, but CSS Text
+/// Decoration §2 propagates it to every in-flow descendant, anonymous boxes
+/// included — and `build_inline_layout` seeds the IFC root's own text style
+/// (`root_text_style.has_underline`) straight from `root_computed.text_decoration`
+/// (`ifc.rs`). For an anonymous root that field *is* `root_computed`, so a
+/// dropped copy makes every anonymous root's underline vanish, however the
+/// parent declares it.
+///
+/// Ink witness, not a computed-style read — the point is that *paint* sees
+/// it, not merely that the struct field equals the parent's. "label" has no
+/// descenders, so the row strictly below the baseline and above the glyph box
+/// is ink-free except for the underline stroke; comparing it against an
+/// undeclared control (rather than asserting a raw pixel count) is what keeps
+/// this independent of font metrics/AA on whatever host runs it.
+///
+/// Kills: dropping `text_decoration` from `for_anonymous_box`'s literal.
+#[test]
+fn an_anonymous_roots_text_decoration_comes_from_its_parent() {
+    fn painted(decorated: bool) -> Vec<u8> {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "background-color: rgb(255, 255, 255)");
+        let decl = if decorated {
+            "text-decoration: underline;"
+        } else {
+            ""
+        };
+        let container = child_of(
+            &mut doc,
+            body,
+            "div",
+            &format!(
+                "width: 400px; padding: 10px 20px 30px 40px; \
+                 border: 2px solid rgb(0, 0, 255); font-size: 16px; \
+                 line-height: 20px; color: rgb(0, 0, 0); {decl}"
+            ),
+        );
+        // Mixed content: the trailing block sibling forces the inline run
+        // into an anonymous block box rather than the container's own IFC.
+        text_in(&mut doc, container, "label");
+        child_of(&mut doc, container, "div", "height: 20px");
+        doc.resolve_layout(VW, VH);
+        rasterize(&mut doc)
+    }
+
+    // The underline sits just below the baseline. "label" (l,a,b,e,l) has no
+    // descenders, so for a 16px font at line-height 20 the row immediately
+    // under the glyph box is ink-free unless something draws a line there.
+    // Scanning the whole line box (the container is body's first child here,
+    // so its content box starts at y = padding-top 10 + border-top 2 = 12;
+    // the band 12..44 covers the 20px line plus margin on both sides) is
+    // simpler than pinning an exact row and just as discriminating, since
+    // the control build has *no* decoration ink anywhere in that band
+    // (measured: the glyphs alone occupy rows 15..28, strictly inside it).
+    fn ink_in_line_box(px: &[u8]) -> u32 {
+        let mut n = 0;
+        for y in 12..44u32 {
+            for x in 42..120u32 {
+                let i = ((y * VW as u32 + x) * 4) as usize;
+                let (r, g, b, a) = (px[i], px[i + 1], px[i + 2], px[i + 3]);
+                if a > 0 && (r as u16 + g as u16 + b as u16) < 700 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    let undecorated = ink_in_line_box(&painted(false));
+    let decorated = ink_in_line_box(&painted(true));
+    assert!(
+        decorated > undecorated,
+        "an underline must add ink over the undeclared control \
+         (undecorated={undecorated}, decorated={decorated}) — equal counts \
+         mean the anonymous root never saw `text-decoration: underline` at \
+         all, which is what dropping `text_decoration` from the copy list \
+         produces (#505)"
+    );
+}
