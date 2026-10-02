@@ -60,10 +60,11 @@ pub fn is_replaced_without_content(node: &Node) -> bool {
 /// lays such an element out as a replaced box whatever its `display` says
 /// inside: `display: flex` on a canvas is a block-level box, `inline-grid` an
 /// inline-level one. rinch maps `flex`/`grid` to block and
-/// `inline-flex`/`inline-grid` to inline-block for it, in both its
-/// [`crate::node::DisplayMode`] and its Taffy style, so it stays a block
-/// container: the IFC pass makes it a hollow root, which is what detaches its
-/// children and reaches its measure.
+/// `inline-flex`/`inline-grid` to inline-block in its
+/// [`crate::node::DisplayMode`], so it stays a block container: the IFC pass
+/// makes it a hollow root, which detaches its children from Taffy and so
+/// reaches its measure. Its Taffy `display` may still say `Flex`; Taffy runs
+/// the measure of any childless node whatever its display.
 pub fn ignores_inner_display(node: &Node) -> bool {
     crate::form_control::is_value_control(node) || is_replaced_without_content(node)
 }

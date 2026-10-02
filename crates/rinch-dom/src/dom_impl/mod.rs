@@ -503,7 +503,7 @@ impl RinchDocument {
                a Taffy node with children never calls one) nor painted nor hit.
                `!important` so an author `display` cannot bring it back.
                Chrome still lets canvas fallback content take focus by Tab;
-               rinch does not (FOLLOWUP). */
+               rinch does not (#1294). */
             :is(textarea, input, canvas, video, iframe) > * {
                 display: none !important;
             }
