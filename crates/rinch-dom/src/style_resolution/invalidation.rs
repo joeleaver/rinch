@@ -212,6 +212,30 @@ impl RinchDocument {
             // them for the write to matter.
             (Some("textarea"), "rows" | "cols") => self.mark_restyle(node, false),
             (Some("input"), "type" | "size") => self.mark_restyle(node, false),
+            // A `submit`/`reset`/`button` input's measure is its `value` —
+            // its label text (#1195, `button_label_content_width`) — which,
+            // like `rows`/`cols`/`size` above, matches no selector either
+            // (#1306). Scoped to those three types so an ordinary text
+            // field's `value`, rewritten on every keystroke, does not pay a
+            // restyle it has no use for: `value` sizes nothing else.
+            // A `submit`/`reset`/`button` input's measure is its `value` —
+            // its label text (#1195, `button_label_content_width`) — which,
+            // like `rows`/`cols`/`size` above, matches no selector either
+            // (#1306). Scoped to those three types so an ordinary text
+            // field's `value`, rewritten on every keystroke, does not pay a
+            // restyle it has no use for: `value` sizes nothing else.
+            (Some("input"), "value")
+                if matches!(
+                    self.tree.nodes[node]
+                        .attributes
+                        .get("type")
+                        .map(|t| t.trim().to_ascii_lowercase())
+                        .as_deref(),
+                    Some("submit" | "reset" | "button")
+                ) =>
+            {
+                self.mark_restyle(node, false);
+            }
             // A canvas's natural size is its `width` and `height` (#1173,
             // `replaced.rs`), re-read by the same restyle.
             (Some("canvas"), "width" | "height") => self.mark_restyle(node, false),

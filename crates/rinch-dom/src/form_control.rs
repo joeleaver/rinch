@@ -149,7 +149,13 @@ pub(crate) fn form_control_content_height(node: &Node) -> Option<f32> {
 /// Called wherever a node's computed style is (re)written — the cascade and
 /// the two animation ticks — because the line height is part of the answer and
 /// is not a Taffy property: a `line-height` or `font-size` change moves no
-/// Taffy style, so nothing else would dirty the node.
+/// Taffy style, so nothing else would dirty the node. `value`/`rows`/`cols`/
+/// `size`/`type` feed [`form_control_content_size`] too but match no
+/// selector, so an attribute write that only changed one of them needs
+/// `note_attribute_change` to force a restyle of just this node
+/// (`mark_restyle`) — see its `(tag, name)` match in
+/// `style_resolution/invalidation.rs` (#1306; `rows`/`cols`/`type`/`size`
+/// were already in that match, `value` was the gap).
 pub(crate) fn sync_form_control_measure(
     tree: &mut NodeTree,
     font_cx: &mut parley::FontContext,
