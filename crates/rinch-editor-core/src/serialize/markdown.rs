@@ -42,7 +42,9 @@
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, Node};
 use crate::schema::Schema;
-use crate::serialize::html::{is_safe_css_color, is_safe_url, node_to_html, slice_from_html};
+use crate::serialize::html::{
+    DroppedAttr, dropped_table_attr, is_safe_css_color, is_safe_url, node_to_html, slice_from_html,
+};
 use pulldown_cmark::{
     Alignment, CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd,
 };
@@ -59,7 +61,9 @@ pub enum Construct {
     /// Inline HTML other than the mark tags in the module docs.
     InlineHtml,
     /// A block of raw HTML other than a `<table>`, or a `<table>` holding
-    /// something a table cell cannot.
+    /// something a table cell cannot: another tag, stray text, or an attribute
+    /// the document does not keep (`style` other than a safe colour or
+    /// `text-align`, `colspan` above 1000, `class`, an event handler, …).
     HtmlBlock,
     /// A mark tag (`<u>`, `<span style>`, …) opened and not closed in its block,
     /// or closed without being opened.
@@ -68,9 +72,10 @@ pub enum Construct {
     Footnote,
     /// A task-list item marker (`- [ ]`, `- [x]`).
     TaskList,
-    /// A link whose URL is not allowed (`javascript:`, `data:`, …).
+    /// A link whose URL is not allowed (`javascript:`, `data:`, …), in Markdown
+    /// or in an HTML table.
     UnsafeLink,
-    /// An image whose URL is not allowed.
+    /// An image whose URL is not allowed, in Markdown or in an HTML table.
     UnsafeImage,
     /// Markdown syntax for a mark the schema does not have.
     UnsupportedMark,
@@ -463,7 +468,7 @@ impl<'a> MdBuilder<'a> {
             }
             TagEnd::HtmlBlock => {
                 if let Some((html, range)) = self.html_block.take() {
-                    match self.html_tables(&html)? {
+                    match self.html_tables(&html, &range)? {
                         Some(tables) => self.top_mut().children.extend(tables),
                         None => self.refuse_at(Construct::HtmlBlock, range)?,
                     }
@@ -557,7 +562,13 @@ impl<'a> MdBuilder<'a> {
     // ── HTML tables ──
 
     /// The tables an HTML block holds, or `None` if it is not (only) tables.
-    fn html_tables(&self, html: &str) -> Result<Option<Vec<Node>>, MarkdownError> {
+    /// Strict, it refuses (at `range`) an attribute the tables would lose: an
+    /// unsafe URL as such, anything else as an HTML block.
+    fn html_tables(
+        &self,
+        html: &str,
+        range: &Range<usize>,
+    ) -> Result<Option<Vec<Node>>, MarkdownError> {
         let trimmed = html.trim();
         let lower = trimmed.to_ascii_lowercase();
         if !lower.starts_with("<table") || !lower.ends_with("</table>") {
@@ -569,6 +580,16 @@ impl<'a> MdBuilder<'a> {
         // The writer encodes newlines in cell text (code blocks) as `&#10;` so a
         // blank line never ends the HTML block early.
         let decoded = trimmed.replace("&#10;", "\n");
+        if self.strict
+            && let Some(dropped) = dropped_table_attr(&decoded)
+        {
+            let construct = match dropped {
+                DroppedAttr::UnsafeLink => Construct::UnsafeLink,
+                DroppedAttr::UnsafeImage => Construct::UnsafeImage,
+                DroppedAttr::Other => Construct::HtmlBlock,
+            };
+            self.refuse_at(construct, range.clone())?;
+        }
         let slice = slice_from_html(self.schema, &decoded)?;
         let tables: Vec<Node> = slice
             .content
