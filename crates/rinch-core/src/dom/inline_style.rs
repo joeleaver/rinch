@@ -168,10 +168,9 @@ use super::NodeHandle;
 /// cascade pick the winner the way a browser would, duplicates and all. A
 /// caller with no such parser downstream — `StyleProp`'s composition
 /// bookkeeping, `MockDomDocument`, the read-only scanners in #705 — has no way
-/// to ask the question either, so this collapsed form is what they keep using;
-/// `StyleProp::apply`'s own merge is itself downstream of
-/// `split_declarations_keeping_duplicates` for exactly the Stylo-reaching
-/// reason — see its doc.
+/// to ask the question either, so this collapsed form is what they keep using.
+/// `StyleProp::apply` writes the collapsed form straight to the attribute, so
+/// a duplicate it carries is decided here, before Stylo sees it (#1355).
 pub fn split_declarations(css: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for (name, value) in split_declarations_keeping_duplicates(css) {

@@ -990,3 +990,84 @@ fn an_unterminated_comment_marker_in_a_url_does_not_eat_the_rest() {
         "background-image: url(http://example.test/a/*b.png); color: red; padding: 12px"
     );
 }
+
+#[test]
+fn review_722_margin_shorthand_longhand_duplicate_survives_unrelated_write() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    let body = doc.body();
+    doc.append_child(body, div);
+    doc.set_attribute(
+        div,
+        "style",
+        "margin: 1px; margin-left: bad; margin-left: 4px",
+    );
+    doc.set_style(div, "padding", "2px");
+    doc.resolve_layout(800.0, 600.0);
+    eprintln!("ATTR = {:?}", doc.get_attribute(div, "style"));
+    let ml = &doc.tree.get(div.0).unwrap().computed_style.margin_left;
+    eprintln!("margin_left = {:?}", ml);
+}
+
+#[test]
+fn review_722_important_combos_both_orders() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let a = doc.create_element("div");
+    doc.append_child(body, a);
+    doc.set_attribute(a, "style", "color: red !important; color: blue");
+    doc.set_style(a, "gap", "1px");
+    doc.resolve_layout(800.0, 600.0);
+    eprintln!(
+        "ORDER1 (important first) = {:?}",
+        doc.get_attribute(a, "style")
+    );
+    eprintln!(
+        "ORDER1 color = {:?}",
+        doc.tree.get(a.0).unwrap().computed_style.color
+    );
+
+    let b = doc.create_element("div");
+    doc.append_child(body, b);
+    doc.set_attribute(b, "style", "color: red; color: blue !important");
+    doc.set_style(b, "gap", "1px");
+    doc.resolve_layout(800.0, 600.0);
+    eprintln!(
+        "ORDER2 (important second) = {:?}",
+        doc.get_attribute(b, "style")
+    );
+    eprintln!(
+        "ORDER2 color = {:?}",
+        doc.tree.get(b.0).unwrap().computed_style.color
+    );
+}
+
+#[test]
+fn review_722_case_folded_duplicates() {
+    let mut doc = RinchDocument::new();
+    let n = doc.create_element("div");
+    doc.set_attribute(n, "style", "COLOR: red; color: green");
+    doc.set_style(n, "gap", "1px");
+    eprintln!("CASE_FOLD = {:?}", doc.get_attribute(n, "style"));
+}
+
+#[test]
+fn review_722_custom_properties_case_distinct() {
+    let mut doc = RinchDocument::new();
+    let n = doc.create_element("div");
+    doc.set_attribute(n, "style", "--a: 1; --A: 2");
+    doc.set_style(n, "gap", "1px");
+    eprintln!("CUSTOM_CASE = {:?}", doc.get_attribute(n, "style"));
+}
+
+#[test]
+fn review_722_attribute_growth_under_repeated_writes() {
+    let mut doc = RinchDocument::new();
+    let n = doc.create_element("div");
+    doc.set_attribute(n, "style", "color: red; color: green");
+    for i in 0..50 {
+        doc.set_style(n, "gap", &format!("{}px", i));
+    }
+    let attr = doc.get_attribute(n, "style").unwrap();
+    eprintln!("GROWTH len={} attr={:?}", attr.len(), attr);
+}
