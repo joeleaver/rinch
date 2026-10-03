@@ -68,22 +68,14 @@ use std::path::PathBuf;
 /// `RadioGroup::size` and `Accordion::disable_chevron_rotation`. **D** (content
 /// and input props) is all but one: the two `description`s landed.
 ///
-/// The one below is a different kind of entry from any that came before it, and
-/// worth reading as the exception it is. Every earlier entry was *missing
-/// wiring* — a `render` that never looked at a field, curable inside the
-/// component. `Textarea::max_rows` was wired during #707 and **reverted**,
-/// because a `max-height` cannot do what the prop means on a rinch `<textarea>`:
-/// the control's content height is its `rows` lines, never its text (#297), and
-/// the sheet's `min-height` floor beats `max-height`. Reading the prop was easy and would have been a lie. The
-/// ratchet's whole purpose is to keep that visible rather than let an empty list
-/// assert something untrue, which is why the prop is here rather than read.
-const ALLOWLIST: &[(&str, &str)] = &[
-    // #474 category D — blocked below the component, on #715.
-    (
-        "Textarea::max_rows",
-        "#715: no max-height can follow the text of a textarea whose height is its rows",
-    ),
-];
+/// `Textarea::max_rows` was the one exception to all of this — wired during
+/// #707, then **reverted**, because a `max-height` could not yet do what the
+/// prop means on a rinch `<textarea>`: before #297/#1152 the control's
+/// content height was a `min-height` rinch wrote, and one `min-height` always
+/// beats another `max-height` in CSS. #715 closed that gap (the control's
+/// `rows` is now a Taffy *measure*, so `max-height` binds), and `max_rows` is
+/// wired for real — the list is empty again.
+const ALLOWLIST: &[(&str, &str)] = &[];
 
 /// One top-level item: the header line that opens it plus its whole text.
 struct Item {
