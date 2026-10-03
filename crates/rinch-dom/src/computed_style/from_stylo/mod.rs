@@ -79,6 +79,11 @@ impl ComputedStyle {
         let outline_style = cv.get_outline();
         let inherited_ui = cv.get_inherited_ui();
         let background_repeat = background_repeat_from_stylo(background);
+        // Shared by the `font_size` field below and by
+        // `letter_spacing_from_stylo`/`word_spacing_from_stylo` (#743), so the
+        // percentage basis can never disagree with the element's own computed
+        // font-size.
+        let font_size_px = font.font_size.computed_size().px();
 
         Self {
             // Display/position
@@ -251,13 +256,13 @@ impl ComputedStyle {
             user_select: UserSelectValue::Auto,
 
             // Typography
-            font_size: font.font_size.computed_size().px(),
+            font_size: font_size_px,
             font_weight: font.font_weight.value(),
             font_family: font_family_from_stylo(&font.font_family),
             font_style: font_style_from_stylo(&font.font_style),
             line_height: line_height_from_stylo(&font.line_height),
-            letter_spacing: letter_spacing_from_stylo(&text.letter_spacing),
-            word_spacing: word_spacing_from_stylo(&text.word_spacing),
+            letter_spacing: letter_spacing_from_stylo(&text.letter_spacing, font_size_px),
+            word_spacing: word_spacing_from_stylo(&text.word_spacing, font_size_px),
             text_align: text_align_from_stylo(&text.text_align),
             text_decoration: text_decoration_from_stylo(
                 &cv.get_text().clone_text_decoration_line(),
