@@ -401,6 +401,7 @@ Measured on the desktop engine:
 | Selector | Desktop | Note |
 |---|---|---|
 | `tag`, `.class`, `#id`, `*` | works | `#id` was silently dropped before #675 |
+| an UPPERCASE HTML *tag* name, in the markup (`<DIV>`, `<Button>`) | works | as of #739 — a tag is stored ASCII-lowercased in HTML content, matching Stylo's own lowercased type-selector comparison for an HTML element. A tag that is one of SVG's own camelCase spellings, however it was cased, is restored to that spelling rather than lowercased (`attr_name::fold_tag_name`), mirroring #688's attribute-name fold one row down |
 | descendant / `>` / `+` / `~` | works | |
 | `[attr]`, `[attr=v]`, `~=`, `\|=`, `^=`, `$=`, `*=` | works | |
 | an UPPERCASE attribute *name*, in the selector or the markup (`[DATA-X]`, `<div ID="up">`) | works | as of #688 — attribute names are stored ASCII-lowercased in HTML content, and Stylo lowercases the selector's name itself. `viewBox` and the other camelCase SVG attributes are kept verbatim |

@@ -146,6 +146,104 @@ const SVG_CONTENT_TAGS: &[&str] = &[
     "view",
 ];
 
+/// The subset of [`SVG_CONTENT_TAGS`] whose canonical spelling is not already
+/// all-lowercase, keyed by that lowercase spelling and sorted by it for
+/// `binary_search_by_key` (#739). This is HTML's own "adjust SVG tag names"
+/// step: a browser's tokenizer lowercases every tag name it reads, *then*
+/// the tree builder restores a fixed set of names back to their mixed-case
+/// spelling — so the restoration is keyed on the lowercase form regardless of
+/// how the author originally cased it. `svg_tag_name_adjustments_match_the_canonical_list`
+/// below is what keeps this derived rather than hand-drifted from the list
+/// above.
+const SVG_TAG_NAME_ADJUSTMENTS: &[(&str, &str)] = &[
+    ("animatemotion", "animateMotion"),
+    ("animatetransform", "animateTransform"),
+    ("clippath", "clipPath"),
+    ("feblend", "feBlend"),
+    ("fecolormatrix", "feColorMatrix"),
+    ("fecomponenttransfer", "feComponentTransfer"),
+    ("fecomposite", "feComposite"),
+    ("feconvolvematrix", "feConvolveMatrix"),
+    ("fediffuselighting", "feDiffuseLighting"),
+    ("fedisplacementmap", "feDisplacementMap"),
+    ("fedistantlight", "feDistantLight"),
+    ("fedropshadow", "feDropShadow"),
+    ("feflood", "feFlood"),
+    ("fefunca", "feFuncA"),
+    ("fefuncb", "feFuncB"),
+    ("fefuncg", "feFuncG"),
+    ("fefuncr", "feFuncR"),
+    ("fegaussianblur", "feGaussianBlur"),
+    ("feimage", "feImage"),
+    ("femerge", "feMerge"),
+    ("femergenode", "feMergeNode"),
+    ("femorphology", "feMorphology"),
+    ("feoffset", "feOffset"),
+    ("fepointlight", "fePointLight"),
+    ("fespecularlighting", "feSpecularLighting"),
+    ("fespotlight", "feSpotLight"),
+    ("fetile", "feTile"),
+    ("feturbulence", "feTurbulence"),
+    ("foreignobject", "foreignObject"),
+    ("lineargradient", "linearGradient"),
+    ("radialgradient", "radialGradient"),
+    ("textpath", "textPath"),
+];
+
+fn adjust_svg_tag_name(lower: &str) -> Option<&'static str> {
+    SVG_TAG_NAME_ADJUSTMENTS
+        .binary_search_by_key(&lower, |&(key, _)| key)
+        .ok()
+        .map(|idx| SVG_TAG_NAME_ADJUSTMENTS[idx].1)
+}
+
+/// The name an element's tag is stored under (#739).
+///
+/// HTML tag names are ASCII case-insensitive and a parser lowercases them;
+/// SVG's are not, and keep the author's canonical spelling. Deciding which
+/// rule applies uses the same tag-only test #688 uses for attributes
+/// ([`is_svg_content_tag`]), checked against the tag **as given** first — an
+/// already-correctly-spelled SVG tag (`svg`, `linearGradient`, `path`, …) is
+/// returned untouched, which is also what lets a plain lowercase tag skip
+/// every other check. Anything else is ASCII-lowercased, then restored to its
+/// canonical SVG spelling if [`adjust_svg_tag_name`] has one for it — the
+/// "adjust SVG tag names" step above, applied to a tag that was not already
+/// exactly right (`<LINEARGRADIENT>`, `<lineargradient>`, `<ClipPath>`, …).
+///
+/// **Deliberately not case-insensitive against the whole SVG list.** Most of
+/// [`SVG_CONTENT_TAGS`] is already lowercase (`text`, `g`, `use`, `path`, …),
+/// so a case-insensitive match of e.g. `<TEXT>` against that list would read
+/// it as SVG's `<text>` — wrong for a plain uppercase HTML tag with no SVG
+/// context to justify it, and `TEXT` is exactly as ambiguous as the lowercase
+/// `text` #688 already accepts as HTML by default. Restricting the
+/// case-insensitive step to [`SVG_TAG_NAME_ADJUSTMENTS`] — only the names
+/// whose canonical spelling actually differs from its lowercase form — avoids
+/// that: `TEXT` lowercases to `text`, finds no adjustment entry (there is
+/// none; canonical already equals lowercase) and stays the plain HTML tag
+/// `text`, exactly as `<TEXT>` would with no SVG list in the picture at all.
+///
+/// Must run **before** any attribute is written on the element — attributes
+/// are folded by [`fold_attribute_name`] against the tag the node already
+/// carries, so a tag normalised after the fact folds every one of its
+/// attributes by the wrong rule (`create_element` is the one call site that
+/// needs to apply this first).
+pub fn fold_tag_name(tag: &str) -> Cow<'_, str> {
+    if is_svg_content_tag(tag) {
+        return Cow::Borrowed(tag);
+    }
+    if !tag.bytes().any(|b| b.is_ascii_uppercase()) {
+        return match adjust_svg_tag_name(tag) {
+            Some(canonical) => Cow::Borrowed(canonical),
+            None => Cow::Borrowed(tag),
+        };
+    }
+    let lower = tag.to_ascii_lowercase();
+    match adjust_svg_tag_name(&lower) {
+        Some(canonical) => Cow::Borrowed(canonical),
+        None => Cow::Owned(lower),
+    }
+}
+
 /// The name an attribute is stored under, for an element whose tag is `tag`.
 ///
 /// HTML content folds to ASCII lowercase, matching a browser's parse-time
@@ -246,6 +344,72 @@ mod tests {
             fold_attribute_name(Some("div"), "CLASS"),
             Cow::Owned(_)
         ));
+    }
+
+    /// Every weird-cased SVG name in [`SVG_CONTENT_TAGS`] (canonical spelling
+    /// differs from its own lowercase form) has exactly one entry in
+    /// [`SVG_TAG_NAME_ADJUSTMENTS`], and nothing else does — a hand-transcribed
+    /// second list is exactly where this drifts.
+    #[test]
+    fn svg_tag_name_adjustments_match_the_canonical_list() {
+        let expected: std::collections::BTreeSet<&str> = SVG_CONTENT_TAGS
+            .iter()
+            .copied()
+            .filter(|tag| tag.to_ascii_lowercase() != *tag)
+            .collect();
+        let actual: std::collections::BTreeSet<&str> = SVG_TAG_NAME_ADJUSTMENTS
+            .iter()
+            .map(|&(_, canonical)| canonical)
+            .collect();
+        assert_eq!(actual, expected);
+        for &(lower, canonical) in SVG_TAG_NAME_ADJUSTMENTS {
+            assert_eq!(canonical.to_ascii_lowercase(), lower);
+        }
+        let mut sorted = SVG_TAG_NAME_ADJUSTMENTS.to_vec();
+        sorted.sort_unstable_by_key(|&(key, _)| key);
+        assert_eq!(SVG_TAG_NAME_ADJUSTMENTS, sorted.as_slice());
+    }
+
+    /// `<DIV>` and `<Button>`: an HTML tag folds to lowercase whatever case it
+    /// was written in, which is the whole point of #739 — `div { … }` then
+    /// matches both `<div>` and `<DIV>`.
+    #[test]
+    fn html_tags_fold_to_lowercase() {
+        assert_eq!(fold_tag_name("DIV"), "div");
+        assert_eq!(fold_tag_name("Button"), "button");
+        assert_eq!(fold_tag_name("div"), "div");
+    }
+
+    /// An already-correctly-cased SVG tag is untouched and borrowed — the
+    /// fast path, and what keeps `viewBox`/`gradientUnits`/etc. folding
+    /// decisions (keyed on the tag the node carries) unaffected by #739.
+    #[test]
+    fn correctly_cased_svg_tags_are_untouched_and_borrowed() {
+        for tag in ["svg", "linearGradient", "path", "foreignObject"] {
+            assert!(matches!(fold_tag_name(tag), Cow::Borrowed(_)));
+            assert_eq!(fold_tag_name(tag), tag);
+        }
+    }
+
+    /// A mis-cased SVG tag — written in all caps, or in plain lowercase — is
+    /// restored to its canonical mixed-case spelling, matching a browser's
+    /// own "adjust SVG tag names" step, which runs off the *lowercased* name
+    /// regardless of how the author originally cased it.
+    #[test]
+    fn miscased_svg_tags_are_adjusted_to_canonical() {
+        assert_eq!(fold_tag_name("LINEARGRADIENT"), "linearGradient");
+        assert_eq!(fold_tag_name("lineargradient"), "linearGradient");
+        assert_eq!(fold_tag_name("ClipPath"), "clipPath");
+        assert_eq!(fold_tag_name("FOREIGNOBJECT"), "foreignObject");
+    }
+
+    /// The one case the #738 review flagged by name: `<TEXT>` must stay a
+    /// plain HTML tag, not become SVG's `<text>`, because `text`'s canonical
+    /// spelling is already all-lowercase and so carries no adjustment entry.
+    #[test]
+    fn uppercase_text_stays_html_not_svg() {
+        assert_eq!(fold_tag_name("TEXT"), "text");
+        assert!(matches!(fold_tag_name("TEXT"), Cow::Owned(_)));
     }
 
     /// Only the ASCII range folds. `İ` (U+0130) lowercases to `i̇` in Unicode,

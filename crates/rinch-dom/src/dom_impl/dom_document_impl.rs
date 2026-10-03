@@ -24,6 +24,13 @@ impl DomDocument for RinchDocument {
     }
 
     fn create_element(&mut self, tag: &str) -> NodeId {
+        // #739: fold the tag to its canonical spelling before anything else
+        // reads it — `default_display_for_tag`, the `tag == "img"` /
+        // `matches!(tag, "style" | …)` checks below, and every later
+        // `fold_attribute_name` call all key on the tag the node ends up
+        // carrying, not the one the author wrote.
+        let tag = crate::attr_name::fold_tag_name(tag);
+        let tag = tag.as_ref();
         let id = self.tree.nodes.vacant_key();
         let mut node = Node::element(id, tag, self.tree.guard.clone());
         // Use CSS-standard defaults based on element type:
