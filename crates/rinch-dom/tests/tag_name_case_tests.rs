@@ -231,4 +231,3 @@ fn a_miscased_svg_tag_is_restored_to_canonical() {
          lowercased to \"lineargradient\""
     );
 }
-
