@@ -27,8 +27,6 @@ const VH: f32 = 600.0;
 const RED: &str = "#ff0000";
 const GREEN: &str = "#00ff00";
 const BLUE: &str = "#0000ff";
-/// Not a colour anybody declares — the value a rejected `color` falls back to.
-const BLACK: &str = "#000000";
 
 fn hex(doc: &RinchDocument, n: NodeId) -> String {
     let c = doc.tree.get(n.0).unwrap().computed_style.color;
@@ -259,28 +257,28 @@ fn the_attribute_reads_back_in_the_cssom_touched_form() {
     );
 }
 
-/// **A deviation, pinned rather than merely described — issue #722.** rinch collapses a
-/// duplicated property **syntactically**; a browser collapses after validity,
-/// because it drops an invalid declaration at parse and the duplicate then
-/// never competes. So rinch's priority arm can preserve an `!important`
-/// declaration Stylo will go on to reject, leaving the property with no value
-/// at all, where Chrome 150 falls through to the later valid one — measured,
-/// `color: notacolor !important; color: blue` and
-/// `color: red !important !important; color: blue` both compute **blue** there.
+/// **Issue #722, closed.** `rinch_core::dom::split_declarations` still
+/// collapses a duplicated property syntactically — it has no Stylo and cannot
+/// tell a valid declaration from one that will be rejected — but
+/// `merged_inline_style` (the function `set_style`/`set_styles` route
+/// through) no longer feeds Stylo that collapsed form for a property it is
+/// not itself writing. It reads the existing attribute with
+/// `split_declarations_keeping_duplicates` instead, so an untouched
+/// property's duplicates reach Stylo's own parser exactly as the author wrote
+/// them, and Stylo's post-validity collapse — reject the invalid declaration,
+/// then pick among what is left — runs the way a browser's CSSOM does.
+/// Measured in Chrome 150: `color: notacolor !important; color: blue`,
+/// `color: red !important !important; color: blue` and `color: blue; color:
+/// notacolor` all compute **blue**.
 ///
-/// The class is older than the priority arm, and the `older` node is what says
-/// so: `color: blue; color: notacolor` computes black in rinch and blue in
-/// Chrome, and did before this fix too, because two *plain* declarations
-/// collapse exactly as they always did. What #711 changed is the reach — the
-/// two important shapes were accidentally right under the old unconditional
-/// collapse, which discarded the invalid declaration for the wrong reason.
-///
-/// Both shapes need invalid CSS to reach. This fixture exists so the caveat in
-/// `split_declarations`' doc is a fact somebody can check, and so that whoever
-/// closes **#722** has a fixture that flips rather than prose to re-derive.
-/// When it does close, all three assertions below become `BLUE` and this doc
-/// describes history — the `control` assertion is the only one that survives
-/// unchanged, which is why it is here.
+/// Each node here calls `set_style(n, "gap", …)` — a write to an unrelated
+/// property — specifically to route through `merged_inline_style`; a node
+/// whose attribute is only ever set once (no second author touches it) was
+/// never collapsed before Stylo in the first place, so it would pass whether
+/// or not this bug was fixed and prove nothing. The positive control
+/// (`color: green !important; color: blue`, both valid) is off that fixed
+/// point in the other direction: it must keep computing green, which shows
+/// the fix did not simply stop preferring `!important`.
 #[test]
 fn a_duplicate_collapses_before_validity_not_after() {
     let mut doc = RinchDocument::new();
@@ -305,20 +303,55 @@ fn a_duplicate_collapses_before_validity_not_after() {
     assert_eq!(
         hex(&doc, control),
         GREEN,
-        "positive control: a *valid* important declaration still wins, which is \
-         the rule this deviation is the edge of"
+        "positive control: a *valid* important declaration still wins"
     );
     assert_eq!(
         hex(&doc, invalid),
-        BLACK,
-        "rinch keeps the invalid important declaration, Stylo rejects it, and \
-         the property falls to its initial value; Chrome computes blue"
+        BLUE,
+        "the invalid important declaration reaches Stylo (duplicates kept), \
+         which rejects it and falls through to the valid one"
     );
-    assert_eq!(hex(&doc, doubled), BLACK, "same, for a doubled flag");
+    assert_eq!(hex(&doc, doubled), BLUE, "same, for a doubled flag");
     assert_eq!(
         hex(&doc, older),
-        BLACK,
-        "and the plain-vs-plain shape, which this fix did not touch — the \
-         deviation is the collapse being syntactic, not the priority arm"
+        BLUE,
+        "and the plain-vs-plain shape — Stylo drops the invalid `notacolor` \
+         declaration itself, so only the valid `blue` one is left to cascade"
+    );
+}
+
+/// `merged_inline_style`'s new duplicate-preserving read has one case the
+/// fixtures above do not reach: writing a property that the attribute
+/// *itself* already declares more than once. That write is unambiguous — the
+/// caller supplies one new value — so every existing occurrence collapses to
+/// the single new value rather than leaving a stray earlier one for Stylo to
+/// cascade over it later.
+///
+/// The three colons are decoys at different positions around the `left`
+/// duplicates, which is what pins the position arithmetic rather than only
+/// "a duplicate goes away somehow": if the removal of the earlier duplicate
+/// mis-adjusted the surviving slot's index, this would either panic (index
+/// out of bounds) or silently overwrite the wrong declaration and leave two
+/// `left`s in the attribute, which the second assertion catches directly.
+///
+/// Kills a mutant that collapses only the position found by `position()`
+/// (the first occurrence) instead of every occurrence of the written
+/// property.
+#[test]
+fn set_style_collapses_every_existing_occurrence_of_the_property_it_writes() {
+    let mut doc = RinchDocument::new();
+    let n = div(
+        &mut doc,
+        "left: 1px; gap: 2px; left: 3px; margin: 4px; left: 5px",
+    );
+    doc.set_style(n, "left", "9px");
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(
+        style_of(&doc, n),
+        "gap: 2px; margin: 4px; left: 9px",
+        "every earlier `left` is gone and the one surviving slot (the last \
+         position, matching the pre-existing position rule) carries the new \
+         value"
     );
 }

@@ -174,15 +174,60 @@ Four things about that set are worth knowing before they surprise you.
   per-family default size, so `<code>` keeps the size it inherits. Only the
   family comes from the UA sheet.
 
-`vertical-align: sub`/`super` on `<sub>`/`<sup>` (issue #724) and list markers on
-`<li>` (issue #725) are **not** part of this: neither is a stylesheet line —
-`ComputedStyle` carries no `vertical_align` field and `DisplayValue` no
-`ListItem` — so both need property and layout work first. Until then a `<sub>`
-is smaller but not lowered, and a bulleted list is indented but **unbulleted**:
-desktop draws no list marker at all, for a bare `<ul>`, for the `List`
-component (whose `list-style-type` is parsed and ignored) and for the
-rich-text editor alike. The editor's only marker is the task-list checkbox,
-which it draws itself as a `::before`.
+#### Text controls
+
+A raw `<input>` or `<textarea>` carries the browser's own box and font (issue
+#1194, every value measured in Chrome 153). The input components (`TextInput`,
+`Textarea`, `NumberInput`, `PasswordInput`, `ColorInput`) declare their own
+border, padding and font size, so this is about controls you write by hand:
+
+| control | box | font and text |
+|---------|-----|---------------|
+| text-state `<input>` (no `type`, `text`, `search`, `email`, `password`, `number`, …) | `padding: 1px 2px`, `border: 2px inset` grey | `13.3333px` Arial, weight and style `normal`, `line-height: normal` |
+| date/time `<input>` | `padding: 0 0 0 1px` (inline start only), the same border | the same, in monospace |
+| `checkbox`, `radio`, `range`, `file`, `image`, `hidden` | none | the same 13.3333px font |
+| the button types, `color` | none in rinch — Chrome gives `submit`/`reset`/`button` `1px 6px` and a `2px outset` border, `color` `1px 2px` and a `1px solid` one (not modelled yet) | the same 13.3333px font |
+| `<textarea>` | `padding: 2px`, `border: 1px solid` grey | `13.3333px` monospace, `white-space: pre-wrap`, `overflow-wrap: break-word` |
+
+Both controls also reset `letter-spacing`, `word-spacing`, `text-transform`,
+`text-indent` and `text-align` rather than inheriting them. The font is not
+cosmetic: a control is `size` (or `cols`) average characters of its **own**
+font wide.
+
+Overflow follows Chrome too. An `<input>` other than a checkbox, radio or range
+is `overflow: clip`, and stays `clip` whatever you declare (the UA rule is
+`!important`). A `<textarea>`'s computed overflow is `auto`, and a `visible` you
+declare on either axis computes `auto` (a `hidden` or `clip` is kept), so a raw
+textarea shrinks as a flex item instead of holding its full width. rinch does
+not yet lay out or scroll a textarea's text, so it shows no scrollbar and takes
+no wheel even when its value overflows.
+
+Everything else is an ordinary UA rule your own declaration beats. The theme's
+`button, input, select, textarea { font-family: inherit }` is one such
+declaration, so under the theme a raw control takes the page's family and keeps
+the 13.3333px size — as it does in a browser under the same sheet. The colours
+(`FieldText` on `Field`) are **not** copied: the theme gives form controls
+`color: inherit` on purpose, so they stay readable in dark mode.
+
+`vertical-align: sub`/`super` on `<sub>`/`<sup>` is now part of this (issue
+#724): `ComputedStyle::vertical_align` plus its `ifc::vertical_align_shift_px`
+consumer shift the glyph post-layout, calibrated against Chrome 153 and the
+bundled Inter at a 16px parent font-size (exact only there — see that doc for
+the numbers). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
+lay out as `baseline`, and the shift does not grow the line box the way
+Chrome's does, both filed as #1357.
+
+List markers on `<li>` (issue #725) are **not** part of this: it is not a
+stylesheet line — `DisplayValue` has no `ListItem` — so it needs layout work
+first, and a list item is not a `list-item` box. What desktop draws instead is
+a text marker — `•` or `N.` followed by an en space —
+generated as a span at the start of every `<li>` whose parent is a `<ul>` or
+`<ol>`, whose `list-style-type` is not `none` and which has no `::before` of
+its own. It is inline content of the
+item, not an outside marker hanging in its padding. The rich-text editor's
+stylesheet takes that span out of flow and hangs it against the item's left
+edge, as a browser's outside marker hangs, and draws its task-list checkbox
+itself as a `::before` hung the same way (#1246).
 
 **Components are unaffected**, and that is pinned rather than assumed —
 `Divider`, `List`, `Breadcrumbs`, `Tree`, `Image`, `Blockquote` and `Code` all
@@ -219,12 +264,13 @@ rsx! {
 }
 ```
 
-**A percentage is dropped, and that is a divergence.** rinch keeps only the
-length part of `letter-spacing` / `word-spacing`, so `50%` spaces by nothing and
-`calc(5px + 50%)` spaces by 5px. Chrome 150 resolves the percentage against the
-element's own font-size — measured, `letter-spacing: 50%` at `font-size: 20px`
-adds 10px per character — so a percentage that works in a browser does nothing
-here. Use `px`, `em` or `rem`, all of which are exact. Tracked as issue #743.
+**A percentage resolves against the element's own font-size** (issue #743),
+on both properties: `letter-spacing: 50%` / `word-spacing: 50%` add 10px per
+affected character at `font-size: 20px`, and `calc(5px + 50%)` adds 15px —
+measured in Chrome 153 and matched here, including `word-spacing`, whose
+percentage css-text-4 describes as relative to the space glyph's own advance
+rather than the font-size; Chrome's actual behaviour (and rinch's, now) is
+the font-size basis, not that reading.
 
 `normal` is zero, as in CSS, and it is a genuine reset: an inline element
 declaring it inside a spaced ancestor gets no spacing on its own characters,
@@ -362,6 +408,7 @@ Measured on the desktop engine:
 | Selector | Desktop | Note |
 |---|---|---|
 | `tag`, `.class`, `#id`, `*` | works | `#id` was silently dropped before #675 |
+| an UPPERCASE HTML *tag* name, in the markup (`<DIV>`, `<Button>`) | works | as of #739 — a tag is stored ASCII-lowercased in HTML content, matching Stylo's own lowercased type-selector comparison for an HTML element. A tag that is one of SVG's own camelCase spellings, however it was cased, is restored to that spelling rather than lowercased (`attr_name::fold_tag_name`), mirroring #688's attribute-name fold one row down |
 | descendant / `>` / `+` / `~` | works | |
 | `[attr]`, `[attr=v]`, `~=`, `\|=`, `^=`, `$=`, `*=` | works | |
 | an UPPERCASE attribute *name*, in the selector or the markup (`[DATA-X]`, `<div ID="up">`) | works | as of #688 — attribute names are stored ASCII-lowercased in HTML content, and Stylo lowercases the selector's name itself. `viewBox` and the other camelCase SVG attributes are kept verbatim |
@@ -371,10 +418,12 @@ Measured on the desktop engine:
 | `:link`, `:any-link` | works | `<a>`/`<area>` with an `href` |
 | `:visited` | never matches | rinch tracks no history |
 | `:first-child`, `:nth-child()`, `:not()`, `:is()`, `:where()`, `:root`, `:empty` | works | handled by the selector engine itself |
-| `:has()` | **never matches** | parses, then matches nothing even when the subject is present |
-| `:required`, `:optional`, `:read-only`, `:read-write`, `:placeholder-shown`, `:indeterminate`, `:valid`, `:invalid`, `:default`, `:defined`, `:target`, `:focus-within`, `:fullscreen`, `:lang()` | **never match** | they parse, then fall through to a catch-all `false` |
+| `:has()` | **never matches** | `stylo`'s servo-feature `SelectorParser` answers `parse_has() -> false` (#680), so `div:has(em) { … }` never parses into a relative selector in the first place — an upstream-dependency limitation, not a `rinch-dom` matching bug, and fixing it needs a patched/forked `stylo` (the same shape as the vendored `wgpu` fork) |
+| `:required`, `:optional`, `:read-only`, `:read-write`, `:placeholder-shown`, `:defined`, `:lang()` | works (#681) | narrower than the full CSS definition — see `Node::tag_supports_required` / `Node::tag_is_readonly_capable`'s docs for the exact scope each leaves out (no `<fieldset disabled>` inheritance, no non-form-control `:read-only`; `:lang()`'s invalidation is a forced self+subtree+later-siblings restyle on a `lang` write, not Stylo's state maps) |
+| `:focus-within` | **never matches** | attempted for #681 and reverted: an eager ancestor-propagated bit went stale under `style_invalidation_twin_tests.rs`'s random-mutation oracle (`.a:focus-within`) whenever a subtree was `Move`d while focus lived elsewhere — see `stylo_impl.rs`'s comment at the pseudo-class match's catch-all |
+| `:indeterminate`, `:valid`, `:invalid`, `:in-range`, `:out-of-range`, `:default`, `:target`, `:fullscreen`, `:modal`, `:popover-open`, `:autofill`, `:user-valid`, `:user-invalid` | **never match** | they parse, then fall through to a catch-all `false` — rinch has no constraint validation, no document/fragment concept, and no "default" tracking distinct from current state |
 | `::before`, `::after` | works | |
-| camelCase SVG type selectors (`linearGradient`, `clipPath`) | **never match** | type selectors are lowercased as if every element were HTML |
+| camelCase SVG type selectors (`linearGradient`, `clipPath`) | works (#683) | `is_html_element_in_html_document` answers `false` for SVG content tags (`attr_name::is_svg_content_tag`), so the selector keeps the author's exact spelling instead of being lowercased as if every element were HTML |
 | Presentational attributes (`<img width=100>`, `<td bgcolor>`) | **no effect** | legacy-attribute hints are not synthesized |
 
 Reach for a class where the table says a selector does not match — that is the
@@ -572,67 +621,68 @@ properties work there.
 
 For `width`, `height`, `min-width`/`min-height`, `max-width`/`max-height` and
 `flex-basis`, rinch supports lengths, percentages, `calc()` mixing the two,
-`auto` and `none`. It supports **no intrinsic sizing keyword** on any of them
-(issue #626): every one parses and is then laid out as `auto`.
+`auto` and `none`. The intrinsic sizing keywords are supported on **`width`,
+`height` and `flex-basis`** (#691), and parse but lay out as `auto` on
+**`min-*`/`max-*`** (#1275).
 
-| Value | What rinch does |
-|---|---|
-| `<length>` (`px`, `em`, `rem`, …) | Supported |
-| `<percentage>` | Supported |
-| `calc()` mixing a length and a percentage | Supported |
-| `auto`, `none` | Supported |
-| `max-content` | Laid out as `auto` |
-| `min-content` | Laid out as `auto` |
-| `fit-content` | Laid out as `auto` |
-| `fit-content(<length-percentage>)` | Laid out as `auto` |
-| `stretch`, `-webkit-fill-available` | Laid out as `auto` |
-| `anchor-size(…)` | Laid out as `auto` |
+| Value | `width` / `height` / `flex-basis` | `min-*` / `max-*` |
+|---|---|---|
+| `<length>`, `<percentage>`, `calc()` of the two | Supported | Supported |
+| `auto`, `none` | Supported | Supported |
+| `max-content` | Supported | Laid out as `auto` |
+| `min-content` | Supported | Laid out as `auto` |
+| `fit-content` | Supported | Laid out as `auto` |
+| `stretch`, `-webkit-fill-available` | Supported | Laid out as `auto` |
+| `fit-content(<length-percentage>)` | `auto` — Chrome 153 does not accept it on these properties either | Laid out as `auto` |
+| `anchor-size(…)` | Laid out as `auto` | Laid out as `auto` |
 
-rinch prints one line on stderr per property and keyword per process, so the
-substitution is visible rather than silent:
+They are checked against Chrome 153 in block, flex (both axes, and
+`flex-basis`), grid, `inline-block`/`inline-flex`, `absolute` and `fixed`
+contexts (`crates/rinch-dom/tests/intrinsic_sizing_twin_tests.rs`). What still
+differs, each with its issue:
+
+- **`fit-content` around content that wraps** comes out as wide as its widest
+  wrapped line rather than the available width (#1276) — the same measurement
+  that makes an `auto`-width absolute too narrow. It is right whenever the
+  content fits on one line, or cannot wrap at all.
+- **`height: stretch` on an `inline-block`** lays out as `auto`, and
+  **`width: stretch` on a flex item** whose content is wider than the
+  container is not capped by it (#1277).
+- An `inline-block` whose width is **`auto`** is still sized at max-content and
+  never capped at its containing block (#658). Spelling it `width:
+  fit-content` gets the capped, browser answer.
+
+For `min-*`/`max-*` rinch prints one line on stderr per property and keyword
+per process, so the substitution is visible rather than silent:
 
 ```text
-[rinch] `width: max-content` is not implemented; it lays out as `auto`, which
-matches a browser only where `auto` already gives the same used size (issue
-#626). Reported once per property and value per process.
+[rinch] `min-width: max-content` is not implemented; it lays out as `auto`,
+which matches a browser only where `auto` already gives the same used size
+(issues #626, #1275). Reported once per property and value per process.
 ```
 
-**Grid tracks are a different story and they do work.**
-`grid-template-columns: max-content` and `min-content` size a column the way a
-browser does — measured, an item whose content is 300px wide gets 300px in such
-a track and 800px in an `auto` one — because Taffy implements intrinsic sizing
-for track sizing functions. (`fit-content(<length-percentage>)` is converted for
-tracks too.) It is only a *box's own* `width`/`height`/`min-*`/`max-*` that
-cannot carry one, so this is not a missing line in a conversion table —
-implementing it needs a measurement pass of rinch's own.
+**Grid tracks** take the keywords too: `grid-template-columns: max-content`
+and `min-content` size a column the way a browser does, and
+`fit-content(<length-percentage>)` is converted for tracks.
 
-### When `auto` happens to be the right answer
+### When `auto` is the right answer for `min-*`/`max-*`
 
-Whether the substitution changes anything depends on the box, and the two
-halves are mirror images. Measured against Chrome 150, for a box whose content
-is 300px wide inside an 800px containing block:
+On `min-*`/`max-*`, where every keyword is still laid out as `auto`, whether
+that changes anything depends on the box. Measured against
+Chrome 150, for a box whose content is 300px wide inside an 800px containing
+block:
 
 | The box | `auto` gives | `max-content`/`min-content`/`fit-content` | `stretch` |
 |---|---|---|---|
-| block-level `width` | fills (800) | **wrong** — should shrink-wrap (300) | correct (800) |
 | `min-width` / `max-width` | no constraint | **wrong** — should constrain to 300 | correct |
-| `inline-block` `width` | shrink-wraps (300) | correct (300) | **wrong** — should fill (800) |
-| flex-row item `width` (main axis) | content (300) | correct (300) | **wrong** — should fill (800) |
-| flex-column or grid item `width` (cross axis) | stretches (800) | **wrong** — should be 300 | correct (800) |
-| block `height` | content height | correct | **wrong** — should fill the containing block |
 | `min-height` | none | correct | **wrong** — should fill the containing block |
+| `max-height` | none | correct | correct |
 
-So the three intrinsic keywords are already right wherever `auto` is
-content-sized, and `stretch` is already right wherever `auto` fills.
+A browser shrink-wraps a float too. rinch does not, because **rinch implements
+no CSS float at all** — measured, `float: left` on the same box gives 800, the
+full containing block, where a browser gives 300. So a float is not a way to
+shrink-wrap a box here; `width: fit-content` (or `display: inline-block`) is.
 
-A browser would put floats in the shrink-wrapping row. rinch does not, because
-**rinch implements no CSS float at all** — measured, `float: left` on the same
-box gives 800, the full containing block, where a browser gives 300. So a float
-is not a way to reach the shrink-to-fit behaviour here; `display: inline-block`
-is.
-
-**The workaround in both directions is a declared length or percentage.** Where
-you reached for `width: fit-content` on a block, `display: inline-block` gives
-the same shrink-to-fit today; where you reached for `height: stretch`, `height:
-100%` gives the same used size as long as the box has no margin, border or
-padding on that axis.
+Where a `min-*`/`max-*` keyword is wrong, a declared length or percentage is
+the workaround: `min-height: 100%` gives `min-height: stretch`'s used size as
+long as the box has no margin, border or padding on that axis.

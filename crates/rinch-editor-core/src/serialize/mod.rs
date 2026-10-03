@@ -17,6 +17,7 @@ pub mod html;
 mod html_integer;
 #[cfg(feature = "markdown")]
 pub mod markdown;
+mod style_scan;
 pub mod text;
 
 #[cfg(feature = "serde")]

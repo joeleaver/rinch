@@ -92,6 +92,7 @@ pub use bool_attr::{
 pub use html_integer::{parse_html_integer, parse_html_non_negative_integer};
 pub use inline_style::{
     StyleProp, normalize_property_name, serialize_declarations, split_declarations,
+    split_declarations_keeping_duplicates,
 };
 pub use late_child::{on_child_inserted, on_child_removed};
 pub use render_scope::*;
@@ -501,6 +502,45 @@ impl NodeHandle {
     pub fn focus(&self) {
         if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().focus_element(self.node_id);
+        }
+    }
+
+    /// Select a `[start, end)` range of this text control's text, in
+    /// **UTF-16 code units** — matching the DOM's
+    /// `HTMLInputElement.setSelectionRange(start, end, direction)` exactly
+    /// (issue #552), so one offset pair means the same thing whether this
+    /// handle's document is the desktop backend or `rinch-web`.
+    ///
+    /// Applied now if this node already holds the keyboard; otherwise stashed
+    /// for the next time it gains it — a `setSelectionRange()` call on an
+    /// unfocused control works the same way in a browser. A no-op before this
+    /// handle is mounted, like [`focus`](Self::focus).
+    ///
+    /// ```ignore
+    /// // A rename box that opens with its text selected, so the first
+    /// // keystroke replaces it rather than appending to it:
+    /// input.focus();
+    /// input.set_selection_range(0, name.encode_utf16().count(), SelectionDirection::Forward);
+    /// ```
+    ///
+    /// See [`DomDocument::set_selection_range`] for the backend contract.
+    pub fn set_selection_range(&self, start: usize, end: usize, direction: SelectionDirection) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut()
+                .set_selection_range(self.node_id, start, end, direction);
+        }
+    }
+
+    /// Select this text control's **entire** text — the DOM's
+    /// `HTMLInputElement.select()` (issue #552). Equivalent to
+    /// `set_selection_range(0, <the control's UTF-16 length>,
+    /// SelectionDirection::Forward)`, and subject to the same "applied now or
+    /// stashed for the next focus" rule.
+    ///
+    /// See [`DomDocument::select_text`] for the backend contract.
+    pub fn select(&self) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut().select_text(self.node_id);
         }
     }
 
@@ -1247,36 +1287,39 @@ mod tests {
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 
-    /// A falsey write of `checked` / `selected` reaches the backend even when
-    /// the content attribute is already absent (issue #687).
+    /// A falsey write of `checked` / `selected` / `muted` reaches the backend
+    /// even when the content attribute is already absent (issues #687, #754).
     ///
     /// `write_attribute`'s removal is otherwise guarded on the attribute being
     /// present, which reads as "already off" — true for every attribute whose
-    /// whole state is the attribute, and false for these two on the web, where
-    /// a user toggle moves the live IDL property and leaves the attribute
-    /// behind. Only the backend can see that property, so the writer must call
-    /// it; whether the call is worth making is not the writer's question.
+    /// whole state is the attribute, and false for these three on the web,
+    /// where a user toggle (or, for `muted`, a `<video controls>`'s own mute
+    /// button) moves the live IDL property and leaves the attribute behind.
+    /// Only the backend can see that property, so the writer must call it;
+    /// whether the call is worth making is not the writer's question.
     ///
     /// The mock records every mutation as a dirty node, so "did the call reach
-    /// the backend" is observable here without a browser. Three mutants die:
-    /// restoring the guard for the pair (row 1 and row 2), listing only
-    /// `checked` in it (row 2), and dropping the guard for *everything* (row 3,
+    /// the backend" is observable here without a browser. Four mutants die:
+    /// restoring the guard for the trio (rows 1-3), listing only `checked` in
+    /// it (row 2 or row 3), and dropping the guard for *everything* (row 4,
     /// which would restyle a node on every falsey write of any boolean
     /// attribute).
     #[test]
-    fn a_falsey_write_of_the_presence_pair_always_reaches_the_backend() {
+    fn a_falsey_write_of_the_presence_trio_always_reaches_the_backend() {
         let doc = Rc::new(RefCell::new(MockDomDocument::new()));
         let body = doc.borrow().body();
         let mut scope = RenderScope::new(doc.clone(), body);
 
         let input = scope.create_element("input");
         let option = scope.create_element("option");
+        let video = scope.create_element("video");
         let dirtied = |doc: &Rc<RefCell<MockDomDocument>>, n: &NodeHandle| {
             doc.borrow_mut().take_dirty_nodes().contains(&n.node_id())
         };
         doc.borrow_mut().take_dirty_nodes(); // drop the creation noise
 
-        // Neither attribute is present, so the guard would skip both writes.
+        // None of the three attributes is present, so the guard would skip
+        // every write.
         input.write_attribute("checked", "false");
         assert!(
             dirtied(&doc, &input),
@@ -1286,12 +1329,18 @@ mod tests {
         option.write_attribute("selected", "false");
         assert!(
             dirtied(&doc, &option),
-            "`selected` is the other half of the pair — an option's selectedness              goes dirty the same way"
+            "`selected` is another member of the trio — an option's selectedness              goes dirty the same way"
+        );
+
+        video.write_attribute("muted", "false");
+        assert!(
+            dirtied(&doc, &video),
+            "`muted` joined the trio in #754 — a media element's live `.muted`              can move with no attribute write at all, same as checked/selected"
         );
 
         // The name is ASCII case-insensitive, like every HTML attribute name
         // (#688). `is_boolean_attribute` folds, so an uppercase spelling reaches
-        // the falsey branch; the pair check has to fold with it or `CHECKED:
+        // the falsey branch; the trio check has to fold with it or `CHECKED:
         // {|| false}` keeps the bug. Sampled off the fixed point on purpose —
         // with the attribute *present* the guard finds it either way, because
         // `get_attribute` folds too.
@@ -1703,5 +1752,42 @@ mod tests {
         // Positive control: a write the re-render effect legitimately tracks.
         rev.set(2);
         assert_eq!(renders.get(), renders_before + 1);
+    }
+
+    /// `NodeHandle::select()`/`set_selection_range()` route to the backend's
+    /// `DomDocument::select_text`/`set_selection_range` with this handle's own
+    /// node id (issue #552) — the same shape `focus()` already has. A mutant
+    /// passing the *parent* node's id instead of `self.node_id` would still
+    /// pass a test that only checks "a selection was recorded", so this one
+    /// asserts the node too.
+    #[test]
+    fn select_and_set_selection_range_reach_the_backend_for_this_node() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let weak: std::rc::Weak<RefCell<dyn DomDocument>> = Rc::downgrade(&doc) as _;
+        let (input, other) = {
+            let mut d = doc.borrow_mut();
+            let body = d.body();
+            let input = d.create_element("input");
+            d.set_attribute(input, "value", "hello");
+            d.append_child(body, input);
+            let other = d.create_element("input");
+            d.append_child(body, other);
+            (input, other)
+        };
+        let handle = NodeHandle::new(input, weak.clone());
+        let other_handle = NodeHandle::new(other, weak);
+
+        handle.set_selection_range(1, 3, SelectionDirection::Backward);
+        assert_eq!(
+            doc.borrow().__selection_range(),
+            Some((input, 1, 3, SelectionDirection::Backward))
+        );
+
+        // A different handle's select() must not be attributed to `input`.
+        other_handle.select();
+        assert_eq!(
+            doc.borrow().__selection_range().map(|(n, ..)| n),
+            Some(other)
+        );
     }
 }

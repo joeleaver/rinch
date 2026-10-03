@@ -1095,18 +1095,60 @@ peer.
 for a *late*-joining peer to `start_collaboration_guest` from), and
 `collab_take_error()` round out the API. The first milestone covers **flat
 text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…),
-list containers (bullet/ordered lists and list items, nested to any depth),
-horizontal rules, and the inline atoms inside a line — images and hard breaks
-(Shift+Enter). Blockquotes, tables and task lists are still outside it: an edit
+list containers (bullet/ordered lists and list items) and block quotes, nested
+into each other to any depth, tables (merged cells included, anything above inside a
+cell), horizontal rules, and the inline atoms inside a line — images and hard breaks
+(Shift+Enter). Task lists, and a pasted table whose rows are ragged, are still outside
+it: an edit
 outside that scope fails loud rather than silently diverging —
 `collab_take_error()` surfaces it, and the CRDT is left untouched (the local edit is
-not projected). Horizontal rules, images and hard breaks all joined that scope
-without a new wire format, so **every peer on a document must be upgraded
-together**: an older build accepts a rule, an image or a hard break from a newer
+not projected). Horizontal rules, images, hard breaks, block quotes and tables all
+joined that scope without a new format tag, so **every peer on a document must be upgraded
+together**: an older build accepts a rule, an image, a hard break, a quote or a table from a newer
 peer and then cannot read it, which poisons its session (see below) in both
-directions for as long as that content remains in the document — it heals only
-when the last one is deleted. A peer joining from a snapshot that already holds
-one fails the join instead.
+directions for as long as that content remains in the document — for a rule, an
+image or a hard break it heals when the last one is deleted. A quote may never
+leave: one emptied by two people deleting its contents at the same time is no
+longer shown, but it stays in the shared document for good (deleting it could race
+a third person typing into it), so once that has happened an older build stays
+locked out of the document for its whole life. A peer joining from a snapshot that
+already holds one fails the join instead.
+
+Wrapping a paragraph in a quote or a list, or lifting it out of one, replaces that
+paragraph in the shared document, so if someone else is typing in it at that moment
+their typing is lost; both editors still end up with the same document.
+
+Tables keep a full grid however their structure is edited at once: a row and a column
+added by two people meet at an empty cell, two columns added at once are both there in
+every row, and a row deleted while someone types in it is gone with that typing. What
+can still be lost is typing in a row, column or cell someone else deletes or merges
+away, and, when two people type at once into the same empty cell that such a
+concurrent row-and-column insert created, one of the two. Rows, columns and paragraphs that look
+alike are told apart by which one was actually edited, not by their content: deleting
+the first of three empty rows while someone types in the last keeps their typing.
+
+A table read from someone else that would be absurdly large for what the shared
+document actually holds (rows and columns cost a few bytes each to send, the empty
+cells between them nothing) is not built: it shows up as a single empty cell instead,
+and while the document holds one, **the editor is frozen**: it refuses every edit, as
+a read-only editor does (typing, commands, paste, undo and `load_doc`/`load_html` do
+nothing and answer `false`; the caret, selection and copying still work), while other
+people's edits keep arriving. `collab_outbound_stall()` reports
+`CollabError::OversizedTable` naming the table; show it — "a collaborator added a
+table too large to load; delete it to keep editing". No edit is allowed near the
+table — not even deleting it with the editor — because the empty cell is not the
+table, and a change to it (or a document reloaded from an export, which cannot tell
+it from an ordinary empty table) could delete the real one for everybody; and none is
+kept to send later, because the next change from anyone else would wipe it. Two
+things end it: `collab_oversized_tables()` lists the tables and
+`collab_delete_oversized_table(id)` deletes one from the shared document for every
+peer (it works while frozen); or someone else deletes or shrinks it. Nothing typed is
+lost: nothing was accepted. One person's edits never make such a table;
+two people adding hundreds of rows and hundreds of columns at the same moment could.
+
+A table you make yourself whose merged cells span far more rows and columns than it
+has cells (thousands of them) is refused before it is shared, and the session reports
+it as not syncing until you remove it.
 
 Two concurrent edits to images can still be lost, and both editors still end up
 with the same document when they are. **Two identical images side by side**
@@ -1140,13 +1182,13 @@ the condition holds — so it is what to drive a persistent indicator from:
 
 ```rust
 if let Some(err) = editor.collab_outbound_stall() {
-    // e.g. "Not syncing — remove the pasted table to resume." The error names the
-    // content: "collab does not support this content yet: node `blockquote` …".
+    // e.g. "Not syncing — remove the task list to resume." The error names the
+    // content: "collab does not support this content yet: node `task_list` …".
     show_banner(&err.to_string());
 }
 ```
 
-The cure is to remove the offending content — undo the paste, unwrap the quote. You do
+The cure is to remove the offending content — undo the paste, remove the task list. You do
 not have to re-send anything: the next edit that projects re-bases on the CRDT and
 broadcasts **everything** that accumulated during the stall, in one delta. Nothing typed
 while stalled is lost (issue #220).
@@ -1216,10 +1258,11 @@ What it survives and what it does not:
   joined text as a new insert, not a move. Likewise, splitting a block (Enter) before
   the position moves the tail into a new block, and an index on the tail then resolves
   to the split point.
-- **An edit next to its paragraph, at the top level of the document.** The projection
-  finds the top-level blocks an edit left alone by node *identity*, and a split or a
-  join rebuilds both nodes it touches, so the paragraph beside it is rewritten even
-  though its text did not change (tracked in #917). In practice:
+- **An edit next to its paragraph**, at the top level or inside a list, a quote or a
+  table cell. The projection finds the blocks an edit left alone by node *identity*,
+  and a split or a join rebuilds both nodes it touches, so the paragraph beside it is
+  rewritten even though its text did not change (tracked in #917). In practice, when
+  the paragraph has a sibling at its level:
   - **Enter at the start of a paragraph** (inserting an empty paragraph above it):
     every index into that paragraph now resolves into the **new empty paragraph**.
     That is a wrong position, not `None`.
@@ -1228,8 +1271,9 @@ What it survives and what it does not:
   - **Toggling a bullet list on a paragraph** replaces the block with one of another
     kind: `None`.
 
-  Blocks inside a list fare better: that level of the diff compares nodes
-  structurally, so Enter at the start of a paragraph in a list item keeps its indexes.
+  A paragraph that is alone at its level (the document's only block, a list item's
+  only paragraph) fares better: an edit there keeps nothing of the level, which is
+  then compared by content, so Enter at its start keeps its indexes.
 
 `collab_sticky_index` answers `None` when not collaborating, for a position that is
 not inside a textblock (between two blocks), for the empty starter paragraph of a

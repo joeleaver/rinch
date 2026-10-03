@@ -503,7 +503,7 @@ fn set_inner_html_clears_plain_children() {
 // A plain move does NOT leak on its own: `sync_display_contents` rebuilds
 // the new parent with taffy's `set_children`, and taffy removes each new
 // child from its previous parent as it adopts it
-// (taffy-0.12.2/src/tree/taffy_tree.rs, `set_children`'s
+// (taffy-0.14.0/src/tree/taffy_tree.rs, `set_children`'s
 // remove-from-previous-parent loop) — so the OLD parent heals at the next
 // layout pass whether or not it retains another contents child. The
 // straight-move tests below passed before the fix and stand as guards that

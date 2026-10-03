@@ -1002,3 +1002,79 @@ fn rv960_outside_reregistration_replaces_mount_interceptor() {
         );
     });
 }
+
+/// Issue #500: two documents that BOTH register a keyboard interceptor at
+/// *initial mount* — a component body, run once, outside any `handle_event` —
+/// must not collide last-wins in the shared `None` (ownerless) slot entry.
+///
+/// `RinchApp::mount_component` has pushed the dispatching-document marker
+/// around the component's build since issue #295
+/// (`rinch_core::push_dispatching_doc`, `app/mod.rs`), so a mount-time
+/// `set_keyboard_interceptor` call already resolves `current_dispatching_doc()`
+/// to that document rather than falling through to the ownerless entry. This
+/// test is the #500 repro made concrete: if the mount marker were ever lost,
+/// B's mount-time registration would land in the same `None` slot as A's and
+/// silently replace it, so A's own later dispatch would run B's interceptor
+/// instead of its own (or vice versa, depending on registration order).
+#[test]
+fn issue_500_two_contexts_registering_at_mount_do_not_collide() {
+    on_ui_thread(|| {
+        use std::cell::RefCell;
+        let hits: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+
+        let ha = hits.clone();
+        let mut a = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            let ha = ha.clone();
+            // Registered directly in the component body — at mount, not from
+            // inside an effect or a handler. This is the case #500 names.
+            rinch_core::events::set_keyboard_interceptor(move |_| {
+                ha.borrow_mut().push("A");
+                false
+            });
+            rsx! { div { style: "width: 300px; height: 300px;" } }
+        });
+
+        let hb = hits.clone();
+        let mut b = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            let hb = hb.clone();
+            rinch_core::events::set_keyboard_interceptor(move |_| {
+                hb.borrow_mut().push("B");
+                false
+            });
+            rsx! { div { style: "width: 300px; height: 300px;" } }
+        });
+
+        // Settle both initial mounts before any key dispatch.
+        a.update(&[]);
+        b.update(&[]);
+
+        a.update(&[rv960_key()]);
+        assert_eq!(
+            hits.borrow().clone(),
+            vec!["A"],
+            "A's own mount-time interceptor must run on A's dispatch"
+        );
+
+        b.update(&[rv960_key()]);
+        assert_eq!(
+            hits.borrow().clone(),
+            vec!["A", "B"],
+            "B's own mount-time interceptor must run on B's dispatch, not A's"
+        );
+
+        // A's slot must not have been clobbered by B's later mount-time
+        // registration (the collision #500 describes: both land in the same
+        // ownerless `None` entry, last-wins).
+        a.update(&[rv960_key()]);
+        assert_eq!(
+            hits.borrow().clone(),
+            vec!["A", "B", "A"],
+            "A's interceptor must survive B's mount-time registration"
+        );
+
+        rinch_core::events::clear_keyboard_interceptor();
+        rinch_core::events::clear_keyboard_interceptor();
+        drop(a);
+        drop(b);
+    });
+}

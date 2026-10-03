@@ -143,20 +143,30 @@ That was a real divergence until issue #622: the web backend mapped truthiness
 onto presence for `checked` and `selected` alone, so the same call unchecked a box
 in the browser and checked it on the desktop backend.
 
-On the web, `checked` and `<option selected>` also drive the control's live
-property, not only the attribute — a browser stops mirroring the attribute into
-the property once the user has toggled the control, and rinch has no such flag, so
-a programmatic write keeps winning. It follows the attribute's presence, matching
-what the desktop backend's `:checked` reads.
+On the web, `checked`, `<option selected>` and a media element's `muted` also
+drive the control's live property, not only the attribute — a browser stops
+mirroring `checked`/`selected`'s attribute into the property once the user has
+toggled the control (and never mirrors `muted`'s dynamically at all; HTML reads
+it once, at load, to seed `defaultMuted`), and rinch has no such flag, so a
+programmatic write keeps winning. `checked`/`selected` follow the attribute's
+presence, matching what the desktop backend's `:checked` reads; `muted` is
+rinch's own invention — deliberately more dynamic than plain HTML — because
+nothing else lets a reactive `muted: {|| m.get()}` binding mute or unmute a
+`<video>`/`<audio>` element at all (issue #754). The name is folded
+ASCII-lowercase before any of this is decided, so `CHECKED`/`MUTED` written in
+any case still mirror (issue #758) — desktop already folds the attribute name
+this way (#738); on the web the browser folds the written attribute itself, so
+only rinch's own Rust-side matching needed the fold.
 
-Those two are also the reason a falsey write of them is never skipped. Turning a
-boolean attribute off is otherwise a no-op when the attribute is already gone,
+These three are also the reason a falsey write of them is never skipped. Turning
+a boolean attribute off is otherwise a no-op when the attribute is already gone,
 and `write_attribute` skips it to save a restyle — but on the web a user's
-toggle leaves the *property* on with the attribute absent, so the skip was
-exactly the write that would have corrected it, and a box the user clicked
-stayed checked against a binding that said `false` (issue #687). `checked` and
-`selected` now always reach the backend, which is the only layer that can see
-the property.
+toggle (or, for `muted`, a `<video controls>`'s own mute button) leaves the
+*property* on with the attribute absent, so the skip was exactly the write that
+would have corrected it, and a box the user clicked stayed checked against a
+binding that said `false` (issue #687, and #754 for `muted`). `checked`,
+`selected` and `muted` now always reach the backend, which is the only layer
+that can see the property.
 
 Component props are unaffected — a component's `disabled: bool` is an ordinary
 typed field, and the component decides how to render it.
@@ -452,11 +462,11 @@ and edits it, and follows it when it changes (a reactive
 sets its `value`. That is HTML's dirty value flag, which focusing and blurring
 do not set (#1186); from then on a child change updates only the default value
 (`defaultValue` on the web), and the field keeps what the user typed. The rule
-is the same on the desktop and on rinch-web, with two exceptions around the
-`value` attribute (#1222): removing a textarea's `value` attribute makes it
-follow its children again on the desktop and leaves it empty on the web, and a
-`value` write equal to the shown text freezes the field on the desktop (as in
-Chrome) but not on the web. A child change while the field is focused and
+is the same on the desktop and on rinch-web, `value` writes included (#1222):
+a write equal to the shown text sets the flag too, as a script `.value` write
+does in Chrome, and removing the `value` attribute is a write of `""` — the
+field empties and stays dirty, since no script write clears the flag again.
+(A browser's form reset does; the desktop has no form reset.) A child change while the field is focused and
 unedited keeps the caret at its offset, clamped to the new text, as in Chrome.
 
 **A text child is not a controlled value.** Until #1206, rinch-web wrote a
@@ -484,7 +494,9 @@ rsx! {
 ```
 
 It sizes the field no more than a value does. An `<input>`'s
-children are not shown at all. A control with no `width` is as wide as its
+children are not shown at all, and neither is an **element** child of a
+`<textarea>` — a `div` built into one through rsx or `append_child` has no
+box, draws nothing and does not size the field (#1178), as in a browser. A control with no `width` is as wide as its
 `cols` (a textarea, default 20) or `size` (a text `<input>`, default 20)
 average characters of its font, as in a browser, and a textarea reserves a
 scrollbar's width beside them (#1177). A

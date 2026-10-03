@@ -62,6 +62,14 @@ pub fn session_from_bytes_with_client_id(bytes: &[u8], client_id: u64) -> Result
     CollabSession::from_bytes_with_client_id(bytes, checked(client_id))
 }
 
+/// How many CRDT nodes this **thread** has examined so far: one per node read back
+/// (its text, marks and children) and one per node whose shape was checked for a void
+/// container. Take the difference across an operation to count what it read — the pin
+/// that a local keystroke reads the block it changed and not the whole document.
+pub fn node_reads() -> u64 {
+    crate::projection::node_reads()
+}
+
 /// yrs client ids are **53-bit** (`ClientID::new` debug-asserts it, and a release build
 /// would silently fold the high bits into the mask instead), so two ids that differ only
 /// above bit 52 would collide — the corruption this module exists to warn about. Reject
@@ -73,4 +81,43 @@ fn checked(client_id: u64) -> u64 {
          another id that differs only in its high bits"
     );
     client_id
+}
+
+/// A foreign writer's update on top of `snapshot` (a session's
+/// [`CollabSession::snapshot`]): `n` row lines and `n` column lines appended to the
+/// first top-level table, so it reads as a table too large to read once `n` is a
+/// few hundred. What a peer on another build, or a hostile one, can send; the tests
+/// of the freeze (`CollabError::OversizedTable`) forge it with this, in any crate,
+/// without linking `yrs` themselves. `None` when the document holds no top-level
+/// table.
+pub fn grow_first_table_update(snapshot: &[u8], n: usize) -> Option<Vec<u8>> {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Any, Array, ArrayRef, Map, MapPrelim, Out, ReadTxn, Transact, Update};
+    let doc = yrs::Doc::with_client_id(999);
+    {
+        let mut txn = doc.transact_mut();
+        txn.apply_update(Update::decode_v1(snapshot).ok()?).ok()?;
+    }
+    let sv = doc.transact().state_vector();
+    {
+        let content: ArrayRef = doc.get_or_insert_array("content");
+        let mut txn = doc.transact_mut();
+        let table = content.iter(&txn).find_map(|child| match child {
+            Out::YMap(m) if m.get(&txn, "rows").is_some() => Some(m),
+            _ => None,
+        })?;
+        let (Some(Out::YArray(cols)), Some(Out::YArray(rows))) =
+            (table.get(&txn, "cols"), table.get(&txn, "rows"))
+        else {
+            return None;
+        };
+        // Inserted at index 1, not pushed: `push_back` walks the whole array per insert.
+        for i in 0..n {
+            let m = cols.insert(&mut txn, 1, MapPrelim::default());
+            m.insert(&mut txn, "id", Any::String(format!("grown-c{i}").into()));
+            let r = rows.insert(&mut txn, 1, MapPrelim::default());
+            r.insert(&mut txn, "id", Any::String(format!("grown-r{i}").into()));
+        }
+    }
+    Some(doc.transact().encode_state_as_update_v1(&sv))
 }

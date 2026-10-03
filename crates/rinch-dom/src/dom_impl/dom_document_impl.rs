@@ -1,13 +1,14 @@
 //! `DomDocument` trait implementation for `RinchDocument`.
 
 use rinch_core::dom::{
-    CaretAffinity, DomDocument, NodeId, serialize_declarations, split_declarations,
+    CaretAffinity, DomDocument, NodeId, serialize_declarations,
+    split_declarations_keeping_duplicates,
 };
 
 use peniko::color::{AlphaColor, Srgb};
 
 use style::properties::{
-    LonghandId, PropertyDeclaration, PropertyDeclarationBlock, PropertyDeclarationId,
+    LonghandId, PropertyDeclaration, PropertyDeclarationBlock, PropertyDeclarationId, PropertyId,
 };
 use style::values::generics::position::GenericInset;
 use style::values::specified::{LengthPercentage, NoCalcLength};
@@ -24,6 +25,13 @@ impl DomDocument for RinchDocument {
     }
 
     fn create_element(&mut self, tag: &str) -> NodeId {
+        // #739: fold the tag to its canonical spelling before anything else
+        // reads it — `default_display_for_tag`, the `tag == "img"` /
+        // `matches!(tag, "style" | …)` checks below, and every later
+        // `fold_attribute_name` call all key on the tag the node ends up
+        // carrying, not the one the author wrote.
+        let tag = crate::attr_name::fold_tag_name(tag);
+        let tag = tag.as_ref();
         let id = self.tree.nodes.vacant_key();
         let mut node = Node::element(id, tag, self.tree.guard.clone());
         // Use CSS-standard defaults based on element type:
@@ -40,7 +48,17 @@ impl DomDocument for RinchDocument {
             flex_wrap: taffy::FlexWrap::NoWrap,
             ..Default::default()
         };
-        let taffy_id = if tag == "img" {
+        let replaced = crate::replaced::replaced_context(&node);
+        let taffy_id = if let Some(context) = replaced {
+            // `<canvas>`, `<video>`, `<iframe>`: sized from their natural or
+            // default object size (#1173). The attributes are not set yet,
+            // so a canvas starts at its 300x150 default; a later
+            // `width`/`height` write re-syncs it through the cascade.
+            self.tree
+                .taffy
+                .new_leaf_with_context(default_style, context)
+                .unwrap()
+        } else if tag == "img" {
             // Image elements use NodeContext::Image for intrinsic sizing
             let context = NodeContext::Image {
                 src: String::new(),
@@ -651,6 +669,13 @@ impl DomDocument for RinchDocument {
         if selects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, true);
         }
+        // A `<select>`'s own `value` write is a live selection write too
+        // (#757): it is the freshest of the two mechanisms until a later
+        // `selected` write on one of its options clears it — see
+        // `NodeTree::select_value_fresh`'s doc.
+        if name == "value" && self.tree.nodes[node.0].tag() == Some("select") {
+            self.tree.select_value_fresh.insert(node.0);
+        }
 
         // Parse inline style into Stylo PropertyDeclarationBlock
         if name == "style" {
@@ -714,6 +739,25 @@ impl DomDocument for RinchDocument {
         // written only by `set_attribute("style", …)` and `set_styles`, and both
         // put the `style` attribute in the map first, so a cache with no
         // attribute cannot exist.
+        //
+        // The one removal that is a write whether or not the attribute is
+        // there: a `<textarea>`'s `value`. rinch-web removes it by writing
+        // `.value = ""`, which sets the browser's dirty value flag for good, so
+        // the field empties and stops following its text children — a pristine
+        // field with no attribute included (#1222).
+        if name == "value"
+            && !self.tree.nodes[node.0].value_dirty
+            && self.tree.nodes[node.0].tag() == Some("textarea")
+        {
+            self.tree.nodes[node.0].value_dirty = true;
+            if !self.tree.nodes[node.0].attributes.contains_key(name) {
+                // What the field shows went from its children to `""`; no
+                // attribute changed, so no selector can see it.
+                self.tree.hit_cache.invalidate();
+                self.push_dirty_flags(node.0, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                return;
+            }
+        }
         if !self.tree.nodes[node.0].attributes.contains_key(name) {
             return;
         }
@@ -736,6 +780,12 @@ impl DomDocument for RinchDocument {
         // first non-disabled option, which is HTML's "ask for a reset".
         if deselects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, false);
+        }
+        // Removing the select's own `value` attribute retires its claim to
+        // freshness too (#757) — there's nothing left for step 1 to answer
+        // from, and a later re-write starts the race over cleanly.
+        if name == "value" && self.tree.nodes[node.0].tag() == Some("select") {
+            self.tree.select_value_fresh.remove(&node.0);
         }
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
@@ -1004,6 +1054,12 @@ impl DomDocument for RinchDocument {
         crate::ifc::TAB_SPACES.len()
     }
 
+    /// U+2028, U+2029, U+0085 and U+000C as the inline formatting context
+    /// lays them out in preserved text (`ifc::PRESERVED_SUBSTITUTES`, #1181).
+    fn substituted_char_flat_bytes(&self) -> &'static [(char, usize)] {
+        &crate::ifc::PRESERVED_SUBSTITUTE_FLAT_BYTES
+    }
+
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
         use crate::text_query::caret_position_for_offset;
         caret_position_for_offset(self, node_id, byte_offset)
@@ -1120,6 +1176,31 @@ impl DomDocument for RinchDocument {
         rinch_core::request_focus(self.doc_key, node_id.0);
     }
 
+    /// Posts the request via the same kind of channel [`focus_element`]
+    /// uses, keyed by this document (issue #134) — but a **separate** one
+    /// from [`FocusRequest`](rinch_core::FocusRequest), so a `focus()` and a
+    /// `set_selection_range()`/`select()` posted from the same effect (the
+    /// "open a rename box, focused with its name selected" shape #552 exists
+    /// for) both survive to be applied, rather than the later post silently
+    /// discarding the earlier one in a shared slot.
+    ///
+    /// The runtime (`RinchApp`) applies this directly to the focused input's
+    /// `EditableState` if `node_id` already holds the keyboard, converting
+    /// the UTF-16 offsets to the byte offsets that state keeps; otherwise it
+    /// stashes the request for the next time `node_id` is focused
+    /// (`try_focus_input` consults the stash instead of defaulting to a caret
+    /// at the text's end). `start`/`end` are passed through unchanged — the
+    /// runtime is what knows the control's text and can convert and swap.
+    fn set_selection_range(
+        &mut self,
+        node_id: NodeId,
+        start: usize,
+        end: usize,
+        direction: rinch_core::dom::SelectionDirection,
+    ) {
+        rinch_core::post_text_selection_request(self.doc_key, node_id.0, start, end, direction);
+    }
+
     /// The DOM mirror of the focus arbiter's claim (issue #695).
     ///
     /// `focused_node` is what `RinchApp::set_focus_target` and its teardown keep
@@ -1201,6 +1282,25 @@ impl DomDocument for RinchDocument {
             node.layout.width,
             node.layout.height,
         ))
+    }
+
+    /// The node's left and top border widths, as Taffy laid them out
+    /// (`taffy_conversion` hands it the computed widths). A child's
+    /// [`LayoutResult`](crate::node::LayoutResult) origin is relative to its parent's
+    /// border box, but an absolutely-positioned child's `left: 0; top: 0` sits
+    /// at the parent's padding box, inside the border. The editor's caret and
+    /// selection overlays are such children, placed from summed layout
+    /// origins, so without this they were drawn one border width right of and
+    /// below the glyphs (1px in the default editor style).
+    fn content_origin_inset(&self, node_id: u64) -> (f32, f32) {
+        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+            return (0.0, 0.0);
+        };
+        let cs = &node.computed_style;
+        (
+            cs.border_left_width.to_px().max(0.0),
+            cs.border_top_width.to_px().max(0.0),
+        )
     }
 
     fn tag_name(&self, node: NodeId) -> Option<String> {
@@ -1401,8 +1501,8 @@ impl RinchDocument {
     /// it, so the divergence is observable to a test or a devtools surface
     /// without scraping logs.
     ///
-    /// **What the clamp is worth, measured against taffy 0.12.2 rather than
-    /// assumed.** `insert_child_at_index` returns `Err` for exactly one reason,
+    /// **What the clamp is worth, measured against taffy 0.12.2 (and re-read
+    /// against 0.14.0, unchanged) rather than assumed.** `insert_child_at_index` returns `Err` for exactly one reason,
     /// `ChildIndexOutOfBounds`; its only other fallible call is `mark_dirty`,
     /// which always answers `Ok`. So the clamp does not merely *usually* avoid
     /// the error — it makes this call **total**, and with
@@ -1524,24 +1624,42 @@ impl RinchDocument {
     /// `assert` could pass all day and fail in CI. A `Vec` makes it a fact
     /// about the input instead of a fact about the process.
     ///
-    /// **Residual divergence from a browser**, deliberately accepted here: a
-    /// longhand *already in the attribute* before a shorthand that covers it
-    /// still loses to that shorthand — `"left: 5px; inset: 0"` plus
-    /// `set_style("left", "10px")` yields `"left: 10px; inset: 0"`, so `inset`
-    /// still wins and `left` computes to `0`. CSSOM expands `inset` into its
-    /// four longhands at parse time, so a browser answers `10px`. Closing that
-    /// gap means keeping Stylo's `PropertyDeclarationBlock` as the source of
-    /// truth (`prepare_for_update`/`update`, then `to_css` for the attribute)
-    /// rather than the string — a bigger change that inverts the
-    /// `merged → parse_inline_style → cache` invariant `inset_fast_path_values`
-    /// rests on, and canonicalises `get_attribute("style")` output. The
-    /// reported shape — shorthand first, longhand written later — is correct
-    /// with the `Vec`, and *every* shape is now deterministic.
+    /// **A written property moves past a later declaration that covers it**
+    /// (#470). CSSOM keeps a list of longhands — a shorthand is expanded when
+    /// it is parsed — so `style.left = "10px"` on `"left: 5px; inset: 0"`
+    /// replaces the one `left` longhand and `left` computes to `10px`.
+    /// Rewritten in place in this string, `left: 10px` would still sit before
+    /// the `inset: 0` that covers it, and lose the cascade to it. So a property
+    /// that a declaration *after* its slot overlaps ([`declarations_overlap`])
+    /// is taken out of its slot and appended, where it wins as it does in a
+    /// browser; every other rewrite stays where it stands. The string stays the
+    /// source of truth and keeps the author's spelling — what moves is one
+    /// declaration, and only when its position decides the cascade.
+    ///
+    /// Still not a browser: a later overlapping declaration that is
+    /// `!important` keeps beating a normal write, where CSSOM's write replaces
+    /// the important longhand outright (#1298).
+    ///
+    /// **The existing attribute is read with
+    /// [`split_declarations_keeping_duplicates`], not the collapsing
+    /// [`split_declarations`] (#722).** `set_styles` feeds this function's
+    /// result straight to Stylo's own parser (`parse_inline_style`), which
+    /// *is* validity-aware — so a property this call is not touching is left
+    /// exactly as the author wrote it, duplicates included, and Stylo decides
+    /// the winner the way a browser's CSSOM would: `color: notacolor
+    /// !important; color: blue` plus an unrelated `set_style("gap", …)` used
+    /// to collapse to the invalid important declaration *before* Stylo ever
+    /// saw it (rinch computed black where Chrome computes blue); now both
+    /// `color` declarations reach Stylo and it rejects the invalid one itself.
+    /// A property this call *is* writing has no such ambiguity — the caller
+    /// supplies its one new value — so every existing occurrence of that name
+    /// collapses to a single slot (the last one, matching the position rule
+    /// above) and any earlier duplicates of it are dropped.
     fn merged_inline_style(&self, node_id: usize, properties: &[(&str, &str)]) -> String {
         let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
             .get("style")
-            .map(|s| split_declarations(s))
+            .map(|s| split_declarations_keeping_duplicates(s))
             .unwrap_or_default();
         for &(property, value) in properties {
             // The caller's name goes through the same rule the parsed ones did
@@ -1549,8 +1667,42 @@ impl RinchDocument {
             // `set_style("COLOR", …)` overwrites an existing `color` rather
             // than declaring the property a second time.
             let property = rinch_core::dom::normalize_property_name(property);
-            match decls.iter_mut().find(|(k, _)| k.as_str() == &*property) {
-                Some(slot) => slot.1 = value.to_string(),
+            // Every existing occurrence of this property, in order. With the
+            // duplicate-preserving parse above there can be more than one —
+            // an author's own literal duplicate the attribute never had a
+            // reason to collapse until a write actually touches that name.
+            let mut positions: Vec<usize> = decls
+                .iter()
+                .enumerate()
+                .filter(|(_, (k, _))| k.as_str() == &*property)
+                .map(|(i, _)| i)
+                .collect();
+            match positions.pop() {
+                Some(slot) => {
+                    // `slot` is the LAST occurrence (positions is ascending),
+                    // so every remaining entry in `positions` sits before it.
+                    // Drop them — this write is an unambiguous new value, so
+                    // nothing is lost by collapsing the property's other
+                    // occurrences to it — highest index first to keep the
+                    // rest of `positions` valid as we go.
+                    for &at in positions.iter().rev() {
+                        decls.remove(at);
+                    }
+                    let slot = slot - positions.len();
+
+                    let covered_later = slot + 1 < decls.len() && {
+                        let written = declared_longhands(&property);
+                        decls[slot + 1..]
+                            .iter()
+                            .any(|(k, _)| declarations_overlap(&written, &declared_longhands(k)))
+                    };
+                    if covered_later {
+                        let (name, _) = decls.remove(slot);
+                        decls.push((name, value.to_string()));
+                    } else {
+                        decls[slot].1 = value.to_string();
+                    }
+                }
                 None => decls.push((property.into_owned(), value.to_string())),
             }
         }
@@ -1855,6 +2007,37 @@ impl RinchDocument {
         let (_, cy2) = fwd(pad_l + local_x, pad_t + local_y + height);
         Some((cx as f32, cy as f32, (cy2 - cy).abs() as f32))
     }
+}
+
+/// The longhands a declaration of `name` sets: itself for a longhand, its
+/// sub-properties for a shorthand, none for a custom or unknown property (a
+/// custom property is one name, and two declarations of it never coexist in a
+/// split attribute).
+fn declared_longhands(name: &str) -> Vec<LonghandId> {
+    match PropertyId::parse_enabled_for_all_content(name) {
+        Ok(id) => match id.as_shorthand() {
+            Ok(shorthand) => shorthand.longhands().collect(),
+            Err(PropertyDeclarationId::Longhand(longhand)) => vec![longhand],
+            Err(PropertyDeclarationId::Custom(_)) => Vec::new(),
+        },
+        Err(()) => Vec::new(),
+    }
+}
+
+/// Whether a declaration setting `later` decides any longhand of one setting
+/// `earlier` when it comes after it (#470): they share a longhand, or — CSSOM's
+/// logical-property-group step, which Stylo's `prepare_for_update` implements —
+/// one is the logical twin of the other (`left` and `inset-inline-start`), a
+/// different longhand that maps onto the same physical side.
+fn declarations_overlap(earlier: &[LonghandId], later: &[LonghandId]) -> bool {
+    earlier.iter().any(|&a| {
+        later.iter().any(|&b| {
+            a == b
+                || (a.is_logical() != b.is_logical()
+                    && a.logical_group().is_some()
+                    && a.logical_group() == b.logical_group())
+        })
+    })
 }
 
 #[cfg(test)]

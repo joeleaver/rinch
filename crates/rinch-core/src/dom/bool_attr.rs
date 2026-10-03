@@ -121,31 +121,41 @@ fn is_lowercase_boolean_attribute(name: &str) -> bool {
 /// Whether `name` is a boolean attribute whose state the **browser** can move
 /// behind the app's back, so that the content attribute stops describing it.
 ///
-/// `checked` and `selected` are the whole set, and they are the two the web
-/// backend mirrors onto a live IDL property (`sync_presence_property`, issue
-/// #100). A browser sets a *dirty checkedness* / *dirty selectedness* flag on
-/// the first user toggle and from then on the content attribute is only the
-/// control's **default**: the box can read checked with no `checked` attribute
-/// anywhere, and `getAttribute` cannot tell.
+/// `checked` and `selected` are the original two, and with `muted` (issue
+/// #754) they are the three the web backend mirrors onto a live IDL property
+/// (`sync_presence_property`, issues #100 and #754). A browser sets a *dirty
+/// checkedness* / *dirty selectedness* flag on the first user toggle and from
+/// then on the content attribute is only the control's **default**: the box
+/// can read checked with no `checked` attribute anywhere, and `getAttribute`
+/// cannot tell. `muted` is the same shape from the very first frame rather
+/// than after a toggle — HTML gives its content attribute no dynamic effect at
+/// all, reading it only once at the media element's load algorithm to seed
+/// `defaultMuted` — and native media controls (a `<video controls>`'s own mute
+/// button) move `.muted` with no attribute write at all, same as a user's
+/// checkbox click.
 ///
 /// That is what [`super::NodeHandle::write_attribute`] consults. Its removal is
 /// otherwise guarded by "is the attribute already absent", which is a sound
 /// proxy for "is it already off" for every attribute whose whole state *is* the
-/// attribute — and a false one for these two on the web, where a user click
-/// left the property on and the attribute off, so a binding writing `false`
-/// wrote nothing and the control stayed checked (issue #687).
+/// attribute — and a false one for these three on the web, where a user click
+/// (or, for `muted`, the native controls) left the property on and the
+/// attribute off, so a binding writing `false` wrote nothing and the control
+/// stayed checked / muted (issue #687, and #754 for `muted`).
 ///
 /// Desktop has no such divergence: `:checked` (`stylo_impl.rs`) and `<option>`
-/// selectedness (`select.rs`) read the attribute and nothing else, and no
-/// desktop input path writes a raw `<input>`'s `checked`. The unguarded
-/// removal costs it nothing anyway — `RinchDocument::remove_attribute` returns
-/// early for an attribute the node does not carry.
+/// selectedness (`select.rs`) read the attribute and nothing else, no desktop
+/// input path writes a raw `<input>`'s `checked`, and desktop has no media
+/// element that reads `muted` at all. The unguarded removal costs it nothing
+/// anyway — `RinchDocument::remove_attribute` returns early for an attribute
+/// the node does not carry.
 ///
 /// `indeterminate` is deliberately **not** here: it is a property-only IDL flag
 /// with no content attribute at all, so it is not a boolean attribute either
 /// and `write_attribute` never maps it.
 pub fn is_presence_reflected_attribute(name: &str) -> bool {
-    name.eq_ignore_ascii_case("checked") || name.eq_ignore_ascii_case("selected")
+    name.eq_ignore_ascii_case("checked")
+        || name.eq_ignore_ascii_case("selected")
+        || name.eq_ignore_ascii_case("muted")
 }
 
 /// Truthiness for a value **being written into** a boolean attribute.
@@ -309,18 +319,20 @@ mod tests {
         }
     }
 
-    /// The pair whose live state the browser can move on its own, and which
-    /// therefore cannot have its falsey write skipped (#687).
+    /// The trio whose live state the browser can move on its own, and which
+    /// therefore cannot have its falsey write skipped (#687, #754).
     ///
     /// Case-folded like every HTML attribute name (#688), and sampled off the
     /// fixed point: each accepted name is checked in a spelling that needs the
     /// fold, and beside a rejected neighbour. `indeterminate` is the pointed
-    /// rejection — it is the third member of the web backend's *reflected*
+    /// rejection — it is a fourth member of the web backend's *reflected*
     /// family, and the one with no content attribute at all, so it is not a
     /// boolean attribute and `write_attribute` never maps it.
     #[test]
-    fn the_presence_reflected_pair_is_checked_and_selected_in_any_case() {
-        for name in ["checked", "CHECKED", "Selected", "selected"] {
+    fn the_presence_reflected_trio_is_checked_selected_and_muted_in_any_case() {
+        for name in [
+            "checked", "CHECKED", "Selected", "selected", "muted", "MUTED",
+        ] {
             assert!(
                 is_presence_reflected_attribute(name),
                 "{name}'s live state can move without its attribute"

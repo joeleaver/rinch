@@ -605,8 +605,8 @@ impl DepKey {
     pub(crate) fn unsubscribe(self, observer: ObserverId) {
         match self {
             DepKey::Signal { id, generation } => SIGNAL_STORE.with(|store| {
-                if let Some(slot) = store.borrow_mut().get_slot_mut(id, generation) {
-                    slot.subscribers.remove(&observer);
+                if let Some(inner) = store.borrow().get_inner(id, generation) {
+                    inner.subscribers.borrow_mut().remove(&observer);
                 }
             }),
             DepKey::Memo { id, generation, .. } => {
@@ -628,13 +628,38 @@ thread_local! {
     static SIGNAL_STORE: RefCell<SignalStore> = RefCell::new(SignalStore::new());
 }
 
-pub(crate) struct SignalSlot {
-    pub(crate) value: Box<dyn Any>,
+/// A signal's value and subscriber set, each in its **own** `RefCell` —
+/// separate from the `RefCell<SignalStore>` that the slot vec itself lives in
+/// (issue #546).
+///
+/// Every read/write first clones this `Rc` out of `SIGNAL_STORE` under a
+/// brief, shared `borrow()`, then drops the store borrow and operates on
+/// `value`/`subscribers` alone. That is what lets a nested read of a
+/// *different* signal — `a.with(|av| b.get())` — work both in and out of an
+/// effect: `b`'s `track()` no longer needs `SIGNAL_STORE.borrow_mut()` while
+/// `a`'s closure is running, because `a`'s own borrow was never taken on the
+/// store in the first place; it is taken on `a`'s own `SignalCell`, which is a
+/// different `RefCell` from `b`'s. Only a signal reading or writing *itself*
+/// from inside its own `with`/`update` closure still panics — genuine
+/// reentrancy on one `RefCell`, not an artifact of sharing the whole store.
+///
+/// This mirrors `Memo`'s existing shape (`MemoInner` is reached the same way,
+/// through an `Rc<dyn Any>` cloned out of `MEMO_STORE`), which is why memos
+/// never had this bug.
+pub(crate) struct SignalCell {
+    pub(crate) value: RefCell<Box<dyn Any>>,
     /// Observers to notify, ordered. `BTreeSet` (not `HashSet`) so iteration
     /// yields ascending `ObserverId` = registration order; see the module-level
     /// "Execution order" docs.
-    pub(crate) subscribers: BTreeSet<ObserverId>,
-    pub(crate) generation: u32,
+    pub(crate) subscribers: RefCell<BTreeSet<ObserverId>>,
+}
+
+/// One entry in [`SignalStore`]'s slot vec: the generation that names it, plus
+/// the `Rc<SignalCell>` callers clone out to reach the value/subscribers
+/// without holding the store borrow.
+struct SignalSlot {
+    inner: Rc<SignalCell>,
+    generation: u32,
 }
 
 pub(crate) struct SignalStore {
@@ -662,8 +687,10 @@ impl SignalStore {
         }
 
         let slot = SignalSlot {
-            value: Box::new(value),
-            subscribers: BTreeSet::new(),
+            inner: Rc::new(SignalCell {
+                value: RefCell::new(Box::new(value)),
+                subscribers: RefCell::new(BTreeSet::new()),
+            }),
             generation,
         };
 
@@ -677,18 +704,15 @@ impl SignalStore {
         }
     }
 
-    pub(crate) fn get_slot(&self, id: u32, generation: u32) -> Option<&SignalSlot> {
+    /// The slot's `SignalCell`, cloned out under a shared borrow of the store
+    /// alone — the store borrow is gone by the time the caller touches
+    /// `value` or `subscribers`.
+    pub(crate) fn get_inner(&self, id: u32, generation: u32) -> Option<Rc<SignalCell>> {
         self.slots
             .get(id as usize)?
             .as_ref()
             .filter(|s| s.generation == generation)
-    }
-
-    pub(crate) fn get_slot_mut(&mut self, id: u32, generation: u32) -> Option<&mut SignalSlot> {
-        self.slots
-            .get_mut(id as usize)?
-            .as_mut()
-            .filter(|s| s.generation == generation)
+            .map(|s| Rc::clone(&s.inner))
     }
 
     /// Free a slot, **returning** its value rather than dropping it in place.
@@ -697,14 +721,28 @@ impl SignalStore {
     /// a value whose `Drop` touches a signal would otherwise `BorrowMutError`
     /// (issue #141, SD4). Returns `None` if the slot was already freed or the
     /// generation does not match.
+    ///
+    /// The per-signal `Rc<SignalCell>` is `try_unwrap`'d here rather than
+    /// dropped as-is: nothing but the store itself normally holds a clone at
+    /// dispose time, so this succeeds in the overwhelming common case and the
+    /// caller gets the same `Box<dyn Any>` contract as before #546. If some
+    /// in-flight borrow elsewhere still holds a clone — reentrant disposal
+    /// from inside this very signal's own `with`/`update` closure, which is
+    /// not a shape any caller is expected to construct — the value is simply
+    /// not parked for the deterministic end-of-fixpoint drop; it drops
+    /// whenever that other clone's last reference goes away instead, same as
+    /// any other `Rc`.
     fn free(&mut self, id: u32, generation: u32) -> Option<Box<dyn Any>> {
         let slot = self.slots.get_mut(id as usize)?;
         if !slot.as_ref().is_some_and(|s| s.generation == generation) {
             return None;
         }
-        let taken = slot.take();
+        let taken = slot.take()?;
         self.free_list.push(id);
-        taken.map(|s| s.value)
+        match Rc::try_unwrap(taken.inner) {
+            Ok(cell) => Some(cell.value.into_inner()),
+            Err(_still_shared) => None,
+        }
     }
 }
 

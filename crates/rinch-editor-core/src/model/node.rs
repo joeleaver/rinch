@@ -284,6 +284,37 @@ impl Node {
         }
     }
 
+    /// Re-home this node (and its subtree) onto `schema`: match each node and
+    /// mark type by **name** against `schema`'s own interned `NodeType`/
+    /// `MarkType` handles, recursively, and rebuild through them. Needed
+    /// because `NodeType`/`MarkType` equality is `Rc::ptr_eq`
+    /// (`model/types.rs`) — a node or mark built by a *different* `Schema`
+    /// instance never compares equal to one this schema builds, even one
+    /// built from an identical spec (e.g. another call to
+    /// `Schema::starter_kit()`), however many fields match.
+    ///
+    /// This is what [`EditorHandle::load_doc`](crate) must call before
+    /// installing a caller-supplied `Node` (#440): without it, a document
+    /// handed to one editor by another (`b.load_doc(a.doc())`, the documented
+    /// move-content-between-editors pair) carries marks the receiving
+    /// schema's `is_mark_active`/`Transform::add_mark` can never recognize as
+    /// present, so `toggleBold` over already-bold text takes the *add* branch
+    /// and the run ends up carrying two `bold` marks — silent corruption, not
+    /// a no-op.
+    ///
+    /// Returns [`EditorError::SchemaValidation`] for a node or mark type
+    /// `schema` does not know by name — the same validation
+    /// [`Schema::node_from_doc`] applies to the wire format, without the JSON
+    /// round trip. A subtree whose types already belong to `schema` (the
+    /// overwhelmingly common case: every normal `load_doc` of a document the
+    /// handle itself produced, and the collaboration guest join, which
+    /// already projects through the receiving schema) costs one pointer
+    /// comparison per node and mark and returns via cheap `Rc` clone with no
+    /// reallocation — only a genuinely foreign subtree pays a rebuild.
+    pub fn rebind(&self, schema: &Schema) -> Result<Node, EditorError> {
+        rebind_node(schema, self)
+    }
+
     /// A copy of this **non-text** node with replaced attrs, keeping content and
     /// marks. The attr-step primitive.
     pub(crate) fn with_attrs(&self, attrs: Attrs) -> Node {
@@ -353,6 +384,68 @@ fn nodes_between_frag<F>(
         }
         pos = end;
     }
+}
+
+/// Recursive worker for [`Node::rebind`].
+fn rebind_node(schema: &Schema, node: &Node) -> Result<Node, EditorError> {
+    let nt = schema
+        .node_type(node.type_name())
+        .ok_or_else(|| {
+            EditorError::SchemaValidation(format!("unknown node type '{}'", node.type_name()))
+        })?
+        .clone();
+
+    let marks = rebind_marks(schema, node.marks())?;
+    let same_marks = marks.as_slice() == node.marks();
+
+    if let Some(text) = node.text() {
+        if nt == *node.node_type() && same_marks {
+            return Ok(node.clone());
+        }
+        return Ok(Node::new_text(nt, text.into(), marks));
+    }
+
+    let mut children = Vec::with_capacity(node.child_count());
+    let mut children_changed = false;
+    for child in node.content().children() {
+        let rebound = rebind_node(schema, child)?;
+        if !rebound.same_ref(child) {
+            children_changed = true;
+        }
+        children.push(rebound);
+    }
+
+    if nt == *node.node_type() && same_marks && !children_changed {
+        return Ok(node.clone());
+    }
+
+    let attrs = nt.compute_attrs(node.attrs())?;
+    let built = Node::new_branch(nt, attrs, Fragment::from_children(children));
+    Ok(if marks.is_empty() {
+        built
+    } else {
+        built.with_marks(marks)
+    })
+}
+
+/// Re-home a mark list onto `schema`, matching each mark type by name. See
+/// [`Node::rebind`].
+fn rebind_marks(schema: &Schema, marks: &[Mark]) -> Result<Vec<Mark>, EditorError> {
+    marks.iter().map(|m| rebind_mark(schema, m)).collect()
+}
+
+fn rebind_mark(schema: &Schema, mark: &Mark) -> Result<Mark, EditorError> {
+    let mt = schema
+        .mark_type(mark.type_name())
+        .ok_or_else(|| {
+            EditorError::SchemaValidation(format!("unknown mark type '{}'", mark.type_name()))
+        })?
+        .clone();
+    if mt == mark.typ {
+        return Ok(mark.clone());
+    }
+    let attrs = mt.compute_attrs(&mark.attrs)?;
+    Ok(Mark::new(mt, attrs))
 }
 
 impl PartialEq for Node {
@@ -770,5 +863,123 @@ mod tests {
             s.branch("spacer", Fragment::empty()).unwrap().node_size(),
             1
         );
+    }
+
+    mod rebind_tests {
+        use super::*;
+        use crate::EditorError;
+        use crate::model::{AttrValue, Attrs, Mark, Node};
+
+        /// A paragraph of bold "hi", built on `s`.
+        fn bold_para(s: &Schema) -> Node {
+            let bold = s.mark_type("bold").unwrap().clone();
+            let text = s
+                .text_with_marks("hi", vec![Mark::new(bold, Attrs::new())])
+                .unwrap();
+            s.branch("paragraph", Fragment::from_node(text)).unwrap()
+        }
+
+        /// #440: a node built by one `Schema` instance carries `NodeType`/
+        /// `MarkType` handles that are never `Rc::ptr_eq`-equal to another
+        /// instance's, even one built from the identical starter kit spec.
+        /// `rebind` onto the second schema must produce a node whose types
+        /// (and the bold mark's type) ARE that second schema's own handles.
+        #[test]
+        fn rebind_onto_a_different_schema_matches_types_by_name() {
+            let a = Schema::starter_kit();
+            let b = Schema::starter_kit();
+            let foreign = bold_para(&a);
+
+            // Before rebinding, the foreign node's types do not belong to `b`.
+            assert_ne!(*foreign.node_type(), *b.node_type("paragraph").unwrap());
+
+            let rebound = foreign.rebind(&b).unwrap();
+            assert_eq!(*rebound.node_type(), *b.node_type("paragraph").unwrap());
+            let text = rebound.child(0);
+            assert_eq!(*text.node_type(), *b.node_type("text").unwrap());
+            assert_eq!(text.text(), Some("hi"));
+            assert_eq!(text.marks().len(), 1, "the bold mark survives rebinding");
+            assert_eq!(
+                text.marks()[0].typ,
+                *b.mark_type("bold").unwrap(),
+                "the rebound mark's type is `b`'s own handle, not `a`'s"
+            );
+        }
+
+        /// The mutant this kills: `is_mark_active`/`Transform::add_mark`
+        /// compare `MarkType`s by `Rc::ptr_eq`. Without the rebind, the
+        /// foreign mark above would never compare equal to anything `b`
+        /// builds — exactly the #440 corruption. This asserts the positive
+        /// side directly, independent of the editor-view harness.
+        #[test]
+        fn rebound_mark_type_is_ptr_eq_to_the_target_schemas_own_handle() {
+            let a = Schema::starter_kit();
+            let b = Schema::starter_kit();
+            let foreign = bold_para(&a);
+            let rebound = foreign.rebind(&b).unwrap();
+            let mark_typ = &rebound.child(0).marks()[0].typ;
+            // NodeType/MarkType's PartialEq IS Rc::ptr_eq (model/types.rs).
+            assert_eq!(mark_typ, b.mark_type("bold").unwrap());
+        }
+
+        /// A node already built by the target schema costs no rebuild: `rebind`
+        /// returns the exact same `Rc` (`same_ref`), not a structurally-equal
+        /// copy. This is the collaboration-guest-join and ordinary same-editor
+        /// `load_doc` case (#1245), which must stay cheap.
+        #[test]
+        fn rebind_onto_its_own_schema_is_a_cheap_no_op() {
+            let s = Schema::starter_kit();
+            let doc = bold_para(&s);
+            let rebound = doc.rebind(&s).unwrap();
+            assert!(
+                rebound.same_ref(&doc),
+                "a node already on this schema must not be rebuilt"
+            );
+        }
+
+        /// A node whose type doesn't exist in the target schema is a hard,
+        /// loud error (matching `Schema::node_from_doc`'s contract for the
+        /// wire format) rather than a silent drop or panic.
+        #[test]
+        fn rebind_onto_a_schema_missing_the_node_type_errors() {
+            let a = Schema::starter_kit();
+            let minimal = Schema::builder()
+                .node(
+                    "doc",
+                    crate::NodeSpec::builder("doc").content("text*").build(),
+                )
+                .node(
+                    "text",
+                    crate::NodeSpec::builder("text")
+                        .group("inline")
+                        .inline()
+                        .build(),
+                )
+                .build();
+            let foreign = bold_para(&a);
+            assert!(matches!(
+                foreign.rebind(&minimal),
+                Err(EditorError::SchemaValidation(_))
+            ));
+        }
+
+        /// A mark whose attrs the target schema's spec declares is preserved
+        /// by value, through the same type-by-name match, not dropped.
+        #[test]
+        fn rebind_preserves_mark_attrs() {
+            let a = Schema::starter_kit();
+            let b = Schema::starter_kit();
+            let link = a.mark_type("link").unwrap().clone();
+            let attrs = Attrs::from_iter([("href", AttrValue::Str("https://x".into()))]);
+            let text = a
+                .text_with_marks("go", vec![Mark::new(link, attrs.clone())])
+                .unwrap();
+            let doc = a.branch("paragraph", Fragment::from_node(text)).unwrap();
+
+            let rebound = doc.rebind(&b).unwrap();
+            let mark = &rebound.child(0).marks()[0];
+            assert_eq!(mark.typ, *b.mark_type("link").unwrap());
+            assert_eq!(mark.attrs.get("href"), attrs.get("href"));
+        }
     }
 }

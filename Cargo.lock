@@ -2381,12 +2381,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grid"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9e2d4c0a8296178d8802098410ca05d86b17a10bb5ab559b3fb404c1f948220"
-
-[[package]]
 name = "gtk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4961,6 +4955,8 @@ dependencies = [
  "rinch-components",
  "rinch-core",
  "rinch-dom",
+ "rinch-editor-collab",
+ "rinch-editor-core",
  "rinch-platform",
  "rinch-theme",
 ]
@@ -5017,6 +5013,8 @@ dependencies = [
  "bitflags 2.10.0",
  "cssparser",
  "euclid",
+ "icu_properties",
+ "icu_segmenter",
  "image",
  "parley",
  "peniko",
@@ -5033,7 +5031,6 @@ dependencies = [
  "stylo_atoms",
  "stylo_config",
  "stylo_dom",
- "stylo_taffy",
  "stylo_traits",
  "swash",
  "taffy",
@@ -5105,6 +5102,7 @@ dependencies = [
  "rinch",
  "rinch-core",
  "rinch-dom",
+ "rinch-tabler-icons",
  "syn 2.0.114",
 ]
 
@@ -5255,6 +5253,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "image",
+ "rinch-core",
  "rinch-debug",
  "serde",
  "serde_json",
@@ -5272,6 +5271,7 @@ dependencies = [
  "rinch-clipboard",
  "rinch-core",
  "rinch-editable",
+ "rinch-editor-collab",
  "rinch-editor-core",
  "rinch-editor-view",
  "wasm-bindgen",
@@ -6050,15 +6050,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd15301b4756455af51fda9835655e48812dd4175e80947fd5d6a4b57ee30e89"
 
 [[package]]
-name = "stylo_taffy"
-version = "0.2.0"
-dependencies = [
- "stylo",
- "stylo_atoms",
- "taffy",
-]
-
-[[package]]
 name = "stylo_traits"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6160,14 +6151,14 @@ dependencies = [
 
 [[package]]
 name = "taffy"
-version = "0.12.2"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "340a09581f29809fc0df82a3955501dc7f2a21f887e5d1c13dbe288fe1c0bef4"
+checksum = "639627c87f43b9181c811f40a6296409e093a17bc761214cba3c15df74f86b99"
 dependencies = [
  "arrayvec",
- "grid",
  "serde",
  "slotmap",
+ "smallvec",
 ]
 
 [[package]]

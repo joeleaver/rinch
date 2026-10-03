@@ -32,7 +32,7 @@ use rinch_editor_core::{
 };
 
 #[cfg(feature = "collaboration")]
-use rinch_editor_collab::{CollabError, CollabSession};
+use rinch_editor_collab::{CollabError, CollabSession, OversizedTable};
 
 #[cfg(feature = "collaboration")]
 use super::collab::CollabBridge;
@@ -526,8 +526,15 @@ impl EditorCore {
     /// caller of [`Self::commit`] there is or will be. Remote integration
     /// ([`EditorHandle::collab_receive`]) never reaches `commit` and so is never
     /// asked.
+    ///
+    /// A collaboration **freeze** ([`EditorHandle::collab_oversized_tables`]: the
+    /// shared document holds a table too large to read) refuses exactly what the
+    /// switch does, loads included, so the model never runs ahead of the CRDT while
+    /// outbound cannot carry it. The freeze is not the switch: `is_read_only` does not
+    /// report it, so the other places that read the switch (the OS input method, the
+    /// context menu's Cut and Paste, the web capture textarea) do not follow it.
     fn refuses(&self, prev: &EditorState, next: &EditorState, is_load: bool) -> bool {
-        if !self.read_only {
+        if !self.locked() {
             return false;
         }
         if is_load {
@@ -538,6 +545,16 @@ impl EditorCore {
         }
         !prev.doc.same_ref(&next.doc)
             || (next.stored_marks.is_some() && next.stored_marks != prev.stored_marks)
+    }
+
+    /// Whether local document changes are refused: the read-only switch, or a
+    /// collaboration freeze (see [`Self::refuses`]).
+    fn locked(&self) -> bool {
+        #[cfg(feature = "collaboration")]
+        if self.collab.as_ref().is_some_and(|b| b.session.is_frozen()) {
+            return true;
+        }
+        self.read_only
     }
 
     /// Carry every live [`SelectionAnchor`] across a document change, so an
@@ -911,7 +928,15 @@ impl EditorHandle {
     /// Build a handle and project it into `container` in one step (the eager path,
     /// used by tests and by [`Self::mount`]). `doc_ref` is a weak handle to the
     /// host document the view patches. Does **not** register the editor with the
-    /// runtime — that is [`Self::mount`]'s job.
+    /// runtime — that is [`Self::mount`]'s job. `doc` is loaded as
+    /// [`Self::load_doc`] loads one: re-homed onto `schema` first (#440 — `doc`
+    /// and `schema` are two separate caller-supplied arguments, so a `doc` built
+    /// on a different `Rc<Schema>` is the same latent mismatch `load_doc` had),
+    /// then a `colspan` past 1000 is capped (#1214). A `doc` that cannot be
+    /// re-homed (an unknown node or mark type by name) is used as given rather
+    /// than refused — this constructor has no failure return, and every current
+    /// caller builds `doc` on `schema` already, so that path is a same-schema,
+    /// effectively-free `rebind`.
     pub fn new(
         container: NodeHandle,
         doc_ref: Weak<RefCell<dyn DomDocument>>,
@@ -919,6 +944,9 @@ impl EditorHandle {
         doc: Node,
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
+        let doc = doc.rebind(&schema).unwrap_or(doc);
+        // A load: colspans past 1000 are capped (#1214).
+        let doc = rinch_editor_core::tables::cap_colspans(&doc);
         // Plugins' `init_state` and `decorations` run here; untracked, as under
         // the core (#943).
         let (state, view) = untracked_handler(|| {
@@ -1591,7 +1619,7 @@ impl EditorHandle {
     /// one. Tracked for a cheaper answer.
     pub fn can_run(&self, name: &str) -> bool {
         let core = self.core();
-        if !core.read_only {
+        if !core.locked() {
             return core.state.can_run(name);
         }
         core.state
@@ -2138,6 +2166,15 @@ impl EditorHandle {
         self.inner.try_borrow().is_ok_and(|core| core.read_only)
     }
 
+    /// Whether every local edit is refused right now: the editor is
+    /// [read-only](Self::set_read_only), or frozen by a collaboration freeze
+    /// ([`Self::collab_oversized_tables`]). What a platform asks to behave as it does
+    /// for a `readonly` field (input method off, no Cut/Paste, the web capture field
+    /// `readonly`, printable keys still owned). Soft like [`Self::is_read_only`].
+    pub fn refuses_edits(&self) -> bool {
+        self.inner.try_borrow().is_ok_and(|core| core.locked())
+    }
+
     /// Switch the editor between the light (default) and dark color schemes of the
     /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
     /// afterward (toolbar/keyboard handlers already do).
@@ -2159,6 +2196,14 @@ impl EditorHandle {
     /// single empty paragraph, so the editor is never left with no textblock to
     /// render or place a caret in.
     ///
+    /// A table cell's `colspan` past 1000 is capped at 1000, as the HTML import
+    /// and Chrome read it (#1214, `rinch_editor_core::tables::cap_colspans`):
+    /// one such cell made every row as wide as it, and a row insert built a
+    /// cell per column. The same cap applies to the document [`Self::new`] is
+    /// given. Edits (commands, [`Self::update`]) are not capped, and neither is
+    /// the shared document a [collaboration guest](Self::start_collaboration_guest)
+    /// adopts: that is its peers' edits.
+    ///
     /// A [read-only](Self::set_read_only) editor still loads — that is how it gets
     /// a document to show — **except while collaborating**, where a load is a
     /// write to the shared document and is refused like any other (see
@@ -2170,9 +2215,36 @@ impl EditorHandle {
     /// [`Self::load_doc`], answering whether the document was loaded (`false`:
     /// refused by a read-only, collaborating editor).
     fn load_doc_checked(&self, doc: Node) -> bool {
+        self.load_doc_inner(doc, true)
+    }
+
+    /// Install `doc` as a load does. `doc` is first re-homed onto this
+    /// editor's own schema (`Node::rebind`, #440): `load_doc`'s documented use
+    /// is moving a document between editors, each minting its own `Schema`
+    /// (and therefore its own `NodeType`/`MarkType` handles, compared by
+    /// `Rc::ptr_eq`), so installing a caller-supplied `Node` verbatim leaves
+    /// its marks and node types unrecognizable to this editor — `toggleBold`
+    /// over already-bold adopted text then takes the *add* branch instead of
+    /// *remove*, duplicating the mark. A document naming a node or mark type
+    /// this schema does not know by name refuses the load (returns `false`),
+    /// same as a `load_html` parse failure. With `cap`, a table cell's
+    /// `colspan` past 1000 is capped, as the HTML import reads it (#1214,
+    /// `tables::cap_colspans`). A collaboration guest adopts the shared
+    /// document with `cap: false`: what the CRDT holds is its peers' edits,
+    /// which are not capped, and a capped model would differ from its own
+    /// projection and write the cap back to the peers as an edit nobody made.
+    /// (That guest document is already projected through this editor's own
+    /// schema — `CollabSession::projected_doc` — so its `rebind` here is the
+    /// cheap already-this-schema fast path, not a rebuild.)
+    fn load_doc_inner(&self, doc: Node, cap: bool) -> bool {
         let mut core = self.core_mut();
+        let Ok(doc) = doc.rebind(&core.schema) else {
+            return false;
+        };
         let doc = if doc.child_count() == 0 {
             empty_paragraph_doc(&core.schema).unwrap_or(doc)
+        } else if cap {
+            rinch_editor_core::tables::cap_colspans(&doc)
         } else {
             doc
         };
@@ -2654,12 +2726,12 @@ impl EditorHandle {
     /// now (the platform candidate box is placed from the model caret instead). A
     /// no-op before mount.
     ///
-    /// A [read-only](Self::set_read_only) editor shows no composition: the commit
-    /// it would lead to is refused, so the overlay would be text that can never
-    /// land.
+    /// A [read-only](Self::set_read_only) editor, or one frozen by a collaboration
+    /// freeze ([`Self::collab_oversized_tables`]), shows no composition: the commit it
+    /// would lead to is refused, so the overlay would be text that can never land.
     pub fn ime_set_preedit(&self, text: &str, _cursor: Option<(usize, usize)>) {
         let mut core = self.core_mut();
-        let text = if core.read_only { "" } else { text };
+        let text = if core.locked() { "" } else { text };
         if let Some(view) = core.view.as_mut() {
             view.set_preedit(text);
         }
@@ -2790,7 +2862,8 @@ impl EditorHandle {
         let schema = self.core().schema.clone();
         let doc = session.projected_doc(&schema)?;
         self.core_mut().collab = None;
-        self.load_doc(doc);
+        // Not capped (#1214): the shared document is peers' edits, not a load.
+        self.load_doc_inner(doc, false);
         self.core_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
         Ok(())
     }
@@ -2997,13 +3070,13 @@ impl EditorHandle {
     }
 
     /// Why this editor's **outbound** collaboration is currently refusing, if it is
-    /// (issue #220): a local edit outside the staged A22 scope — a pasted table, a
-    /// `blockquote` wrap — cannot be projected onto the CRDT, so this edit and every
+    /// (issue #220): a local edit outside the staged A22 scope — a pasted ragged
+    /// table, a task list — cannot be projected onto the CRDT, so this edit and every
     /// one after it stays local until that content is removed.
     ///
     /// Unlike [`Self::collab_take_error`] this does **not** clear: it stays `Some` for
     /// as long as the condition holds, so it is what an app should drive a persistent
-    /// "not syncing — remove the table to resume" indicator from. It clears itself the
+    /// "not syncing — remove the task list to resume" indicator from. It clears itself the
     /// moment a local edit projects again, and that same edit broadcasts everything
     /// that accumulated meanwhile.
     ///
@@ -3013,11 +3086,77 @@ impl EditorHandle {
     ///
     /// Uses `try_borrow` — soft, like [`Self::collab_receive`] — so an `outbound`
     /// callback may call it re-entrantly.
+    ///
+    /// [`CollabError::OversizedTable`] is the **freeze** (see
+    /// [`Self::collab_oversized_tables`]): reported as soon as such a table arrives,
+    /// and cleared only by [`Self::collab_delete_oversized_table`] or a peer removing
+    /// or shrinking the table, not by an edit.
     pub fn collab_outbound_stall(&self) -> Option<CollabError> {
         let core = self.inner.try_borrow().ok()?;
         core.collab
             .as_ref()
             .and_then(|b| b.session.outbound_stall().cloned())
+    }
+
+    /// The tables in the shared document too large to read: a peer grew each past
+    /// the read's budget, and the model shows it as a one-cell placeholder. While
+    /// any exists, the editor is **frozen**: every local edit is refused, as a
+    /// [read-only](Self::set_read_only) editor refuses it (typing, commands, paste,
+    /// undo and loads answer `false`; the caret, selection and copy still work), and
+    /// [`Self::collab_outbound_stall`] reports [`CollabError::OversizedTable`] naming
+    /// the tables — because no diff against a placeholder can be trusted not to delete
+    /// real content, and an edit kept to ship later is lost to the next inbound change.
+    /// An app should say so ("a collaborator added a table too large to load — delete
+    /// it to keep editing"). Cure it with [`Self::collab_delete_oversized_table`], or wait for a
+    /// peer to delete or shrink the table. Empty when not collaborating.
+    pub fn collab_oversized_tables(&self) -> Vec<OversizedTable> {
+        let Ok(core) = self.inner.try_borrow() else {
+            return Vec::new();
+        };
+        core.collab
+            .as_ref()
+            .map(|b| b.session.oversized_tables())
+            .unwrap_or_default()
+    }
+
+    /// Delete the table too large to read named `id` (an [`OversizedTable::id`] from
+    /// [`Self::collab_oversized_tables`]) from the shared document, for every peer:
+    /// the one change that may touch it, and it works while frozen (it is not a model
+    /// edit). Its placeholder leaves the model, and once no such table is left editing
+    /// works again. Not undoable. `Ok(false)` when `id` is not in
+    /// [`Self::collab_oversized_tables`] **now** (a peer deleted the table, or shrank
+    /// it back into a readable one) or this editor is not collaborating.
+    #[cfg(feature = "collaboration")]
+    pub fn collab_delete_oversized_table(&self, id: &str) -> Result<bool, CollabError> {
+        let mut core = self.core_mut();
+        // A read-only editor writes nothing to the shared document (as its loads).
+        if core.collab.is_none() || core.read_only {
+            return Ok(false);
+        }
+        let prev = core.state.clone();
+        let bridge = core.collab.as_mut().unwrap();
+        let Some(next) = bridge.session.delete_oversized_table(&prev, id)? else {
+            return Ok(false);
+        };
+        match bridge.session.save_incremental() {
+            Ok(delta) if !delta.is_empty() => untracked_handler(|| (bridge.outbound)(delta)),
+            Ok(_) => {}
+            Err(e) => bridge.last_error = Some(e),
+        }
+        if !prev.doc.same_ref(&next.doc) {
+            core.carry_anchors(&next.doc, None);
+            core.carry_caret_hint(&prev, &next);
+            core.note_selection(&prev.selection, &next.selection);
+            core.state = next.clone();
+            if let Some(view) = core.view.as_mut() {
+                view.update_dom(&prev, &next);
+            }
+        }
+        drop(core);
+        // The freeze may have lifted: a runtime keeping per-editor input state (the
+        // web capture field's `readonly`) hears it here, as from `set_read_only`.
+        crate::registry::request_overlay_refresh();
+        Ok(true)
     }
 
     /// Take (and clear) the most recent collaboration error — e.g. an edit outside
@@ -3077,6 +3216,48 @@ mod tests {
             container_id,
             handle,
         }
+    }
+
+    /// #1214: the guest join's load (`cap: false`) installs a wide `colspan` as
+    /// it is; a load proper caps it. (The join itself is pinned in
+    /// `tests/colspan_cap_collab_guest.rs` once tables are in the collab scope,
+    /// #1233.)
+    #[test]
+    fn only_a_capped_load_caps_a_colspan() {
+        let s = Schema::starter_kit();
+        let p = s.branch("paragraph", Fragment::empty()).unwrap();
+        let h = mount(s.branch("doc", Fragment::from_node(p.clone())).unwrap());
+        let cell = s
+            .create_node(
+                "table_cell",
+                rinch_editor_core::Attrs::from_iter([(
+                    "colspan",
+                    rinch_editor_core::AttrValue::Int(5000),
+                )]),
+                Fragment::from_node(p.clone()),
+            )
+            .unwrap();
+        let row = s
+            .create_node("table_row", Default::default(), Fragment::from_node(cell))
+            .unwrap();
+        let table = s
+            .create_node("table", Default::default(), Fragment::from_node(row))
+            .unwrap();
+        let wide = s
+            .branch("doc", Fragment::from_children(vec![table, p]))
+            .unwrap();
+        let colspan = |h: &EditorHandle| {
+            h.doc()
+                .child(0)
+                .child(0)
+                .child(0)
+                .attrs()
+                .get_int("colspan")
+        };
+        assert!(h.handle.load_doc_inner(wide.clone(), false));
+        assert_eq!(colspan(&h.handle), Some(5000));
+        assert!(h.handle.load_doc_inner(wide, true));
+        assert_eq!(colspan(&h.handle), Some(1000));
     }
 
     /// The handle→request plumbing: `update_caret` must *fulfil* the view's
@@ -3393,22 +3574,24 @@ mod tests {
         );
     }
 
-    /// Issue #217 where a user actually meets it. `create_editor` mints a **new**
-    /// `Rc<Schema>` per handle and `NodeType`/`MarkType` equality is `Rc::ptr_eq`, so
-    /// the documented `doc()` → `load_doc()` pair hands one editor a document whose
-    /// marks belong to another editor's schema.
+    /// Issue #217/#440 where a user actually meets it. `create_editor` mints a
+    /// **new** `Rc<Schema>` per handle and `NodeType`/`MarkType` equality is
+    /// `Rc::ptr_eq`, so the documented `doc()` → `load_doc()` pair used to hand
+    /// one editor a document whose marks belong to another editor's schema.
     ///
-    /// On `main` the next `toggleBold` over that text answered `true` and left the run
-    /// carrying **two** `bold` marks — the document's real one plus a freshly added
-    /// foreign twin. That is silent corruption on a first-party path, and it is what
-    /// `Transform::add_mark`'s guard now refuses.
+    /// On unfixed `main` the next `toggleBold` over that text answered `true` and
+    /// left the run carrying **two** `bold` marks — the document's real one plus
+    /// a freshly added foreign twin — until #427's `Transform::add_mark` guard
+    /// turned that into a loud refusal instead (`is_mark_active` still answered
+    /// `false` over bold text, so the command failed rather than corrupting).
     ///
-    /// What the guard does **not** do is make the pair work: `is_mark_active` still
-    /// answers `false` for text that is bold, and the command now simply fails. Fixing
-    /// that means re-interning the adopted document through the receiving schema, which
-    /// belongs to `load_doc` rather than to the transform.
+    /// #440 is the actual fix: `load_doc` re-homes the incoming document onto the
+    /// receiving editor's own schema (`Node::rebind`), matching node and mark
+    /// types by name, so the adopted mark is a real mark B's schema recognizes.
+    /// `is_mark_active` now answers `true`, and `toggleBold` *removes* the mark
+    /// (the correct toggle) rather than being refused or duplicating it.
     #[test]
-    fn a_document_adopted_from_another_handle_never_grows_a_duplicate_mark() {
+    fn a_document_adopted_from_another_handle_is_recognized_not_duplicated() {
         let s = Schema::starter_kit();
         let a = mount(doc_node(&s, vec![para(&s, "hello")]));
         a.handle.set_selection(Selection::text(Pos(1), Pos(6)));
@@ -3418,15 +3601,74 @@ mod tests {
         let b = mount(doc_node(&s, vec![para(&s, "x")]));
         b.handle.load_doc(a.handle.doc());
         b.handle.set_selection(Selection::text(Pos(1), Pos(6)));
-        // The command is refused rather than corrupting the run.
         assert!(
-            !b.handle.command("toggleBold"),
-            "a foreign-schema document must refuse the mark, not accept it"
+            b.handle.is_mark_active("bold"),
+            "the adopted mark is re-homed onto B's schema, so B recognizes it as bold"
+        );
+        assert!(
+            b.handle.command("toggleBold"),
+            "a re-homed mark is a real mark B's schema can toggle (not refused)"
         );
         assert_eq!(
             b.handle.doc().child(0).child(0).marks().len(),
+            0,
+            "toggleBold over already-bold adopted text removes the mark, it does not duplicate it"
+        );
+    }
+
+    /// #440: `EditorHandle::new` has the identical latent defect `load_doc` had —
+    /// `schema` and `doc` are two separate caller-supplied arguments, and
+    /// `EditorState::create` stores whatever pair it is given with no check they
+    /// match. Builds `doc` with a bold mark on a schema the constructor is never
+    /// given, and hands `EditorHandle::new` a *different* `Rc<Schema>` directly
+    /// (not through the `mount` test helper's own fresh schema, so this is an
+    /// explicit, intentional mismatch rather than every other `mount`-based
+    /// fixture's incidental one). The resulting handle must recognize the
+    /// adopted mark as its own schema's bold, exactly as a `load_doc` adoption
+    /// does.
+    #[test]
+    fn editor_handle_new_rebinds_a_doc_built_on_a_different_schema() {
+        // A "donor" editor on its own schema, bolded — same shape as the
+        // load_doc fixture's A, just to produce a foreign-schema `Node`
+        // without reaching into the Transform/Mark construction API directly.
+        let donor_schema = Schema::starter_kit();
+        let donor = mount(doc_node(&donor_schema, vec![para(&donor_schema, "hello")]));
+        donor.handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(donor.handle.command("toggleBold"));
+        let foreign_doc = donor.handle.doc();
+        assert_eq!(
+            foreign_doc.child(0).child(0).marks().len(),
             1,
-            "exactly one bold: the document's own, with no foreign twin added beside it"
+            "the fixture itself is bold, on the donor's schema"
+        );
+
+        let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+        let dd: Rc<RefCell<dyn DomDocument>> = mock;
+        let container_id = dd.borrow_mut().create_element("div");
+        let container = NodeHandle::new(container_id, Rc::downgrade(&dd));
+        let receiving_schema = Rc::new(Schema::starter_kit());
+        let handle = EditorHandle::new(
+            container,
+            Rc::downgrade(&dd),
+            receiving_schema,
+            foreign_doc,
+            default_plugins(),
+        );
+        std::mem::forget(dd);
+
+        handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(
+            handle.is_mark_active("bold"),
+            "EditorHandle::new re-homed the foreign doc's mark onto its own schema"
+        );
+        assert!(
+            handle.command("toggleBold"),
+            "a re-homed mark is a real mark this schema can toggle"
+        );
+        assert_eq!(
+            handle.doc().child(0).child(0).marks().len(),
+            0,
+            "toggleBold removes it rather than being refused or duplicating it"
         );
     }
 
@@ -5493,16 +5735,18 @@ mod tests {
             assert_eq!(doc_text(&guest), "hello");
             assert!(host.collab_outbound_stall().is_none(), "healthy to start");
 
-            // Append a blockquote — applied locally, refused by the projection. (A
-            // `horizontal_rule` used to stand here; leaf block atoms are inside the
-            // projected scope now, so the stall needs content that is still outside it.)
+            // Append a task list — applied locally, refused by the projection. (A
+            // `horizontal_rule` and then a `blockquote` used to stand here; both are
+            // inside the projected scope now, so the stall needs content that is still
+            // outside it.)
             assert!(
                 host.update(|state| {
                     let s = state.schema().clone();
                     let inner = s
                         .branch("paragraph", Fragment::from_node(s.text("q").ok()?))
                         .ok()?;
-                    let bq = s.branch("blockquote", Fragment::from_node(inner)).ok()?;
+                    let item = s.branch("task_item", Fragment::from_node(inner)).ok()?;
+                    let bq = s.branch("task_list", Fragment::from_node(item)).ok()?;
                     let at = state.doc.content_size();
                     let mut tr = state.tr();
                     tr.replace(at, at, Slice::new(Fragment::from_node(bq), 0, 0))
@@ -5515,7 +5759,7 @@ mod tests {
                 .collab_outbound_stall()
                 .expect("outbound must report itself stalled");
             assert!(
-                stall.to_string().contains("blockquote"),
+                stall.to_string().contains("task_list"),
                 "the stall must name the content to remove, got: {stall}"
             );
             assert!(
@@ -5528,7 +5772,7 @@ mod tests {
             assert!(host.insert_text("!!"));
             assert!(
                 host.collab_outbound_stall().is_some(),
-                "still stalled while the blockquote is there"
+                "still stalled while the task list is there"
             );
             assert_eq!(
                 doc_text(&guest),
@@ -5536,7 +5780,7 @@ mod tests {
                 "nothing reached the guest during the stall"
             );
 
-            // Delete the blockquote — selecting it and pressing Delete, as an app would. Note
+            // Delete the task list — selecting it and pressing Delete, as an app would. Note
             // this is NOT `undo`: the text typed during the stall stays, which is the
             // half that must survive.
             assert!(
@@ -5549,7 +5793,7 @@ mod tests {
                     tr.delete(from, to).ok()?;
                     Some(tr)
                 }),
-                "the blockquote is deleted"
+                "the task list is deleted"
             );
             assert!(
                 host.collab_outbound_stall().is_none(),
@@ -6089,9 +6333,22 @@ mod tests {
             loopback(&host, &guest);
             assert_eq!(doc_text(&guest), "ok");
 
-            // A blockquote is still outside the projected scope (lists are supported
-            // now, and so are inline atoms; blockquote / tables / task lists are not).
-            assert!(host.load_html("<blockquote><p>quoted</p></blockquote>"));
+            // A task list is still outside the projected scope (lists, quotes and
+            // inline atoms are supported now; tables and task lists are not). HTML has
+            // no task list, so it is inserted directly.
+            assert!(host.update(|state| {
+                let s = state.schema().clone();
+                let inner = s
+                    .branch("paragraph", Fragment::from_node(s.text("todo").ok()?))
+                    .ok()?;
+                let item = s.branch("task_item", Fragment::from_node(inner)).ok()?;
+                let list = s.branch("task_list", Fragment::from_node(item)).ok()?;
+                let at = state.doc.content_size();
+                let mut tr = state.tr();
+                tr.replace(at, at, Slice::new(Fragment::from_node(list), 0, 0))
+                    .ok()?;
+                Some(tr)
+            }));
 
             // The host's model changed locally, but the projection failed loud (the
             // CRDT was left untouched, all-or-nothing) so the peer received nothing.
@@ -6173,7 +6430,7 @@ mod tests {
             assert_eq!(doc_text(&guest), "ok");
 
             // Lists are inside the projected scope, so this must sync rather than
-            // fail loud (the counterpart to the blockquote case above).
+            // fail loud (the counterpart to the task list case above).
             assert!(host.load_html("<ul><li><p>item</p></li></ul>"));
             assert!(
                 host.collab_take_error().is_none(),
@@ -6193,6 +6450,75 @@ mod tests {
                 "ab",
                 "nested list content reaches the peer"
             );
+        }
+
+        #[test]
+        fn quote_edits_sync_to_the_peer() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ok")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            assert_eq!(doc_text(&guest), "ok");
+
+            // Quotes are inside the projected scope: a loaded one syncs.
+            assert!(
+                host.load_html("<blockquote><p>quoted</p><ul><li><p>li</p></li></ul></blockquote>")
+            );
+            assert!(
+                host.collab_take_error().is_none(),
+                "a blockquote is supported and must not fail loud"
+            );
+            assert_eq!(doc_text(&guest), "quotedli");
+            // Compared by shape: each mount builds its own schema, and node types
+            // compare by schema identity.
+            let shape = |h: &EditorHandle| format!("{:?}", h.doc());
+            assert_eq!(
+                shape(&guest),
+                shape(&host),
+                "the guest holds the same quote"
+            );
+
+            // Typing inside it, and lifting the paragraph out, sync as well.
+            host.set_selection(Selection::cursor(Pos(8)));
+            assert!(host.insert_text("!"));
+            assert!(host.command("liftListItem"));
+            assert!(host.collab_take_error().is_none());
+            assert_eq!(doc_text(&guest), "quoted!\nli", "one block per line");
+            assert_eq!(shape(&guest), shape(&host));
+            assert_eq!(guest.doc().child(0).type_name(), "paragraph");
+        }
+
+        #[test]
+        fn table_edits_sync_to_the_peer() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ok")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            let shape = |h: &EditorHandle| format!("{:?}", h.doc());
+
+            // A table, typing in a cell, a column and a merge: every one syncs.
+            host.set_selection(Selection::cursor(Pos(3)));
+            assert!(host.command("insertTable"));
+            assert!(
+                host.collab_take_error().is_none(),
+                "a table is supported and must not fail loud"
+            );
+            let doc = host.doc();
+            let table_at = (0..doc.child_count())
+                .take_while(|&i| doc.child(i).type_name() != "table")
+                .map(|i| doc.child(i).node_size())
+                .sum::<usize>();
+            // table, row, cell, paragraph: the first cell's text starts four in.
+            host.set_selection(Selection::cursor(Pos(table_at + 4)));
+            assert!(host.insert_text("cell"));
+            assert!(host.command("addColumnAfter"));
+            assert!(host.collab_take_error().is_none());
+            assert_eq!(
+                shape(&guest),
+                shape(&host),
+                "the guest holds the same table"
+            );
+            assert!(doc_text(&guest).contains("cell"));
         }
 
         /// Seeded fuzz over the real `EditorHandle` wiring: two handles relay random

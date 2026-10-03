@@ -392,6 +392,90 @@ impl RinchDocument {
                 display: inline-block;
             }
 
+            /* Chrome's UA sheet: an iframe's 2px inset border (#1173). It sits
+               outside its 300x150 default object size, so a bare iframe
+               measures 304x154 there. */
+            iframe {
+                border: 2px inset;
+            }
+
+            /* The text controls' own box and font (issue #1194). Every value is
+               Chrome 153's, measured with `getComputedStyle` under a parent
+               declaring `font: italic bold 20px/40px serif`, letter- and
+               word-spacing, `text-transform: uppercase` and `text-align:
+               right` — so each one here is a value the control does *not*
+               inherit. Chrome writes the font as `-webkit-small-control`,
+               which computes `normal 400 13.3333px/normal`, family Arial for an
+               `<input>` and monospace for a `<textarea>` and the date/time
+               inputs. `white-space` and `overflow-wrap` still inherit on an
+               `<input>` and are reset on a `<textarea>`.
+
+               With #1177 a control's width is its font's average character
+               width times `size`/`cols`, so the font is not cosmetic: a raw
+               input under a 16px serif body is 158px wide in Chrome, from its
+               own 13.3333px Arial. The rinch theme's `font-family: inherit` on
+               form controls still wins (an author rule), and keeps the size,
+               as it does in Chrome under the same sheet.
+
+               Cascade rules, so an author declaration beats every one of them —
+               except `overflow` on an `<input>`, which Chrome forces to `clip`
+               with `!important` (an author `overflow: auto` still computes
+               `clip`), and not on a checkbox, radio or range. A textarea's
+               `overflow: auto` is not a rule at all: Chrome computes `visible`
+               on one as `auto` after the cascade, whoever declared it, and
+               rinch does the same in `apply_stylo_styles_to_taffy` — which
+               covers the default too, so a UA `overflow: auto` here would be
+               dead.
+
+               The box rule covers the text states and the date/time family.
+               The button types (`submit`, `reset`, `button`) and `color` carry
+               padding and borders of their own in Chrome that rinch does not
+               model, and keep none here; `<button>` and `<select>` are not
+               touched by the font rule (#1194 is about the text controls). */
+            input, textarea {
+                font-style: normal;
+                font-weight: normal;
+                font-size: 13.333333px;
+                line-height: normal;
+                letter-spacing: normal;
+                word-spacing: normal;
+                text-transform: none;
+                text-indent: 0;
+                text-align: start;
+            }
+
+            input {
+                font-family: Arial;
+                padding: 1px 2px;
+                border: 2px inset rgb(118, 118, 118);
+            }
+
+            input:is([type=checkbox i], [type=radio i], [type=range i], [type=file i],
+                     [type=image i], [type=hidden i], [type=submit i], [type=reset i],
+                     [type=button i], [type=color i]) {
+                padding: 0;
+                border: 0 none;
+            }
+
+            input:is([type=date i], [type=month i], [type=week i], [type=time i],
+                     [type=datetime-local i]) {
+                font-family: monospace;
+                padding: 0;
+                padding-inline-start: 1px;
+            }
+
+            input:not([type=checkbox i], [type=radio i], [type=range i]) {
+                overflow: clip !important;
+            }
+
+            textarea {
+                font-family: monospace;
+                padding: 2px;
+                border: 1px solid rgb(118, 118, 118);
+                white-space: pre-wrap;
+                overflow-wrap: break-word;
+            }
+
             /* A closed <select> shows the selected option's label (painted by the
                backend) plus a dropdown arrow — its <option>/<optgroup> children are
                not laid out, so its size comes from its widest option label
@@ -405,6 +489,26 @@ impl RinchDocument {
                drawn by the app/shell layer (issue #121). */
             option, optgroup {
                 display: none;
+            }
+
+            /* A browser renders no child of a text control or of a replaced
+               element (#1178, #1288). A `<textarea>`'s text children are its
+               default value (`form_control::control_value`) and an `<input>`
+               is void, so only the DOM can put an element in one; a canvas's
+               children are fallback content, a video's `<source>`/`<track>`,
+               an iframe's ignored. Text and non-atomic inline children leave
+               the element hollow (#1159, #1173); an **element** child gets no
+               box at all here, so a block, atomic-inline or out-of-flow child
+               is neither laid out (where it replaced the element's measure:
+               a Taffy node with children never calls one) nor painted nor hit.
+               `!important` so an author `display` cannot bring it back.
+               Chrome still lets canvas fallback content take focus by Tab;
+               rinch does not (#1294). Spelled as a plain selector list, not
+               `:is(...)`, which cost ~1.2k instructions per element cascade.
+               Chrome reports such a child's computed `display` as `block`
+               (it has no box either way); rinch reports `none`. */
+            textarea > *, input > *, canvas > *, video > *, iframe > * {
+                display: none !important;
             }
 
             select {
@@ -546,11 +650,17 @@ impl RinchDocument {
                0.05px at every level.
 
                `vertical-align: sub`/`super` is the other half of `<sub>`/`<sup>`
-               and is **not** here: `ComputedStyle` carries no `vertical_align`
-               field at all, so it needs property plumbing before a rule could
-               mean anything. Tracked separately as issue #724 (#674 §5). */
+               (issue #724, #674 §5): `ComputedStyle::vertical_align` and its
+               `ifc::vertical_align_shift_px` consumer now give it an effect on
+               a text run, so the two rules below land it. */
             small, sub, sup {
                 font-size: smaller;
+            }
+            sub {
+                vertical-align: sub;
+            }
+            sup {
+                vertical-align: super;
             }
 
             /* Default body margin - set to 0 for GUI apps */
@@ -885,12 +995,7 @@ impl RinchDocument {
 
                 // Body node needs the same overrides as apply_stylo_styles_to_taffy
                 if node_id == self.tree.body_id {
-                    if taffy_style.flex_grow == 0.0 {
-                        taffy_style.flex_grow = 1.0;
-                    }
-                    if taffy_style.size.width == taffy::Dimension::auto() {
-                        taffy_style.size.width = taffy::Dimension::percent(1.0);
-                    }
+                    crate::node::body_taffy_overrides(&mut taffy_style);
                 }
 
                 // Same as apply_stylo_styles_to_taffy: an out-of-flow box
@@ -1041,12 +1146,7 @@ impl RinchDocument {
 
                 // Body node needs the same overrides as apply_stylo_styles_to_taffy
                 if node_id == self.tree.body_id {
-                    if taffy_style.flex_grow == 0.0 {
-                        taffy_style.flex_grow = 1.0;
-                    }
-                    if taffy_style.size.width == taffy::Dimension::auto() {
-                        taffy_style.size.width = taffy::Dimension::percent(1.0);
-                    }
+                    crate::node::body_taffy_overrides(&mut taffy_style);
                 }
 
                 // Same as apply_stylo_styles_to_taffy: an out-of-flow box

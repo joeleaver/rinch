@@ -875,3 +875,83 @@ pub fn op_memo_selection(f: ShellFixture<Signal<usize>>) -> ShellFixture<Signal<
     f.state.set(2);
     f
 }
+
+// ── rinch-editor-collab: a keystroke in a large collaborating document ─────
+
+/// Paragraphs in the collaborating document.
+pub const COLLAB_BLOCKS: usize = 2_000;
+
+/// A collaboration session over [`COLLAB_BLOCKS`] paragraphs, and the document one
+/// keystroke in the middle paragraph leads to: what [`op_collab_keystroke`] projects.
+pub struct CollabFixture {
+    pub schema: Rc<rinch_editor_core::Schema>,
+    pub before: rinch_editor_core::Node,
+    pub after: rinch_editor_core::Node,
+    pub session: rinch_editor_collab::CollabSession,
+}
+
+fn collab_state(schema: &Rc<rinch_editor_core::Schema>) -> rinch_editor_core::EditorState {
+    use rinch_editor_core::{EditorState, Fragment, Plugin, default_plugins};
+    let blocks: Vec<_> = (0..COLLAB_BLOCKS)
+        .map(|i| {
+            let text = schema
+                .text(&format!("paragraph number {i} with some text in it"))
+                .expect("text");
+            schema
+                .branch("paragraph", Fragment::from_node(text))
+                .expect("paragraph")
+        })
+        .collect();
+    let doc = schema
+        .branch("doc", Fragment::from_children(blocks))
+        .expect("doc");
+    let mut plugins: Vec<Rc<dyn Plugin>> = default_plugins();
+    plugins.push(Rc::new(rinch_editor_collab::CollabPlugin));
+    EditorState::create(schema.clone(), doc, plugins)
+}
+
+/// Type one character into the middle paragraph of `state`.
+fn collab_type(state: &rinch_editor_core::EditorState) -> rinch_editor_core::EditorState {
+    use rinch_editor_core::{Pos, Selection};
+    let at: usize = (0..COLLAB_BLOCKS / 2)
+        .map(|i| state.doc.child(i).node_size())
+        .sum::<usize>()
+        + 3;
+    let mut tr = state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("x").expect("insert");
+    state.apply(tr)
+}
+
+/// [`COLLAB_BLOCKS`] paragraphs under a live session, one keystroke already projected
+/// (so the measured one is the second), and the next keystroke's document ready.
+///
+/// The document holds no void container (`rinch_editor_collab::projection`): the
+/// common case, which reads back the paragraph it changed and nothing else. #1229's
+/// first round read back all 2,000 on every keystroke (about 770x the time).
+pub fn setup_collab_keystroke() -> CollabFixture {
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let state = collab_state(&schema);
+    let mut session = rinch_editor_collab::CollabSession::new(&state).expect("session");
+    let warm = collab_type(&state);
+    session
+        .record_local(&schema, &state.doc, &warm.doc)
+        .expect("projects");
+    session.save_incremental().expect("drain");
+    let next = collab_type(&warm);
+    CollabFixture {
+        schema,
+        before: warm.doc.clone(),
+        after: next.doc.clone(),
+        session,
+    }
+}
+
+/// Project the keystroke onto the CRDT.
+pub fn op_collab_keystroke(mut f: CollabFixture) -> CollabFixture {
+    f.session
+        .record_local(&f.schema, &f.before, &f.after)
+        .expect("projects");
+    f
+}

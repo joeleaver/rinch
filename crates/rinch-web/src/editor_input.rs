@@ -320,7 +320,7 @@ fn schedule_overlay_pass() {
 /// which `set_read_only` requests through the overlay refresher.
 fn sync_capture_read_only(handle: &EditorHandle) {
     if let Some(ta) = capture_target() {
-        let read_only = handle.is_read_only();
+        let read_only = handle.refuses_edits();
         if ta.read_only() != read_only {
             ta.set_read_only(read_only);
         }
@@ -1266,7 +1266,7 @@ fn on_cut(event: &web_sys::ClipboardEvent) {
         return;
     };
     event.prevent_default();
-    if handle.is_read_only() {
+    if handle.refuses_edits() {
         return;
     }
     if let Some((html, text)) = handle.selection_clipboard()
@@ -2268,7 +2268,7 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
                 // A read-only editor refuses the text but still owns the key, as
                 // on desktop: left unconsumed, a typed letter would go on to the
                 // page's own shortcuts and Space would scroll it.
-                handle.insert_text(&key) || handle.is_read_only()
+                handle.insert_text(&key) || handle.refuses_edits()
             } else {
                 false
             }
@@ -2881,11 +2881,11 @@ fn add_target_listener<E: JsCast + 'static>(
 }
 
 /// A small web-only override of the shared editor default stylesheet. The shared
-/// stylesheet (`rinch_editor_view`'s `styles.rs`) sets `li { display: flex }` so the
-/// *desktop* renderer (rinch-dom, which emits list markers as block siblings) can align
-/// them inline with their content. On the web the browser draws the native `::marker`,
-/// which `display: flex` suppresses — so bullets and numbers vanish. Restoring
-/// `display: list-item` brings them back. Scoped one level deeper (`ul/ol > li`) than the
+/// stylesheet (`rinch_editor_view`'s `styles.rs`) gives `li` no `display` of its own
+/// and hangs the *desktop* renderer's generated marker span (rinch-dom has no
+/// `list-item`) outside the item, while the editor's UA sheet makes `li` a block — so
+/// on the web, where the browser draws the native `::marker`, bullets and numbers would
+/// vanish. Restoring `display: list-item` brings them back. Scoped one level deeper (`ul/ol > li`) than the
 /// base `li` rule so it wins by specificity regardless of `<style>` source order.
 const EDITOR_WEB_CSS: &str =
     "[data-pm-editor] ul > li, [data-pm-editor] ol > li { display: list-item; }";

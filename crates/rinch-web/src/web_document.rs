@@ -376,6 +376,9 @@ fn is_svg_tag(tag: &str) -> bool {
 /// value. For `value` that avoids resetting the caret to the end on the common
 /// echo path (user types → `oninput` → signal → effect re-writes the same
 /// string); for the boolean properties it just skips redundant DOM writes.
+/// The exception is a `<textarea>`, whose equal write goes through `set_value`
+/// anyway: that sets its dirty value flag (it stops following its text
+/// children) without moving the cursor (#1222).
 ///
 /// A `value` write to the control that holds focus is the user's live text
 /// being rewritten under them (issue #238): the selection is mapped through
@@ -398,10 +401,18 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
                 if settable && input.value() != value {
                     write_live_text(&TextControl::Input(input), value);
                 }
-            } else if let Some(textarea) = node.dyn_ref::<web_sys::HtmlTextAreaElement>()
-                && textarea.value() != value
-            {
-                write_live_text(&TextControl::TextArea(textarea), value);
+            } else if let Some(textarea) = node.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+                if textarea.value() != value {
+                    write_live_text(&TextControl::TextArea(textarea), value);
+                } else {
+                    // An equal write is still a write: it sets the dirty value
+                    // flag, as a script `.value` write does in Chrome 153, so
+                    // the field stops following its text children — as on
+                    // desktop, where the flag is the attribute's presence
+                    // (#1222). The setter moves the cursor only when the value
+                    // changes, so the echo path keeps its caret.
+                    textarea.set_value(value);
+                }
             } else if let Some(select) = node.dyn_ref::<web_sys::HtmlSelectElement>()
                 && select.value() != value
             {
@@ -427,8 +438,8 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
     }
 }
 
-/// Mirror a **presence** boolean attribute (`checked`, `selected`) onto the live
-/// IDL property it reflects.
+/// Mirror a **presence** boolean attribute (`checked`, `selected`, `muted`)
+/// onto the live IDL property it reflects.
 ///
 /// The content attribute is only the control's *default*: the browser sets a
 /// dirty checkedness / selectedness flag on the first user toggle and stops
@@ -448,6 +459,14 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
 /// used to sit here belongs to the *writer*,
 /// [`rinch_core::dom::NodeHandle::write_attribute`], which removes the attribute
 /// for a falsey value before the backend sees it (issue #551).
+///
+/// `muted` (issue #754) is NOT a browser-reflected property — HTML gives the
+/// `muted` *content* attribute no dynamic effect at all; it only seeds
+/// `defaultMuted` once, at the media element's load algorithm. rinch mirrors it
+/// dynamically anyway, deliberately more dynamic than HTML, because a
+/// reactive `muted: {|| m.get()}` binding is otherwise unmutable after the
+/// first load — the same shape #100 fixed for `checked`/`selected`, chosen as
+/// option 1 of the issue's three.
 fn sync_presence_property(node: &web_sys::Node, name: &str, present: bool) {
     match name {
         "checked" => {
@@ -462,6 +481,13 @@ fn sync_presence_property(node: &web_sys::Node, name: &str, present: bool) {
                 && option.selected() != present
             {
                 option.set_selected(present);
+            }
+        }
+        "muted" => {
+            if let Some(media) = node.dyn_ref::<web_sys::HtmlMediaElement>()
+                && media.muted() != present
+            {
+                media.set_muted(present);
             }
         }
         _ => {}
@@ -1376,15 +1402,29 @@ impl DomDocument for WebDocument {
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
         if let Some(n) = self.nodes.get(&node.0) {
+            // Fold the name ASCII-lowercase before deciding which of the few
+            // special-cased attributes below this is — matching the browser's
+            // own fold of an HTML attribute name (`Element.setAttribute` lowers
+            // it for an element in the HTML namespace, per the DOM spec), which
+            // is why `el.set_attribute` below is still given the ORIGINAL
+            // `name`: the browser folds that write itself for HTML elements,
+            // and an SVG element's attribute name is case-SIGNIFICANT (`viewBox`)
+            // and must reach it unfolded. Without this, `set_attribute("CHECKED",
+            // "")` set the content attribute (the browser folded that) but fell
+            // through every match arm here by missing them literally, so the
+            // live `.checked`/`.selected`/`.muted` property was never mirrored
+            // (issue #758, the web-only gap #738 closed on desktop).
+            let folded = name.to_ascii_lowercase();
+            let matched = folded.as_str();
             if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
-                match name {
-                    // `checked` and `selected` are HTML **boolean** attributes:
-                    // presence is the whole value. `set_attribute` is the literal
-                    // primitive on both backends, so the string is written as
-                    // given and the control follows the attribute's *presence*,
-                    // whatever that string says (issue #622). That is the
-                    // browser's own rule for raw markup — `<input
-                    // checked="false">` is checked, measured in
+                match matched {
+                    // `checked`, `selected` and `muted` are HTML **boolean**
+                    // attributes: presence is the whole value. `set_attribute`
+                    // is the literal primitive on both backends, so the string
+                    // is written as given and the control follows the
+                    // attribute's *presence*, whatever that string says (issue
+                    // #622). That is the browser's own rule for raw markup —
+                    // `<input checked="false">` is checked, measured in
                     // `tests/boolean_attributes.rs` — and desktop's, whose
                     // `:checked` and `<option selected>` readers look at presence
                     // alone.
@@ -1401,11 +1441,11 @@ impl DomDocument for WebDocument {
                     //
                     // Reach for `write_attribute` when you are rendering a value;
                     // reach for `remove_attribute` when you mean off.
-                    "checked" | "selected" => {
+                    "checked" | "selected" | "muted" => {
                         el.set_attribute(name, value).ok();
                         // Presence, not the string: see `sync_presence_property`
                         // for why the live property is written at all.
-                        sync_presence_property(n, name, true);
+                        sync_presence_property(n, matched, true);
                         return;
                     }
                     // `indeterminate` is a property-only flag with no HTML content
@@ -1431,30 +1471,34 @@ impl DomDocument for WebDocument {
             }
             // A handful of attributes are reflected *asymmetrically* onto a live
             // DOM property on form controls (`value`, `checked`, `selected`,
-            // `indeterminate`). Writing the attribute alone only sets the
-            // control's *default*: the moment the user edits the control it goes
-            // "dirty" and the browser stops mirroring the attribute into the
+            // `indeterminate`, `muted`). Writing the attribute alone only sets
+            // the control's *default*: the moment the user edits the control it
+            // goes "dirty" and the browser stops mirroring the attribute into the
             // property. A reactive `value:`/`checked:` binding would then silently
             // stop updating what is displayed. Mirror the property too so
             // signal-driven updates keep working after the control has been typed
             // into / toggled (issue #100).
             //
-            // `checked` and `selected` returned above, having mirrored their own
-            // presence; `value` returned into `write_value_attribute`. What
-            // reaches here is `indeterminate` and everything with no reflected
-            // property at all.
-            sync_reflected_property(n, name, value);
+            // `checked`, `selected` and `muted` returned above, having mirrored
+            // their own presence; `value` returned into `write_value_attribute`.
+            // What reaches here is `indeterminate` and everything with no
+            // reflected property at all.
+            sync_reflected_property(n, matched, value);
         }
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
         if let Some(n) = self.nodes.get(&node.0) {
+            // See the matching comment in `set_attribute`: fold only for the
+            // match decisions below, never for the literal write.
+            let folded = name.to_ascii_lowercase();
+            let matched = folded.as_str();
             if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
                 // Removing `value` is a write of `""`: property first (for the
                 // same pristine-control mirroring reason as in `set_attribute`)
                 // and deferred during an IME composition, so both spellings of
                 // "clear this field" obey one policy (issue #238).
-                if name == "value" {
+                if matched == "value" {
                     remove_value_attribute(&el);
                     return;
                 }
@@ -1462,14 +1506,14 @@ impl DomDocument for WebDocument {
             }
             // Keep the reflected property in sync when the attribute is removed,
             // otherwise a dirtied control keeps showing the stale property (#100).
-            match name {
-                // Absence is the off state for the presence pair, and the only
+            match matched {
+                // Absence is the off state for the presence trio, and the only
                 // one — a dirtied control would otherwise keep showing the stale
-                // property (#100, #622).
-                "checked" | "selected" => sync_presence_property(n, name, false),
+                // property (#100, #622, #754).
+                "checked" | "selected" | "muted" => sync_presence_property(n, matched, false),
                 // `indeterminate` has no content attribute to be absent, so
                 // "remove it" is simply "off".
-                "indeterminate" => sync_reflected_property(n, name, "false"),
+                "indeterminate" => sync_reflected_property(n, matched, "false"),
                 _ => {}
             }
         }
@@ -1890,6 +1934,37 @@ impl DomDocument for WebDocument {
             && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>()
         {
             el.focus().ok();
+        }
+    }
+
+    /// `HTMLInputElement`/`HTMLTextAreaElement.setSelectionRange(start, end,
+    /// direction)` directly (issue #552) — `start`/`end` are already UTF-16
+    /// code units on this backend, a JS string's own unit, so no conversion
+    /// is needed the way desktop's `EditableState` (byte offsets) requires.
+    /// The browser itself implements "set now, or honour it the first time
+    /// this control is focused" for an unfocused target, so there is nothing
+    /// here to stash.
+    fn set_selection_range(
+        &mut self,
+        node_id: NodeId,
+        start: usize,
+        end: usize,
+        direction: rinch_core::dom::SelectionDirection,
+    ) {
+        let Some(n) = self.nodes.get(&node_id.0) else {
+            return;
+        };
+        let start = start as u32;
+        let end = end as u32;
+        let direction = match direction {
+            rinch_core::dom::SelectionDirection::Forward => "forward",
+            rinch_core::dom::SelectionDirection::Backward => "backward",
+            rinch_core::dom::SelectionDirection::None => "none",
+        };
+        if let Some(input) = n.dyn_ref::<web_sys::HtmlInputElement>() {
+            let _ = input.set_selection_range_with_direction(start, end, direction);
+        } else if let Some(textarea) = n.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+            let _ = textarea.set_selection_range_with_direction(start, end, direction);
         }
     }
 

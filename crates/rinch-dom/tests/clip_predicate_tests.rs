@@ -186,6 +186,162 @@ fn the_stacking_context_creators_are_the_css_ones() {
          coordinate space with"
     );
     assert!(sc("position: sticky"));
+
+    assert!(
+        sc("filter: brightness(0.5)"),
+        "#542: a non-identity filter scalar is a stacking-context creator"
+    );
+    assert!(sc("filter: grayscale(1)"));
+    assert!(sc("filter: saturate(2)"));
+    assert!(sc("filter: hue-rotate(90deg)"));
+}
+
+/// A plain `div` — no flex/grid parent — ignores `z-index` at `position:
+/// static` whatever other creator it might look like it is missing. This is
+/// the sibling check to the `z-index: 5` row above: #542 adds a
+/// *conditional* static-position creator, and this pins that the condition
+/// (being a flex/grid item) is actually load-bearing, not a no-op that would
+/// make every static `z-index` count.
+#[test]
+fn a_static_non_item_box_still_ignores_z_index() {
+    assert!(!sc("z-index: 5"));
+    assert!(!sc("z-index: -1"));
+    assert!(!sc("z-index: 0"));
+}
+
+/// #542's filter arm is an approximation, not the CSS rule, and this is the
+/// fixed point the issue itself names: `filter: brightness(1)` is a genuine
+/// non-`none` filter (Chrome still makes it a stacking context) that happens
+/// to be numerically identical to "no filter" in how `ComputedStyle` stores
+/// it — four scalars defaulting to their function's identity value, with no
+/// separate "was a filter declared" bit. So this answers `false` here, which
+/// is the documented, accepted gap (`Node::has_non_identity_filter`'s doc),
+/// not something a `#542` fix is expected to close.
+#[test]
+fn filter_brightness_one_is_indistinguishable_from_no_filter() {
+    assert!(!sc("filter: brightness(1)"));
+    assert!(
+        !sc(""),
+        "and that is exactly the same answer as no filter at all"
+    );
+}
+
+/// `blur()` is the other named gap: only the four scalar functions survive
+/// `from_stylo`, so a filter that is *only* `blur()` leaves every scalar at
+/// its identity and this predicate cannot see it declared at all.
+#[test]
+fn a_blur_only_filter_is_not_detected() {
+    assert!(!sc("filter: blur(4px)"));
+}
+
+/// A flex or grid **item** at `position: static` with a non-`auto` `z-index`
+/// is a stacking context (css-flexbox-1 §5.4, css-grid-1 §6, #542) — the
+/// second creator the issue named, and the one that needs the item's layout
+/// parent rather than anything on the item's own `ComputedStyle`.
+fn item_sc(container_display: &str, item_style: &str) -> bool {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        &format!("display: {container_display}; width: 200px; height: 100px"),
+    );
+    doc.append_child(body, container);
+    let item = doc.create_element("div");
+    doc.set_attribute(
+        item,
+        "style",
+        &format!("width: 20px; height: 20px; {item_style}"),
+    );
+    doc.append_child(container, item);
+    doc.resolve_layout(800.0, 600.0);
+    doc.tree.get(item.0).unwrap().creates_stacking_context()
+}
+
+/// `z-index: 0` is deliberately avoided for the positive rows (the issue's
+/// own warning): the `(z_index, dom_order)` sort key decides nothing at `0`,
+/// so a fixture there would pass whether or not the item actually became a
+/// stacking context.
+#[test]
+fn a_static_flex_item_with_z_index_is_a_stacking_context() {
+    assert!(item_sc("flex", "z-index: 5"));
+    assert!(item_sc("flex", "z-index: -1"));
+    assert!(item_sc("inline-flex", "z-index: 5"));
+}
+
+#[test]
+fn a_static_grid_item_with_z_index_is_a_stacking_context() {
+    assert!(item_sc("grid", "z-index: 5"));
+    assert!(item_sc("inline-grid", "z-index: 5"));
+}
+
+#[test]
+fn a_static_flex_item_with_z_index_auto_is_not_a_stacking_context() {
+    assert!(!item_sc("flex", ""), "no z-index at all: auto, by default");
+}
+
+/// The condition is genuinely about the item, not about any box inside a flex
+/// container: a non-item descendant (one more level down, an ordinary block
+/// child of the item) must not pick this up just because *its* ancestor chain
+/// passes through a flex container somewhere above.
+#[test]
+fn a_grandchild_of_a_flex_container_is_not_itself_a_flex_item() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; width: 200px; height: 100px",
+    );
+    doc.append_child(body, container);
+    let item = doc.create_element("div");
+    doc.set_attribute(item, "style", "width: 100px; height: 100px");
+    doc.append_child(container, item);
+    let grandchild = doc.create_element("div");
+    doc.set_attribute(grandchild, "style", "width: 20px; height: 20px; z-index: 5");
+    doc.append_child(item, grandchild);
+    doc.resolve_layout(800.0, 600.0);
+
+    assert!(
+        !doc.tree
+            .get(grandchild.0)
+            .unwrap()
+            .creates_stacking_context(),
+        "the grandchild's layout parent is `item`, a plain block, not the \
+         flex container two levels up"
+    );
+}
+
+/// A `display: contents` wrapper between a flex container and its would-be
+/// item does not block the fact (#998's own blockification rule, reused
+/// here): the item's *layout* parent skips straight past the boxless wrapper
+/// to the flex container.
+#[test]
+fn a_flex_item_behind_a_display_contents_wrapper_still_counts() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; width: 200px; height: 100px",
+    );
+    doc.append_child(body, container);
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", "display: contents");
+    doc.append_child(container, wrapper);
+    let item = doc.create_element("div");
+    doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+    doc.append_child(wrapper, item);
+    doc.resolve_layout(800.0, 600.0);
+
+    assert!(
+        doc.tree.get(item.0).unwrap().creates_stacking_context(),
+        "the wrapper generates no box, so the item's layout parent is the \
+         flex container right through it"
+    );
 }
 
 /// The trap dropping the `overflow` arm springs, stated as a test rather than a
@@ -420,14 +576,18 @@ mod painted {
         assert_eq!(pixel_at(&painter, 150, 150), NOTHING);
     }
 
-    /// One axis is enough, and it is the axis the old predicate could not see.
+    /// One axis is enough, and it is the axis the old predicate could not see
+    /// — and, since #535, the *other* axis staying `visible` really does leave
+    /// its overhang unclipped, matching CSS rather than contradicting it.
     ///
-    /// The vertical assertion pins a **known deviation, not the CSS answer**:
     /// `overflow-y` computes to `visible` here (css-overflow-3 pairs `clip`
-    /// with `visible`), so CSS would paint the vertical overhang. rinch clips
-    /// both axes with one rect, which hit testing has always done and paint now
-    /// matches. Per-axis clipping is #535; when it lands, this assertion
-    /// becomes `RED` and the comment goes away.
+    /// with `visible`, measured by `stylo_pairs_a_non_visible_axis_with_auto`
+    /// below), so a correct per-axis clip paints the vertical overhang and
+    /// only the vertical one: (150, 50) is overhanging in x alone and still
+    /// goes, (150, 150) overhangs in x (which alone is enough to cut it,
+    /// whatever y says), and (50, 150) — x inside the container, y
+    /// overhanging — is the one pixel this test exists to flip from `NOTHING`
+    /// to `RED`.
     #[test]
     fn overflow_x_clip_clips_without_the_other_axis_saying_anything() {
         let (mut doc, container, _child) = overhang("overflow-x: clip");
@@ -448,9 +608,164 @@ mod painted {
         );
         assert_eq!(
             pixel_at(&painter, 50, 150),
+            RED,
+            "the y axis says visible, so CSS paints the vertical overhang — \
+             and so must rinch (#535)"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
             NOTHING,
-            "known deviation: rinch clips both axes with one rect, so the \
-             vertical overhang goes too. CSS would paint it."
+            "x alone is enough to cut this corner, whatever y says"
+        );
+    }
+
+    /// [`overflow_x_clip_clips_without_the_other_axis_saying_anything`],
+    /// mirrored: `overflow-y: clip; overflow-x: visible`. Pins that the fix is
+    /// symmetric — the same assertions with x and y swapped — and not an
+    /// `overflow-x` special case: `clip_shape` asks `clips_overflow_x()` and
+    /// `clips_overflow_y()` independently, so a mutant that hard-codes which
+    /// axis is "the clipping one" passes the first test and fails this one.
+    #[test]
+    fn overflow_y_clip_clips_without_the_other_axis_saying_anything() {
+        let (mut doc, container, _child) = overhang("overflow-y: clip");
+        assert_eq!(
+            doc.tree.get(container).unwrap().computed_style.overflow_x,
+            OverflowValue::Visible,
+            "the fixture is only interesting while the x axis stays visible"
+        );
+
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+
+        assert_eq!(pixel_at(&painter, 50, 50), RED);
+        assert_eq!(
+            pixel_at(&painter, 50, 150),
+            NOTHING,
+            "the y axis says clip, so the vertical overhang goes"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 50),
+            RED,
+            "the x axis says visible, so CSS paints the horizontal overhang \
+             (#535)"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            NOTHING,
+            "y alone is enough to cut this corner, whatever x says"
+        );
+    }
+
+    /// Rounded corners on a clip open on one axis draw **no curve at all** —
+    /// measured in Chrome 153, not assumed: an infinite strip bounded on only
+    /// one axis has no actual box corner for a radius to round against, so
+    /// `clip_shape` must hand back square (all-zero) radii even though the
+    /// box's own `border-radius` is large. (The *border* itself still paints
+    /// rounded, unaffected — it is drawn before any clip bracket opens.)
+    ///
+    /// This asks `clip_shape` directly rather than reading a painted pixel:
+    /// the unbounded axis is extended by [`AXIS_UNBOUNDED`]-ish magnitude (see
+    /// `paint::clip`'s module doc), which pushes every corner of the clip
+    /// rect's **geometry** tens of millions of px from the visible box either
+    /// way — so a rounded corner there changes nothing any painter draws on
+    /// screen, and a pixel oracle cannot tell a wrongly-rounded clip from a
+    /// correctly-square one. The `radii` value itself is still observable,
+    /// and is what every consumer that reads it (`paint_node`'s `RoundedRect`
+    /// branch, `stacking::ClipRect`) receives.
+    ///
+    /// The mutant this kills: making `clip_shape` call `padding_box_radii`
+    /// unconditionally (dropping the `clip_x && clip_y` gate) hands back the
+    /// box's real (non-zero) corners here instead of all-zero ones.
+    #[test]
+    fn an_overflow_clip_open_on_one_axis_has_square_radii() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; border-radius: 40px; \
+             overflow-x: clip; overflow-y: visible",
+        );
+        doc.append_child(body, container);
+        doc.resolve_layout(800.0, 600.0);
+
+        let node = doc.tree.get(container.0).unwrap();
+        let (_, radii) =
+            rinch_dom::paint::clip_shape(node, 1.0, 0.0, 0.0).expect("the container clips on x");
+        assert_eq!(
+            (
+                radii.top_left,
+                radii.top_right,
+                radii.bottom_right,
+                radii.bottom_left
+            ),
+            (0.0, 0.0, 0.0, 0.0),
+            "a clip open on one axis has no real corner for a radius to \
+             round against — clip_shape must not hand back the box's own \
+             rounded corners here, even though it is holding a legitimate \
+             40px border-radius"
+        );
+    }
+
+    /// #535 review: `paints_nothing_without_visit` (the dirty-region subtree
+    /// prune a parent asks of a child before entering `paint_node` for it) has
+    /// to require **both** axes clipping before it may skip a subtree
+    /// unvisited — a box open on one axis lets a child paint past it on
+    /// exactly that axis, so the box's own ink missing the dirty region does
+    /// not mean its children's does too.
+    ///
+    /// `container` only clips x; its child overflows vertically into a dirty
+    /// region that misses `container`'s own 100x100 box entirely. A correct
+    /// per-axis gate falls through to ask the child directly, finds it
+    /// intersects, and paints it; a both-axes-together gate stops at
+    /// `container` and never visits the child at all — the subtree is
+    /// skipped, not merely "painted but then clipped away", so the pixel
+    /// stays whatever it already was (here, unpainted).
+    ///
+    /// The mutant this kills: reverting the gate from
+    /// `clips_overflow_x() && clips_overflow_y()` to `clips_overflow()` (OR)
+    /// makes `paints_nothing_without_visit(container)` return `true` on the
+    /// strength of the x clip alone, so the `continue;` in the paint sequence
+    /// loop skips `container` — and therefore its child — unvisited, and
+    /// (50, 200) stays `NOTHING` instead of `RED`.
+    #[test]
+    fn paints_nothing_without_visit_requires_both_axes_to_skip_a_subtree() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; overflow-x: clip; overflow-y: visible",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 40px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Misses `container`'s own box (y: 0..100) but reaches the child's
+        // vertical overhang (y: 0..300) — the same shape
+        // `a_culled_node_paints_its_children_at_the_scrolled_origin` uses for
+        // the analogous `paint_node`-level gate.
+        rinch_dom::paint::set_dirty_region(Some(peniko::kurbo::Rect::new(
+            0.0, 150.0, 300.0, 300.0,
+        )));
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+        rinch_dom::paint::set_dirty_region(None);
+
+        assert_eq!(
+            pixel_at(&painter, 20, 200),
+            RED,
+            "the open y axis must let the child's overhang be visited and \
+             painted even though its clipping ancestor's own box misses the \
+             dirty region"
         );
     }
 
@@ -690,6 +1005,219 @@ mod painted {
         );
         assert_eq!(pixel_at(&painter, 100, 199), RED, "and on the other axis");
         assert_eq!(pixel_at(&painter, 100, 200), NOTHING);
+    }
+
+    /// #536: the clip is the **padding** box (css-overflow-3 §3: "the box's
+    /// content is clipped to the box's padding edge"), not the border box —
+    /// a clipping container with a non-zero `border-width` must not let its
+    /// content paint over its own border.
+    ///
+    /// The exact repro from the issue: a 100x100 container with a 10px solid
+    /// border and `overflow: hidden`, holding a 300x300 red child. The left
+    /// and top border strips would survive even the broken (border-box) clip,
+    /// because the child starts at the content origin and cannot reach
+    /// backward into them — it is the **right and bottom** strips where the
+    /// clip actually decides, and border paints *before* the clip bracket
+    /// opens (`paint_borders` then `push_clip` then children), so a clip that
+    /// reaches the border box lets the child paint directly over the border
+    /// that was already drawn there. The mutant that kills this is reverting
+    /// `clip_shape`'s inset to the plain border box (`#536`'s pre-fix shape):
+    /// run by hand, it paints RED at (95, 60) and (60, 95) instead of BLUE.
+    #[test]
+    fn an_overflow_clip_container_does_not_paint_over_its_own_border() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; border: 10px solid rgb(0, 0, 255); \
+             overflow: hidden",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 300px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+
+        // Left/top border strips: survive even the broken clip, since the
+        // child cannot reach backward past its own content origin.
+        assert_eq!(pixel_at(&painter, 5, 60), BLUE, "left border strip");
+        assert_eq!(pixel_at(&painter, 60, 5), BLUE, "top border strip");
+
+        // Right/bottom border strips: where the clip rect actually decides.
+        assert_eq!(
+            pixel_at(&painter, 95, 60),
+            BLUE,
+            "right border strip must show the border, not the overflowing \
+             red child — the fixed point a border-box clip cannot reach"
+        );
+        assert_eq!(
+            pixel_at(&painter, 60, 95),
+            BLUE,
+            "bottom border strip, same reasoning"
+        );
+
+        // Just inside the padding edge, the child still shows.
+        assert_eq!(
+            pixel_at(&painter, 50, 50),
+            RED,
+            "content area is unaffected"
+        );
+
+        // Outside the border box entirely: nothing painted there at all.
+        assert_eq!(pixel_at(&painter, 105, 60), NOTHING);
+    }
+
+    /// #536 review finding: the fixture above uses a **uniform** border
+    /// (`10px` all sides), which is the textbook fixed point — `left` and
+    /// `right` are equal, so a mutant that swaps which border width
+    /// `padding_box_insets` reads for which side (`left` reads
+    /// `border_right_width`, say) survives it undetected. Four different
+    /// widths (2/4/6/8) make every side's own inset distinguishable from
+    /// every other side's.
+    ///
+    /// Probes sit just inside each real edge, in the band a swapped (wrong)
+    /// inset would wrongly exclude — a left/right (or top/bottom) swap turns
+    /// the correct inset *narrower* on one side and *wider* on the other, so
+    /// one swapped pair shows up as an unexpected `NOTHING` (over-tight) and
+    /// the other as an unexpected `RED` bleeding onto the border strip
+    /// (over-loose) once the clip's edge moves the wrong way.
+    #[test]
+    fn an_overflow_clip_respects_asymmetric_border_widths() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; overflow: hidden; \
+             border-left: 2px solid rgb(0, 0, 255); \
+             border-top: 4px solid rgb(0, 0, 255); \
+             border-right: 6px solid rgb(0, 0, 255); \
+             border-bottom: 8px solid rgb(0, 0, 255);",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 300px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+
+        // Sanity: each border strip, well away from any swap's effect.
+        assert_eq!(pixel_at(&painter, 1, 50), BLUE, "left border (2px)");
+        assert_eq!(pixel_at(&painter, 50, 1), BLUE, "top border (4px)");
+
+        // Just past the real left edge (2px): correct shows the child; a
+        // left<->right swap makes the clip's left edge 6 (border-right's
+        // width) instead of 2, wrongly excluding this band.
+        assert_eq!(
+            pixel_at(&painter, 3, 50),
+            RED,
+            "just inside the real 2px left edge — a left/right swap clips \
+             this away (padding box would wrongly start at x=6)"
+        );
+        // Just past the real top edge (4px): the top/bottom analogue.
+        assert_eq!(
+            pixel_at(&painter, 50, 6),
+            RED,
+            "just inside the real 4px top edge — a top/bottom swap clips \
+             this away (padding box would wrongly start at y=8)"
+        );
+
+        // Inside the real right border strip (94..100, since 100-6=94): a
+        // left/right swap makes the clip's right edge 98 (100 - 2, using
+        // border-left's width), which would let the child bleed over the
+        // border here instead of being clipped at the true 94 edge.
+        assert_eq!(
+            pixel_at(&painter, 96, 50),
+            BLUE,
+            "inside the real 6px right border — a swap would let the \
+             child paint over it up to x=98 instead of being clipped at x=94"
+        );
+        // The top/bottom analogue, inside the real bottom border (92..100).
+        assert_eq!(
+            pixel_at(&painter, 50, 94),
+            BLUE,
+            "inside the real 8px bottom border — a swap would let the \
+             child paint over it up to y=96 instead of being clipped at y=92"
+        );
+
+        assert_eq!(pixel_at(&painter, 50, 50), RED, "content area, sanity");
+    }
+
+    /// #536 review finding: the existing rounded-clip fixture
+    /// (`a_rounded_clip_cuts_its_corners`) has no border, so a mutant that
+    /// returns `padding_box_radii`'s corners **unreduced** (`border_radii`
+    /// passed straight through, the clip rect correctly inset but its
+    /// corners left at the outer radius) survives every pixel oracle in
+    /// this file undetected.
+    ///
+    /// Geometry chosen for margin, not minimalism: a correct inner radius of
+    /// 60 at (90, 90) and a wrong (unreduced) one of 90 at (120, 120) put the
+    /// probe below at roughly 5px inside the correct circle and 7px outside
+    /// the wrong one (both diagonal distances from the probe to each
+    /// circle's edge) — comfortably past tiny-skia's one-pixel antialiasing
+    /// band on either side. A tighter (border 10 / radius 30) version of the
+    /// same shape works out to sub-2px margins, which is why this isn't that.
+    #[test]
+    fn an_overflow_clip_with_rounded_corners_uses_the_reduced_radius() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 300px; height: 300px; border: 30px solid rgb(0, 0, 255); \
+             border-radius: 90px; overflow: hidden",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 300px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(400, 400);
+        paint(&mut doc, &mut painter);
+
+        // Straight-edge sanity, away from any corner.
+        assert_eq!(
+            pixel_at(&painter, 1, 150),
+            BLUE,
+            "left border, straight edge"
+        );
+        assert_eq!(pixel_at(&painter, 150, 150), RED, "content area, sanity");
+
+        // The top-left corner: padding box [30, 270] x [30, 270], outer
+        // radius 90 reduced to 90 - (30+30)/2 = 60. Correct circle centres
+        // at (30+60, 30+60) = (90, 90), r = 60. The unreduced mutant's
+        // circle centres at (30+90, 30+90) = (120, 120), r = 90 (neither
+        // clamped: the padding box's half-side is 120, above both 60 and 90).
+        // (51, 51) is ~55.15px from the correct centre (inside by ~4.85) and
+        // ~97.58px from the mutant's (outside by ~7.58).
+        assert_eq!(
+            pixel_at(&painter, 51, 51),
+            RED,
+            "inside the correctly-reduced (r=60) rounded clip; a mutant \
+             using the unreduced outer radius (r=90) would clip this away"
+        );
     }
 
     /// #408: the culled-node branch paints its children at the **scrolled**
@@ -982,4 +1510,340 @@ fn a_split_inline_never_clips_either() {
         rinch_dom::paint::clip_shape(n, 1.0, 0.0, 0.0).is_none(),
         "and so has no clip shape"
     );
+}
+
+/// #542 review follow-up: `Node::is_flex_or_grid_item` is set at cascade
+/// time, and every fixture above only ever cascades a tree once before
+/// asking it anything. These probe the dynamic cases — a mutant that sets
+/// the field only on a node's *first* cascade (`old_style.is_none()`, never
+/// re-derived on a later restyle) passes every test above, because none of
+/// them restyle a tree that has already been laid out once.
+mod dynamic_flex_item_tracking_542 {
+    use super::*;
+
+    /// An item created under a block parent (static `z-index` does nothing),
+    /// then moved into a flex container with `append_child`. A move to a
+    /// different parent re-cascades the subtree (#914), so the flag must
+    /// follow.
+    #[test]
+    fn moving_a_static_z_index_item_into_a_flex_container_flips_the_flag() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let block_parent = doc.create_element("div");
+        doc.set_attribute(block_parent, "style", "width: 200px; height: 100px");
+        doc.append_child(body, block_parent);
+
+        let flex_parent = doc.create_element("div");
+        doc.set_attribute(
+            flex_parent,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, flex_parent);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(block_parent, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "under a block parent, static z-index does nothing"
+        );
+
+        doc.append_child(flex_parent, item);
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "after moving into a flex container, the item's static z-index \
+             should now create a stacking context"
+        );
+    }
+
+    /// The reverse: an item starts as a flex item (a context, from its static
+    /// `z-index`), then is moved out to a plain block parent. The flag must
+    /// clear.
+    #[test]
+    fn moving_a_static_z_index_item_out_of_a_flex_container_clears_the_flag() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let flex_parent = doc.create_element("div");
+        doc.set_attribute(
+            flex_parent,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, flex_parent);
+
+        let block_parent = doc.create_element("div");
+        doc.set_attribute(block_parent, "style", "width: 200px; height: 100px");
+        doc.append_child(body, block_parent);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(flex_parent, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "flex item with z-index is a context"
+        );
+
+        doc.append_child(block_parent, item);
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "after moving to a block parent, static z-index should do \
+             nothing again"
+        );
+    }
+
+    /// The **container's** own `display` flips from `block` to `flex`
+    /// dynamically, with the item never moving or restyled. `display`
+    /// participates in `child_cascade`'s inherited-change check, so a
+    /// `display` change on the parent re-cascades its children — the item
+    /// should pick up the new fact without itself being touched. This is
+    /// exactly what a "first cascade only" mutant of `is_flex_or_grid_item`
+    /// cannot see.
+    #[test]
+    fn flipping_the_containers_display_from_block_to_flex_updates_children() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 200px; height: 100px");
+        doc.append_child(body, container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(container, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "block parent: no effect"
+        );
+
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "container flipped to flex; the item's static z-index should \
+             now create a stacking context"
+        );
+    }
+
+    /// The reverse direction: flex -> block.
+    #[test]
+    fn flipping_the_containers_display_from_flex_to_block_updates_children() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(container, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "flex parent: z-index applies"
+        );
+
+        doc.set_attribute(container, "style", "width: 200px; height: 100px");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "container flipped to block; static z-index should stop \
+             mattering"
+        );
+    }
+
+    /// A `display: contents` wrapper is inserted *between* an
+    /// already-rendered flex container and its item (the item was a direct
+    /// child; it is now re-parented under the wrapper). The item's layout
+    /// parent should still be the flex container, right through the wrapper.
+    #[test]
+    fn inserting_a_contents_wrapper_between_container_and_item_after_render() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(container, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "direct flex item: context"
+        );
+
+        let wrapper = doc.create_element("div");
+        doc.set_attribute(wrapper, "style", "display: contents");
+        doc.append_child(container, wrapper);
+        doc.append_child(wrapper, item);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "item moved under a display:contents wrapper whose parent is \
+             still the flex container; should still count as a flex item"
+        );
+    }
+
+    /// A `display: contents` wrapper that *was* between a flex container and
+    /// the item is bypassed — the item is re-parented directly under a plain
+    /// block sibling instead. The flag must clear.
+    #[test]
+    fn removing_the_contents_wrapper_after_render_clears_the_flag() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+
+        let wrapper = doc.create_element("div");
+        doc.set_attribute(wrapper, "style", "display: contents");
+        doc.append_child(container, wrapper);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.append_child(wrapper, item);
+
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "item through contents wrapper: context"
+        );
+
+        let plain = doc.create_element("div");
+        doc.set_attribute(plain, "style", "width: 200px; height: 100px");
+        doc.append_child(body, plain);
+        doc.append_child(plain, item);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "item re-parented to a plain block; static z-index should no \
+             longer create a stacking context"
+        );
+    }
+
+    /// Same parent throughout, but `z-index` is added to the item only
+    /// *after* the container already flipped to flex. A "first cascade
+    /// only" mutant updates the item's `is_flex_or_grid_item` on its own
+    /// first cascade (before the flip) and never again, so by the time the
+    /// item gets a `z-index` the flag is still stale — this is the case the
+    /// mutant breaks most directly.
+    #[test]
+    fn item_gains_z_index_after_container_already_flipped_to_flex() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 200px; height: 100px");
+        doc.append_child(body, container);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "style", "width: 20px; height: 20px");
+        doc.append_child(container, item);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            !doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "no z-index yet"
+        );
+
+        doc.set_attribute(item, "style", "width: 20px; height: 20px; z-index: 5");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(item.0).unwrap().creates_stacking_context(),
+            "item now has z-index under an already-flex parent"
+        );
+    }
+
+    /// A `::before` pseudo-element whose *originator* is itself the flex/grid
+    /// container (so the generated box is directly a flex item) becomes a
+    /// stacking context when it carries a static `z-index` — the pseudo
+    /// cascade's own `is_flex_or_grid_item` wiring
+    /// (`style_resolution/pseudo.rs`) was otherwise untested.
+    #[test]
+    fn a_before_pseudo_that_is_itself_a_flex_item_with_z_index_is_a_stacking_context() {
+        // `::before` is a child of its *originator*, so for the generated box
+        // to be a flex item, the originator itself (not some ancestor
+        // further up) must be the flex/grid container.
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "class", "probe-container");
+        doc.set_attribute(
+            container,
+            "style",
+            "display: flex; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+
+        doc.load_css(
+            ".probe-container::before { content: \"x\"; z-index: 7; width: 2px; height: 2px; }",
+        );
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let before_id = doc
+            .tree
+            .get(container.0)
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .find(|&cid| doc.tree.get(cid).is_some_and(|n| n.is_pseudo_element));
+
+        let before_id = before_id.expect("a ::before box should have been generated");
+        assert!(
+            doc.tree.get(before_id).unwrap().creates_stacking_context(),
+            "the ::before's layout parent is `container` itself, which is \
+             flex, so its own static z-index should create a context"
+        );
+    }
 }

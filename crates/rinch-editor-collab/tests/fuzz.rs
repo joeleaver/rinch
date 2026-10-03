@@ -1,7 +1,8 @@
 //! Seeded, deterministic fuzz/property tests for the collab adapter.
 //!
-//! Two invariants are stress-tested over thousands of random edits, spanning both
-//! flat text-blocks and list containers (nested to depth 3 in practice):
+//! Two invariants are stress-tested over thousands of random edits, spanning flat
+//! text-blocks, the containers (lists and quotes, nested to depth 3 in practice) and
+//! tables:
 //!
 //! 1. **`model ≡ project(model)`** — after EVERY local edit, the CRDT must read
 //!    back (`projected_doc`) as *exactly* the editor model that produced it. This is
@@ -10,7 +11,8 @@
 //! 2. **Convergence** — N peers make concurrent random edits and relay their
 //!    incremental deltas (interleaved, FIFO so a change's deps always precede it).
 //!    Once every peer has seen every delta, all peers must project to the *identical*
-//!    document. This is the exact incremental-delta path pimble / `EditorHandle` use.
+//!    document, and one whose block structure the schema allows (`schema_valid`).
+//!    This is the exact incremental-delta path pimble / `EditorHandle` use.
 //!
 //! A trial is **replayable bit-for-bit** from its `(seed, peers, rounds)` triple
 //! (issue #214). Two things have to be pinned for that, not one. The **edit script**
@@ -114,7 +116,7 @@ fn random_text(rng: &mut Rng) -> String {
 /// Apply one random *projectable* edit to `state` — insert / delete / mark / split /
 /// block-type, plus the list container ops (wrap, unwrap, indent, outdent). Returns
 /// `None` (skip) when the random selection makes the op invalid; the fuzz tolerates
-/// skips. Stays inside the projected scope (no task lists, blockquotes or tables), so
+/// skips. Stays inside the projected scope (no task lists), so
 /// `record_local` never hits the A22 `Unsupported` boundary — a failure here is a real
 /// projection bug, not an out-of-scope node. **Inline atoms are in scope** and are
 /// generated deliberately: they are one char of a block's text carrying a reserved
@@ -122,8 +124,19 @@ fn random_text(rng: &mut Rng) -> String {
 /// to carry them, and only random interleaving exercises that at the boundaries.
 /// `images` also lets the inline-atom op insert an `image`; see that arm for why only
 /// the convergence-only trial (`fuzz_with_images_converges`) passes `true`.
+///
+/// An edit that leaves a table that does not tile its grid (a ragged row) is dropped:
+/// the projection refuses one, as it should, and the edits that make one here are not
+/// ones the editor's UI makes. A raw `tr.delete` across rows is one (`deleteSelection`
+/// refuses that selection); `splitBlock` with the caret at a gap inside a cell is the
+/// other, and that one is an editor bug (#1232: it splits the cell).
 fn random_edit(rng: &mut Rng, state: &EditorState, images: bool) -> Option<EditorState> {
-    match rng.below(13) {
+    let next = random_edit_unchecked(rng, state, images)?;
+    tables_tile(&next.doc).then_some(next)
+}
+
+fn random_edit_unchecked(rng: &mut Rng, state: &EditorState, images: bool) -> Option<EditorState> {
+    match rng.below(16) {
         // Insert text (weighted — the common case).
         0..=3 => {
             let p = random_pos(rng, state);
@@ -224,9 +237,9 @@ fn random_edit(rng: &mut Rng, state: &EditorState, images: bool) -> Option<Edito
         // Wrap/unwrap the block in a list, and nest/un-nest list items. These are the
         // container operations — they are what makes the projection recursive, so the
         // fuzz has to produce them or list convergence goes untested. Only the
-        // projectable containers appear here: task lists and blockquotes are still
-        // `Unsupported`, and generating one would (correctly) fail the projection
-        // assertion below rather than find a real bug.
+        // projectable containers appear here (lists, and quotes and tables in their own
+        // arms): task lists are still `Unsupported`, and generating one would
+        // (correctly) fail the projection assertion below rather than find a real bug.
         9 => {
             let p = random_pos(rng, state);
             let mut tr = state.tr();
@@ -234,6 +247,36 @@ fn random_edit(rng: &mut Rng, state: &EditorState, images: bool) -> Option<Edito
             let placed = state.apply(tr);
             let cmd = ["toggleBulletList", "toggleOrderedList"][rng.below(2)];
             placed.run(cmd)
+        }
+        // Wrap the block in a quote. Its way out is the lift in the next arm, which
+        // lifts a block out of whatever wraps it, a quote or a list.
+        12 => {
+            let p = random_pos(rng, state);
+            let mut tr = state.tr();
+            tr.set_selection(Selection::cursor(p));
+            let next = state.apply(tr).run("wrapInBlockquote")?;
+            QUOTES_WRAPPED.fetch_add(1, Ordering::Relaxed);
+            Some(next)
+        }
+        // Tables: insert one, or change the structure of the one the caret is in.
+        // Typing, splitting, wrapping and deleting inside cells come from the other
+        // arms, whose random positions land in cells as anywhere else.
+        13 | 14 => {
+            let p = random_pos(rng, state);
+            let mut tr = state.tr();
+            tr.set_selection(Selection::cursor(p));
+            let placed = state.apply(tr);
+            let cmd = [
+                "insertTable",
+                "addRowAfter",
+                "addColumnBefore",
+                "deleteRow",
+                "deleteColumn",
+                "splitCell",
+            ][rng.below(6)];
+            let next = placed.run(cmd)?;
+            TABLE_EDITS.fetch_add(1, Ordering::Relaxed);
+            Some(next)
         }
         // Indent / outdent a list item (creates and collapses nesting depth).
         10 => {
@@ -286,9 +329,65 @@ fn random_edit(rng: &mut Rng, state: &EditorState, images: bool) -> Option<Edito
     }
 }
 
+/// Whether every table in `node` tiles its grid: each slot covered by exactly one cell.
+fn tables_tile(node: &Node) -> bool {
+    if node.type_name() == "table" {
+        let width = rinch_editor_core::tables::column_count(node);
+        let height = node.child_count();
+        let mut taken = vec![false; width * height];
+        for r in 0..height {
+            let row = node.child(r);
+            let mut c = 0;
+            for k in 0..row.child_count() {
+                while c < width && taken[r * width + c] {
+                    c += 1;
+                }
+                let cell = row.child(k);
+                let cs = cell.attrs().get_int("colspan").unwrap_or(1).max(1) as usize;
+                let rs = cell.attrs().get_int("rowspan").unwrap_or(1).max(1) as usize;
+                if c + cs > width || r + rs > height {
+                    return false;
+                }
+                for rr in r..r + rs {
+                    for cc in c..c + cs {
+                        if std::mem::replace(&mut taken[rr * width + cc], true) {
+                            return false;
+                        }
+                    }
+                }
+                c += cs;
+            }
+        }
+        if width == 0 || taken.iter().any(|t| !t) {
+            return false;
+        }
+    }
+    (0..node.child_count()).all(|i| tables_tile(node.child(i)))
+}
+
 /// The canonical "two docs are the same model" check.
 fn same(a: &Node, b: &Node) -> bool {
     a == b
+}
+
+/// Whether every container's children satisfy its schema content expression: a
+/// converged document must be one a model can hold, not merely the same on every peer.
+/// (Two peers each deleting one of a container's two children used to converge on an
+/// empty list, which none can.)
+///
+/// Block structure only: a textblock's inline content is not checked, because a code
+/// block retyped while a peer formats it still converges on marks and a hard break
+/// inside `<pre>` (#1227).
+fn schema_valid(node: &Node) -> bool {
+    if node.is_text() || node.is_textblock() {
+        return true;
+    }
+    let names: Vec<&str> = (0..node.child_count())
+        .map(|i| node.child(i).type_name())
+        .collect();
+    node.node_type().content_match().matches(&names)
+        && (node.type_name() != "table" || tables_tile(node))
+        && (0..node.child_count()).all(|i| schema_valid(node.child(i)))
 }
 
 /// N peers sharing one CRDT lineage, plus the global delta queue and each peer's
@@ -312,6 +411,13 @@ struct Swarm {
 /// Images inserted by [`random_edit`] across the whole test binary — the positive
 /// control that the image trial generated any.
 static IMAGES_INSERTED: AtomicUsize = AtomicUsize::new(0);
+
+/// Blocks wrapped in a quote by [`random_edit`] — the positive control that the trials
+/// exercise quotes at all.
+static QUOTES_WRAPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// Table commands applied by [`random_edit`] — the positive control for tables.
+static TABLE_EDITS: AtomicUsize = AtomicUsize::new(0);
 
 /// A distinct, deterministic yrs client id for peer `p` of the trial at `seed`.
 ///
@@ -422,6 +528,12 @@ impl Swarm {
                 ),
                 "model ≡ project(model) violated after integrate (seed={seed}, peer={q})"
             );
+            assert!(
+                schema_valid(&next.doc),
+                "a remote integration produced a document the schema does not allow \
+                 (seed={seed}, peer={q}): {}",
+                rinch_editor_core::serialize::node_to_html(&next.doc)
+            );
             self.states[q] = next;
         }
     }
@@ -456,6 +568,10 @@ impl Swarm {
     /// what its own model holds (model ≡ project, post-flush).
     fn assert_converged(&self, seed: u64) {
         let reference = self.sessions[0].projected_doc(&self.schema).unwrap();
+        assert!(
+            schema_valid(&reference),
+            "the converged document is not one the schema allows (seed={seed})"
+        );
         for q in 0..self.peers() {
             let projected = self.sessions[q].projected_doc(&self.schema).unwrap();
             assert!(
@@ -611,6 +727,36 @@ fn fuzz_two_peers_converge() {
     for seed in 1..=24u64 {
         let _ = fuzz_trial(seed, 2, 220);
     }
+}
+
+#[test]
+fn fuzz_wraps_blocks_in_quotes() {
+    // The positive control for the quote arm of `random_edit`, counted over trials of
+    // its own so it does not depend on which other tests share the binary's counter.
+    let before = QUOTES_WRAPPED.load(Ordering::Relaxed);
+    for seed in 800..=807u64 {
+        let _ = fuzz_trial(seed, 3, 300);
+    }
+    let wrapped = QUOTES_WRAPPED.load(Ordering::Relaxed) - before;
+    assert!(
+        wrapped >= 20,
+        "the trials must actually wrap blocks in quotes to test them (wrapped {wrapped})"
+    );
+}
+
+#[test]
+fn fuzz_edits_tables_among_everything_else() {
+    // The positive control for the table arm: tables inserted and restructured while
+    // the other arms type, split, wrap and delete in and around their cells.
+    let before = TABLE_EDITS.load(Ordering::Relaxed);
+    for seed in 900..=907u64 {
+        let _ = fuzz_trial(seed, 3, 300);
+    }
+    let applied = TABLE_EDITS.load(Ordering::Relaxed) - before;
+    assert!(
+        applied >= 20,
+        "the trials must actually edit tables to test them (applied {applied})"
+    );
 }
 
 #[test]

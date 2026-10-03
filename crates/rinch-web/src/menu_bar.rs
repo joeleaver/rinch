@@ -89,6 +89,57 @@ pub(crate) fn wrap(
 /// `match_shortcut_code` answers `false` for a chord nothing is listening to —
 /// an item with no `on_click`, a disabled one, one whose component has since
 /// unmounted — and a keystroke nobody claimed belongs to the page.
+/// Whether the key event's own target types text: a `<textarea>`, an
+/// `<input>` whose type takes text, or anything `contenteditable` — the
+/// rich-text editor's capture `<textarea>` is the first of those, read-only or
+/// not, as it still owns the keys it would type.
+///
+/// The target is `composedPath()[0]`, the element a keystroke is dispatched at
+/// (the focused one), not `document.activeElement`: for a field inside a shadow
+/// root `activeElement` is the shadow **host**, and the chord ate the `/` typed
+/// into a third-party web component's input (review of #1285, measured in
+/// Chrome 153). `activeElement` is the fallback for an event with no path.
+fn key_target_is_text_field(event: &web_sys::KeyboardEvent) -> bool {
+    use wasm_bindgen::JsCast;
+    let target = event
+        .composed_path()
+        .get(0)
+        .dyn_into::<web_sys::Element>()
+        .ok()
+        .or_else(|| {
+            web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.active_element())
+        });
+    let Some(target) = target else {
+        return false;
+    };
+    if let Some(input) = target.dyn_ref::<web_sys::HtmlInputElement>() {
+        return rinch::menu::input_type_takes_text(&input.type_());
+    }
+    if target.tag_name().eq_ignore_ascii_case("textarea") {
+        return true;
+    }
+    target
+        .dyn_ref::<web_sys::HtmlElement>()
+        .is_some_and(|el| el.is_content_editable())
+}
+
+/// The single ASCII letter `key` (a `KeyboardEvent.key`) spells, lowercased —
+/// or `None` for anything else: a non-letter key, a multi-character name
+/// (`"Enter"`, `"ArrowLeft"`), or a non-Latin character (Cyrillic, Thai, …).
+/// Feeds `match_shortcut_code`'s layout-character branch (#1170); `None` is
+/// exactly "this layout types no Latin letter for the pressed key", which is
+/// what falls back to physical-key matching there.
+fn web_typed_letter(key: &str) -> Option<char> {
+    let mut chars = key.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    c.is_ascii_alphabetic().then(|| c.to_ascii_lowercase())
+}
+
 fn install_shortcut_dispatch() {
     if SHORTCUTS_INSTALLED.with(|f| f.replace(true)) {
         return;
@@ -102,18 +153,46 @@ fn install_shortcut_dispatch() {
         |event: web_sys::KeyboardEvent| {
             // `code` is the physical key's W3C name — "KeyK", "Digit0", "F5" — which
             // is exactly what a shortcut string parses into, so no translation.
-            // `key` would be wrong here: it carries the *typed character*, so
-            // Ctrl+Shift+K reports "K" on one layout and something else on another.
+            // It is still the only thing a *digit or punctuation* chord
+            // matches against (unaffected by #1170 below): `key` for those
+            // carries the shifted character, so Ctrl+Shift+K reports "K" on
+            // every layout and tells punctuation nothing about which key was
+            // pressed.
             let code = event.code();
             if code.is_empty() {
                 return;
             }
+            // A chord with no Ctrl/Cmd/Alt is a keystroke a text field types
+            // or edits with, and it is the field's while one has focus
+            // (#1169): matching it would `preventDefault` the very `/` the
+            // user is typing. The desktop shell asks the same question of its
+            // focus arbiter.
+            if rinch::menu::chord_yields_to_text_input(
+                event.ctrl_key(),
+                event.meta_key(),
+                event.alt_key(),
+                &code,
+            ) && key_target_is_text_field(&event)
+            {
+                return;
+            }
+            // `key` *is* what a letter chord matches against (issue #1170):
+            // lowercased, it is the layout's character for the pressed key —
+            // "z" from the key labelled Z wherever the layout put it — so
+            // `rinch::menu::match_shortcut_code` tries it first and falls back
+            // to `code` only when it names no single Latin letter (a digit, a
+            // punctuation mark, or a non-Latin character on a Cyrillic/Thai/…
+            // layout). Shift does not change it: the browser's `key` for a
+            // letter under Ctrl is already unshifted on every tested layout,
+            // and lowercasing covers Caps Lock.
+            let typed_letter = web_typed_letter(&event.key());
             if rinch::menu::match_shortcut_code(
                 event.ctrl_key(),
                 event.meta_key(),
                 event.alt_key(),
                 event.shift_key(),
                 &code,
+                typed_letter,
             ) {
                 event.prevent_default();
                 // The app must not *also* act on a key the menu consumed — the

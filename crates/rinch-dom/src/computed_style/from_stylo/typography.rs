@@ -2,29 +2,58 @@
 
 use crate::computed_style::values::*;
 
+/// The computed `font-family` as a CSS list parley's `parse_css_list` reads
+/// back as the same families (#1223).
+///
+/// Every family *name* is written quoted, so a name with spaces or a comma
+/// stays one name, a name spelled like a generic (`"serif"`) stays a name,
+/// and a name that starts with a quote is not an unterminated string. Bare
+/// are stylo's generics and an unquoted name parley parses as a generic
+/// stylo lacks (`ui-monospace`, `emoji`, `math`, `fangsong`, ...). An empty
+/// name matches no font and would be a parse error that loses every family
+/// after it, so it is left out; so is a name holding both `"` and `'`, which
+/// parley's parser (no escapes) cannot read.
 pub(super) fn font_family_from_stylo(family: &style::values::computed::font::FontFamily) -> String {
-    use style::values::computed::font::{GenericFontFamily, SingleFontFamily};
+    use style::values::computed::font::{
+        FontFamilyNameSyntax, GenericFontFamily, SingleFontFamily,
+    };
     let mut result = String::new();
-    for (i, f) in family.families.iter().enumerate() {
-        if i > 0 {
+    for f in family.families.iter() {
+        let item = match f {
+            SingleFontFamily::FamilyName(family_name) => {
+                let name: &str = family_name.name.as_ref();
+                if name.is_empty() {
+                    continue;
+                }
+                // A CSS Fonts 4 generic the servo build of stylo does not know
+                // (`ui-monospace`, `emoji`, `math`, `fangsong`, ...) arrives as
+                // an unquoted name; it stays bare so parley reads it as the
+                // generic. Quoted, it is a family name, as CSS says.
+                if family_name.syntax == FontFamilyNameSyntax::Identifiers
+                    && parley::fontique::GenericFamily::parse(name).is_some()
+                {
+                    std::borrow::Cow::Borrowed(name)
+                } else {
+                    match crate::fonts::quote_family(name) {
+                        Some(quoted) => std::borrow::Cow::Owned(quoted),
+                        None => continue,
+                    }
+                }
+            }
+            SingleFontFamily::Generic(generic) => std::borrow::Cow::Borrowed(match *generic {
+                GenericFontFamily::None => "sans-serif",
+                GenericFontFamily::Serif => "serif",
+                GenericFontFamily::SansSerif => "sans-serif",
+                GenericFontFamily::Monospace => "monospace",
+                GenericFontFamily::Cursive => "cursive",
+                GenericFontFamily::Fantasy => "fantasy",
+                GenericFontFamily::SystemUi => "system-ui",
+            }),
+        };
+        if !result.is_empty() {
             result.push_str(", ");
         }
-        match f {
-            SingleFontFamily::FamilyName(name) => {
-                result.push_str(name.name.as_ref());
-            }
-            SingleFontFamily::Generic(generic) => {
-                result.push_str(match *generic {
-                    GenericFontFamily::None => "sans-serif",
-                    GenericFontFamily::Serif => "serif",
-                    GenericFontFamily::SansSerif => "sans-serif",
-                    GenericFontFamily::Monospace => "monospace",
-                    GenericFontFamily::Cursive => "cursive",
-                    GenericFontFamily::Fantasy => "fantasy",
-                    GenericFontFamily::SystemUi => "system-ui",
-                });
-            }
-        }
+        result.push_str(&item);
     }
     result
 }
@@ -55,21 +84,45 @@ pub(super) fn line_height_from_stylo(lh: &style::values::computed::LineHeight) -
     }
 }
 
-pub(super) fn letter_spacing_from_stylo(ls: &style::values::computed::text::LetterSpacing) -> f32 {
-    // LetterSpacing wraps a LengthPercentage. A percentage here is
-    // font-relative (resolved per glyph at used-value time — Chrome keeps
-    // `calc(50% - 10px)` unresolved in the computed value), which the px-only
-    // spacing rinch hands Parley cannot express. Keep the length part of a
-    // mixed calc rather than dropping the whole value.
-    let (px, _pct) = super::calc::split_length_percentage(&ls.0);
-    px
+/// `letter-spacing`'s percentage resolves against the element's own
+/// `font-size` (#743) — measured in Chrome 153: `letter-spacing: 50%` at
+/// `font-size: 20px` adds exactly 10px per affected cluster, and at
+/// `font-size: 40px` exactly 20px, so the basis scales with `font-size` and
+/// not with any glyph's measured advance (the font's own glyphs, including
+/// the space, average well under 1em wide in that same probe, which is what
+/// rules out "the space glyph's advance" as the basis for either property —
+/// see `word_spacing_from_stylo` below). `font_size_px` is the caller's
+/// already-computed `font.font_size.computed_size().px()`, the same value
+/// that lands in `ComputedStyle::font_size`, so the two can never disagree
+/// about which font-size the percentage was resolved against — and a later
+/// `font-size` change re-shapes this text because `same_text_layout_inputs`/
+/// `same_measured_text_inputs` compare `font_size` directly, not just the
+/// resolved spacing.
+pub(super) fn letter_spacing_from_stylo(
+    ls: &style::values::computed::text::LetterSpacing,
+    font_size_px: f32,
+) -> f32 {
+    let (px, pct) = super::calc::split_length_percentage(&ls.0);
+    px + pct * font_size_px
 }
 
-pub(super) fn word_spacing_from_stylo(ws: &style::values::computed::text::WordSpacing) -> f32 {
-    // Same shape as letter_spacing_from_stylo: the percentage part is
-    // font-relative and not representable in px-only spacing.
-    let (px, _pct) = super::calc::split_length_percentage(ws);
-    px
+/// `word-spacing`'s percentage resolves against the element's own
+/// `font-size` too — **not** against the space glyph's advance width, which
+/// is what css-text-4 §10 describes and what the comment this replaces
+/// assumed. Measured in Chrome 153, `20px/40px monospace`, `white-space:
+/// pre`, `a a a` (one character per 12.04375px, i.e. about 0.6 of the
+/// 20px font-size): `word-spacing: 50%` widens the box by 20px over the
+/// unspaced line — 10px per space, exactly 50% of the 20px font-size and
+/// not 50% of the ~12px glyph advance a space-relative basis would give.
+/// Doubling `font-size` to 40px doubles the added width to 40px (20px per
+/// space), confirming the basis scales with `font-size` and not with a
+/// fixed glyph metric. See `letter_spacing_from_stylo` for the shared shape.
+pub(super) fn word_spacing_from_stylo(
+    ws: &style::values::computed::text::WordSpacing,
+    font_size_px: f32,
+) -> f32 {
+    let (px, pct) = super::calc::split_length_percentage(ws);
+    px + pct * font_size_px
 }
 
 pub(super) fn text_align_from_stylo(align: &style::values::computed::TextAlign) -> TextAlignValue {

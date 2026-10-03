@@ -23,8 +23,8 @@
 //!
 //! ## Outbound stalls (issue #220)
 //!
-//! A local edit outside the staged A22 scope — pasting a table, wrapping in a
-//! `blockquote` — is refused by `record_local` with the CRDT untouched. But the *model*
+//! A local edit outside the staged A22 scope — pasting a ragged table, toggling a task
+//! list — is refused by `record_local` with the CRDT untouched. But the *model*
 //! has already applied it, so from that moment the caller's `before` is a false
 //! description of the CRDT.
 //!
@@ -40,18 +40,18 @@
 //! it fails, the change is re-projected against [`CollabDoc::to_doc`] — the CRDT's own
 //! read-back, which by construction describes what is really there. That heals every
 //! accumulated difference in one write, and it makes the failure honest: if the content
-//! really is out of scope the error names it (`Unsupported: blockquote`) instead of a
+//! really is out of scope the error names it (`Unsupported: task_list`) instead of a
 //! block-count symptom.
 //!
 //! Once stalled, the hint is skipped entirely rather than tried first. The fast diff
 //! verifies only the block *count* and then skips every block the transaction did not
-//! touch, so an out-of-scope block that keeps its index — a `blockquote` wrapped around
+//! touch, so an out-of-scope block that keeps its index — a `task_list` toggled on
 //! a paragraph in place — lets a later edit elsewhere pass, answer `Ok`, and clear the
 //! stall while the model and the CRDT still differ. `before` is known to be false from
 //! the moment of the first refusal; there is nothing left to trust in it.
 //!
 //! [`CollabSession::outbound_stall`] reports the state in between, so an app can say
-//! "not syncing — remove the table" rather than leaving the user to wonder. It is
+//! "not syncing — remove the task list" rather than leaving the user to wonder. It is
 //! **not** poison: local-outbound-only, the shared CRDT is healthy throughout, inbound
 //! keeps working, and it clears itself on the next projectable edit.
 //!
@@ -101,6 +101,7 @@ use rinch_editor_core::{EditorState, Node, Pos, Schema};
 use crate::error::{CollabError, Result};
 use crate::projection::CollabDoc;
 use crate::remote::build_remote_transaction;
+use crate::table::OversizedTable;
 
 /// An update that carries nothing, in the lib0 v1 encoding: zero blocks followed by a
 /// zero-length delete set. A peer can legitimately send one (a reconciliation diff for a
@@ -120,6 +121,11 @@ pub struct CollabSession {
     /// [`CollabSession::outbound_stall`] (issue #220). Cleared by the next successful
     /// [`CollabSession::record_local`]; unrelated to `poisoned`.
     stalled: Option<CollabError>,
+    /// Whether the model holds local edits the CRDT does not: a [`Self::record_local`]
+    /// was refused since the model last matched the CRDT. A freeze alone (a table too
+    /// large to read arrived) leaves the model the CRDT's read, so sticky indexes keep
+    /// working through it; an edit refused during it does not.
+    model_ahead: bool,
 }
 
 impl CollabSession {
@@ -130,6 +136,7 @@ impl CollabSession {
             cdoc: CollabDoc::from_doc(&state.doc)?,
             poisoned: None,
             stalled: None,
+            model_ahead: false,
         })
     }
 
@@ -139,7 +146,16 @@ impl CollabSession {
             cdoc: CollabDoc::load(bytes)?,
             poisoned: None,
             stalled: None,
-        })
+            model_ahead: false,
+        }
+        .with_freeze())
+    }
+
+    /// Report the freeze as the outbound stall from the start, when the joined
+    /// document holds a table too large to read.
+    fn with_freeze(mut self) -> CollabSession {
+        self.stalled = self.frozen();
+        self
     }
 
     /// [`CollabSession::new`] with this replica's yrs client id pinned — the
@@ -151,6 +167,7 @@ impl CollabSession {
             cdoc: CollabDoc::from_doc_with_client_id(&state.doc, Some(ClientID::new(client_id)))?,
             poisoned: None,
             stalled: None,
+            model_ahead: false,
         })
     }
 
@@ -162,7 +179,9 @@ impl CollabSession {
             cdoc: CollabDoc::load_with_client_id(bytes, Some(ClientID::new(client_id)))?,
             poisoned: None,
             stalled: None,
-        })
+            model_ahead: false,
+        }
+        .with_freeze())
     }
 
     /// Whether this session is **poisoned** — an integrate left the shared CRDT
@@ -173,6 +192,78 @@ impl CollabSession {
     /// is a fresh session from a healthy peer's snapshot.
     pub fn is_poisoned(&self) -> bool {
         self.poisoned.is_some()
+    }
+
+    /// The tables in the shared document too large to read, as the last model read
+    /// found them: each is shown in the model as a one-cell placeholder, and while any
+    /// exists [`Self::record_local`] refuses every local change with
+    /// [`CollabError::OversizedTable`]. Delete one with
+    /// [`Self::delete_oversized_table`].
+    pub fn oversized_tables(&self) -> Vec<OversizedTable> {
+        self.cdoc.oversized_tables()
+    }
+
+    /// Whether the editor's model is the CRDT's projection, which sticky indexes rely
+    /// on: not while poisoned, stalled by a refused edit, or holding edits refused
+    /// during a freeze. A freeze on its own keeps it.
+    fn model_matches_crdt(&self) -> bool {
+        self.poisoned.is_none()
+            && !self.model_ahead
+            && matches!(self.stalled, None | Some(CollabError::OversizedTable(_)))
+    }
+
+    /// The freeze error, while the shared document holds a table too large to read.
+    fn frozen(&self) -> Option<CollabError> {
+        let tables = self.cdoc.oversized_tables();
+        (!tables.is_empty()).then(|| {
+            CollabError::OversizedTable(
+                tables
+                    .iter()
+                    .map(|t| format!("table {}: {}", t.id, t.detail))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })
+    }
+
+    /// Delete the table too large to read named `id` ([`OversizedTable::id`]) from the
+    /// shared document — the cure for the freeze, since no local edit may touch it.
+    /// The CRDT node is removed without being read, and the model is brought to the
+    /// CRDT's read (as an inbound change is), which removes the placeholder — with the
+    /// container it was alone in, if any; one [`Self::save_incremental`] carries the
+    /// deletion to peers. Returns the new state, or `None` when `id` is not a table
+    /// too large to read **now** ([`Self::oversized_tables`]): a peer deleted it, or
+    /// shrank it back into a real table nobody asked to delete.
+    ///
+    /// No backlog is shipped: an editor refuses every edit while frozen
+    /// (`EditorCore::commit`), so its model never runs ahead of the CRDT. A caller
+    /// driving the session directly that applied edits [`Self::record_local`] refused
+    /// loses them here, as it would on any inbound change. The model change is not
+    /// undoable.
+    pub fn delete_oversized_table(
+        &mut self,
+        state: &EditorState,
+        id: &str,
+    ) -> Result<Option<EditorState>> {
+        self.guard()?;
+        if !self.cdoc.oversized_tables().iter().any(|t| t.id == id) || !self.cdoc.delete_table(id) {
+            return Ok(None);
+        }
+        let base = self.cdoc.to_doc(state.schema())?;
+        let next = match build_remote_transaction(state, &base)? {
+            Some(tr) => state.apply(tr),
+            None => state.clone(),
+        };
+        self.stalled = self.frozen();
+        self.model_ahead = false;
+        Ok(Some(next))
+    }
+
+    /// Whether outbound is frozen: the shared document holds a table too large to
+    /// read ([`Self::oversized_tables`]). An editor refuses every local edit while it
+    /// is (`EditorCore::commit`), as a read-only one does.
+    pub fn is_frozen(&self) -> bool {
+        !self.cdoc.oversized_tables().is_empty()
     }
 
     /// Fail with the sticky poison error if this session is poisoned.
@@ -260,7 +351,7 @@ impl CollabSession {
     /// which by construction describes what is really there — and that heals every
     /// accumulated difference at once, not just the blocks this edit touched. If *that*
     /// also fails the change really is out of scope, and the error names the actual
-    /// offending content (`Unsupported: blockquote`) rather than the block-count symptom
+    /// offending content (`Unsupported: task_list`) rather than the block-count symptom
     /// the old path reported.
     ///
     /// `schema` is a parameter rather than session state because
@@ -273,6 +364,18 @@ impl CollabSession {
     /// [`Self::outbound_stall`].
     pub fn record_local(&mut self, schema: &Schema, before: &Node, after: &Node) -> Result<()> {
         self.guard()?;
+        // Frozen while the shared document holds a table too large to read: the model
+        // shows a placeholder for it, and a diff that touches a placeholder can delete
+        // real content (a value-matched pairing, an export loaded back, …), so no diff
+        // runs at all. An editor never gets here with a real edit: it refuses the edit
+        // itself while frozen (`EditorCore::commit`). A caller driving the session
+        // directly that applies a refused edit anyway has a model ahead of the CRDT,
+        // which the next inbound change or the cure discards.
+        if let Some(frozen) = self.frozen() {
+            self.stalled = Some(frozen.clone());
+            self.model_ahead = true;
+            return Err(frozen);
+        }
         let fallback = match self.stalled.clone() {
             // Already stalled: `before` is a *known*-false description of the CRDT, so
             // the fast diff must not be tried at all. It verifies only the block count
@@ -281,7 +384,7 @@ impl CollabSession {
             // the CRDT. A stalled session whose out-of-scope block keeps its index and
             // is left alone by the next edit therefore passes the fast path, answers
             // `Ok`, and clears this very flag while the model and the CRDT still differ:
-            // `<paragraph>Zone<blockquote>two` against `<paragraph>Zone<paragraph>two`,
+            // `<paragraph>Zone<task_list>two` against `<paragraph>Zone<paragraph>two`,
             // silent, with `outbound_stall()` reporting healthy. Go straight to the
             // authoritative base instead — which is also what makes the "a stalled
             // session pays the read-back per edit" note below true.
@@ -302,9 +405,17 @@ impl CollabSession {
                 return Err(fallback);
             }
         };
+        // The read may have found a table too large to read (one a local edit pushed
+        // past the budget): freeze rather than diff against its placeholder.
+        if let Some(frozen) = self.frozen() {
+            self.stalled = Some(frozen.clone());
+            self.model_ahead = true;
+            return Err(frozen);
+        }
         match self.cdoc.project_change(&base, after) {
             Ok(()) => {
                 self.stalled = None;
+                self.model_ahead = false;
                 Ok(())
             }
             Err(e) => {
@@ -317,7 +428,7 @@ impl CollabSession {
     /// Why this replica's **outbound** is currently refusing, if it is (issue #220).
     ///
     /// `Some` from the moment a local edit cannot be projected — content outside the
-    /// staged A22 scope (a table paste, a `blockquote` wrap) — until a later
+    /// staged A22 scope (a ragged table paste, a task list) — until a later
     /// [`Self::record_local`] succeeds. While it is `Some`, local edits are **not**
     /// reaching peers; inbound integration is unaffected and the shared document is
     /// healthy throughout.
@@ -329,6 +440,13 @@ impl CollabSession {
     /// An app can render this directly — "not syncing: {error}" — which is the whole
     /// point: before, the app saw a block-count mismatch that named neither the cause
     /// nor the cure.
+    ///
+    /// [`CollabError::OversizedTable`] here is the **freeze**: the shared document
+    /// holds a table too large to read, and it is reported from the moment the table
+    /// arrives (or a guest joins), before any local edit. It does not clear on an
+    /// edit — every local edit is refused while it lasts — but on
+    /// [`Self::delete_oversized_table`] or an inbound change that removes or shrinks
+    /// the table.
     pub fn outbound_stall(&self) -> Option<&CollabError> {
         self.stalled.as_ref()
     }
@@ -461,6 +579,20 @@ impl CollabSession {
         // exactly this — a full inbound integration whose rebuild succeeds (the
         // returned state below is what brings the model back in step).
         self.poisoned = None;
+        // The freeze follows the shared document: on while it holds a table too large
+        // to read, off once a peer deleted or shrank the last one. The model is the
+        // CRDT's read after this integration (the transaction below makes it so), so
+        // a lifted freeze leaves nothing to re-base.
+        match self.frozen() {
+            Some(frozen) => self.stalled = Some(frozen),
+            None if matches!(self.stalled, Some(CollabError::OversizedTable(_))) => {
+                self.stalled = None
+            }
+            None => {}
+        }
+        if matches!(self.stalled, None | Some(CollabError::OversizedTable(_))) {
+            self.model_ahead = false;
+        }
         // Past this point a failure is not the unprojectable class: building/applying
         // the model transaction reads only the validated rebuild (and is unreachable
         // in practice for a doc `to_doc` admitted). Defense in depth, not a supported
@@ -490,7 +622,7 @@ impl CollabSession {
     /// [stalled](Self::outbound_stall): then the editor document holds content the CRDT
     /// does not, so its positions cannot be trusted to name the CRDT's blocks.
     pub fn sticky_index(&self, doc: &Node, pos: Pos) -> Option<Vec<u8>> {
-        if self.poisoned.is_some() || self.stalled.is_some() {
+        if !self.model_matches_crdt() {
             return None;
         }
         self.cdoc.sticky_index(doc, pos)
@@ -501,7 +633,7 @@ impl CollabSession {
     /// `None`; also `None` while the session is poisoned or outbound is stalled, as
     /// for [`Self::sticky_index`].
     pub fn resolve_sticky(&self, doc: &Node, bytes: &[u8]) -> Option<Pos> {
-        if self.poisoned.is_some() || self.stalled.is_some() {
+        if !self.model_matches_crdt() {
             return None;
         }
         self.cdoc.resolve_sticky(doc, bytes)

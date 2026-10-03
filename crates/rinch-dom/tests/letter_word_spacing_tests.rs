@@ -57,17 +57,20 @@
 //! is a pin on the local font set, a difference is the declaration. Every
 //! fixture declares `font-size` and `line-height` for the same reason.
 //!
-//! # Percentages are not expressed, and #743 says why that is wrong
+//! # Percentages (#743, fixed)
 //!
-//! `letter-spacing: 50%` / `word-spacing: 50%` compute to `0` here, because
-//! `computed_style::from_stylo::typography` keeps only the length part of a
-//! `LengthPercentage`. **Chrome resolves the percentage against the element's
-//! own font-size** — measured, `50%` at `font-size: 20px` adds 10px per
-//! character — which is a constant the conversion already holds, so the
-//! comment there calling it unrepresentable is wrong about why. That is
-//! issue **#743**, filed from this work and not fixed by it.
-//! `calc_tests::calc_letter_and_word_spacing_keep_px_part` pins the current
-//! behaviour and is the fixture to change with it.
+//! `letter-spacing: 50%` / `word-spacing: 50%` used to compute to `0` here,
+//! because `computed_style::from_stylo::typography` kept only the length
+//! part of a `LengthPercentage`. **Chrome resolves the percentage against
+//! the element's own font-size** — measured, `50%` at `font-size: 20px`
+//! adds 10px per character for either property — which is a constant the
+//! conversion already holds, so the old comment there calling it
+//! unrepresentable was wrong about why. Fixed as issue **#743**; the
+//! percentage arithmetic itself (both properties, `calc()`, and the
+//! font-size-scaling check) is pinned in
+//! `percent_letter_word_spacing_tests.rs`, and
+//! `calc_tests::calc_letter_and_word_spacing_resolve_percentage_against_font_size`
+//! pins the mixed-`calc()` case this file's own `CASES` don't cover.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;

@@ -106,35 +106,49 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 }
 
 /* ── Lists ─────────────────────────────────────────────────────────────── */
-/* `li` is flex so the bullet/number aligns with the first line of its content
-   (rinch-dom renders list markers as block siblings otherwise). `flex-wrap: wrap`
-   plus `flex-basis: 100%` on a *nested* list make the sublist break onto its own
-   full-width line and indent below the item, instead of floating beside it. */
+/* A list item is an ordinary block whose marker hangs outside it, as a browser's
+   `display: list-item` does. rinch-web keeps the browser's own `::marker` (it sets
+   `ul > li, ol > li { display: list-item }`). rinch-dom has no `list-item`: it
+   generates the marker as a `span` holding "•" or "N." and an en space at the
+   start of the `li`, which `li > span:not([data-pm-type])` picks out (an item's
+   own children are blocks, each carrying `data-pm-type`) and takes out of flow,
+   right-aligned against the item's left edge on its first line.
+
+   The item used to be a wrapping flex row of the marker and its blocks. A
+   paragraph there has `flex-basis: auto`, so it was sized at its max-content
+   width (the whole text on one line) and `flex-wrap` moved a long one onto a
+   line of its own, leaving the bullet alone above it (#1246; Chrome does the
+   same with that CSS). As blocks, the text wraps beside the marker, a second
+   paragraph and a nested list start their own lines under the text, and no
+   alignment rule is involved (rinch-dom used to baseline-align a multi-line
+   flex item by its bottom edge, which put a flex marker beside the paragraph's
+   last line; fixed by #1013). */
 [data-pm-editor] ul, [data-pm-editor] ol { padding-left: 1.6em; margin: 0 0 0.75em; }
-[data-pm-editor] li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4em; margin: 0.15em 0; }
+[data-pm-editor] li { position: relative; margin: 0.15em 0; }
+[data-pm-editor] li > span:not([data-pm-type]) { position: absolute; top: 0; right: 100%; white-space: pre; }
 [data-pm-editor] li > ul, [data-pm-editor] li > ol,
-[data-pm-editor] li > [data-pm-type="task_list"] { flex-basis: 100%; margin: 0.15em 0 0; }
+[data-pm-editor] li > [data-pm-type="task_list"] { margin: 0.15em 0 0; }
 
 /* ── Task lists ────────────────────────────────────────────────────────────
    task_list / task_item have no native HTML tag (they render as <div>), so they
    are styled by their `data-pm-type` marker. Each item gets a checkbox `::before`
-   (☑ when its `data-checked` is set by the view); a checked item is dimmed and
-   struck through. Nested task lists wrap onto their own indented line, like ul/ol. */
+   (☑ when its `data-checked` is set by the view), hung in the item's left padding
+   the way a list marker hangs (#1246: as a flex item beside the paragraph it put a
+   long paragraph on a line of its own); a checked item is dimmed and struck
+   through. A nested task list starts its own line under the item's text. */
 [data-pm-editor] [data-pm-type="task_list"] { margin: 0 0 0.75em; padding-left: 0.1em; }
-[data-pm-editor] [data-pm-type="task_item"] {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5em; margin: 0.15em 0;
-}
+[data-pm-editor] [data-pm-type="task_item"] { position: relative; padding-left: 1.5em; margin: 0.15em 0; }
 [data-pm-editor] [data-pm-type="task_item"]::before {
-  content: "\2610"; flex: 0 0 auto; color: #57606a; line-height: 1.4;
+  content: "\2610"; position: absolute; top: 0; left: 0; color: #57606a;
 }
 [data-pm-editor] [data-pm-type="task_item"][data-checked="true"]::before { content: "\2611"; color: #1a7f37; }
 /* Dim + strike the item's *own* content only — never a nested sub-list (whose items
    carry their own checked state); `> *` would grey/strike unchecked sub-tasks. */
 [data-pm-editor] [data-pm-type="task_item"][data-checked="true"] > :not([data-pm-type="task_list"]) { color: #8c959f; text-decoration: line-through; }
 [data-pm-editor] [data-pm-type="task_item"] > * { margin-bottom: 0; }
-[data-pm-editor] [data-pm-type="task_item"] > [data-pm-type="task_list"],
+[data-pm-editor] [data-pm-type="task_item"] > [data-pm-type="task_list"] { margin: 0.15em 0 0; padding-left: 0; }
 [data-pm-editor] [data-pm-type="task_item"] > ul,
-[data-pm-editor] [data-pm-type="task_item"] > ol { flex-basis: 100%; margin: 0.15em 0 0; padding-left: 1.4em; }
+[data-pm-editor] [data-pm-type="task_item"] > ol { margin: 0.15em 0 0; padding-left: 1.4em; }
 
 /* ── Horizontal rule ───────────────────────────────────────────────────── */
 [data-pm-editor] hr { border: none; border-top: 2px solid #e1e4e8; margin: 1.2em 0; height: 0; }

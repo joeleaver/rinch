@@ -110,17 +110,19 @@ handle off the document (or off `state.schema()`, which is the same instance).
 The same pointer identity is why comparing `Node`s across two editor handles fails even
 for structurally identical documents — compare their serialized HTML instead.
 
-**This reaches `EditorHandle` too.** `create_editor` mints a new `Rc<Schema>` per handle,
-and `load_doc` installs the `Node` you give it as-is, so `b.load_doc(a.doc())` hands `b` a
-document built by `a`'s schema. `b` then reports `is_mark_active("bold") == false` over
-text that is bold, and its formatting commands return `false` rather than editing it —
-before the guard above they returned `true` and left the run carrying *two* `bold` marks,
-one per schema. Move a document between handles through a serialization instead:
-
-```rust
-b.load_html(&to_html(&a.doc()));        // or
-b.load_doc(b_schema.node_from_doc(&a.doc().to_doc())?);
-```
+**This used to reach `EditorHandle` too, and no longer does (#440).** `create_editor`
+mints a new `Rc<Schema>` per handle, so `b.load_doc(a.doc())` hands `b` a document built
+by `a`'s schema — but `load_doc` (and therefore `load_html`, and the collaboration guest
+join) now re-homes the incoming document onto the receiving schema first
+(`Node::rebind`), matching every node and mark type by *name* against `b`'s own interned
+handles before installing it. `b.is_mark_active("bold")` then answers `true` over the
+adopted bold text, and `toggleBold` removes the mark rather than returning `false` (the
+pre-#440 guard's refusal) or — on an unfixed build older than #217's guard — duplicating
+it. `b.load_doc(a.doc())` is the documented way to move a document between handles; no
+manual serialization round-trip is needed for it any more. `Node::rebind` costs one
+pointer comparison per node/mark when the document is already on the target schema (the
+guest-join case: `projected_doc` already builds through the guest's own schema), and a
+rebuild only for a genuinely foreign type.
 
 ### Serialization
 
@@ -152,6 +154,19 @@ plus one per cell that found it full. That limit is rinch's, not Chrome's (Chrom
 out a row of 3001 columns); without it a row's width grew with every rowspan above it,
 and a 57 KB paste made a 1,000,000-column table.
 
+A loaded document keeps no `colspan` past 1000 either (#1214, Chrome's limit):
+`tables::cap_colspans` cuts every larger one to `tables::MAX_COLSPAN`, and
+`Schema::node_from_doc`, `EditorHandle::new` and `EditorHandle::load_doc` call it, as
+the HTML import (`load_html`, paste, `Editor`'s `content:`) already reads `colspan`.
+One `colspan = 3,000,000` cell made a two-row table 2^21 columns wide, and
+`addRowAfter` built a cell per column: 2,097,152 cells, 15.6 s and 5 GB through a
+mounted view, 3.8 ms after the cap. Edits are not capped — an app's own transaction,
+a peer's change (and the shared document a collaboration guest adopts on joining), or
+a command (`addColumnAfter` across a 1000-wide cell makes it 1001) — so `node_from_doc` is not a lossless inverse of `to_doc` for a cell that went
+past 1000 that way. `rowspan` is not capped: a grid is never taller than its rows. The
+row-width limit above is the HTML import's alone: a loaded row of 2,100
+`colspan = 1000` cells is still 2,100,000 columns wide.
+
 Whatever route a table takes into the model — paste, `load_doc`, an app's own
 transaction, the table commands — the grid `TableMap` builds over it is bounded:
 `tables::column_count` caps `width × rows` at `tables::grid_slot_budget`, twice the
@@ -167,7 +182,8 @@ is a hole, and the table commands treat it as no cell (#1184): `deleteRow` and
 hole at that column a new cell at its end, a row added by `addRowBefore`/`addRowAfter`
 gets a cell in a hole's column, and `mergeCells` grows the top-left cell over the holes
 in its rectangle. Every span a command writes is the cell's extent in the grid ± 1,
-never the attribute's own value ± 1: a `colspan` of `i64::MAX` in a two-row table,
+never the attribute's own value ± 1: a `colspan` of `i64::MAX` in a two-row table
+(which an app's own transaction can still write; a load caps it at 1000),
 which the grid cuts to 2^21 columns, is 2^21 + 1 after `addColumnAfter` across it.
 
 The view lays a table out as that same grid (#1182): `<table>` is a CSS grid of
@@ -180,17 +196,20 @@ leaves short into the row before it, where the map has it below. A cell the map 
 no slot for is laid out as a band across the whole grid (`grid-column: 1 / -1`) on a
 row of its own (the first the grid leaves empty, normally after its last),
 so its text stays visible and adds no column.
-Written raw, a few cells of huge spans stacked past the 32767 grid lines Taffy numbers
-a grid with, and desktop layout panicked. Two limits remain, both from the desktop's
+Written raw, a few cells of huge spans stacked past the 32767 grid lines Taffy 0.12
+numbered a grid with, and desktop layout panicked; Taffy 0.14 (#1236) clamps a grid
+axis at 10000 tracks instead and overlaps whatever lands past them. Two limits remain, both from the desktop's
 Stylo clamping a grid line, a template and every span to 10000: a table wider than
 that is drawn 10000 columns wide; and an axis past 9999 tracks, whose lines would be
 clamped onto one, is placed by `span <n>` and auto-placement instead. A table past
 9999 rows keeps its column lines, so a cell is still placed below the one before it
-in its column. A table past 9999 columns loses its row lines too, because cells
-locked to their row with auto-placed columns can grow the grid past the 32767 lines
-Taffy numbers it with (a row of four `colspan = 20000` cells panicked); there a short
-row's cells are still lifted into the row before it, on the web as well as the
-desktop.
+in its column. On the desktop such a table still meets Taffy's own clamp:
+a table of more than 10000 rows overlaps its rows from the 10000th on (they lay out
+in the last grid track), where Taffy 0.12 laid out up to 32767 lines correctly. A table past 9999 columns loses its row lines too, because cells
+locked to their row with auto-placed columns can grow the grid past what Taffy
+numbers (on Taffy 0.12 a row of four `colspan = 20000` cells panicked; 0.14 clamps
+the axis at 10000 tracks); there a short row's cells are still lifted into the row
+before it, on the web as well as the desktop.
 
 ## The transform engine
 

@@ -202,6 +202,12 @@ fn one_caret_blink_repaints_the_caret() {
 /// Taffy style change that ran a second whole-document root compute. The
 /// second resolve itself cannot go: the caret's position is read off the
 /// text layout the first one produced.
+///
+/// **`repainted_px` 18112, was 18678; `clip_mask_px` 20520, was 21090.** The
+/// caret overlay is drawn on the glyphs now, not one border width right of and
+/// below them (`content_origin_inset` on desktop), so the damage rect, the
+/// union of the reshaped text and the caret's old and new rects, lost the
+/// row and column the caret used to stick out by.
 #[test]
 fn typing_one_character() {
     let mut page = page();
@@ -228,14 +234,14 @@ fn typing_one_character() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 18678),
+            (RepaintedPx, 18112),
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 3),
             (GlyphCacheHits, 19),
             (GlyphCacheMisses, 1),
             (ClipMasks, 2),
-            (ClipMaskPx, 21090),
+            (ClipMaskPx, 20520),
         ],
     );
 }
@@ -332,8 +338,14 @@ fn enter_splits_a_paragraph() {
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 3),
             (GlyphCacheHits, 286),
+            // #536: the editor's bordered scroll container clips to its
+            // padding box now, a border-width's worth smaller on every side
+            // than the border box the push used to mask — fewer pixels for
+            // the same one push, not an extra one (contrast the `.field`
+            // moves in `perf_regression_tests.rs`, where the clip went from
+            // elided to pushed).
             (ClipMasks, 1),
-            (ClipMaskPx, 303408),
+            (ClipMaskPx, 301702),
         ],
     );
 }
@@ -385,8 +397,9 @@ fn backspace_joins_two_paragraphs() {
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 3),
             (GlyphCacheHits, 324),
+            // #536, see `enter_splits_a_paragraph` above.
             (ClipMasks, 1),
-            (ClipMaskPx, 303408),
+            (ClipMaskPx, 301702),
         ],
     );
 }

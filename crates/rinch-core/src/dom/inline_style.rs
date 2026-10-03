@@ -58,10 +58,26 @@ use super::NodeHandle;
 /// `/* … */` comments are removed first — from a property name as readily as a
 /// value, and each leaves a **space**, since a comment ends the token before it.
 /// Two places CSS does not see one, so neither does this: inside a string, and
-/// inside an unquoted `url(…)`. One where it sees one and keeps it, which rinch
-/// does not: the interior of a **custom property** value (Refs #713, a
-/// serialisation difference over an identical token stream). See
-/// [`strip_comments`].
+/// inside an unquoted `url(…)`. See [`strip_comments`].
+///
+/// **A custom property's value is the one place a comment is not simply
+/// removed (#713).** CSSOM stores a custom property's value as the raw token
+/// text, trimmed of leading/trailing whitespace — comments included — but
+/// with an *interior* comment kept verbatim, because nothing retokenizes a
+/// `var()` substitution value for serialisation the way an ordinary property's
+/// value is reconstructed from its parsed tokens. Measured in Chrome 150:
+/// `--x: 1px /* c */ 2px` reads back as `"1px /* c */ 2px"` (the comment
+/// survives, byte for byte) while `--x: /* c */red` reads back as `"red"` (a
+/// *leading* comment is trimmed like whitespace, and so is a trailing one, by
+/// the same rule). An ordinary property gets no such treatment — `color: red
+/// /* c */ blue` still loses its comment to a single space, same as any other
+/// declaration — only a name starting with `--` does. [`mask_comments`] is
+/// what makes the leading/trailing trim exact: it stands in for
+/// [`strip_comments`] but keeps every comment's **length**, so a custom
+/// property's value can be located by trimming the masked (comment-as-spaces)
+/// text and slicing the *same byte range* out of the untouched original —
+/// trimming removes a leading or trailing comment (it reads as whitespace)
+/// while leaving an interior one exactly as the author wrote it.
 ///
 /// **Property names are compared ASCII case-insensitively** and come out
 /// lowercased, because that is what CSS does with them — `COLOR` and `color`
@@ -129,10 +145,89 @@ use super::NodeHandle;
 ///
 /// Values are kept verbatim, `!important` included, so a round trip through
 /// [`serialize_declarations`] preserves what the author wrote.
+///
+/// **This collapse is syntactic, not post-validity (#722).** It decides which
+/// of two same-named declarations keeps the slot from the text alone — it has
+/// no Stylo and no cascade, so it cannot tell a valid declaration from one
+/// that will be rejected. A browser's CSSOM collapse runs *after* validity: an
+/// invalid declaration (`color: notacolor`, or a value broken by a doubled
+/// `!important`) is dropped while parsing and never competes for the slot at
+/// all. Where both candidates are valid the two answers agree (nothing to
+/// reject, so the position/priority rule this function applies is exactly
+/// Chrome's), which is every case this function's own tests measure. Where
+/// one candidate is invalid they can diverge: `color: notacolor !important;
+/// color: blue` collapses to the (important, syntactically-first-wins-the-tie)
+/// invalid declaration here, and Stylo then rejects it outright, leaving the
+/// property at its initial value — black — where Chrome computes blue.
+///
+/// Closing that gap needs a parser that knows validity, which lives only in
+/// Stylo (or a browser's CSSOM) — not in this crate. [`split_declarations_keeping_duplicates`]
+/// is the other half: it skips this collapse entirely, so a caller that can
+/// feed its *result* to that validity-aware parser (rinch-dom's
+/// `merged_inline_style`, which hands the re-joined string to Stylo) lets the
+/// cascade pick the winner the way a browser would, duplicates and all. A
+/// caller with no such parser downstream — `StyleProp`'s composition
+/// bookkeeping, `MockDomDocument`, the read-only scanners in #705 — has no way
+/// to ask the question either, so this collapsed form is what they keep using.
+/// `StyleProp::apply` writes the collapsed form straight to the attribute, so
+/// a duplicate it carries is decided here, before Stylo sees it (#1355).
 pub fn split_declarations(css: &str) -> Vec<(String, String)> {
-    let css = strip_comments(css);
     let mut out: Vec<(String, String)> = Vec::new();
-    for part in split_top_level(&css) {
+    for (name, value) in split_declarations_keeping_duplicates(css) {
+        if let Some(at) = out.iter().position(|(k, _)| *k == name) {
+            let (_, displaced) = out.remove(at);
+            // The slot moves to the last declaration's position either way;
+            // only the *value* is decided by priority. `is_important` is not
+            // comment-aware (nothing here needs it to be, ordinarily — see
+            // its own doc), so a custom property's possibly-commented raw
+            // value is checked through `strip_comments`, which already knows
+            // how to look past one (including the `url(...)` exemption); a
+            // comment-free value — every non-custom one — passes through
+            // that call unchanged (its fast path borrows, no-op).
+            let mut value = value;
+            if is_important(&strip_comments(&displaced)) && !is_important(&strip_comments(&value)) {
+                value = displaced;
+            }
+            out.push((name, value));
+        } else {
+            out.push((name, value));
+        }
+    }
+    out
+}
+
+/// [`split_declarations`] with its duplicate-property collapse switched off:
+/// every declaration comes back, verbatim, in the order it was written,
+/// including a repeated property name.
+///
+/// This is the half of **#722** `rinch-core` *can* give a caller: it cannot
+/// decide which of two same-named declarations is valid (that needs Stylo or
+/// a browser's CSSOM, neither of which this crate depends on), so instead of
+/// guessing it hands every candidate back and lets whatever parses the
+/// re-joined string decide. `rinch-dom`'s `merged_inline_style` is the
+/// intended caller: it uses this to read the properties it is *not* touching
+/// this call back out of the existing attribute untouched, duplicates and
+/// all, so a `set_style`/`set_styles` call that leaves `color` alone does not
+/// collapse someone else's ambiguous `color: notacolor !important; color:
+/// blue` before Stylo ever sees it. A property this call *is* writing gets an
+/// unambiguous new value supplied by the caller, so collapsing every existing
+/// occurrence of just that one name to the single new value is correct (no
+/// validity question is left to answer) — that collapse is the merge
+/// function's own job, not this parser's.
+///
+/// Same tokenizing as `split_declarations` — comments, quotes, `url(…)`
+/// brackets, custom-property verbatim recovery, case folding — only the
+/// per-name collapse at the end is skipped.
+pub fn split_declarations_keeping_duplicates(css: &str) -> Vec<(String, String)> {
+    let stripped = strip_comments(css);
+    // Comments the same length as the ones they replace, so a byte offset
+    // found in `masked` names the identical byte in `css` — see the
+    // `mask_comments` doc. Only consulted for a custom property's value.
+    let masked = mask_comments(css);
+    let masked_base = masked.as_ptr() as usize;
+    let masked_parts = split_top_level(&masked);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (part, masked_part) in split_top_level(&stripped).into_iter().zip(masked_parts) {
         let part = part.trim();
         if part.is_empty() {
             continue;
@@ -146,14 +241,24 @@ pub fn split_declarations(css: &str) -> Vec<(String, String)> {
             continue;
         }
         let name = normalize_property_name(name);
-        if let Some(at) = out.iter().position(|(k, _)| k.as_str() == &*name) {
-            let (_, displaced) = out.remove(at);
-            // The slot moves to the last declaration's position either way;
-            // only the *value* is decided by priority.
-            if is_important(&displaced) && !is_important(&value) {
-                value = displaced;
-            }
+
+        // Custom property: recover the verbatim value (comments and all)
+        // from the length-preserving masked copy, trimmed the same way —
+        // trimming eats a leading or trailing comment (it reads as
+        // whitespace in the masked text) while leaving an interior one
+        // exactly where the byte offsets say it is in `css`.
+        if name.starts_with("--")
+            && let Some(mc) = top_level_colon(masked_part)
+        {
+            let masked_value = masked_part[mc + 1..].trim();
+            value = if masked_value.is_empty() {
+                String::new()
+            } else {
+                let start = masked_value.as_ptr() as usize - masked_base;
+                css[start..start + masked_value.len()].to_string()
+            };
         }
+
         out.push((name.into_owned(), value));
     }
     out
@@ -259,14 +364,81 @@ pub fn serialize_declarations(decls: &[(String, String)]) -> String {
 /// Every index cut here lands on an ASCII byte, so a multi-byte value —
 /// `content: "→"` — is never split mid-character.
 fn strip_comments(css: &str) -> Cow<'_, str> {
-    if !css.contains("/*") {
+    let ranges = comment_ranges(css);
+    if ranges.is_empty() {
         return Cow::Borrowed(css);
     }
-    let bytes = css.as_bytes();
     let mut out = String::with_capacity(css.len());
+    let mut keep_from = 0usize;
+    for (start, end) in ranges {
+        out.push_str(&css[keep_from..start]);
+        // A **space**, not nothing. A comment is consumed by the tokenizer
+        // and produces no token, but it still ends the token before it —
+        // deleting it textually glues two tokens into one. Measured in Chrome
+        // 150: `font-family: Foo/*c*/Bar` is the two-ident family
+        // `"Foo Bar"`, `letter-spacing: 1/*c*/px` is invalid (not `1px`), and
+        // `col/**/or: red` is not a `color` declaration at all. Deleting gave
+        // rinch `FooBar`, `1px` and `color` — three different answers from
+        // one missing byte.
+        out.push(' ');
+        keep_from = end;
+    }
+    out.push_str(&css[keep_from..]);
+    Cow::Owned(out)
+}
+
+/// Stand in for every `/* … */` comment with ASCII spaces **of the same
+/// length**, rather than removing it — so `mask_comments(css)` is always
+/// exactly as long as `css`, and a byte offset found in the result names the
+/// identical byte in `css` itself.
+///
+/// This is what [`split_declarations`] uses to recover a custom property's
+/// *verbatim* value (#713): trimming the masked text finds the right
+/// boundaries (a comment reads as whitespace, so a leading or trailing one
+/// trims away with it) while the byte range those boundaries describe can be
+/// sliced straight out of the untouched original, comments and all. It is
+/// deliberately not used for an ordinary property's value — there, a comment
+/// is a space (one, not its own length), which is [`strip_comments`]'s job
+/// and must stay that way or `a_removed_comment_still_separates_the_tokens_
+/// it_sat_between` fails.
+///
+/// Same quote- and `url(…)`-awareness as `strip_comments` (shared via
+/// [`comment_ranges`]), and the common case (no comment) borrows.
+fn mask_comments(css: &str) -> Cow<'_, str> {
+    let ranges = comment_ranges(css);
+    if ranges.is_empty() {
+        return Cow::Borrowed(css);
+    }
+    let mut out = String::with_capacity(css.len());
+    let mut keep_from = 0usize;
+    for (start, end) in ranges {
+        out.push_str(&css[keep_from..start]);
+        for _ in start..end {
+            out.push(' ');
+        }
+        keep_from = end;
+    }
+    out.push_str(&css[keep_from..]);
+    Cow::Owned(out)
+}
+
+/// The byte ranges `[start, end)` of every top-level `/* … */` comment in
+/// `css` — quote- and unquoted-`url(…)`-aware, same as `strip_comments`'s own
+/// scan (this is that scan, with the ranges collected instead of written to
+/// an output string). `end` is one past the closing `*/`, or `css.len()` for
+/// an unterminated comment — CSS's own rule, that such a comment runs to the
+/// end of the input.
+///
+/// Every `start`/`end` lands on an ASCII byte (`/`, `*`), so slicing `css` at
+/// one is never a multi-byte split.
+fn comment_ranges(css: &str) -> Vec<(usize, usize)> {
+    if !css.contains("/*") {
+        return Vec::new();
+    }
+    let bytes = css.as_bytes();
+    let mut ranges = Vec::new();
     let mut quote: Option<u8> = None;
     let mut escaped = false;
-    let mut keep_from = 0usize;
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
@@ -292,32 +464,23 @@ fn strip_comments(css: &str) -> Cow<'_, str> {
                 i += 1;
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                out.push_str(&css[keep_from..i]);
-                // A **space**, not nothing. A comment is consumed by the
-                // tokenizer and produces no token, but it still ends the token
-                // before it — deleting it textually glues them into one.
-                // Measured in Chrome 150: `font-family: Foo/*c*/Bar` is the
-                // two-ident family `"Foo Bar"`, `letter-spacing: 1/*c*/px` is
-                // invalid (not `1px`), and `col/**/or: red` is not a `color`
-                // declaration at all. Deleting gave rinch `FooBar`, `1px` and
-                // `color` — three different answers from one missing byte.
-                out.push(' ');
+                let start = i;
                 let mut j = i + 2;
                 while j + 1 < bytes.len() && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
                     j += 1;
                 }
-                i = if j + 1 < bytes.len() {
+                let end = if j + 1 < bytes.len() {
                     j + 2
                 } else {
                     bytes.len()
                 };
-                keep_from = i;
+                ranges.push((start, end));
+                i = end;
             }
             _ => i += 1,
         }
     }
-    out.push_str(&css[keep_from..]);
-    Cow::Owned(out)
+    ranges
 }
 
 /// If an **unquoted** `url(` token starts at `i`, the index just past its
@@ -768,40 +931,71 @@ mod tests {
         assert_eq!(value(&decls, "letter-spacing"), Some("1 px"));
     }
 
-    /// A custom property is where rinch and CSSOM still part company over a
-    /// comment, and the divergence is now **serialisation only**.
+    /// A custom property's value keeps an *interior* comment verbatim, where
+    /// an ordinary property's does not (#713, fixed).
     ///
-    /// Measured in Chrome 150: a custom property's value keeps an *interior*
-    /// comment verbatim (`--x: 1px /* c */ 2px` reads back as
-    /// `"1px /* c */ 2px"`) while a *leading* one is trimmed
-    /// (`--x: /* c */red` → `"red"`). rinch strips both, so it agrees on the
-    /// leading case and writes `1px  2px` for the interior one.
+    /// Measured in Chrome 150: `--x: 1px /* c */ 2px` reads back as
+    /// `"1px /* c */ 2px"` — the comment survives byte for byte — while a
+    /// *leading* one is trimmed like whitespace (`--x: /* c */red` →
+    /// `"red"`), and so, by the same rule, is a *trailing* one
+    /// (`--x: red /* c */` → `"red"`). An ordinary property gets none of
+    /// this: `color: red /* c */ blue` still loses its comment to a single
+    /// space (`a_removed_comment_still_separates_the_tokens_it_sat_between`
+    /// pins that half, unchanged by this fix).
     ///
-    /// Pinned at rinch's value rather than the browser's, deliberately: with
-    /// the comment replaced by a space the two token streams are identical —
-    /// `<dimension 1px> <dimension 2px>` either way — so nothing a `var()`
-    /// substitution can see differs, and matching Chrome exactly needs a
-    /// declaration-aware comment pass (it would have to know the property name
-    /// before it strips, and then keep interior comments while trimming
-    /// leading and trailing ones). Refs #713.
-    ///
-    /// The *unterminated* case needs no carve-out at all: Chrome drops the
-    /// `color: red` too, because an unterminated comment runs to the end of
-    /// the string there as well.
+    /// The *unterminated* case needs no carve-out: an unterminated comment
+    /// runs to the end of the input either way (CSS's own rule, and Chrome's),
+    /// so a custom property's value still ends at the comment's start and the
+    /// declaration after it is still gone.
     #[test]
-    fn a_comment_in_a_custom_property_value_is_a_named_serialisation_deviation() {
+    fn a_comment_in_a_custom_property_value_is_kept_verbatim_when_interior() {
         let decls = split_declarations("--x: 1px /* c */ 2px; color: red");
-        assert_eq!(value(&decls, "--x"), Some("1px   2px"));
+        assert_eq!(value(&decls, "--x"), Some("1px /* c */ 2px"));
         assert_eq!(value(&decls, "color"), Some("red"));
 
-        // The leading case, where rinch and Chrome agree.
+        // Leading: trimmed like whitespace.
         let decls = split_declarations("--x: /* c */red");
         assert_eq!(value(&decls, "--x"), Some("red"));
 
-        // And the unterminated one, where they agree that it eats the rest.
+        // Trailing: trimmed the same way (not measured in the issue, but the
+        // same CSSOM rule — a trailing comment is whitespace too).
+        let decls = split_declarations("--x: red /* c */");
+        assert_eq!(value(&decls, "--x"), Some("red"));
+
+        // Both ends at once, with the interior one still kept.
+        let decls = split_declarations("--x: /* lead */ 1px /* mid */ 2px /* trail */");
+        assert_eq!(value(&decls, "--x"), Some("1px /* mid */ 2px"));
+
+        // Unterminated: still eats the rest of the input, same as before.
         let decls = split_declarations("--x: a /* b; color: red");
         assert_eq!(names(&decls), ["--x"]);
         assert_eq!(value(&decls, "--x"), Some("a"));
+
+        // An ordinary property is untouched by any of this.
+        let decls = split_declarations("color: red /* c */ blue");
+        assert_eq!(value(&decls, "color"), Some("red   blue"));
+    }
+
+    /// A `/*` that CSS does not see as a comment at all — inside a string, or
+    /// inside an unquoted `url(…)` — is kept literally in a custom property's
+    /// value too, same as it already is for an ordinary one. Neither is a
+    /// *comment* to preserve or trim; both are just text the value contains.
+    #[test]
+    fn a_custom_propertys_url_and_string_exemptions_match_an_ordinary_propertys() {
+        let decls = split_declarations(r#"--x: "a /* not a comment */ b""#);
+        assert_eq!(value(&decls, "--x"), Some(r#""a /* not a comment */ b""#));
+
+        let decls = split_declarations("--bg: url(http://a/*b*/c.png)");
+        assert_eq!(value(&decls, "--bg"), Some("url(http://a/*b*/c.png)"));
+    }
+
+    /// `!important` on a custom property is still detected across a dedup
+    /// collision, even though the stored value may carry a raw (unstripped)
+    /// comment the naive `is_important` Scanner was never meant to see.
+    #[test]
+    fn important_on_a_custom_property_survives_a_comment_and_a_collision() {
+        let decls = split_declarations("--x: 1px /* c */ !important; --x: 2px");
+        assert_eq!(value(&decls, "--x"), Some("1px /* c */ !important"));
     }
 
     /// A `\` escapes the byte after it outside a string as well as inside, so
@@ -854,6 +1048,32 @@ mod tests {
     fn a_part_with_no_colon_is_dropped() {
         let decls = split_declarations("color: red; nonsense; : 4px; gap: 4px");
         assert_eq!(names(&decls), ["color", "gap"]);
+    }
+
+    /// The other half of #722: `split_declarations_keeping_duplicates` is the
+    /// one case where this module deliberately does NOT collapse — every
+    /// declaration comes back, in order, duplicates and all, so a caller that
+    /// can hand the re-joined string to something validity-aware (Stylo, a
+    /// browser's CSSOM) gets to let *that* decide instead of this parser
+    /// guessing. Kills the mutant that has this function call
+    /// `split_declarations` instead of doing its own un-collapsed walk.
+    #[test]
+    fn keeping_duplicates_returns_every_declaration_uncollapsed() {
+        let decls = split_declarations_keeping_duplicates("a: 1; color: red; b: 2; COLOR: blue");
+        assert_eq!(names(&decls), ["a", "color", "b", "color"]);
+        assert_eq!(decls[1].1, "red");
+        assert_eq!(decls[3].1, "blue");
+    }
+
+    /// Case folding, comment stripping and the custom-property verbatim
+    /// recovery are shared with `split_declarations` — only the final
+    /// per-name collapse is skipped. If this regressed to a plain textual
+    /// split, a custom property's commented value would come back wrong.
+    #[test]
+    fn keeping_duplicates_still_normalises_names_and_keeps_custom_values_verbatim() {
+        let decls = split_declarations_keeping_duplicates("--x: 1px /* c */ 2px; COLOR: red");
+        assert_eq!(names(&decls), ["--x", "color"]);
+        assert_eq!(decls[0].1, "1px /* c */ 2px");
     }
 
     // ── StyleProp ───────────────────────────────────────────────────────────

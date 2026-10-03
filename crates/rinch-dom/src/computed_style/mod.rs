@@ -24,6 +24,9 @@ pub struct ComputedStyle {
     /// table part to a flex or block container and cannot say.
     pub table_part: TablePart,
     pub position: PositionValue,
+    /// `vertical-align` (#724): non-inherited, not carried to an anonymous
+    /// box (see [`ComputedStyle::for_anonymous_box`]).
+    pub vertical_align: VerticalAlignValue,
     pub overflow_x: OverflowValue,
     pub overflow_y: OverflowValue,
     /// How the overlay scrollbar of a scroll container is drawn. Both come
@@ -177,6 +180,10 @@ pub struct ComputedStyle {
     // Typography
     pub font_size: f32,
     pub font_weight: f32,
+    /// The family list as a CSS list string, every name quoted and the
+    /// generics bare — stylo's, and the unquoted CSS Fonts 4 ones parley knows
+    /// (`ui-monospace`, `emoji`, ...) — so parley's `parse_css_list` reads it
+    /// back whole (#1223).
     pub font_family: String,
     pub font_style: FontStyleValue,
     pub line_height: LineHeightValue,
@@ -244,6 +251,7 @@ impl Default for ComputedStyle {
             display: DisplayValue::default(),
             table_part: TablePart::None,
             position: PositionValue::default(),
+            vertical_align: VerticalAlignValue::default(),
             overflow_x: OverflowValue::default(),
             overflow_y: OverflowValue::default(),
             scrollbar_color: ScrollbarColorValue::default(),
@@ -471,6 +479,34 @@ impl ComputedStyle {
             LineHeightValue::Relative(r) => self.font_size * r,
             LineHeightValue::Absolute(px) => px,
         }
+    }
+
+    /// Whether `filter` is detectably non-`none`, within what this struct
+    /// stores (#542; the real computation behind
+    /// [`crate::node::Node::has_non_identity_filter`], which this cascade is
+    /// the **only** caller of — see that method's doc for the two accepted
+    /// gaps, `filter: brightness(1)` and a `blur()`-only filter, neither of
+    /// which this can see). `true` when any of the four scalars
+    /// (`filter_brightness`/`filter_grayscale`/`filter_saturate`/
+    /// `filter_hue_rotate`) differs from that filter function's identity
+    /// value.
+    ///
+    /// Cascade-time only (#729 perf review): four `f32` compares per call
+    /// is cheap in isolation, but `Node::creates_stacking_context` is on the
+    /// hit-test and paint hot paths — walked once per node per pointer move
+    /// and per frame — so paying it again on every walk measured as a real
+    /// regression (CI Perf: `shell::pointer_move_warm.warm_x50` +11.95%,
+    /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
+    /// +3.56%). Call this once, at the point a node's `ComputedStyle` is
+    /// finalized (`style_resolution/mod.rs`'s `apply_stylo_styles_to_taffy`,
+    /// and the pseudo-element cascade in `style_resolution/pseudo.rs`), and
+    /// cache the answer in `Node::filter_creates_stacking_context`; nothing
+    /// else should call this per-frame.
+    pub fn has_non_identity_filter(&self) -> bool {
+        self.filter_brightness != 1.0
+            || self.filter_grayscale != 0.0
+            || self.filter_saturate != 1.0
+            || self.filter_hue_rotate != 0.0
     }
 }
 

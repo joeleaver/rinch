@@ -121,7 +121,7 @@ pub(crate) fn note_unsupported_size(prop: &'static str, value: &str) -> bool {
     eprintln!(
         "[rinch] `{prop}: {value}` is not implemented; it lays out as `auto`, which \
          matches a browser only where `auto` already gives the same used size \
-         (issue #626). Reported once per property and value per process."
+         (issues #626, #1275). Reported once per property and value per process."
     );
     true
 }
@@ -130,17 +130,22 @@ pub(crate) fn note_unsupported_size(prop: &'static str, value: &str) -> bool {
 /// [`flex_basis_from_stylo`].
 ///
 /// The four intrinsic keywords survive as [`DimensionValue::Intrinsic`] rather
-/// than collapsing into `Auto`. That does **not** make them lay out — they
-/// still reach Taffy as `auto` (see that variant) — it makes the declaration
-/// visible to a reader of the computed style, and it is what lets the
-/// diagnostic above fire exactly once instead of on every style resolution.
+/// than collapsing into `Auto`. On `width`/`height`/`flex-basis` they lay out
+/// (#691); on `min-width`/`min-height` they still reach Taffy as `auto` (see
+/// that variant, #1275), and the diagnostic above fires for those once
+/// instead of on every style resolution.
 pub(super) fn size_from_stylo(
     prop: &'static str,
     size: &style::values::computed::Size,
 ) -> DimensionValue {
     use style::values::computed::Size;
+    // `width`/`height`/`flex-basis` lay the keywords out (#691); `min-*`
+    // cannot — Taffy's `min_size` has no keyword (#1275) — so only that
+    // property is reported.
     let keyword = |k: IntrinsicSize| {
-        note_unsupported_size(prop, k.css_name());
+        if prop.starts_with("min-") {
+            note_unsupported_size(prop, k.css_name());
+        }
         DimensionValue::Intrinsic(k)
     };
     match size {

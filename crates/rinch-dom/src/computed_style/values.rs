@@ -222,11 +222,11 @@ impl PositionValue {
 
 /// A CSS **intrinsic sizing keyword** (css-sizing-3 §5, css-sizing-4 §4).
 ///
-/// None of these lays out yet — see [`DimensionValue::Intrinsic`] for what
-/// happens to one and why. The keyword is carried this far rather than folded
-/// into `Auto` at style conversion so that a consumer can tell a declared
-/// `max-content` from an undeclared size (#626): `Auto` now means the author
-/// wrote `auto` (or nothing), which is what every reader of it already assumed.
+/// They lay out on `width`, `height` and `flex-basis` (#691) and not on
+/// `min-*`/`max-*` (#1275) — see [`DimensionValue::Intrinsic`]. The keyword is
+/// carried this far rather than folded into `Auto` at style conversion so that
+/// a consumer can tell a declared `max-content` from an undeclared size
+/// (#626): `Auto` means the author wrote `auto` (or nothing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum IntrinsicSize {
     /// `max-content` — the box's preferred size, laid out with no wrapping.
@@ -243,6 +243,16 @@ pub enum IntrinsicSize {
 }
 
 impl IntrinsicSize {
+    /// The Taffy keyword for `width`/`height`/`flex-basis` (#691).
+    pub fn to_taffy(self) -> taffy::Dimension {
+        match self {
+            Self::MaxContent => taffy::Dimension::max_content(),
+            Self::MinContent => taffy::Dimension::min_content(),
+            Self::FitContent => taffy::Dimension::fit_content(),
+            Self::Stretch => taffy::Dimension::stretch(),
+        }
+    }
+
     /// The keyword as an author would write it, for diagnostics.
     pub fn css_name(self) -> &'static str {
         match self {
@@ -269,27 +279,26 @@ pub enum DimensionValue {
         px: f32,
         pct: f32,
     },
-    /// An intrinsic sizing keyword, which **does not lay out yet** (#626): it
-    /// reaches Taffy as `auto`, so the used size is whatever `auto` would give.
+    /// An intrinsic sizing keyword.
     ///
-    /// Taffy 0.12 cannot be handed one. `taffy::Dimension` is a newtype over
-    /// `CompactLength`, and while that type does carry `MIN_CONTENT_TAG` /
-    /// `MAX_CONTENT_TAG` / `FIT_CONTENT_*_TAG`, only the **grid track sizing**
-    /// functions ever read them: `Dimension`'s own resolver
-    /// (`MaybeResolve for Dimension`, taffy-0.12.2 `src/util/resolve.rs:57`)
-    /// matches `AUTO`/`LENGTH`/`PERCENT`/calc and ends `_ => unreachable!()`,
-    /// and `Dimension` exposes no safe constructor for the intrinsic tags at
-    /// all. So a `size`/`min_size`/`max_size` carrying one **panics** in
-    /// layout rather than shrink-wrapping — pinned by
-    /// `tests/intrinsic_sizing_tests.rs`, which is what fails if a future
-    /// Taffy bump makes this representable.
+    /// **On `width`, `height` and `flex-basis` it lays out** (#691):
+    /// [`DimensionValue::to_taffy`] hands Taffy 0.14 the keyword itself, which
+    /// lays it out on any box it computes as a child. Two kinds of box are not
+    /// that, and rinch resolves the keyword itself for them:
     ///
-    /// Implementing them therefore needs a rinch-side measurement pass, not a
-    /// mapping. In the meantime the declaration is at least *inspectable* —
-    /// the MCP's `GetComputedStyles` serializes this enum, so it now reports
-    /// `{"Intrinsic": "MaxContent"}` where it used to say `"Auto"` — and
-    /// `from_stylo` prints one line per property and keyword per process, so
-    /// the substitution is no longer silent.
+    /// - an **atomic inline** is computed as a Taffy *root*, and a root
+    ///   ignores its own size keyword — `ifc.rs::resolve_root_width_keyword`
+    ///   measures the width keywords there (not `height: stretch`, #1277);
+    /// - an out-of-flow box whose containing block is the **viewport** would
+    ///   take `stretch` from its Taffy parent — `out_of_flow.rs` bakes it from
+    ///   the viewport.
+    ///
+    /// **On `min-*`/`max-*` it still lays out as `auto`** (#1275): Taffy 0.14
+    /// stores those as `LengthPercentageAuto`, which has no keyword, so
+    /// [`DimensionValue::to_taffy_lpa`] answers `auto`. The declaration is at
+    /// least inspectable — the MCP's `GetComputedStyles` serializes this enum
+    /// (`{"Intrinsic": "MaxContent"}`) — and `from_stylo` prints one line per
+    /// such property and keyword per process.
     ///
     /// All four keywords reach this variant, `-webkit-fill-available` folding
     /// into `Stretch`. `fit-content(<length-percentage>)` does not — it is
@@ -308,45 +317,65 @@ pub enum DimensionValue {
 impl DimensionValue {
     /// Convert to Taffy Dimension.
     ///
-    /// A `Calc` cannot be represented in a Taffy value — Taffy 0.12's calc
-    /// pointer (`CompactLength::calc`) only works for callers implementing the
+    /// A `Calc` cannot be represented in a Taffy value — Taffy's calc pointer
+    /// (`CompactLength::calc`) only works for callers implementing the
     /// layout-tree traits themselves; `TaffyTree`'s `resolve_calc_value` is
-    /// hardcoded to `0.0` (taffy-0.12.2, `src/tree/taffy_tree.rs:391`). So the
+    /// hardcoded to `0.0` (taffy-0.14.0, `src/tree/taffy_tree.rs:387`). So the
     /// length part goes in as a *seed* and `resolve_layout_calcs`
     /// (`calc_layout.rs`) overwrites it with the resolved length before a
     /// layout result is read — on the converged path; a run that hits the
     /// fixpoint's iteration cap reads the last iterate (see `calc_layout.rs`).
-    /// An [`Intrinsic`](Self::Intrinsic) keyword has no Taffy representation
-    /// either, and unlike a `Calc` no later pass repairs it: it goes in as
-    /// `auto` and stays `auto` (#626). See that variant for why Taffy 0.12
-    /// cannot be handed one.
+    /// An [`Intrinsic`](Self::Intrinsic) keyword goes in as Taffy's own
+    /// keyword (#691; [`IntrinsicSize::to_taffy`]).
     pub fn to_taffy(&self) -> taffy::Dimension {
         match self {
             Self::Auto => taffy::Dimension::auto(),
             Self::Length(v) => taffy::Dimension::length(*v),
             Self::Percent(v) => taffy::Dimension::percent(*v),
             Self::Calc { px, .. } => taffy::Dimension::length(px.max(0.0)),
-            Self::Intrinsic(_) => taffy::Dimension::auto(),
+            Self::Intrinsic(k) => k.to_taffy(),
+        }
+    }
+
+    /// Convert to the `LengthPercentageAuto` Taffy 0.14 stores `min_size` and
+    /// `max_size` as. Same mapping as [`Self::to_taffy`]; an
+    /// [`Intrinsic`](Self::Intrinsic) keyword goes in as `auto`, since Taffy's
+    /// min/max sizes have no keyword representation at all (#1275).
+    pub fn to_taffy_lpa(&self) -> taffy::LengthPercentageAuto {
+        match self {
+            Self::Auto => taffy::LengthPercentageAuto::auto(),
+            Self::Length(v) => taffy::LengthPercentageAuto::length(*v),
+            Self::Percent(v) => taffy::LengthPercentageAuto::percent(*v),
+            Self::Calc { px, .. } => taffy::LengthPercentageAuto::length(px.max(0.0)),
+            Self::Intrinsic(_) => taffy::LengthPercentageAuto::auto(),
         }
     }
 
     /// Whether the author wrote `auto` (or nothing).
     ///
-    /// This is the **specified** value. It answers `false` for an intrinsic
-    /// keyword even though one currently lays out as `auto` — ask
-    /// [`Self::lays_out_as_auto`] when the question is about the used size.
+    /// This is the **specified** value: it answers `false` for an intrinsic
+    /// keyword, which lays out as itself (#691) — ask
+    /// [`Self::is_auto_or_keyword`] for "no declared length".
     pub fn is_auto(&self) -> bool {
         matches!(self, Self::Auto)
     }
 
-    /// Whether this value reaches Taffy as `auto`.
+    /// Whether the author declared no size here: `auto`, or a sizing keyword.
     ///
-    /// True for `auto` itself and for every intrinsic keyword, because none of
-    /// them lays out yet (#626). Every call site is a place that will need
-    /// revisiting when they do, which is why it is spelled separately from
-    /// [`Self::is_auto`] rather than folded into it.
-    pub fn lays_out_as_auto(&self) -> bool {
+    /// Either way the used size is derived — from the content or from the
+    /// containing block — rather than read off the declaration, which is the
+    /// question the IFC wrap tolerance and the `<select>` intrinsic floor ask.
+    /// It is **not** "lays out like `auto`": since #691 the keywords lay out as
+    /// themselves on `width`/`height`/`flex-basis`.
+    pub fn is_auto_or_keyword(&self) -> bool {
         matches!(self, Self::Auto | Self::Intrinsic(_))
+    }
+
+    /// Whether a box with this size fills the space between two paired insets
+    /// of a positioned box: `auto` and `stretch` do, a content keyword
+    /// (`max-content`, `min-content`, `fit-content`) keeps its measured size.
+    pub fn fills_between_insets(&self) -> bool {
+        matches!(self, Self::Auto | Self::Intrinsic(IntrinsicSize::Stretch))
     }
 
     /// The intrinsic sizing keyword the author wrote, if any.
@@ -797,6 +826,35 @@ impl TextAlignValue {
     }
 }
 
+/// CSS `vertical-align` property (#724). Non-inherited; the initial value is
+/// `baseline`.
+///
+/// Only [`Baseline`](Self::Baseline), [`Sub`](Self::Sub), [`Super`](Self::Super)
+/// and [`LengthPercentage`](Self::LengthPercentage) have a layout consumer
+/// today — see `ifc::vertical_align_shift_px` and its module doc.
+/// `Top`/`TextTop`/`Middle`/`Bottom`/`TextBottom` parse and round-trip through
+/// `get_computed_styles` so an author's declaration is reported faithfully,
+/// but lay out identically to `Baseline` (no shift): those five only have a
+/// defined effect against an atomic inline (an `inline-block`/image) or a
+/// table cell, which is out of scope here — filed as #1357.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum VerticalAlignValue {
+    #[default]
+    Baseline,
+    Sub,
+    Super,
+    Top,
+    TextTop,
+    Middle,
+    Bottom,
+    TextBottom,
+    /// `<length>` or `<percentage>`. A percentage resolves against the
+    /// element's own `line-height` (CSS 2.1 §10.8.1, measured in Chrome 153);
+    /// a length is absolute. Positive raises the box, matching
+    /// [`LengthPercentageValue::resolve`]'s sign.
+    LengthPercentage(LengthPercentageValue),
+}
+
 /// CSS `text-decoration-style` — how the decoration line is drawn.
 ///
 /// Only [`Solid`](Self::Solid) and [`Wavy`](Self::Wavy) are distinguished when
@@ -921,6 +979,18 @@ pub enum BorderStyleValue {
     Dotted,
     Double,
     Hidden,
+    /// Top/left darkened, bottom/right lightened — a "pressed in" bevel.
+    Inset,
+    /// The reverse of `Inset` — top/left lightened, bottom/right darkened —
+    /// a "pushed out" bevel.
+    Outset,
+    /// Each edge split into two halves along its thickness: the half nearer
+    /// the box's outer edge takes `Inset`'s shading, the half nearer the
+    /// content takes `Outset`'s — a bevel that looks carved into the page.
+    Groove,
+    /// The reverse split of `Groove` — a bevel that looks raised off the
+    /// page.
+    Ridge,
 }
 
 /// CSS visibility property values.

@@ -7,7 +7,22 @@ license.workspace = true
 [dependencies]
 rinch-core = { workspace = true }
 slab = "0.4"
-taffy = "0.12"
+# Taffy's default features minus the five rinch never reads (#1260), which
+# cost instructions in every compute whether read or not:
+# - `content_size`: a scrollable-overflow rect per node in flex, block, grid and
+#   leaf layout, and eight more roundings per node in `round_layout`. rinch
+#   measures scroll ranges itself (`paint::scrollbar::content_extents`).
+# - `calc`: Taffy's calc pointer. rinch never hands Taffy one — a mixed
+#   `calc()` is resolved by `calc_layout.rs` and written in as a plain length
+#   — so it only bought a tag check on every length resolution.
+# - `float_layout`, `flexbox_balance`, `detailed_layout_info`: CSS floats,
+#   `flex-wrap: balance` and the grid's per-track output, none of which rinch
+#   maps into or reads out of Taffy.
+# Measured on `rinch-bench`'s 500-row list: about -4% instructions per
+# structural edit (append, remove, set_text_content). The dev-dependency below
+# must carry the same list, or `cargo test` unifies the defaults back in and
+# the suite runs a different Taffy than the build.
+taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout"] }
 bitflags = "2"
 # Monotonic/wall clock usable on wasm32-unknown-unknown (layout perf timers + CSS
 # transition/animation clocks). Re-exports std::time on native — zero cost off web.
@@ -17,6 +32,12 @@ parley = { workspace = true }
 # The primary font's OS/2 `xAvgCharWidth` and `head` bounds, which size a text
 # control (#1177). The version parley itself depends on, so nothing new is built.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
+# Emoji_Presentation and grapheme clusters, to give an emoji-presentation
+# cluster the `emoji` generic ahead of a generic's text faces (#1204). The
+# versions parley and stylo already build with `compiled_data`, so nothing new
+# is built.
+icu_properties = { version = "2.1", default-features = false, features = ["compiled_data"] }
+icu_segmenter = { version = "2.1", default-features = false, features = ["compiled_data"] }
 vello = { workspace = true }
 peniko = "0.6"
 serde = { version = "1", features = ["derive"] }
@@ -29,13 +50,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 base64 = "0.22"
 
 # CSS engine (Stylo from Firefox/Servo)
-# Note: stylo_taffy 0.2 requires stylo 0.8.x
 stylo = { workspace = true }
 stylo_traits = { workspace = true }
 stylo_dom = { workspace = true }
 stylo_atoms = { workspace = true }
 stylo_config = { workspace = true }
-stylo_taffy = { workspace = true }
 servo_arc = { workspace = true }
 
 # Keep cssparser/selectors for compatibility during migration
@@ -57,5 +76,6 @@ software-renderer = ["tiny-skia", "swash"]
 
 [dev-dependencies]
 # Integration tests name taffy types (the IFC leaf invariant tests, #466,
-# inspect `NodeTree::taffy` directly). Resolves to the same pinned 0.12.
-taffy = "0.12"
+# inspect `NodeTree::taffy` directly). Resolves to the same pinned 0.14, with
+# the same features as the dependency above (see there).
+taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout"] }

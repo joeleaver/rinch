@@ -21,6 +21,10 @@ base64 = "0.22"
 # than a hand-rolled mirror: the mirror is what produced the missing `params`
 # key and the wrong error shape this harness used to send.
 rinch-debug = { workspace = true }
+# The workspace's one inline-style parser (#670): `strip_css_variables` reuses
+# its quote-/bracket-aware split rather than carrying a second, cruder one
+# (#705). A test-harness crate, so the dependency is free.
+rinch-core = { workspace = true }
 
 [[bin]]
 name = "visual-test"

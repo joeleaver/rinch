@@ -173,8 +173,8 @@ fn an_emoji_the_appended_face_lacks_still_reaches_the_emoji_generic() {
 ///   drawn in colour under a missing-only stack and under a stack naming the
 ///   primary face;
 /// - the primary face has its own U+1F600 (DejaVu Sans, a monochrome one): it
-///   is drawn in that face under both stacks — the accepted consequence
-///   (#1204), which every `sans-serif` stack already draws there.
+///   is drawn in that face under both stacks — the accepted consequence: a
+///   named face that covers an emoji draws it (#1204), as in Chrome.
 ///
 /// On a host with no colour emoji face it asserts nothing and says so. The
 /// second branch is also pinned host-independently by

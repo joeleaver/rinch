@@ -85,10 +85,10 @@ pub enum NodeContext {
     },
     /// IFC root that needs Parley TreeBuilder measurement.
     ///
-    /// **The IFC leaf invariant (#466).** Taffy 0.12 consults a measure
-    /// function only on a node with zero children (`taffy_tree.rs:303-327`,
-    /// the `(_, false)` arm of the `match (display_mode, has_children)`
-    /// dispatch). Therefore the Taffy node carrying a live `InlineRoot` must
+    /// **The IFC leaf invariant (#466).** Taffy (0.12 and 0.14 alike) consults a
+    /// measure function only on a node with zero children
+    /// (`taffy_tree.rs:310-326` in 0.14, the `(_, false)` arm of the
+    /// `match (display_mode, has_children)` dispatch). Therefore the Taffy node carrying a live `InlineRoot` must
     /// be childless: the IFC root's own node when inline detachment emptied
     /// it, or its dedicated measure-leaf when out-of-flow children remain
     /// attached. After `setup_inline_formatting_contexts`, no Taffy node with
@@ -123,6 +123,20 @@ pub enum NodeContext {
         content_width: f32,
         /// Content-box height: `rows × line-height` (one row for an `<input>`).
         content_height: f32,
+    },
+    /// A `<canvas>`, `<video>` or `<iframe>` (#1173): a replaced element with
+    /// no content of its own, sized from its natural dimensions —
+    /// `width`/`height` attributes on a canvas, the 300x150 default object
+    /// size otherwise. The measure is [`crate::replaced::measure`]; written
+    /// and kept current by [`crate::replaced::sync_replaced_measure`].
+    Replaced {
+        /// Natural content-box width.
+        width: f32,
+        /// Natural content-box height.
+        height: f32,
+        /// Whether `width / height` is a natural aspect ratio (a canvas
+        /// with both dimensions non-zero; a video or iframe has none).
+        ratio: bool,
     },
 }
 
@@ -534,6 +548,34 @@ pub struct InlineDecorationSpan {
     pub color: peniko::Color,
 }
 
+/// A `vertical-align: sub|super|<length>|<percentage>` span within an IFC
+/// (#724).
+///
+/// Parley 0.11.1's shaping API has no per-run baseline offset, so a non-`baseline`
+/// `vertical-align` is not a Parley style at all — like [`InlineDecorationSpan`]'s
+/// wave, it is recorded here as a byte range over the flat IFC text and applied
+/// by the painter and the text-position queries directly, each glyph shifted by
+/// `shift_px` in *layout* pixels (positive = down, matching rinch's Y-down glyph
+/// convention — see `ifc::vertical_align_shift_px`'s doc for the sign and the
+/// calibration this was measured against).
+///
+/// **Known gap:** this is a pure post-layout shift. It does not grow the line
+/// box the way Chrome's does (a raised `<sup>` can paint into the line above),
+/// because Parley computed the line's own ascent/descent with no idea the glyph
+/// would move — filed as #1357, alongside the five `vertical-align` keywords
+/// this crate does not lay out at all.
+#[derive(Debug, Clone, Copy)]
+pub struct InlineVerticalAlignSpan {
+    /// Byte range start in the IFC `text_content`.
+    pub start: usize,
+    /// Byte range end (exclusive) in the IFC `text_content`.
+    pub end: usize,
+    /// The shift to apply to every glyph in this range, in unscaled layout
+    /// pixels. Positive moves the glyph down (`sub`, a negative `<length>`),
+    /// negative moves it up (`super`, a positive `<length>`/`<percentage>`).
+    pub shift_px: f32,
+}
+
 /// Cached Parley inline layout for an IFC (Inline Formatting Context) root.
 ///
 /// Stored on the IFC root element. Rebuilt when any inline child mutates.
@@ -551,6 +593,8 @@ pub struct InlineLayout {
     /// Wavy-underline spans (`text-decoration-style: wavy`), which Parley cannot
     /// express as a style and the painter draws itself.
     pub decoration_spans: Vec<InlineDecorationSpan>,
+    /// `vertical-align` spans (#724) — see [`InlineVerticalAlignSpan`].
+    pub vertical_align_spans: Vec<InlineVerticalAlignSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
     /// Whether spaces at the end of a line can be content, not collapsed
@@ -565,6 +609,33 @@ pub struct InlineLayout {
 }
 
 impl InlineLayout {
+    /// The `vertical-align` shift (#724) at layout byte `byte`, or `0.0` when
+    /// no span covers it (the common case: no descendant declared a non-
+    /// `baseline` `vertical-align`).
+    ///
+    /// A **linear** scan, deliberately not [`crate::paint::text::TextMask`]'s
+    /// binary search: unlike a background or a wavy underline, two of these
+    /// spans *can* nest byte-for-byte (`<sub><sup>x</sup></sub>`), and
+    /// `ifc::walk_inline_children` pushes a descendant's span before its
+    /// ancestor's (post-order — a `push_inline_spans` call closes a stretch,
+    /// which happens as each element's own walk returns). So the first match
+    /// in **insertion order** is always the innermost one covering `byte`,
+    /// which is what CSS composes toward anyway for a single level, and is
+    /// close enough for two: `vertical-align` is deliberately not chained
+    /// here (true nested composition — an outer `sub` shifting the *shifted*
+    /// baseline an inner `super` already moved — is out of scope, filed
+    /// alongside the five keywords this crate does not lay out). The list
+    /// stays this short in practice (elements with a non-`baseline`
+    /// `vertical-align` are rare), so the scan costs nothing a sort-then-
+    /// search would have saved.
+    pub(crate) fn vertical_align_shift_at(&self, byte: usize) -> f32 {
+        self.vertical_align_spans
+            .iter()
+            .find(|s| s.start <= byte && byte < s.end)
+            .map(|s| s.shift_px)
+            .unwrap_or(0.0)
+    }
+
     /// The width this inline content asks for: what the IFC root's measure
     /// reports to Taffy.
     ///
@@ -725,6 +796,15 @@ pub struct Node {
     /// instead: a direct write of `id` fails loudly in every debug test rather
     /// than silently un-fixing #675. The assert is compiled out in release.
     id_atom: Option<Atom>,
+    /// A `<textarea>`'s dirty value flag, for the one state the `value`
+    /// attribute cannot carry: **dirty with no attribute**, which removing the
+    /// attribute leaves (#1222). While the attribute is present its presence
+    /// is the flag ([`crate::form_control::control_value`]); this records that
+    /// it was removed, so the field shows `""` rather than falling back to its
+    /// text children. rinch-web's removal writes `.value = ""`, which sets the
+    /// browser's flag, and only a form reset clears that — which desktop does
+    /// not model — so nothing clears this either.
+    pub value_dirty: bool,
     /// Dirty flags for incremental updates.
     pub dirty: DirtyFlags,
     /// Scroll offset (x, y).
@@ -1044,6 +1124,31 @@ pub struct Node {
     /// elements carrying this flag (and what inherits from them), instead of
     /// the whole document. See `RinchDocument::restyle_for_viewport_change`.
     pub uses_viewport_units: Cell<bool>,
+    /// Whether this element's **layout parent** (its DOM parent, or the
+    /// nearest ancestor that is not `display: contents` when it is — #998)
+    /// is a flex or grid container, by either outside (`flex`/`inline-flex`,
+    /// `grid`/`inline-grid`).
+    ///
+    /// Set at every cascade of this node from `layout_parent_style` — the same
+    /// style Stylo's adjuster blockifies against — so it stays in step with
+    /// blockification for free: a container's `display` moving to or from
+    /// flex/grid re-cascades its children (`child_cascade` follows an inherited
+    /// *or* `display` change), and a `display: contents` wrapper's own move
+    /// reaches its effective children the same way blockification does.
+    ///
+    /// The one thing [`Node::creates_stacking_context`] cannot answer from
+    /// `self.computed_style` alone (#542): per css-flexbox-1 §5.4 and
+    /// css-grid-1 §6, `z-index` applies to a flex or grid *item* as though it
+    /// were positioned, even at `position: static`, and that needs this fact
+    /// about the parent rather than anything the item's own cascade computes.
+    pub is_flex_or_grid_item: Cell<bool>,
+    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
+    /// cached at the same cascade-time moment as [`Self::is_flex_or_grid_item`]
+    /// (#542, perf review). `creates_stacking_context` reads this field
+    /// instead of recomputing the four scalar compares on every hit-test and
+    /// paint walk; see that method's doc for why it is cached rather than
+    /// computed on the hot path.
+    pub filter_creates_stacking_context: Cell<bool>,
     /// Some descendant of this element needs its style recomputed — the path
     /// Stylo's invalidator marks from an invalidated element down to each
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
@@ -1064,6 +1169,12 @@ pub struct Node {
     /// font property shapes nothing to size the control (#1177). `None` until
     /// the control is first sized.
     pub(crate) form_char_metrics: Cell<Option<(u64, crate::form_control::CharMetrics)>>,
+    /// A `submit`/`reset`/`button` `<input>`'s shaped label width, or a
+    /// date/time-family/`file` `<input>`'s shaped representative-string
+    /// width, with the hash of the label text and font properties it was
+    /// shaped under (#1195, review of #1302) — so a restyle that moves
+    /// neither shapes nothing. `None` until the control is first sized.
+    pub(crate) form_label_width: Cell<Option<(u64, f32)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1120,6 +1231,51 @@ pub(crate) fn display_contents_taffy_style() -> taffy::Style {
     taffy::Style {
         display: taffy::Display::None,
         ..Default::default()
+    }
+}
+
+/// The Taffy-style overrides `<body>` carries over what its computed style
+/// says. The **one** copy: the cascade's sync and both tick re-syncs call it.
+///
+/// `<html>` is a fixed flex column the size of the viewport (its Taffy style
+/// is set once, in [`NodeTree::new`], and never rebuilt from its computed
+/// style) and `<body>` is the only child rinch gives it. So `<body>` grows to
+/// fill the viewport (`flex-grow` is at least 1) and is as wide as it
+/// (`width: 100%`).
+///
+/// **And when nothing about `<body>`'s own height depends on its content, its
+/// flex basis is `0`** (#1260). That is the UA sheet's `overflow-y: auto`
+/// body — a scroll container, so its automatic minimum height is `0` — with
+/// `height` and `flex-basis` both `auto` and `flex-shrink` above zero. A sole
+/// flex item of a definite-height column that can both grow and shrink ends at
+/// the column's height less its margins, clamped by its `min-height` and
+/// `max-height`, whatever its basis — so the basis is not worth measuring, and
+/// measuring it costs a whole `ComputeSize` pass over everything in `<body>`,
+/// every compute in which anything inside it is dirty: for a 500-row flex
+/// list, every row's cache probed a second time per edit. Any other `<body>`
+/// (an author `overflow: visible`, `flex-basis`, `height` or
+/// `flex-shrink: 0`) keeps the basis its style gives it.
+/// `tests/body_flex_basis_tests.rs` pins the box. (A second in-flow child of
+/// `<html>` — reachable only by appending to the raw `NodeTree::html_id` —
+/// would share the column with `<body>` by basis, and there the fold would
+/// change the split.)
+pub(crate) fn body_taffy_overrides(style: &mut taffy::Style) {
+    if style.flex_grow == 0.0 {
+        style.flex_grow = 1.0;
+    }
+    if style.size.width == taffy::Dimension::auto() {
+        style.size.width = taffy::Dimension::percent(1.0);
+    }
+    if style.flex_basis == taffy::Dimension::auto()
+        && style.size.height == taffy::Dimension::auto()
+        // Below 1 a factor scales the free space it distributes (flexbox
+        // §9.7.4c), so the basis would show through: `flex-grow: 0.5` over
+        // short content, or `flex-shrink: 0.5` over tall content.
+        && style.flex_grow >= 1.0
+        && style.flex_shrink >= 1.0
+        && style.overflow.y.is_scroll_container()
+    {
+        style.flex_basis = taffy::Dimension::length(0.0);
     }
 }
 
@@ -1193,6 +1349,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            value_dirty: false,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -1233,10 +1390,13 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
+            form_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1255,6 +1415,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            value_dirty: false,
             dirty: DirtyFlags::STYLE | DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -1295,10 +1456,13 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
+            form_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1316,6 +1480,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            value_dirty: false,
             dirty: DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -1356,10 +1521,13 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
+            form_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1375,6 +1543,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            value_dirty: false,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -1415,10 +1584,13 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            is_flex_or_grid_item: Cell::new(false),
+            filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
+            form_label_width: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1448,7 +1620,13 @@ impl Node {
     /// A stacking context is formed when any of:
     /// - `position` is not `static` AND `z-index` is explicitly set (not `auto`)
     /// - `position` is `fixed` or `sticky`, whatever the `z-index`
+    /// - this node is a flex or grid **item** — its layout parent's `display`
+    ///   is flex/inline-flex/grid/inline-grid ([`Self::is_flex_or_grid_item`])
+    ///   — with `z-index` explicitly set, even at `position: static`
+    ///   (css-flexbox-1 §5.4, css-grid-1 §6; #542)
     /// - `opacity < 1.0`
+    /// - a non-`none` `filter`, as far as `ComputedStyle` can tell
+    ///   ([`Self::has_non_identity_filter`]; CSS Filter Effects §2.1, #542)
     /// - `transform` is non-identity **and applies** — not on a non-atomic
     ///   `display: inline` element, which is not transformable (#1080; see
     ///   [`Self::transform_applies`])
@@ -1457,36 +1635,31 @@ impl Node {
     /// expressibility one.** `clip-path`, `mask`, `isolation`,
     /// `mix-blend-mode`, `contain: paint` and `will-change` are absent from
     /// `ComputedStyle` altogether, so those need new style plumbing per
-    /// property. But two creators are representable **today** and still
-    /// missing, measured rather than assumed:
+    /// property — tracked separately from #542, which closed the two creators
+    /// that needed none: the filter arm above, and the flex/grid item one.
     ///
-    /// - **a non-`none` `filter`** (CSS Filter Effects §2.1). `filter:
-    ///   brightness(0.5)` reaches `ComputedStyle::filter_brightness` and paint
-    ///   consumes it, and this function still answers `false`. (`blur()` is the
-    ///   genuinely unexpressed part — only the four scalars survive
-    ///   `from_stylo`.)
-    /// - **a flex or grid item with a `z-index` other than `auto`**, even at
-    ///   `position: static` (css-flexbox-1 §5.4, css-grid-1 §6). Both the
-    ///   `z_index` and the parent's `display` are already here.
-    ///
-    /// Neither is folded in here, because adding a creator changes which boxes
-    /// hoist — the very axis stage B is re-founding — and landing both at once
-    /// would make a regression impossible to attribute. **Tracked as #542.**
-    /// The six properties `ComputedStyle` does not carry at all (and `blur()`,
-    /// which really is unexpressed) need per-property style plumbing and are a
-    /// separate piece of work again.
+    /// **The filter arm is an approximation, not the CSS rule**, and
+    /// `has_non_identity_filter`'s own doc says why: `ComputedStyle` stores
+    /// four scalars, each defaulting to its filter's identity value, with no
+    /// separate "a filter was declared" bit. `filter: brightness(1)` is a
+    /// genuine non-`none` filter — Chrome still creates a stacking context for
+    /// it — and is indistinguishable here from no filter at all. `blur()` is
+    /// the other gap: only the four scalars survive `from_stylo`, so a
+    /// `blur()`-only filter answers `false` too. Both need the real "is there a
+    /// filter" plumbing #542 explicitly left alone.
     ///
     /// Related, and probably to be fixed together: **#415**, this same function
     /// answering `false` for a `transform` that composes to the identity, where
     /// CSS keys on `not none`. Same class of gap — a creator this predicate can
     /// see and does not count.
     ///
-    /// One honest consequence of stage B: a box declaring **both** a filter and
-    /// a clipping `overflow` used to get a stacking context by accident, via
-    /// the `overflow` arm this function no longer has. Its clipping survives —
-    /// the chain carries that — but its ordering does not, so stage B slightly
-    /// widens #542's exposure rather than leaving it untouched. A filter box
-    /// without an `overflow` was already wrong before.
+    /// One honest consequence of stage B, closed by #542: a box declaring
+    /// **both** a filter (or a static flex/grid item's `z-index`) and a
+    /// clipping `overflow` used to get a stacking context by accident, via the
+    /// `overflow` arm this function no longer has — its clipping survived (the
+    /// chain carries that) but its ordering did not. Both arms above now make
+    /// such a box a stacking context on its own declared creator, so the
+    /// ordering is correct again rather than merely latent.
     ///
     /// **`overflow` is not on the list.** It used to be, so that a hoisted
     /// descendant stayed inside the clip bracket paint opened around one
@@ -1518,7 +1691,18 @@ impl Node {
             // than being hoisted out into a sequence they no longer share a
             // coordinate space with.
             PositionValue::Fixed | PositionValue::Sticky => return true,
-            PositionValue::Static => {}
+            PositionValue::Static => {
+                // css-flexbox-1 §5.4 / css-grid-1 §6: `z-index` applies to a
+                // flex or grid item as though it were positioned, so a
+                // `position: static` item with a non-`auto` `z-index` is a
+                // stacking context too (#542) — `z_index.is_some()` alone
+                // would be wrong here, since most of this repo's static,
+                // non-item boxes never declare one, but a bare `z-index` on a
+                // plain block does nothing in CSS and must not create one.
+                if self.is_flex_or_grid_item.get() && self.computed_style.z_index.is_some() {
+                    return true;
+                }
+            }
             _ => {
                 if self.computed_style.z_index.is_some() {
                     return true;
@@ -1528,10 +1712,48 @@ impl Node {
         if self.computed_style.opacity < 1.0 {
             return true;
         }
+        if self.has_non_identity_filter() {
+            return true;
+        }
         if self.has_applied_transform() {
             return true;
         }
         false
+    }
+
+    /// Whether this node's `filter` is detectably non-`none`, within what
+    /// `ComputedStyle` stores (#542).
+    ///
+    /// `ComputedStyle` carries `filter_brightness` / `filter_grayscale` /
+    /// `filter_saturate` / `filter_hue_rotate` as four scalars, each defaulting
+    /// to its filter function's **identity** value (`1.0`, `0.0`, `1.0`, `0.0`
+    /// respectively) rather than to "no filter was declared". So this answers
+    /// `true` for any declared value of those four functions that is not
+    /// itself the identity, and — unavoidably, given that storage —
+    /// misses two things a real "is `filter` `none`" check would not:
+    /// `filter: brightness(1)` (a genuine non-`none` filter that happens to
+    /// change no pixel, and so is indistinguishable here from the absent
+    /// case) and a `blur()`-only filter (dropped entirely by `from_stylo`,
+    /// which keeps only the four scalars). Both are the honest boundary of
+    /// what is representable today, not something this predicate can close;
+    /// see [`Self::creates_stacking_context`]'s doc.
+    ///
+    /// **A cached read, not a computation** (#542, perf review). The actual
+    /// four-scalar comparison is
+    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
+    /// run once at cascade time (`style_resolution/mod.rs`,
+    /// `style_resolution/pseudo.rs`) into
+    /// [`Self::filter_creates_stacking_context`]; this method just reads
+    /// that field. `creates_stacking_context` is on the hit-test and paint
+    /// hot paths — walked once per node per pointer move and per frame — so
+    /// four `f32` compares there, however cheap in isolation, showed up as a
+    /// real instruction-count regression in CI's Perf job
+    /// (`shell::pointer_move_warm.warm_x50` +11.95%,
+    /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
+    /// +3.56%, measured against this method computing from
+    /// `self.computed_style` directly on every call).
+    pub fn has_non_identity_filter(&self) -> bool {
+        self.filter_creates_stacking_context.get()
     }
 
     /// Whether `transform` **applies** to this node: it is not a non-atomic
@@ -1673,10 +1895,49 @@ impl Node {
     /// down would leave hit testing's `check_children` gate and the dirty-region
     /// prune still believing the span clips.
     pub fn clips_overflow(&self) -> bool {
+        let (x, y) = self.clip_axes();
+        x || y
+    }
+
+    /// The same question as [`Self::clips_overflow`], asked of the
+    /// inline/horizontal axis alone (`overflow-x`) — issue #535.
+    ///
+    /// CSS clips per axis; rinch used to clip per box, pushing one bracket
+    /// covering both axes whenever either one asked for it, which is
+    /// indistinguishable from the per-axis answer for `hidden`/`scroll`/`auto`
+    /// (Stylo never pairs one of those with a `visible` on the other axis —
+    /// see `paint::clip`'s module doc) but wrong for `clip`, the one value the
+    /// spec lets stay asymmetric. [`crate::paint::clip_shape`] is what reads
+    /// this and [`Self::clips_overflow_y`] separately to decide which axis, if
+    /// either, actually bounds the clip shape.
+    ///
+    /// A caller that needs **both** axes (`check_children`'s per-axis gate,
+    /// `flow_extent`, `mark_scrolled`, the dirty-region prune's both-axes
+    /// test) should call [`Self::clip_axes`] once instead of this and
+    /// [`Self::clips_overflow_y`] separately — each of those re-runs the
+    /// shared `display`/`contents` guards below from scratch, and this
+    /// predicate sits on the pointer-move hit-testing hot path, where that
+    /// doubling measured as a +12% regression on `pointer_move_warm` (#535
+    /// Perf CI, Callgrind) before `clip_axes` landed.
+    pub fn clips_overflow_x(&self) -> bool {
+        self.clip_axes().0
+    }
+
+    /// [`Self::clips_overflow_x`], for `overflow-y`. See its doc for why a
+    /// caller that needs both axes should use [`Self::clip_axes`] instead.
+    pub fn clips_overflow_y(&self) -> bool {
+        self.clip_axes().1
+    }
+
+    /// `(`[`Self::clips_overflow_x`]`, `[`Self::clips_overflow_y`]`)`, the
+    /// shared `display`/`display: contents` guards run once instead of twice.
+    /// The hot-path entry point for any caller that needs both axes.
+    #[inline]
+    pub fn clip_axes(&self) -> (bool, bool) {
         use crate::computed_style::OverflowValue;
 
         if self.is_element() && self.display_mode == DisplayMode::Inline {
-            return false;
+            return (false, false);
         }
         // A `display: contents` element generates no box, so there is nothing
         // for `overflow` to clip to (#1038; Chrome 153 clips nothing). Its
@@ -1684,10 +1945,12 @@ impl Node {
         // descendant carried it to — hit testing's `check_children` gate, and
         // the chain of a positioned descendant hoisted past it.
         if self.computed_style.display == crate::computed_style::DisplayValue::Contents {
-            return false;
+            return (false, false);
         }
-        !matches!(self.computed_style.overflow_x, OverflowValue::Visible)
-            || !matches!(self.computed_style.overflow_y, OverflowValue::Visible)
+        (
+            !matches!(self.computed_style.overflow_x, OverflowValue::Visible),
+            !matches!(self.computed_style.overflow_y, OverflowValue::Visible),
+        )
     }
 
     /// Whether this node establishes a containing block for absolutely
@@ -2030,10 +2293,26 @@ pub struct IfcRootMeasures {
     /// looked at it, or `None` if it has not seen it since the entry was
     /// created. See `RinchDocument::refresh_ifc_signatures`.
     pub signature: Option<u64>,
-    /// `(available-width bits, (width, height))`, one per available space the
+    /// `(available-width bits, measure)`, one per available space the
     /// measure function was asked about, newest last, at most
     /// [`IfcRootMeasures::MAX_SIZES`].
-    pub sizes: Vec<(u32, (f32, f32))>,
+    pub sizes: Vec<(u32, IfcMeasure)>,
+}
+
+/// What an IFC root's measure answered under one available width: the content
+/// size Taffy was given and the first line's baseline (#1013), both from the
+/// same Parley build.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IfcMeasure {
+    /// The content-box width (`InlineLayout::measured_width`).
+    pub width: f32,
+    /// The content-box height.
+    pub height: f32,
+    /// The first line's baseline, from the top of the **content** box, or
+    /// `None` when the root laid out no line. The measure closure adds the
+    /// box's top padding and border before handing it to Taffy, which
+    /// measures baselines from the border-box top.
+    pub first_baseline: Option<f32>,
 }
 
 impl IfcRootMeasures {
@@ -2044,8 +2323,8 @@ impl IfcRootMeasures {
     /// as the root lived.
     pub const MAX_SIZES: usize = 8;
 
-    /// The size measured under `bits`, if any.
-    pub fn get(&self, bits: u32) -> Option<(f32, f32)> {
+    /// The measure answered under `bits`, if any.
+    pub fn get(&self, bits: u32) -> Option<IfcMeasure> {
         self.sizes
             .iter()
             .rev()
@@ -2053,8 +2332,8 @@ impl IfcRootMeasures {
             .map(|&(_, s)| s)
     }
 
-    /// Record the size measured under `bits`, replacing an older one.
-    pub fn insert(&mut self, bits: u32, size: (f32, f32)) {
+    /// Record the measure answered under `bits`, replacing an older one.
+    pub fn insert(&mut self, bits: u32, size: IfcMeasure) {
         self.sizes.retain(|(b, _)| *b != bits);
         if self.sizes.len() >= Self::MAX_SIZES {
             self.sizes.remove(0);
@@ -2216,6 +2495,37 @@ pub struct NodeTree {
     /// `max-height`, so it is not a scroll container. Give it either and it
     /// inherits this trap silently.
     pub scroll_lock_exempt: Vec<RawNodeId>,
+    /// `<select>` elements whose own `value` attribute is currently the
+    /// *freshest* selection write — the one `resolve_selected_index`'s step 1
+    /// should answer from (issue #757).
+    ///
+    /// A `<select>`'s `value` attribute is rinch's own invention (HTML has no
+    /// such content attribute); the desktop popup's pick writes it
+    /// (`app/select_widget.rs`'s `commit_select`), and so does the `value:`
+    /// rsx prop. A live `<option selected>` write is the other way to move
+    /// the selection. Chrome and rinch-web have only the second mechanism, so
+    /// whichever happens most recently is "the" selection there; desktop used
+    /// to let the `value` attribute win unconditionally once present, which
+    /// meant a user's pick could never be overtaken by a later script write —
+    /// the opposite of every other browser-matched behaviour in this file.
+    ///
+    /// A select's id is inserted here by every live `value` attribute write
+    /// (`RinchDocument::set_attribute`) and removed by
+    /// [`crate::select::set_option_selectedness`] whenever one of ITS options'
+    /// selectedness is set to `true` through a **live** write — so the most
+    /// recent of the two kinds of write wins, matching a browser's single
+    /// "last write wins" model despite rinch tracking the two as separate
+    /// mechanisms. [`crate::select::options_inserted`] — which re-applies an
+    /// already-decided selectedness when a detached option (built with its
+    /// `selected` attribute already present, the common `rsx!` construction
+    /// order) is attached to its select — deliberately does **not** clear an
+    /// entry here: that call is materializing state decided earlier while
+    /// detached, not a new write, and must not let attachment order override
+    /// a `value:` prop set at the same time
+    /// (`select_value_attribute_wins_over_selected_attribute` in
+    /// `select_tests.rs` pins this half). Removed outright when the `value`
+    /// attribute is removed, and when the select node itself is freed.
+    pub select_value_fresh: HashSet<RawNodeId>,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.
@@ -2297,7 +2607,7 @@ pub struct NodeTree {
     pub pending_background_urls: Vec<String>,
     /// IFC roots whose text content changed since last layout.
     /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
-    pub dirty_ifc_text_roots: HashSet<RawNodeId>,
+    pub dirty_ifc_text_roots: rustc_hash::FxHashSet<RawNodeId>,
     /// How many times `run_taffy_compute` has run over this tree.
     ///
     /// Instrumentation, not state: `resolve_layout`'s `!layout_dirty` early
@@ -2398,6 +2708,13 @@ pub struct NodeTree {
     /// Do not swap it back for a `HashSet`. The set holds a handful of entries
     /// and its `O(log n)` insert is not on any path the cost harness measures.
     pub dirty_atomic_inlines: BTreeSet<RawNodeId>,
+    /// An atomic inline sized by a `fit-content`/`stretch` width (#691), and
+    /// the containing-block inner width it was last sized at by
+    /// `resolve_percentage_inline_blocks`. Any other measure of the box (all
+    /// of which measure it with no containing-block width, as `auto`) removes
+    /// its entry, so an entry still here at the same width means nothing that
+    /// sizes the box moved and it need not be measured again.
+    pub(crate) keyword_inline_cb_width: HashMap<RawNodeId, f32>,
     /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
     /// to clear after the frame's style pass.
     pub styled_unrendered: Vec<RawNodeId>,
@@ -2422,7 +2739,7 @@ pub struct NodeTree {
     /// An entry is removed outright when its node is freed
     /// ([`NodeTree::remove_subtree`]), so a recycled slab id never inherits a
     /// previous node's sizes.
-    pub ifc_measure_cache: HashMap<RawNodeId, IfcRootMeasures>,
+    pub ifc_measure_cache: rustc_hash::FxHashMap<RawNodeId, IfcRootMeasures>,
     /// The Parley layouts the detached atomic-inline compute
     /// (`RinchDocument::measure_inline_blocks`) built for the text leaves it
     /// measured — the text of an `inline-flex` / `inline-grid`, which is a flex
@@ -2462,8 +2779,8 @@ pub struct NodeTree {
     ///
     /// **In shipped code this is provably zero**, not hopefully zero:
     /// `compute_taffy_child_index` returns an in-range index by construction,
-    /// and the clamp makes `insert_child_at_index` total (`taffy 0.12.2` can
-    /// only fail it with `ChildIndexOutOfBounds`). So a non-zero value is not a
+    /// and the clamp makes `insert_child_at_index` total (`taffy 0.14.0`, like
+    /// 0.12.2, can only fail it with `ChildIndexOutOfBounds`). So a non-zero value is not a
     /// tolerable condition to be handled — it is evidence that a regression of
     /// the #477 class has been reintroduced.
     ///
@@ -2600,6 +2917,7 @@ impl NodeTree {
             active_node: None,
             scroll_lock_roots: Vec::new(),
             scroll_lock_exempt: Vec::new(),
+            select_value_fresh: HashSet::new(),
             guard,
             anonymous_block_boxes: Vec::new(),
             split_inlines: Vec::new(),
@@ -2611,7 +2929,7 @@ impl NodeTree {
             image_cache: ImageCache::new(),
             image_loader: None,
             pending_background_urls: Vec::new(),
-            dirty_ifc_text_roots: HashSet::new(),
+            dirty_ifc_text_roots: Default::default(),
             taffy_computes: 0,
             ifc_setup_passes: 0,
             perf: crate::perf::PerfCounters::default(),
@@ -2620,8 +2938,9 @@ impl NodeTree {
             mousemove_handlers: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
+            keyword_inline_cb_width: HashMap::new(),
             styled_unrendered: Vec::new(),
-            ifc_measure_cache: HashMap::new(),
+            ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
@@ -2754,7 +3073,13 @@ impl NodeTree {
     pub fn mark_scrolled(&mut self, id: RawNodeId) {
         if let Some(node) = self.nodes.get_mut(id) {
             node.dirty.insert(DirtyFlags::PAINT);
-            let extent_reads_scroll = !node.clips_overflow();
+            // Per-axis (#535): `flow_extent` folds children into whichever
+            // axis does not clip, so it reads this node's own scroll offset
+            // whenever *either* axis is open, not only when both are —
+            // `!clips_overflow()` (both clip) would under-invalidate a box
+            // clipping on one axis alone.
+            let (clip_x, clip_y) = node.clip_axes();
+            let extent_reads_scroll = !clip_x || !clip_y;
             self.hit_cache.invalidate_scroll(extent_reads_scroll);
             self.dirty_nodes.insert(id);
             self.paint_dirty_nodes.push(id);
@@ -2868,6 +3193,8 @@ impl NodeTree {
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
+            // Nor a freshness flag meant for a now-gone `<select>` (#757).
+            self.select_value_fresh.remove(node_id);
         }
         for node_id in to_remove {
             self.nodes.remove(node_id);
@@ -3022,6 +3349,70 @@ pub fn tag_is_disableable(tag: Option<&str>) -> bool {
     )
 }
 
+/// Tags HTML lets be `required` — the set `:required`/`:optional` are
+/// defined over (HTML Standard §4.10.5.3's "candidate for constraint
+/// validation" minus the kinds rinch doesn't special-case per `type=`).
+/// Narrower than [`tag_is_disableable`]: a `<button>`/`<option>`/`<optgroup>`/
+/// `<fieldset>` has no `required` attribute at all.
+pub fn tag_supports_required(tag: Option<&str>) -> bool {
+    matches!(tag, Some("input" | "select" | "textarea"))
+}
+
+/// Tags `:read-only`/`:read-write`/`:placeholder-shown` apply to in this
+/// implementation (#681): `input`, `textarea`. `select` has neither
+/// `readonly` nor `placeholder` of its own.
+///
+/// **Narrower than the full CSS definition**, deliberately, same spirit as
+/// [`tag_is_disableable`]'s own narrowing: Selectors 4 also matches
+/// `:read-only` on every element that cannot be edited at all (a `<div>`,
+/// which is never "mutable"), and factors a `<fieldset disabled>` ancestor
+/// into whether an `<input>` inside it is "mutable". Neither is implemented
+/// here — only the element's own `readonly` attribute decides — so do not
+/// read `tag_is_readonly_capable` as the full predicate.
+pub fn tag_is_readonly_capable(tag: Option<&str>) -> bool {
+    matches!(tag, Some("input" | "textarea"))
+}
+
+/// `:required` (#681): a `required` attribute on a tag that supports one.
+pub fn node_is_required(node: &Node) -> bool {
+    tag_supports_required(node.tag()) && node.attributes.contains_key("required")
+}
+
+/// `:optional` (#681): the inverse of [`node_is_required`] — a tag that
+/// supports `required` but doesn't carry it. `false` for a tag the
+/// attribute doesn't apply to at all, matching `:required`'s own gate (a
+/// `<div>` is neither required nor optional).
+pub fn node_is_optional(node: &Node) -> bool {
+    tag_supports_required(node.tag()) && !node.attributes.contains_key("required")
+}
+
+/// `:read-only` (#681): a `readonly` attribute on a tag that supports one.
+/// See [`tag_is_readonly_capable`] for the scope this deliberately leaves out.
+pub fn node_is_read_only(node: &Node) -> bool {
+    tag_is_readonly_capable(node.tag()) && node.attributes.contains_key("readonly")
+}
+
+/// `:read-write` (#681): the inverse of [`node_is_read_only`], gated the
+/// same way.
+pub fn node_is_read_write(node: &Node) -> bool {
+    tag_is_readonly_capable(node.tag()) && !node.attributes.contains_key("readonly")
+}
+
+/// `:placeholder-shown` (#681): a `placeholder` attribute present and the
+/// field's current value empty — "current" meaning the `value` attribute,
+/// which the desktop runtime mirrors every edit into before dispatching
+/// `oninput` (see `value_fn`/`live_value` in CLAUDE.md), so this also tracks
+/// a live edit, not only the initial markup.
+pub fn node_is_placeholder_shown(node: &Node) -> bool {
+    tag_is_readonly_capable(node.tag())
+        && node.attributes.contains_key("placeholder")
+        && node
+            .attributes
+            .get("value")
+            .map(|v| v.is_empty())
+            .unwrap_or(true)
+}
+
 /// What a node was last painted with, besides its box ([`Node::painted`]).
 #[derive(Clone, Debug, Default)]
 pub struct PaintedState {
@@ -3032,9 +3423,14 @@ pub struct PaintedState {
     /// The node's own transform, with its origin resolved against the box it
     /// was painted in. `None` for the identity.
     pub transform: Option<Box<PaintedTransform>>,
-    /// Whether the node clipped its content ([`Node::clips_overflow`], and a
-    /// box to clip with: not `display: contents`).
-    pub clips: bool,
+    /// Whether the node clipped its content on the x axis
+    /// ([`Node::clips_overflow_x`], and a box to clip with: not
+    /// `display: contents`). Per-axis (#535) rather than one `clips: bool`,
+    /// because [`crate::paint::clip_chain_bounds`] needs to know which axis a
+    /// painted ancestor bounded, not merely whether it bounded either.
+    pub clips_x: bool,
+    /// [`Self::clips_x`], for `overflow-y`.
+    pub clips_y: bool,
     /// Its `position`, which decides which clippers above it it escapes.
     pub position: crate::computed_style::PositionValue,
     /// Whether it was a containing block for absolute descendants
@@ -3076,10 +3472,12 @@ impl PaintedState {
                 backface_hidden: cs.backface_visibility_hidden,
             })
         });
+        let (clips_x, clips_y) = node.clip_axes();
         Self {
             ink: crate::paint::ink_outsets_in(node, members, get),
             transform,
-            clips: node.clips_overflow(),
+            clips_x,
+            clips_y,
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }

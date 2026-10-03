@@ -310,12 +310,12 @@ fn caret_rect_is_where_the_caret_is_painted() {
         p.app.resolve_and_repaint(800.0, 600.0);
         let (x, y, _, h) = painted_caret(&p.app);
         let r = p.handle.caret_rect(Pos(pos)).expect("a laid-out caret");
-        // Within the editor's 1px border: the desktop overlay is placed one
-        // border width in from the text (it anchors to the padding box, and the
-        // desktop `content_origin_inset` is zero), and boxes snap to whole
-        // pixels. `caret_rect` is the text's own caret.
+        // Within the pixel snap: the overlay is placed at whole pixels, and
+        // `caret_rect` is the text's own caret. (It sat one editor border
+        // width right of and below it until the desktop answered
+        // `content_origin_inset`.)
         assert!(
-            (r.x - x).abs() <= 1.5 && (r.y - y).abs() <= 1.5 && (r.height - h).abs() < 0.5,
+            (r.x - x).abs() <= 1.0 && (r.y - y).abs() <= 1.0 && (r.height - h).abs() < 0.5,
             "pos {pos}: caret_rect {r:?} vs painted ({x}, {y}, h {h})"
         );
         assert_eq!(r.width, 0.0);

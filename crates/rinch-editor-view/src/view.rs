@@ -493,10 +493,11 @@ impl ViewDesc {
     /// Place every cell of this `table` descriptor in the table's CSS grid by its
     /// rectangle in the table's [`TableMap`] — the bounded grid every table
     /// command edits — rather than by its raw `colspan` / `rowspan` (#1182). A
-    /// table reaching the model by `load_doc` or an app's own transaction can
-    /// say `colspan = 3_000_000` or `rowspan = i64::MAX`; written raw, that
+    /// table reaching the model by an app's own transaction can say
+    /// `colspan = 3_000_000` or `rowspan = i64::MAX` (a load caps `colspan` at
+    /// 1000, #1214); written raw, that
     /// asked the host for that many implicit grid tracks, and on the desktop a
-    /// few such cells stacked past the `i16` lines Taffy numbers a grid with,
+    /// few such cells stacked past the `i16` lines Taffy 0.12 numbered a grid with,
     /// and layout panicked. The map cuts a span at the grid's edge and has no
     /// slot for a cell past its capped width, so no cell asks for more columns
     /// than the map has or more rows than the table has, and a cell with no
@@ -514,8 +515,10 @@ impl ViewDesc {
             // Row lines need column lines too: a cell locked to its row is
             // placed beside the cells before it, so a wide row of wide cells
             // (four of `colspan = 20000`, each span clamped to 10000 tracks)
-            // grows the implicit grid past the 32767 lines Taffy numbers it
-            // with, and layout panics. Auto-placed, those cells wrap.
+            // grows the implicit grid past the 32767 lines Taffy 0.12 numbered
+            // it with, and layout panicked; Taffy 0.14 (#1236) clamps the axis
+            // at 10000 tracks and overlaps the cells past it instead.
+            // Auto-placed, those cells wrap.
             rows: columns && self.node.child_count() <= MAX_DEFINITE_GRID_TRACKS,
             columns,
         };
@@ -1307,7 +1310,7 @@ impl RinchDomEditorView {
         // The overlays are absolutely-positioned children of the container, so they
         // anchor to its *padding* box; the summed offsets are border-box-relative.
         // Subtract the container's border inset once so caret/selection land on glyphs
-        // (a no-op on the desktop renderer — default `(0, 0)`).
+        // (both renderers report it).
         let (ix, iy) = d.content_origin_inset(container_id as u64);
         (x - ix, y - iy)
     }
@@ -2213,6 +2216,11 @@ struct FlatWidths {
     /// The bytes a tab occupies ([`DomDocument::tab_flat_bytes`]): `4` on
     /// rinch-dom, which lays a tab out as four spaces, `1` in the browser.
     tab: usize,
+    /// The chars the host lays out as something of another length, and its
+    /// flat bytes for each ([`DomDocument::substituted_char_flat_bytes`]):
+    /// rinch-dom's U+2028, U+2029, U+0085 and U+000C (#1181), none in the
+    /// browser.
+    substituted: &'static [(char, usize)],
 }
 
 impl FlatWidths {
@@ -2221,23 +2229,31 @@ impl FlatWidths {
     const UTF8: FlatWidths = FlatWidths {
         line_break: 0,
         tab: 1,
+        substituted: &[],
     };
 
     fn of(doc: &dyn DomDocument) -> FlatWidths {
         FlatWidths {
             line_break: doc.line_break_flat_bytes(),
             tab: doc.tab_flat_bytes(),
+            substituted: doc.substituted_char_flat_bytes(),
         }
     }
 
     /// The flat bytes of one model char of text.
     fn char_bytes(&self, ch: char) -> usize {
-        if ch == '\t' { self.tab } else { ch.len_utf8() }
+        if ch == '\t' {
+            return self.tab;
+        }
+        self.substituted
+            .iter()
+            .find(|&&(c, _)| c == ch)
+            .map_or(ch.len_utf8(), |&(_, n)| n)
     }
 
     /// The flat bytes of a run of model text.
     fn text_bytes(&self, text: &str) -> usize {
-        if self.tab == 1 {
+        if self.tab == 1 && self.substituted.is_empty() {
             text.len()
         } else {
             text.chars().map(|ch| self.char_bytes(ch)).sum()
@@ -2255,6 +2271,8 @@ impl FlatWidths {
 /// before the tab on its first 3/8 and after it from 3/8 on, where a browser
 /// splits at the middle. A byte cannot say more, so some band of an eighth of
 /// a tab is on the wrong side whichever way the byte at the middle is read.
+/// A byte inside a substituted char's flat bytes (rinch-dom's NBSP + ZWSP for
+/// U+2028, #1181) is after it: the first of them is the visible half.
 fn ifc_byte_to_char(block: &Node, ifc_byte: usize, flat: FlatWidths) -> usize {
     let mut bytes = 0usize;
     let mut chars = 0usize;
@@ -2315,7 +2333,8 @@ fn leaf_flat_bytes(leaf: &Node, flat: FlatWidths) -> usize {
 /// means: the caret beside one is drawn from its box instead
 /// ([`RinchDomEditorView::inline_box_beside`], #1104). A tab in the text is the
 /// host's tab bytes ([`DomDocument::tab_flat_bytes`]) rather than its one UTF-8
-/// byte (#1109).
+/// byte (#1109), and a char the host substitutes its bytes for that
+/// ([`DomDocument::substituted_char_flat_bytes`], #1181).
 fn textblock_flat_byte(block: &Node, char_off: usize, flat: FlatWidths) -> usize {
     let mut chars_seen = 0usize;
     let mut bytes = 0usize;
@@ -3967,6 +3986,12 @@ mod tests {
     const DESKTOP: FlatWidths = FlatWidths {
         line_break: 1,
         tab: 4,
+        substituted: &[
+            ('\u{2028}', 5),
+            ('\u{2029}', 5),
+            ('\u{85}', 3),
+            ('\u{c}', 0),
+        ],
     };
     /// The browser's: a `<br>` has no text, a tab is its one character.
     const WEB: FlatWidths = FlatWidths::UTF8;
@@ -4287,9 +4312,9 @@ mod tests {
 }
 
 /// Issue #1182: a cell's grid span is its [`TableMap`] rectangle, not its raw
-/// `colspan` / `rowspan`. A table that reaches the model by `load_doc` or an
-/// app's own transaction can say `colspan = 3_000_000` or `rowspan =
-/// i64::MAX`; written raw, that asked the host's CSS grid for that many
+/// `colspan` / `rowspan`. A table that reaches the model by an app's own
+/// transaction can say `colspan = 3_000_000` or `rowspan = i64::MAX` (a
+/// load caps `colspan` at 1000 since #1214, but not `rowspan`); written raw, that asked the host's CSS grid for that many
 /// implicit tracks (and on the desktop, four stacked cells of `span 10000` —
 /// Stylo's clamp — made more grid lines than Taffy's `i16` lines hold, and it
 /// panicked). The map cuts a span at the grid's edge, and a cell past the

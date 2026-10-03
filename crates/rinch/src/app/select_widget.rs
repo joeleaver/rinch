@@ -43,6 +43,15 @@ pub(crate) struct OpenSelect {
     pub disabled: Vec<bool>,
     /// Currently highlighted option index.
     pub highlighted: usize,
+    /// The model's resolved selection as of the last time it was checked
+    /// (popup open, or the last [`RinchApp::sync_open_select_highlight_from_dom`]
+    /// call) — issue #757's "vice versa". This is the baseline a resync
+    /// compares the model's *current* answer against, deliberately **not**
+    /// `highlighted`: the user's own arrow-key navigation moves `highlighted`
+    /// without writing anything `resolve_select_model` reads, so comparing
+    /// against `highlighted` would snap the highlight back to the selection
+    /// on every repaint after the very first arrow key.
+    pub last_known_selected_index: usize,
     /// Accumulated type-ahead buffer.
     pub typeahead: String,
     /// When the last type-ahead key landed (buffer resets after a gap).
@@ -310,6 +319,7 @@ impl RinchApp {
             labels,
             disabled,
             highlighted: selected,
+            last_known_selected_index: selected,
             typeahead: String::new(),
             typeahead_at: None,
             initial_value,
@@ -774,5 +784,69 @@ impl RinchApp {
             self.scene_dirty = true;
             self.resolve_and_repaint(vp_w, vp_h);
         }
+    }
+
+    /// Re-sync the open popup's highlight with the model's resolved selection
+    /// (issue #757's "vice versa"). A script that writes an option's
+    /// `selected` attribute, or the select's own `value`, while the popup is
+    /// still open moves `resolve_select_model`'s answer; this is what makes
+    /// the popup follow it rather than freezing at whatever was selected when
+    /// it opened. Compares against [`OpenSelect::last_known_selected_index`],
+    /// not `highlighted` — see that field's doc for why.
+    ///
+    /// Called from the top of [`RinchApp::resolve_and_repaint`], ahead of its
+    /// short-circuit, so it runs on the next repaint after any such write —
+    /// including the one *within* `resolve_and_repaint` that a changed
+    /// `data-highlighted`/`data-selected` attribute itself triggers here,
+    /// which is why this function never calls `resolve_and_repaint` (or
+    /// anything that does): it just writes the attributes and marks the
+    /// scene dirty, the way `set_select_highlight`'s own writes would be
+    /// picked up by the *caller's* next repaint.
+    pub(super) fn sync_open_select_highlight_from_dom(&mut self) {
+        let Some((select_id, baseline)) = self
+            .open_select
+            .as_ref()
+            .map(|o| (o.select_id, o.last_known_selected_index))
+        else {
+            return;
+        };
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        let resolved = {
+            let d = doc.borrow();
+            resolve_select_model(&d.tree, select_id).selected_index
+        };
+        let Some(new_idx) = resolved else {
+            return;
+        };
+        if new_idx == baseline {
+            return;
+        }
+        let Some(open) = self.open_select.as_mut() else {
+            return;
+        };
+        open.last_known_selected_index = new_idx;
+        if new_idx >= open.option_ids.len() {
+            return;
+        }
+        let old_highlighted_id = open.option_ids[open.highlighted];
+        let old_selected_id = open.option_ids.get(baseline).copied();
+        let new_id = open.option_ids[new_idx];
+        open.highlighted = new_idx;
+
+        let mut d = doc.borrow_mut();
+        if old_highlighted_id != new_id {
+            d.remove_attribute(NodeId(old_highlighted_id), "data-highlighted");
+        }
+        if let Some(old_sel) = old_selected_id
+            && old_sel != new_id
+        {
+            d.remove_attribute(NodeId(old_sel), "data-selected");
+        }
+        d.set_attribute(NodeId(new_id), "data-highlighted", "");
+        d.set_attribute(NodeId(new_id), "data-selected", "");
+        drop(d);
+        self.scene_dirty = true;
     }
 }

@@ -1,11 +1,11 @@
 //! The eight props #707 wired: #474's category **C** (a parent prop whose
 //! child's twin works) and two of category **D**'s three.
 //!
-//! The third, `Textarea::max_rows`, is **not** here. It was wired and reverted:
-//! a `max-height` cannot bind on a rinch `<textarea>`, whose used height is
-//! exactly the `min-height` its `rows` and the sheet's floor give it, so the
-//! prop stays on `no_dead_props.rs`'s allowlist against #715 rather than being
-//! read into an effect nobody can see.
+//! The third, `Textarea::max_rows`, is **not** here either — it was wired and
+//! reverted at the time, because a `max-height` could not yet bind on a rinch
+//! `<textarea>`. #715 fixed that (the control's `rows` became a Taffy measure
+//! rather than a `min-height`) and wired it for real; its own fixtures live in
+//! `textarea_max_rows_715.rs`.
 //!
 //! `tests/no_dead_props.rs` is the ratchet that says a prop is *read*; these say
 //! the read has the effect its doc comment promises. They are different claims,

@@ -480,13 +480,14 @@ mod review1208 {
         assert_eq!(value_attr(&app, id).as_deref(), Some(""));
     }
 
-    /// A `value` attribute removed after an edit leaves the field holding its
-    /// text children, as removing the attribute leaves a browser's `.value`
-    /// alone — not "" (review of #1179: the per-frame adoption reads
-    /// `control_value`). Replaces #1179's fixture, which removed the attribute
-    /// focus wrote and removed nothing once focus stopped writing it (#1186).
+    /// A `value` attribute removed after an edit empties the field and leaves
+    /// its dirty value flag set (#1222): rinch-web's removal writes `.value =
+    /// ""`, which sets the browser's flag, and a page cannot clear it. Before
+    /// #1222 desktop read the removal as "pristine again" and fell back to the
+    /// child text — the opposite of what the web can express. Replaces the
+    /// #1179/#1186 fixture that pinned that fallback.
     #[test]
-    fn r_value_removed_after_an_edit_falls_back_to_the_child_text() {
+    fn r_value_removed_after_an_edit_empties_the_field() {
         let (mut app, id, _text, _log) = mount_with_change("hello");
         click_into(&mut app, id);
         press(&mut app, KeyCode::End, None);
@@ -498,9 +499,10 @@ mod review1208 {
             .borrow_mut()
             .remove_attribute(rinch_core::dom::NodeId(id), "value");
         app.resolve_and_repaint(800.0, 600.0);
+        assert_eq!(live(&app, id).as_deref(), Some(""));
         press(&mut app, KeyCode::End, None);
         press(&mut app, KeyCode::KeyX, Some("X"));
-        assert_eq!(value_attr(&app, id).as_deref(), Some("helloX"));
+        assert_eq!(value_attr(&app, id).as_deref(), Some("X"));
     }
     /// A child change during a composition must not reach paint while the
     /// caret attributes still index the engine text (kills M6: drop the
@@ -515,5 +517,137 @@ mod review1208 {
         set_child(&mut app, text, "ééé");
         assert_eq!(live(&app, id).as_deref(), Some("héllo"));
         app.resolve_and_repaint(800.0, 600.0);
+    }
+}
+
+// ── #1222: where the dirty value flag lives must agree with rinch-web ──────
+//
+// The twins are `crates/rinch-web/tests/textarea_text_child.rs`'s
+// `*_1222` fixtures (Chrome 153). The rule both backends follow: a `value`
+// write — equal to the shown text or not — sets the flag, and removing the
+// attribute is a write of `""` that leaves it set. Nothing a page can do
+// clears it again (only a form reset, which desktop does not model).
+mod dirty_flag_1222 {
+    use super::*;
+
+    fn write(app: &mut RinchApp, id: usize, v: Option<&str>) {
+        {
+            let mut d = app.doc.as_ref().unwrap().borrow_mut();
+            match v {
+                Some(v) => d.set_attribute(rinch_core::dom::NodeId(id), "value", v),
+                None => d.remove_attribute(rinch_core::dom::NodeId(id), "value"),
+            }
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+    }
+
+    /// Issue #1222 case 1: write, remove, then change the child.
+    #[test]
+    fn removing_a_written_value_leaves_the_field_empty_and_dirty() {
+        let (mut app, id, text, _log) = mount_with_change("child");
+        write(&mut app, id, Some("written"));
+        assert_eq!(live(&app, id).as_deref(), Some("written"));
+        write(&mut app, id, None);
+        assert_eq!(
+            live(&app, id).as_deref(),
+            Some(""),
+            "the removal empties it"
+        );
+        assert_eq!(
+            value_attr(&app, id),
+            None,
+            "the attribute is gone, as `getAttribute` says on the web"
+        );
+        set_child(&mut app, text, "changed");
+        assert_eq!(
+            live(&app, id).as_deref(),
+            Some(""),
+            "the flag survives the removal: a child change is not shown"
+        );
+    }
+
+    /// Removing a `value` the pristine field never had is the same write of
+    /// `""` on the web (the shown "child" differs from it), so the field
+    /// empties and stops following its children.
+    #[test]
+    fn removing_an_absent_value_from_a_pristine_textarea_empties_it() {
+        let (mut app, id, text, _log) = mount_with_change("child");
+        assert_eq!(live(&app, id).as_deref(), Some("child"), "positive control");
+        write(&mut app, id, None);
+        assert_eq!(live(&app, id).as_deref(), Some(""));
+        set_child(&mut app, text, "changed");
+        assert_eq!(live(&app, id).as_deref(), Some(""));
+    }
+
+    /// Issue #1222 case 2: a write equal to the shown text still sets the flag
+    /// (desktop did this already; the web now does too).
+    #[test]
+    fn an_equal_value_write_sets_the_flag() {
+        let (mut app, id, text, _log) = mount_with_change("same");
+        write(&mut app, id, Some("same"));
+        set_child(&mut app, text, "changed");
+        assert_eq!(live(&app, id).as_deref(), Some("same"));
+    }
+
+    /// The shell edits the emptied field from `""`, not from the child text:
+    /// the removal reached the focus path, not only `live_value`.
+    #[test]
+    fn a_removal_on_a_pristine_textarea_is_typed_into_from_empty() {
+        let (mut app, id, _text, _log) = mount_with_change("child");
+        write(&mut app, id, None);
+        click_into(&mut app, id);
+        app.resolve_and_repaint(800.0, 600.0);
+        press(&mut app, KeyCode::End, None);
+        press(&mut app, KeyCode::KeyX, Some("X"));
+        assert_eq!(value_attr(&app, id).as_deref(), Some("X"));
+    }
+
+    /// The removal reaches paint: the incremental frame after it holds what
+    /// a from-scratch frame holds over the field, and that differs from the
+    /// frame before (the child text is gone). Kills dropping the paint
+    /// invalidation from `remove_attribute`'s absent-attribute arm.
+    #[cfg(software_shell)]
+    #[test]
+    fn a_removal_on_a_pristine_textarea_repaints_it() {
+        const SIZE: (u32, u32) = (800, 600);
+        let (mut app, id, _text, _log) = mount_with_change("child text");
+        let frame = |app: &mut RinchApp, full: bool| {
+            if full {
+                app.scene_dirty = true;
+                app.has_previous_frame = false;
+            }
+            let px = app.build_pixels(1.0, SIZE, false).0.to_vec();
+            let _ = app.end_perf_frame();
+            px
+        };
+        let before = frame(&mut app, true);
+        {
+            let mut d = app.doc.as_ref().unwrap().borrow_mut();
+            d.remove_attribute(rinch_core::dom::NodeId(id), "value");
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        let incremental = frame(&mut app, false);
+        let fresh = frame(&mut app, true);
+        let (x, y, w, h) = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            painted_element_box(&d.tree, id)
+        };
+        let region = |px: &[u8]| -> Vec<u8> {
+            let mut out = Vec::new();
+            for row in (y as usize)..((y + h) as usize) {
+                let start = (row * SIZE.0 as usize + x as usize) * 4;
+                out.extend_from_slice(&px[start..start + (w as usize) * 4]);
+            }
+            out
+        };
+        assert_ne!(
+            region(&before),
+            region(&fresh),
+            "positive control: the child text was painted and is gone"
+        );
+        assert!(
+            region(&incremental) == region(&fresh),
+            "the incremental frame repainted the emptied field"
+        );
     }
 }

@@ -204,7 +204,15 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     let vh = viewport.height;
     let cs = &node.computed_style;
 
-    if taffy_style.size.width == taffy::Dimension::auto() {
+    // `stretch` (#691) fills the containing block less the insets, which
+    // Taffy would take from the direct parent. Unpaired, a missing inset
+    // counts as zero — Taffy's `resolve_absolute_sizing_keywords` rule, and
+    // Chrome 153's answer (`left: 10px` in an 800px viewport gives 790).
+    if taffy_style.size.width.is_stretch() {
+        let l = cs.left.resolve(vw).unwrap_or(0.0);
+        let r = cs.right.resolve(vw).unwrap_or(0.0);
+        taffy_style.size.width = taffy::Dimension::length((vw - l - r).max(0.0));
+    } else if taffy_style.size.width == taffy::Dimension::auto() {
         match (cs.left.resolve(vw), cs.right.resolve(vw)) {
             (Some(l), Some(r)) => {
                 taffy_style.size.width = taffy::Dimension::length((vw - l - r).max(0.0));
@@ -233,7 +241,11 @@ pub(crate) fn apply_out_of_flow_size_overrides(
         }
     }
 
-    if taffy_style.size.height == taffy::Dimension::auto() {
+    if taffy_style.size.height.is_stretch() {
+        let t = cs.top.resolve(vh).unwrap_or(0.0);
+        let b = cs.bottom.resolve(vh).unwrap_or(0.0);
+        taffy_style.size.height = taffy::Dimension::length((vh - t - b).max(0.0));
+    } else if taffy_style.size.height == taffy::Dimension::auto() {
         match (cs.top.resolve(vh), cs.bottom.resolve(vh)) {
             (Some(t), Some(b)) => {
                 taffy_style.size.height = taffy::Dimension::length((vh - t - b).max(0.0));

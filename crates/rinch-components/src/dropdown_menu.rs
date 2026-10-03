@@ -20,30 +20,97 @@ use std::rc::Rc;
 /// while the reveal was an inline `style` rewrite on each panel — issue #760.
 const OPENED_CLASS: &str = "rinch-dropdown-menu--opened";
 
-/// Thread-local signal that menu containers (ContextMenu, DropdownMenu) set
-/// before their children render. DropdownMenuItem reads it to close the menu
-/// on item click.
+/// Registry of live menu-close signals, keyed by the id a menu's content root
+/// carries for its whole lifetime via [`MENU_CLOSE_ID_ATTR`].
 ///
-/// This must be thread-local (not context) because Component::render receives
-/// pre-rendered children — context set in render() is too late.
-use std::cell::RefCell;
+/// Issue #714: a `DropdownMenuItem`'s click handler used to resolve its menu's
+/// close signal through a thread-local the container set just before its
+/// children rendered and cleared right after — a snapshot of "what is
+/// rendering right now". An item inside a reactive block
+/// (`if clipboard.get().is_some() { DropdownMenuItem { .. } }`) renders again
+/// whenever that block's own signal changes, long after the container's own
+/// `render` has returned and the thread-local is back to `None`: the item's
+/// own `onclick` ran, but the lookup found nothing, and the menu stayed open.
+///
+/// The fix moves the lookup from render time to **click** time, and keys it
+/// off the live DOM rather than off whatever happened to be rendering when the
+/// item was built: a menu's content root carries [`MENU_CLOSE_ID_ATTR`] for as
+/// long as the menu exists, so [`find_menu_close_signal`] — called from inside the
+/// click handler, not baked into it at render — finds it by walking up from
+/// whichever button was actually clicked, however late that button arrived.
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 thread_local! {
-    static MENU_CLOSE_SIGNAL: RefCell<Option<Signal<bool>>> = const { RefCell::new(None) };
+    static MENU_CLOSE_REGISTRY: RefCell<HashMap<u64, Signal<bool>>> =
+        RefCell::new(HashMap::new());
+    /// Monotonic id source for [`MENU_CLOSE_REGISTRY`]. Never reused, so a
+    /// stale id left on a long-discarded node never resolves to some other
+    /// menu's entry.
+    static NEXT_MENU_CLOSE_ID: Cell<u64> = const { Cell::new(1) };
 }
 
-/// Set the menu close signal. Call before rendering menu item children.
-pub fn set_menu_close_signal(signal: Signal<bool>) {
-    MENU_CLOSE_SIGNAL.with(|s| *s.borrow_mut() = Some(signal));
+/// The attribute a menu's content root carries for its whole lifetime, naming
+/// its entry in [`MENU_CLOSE_REGISTRY`]. See the registry's doc comment for
+/// why this replaced a thread-local set only around the container's own
+/// render.
+pub(crate) const MENU_CLOSE_ID_ATTR: &str = "data-rinch-menu-close-id";
+
+/// Register `signal` as a menu's close signal and return the id to stamp on
+/// its content root via [`MENU_CLOSE_ID_ATTR`]. Pair with
+/// [`unregister_menu_close_signal`] on the menu's own cleanup, or the registry
+/// accumulates one dead entry per menu built over the session.
+pub(crate) fn register_menu_close_signal(signal: Signal<bool>) -> u64 {
+    let id = NEXT_MENU_CLOSE_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
+    });
+    MENU_CLOSE_REGISTRY.with(|r| r.borrow_mut().insert(id, signal));
+    id
 }
 
-/// Clear the menu close signal. Call after rendering menu item children.
-pub fn clear_menu_close_signal() {
-    MENU_CLOSE_SIGNAL.with(|s| *s.borrow_mut() = None);
+/// Drop `id`'s registry entry. The `Signal` itself is freed by whatever scope
+/// owns it regardless of this call; this only stops the registry holding a
+/// copy of it once the menu that named it is gone.
+pub(crate) fn unregister_menu_close_signal(id: u64) {
+    MENU_CLOSE_REGISTRY.with(|r| {
+        r.borrow_mut().remove(&id);
+    });
 }
 
-/// Get the current menu close signal, if any.
-pub fn get_menu_close_signal() -> Option<Signal<bool>> {
-    MENU_CLOSE_SIGNAL.with(|s| *s.borrow())
+/// The close signal of the menu whose content root is `node` or its nearest
+/// ancestor carrying [`MENU_CLOSE_ID_ATTR`], if that menu is still registered.
+///
+/// An item resolves this **before** running its own callback: the callback may
+/// queue a write that removes the clicked button itself (a Paste item inside an
+/// `if` its own action flips), and the walk's first `NodeHandle` access flushes
+/// that write — leaving a detached button with no menu above it.
+pub(crate) fn find_menu_close_signal(node: &NodeHandle) -> Option<Signal<bool>> {
+    let mut current = Some(node.clone());
+    while let Some(here) = current {
+        if let Some(raw) = here.get_attribute(MENU_CLOSE_ID_ATTR) {
+            let id = raw.parse::<u64>().ok()?;
+            return MENU_CLOSE_REGISTRY.with(|r| r.borrow().get(&id).copied());
+        }
+        current = here.parent_node();
+    }
+    None
+}
+
+/// Close the menu `signal` belongs to. A freed signal — the item's callback
+/// disposed the scope that owns it — is a no-op: there is nothing left to close.
+pub(crate) fn close_menu_signal(signal: Option<Signal<bool>>) {
+    if let Some(signal) = signal
+        && signal.is_alive()
+    {
+        signal.set(false);
+    }
+}
+
+/// How many menus are registered on this thread (tests: a leak shows as growth).
+#[cfg(test)]
+pub(crate) fn registered_menu_count() -> usize {
+    MENU_CLOSE_REGISTRY.with(|r| r.borrow().len())
 }
 
 /// Reactive callback type for opened state.
@@ -167,12 +234,18 @@ pub struct DropdownMenu {
     pub width: String,
     /// Z-index.
     pub z_index: Option<i32>,
-    /// Internal signal shared with DropdownMenuItem children via thread-local
-    /// (set in Default::default before items render). Items publish a close
-    /// request by setting it to false; DropdownMenu observes that to fire
-    /// `on_close`. Set automatically — not a user prop.
+    /// Internal signal `DropdownMenuItem` children close by setting it to
+    /// `false` (issue #714: resolved at click time from the DOM, not at
+    /// render time from a thread-local — see [`register_menu_close_signal`]).
+    /// `DropdownMenu` observes the transition to fire `on_close`. Set
+    /// automatically — not a user prop.
     #[doc(hidden)]
     pub _close_signal: Signal<bool>,
+    /// This menu's entry in [`MENU_CLOSE_REGISTRY`], stamped on `root` via
+    /// [`MENU_CLOSE_ID_ATTR`] so a late-rendered item can still find it. Set
+    /// automatically — not a user prop.
+    #[doc(hidden)]
+    pub _close_signal_id: u64,
 }
 
 impl std::fmt::Debug for DropdownMenu {
@@ -187,13 +260,12 @@ impl std::fmt::Debug for DropdownMenu {
 
 impl Default for DropdownMenu {
     fn default() -> Self {
-        // Set the thread-local close signal here (not in render) so
-        // DropdownMenuItem children — constructed and rendered AFTER this
-        // Default::default() call but BEFORE Component::render — can capture
-        // it. Initialized to true; items publish a close request by setting
-        // it to false. Same pattern as ContextMenu.
+        // Initialized to true; items publish a close request by setting it to
+        // false. The registry id is minted here rather than in `render` only
+        // because this is where `close_sig` is minted — `render` stamps it on
+        // `root` once that exists (issue #714, same pattern as `ContextMenu`).
         let close_sig = Signal::new(true);
-        set_menu_close_signal(close_sig);
+        let close_signal_id = register_menu_close_signal(close_sig);
         Self {
             opened: false,
             opened_fn: None,
@@ -207,6 +279,7 @@ impl Default for DropdownMenu {
             width: String::new(),
             z_index: None,
             _close_signal: close_sig,
+            _close_signal_id: close_signal_id,
         }
     }
 }
@@ -252,10 +325,6 @@ impl DropdownMenu {
 
 impl Component for DropdownMenu {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
-        // Children captured the close signal in their own render() pass; clear
-        // the thread-local so it doesn't leak to siblings or outer scopes.
-        clear_menu_close_signal();
-
         let mut style_parts = Vec::new();
         if let Some(offset) = self.offset {
             style_parts.push(format!("--rinch-dropdown-menu-offset: {}px", offset));
@@ -283,6 +352,19 @@ impl Component for DropdownMenu {
 
         if !style_parts.is_empty() {
             root.set_attribute("style", &style_parts.join("; "));
+        }
+
+        // Stamped for this menu's whole lifetime (issue #714) — see
+        // `register_menu_close_signal`'s doc comment — so a `DropdownMenuItem`
+        // that renders late, inside a reactive block nested in `children`,
+        // still finds its menu by walking up from the button actually
+        // clicked rather than from whatever rendered when the item did.
+        root.set_attribute(MENU_CLOSE_ID_ATTR, &self._close_signal_id.to_string());
+        {
+            let close_signal_id = self._close_signal_id;
+            rinch_core::reactive::on_cleanup(move || {
+                unregister_menu_close_signal(close_signal_id);
+            });
         }
 
         for child in children {
@@ -365,8 +447,9 @@ impl Component for DropdownMenu {
         }
 
         // close_on_item_click: items publish close requests by setting
-        // _close_signal to false (via the thread-local set in Default).
-        // We observe true→false transitions and forward to on_close. Don't
+        // _close_signal to false (found via MENU_CLOSE_ID_ATTR on `root`,
+        // stamped above). We observe true→false transitions and forward to
+        // on_close. Don't
         // write back to close_sig inside this effect — that would borrow_mut
         // the running effect's own closure and panic. Instead, a separate
         // effect resets close_sig to true on the next opened_fn rising edge
@@ -522,33 +605,31 @@ impl Component for DropdownMenuItem {
             btn.set_attribute("disabled", "");
         }
 
-        // Click handler — also closes the parent menu if one exists
+        // Click handler — also closes the parent menu if one exists.
+        //
+        // The lookup is `find_menu_close_signal(&btn_for_close)`, run at click
+        // time rather than resolved once here at render time (issue #714), and
+        // before the item's own callback, which may detach the button. An item
+        // built inside a reactive block nested in the dropdown renders again on
+        // every change to that block's own condition, long after the
+        // container's own render — and a lookup
+        // resolved at render time would see the container's render as already
+        // finished. Walking the DOM from the clicked button instead finds the
+        // menu's content root — which carries `MENU_CLOSE_ID_ATTR` for the
+        // menu's whole lifetime — however late `btn` itself was built.
+        //
+        // A freed signal (the callback above disposed the scope that owns it
+        // — an item whose action removes the very row the menu hangs off) is a
+        // no-op inside `close_menu_signal`, same as it was here: there is
+        // nothing left to close.
         if let Some(ref cb) = self.onclick {
-            let close_signal = get_menu_close_signal();
+            let btn_for_close = btn.clone();
             let handler_id = __scope.register_handler({
                 let cb = cb.clone();
                 move || {
+                    let close = find_menu_close_signal(&btn_for_close);
                     cb.invoke();
-                    if let Some(signal) = close_signal {
-                        // `is_alive` because the callback above may have
-                        // disposed the scope that owns this signal — an item
-                        // whose action rebuilds or removes the very row the menu
-                        // hangs off is an ordinary thing to write, and the menu
-                        // goes with it.
-                        //
-                        // Writing anyway is not unsound: `Signal::set` drops the
-                        // write and warns once per call site, and that warning
-                        // names *this* line ("Signal::set() on a freed signal at
-                        // dropdown_menu.rs:…"), so it reads as a defect in the
-                        // menu rather than as the ordinary end of an
-                        // interaction. It also tells the caller what to do —
-                        // "check `signal.is_alive()` before writing if the write
-                        // matters" — and here it does not: there is nothing left
-                        // to close.
-                        if signal.is_alive() {
-                            signal.set(false);
-                        }
-                    }
+                    close_menu_signal(close);
                 }
             });
             btn.set_attribute("data-rid", &handler_id.0.to_string());
@@ -644,7 +725,9 @@ mod close_signal_tests {
         // The signal belongs to the menu's own scope, as it does in a real tree.
         let menu_scope = Scope::new();
         let opened = menu_scope.run(|| Signal::new(true));
-        set_menu_close_signal(opened);
+        let close_id = register_menu_close_signal(opened);
+        let menu_root = scope.create_element("div");
+        menu_root.set_attribute(MENU_CLOSE_ID_ATTR, &close_id.to_string());
 
         let ran = Rc::new(Cell::new(false));
         let fired = ran.clone();
@@ -661,7 +744,7 @@ mod close_signal_tests {
             ..Default::default()
         };
         let node = item.render(&mut scope, &[]);
-        clear_menu_close_signal();
+        menu_root.append_child(&node);
 
         let rid: usize = node
             .get_attribute("data-rid")
@@ -691,19 +774,71 @@ mod close_signal_tests {
 
         let menu_scope = Scope::new();
         let opened = menu_scope.run(|| Signal::new(true));
-        set_menu_close_signal(opened);
+        let close_id = register_menu_close_signal(opened);
+        let menu_root = scope.create_element("div");
+        menu_root.set_attribute(MENU_CLOSE_ID_ATTR, &close_id.to_string());
 
         let item = DropdownMenuItem {
             onclick: Some(rinch_core::Callback::new(|| {})),
             ..Default::default()
         };
         let node = item.render(&mut scope, &[]);
-        clear_menu_close_signal();
+        menu_root.append_child(&node);
 
         let rid: usize = node.get_attribute("data-rid").unwrap().parse().unwrap();
         dispatch_event(EventHandlerId(rid));
 
         assert_eq!(opened.try_get(), Some(false), "the menu closed");
         menu_scope.dispose();
+        unregister_menu_close_signal(close_id);
+    }
+
+    /// Issue #714: an item built *after* the menu's own render — not merely
+    /// appended, but rendered late, the way a `show_dom`/`if` branch nested in
+    /// the dropdown renders its content — must still close the menu it was
+    /// built inside of.
+    ///
+    /// The old thread-local lookup resolved `get_menu_close_signal()` at
+    /// `DropdownMenuItem::render` time. The menu's own `render` (simulated
+    /// here by stamping `MENU_CLOSE_ID_ATTR` on `menu_root` and then, as the
+    /// old code did, leaving no thread-local set) has already "returned" by
+    /// the time this item renders, so the old lookup found `None` and the
+    /// click ran the item's `onclick` without ever touching `opened`. The new
+    /// lookup is resolved from inside the click handler against the live DOM,
+    /// so it does not matter that `item` was built after `menu_root`.
+    #[test]
+    fn an_item_rendered_after_the_menu_still_closes_it() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let _doc = doc;
+
+        // Stand in for the menu container's own render, complete and
+        // returned, exactly as the old thread-local would have been cleared
+        // by then.
+        let opened = Signal::new(true);
+        let close_id = register_menu_close_signal(opened);
+        let menu_root = scope.create_element("div");
+        menu_root.set_attribute(MENU_CLOSE_ID_ATTR, &close_id.to_string());
+        scope.body_handle().append_child(&menu_root);
+
+        // The item renders strictly afterwards — the `show_dom`/`if` shape —
+        // and is only now appended under the already-rendered menu root.
+        let item = DropdownMenuItem {
+            onclick: Some(rinch_core::Callback::new(|| {})),
+            ..Default::default()
+        };
+        let node = item.render(&mut scope, &[]);
+        menu_root.append_child(&node);
+
+        let rid: usize = node.get_attribute("data-rid").unwrap().parse().unwrap();
+        dispatch_event(EventHandlerId(rid));
+
+        assert_eq!(
+            opened.try_get(),
+            Some(false),
+            "an item rendered after the menu must still be able to close it"
+        );
+        unregister_menu_close_signal(close_id);
     }
 }

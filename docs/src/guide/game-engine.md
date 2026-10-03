@@ -177,6 +177,27 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 
 `SurfaceKeyData` contains `key`, `code`, `ctrl`, `shift`, `alt`, `meta`. `key` is spelled like the browser's `KeyboardEvent.key` on both backends, so the space bar is `key == " "` and `code == "Space"`.
 
+**A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
+keeps receiving every `KeyDown`/`KeyUp` exactly as above — that delivery is unaffected.
+`set_key_handler(handler: impl Fn(&SurfaceKeyData) -> bool)` is a separate, additive
+registration asked *after*: should this key stop at the surface? Leave it unset — the
+default — and the surface claims nothing, so a host's own `window`-level keybindings (and,
+on the web, the browser's own reload/find/… shortcuts) keep working the moment the canvas
+is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I) and Tab:
+
+```rust
+surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space"));
+```
+
+The document-level keyboard interceptor (`set_keyboard_interceptor`) is unaffected either
+way — it already sees every key before a focused surface does, on both backends.
+
+**On the web, an unclaimed key also keeps the browser's default action** — no longer
+`preventDefault()`ed just because the surface is focused, matching an unfocused `<canvas>`.
+Space, PageUp/Down and the arrow keys can scroll the page, and Tab leaves the canvas. A web
+game steering with any of those must claim them via `set_key_handler`, or the page scrolls
+under it.
+
 ### Web (canvas viewport)
 
 The **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted. On the web the **browser** composites, so rinch only creates and manages a real `<canvas>` "viewport hole" sized by layout; the **app owns the GPU context** (rinch links no wgpu on web). This mirrors desktop symmetrically: **desktop** = rinch owns the window and you submit frames; **web** = you own the canvas surface.
@@ -231,6 +252,7 @@ Notes:
 | `writer()` | Get a `SurfaceWriter` for CPU pixel submission |
 | `gpu_registrar()` | Get a `GpuTextureRegistrar` for GPU texture compositing |
 | `set_event_handler(handler)` | Set input event callback (main thread closure) |
+| `set_key_handler(handler)` | `Fn(&SurfaceKeyData) -> bool`; whether a key already delivered to `set_event_handler` should stop here instead of continuing to a window-level host keybinding (web) or DevTools/inspect/Tab (desktop). Unset: claims nothing (issue #482) |
 | `set_render_callback(cb)` | Per-frame `FnMut(&SurfaceWriter, w, h)` — drives `requestAnimationFrame` on web |
 | `set_resize_callback(cb)` | `FnMut(w, h)` fired on backing-size change (physical px) — reconfigure a GPU surface |
 | `layout_size()` | Get current physical `(width, height)` (web: CSS px × devicePixelRatio) |
@@ -392,6 +414,32 @@ if ctx.wants_keyboard() {
     game.handle_key(key); // game shortcuts
 }
 ```
+
+> **A mouse-clicked plain button does not claim `wants_keyboard()` —
+> a Tab-focused one still does** (issue #548). A `<button>`/`<a href>` is
+> focusable with no `tabindex` needed, so a single click on one (no Tab
+> involved) used to make `wants_keyboard()` answer `true` until the next
+> click landed somewhere else — a host following the pattern above then
+> stopped seeing its own Esc/hotkey presses the moment the user clicked
+> *any* button in a HUD. The fix follows the browser's own `:focus-visible`
+> split rather than "is a node focused" or "did it register anything":
+>
+> - A **mouse click** on a plain button/link only ever consumes Enter/Space
+>   through rinch's own activation path, so it does not need the host's
+>   keyboard — `wants_keyboard()` is `false`.
+> - **Tab** (or a programmatic `NodeHandle::focus()`) onto that same plain
+>   button sets its keyboard-focus ring (`is_focus_visible`), and
+>   `wants_keyboard()` is `true` — so Tab navigation and Enter/Space
+>   activation of ordinary controls keep reaching rinch under the pattern
+>   above, exactly as before #548's fix.
+> - A **custom widget** that registered its own
+>   [`FocusEntry::on_key`](rinch::focus_registry::FocusEntry::on_key)
+>   (`register_focus_target` — arrow-key navigation, a shortcut of its own)
+>   is `true` whichever way it was focused: the runtime can't know which
+>   keys it wants without seeing them.
+> - An open native **`<select>`** popup is always `true` too — its own
+>   arrow/Enter/Escape handling needs every key (a separate, pre-existing
+>   gap folded into the same fix).
 
 > **A viewport hole must stay hittable — that is what routes the mouse.**
 > `wants_mouse` only reports "the game wants this" when the hit-tested node has a
@@ -682,7 +730,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `set_theme(&props)` | Replace this context's theme (restyles on the next `update()`) |
 | `viewport_rect(name) -> Option<LayoutRect>` | Query a GameViewport's computed rect |
 | `wants_mouse(x, y) -> bool` | True if point hits UI (not viewport hole) |
-| `wants_keyboard() -> bool` | True if a text input is focused |
+| `wants_keyboard() -> bool` | True for a text input, the editor, an open `<select>` popup, a generic node that registered `on_key`, or a *keyboard-focused* (Tab/`NodeHandle::focus()`) generic node — **not** a plain button/link a mouse click merely focused (issue #548; the click-vs-Tab split follows `:focus-visible`) |
 | `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake` or a new `RenderSurface` frame) |
 | `next_wake() -> Option<Instant>` | When to call `update()` again with no input (the caret blink), or `None` |
 | `register_font(data)` | Register font data for text rendering |

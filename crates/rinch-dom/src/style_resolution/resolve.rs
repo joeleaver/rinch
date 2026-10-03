@@ -10,6 +10,20 @@ use style::invalidation::element::restyle_hints::RestyleHint;
 use crate::RinchDocument;
 use crate::node::DirtyFlags;
 
+/// Whether `style`'s **inside** is a flex or grid formatting context, by
+/// either outside — `flex`/`inline-flex`/`grid`/`inline-grid` all answer
+/// `true` (#542). `none` and `contents` generate no box and so no formatting
+/// context for anything to be an item of.
+pub(super) fn style_is_flex_or_grid_container(style: &ComputedValues) -> bool {
+    use style::values::specified::box_::DisplayInside;
+
+    let display = style.get_box().clone_display();
+    if display.is_none() || display.is_contents() {
+        return false;
+    }
+    matches!(display.inside(), DisplayInside::Flex | DisplayInside::Grid)
+}
+
 /// What an element's new style requires of its children's styles.
 ///
 /// Ordered: each variant asks for at least what the one before it does.
@@ -648,13 +662,15 @@ impl RinchDocument {
                 if let Some(root) = self.tree.nodes[cid].ifc_root {
                     self.invalidate_ifc_root(root);
                 }
-                // Remove from taffy parent (use safe version — the child may
-                // have already been detached by setup_inline_formatting_contexts)
-                if let (Some(parent_taffy), Some(child_taffy)) = (
-                    self.tree.nodes[node_id].taffy_id,
-                    self.tree.nodes[cid].taffy_id,
-                ) {
-                    self.taffy_remove_child_safe(parent_taffy, child_taffy);
+                // Detach the pseudo-element's whole Taffy contribution, not
+                // just its own id (#521): a `display: contents` pseudo has
+                // already had its own id spliced out of `node_id`'s Taffy
+                // child list by `sync_display_contents`, with its *effective*
+                // children (any that are themselves genuine Taffy members)
+                // spliced in directly — the same shape `taffy_detach_contribution`
+                // (#515/#517) exists to detach everywhere else.
+                if let Some(parent_taffy) = self.tree.nodes[node_id].taffy_id {
+                    self.taffy_detach_contribution(parent_taffy, cid);
                 }
                 // Remove the pseudo-element's subtree from the slab
                 self.tree.remove_subtree(cid);
@@ -676,6 +692,16 @@ impl RinchDocument {
         // the parent is `display: contents` (#998). See
         // [`Self::layout_parent_style`].
         let layout_parent_style = self.layout_parent_style(node_id, parent_style.as_ref());
+
+        // #542: the same style decides whether this node is a flex/grid item
+        // for `Node::creates_stacking_context`'s flex/grid z-index creator —
+        // see [`Node::is_flex_or_grid_item`]'s doc for why this is the right
+        // place to read it.
+        self.tree.nodes[node_id].is_flex_or_grid_item.set(
+            layout_parent_style
+                .as_deref()
+                .is_some_and(style_is_flex_or_grid_container),
+        );
 
         // Compute styles in a block so borrows are dropped before recursion
         let computed = {

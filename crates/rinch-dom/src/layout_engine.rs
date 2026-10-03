@@ -595,6 +595,7 @@ impl RinchDocument {
         let hang = std::cell::Cell::new(crate::ifc::HangStats::default());
         let shape_text = std::cell::Cell::new(0u64);
         let cache_hits = std::cell::Cell::new(0u64);
+        let font_family_resolves = std::cell::Cell::new(0u64);
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
@@ -628,204 +629,254 @@ impl RinchDocument {
             .compute_layout_with_measure(
                 root_taffy,
                 available_space,
-                |known_dims, avail_space, _node_id, context, _style| {
-                    measure_calls.set(measure_calls.get() + 1);
-                    let max_width = match avail_space.width {
-                        taffy::AvailableSpace::Definite(w) => Some(w),
-                        taffy::AvailableSpace::MaxContent => None,
-                        taffy::AvailableSpace::MinContent => Some(0.0),
-                    };
-
-                    match context {
-                        Some(NodeContext::Text(text)) => {
-                            if text.content.is_empty() {
-                                return taffy::Size {
-                                    width: 0.0,
-                                    height: 0.0,
-                                };
-                            }
-
-                            // Skip Parley measurement for text in collapsed blocks
-                            if nodes[text.node_id].estimated_height.is_some()
-                                || nodes[text.node_id]
-                                    .parent
-                                    .is_some_and(|p| nodes[p].estimated_height.is_some())
-                            {
-                                return taffy::Size::ZERO;
-                            }
-
-                            shape_text.set(shape_text.get() + 1);
-                            let font_family =
-                                crate::fonts::parley_font_family(font_cx, &text.font_family);
-                            let mut builder =
-                                layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
-                            builder.push_default(parley::style::StyleProperty::FontSize(
-                                text.font_size,
-                            ));
-                            if (text.font_weight - 400.0).abs() > 1.0 {
-                                builder.push_default(parley::style::StyleProperty::FontWeight(
-                                    parley::style::FontWeight::new(text.font_weight),
-                                ));
-                            }
-                            if let Some(lh) =
-                                layout::css_line_height_to_parley(&text.line_height_css)
-                            {
-                                builder.push_default(parley::style::StyleProperty::LineHeight(lh));
-                            }
-                            builder.push_default(parley::style::StyleProperty::FontFamily(
-                                font_family,
-                            ));
-                            // Add brush so the cached layout can be rendered with color
-                            builder.push_default(parley::style::StyleProperty::Brush(
-                                Brush::Solid(text.color),
-                            ));
-                            // Apply overflow-wrap for emergency line-breaking
-                            builder.push_default(parley::style::StyleProperty::OverflowWrap(
-                                text.overflow_wrap.to_parley(),
-                            ));
-                            // letter-/word-spacing (#698). The builder's scale
-                            // is 1.0 here, so these are CSS pixels either way.
-                            builder.push_default(parley::style::StyleProperty::LetterSpacing(
-                                text.letter_spacing,
-                            ));
-                            builder.push_default(parley::style::StyleProperty::WordSpacing(
-                                text.word_spacing,
-                            ));
-                            let mut layout = builder.build(&text.content);
-                            // If no_wrap is set (white-space: nowrap), don't constrain width
-                            let wrap_width = if text.no_wrap {
-                                None
-                            } else {
-                                known_dims.width.or(max_width)
+                |inputs, _node_id, context, style| {
+                    // Taffy 0.14's measure returns a `LayoutOutput`; the leaf
+                    // algorithm (box-sizing, min/max clamps) is what Taffy 0.12's
+                    // `TaffyView` ran around the size this body returns, with the
+                    // same `0.0` calc resolver. The body also says where its
+                    // first line's baseline is, from the content-box top, and
+                    // `with_first_baseline` hands it to Taffy (#1013).
+                    let mut first_baseline: Option<f32> = None;
+                    let out = taffy::compute_leaf_layout(
+                        inputs,
+                        style,
+                        |_, _| 0.0,
+                        |known_dims, avail_space| {
+                            measure_calls.set(measure_calls.get() + 1);
+                            let max_width = match avail_space.width {
+                                taffy::AvailableSpace::Definite(w) => Some(w),
+                                taffy::AvailableSpace::MaxContent => None,
+                                taffy::AvailableSpace::MinContent => Some(0.0),
                             };
-                            let leaf = crate::ifc::break_leaf_lines(&mut layout, wrap_width);
-                            let mut h = hang.get();
-                            h.add(leaf);
-                            hang.set(h);
 
-                            // Cache the layout for use during paint
-                            // Use wrap_width bits as part of the key since layout depends on it
-                            let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-                            text_layout_cache
-                                .borrow_mut()
-                                .insert((text.node_id, wrap_bits), layout);
+                            match context {
+                                Some(NodeContext::Text(text)) => {
+                                    if text.content.is_empty() {
+                                        return taffy::Size {
+                                            width: 0.0,
+                                            height: 0.0,
+                                        };
+                                    }
 
-                            taffy::Size {
-                                width: known_dims.width.unwrap_or_else(|| {
-                                    text_layout_cache
-                                        .borrow()
-                                        .get(&(text.node_id, wrap_bits))
-                                        .map(|l| l.width())
-                                        .unwrap_or(0.0)
-                                }),
-                                height: known_dims.height.unwrap_or_else(|| {
-                                    text_layout_cache
-                                        .borrow()
-                                        .get(&(text.node_id, wrap_bits))
-                                        .map(|l| l.height())
-                                        .unwrap_or(0.0)
-                                }),
-                            }
-                        }
-                        Some(NodeContext::Image { width, height, .. }) => {
-                            let iw = *width as f32;
-                            let ih = *height as f32;
-                            if iw == 0.0 || ih == 0.0 {
-                                // Image still loading — return zero size
-                                return taffy::Size::ZERO;
-                            }
-                            let aspect = iw / ih;
-                            // Use intrinsic dimensions as default, but respect
-                            // CSS width/height if set (via known_dims from Taffy style).
-                            // Maintain aspect ratio when only one dimension is constrained.
-                            let w = match (known_dims.width, known_dims.height) {
-                                (Some(kw), _) => kw,
-                                (None, Some(kh)) => kh * aspect,
-                                (None, None) => iw,
-                            };
-                            let h = match (known_dims.height, known_dims.width) {
-                                (Some(kh), _) => kh,
-                                (None, Some(kw)) => kw / aspect,
-                                (None, None) => ih,
-                            };
-                            taffy::Size {
-                                width: w,
-                                height: h,
-                            }
-                        }
-                        Some(NodeContext::InlineRoot(root_id)) => {
-                            let root_id = *root_id;
+                                    // Skip Parley measurement for text in collapsed blocks
+                                    if nodes[text.node_id].estimated_height.is_some()
+                                        || nodes[text.node_id]
+                                            .parent
+                                            .is_some_and(|p| nodes[p].estimated_height.is_some())
+                                    {
+                                        return taffy::Size::ZERO;
+                                    }
 
-                            // Collapsed block (virtualized) — return estimated size
-                            // without doing any Parley work.
-                            //
-                            // This early return only runs at all because the
-                            // node is a Taffy leaf — Taffy never consults a
-                            // measure function on a node with children (the
-                            // IFC leaf invariant, #466; see
-                            // `NodeContext::InlineRoot`). A non-leaf
-                            // virtualized root would silently get 0 from the
-                            // block algorithm instead of its estimate.
-                            if let Some(est_h) = nodes[root_id].estimated_height {
-                                return taffy::Size {
-                                    width: known_dims.width.unwrap_or(0.0),
-                                    height: known_dims.height.unwrap_or(est_h),
-                                };
-                            }
-
-                            // Use wrap_width bits as cache key
-                            let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-
-                            // Check persistent IFC measure cache — skip expensive
-                            // Parley rebuild if this root's text hasn't changed.
-                            {
-                                let cached = ifc_measure_cache
-                                    .borrow()
-                                    .get(&root_id)
-                                    .and_then(|e| e.get(wrap_bits));
-                                if let Some((cached_w, cached_h)) = cached {
-                                    cache_hits.set(cache_hits.get() + 1);
-                                    return taffy::Size {
-                                        width: known_dims.width.unwrap_or(cached_w),
-                                        height: known_dims.height.unwrap_or(cached_h),
+                                    shape_text.set(shape_text.get() + 1);
+                                    let font_family = crate::fonts::parley_text_family(
+                                        font_cx,
+                                        &text.font_family,
+                                        &text.content,
+                                    );
+                                    let mut builder =
+                                        layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
+                                    builder.push_default(parley::style::StyleProperty::FontSize(
+                                        text.font_size,
+                                    ));
+                                    if (text.font_weight - 400.0).abs() > 1.0 {
+                                        builder.push_default(
+                                            parley::style::StyleProperty::FontWeight(
+                                                parley::style::FontWeight::new(text.font_weight),
+                                            ),
+                                        );
+                                    }
+                                    if let Some(lh) =
+                                        layout::css_line_height_to_parley(&text.line_height_css)
+                                    {
+                                        builder.push_default(
+                                            parley::style::StyleProperty::LineHeight(lh),
+                                        );
+                                    }
+                                    font_family.push_to(&mut builder);
+                                    // Add brush so the cached layout can be rendered with color
+                                    builder.push_default(parley::style::StyleProperty::Brush(
+                                        Brush::Solid(text.color),
+                                    ));
+                                    // Apply overflow-wrap for emergency line-breaking
+                                    builder.push_default(
+                                        parley::style::StyleProperty::OverflowWrap(
+                                            text.overflow_wrap.to_parley(),
+                                        ),
+                                    );
+                                    // letter-/word-spacing (#698). The builder's scale
+                                    // is 1.0 here, so these are CSS pixels either way.
+                                    builder.push_default(
+                                        parley::style::StyleProperty::LetterSpacing(
+                                            text.letter_spacing,
+                                        ),
+                                    );
+                                    builder.push_default(
+                                        parley::style::StyleProperty::WordSpacing(
+                                            text.word_spacing,
+                                        ),
+                                    );
+                                    let mut layout = builder.build(&text.content);
+                                    // If no_wrap is set (white-space: nowrap), don't constrain width
+                                    let wrap_width = if text.no_wrap {
+                                        None
+                                    } else {
+                                        known_dims.width.or(max_width)
                                     };
+                                    let leaf = crate::ifc::break_leaf_lines(
+                                        &mut layout,
+                                        &text.content,
+                                        wrap_width,
+                                    );
+                                    let mut h = hang.get();
+                                    h.add(leaf);
+                                    hang.set(h);
+
+                                    // Cache the layout for use during paint
+                                    // Use wrap_width bits as part of the key since layout depends on it
+                                    let wrap_bits =
+                                        wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                                    first_baseline = crate::ifc::first_line_baseline(&layout);
+                                    text_layout_cache
+                                        .borrow_mut()
+                                        .insert((text.node_id, wrap_bits), layout);
+
+                                    taffy::Size {
+                                        width: known_dims.width.unwrap_or_else(|| {
+                                            text_layout_cache
+                                                .borrow()
+                                                .get(&(text.node_id, wrap_bits))
+                                                .map(|l| l.width())
+                                                .unwrap_or(0.0)
+                                        }),
+                                        height: known_dims.height.unwrap_or_else(|| {
+                                            text_layout_cache
+                                                .borrow()
+                                                .get(&(text.node_id, wrap_bits))
+                                                .map(|l| l.height())
+                                                .unwrap_or(0.0)
+                                        }),
+                                    }
                                 }
+                                Some(NodeContext::Image { width, height, .. }) => {
+                                    let iw = *width as f32;
+                                    let ih = *height as f32;
+                                    if iw == 0.0 || ih == 0.0 {
+                                        // Image still loading — return zero size
+                                        return taffy::Size::ZERO;
+                                    }
+                                    // A replaced element with a natural size and
+                                    // ratio (#788, #1150): a style width or height
+                                    // gives the other through the ratio, and so do
+                                    // `min-*`/`max-*` clamps.
+                                    crate::replaced::measure(
+                                        (iw, ih),
+                                        true,
+                                        known_dims,
+                                        style,
+                                        inputs.parent_size,
+                                        inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                    )
+                                }
+                                Some(NodeContext::InlineRoot(root_id)) => {
+                                    let root_id = *root_id;
+
+                                    // Collapsed block (virtualized) — return estimated size
+                                    // without doing any Parley work.
+                                    //
+                                    // This early return only runs at all because the
+                                    // node is a Taffy leaf — Taffy never consults a
+                                    // measure function on a node with children (the
+                                    // IFC leaf invariant, #466; see
+                                    // `NodeContext::InlineRoot`). A non-leaf
+                                    // virtualized root would silently get 0 from the
+                                    // block algorithm instead of its estimate.
+                                    if let Some(est_h) = nodes[root_id].estimated_height {
+                                        return taffy::Size {
+                                            width: known_dims.width.unwrap_or(0.0),
+                                            height: known_dims.height.unwrap_or(est_h),
+                                        };
+                                    }
+
+                                    // Use wrap_width bits as cache key
+                                    let wrap_bits =
+                                        max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+
+                                    // Check persistent IFC measure cache — skip expensive
+                                    // Parley rebuild if this root's text hasn't changed.
+                                    {
+                                        let cached = ifc_measure_cache
+                                            .borrow()
+                                            .get(&root_id)
+                                            .and_then(|e| e.get(wrap_bits));
+                                        if let Some(m) = cached {
+                                            cache_hits.set(cache_hits.get() + 1);
+                                            first_baseline = m.first_baseline;
+                                            return taffy::Size {
+                                                width: known_dims.width.unwrap_or(m.width),
+                                                height: known_dims.height.unwrap_or(m.height),
+                                            };
+                                        }
+                                    }
+
+                                    // Full Parley rebuild (text changed or cache miss)
+                                    shape_ifc.set(shape_ifc.get() + 1);
+                                    let (inline_layout, resolved) = Self::build_inline_layout(
+                                        nodes, root_id, max_width, 1.0, font_cx, layout_cx,
+                                    );
+                                    font_family_resolves.set(font_family_resolves.get() + resolved);
+                                    let mut h = hang.get();
+                                    h.add(inline_layout.hang);
+                                    hang.set(h);
+                                    let w = inline_layout.measured_width();
+                                    let h = inline_layout.layout.height();
+                                    first_baseline =
+                                        crate::ifc::first_line_baseline(&inline_layout.layout);
+
+                                    // Store in persistent cache
+                                    ifc_measure_cache
+                                        .borrow_mut()
+                                        .entry(root_id)
+                                        .or_default()
+                                        .insert(
+                                            wrap_bits,
+                                            crate::node::IfcMeasure {
+                                                width: w,
+                                                height: h,
+                                                first_baseline,
+                                            },
+                                        );
+
+                                    // Measure callback for IFC root
+                                    taffy::Size {
+                                        width: known_dims.width.unwrap_or(w),
+                                        height: known_dims.height.unwrap_or(h),
+                                    }
+                                }
+                                Some(NodeContext::FormControl {
+                                    content_width,
+                                    content_height,
+                                }) => crate::form_control::measure(
+                                    *content_width,
+                                    *content_height,
+                                    known_dims,
+                                ),
+                                Some(NodeContext::Replaced {
+                                    width,
+                                    height,
+                                    ratio,
+                                }) => crate::replaced::measure(
+                                    (*width, *height),
+                                    *ratio,
+                                    known_dims,
+                                    style,
+                                    inputs.parent_size,
+                                    inputs.sizing_mode == taffy::SizingMode::InherentSize,
+                                ),
+                                _ => taffy::Size::ZERO,
                             }
-
-                            // Full Parley rebuild (text changed or cache miss)
-                            shape_ifc.set(shape_ifc.get() + 1);
-                            let inline_layout = Self::build_inline_layout(
-                                nodes, root_id, max_width, 1.0, font_cx, layout_cx,
-                            );
-                            let mut h = hang.get();
-                            h.add(inline_layout.hang);
-                            hang.set(h);
-                            let w = inline_layout.measured_width();
-                            let h = inline_layout.layout.height();
-
-                            // Store in persistent cache
-                            ifc_measure_cache
-                                .borrow_mut()
-                                .entry(root_id)
-                                .or_default()
-                                .insert(wrap_bits, (w, h));
-
-                            // Measure callback for IFC root
-                            taffy::Size {
-                                width: known_dims.width.unwrap_or(w),
-                                height: known_dims.height.unwrap_or(h),
-                            }
-                        }
-                        Some(NodeContext::FormControl {
-                            content_width,
-                            content_height,
-                        }) => crate::form_control::measure(
-                            *content_width,
-                            *content_height,
-                            known_dims,
-                        ),
-                        _ => taffy::Size::ZERO,
-                    }
+                        },
+                    );
+                    crate::ifc::with_first_baseline(out, &inputs, style, first_baseline)
                 },
             )
             .unwrap();
@@ -839,6 +890,10 @@ impl RinchDocument {
         hang.get().record(perf);
         perf.add(Counter::ShapeMeasureText, shape_text.get());
         perf.add(Counter::IfcMeasureCacheHits, cache_hits.get());
+        perf.add(
+            Counter::InlineFontFamilyResolves,
+            font_family_resolves.get(),
+        );
         perf.add_elapsed(Counter::TimeTaffyComputeNs, t);
 
         text_layout_cache.into_inner()
@@ -1215,8 +1270,20 @@ impl RinchDocument {
                     let right = style.right.resolve(vw);
                     let bottom = style.bottom.resolve(vh);
                     let left = style.left.resolve(vw);
-                    let width_auto = style.width.lays_out_as_auto();
-                    let height_auto = style.height.lays_out_as_auto();
+                    // `auto` and `stretch` fill between paired insets; a
+                    // content keyword keeps the width Taffy measured (#691).
+                    let width_auto = style.width.fills_between_insets();
+                    let height_auto = style.height.fills_between_insets();
+                    // A single inset leaves the height to the content —
+                    // except `stretch`, whose height the pre-layout bake
+                    // already took from the viewport (`out_of_flow`).
+                    let height_from_content = style.height.is_auto_or_keyword()
+                        && !matches!(
+                            style.height,
+                            crate::computed_style::DimensionValue::Intrinsic(
+                                crate::computed_style::IntrinsicSize::Stretch
+                            )
+                        );
 
                     // Horizontal positioning
                     if let (Some(l), Some(r)) = (left, right) {
@@ -1244,12 +1311,12 @@ impl RinchDocument {
                         // (their Taffy parent differs from the CSS containing
                         // block which should be the viewport).  Re-derive
                         // content height from children.
-                        if height_auto {
+                        if height_from_content {
                             let _ = node;
                             new_layout.height = self.compute_content_height(node_id, &new_layout);
                         }
                     } else if let Some(b) = bottom {
-                        if height_auto {
+                        if height_from_content {
                             let _ = node;
                             new_layout.height = self.compute_content_height(node_id, &new_layout);
                         }
@@ -1419,7 +1486,7 @@ impl RinchDocument {
                 DimensionValue::Length(v) => Some(*v),
                 DimensionValue::Percent(p) => Some(p * vh),
                 DimensionValue::Calc { px, pct } => Some(px + pct * vh),
-                // An intrinsic keyword lays out as `auto` (#626), so it
+                // A min/max keyword lays out as `auto` (#1275), so it
                 // constrains nothing here either.
                 DimensionValue::Auto | DimensionValue::Intrinsic(_) => None,
             }

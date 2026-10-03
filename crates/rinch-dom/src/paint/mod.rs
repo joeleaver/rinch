@@ -23,7 +23,9 @@ pub mod vello_painter;
 pub mod skia_painter;
 
 use borders::*;
-pub use clip::{border_radii, clip_shape};
+pub use clip::{
+    border_radii, clip_shape, padding_box_insets, padding_box_insets_for_size, padding_box_radii,
+};
 use contenteditable::*;
 pub use damage::{DamageRegion, MAX_DAMAGE_RECTS};
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
@@ -437,7 +439,7 @@ pub(crate) fn clip_chain_bounds_counted(
         if escaping && a.contains_abs {
             escaping = false;
         }
-        if !escaping && a.clips {
+        if !escaping && (a.clips_x || a.clips_y) {
             let size = match frame {
                 Frame::Current => ancestor.layout,
                 Frame::Painted => ancestor.prev_layout,
@@ -445,7 +447,43 @@ pub(crate) fn clip_chain_bounds_counted(
             let (w, h) = (size.width as f64 * scale, size.height as f64 * scale);
             if w > 0.0 && h > 0.0 {
                 let (x, y, t) = position_and_transform_in(tree, id, scale, frame);
-                let r = t.transform_rect_bbox(Rect::new(x, y, x + w, y + h));
+                // #536: this is the module doc's own claim that "the current
+                // state is exactly what that paint clips with" — so it has to
+                // ask the same (padding-box) shape `clip_shape` does for
+                // paint, not the ancestor's plain border box. There is no
+                // record of a *painted* border width to ask for the
+                // `Frame::Painted` arm, so both frames read the ancestor's
+                // current computed style, clamped against *this* frame's own
+                // size (`padding_box_insets_for_size`) rather than its current
+                // `node.layout` — the same approximation `clip_shape`'s radii
+                // already make for every caller.
+                let (left, top, right, bottom) =
+                    padding_box_insets_for_size(ancestor, size.width, size.height);
+                let (left, top, right, bottom) = (
+                    left as f64 * scale,
+                    top as f64 * scale,
+                    right as f64 * scale,
+                    bottom as f64 * scale,
+                );
+                // Per axis (#535), matching `clip_shape`: an axis this
+                // ancestor does not clip (`a.clips_x`/`clips_y`, read from its
+                // current style either frame, same approximation as the radii
+                // above) is left unbounded rather than cut at its edge.
+                let (x0, x1) = if a.clips_x {
+                    let ix = x + left;
+                    let iw = (w - left - right).max(0.0);
+                    (ix, ix + iw)
+                } else {
+                    (x - clip::AXIS_UNBOUNDED, x + clip::AXIS_UNBOUNDED)
+                };
+                let (y0, y1) = if a.clips_y {
+                    let iy = y + top;
+                    let ih = (h - top - bottom).max(0.0);
+                    (iy, iy + ih)
+                } else {
+                    (y - clip::AXIS_UNBOUNDED, y + clip::AXIS_UNBOUNDED)
+                };
+                let r = t.transform_rect_bbox(Rect::new(x0, y0, x1, y1));
                 clip = Some(clip.map_or(r, |c| c.intersect(r)));
             }
         }
@@ -463,7 +501,10 @@ pub(crate) fn clip_chain_bounds_counted(
 /// The style facts [`clip_chain_bounds`] walks on.
 #[derive(Clone, Copy)]
 struct PaintedStyle {
-    clips: bool,
+    /// Per axis (#535) — [`crate::paint::clip_chain_bounds`] needs to know
+    /// which axis an ancestor bounded, not merely whether it bounded either.
+    clips_x: bool,
+    clips_y: bool,
     position: PositionValue,
     contains_abs: bool,
 }
@@ -476,15 +517,18 @@ impl PaintedStyle {
     /// pushes the node, so between two consumptions nothing it records moves.
     fn then(painted: &crate::node::PaintedState) -> Self {
         Self {
-            clips: painted.clips,
+            clips_x: painted.clips_x,
+            clips_y: painted.clips_y,
             position: painted.position,
             contains_abs: painted.contains_abs,
         }
     }
 
     fn now(node: &Node) -> Self {
+        let (clips_x, clips_y) = node.clip_axes();
         Self {
-            clips: node.clips_overflow(),
+            clips_x,
+            clips_y,
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }
@@ -2275,7 +2319,14 @@ fn paints_nothing_without_visit(
     if inside {
         return false;
     }
-    if node.clips_overflow() {
+    // Both axes, not `clips_overflow()`'s OR (#535): a box open on one axis
+    // lets a child paint past it on exactly that axis, so a box clipping only
+    // one cannot be assumed to confine its children the way a fully clipping
+    // one can — fall through to the recursive check instead of this shortcut.
+    // `clip_axes()` (not the two single-axis predicates) is the shared guard
+    // run once instead of twice.
+    let (clip_x, clip_y) = node.clip_axes();
+    if clip_x && clip_y {
         return true;
     }
     let child_x = x - node.scroll_offset.0 * scale;
@@ -2494,10 +2545,11 @@ fn paint_node(
             // zero-area rect, so both spellings arrive at square corners.
             // Checked against `10px` and `50%`, not reasoned from the type.
             //
-            // #536 (paint clips to the border box where CSS clips to the
-            // padding box) cannot interact here either: `layout.height` *is*
-            // the border box, so a collapsed box carrying a `border-width`
-            // never reaches this branch at all.
+            // #536 (the clip is the padding box, not the border box) cannot
+            // interact here either: `padding_box_insets` clamps each border
+            // width to the box's own (zero) size, so a collapsed box carrying
+            // a `border-width` still gets the same zero-area clip this branch
+            // has always pushed.
             //
             // Built once and handed down, exactly like the full-size bracket's
             // `root_clip` below, because opening a bracket and telling
@@ -2672,7 +2724,14 @@ fn paint_node(
             return;
         }
     } else if node_outside_dirty {
-        if node.clips_overflow() || node.children.is_empty() {
+        // Both axes, not `clips_overflow()`'s OR (#535): a box clipping on
+        // only one axis still lets a child paint past it on the open one, so
+        // this node's own box missing the dirty region does not mean its
+        // children do too — fall through to the recurse below instead of
+        // returning. `clip_axes()` runs the shared display/contents guards
+        // once rather than the two single-axis predicates running them twice.
+        let (node_clips_x, node_clips_y) = node.clip_axes();
+        if (node_clips_x && node_clips_y) || node.children.is_empty() {
             return;
         }
         // Skip drawing this node but recurse into children.
@@ -2683,15 +2742,41 @@ fn paint_node(
         // `scroll_offset` too far down and right. That was #408 — a latent
         // trap rather than a live bug, because a node only carries a scroll
         // offset if it scrolls and a node that scrolls answers
-        // `clips_overflow`, so the guard one line up already returned. Both
-        // halves of that argument read the same predicate, except in one place
-        // since #591 PR 1: a non-atomic inline element never clips, while the
-        // scroll-container walks (`find_scroll_container_at_point_recursive`,
-        // `clamp_scroll_offsets`, the scrollbar geometry) read `overflow`
-        // against `Scroll | Auto` directly, so a `<span style="overflow: auto">`
-        // can carry a scroll offset and not clip. Its box is `0x0`, so no ink is
-        // at stake — and correctness here should not depend on a guard above it
-        // at all.
+        // `clips_overflow`, so the guard one line up — before #535 — always
+        // returned first. Both halves of that argument read the same
+        // predicate, except in one place since #591 PR 1: a non-atomic inline
+        // element never clips, while the scroll-container walks
+        // (`find_scroll_container_at_point_recursive`, `clamp_scroll_offsets`,
+        // the scrollbar geometry) read `overflow` against `Scroll | Auto`
+        // directly, so a `<span style="overflow: auto">` can carry a scroll
+        // offset and not clip. Its box is `0x0`, so no ink is at stake — and
+        // correctness here should not depend on a guard above it at all.
+        //
+        // **This branch is reachable by a partially-clipping node since
+        // #535** (the guard above only excludes both-axes-clipping), and
+        // unlike the fully-unclipping case the comment above describes, such
+        // a node's children genuinely need a bracket on the clipping axis —
+        // dropping it entirely, as the pre-#535 "skip-drawing branch returns
+        // before the clip push" shape did, would let a child overflow straight
+        // through the axis that *does* clip. So this pushes the same
+        // `clip_shape` the normal drawing path below would, skipping only the
+        // background/border/etc paint that `node_outside_dirty` makes
+        // pointless — never the clip itself.
+        let clip = clip_shape(node, scale, x, y);
+        let root_clip: Option<PaintShape> = clip.map(|(clip_rect, clip_radii)| {
+            if clip_radii.top_left > 0.0
+                || clip_radii.top_right > 0.0
+                || clip_radii.bottom_right > 0.0
+                || clip_radii.bottom_left > 0.0
+            {
+                clip_rect.to_rounded_rect(clip_radii).into()
+            } else {
+                clip_rect.into()
+            }
+        });
+        if let Some(shape) = &root_clip {
+            painter.push_clip(Fill::NonZero, node_transform, shape);
+        }
         let scroll_x = node.scroll_offset.0 * scale;
         let scroll_y = node.scroll_offset.1 * scale;
         paint_children_with_stacking(
@@ -2704,10 +2789,12 @@ fn paint_node(
             font_cx,
             layout_cx,
             node_transform,
-            // Ditto: the skip-drawing branch returns before the clip push.
-            None,
+            root_clip.as_ref(),
             false,
         );
+        if root_clip.is_some() {
+            painter.pop_layer();
+        }
         return;
     }
 
@@ -3117,12 +3204,22 @@ fn paint_node(
             // not exist when this was written, so the guard is now on the whole
             // suppression rather than on one arm of it.
             let mut useless = false;
-            if clips && radius <= 0.0 {
+            // #536: the clip's own rect is the **padding** box, which can be
+            // smaller than `rect` (the border box) once a border has width.
+            // `covers_target` and `clip_cuts_nothing` both ask what the clip
+            // itself would cut, so they take `clip`'s rect — never `rect` —
+            // or a box covering the viewport right up to its own border
+            // (common: an app-shell root at the window size) could still
+            // decide "nothing to clip" from the larger border box while its
+            // smaller padding-box clip was the one actually in question.
+            if radius <= 0.0
+                && let Some((clip_rect, _)) = clip
+            {
                 // A rotated or skewed clip is not its own bounding box, so
                 // only an axis-aligned one may be tested this way.
                 let m = node_transform.as_coeffs();
                 let axis_aligned = m[1].abs() < 1e-9 && m[2].abs() < 1e-9;
-                let bbox = node_transform.transform_rect_bbox(rect);
+                let bbox = node_transform.transform_rect_bbox(clip_rect);
                 let covers_target = axis_aligned
                     && VIEWPORT.with(|v| match v.get() {
                         None => false,
@@ -3133,7 +3230,7 @@ fn paint_node(
                                 && bbox.y1 >= vp.target.y1 - 0.5
                         }
                     });
-                if covers_target || clip_cuts_nothing(tree, node_id, scale, x, y, rect) {
+                if covers_target || clip_cuts_nothing(tree, node_id, scale, x, y, clip_rect) {
                     useless = true;
                 }
             }
@@ -3618,9 +3715,10 @@ fn paint_node(
 
             let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
             let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
-            let font_family = crate::fonts::parley_font_family(
+            let font_family = crate::fonts::parley_text_family(
                 font_cx,
                 parent_computed.map_or("", |s| s.font_family.as_str()),
+                &text_data.content,
             );
 
             let color = parent_computed
@@ -3639,7 +3737,7 @@ fn paint_node(
             let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-            builder.push_default(parley::style::StyleProperty::FontFamily(font_family));
+            font_family.push_to(&mut builder);
             if (font_weight - 400.0).abs() > 1.0 {
                 builder.push_default(parley::style::StyleProperty::FontWeight(
                     parley::style::FontWeight::new(font_weight),
@@ -4191,6 +4289,131 @@ mod tests {
             super::point_in_painted_box(&doc.tree, overlay, 1.0, 100.0, 80.0),
             Some((60.0, 170.0)),
             "the page's scroll must not be added back in"
+        );
+    }
+
+    /// #536 review finding: `clip_chain_bounds` (#909's damage clip chain)
+    /// used to compute a clipping ancestor's rect from its plain border box,
+    /// while `clip_shape` (paint's own bracket) clips to the padding box —
+    /// one function left reading `ancestor.layout` raw after the rest of the
+    /// module moved. CLAUDE.md's #909 section claims the current chain "is
+    /// exactly what the next paint clips with"; this is the fixture that
+    /// claim rests on.
+    ///
+    /// The container is the issue's own repro geometry (100x100, `border:
+    /// 10px solid`, `overflow: hidden`, with a 300x300 overflowing child) so
+    /// the expected rect is the same `10..90` square #536's pixel oracle
+    /// pins by colour.
+    ///
+    /// Mutant this kills: reverting the `padding_box_insets_for_size` inset
+    /// in `clip_chain_bounds_counted` back to the plain border-box rect
+    /// (`Rect::new(x, y, x + w, y + h)`, #536's pre-fix shape) makes this
+    /// fail — `clip_now(child)` would answer `0..100`, not `10..90`.
+    #[test]
+    fn clip_chain_bounds_agrees_with_clip_shape_on_a_bordered_ancestor() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 100px; height: 100px; border: 10px solid blue; overflow: hidden",
+        );
+        let child = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(container),
+            "width: 300px; height: 300px; background: red",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        let container_node = doc.tree.get(container).unwrap();
+        let (expected_rect, _radii) =
+            super::clip_shape(container_node, 1.0, 0.0, 0.0).expect("container clips");
+        assert_eq!(
+            expected_rect,
+            peniko::kurbo::Rect::new(10.0, 10.0, 90.0, 90.0),
+            "sanity: the padding box of a 100x100 box with a 10px border"
+        );
+
+        let chain = super::clip_chain_bounds(&doc.tree, child, 1.0, false)
+            .expect("child has a clipping ancestor");
+        assert_eq!(
+            chain, expected_rect,
+            "the damage chain's clip for `child` must be exactly the clip \
+             `paint_node` opens for `container` — the padding box, not the \
+             border box `container.layout` alone would give"
+        );
+    }
+
+    /// #535 review: `clip_chain_bounds` (#909's damage clip chain) must be
+    /// per-axis too — an ancestor clipping only x (open y) bounds the chain's
+    /// x but leaves y effectively unbounded, matching `clip_shape`. No
+    /// existing #535 fixture exercised this function with an asymmetric clip,
+    /// so `a.clips_x`/`a.clips_y` could have regressed to one both-axes rect
+    /// with nothing in the suite noticing.
+    ///
+    /// Mutant this kills: collapsing the per-axis `a.clips_x`/`a.clips_y`
+    /// branches in `clip_chain_bounds_counted` back to one rect taken from
+    /// both insets unconditionally makes this fail — the y side comes back
+    /// `0..100` instead of unbounded.
+    #[test]
+    fn clip_chain_bounds_is_per_axis() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "overflow: visible;");
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 100px; height: 100px; overflow-x: clip; overflow-y: visible;",
+        );
+        let child = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(container),
+            "width: 300px; height: 300px; background: red",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        let chain = super::clip_chain_bounds(&doc.tree, child, 1.0, false)
+            .expect("child has a clipping ancestor");
+        assert_eq!(
+            (chain.x0, chain.x1),
+            (0.0, 100.0),
+            "x is clipped: {chain:?}"
+        );
+        assert!(
+            chain.y0 < -1.0e6 && chain.y1 > 1.0e6,
+            "y must be effectively unbounded, not cut at the box's edge: {chain:?}"
+        );
+    }
+
+    /// The asymmetric half of the fixture above: a left/right (or top/bottom)
+    /// swap in `padding_box_insets`/`padding_box_insets_for_size` survives a
+    /// uniform-border fixture (left == right there), so this one uses four
+    /// different widths and checks each edge lands at its own side's width,
+    /// not its mirror's.
+    #[test]
+    fn clip_chain_bounds_respects_asymmetric_border_widths() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 100px; height: 100px; overflow: hidden; \
+             border-left-width: 2px; border-top-width: 4px; \
+             border-right-width: 6px; border-bottom-width: 8px; border-style: solid;",
+        );
+        let child = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(container),
+            "width: 300px; height: 300px; background: red",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        let chain = super::clip_chain_bounds(&doc.tree, child, 1.0, false)
+            .expect("child has a clipping ancestor");
+        assert_eq!(
+            chain,
+            peniko::kurbo::Rect::new(2.0, 4.0, 94.0, 92.0),
+            "left=2 (not 6), top=4 (not 8), right=100-6=94, bottom=100-8=92"
         );
     }
 }

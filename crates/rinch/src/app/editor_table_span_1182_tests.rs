@@ -1,5 +1,6 @@
 //! #1182 on the desktop: an editor table whose cells' spans reach the model
-//! unbounded — by `load_doc`, or an app's own transaction — is laid out as the
+//! unbounded — by an app's own transaction (a load caps `colspan` at 1000
+//! since #1214) — is laid out as the
 //! grid the model's `TableMap` sees, not as the grid its raw `colspan` /
 //! `rowspan` attributes ask for.
 //!
@@ -7,7 +8,7 @@
 //! i64::MAX`. Written raw, Stylo clamps each span to 10000 (its
 //! `MAX_GRID_LINE`), so each cell fills the whole clamped template and the
 //! next is placed below it: four cells of 10000 rows are 40000 grid lines,
-//! past the `i16` Taffy numbers its lines in, and the layout **panicked**
+//! past the `i16` Taffy 0.12 numbered its lines in, and the layout **panicked**
 //! (`OriginZero grid line cannot be more than the number of positive grid
 //! lines`). The map's grid is `2^22 / 4 = 1_048_576` columns wide: the first
 //! cell spans 1_000_000 of them and all four rows, the second the 48_576 left
@@ -70,7 +71,16 @@ fn mounted(rows: &[Vec<(i64, i64)>]) -> (RinchApp, Vec<usize>, usize) {
     let editor_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
     let editor_in = editor_id.clone();
     let handle = crate::editor::create_editor();
-    handle.load_doc(table_doc(&handle, rows));
+    // As an app's own transaction: a load would cap the 1,000,000 colspans
+    // at 1000 (#1214), and this shape is about spans that reach the model
+    // unbounded.
+    let table = table_doc(&handle, rows);
+    assert!(handle.update(|st| {
+        let mut tr = st.tr();
+        tr.replace_with(0, st.doc.content_size(), table.content().clone())
+            .ok()?;
+        Some(tr)
+    }));
     let handle_in = handle.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
@@ -229,7 +239,7 @@ fn a_tall_table_keeps_its_column_lines() {
 /// #1209: a wide row of wide cells — four of `colspan = 20000` in a
 /// 80000-column table — lays out without a panic. Locked to their row with
 /// auto-placed columns, the four (each span clamped to 10000 tracks) took
-/// 40000 column lines, past the `i16` Taffy numbers them with; a table past
+/// 40000 column lines, past the `i16` Taffy 0.12 numbered them with; a table past
 /// 9999 columns is therefore auto-placed in both axes.
 #[test]
 fn a_wide_row_of_wide_cells_does_not_panic() {

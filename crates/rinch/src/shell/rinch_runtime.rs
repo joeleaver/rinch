@@ -1985,16 +1985,20 @@ impl ApplicationHandler for RinchRuntime {
                         physical_key: winit::keyboard::PhysicalKey::Code(key_code),
                         state: ElementState::Pressed,
                         logical_key: ref win_logical,
+                        key_without_modifiers: ref win_kwm,
                         ref text,
                         repeat,
                         ..
                     },
                 ..
             } => {
-                // Check menu shortcuts first — if matched, consume the event
+                // Check menu shortcuts first — if matched, consume the event.
+                // A chord with no Ctrl/Cmd/Alt leaves its key to a focused
+                // text field (#1169). `win_kwm` is the layout's character for
+                // this physical key, ignoring Shift — issue #1170's letter
+                // chords match it before falling back to the physical key.
                 let mods = self.translate_modifiers();
-                if crate::menu::match_shortcut(mods.ctrl, mods.meta, mods.alt, mods.shift, key_code)
-                {
+                if self.app.try_menu_shortcut(mods, key_code, win_kwm) {
                     // Shortcut matched and callback dispatched; request redraw
                     if let Some(w) = &self.window {
                         w.request_redraw();

@@ -75,6 +75,9 @@ pub struct App<F> {
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     #[cfg(feature = "desktop")]
     pub(crate) renderer: crate::shell::renderer::Renderer,
+    /// See [`shortcut_matching`](App::shortcut_matching).
+    #[cfg(feature = "desktop")]
+    pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
@@ -96,6 +99,8 @@ where
             menus: None,
             #[cfg(feature = "desktop")]
             renderer: crate::shell::renderer::Renderer::Auto,
+            #[cfg(feature = "desktop")]
+            shortcut_matching: crate::menu::ShortcutMatching::default(),
             #[cfg(feature = "gpu")]
             gpu: None,
         }
@@ -249,6 +254,34 @@ where
         self
     }
 
+    /// Choose how a menu's letter chords are matched against a keystroke
+    /// (issue #1170).
+    ///
+    /// The default, [`ShortcutMatching::LayoutAware`](crate::menu::ShortcutMatching::LayoutAware),
+    /// matches a letter chord (`"Ctrl+Z"`) to the *character* the active
+    /// keyboard layout types for the pressed key — so Ctrl+Z fires from
+    /// whichever key is labelled Z, on QWERTZ and AZERTY as well as QWERTY —
+    /// falling back to the physical key when the layout types no Latin
+    /// letter there at all (Cyrillic, Thai, …). Punctuation and digit chords
+    /// are unaffected either way; they have always matched the physical key.
+    ///
+    /// [`ShortcutMatching::Physical`](crate::menu::ShortcutMatching::Physical)
+    /// turns that off and matches every chord by physical key alone, as rinch
+    /// did before #1170 — the escape hatch for a user who wants shortcut
+    /// *positions* to stay where they are on a remapped or non-Latin layout
+    /// rather than follow the character (the same choice VS Code's
+    /// `keyboard.dispatch` setting and JetBrains' "use national layout for
+    /// shortcuts" toggle offer).
+    ///
+    /// Applied at [`run`](App::run); on the web, call
+    /// [`rinch_web::set_shortcut_matching`](https://docs.rs/rinch-web)
+    /// (`rinch::menu::set_shortcut_matching`) directly before mounting.
+    #[cfg(feature = "desktop")]
+    pub fn shortcut_matching(mut self, mode: crate::menu::ShortcutMatching) -> Self {
+        self.shortcut_matching = mode;
+        self
+    }
+
     /// Run on an embedder-provided GPU device.
     ///
     /// The embedder creates the whole GPU stack with its own `DeviceDescriptor`
@@ -281,6 +314,7 @@ where
             fonts: self.fonts,
             menus: self.menus,
             renderer: self.renderer,
+            shortcut_matching: self.shortcut_matching,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
             component: self.component,
@@ -321,11 +355,13 @@ where
             fonts,
             menus,
             renderer,
+            shortcut_matching,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
 
         crate::shell::renderer::set_requested(renderer);
+        crate::menu::set_shortcut_matching(shortcut_matching);
         #[cfg(feature = "gpu")]
         if let Some(gpu) = gpu {
             crate::shell::desktop::set_gpu_init(gpu);
@@ -391,6 +427,55 @@ where
         crate::setup_theme_css(&self.theme.unwrap_or_default());
         crate::shell::android_runtime::run_component(android_app, self.component, &self.fonts);
     }
+}
+
+/// A crude per-character "narrow units" estimate for the inline titlebar
+/// spacer (issue #529). Not a real text-advance measurement — no font
+/// context exists yet at the point this runs, before the window or its
+/// document are created — so this stays an estimate, but a
+/// bounded one: each `char` counts as 1 narrow unit or 2 for the common
+/// double-width East Asian ranges (CJK ideographs, kana, hangul, fullwidth
+/// forms, most emoji), rather than `str::len()`'s UTF-8 **byte** count, which
+/// over-reserves any non-ASCII label by up to 4x (a 4-byte emoji) and already
+/// over-reserves plain Cyrillic/Greek/accented text 2x (every such codepoint
+/// is 2 UTF-8 bytes for one visual character).
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn char_width_units(c: char) -> u32 {
+    let cp = c as u32;
+    let is_wide = matches!(cp,
+        0x1100..=0x115F     // Hangul Jamo
+        | 0x2E80..=0x303E   // CJK Radicals, Kangxi, CJK Symbols and Punctuation
+        | 0x3041..=0x33FF   // Hiragana .. CJK Compatibility
+        | 0x3400..=0x4DBF   // CJK Unified Ideographs Extension A
+        | 0x4E00..=0x9FFF   // CJK Unified Ideographs
+        | 0xA000..=0xA4CF   // Yi Syllables and Radicals
+        | 0xAC00..=0xD7A3   // Hangul Syllables
+        | 0xF900..=0xFAFF   // CJK Compatibility Ideographs
+        | 0xFF00..=0xFF60   // Fullwidth Forms
+        | 0xFFE0..=0xFFE6   // Fullwidth Signs
+        | 0x1F300..=0x1FAFF // Misc Symbols/Pictographs, Emoticons, Transport, Supplemental Symbols
+        | 0x20000..=0x3FFFD // CJK Unified Ideographs Extension B and beyond
+    );
+    if is_wide { 2 } else { 1 }
+}
+
+/// The inline titlebar spacer width for a set of menu-bar labels (issue
+/// #529), extracted so it can be pinned at all — it used to sit inside a
+/// closure inside [`run_desktop_linux`], which only ever runs by taking over
+/// the event loop and so could never be unit-tested.
+///
+/// `10px` padding-left + hamburger(`~36px`) + `2px` gap per item + each
+/// label (`~8px` per narrow-unit + `16px` padding) + `10px` padding-right.
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn inline_spacer_width(labels: &[&str]) -> u32 {
+    let labels_width: u32 = labels
+        .iter()
+        .map(|l| {
+            let width_units: u32 = l.chars().map(char_width_units).sum();
+            width_units * 8 + 16 + 2
+        })
+        .sum();
+    10 + 36 + labels_width + 10
 }
 
 /// The Linux desktop startup path, which has to wrap the component so the
@@ -471,14 +556,10 @@ fn run_desktop_linux<F>(
                 })
             };
 
-            // Estimate inline row width for titlebar spacer:
-            // 10px padding-left + hamburger(~36px) + 2px gap per item
-            // + each label (~8px/char + 16px padding) + 10px padding-right
-            let labels_width: u32 = menu_data_rc
-                .iter()
-                .map(|(l, _)| (l.len() as u32) * 8 + 16 + 2)
-                .sum();
-            let spacer_w = 10 + 36 + labels_width + 10;
+            // Estimate inline row width for titlebar spacer (see
+            // `inline_spacer_width`'s doc for the per-label formula).
+            let labels: Vec<&str> = menu_data_rc.iter().map(|(l, _)| l.as_str()).collect();
+            let spacer_w = inline_spacer_width(&labels);
 
             rinch_core::create_context(rinch_core::MenuBarContext {
                 renderer: items_renderer.clone(),
@@ -543,6 +624,8 @@ pub(crate) struct Startup<F> {
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     /// The renderer the app asked for (`RINCH_RENDERER` still overrides it).
     pub(crate) renderer: crate::shell::renderer::Renderer,
+    /// See [`App::shortcut_matching`].
+    pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
@@ -895,5 +978,80 @@ mod tests {
             None,
         );
         assert_eq!(resolved.resize_inset, None);
+    }
+
+    // #529: the inline titlebar spacer used to size itself from
+    // `label.len()` — UTF-8 **bytes** — rather than the label's visual
+    // width, so any non-ASCII label over-reserved space proportional to how
+    // many bytes its characters happened to encode to, not how wide they
+    // draw. These fixtures use `inline_spacer_width` as it stands today
+    // (char-count + East-Asian-wide doubling) and are proven below, by hand,
+    // to fail against both the original bytes-based formula and against a
+    // plain `chars().count()` with no wide-character doubling — the two
+    // most plausible mutants of this fix.
+
+    /// An ASCII-only label is exactly where `len()` (bytes) and
+    /// `chars().count()` (chars) agree — the issue's own warning that such a
+    /// fixture "cannot see this bug". Kept as a sanity check that the new
+    /// formula still matches the documented base case, not as the bug's pin.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_ascii_label_reserves_the_documented_width() {
+        // "File": 4 narrow units * 8 + 16 + 2 = 50, plus the 10+36+10 frame.
+        assert_eq!(inline_spacer_width(&["File"]), 10 + 36 + 50 + 10);
+    }
+
+    /// "Файл" (Cyrillic for "File") is 4 **characters** but 8 UTF-8 bytes —
+    /// every Cyrillic codepoint is 2 bytes. The byte-based formula reserved
+    /// (8*8+16+2)=82px for it; the character-based one reserves (4*8+16+2)=50,
+    /// matching the ASCII case above exactly, as it should for 4 narrow
+    /// glyphs. Mutant this kills: reverting `l.chars().map(char_width_units).sum()`
+    /// back to `l.len() as u32` reserves 82, not 50 — confirmed by hand
+    /// (temporarily restoring the byte-based line) before writing this
+    /// comment, then reverted.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cyrillic_label_is_sized_by_characters_not_bytes() {
+        assert_eq!(inline_spacer_width(&["Файл"]), 10 + 36 + 50 + 10);
+    }
+
+    /// "Édition" (French for "Edit") is 7 characters, one of them (`É`) a
+    /// 2-byte accented codepoint, so the byte-based formula counted 8 bytes
+    /// and reserved (8*8+16+2)=82; the character-based one counts 7 narrow
+    /// units and reserves (7*8+16+2)=74. Mutant this kills: the same
+    /// byte-count reversion as above, which would assert 82 here instead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_accented_label_is_sized_by_characters_not_bytes() {
+        assert_eq!(inline_spacer_width(&["Édition"]), 10 + 36 + 74 + 10);
+    }
+
+    /// "ファイル" (Japanese katakana for "File") is 4 characters, each a
+    /// double-width glyph, encoded as 12 UTF-8 bytes. The byte-based formula
+    /// reserved (12*8+16+2)=114; `chars().count()` alone (no wide-character
+    /// doubling) would under-reserve at (4*8+16+2)=50 — about as wrong in
+    /// the other direction, per the issue's own warning. The wide-aware
+    /// formula counts 4 chars * 2 width-units = 8 units, reserving
+    /// (8*8+16+2)=82. Mutant this kills: deleting the `is_wide` doubling in
+    /// `char_width_units` (always returning 1) would assert 50 here instead
+    /// of 82 — confirmed by hand (temporarily hard-coding `1`) before
+    /// writing this comment, then reverted.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cjk_label_reserves_double_width_per_character() {
+        assert_eq!(inline_spacer_width(&["ファイル"]), 10 + 36 + 82 + 10);
+    }
+
+    /// Several labels compose additively, confirming the per-label formula
+    /// (not just a single-label fixed point) and that one wide label does
+    /// not affect a sibling narrow one's own contribution.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn multiple_labels_sum_their_own_widths() {
+        // "File" -> 50, "ファイル" -> 82.
+        assert_eq!(
+            inline_spacer_width(&["File", "ファイル"]),
+            10 + 36 + 50 + 82 + 10
+        );
     }
 }

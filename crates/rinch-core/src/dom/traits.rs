@@ -150,6 +150,30 @@ pub enum FocusIntoPolicy {
     AutofocusOnly,
 }
 
+/// The direction a text selection extends in — [`DomDocument::set_selection_range`]'s
+/// fourth argument, matching the DOM's `HTMLInputElement.setSelectionRange(start,
+/// end, direction)` exactly (issue #552): `"forward"`, `"backward"` and
+/// `"none"` are literally these three variants, lowercased.
+///
+/// `Forward` and `Backward` decide which end is the *anchor* (fixed) and which
+/// is the *head* (what Shift+Arrow would move from) — not merely how the
+/// range paints, since a control's own keyboard handling continues from the
+/// head. `None` — "unspecified", a browser's own default when the third
+/// argument is omitted — is applied the same way [`Forward`](Self::Forward)
+/// is: it selects the same text, and the two differ only in what
+/// `selectionDirection` would read back, which rinch does not model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionDirection {
+    /// The anchor is `start`, the head is `end`.
+    #[default]
+    Forward,
+    /// The anchor is `end`, the head is `start`.
+    Backward,
+    /// Unspecified, as when a browser's `setSelectionRange` is called with no
+    /// third argument. Applied the same way [`Forward`](Self::Forward) is.
+    None,
+}
+
 /// Allocate a fresh process-unique document key for [`DomDocument::doc_key`].
 ///
 /// Call once per document at construction and store the result. Monotonic and
@@ -357,6 +381,14 @@ pub trait DomDocument {
     }
 
     /// Set a CSS style property on an element.
+    ///
+    /// CSSOM's `setProperty`: afterwards the element's inline style gives
+    /// `property` this value however the attribute declared it before. A
+    /// backend that keeps the attribute as a string of declarations must not
+    /// leave the write in front of a later declaration that covers it — a
+    /// shorthand, or a logical twin — or that later declaration wins the
+    /// cascade and the attribute names a value the element is not laid out
+    /// with (#470).
     fn set_style(&mut self, node: NodeId, property: &str, value: &str);
 
     /// Set multiple CSS style properties on an element in a single operation.
@@ -453,6 +485,63 @@ pub trait DomDocument {
     /// # Arguments
     /// * `node_id` - The ID of the element to focus
     fn focus_element(&mut self, node_id: NodeId);
+
+    /// Select a `[start, end)` range of a text control's text, in **UTF-16
+    /// code units** — matching the DOM's `HTMLInputElement.setSelectionRange`
+    /// exactly, so one offset pair means the same thing on desktop and on the
+    /// web (issue #552). `start`/`end` out of order are swapped, as a
+    /// browser's own `setSelectionRange` does; `direction` decides which end
+    /// becomes the anchor (see [`SelectionDirection`]).
+    ///
+    /// **Applied now if `node_id` already holds the keyboard; stashed for the
+    /// next time it gains it otherwise** — the same thing a browser does for
+    /// `setSelectionRange`/`select()` called on an unfocused control: the
+    /// range is set immediately, before the control is ever focused, and is
+    /// simply what the control shows the first time it is. There is no
+    /// "no-op on an unfocused control" case to document for a text control,
+    /// unlike [`focus_element`](Self::focus_element) — a selection has
+    /// somewhere to live even without the keyboard.
+    ///
+    /// **A node that is not a text control — a checkbox, a `<select>`, a
+    /// generic `tabindex` node — is a no-op, silently, on desktop** (review of
+    /// #1325, finding 4): such a node never installs the `EditableState` a
+    /// selection would apply to, so there is nowhere for the "stash" half of
+    /// the rule above to land, and desktop drops the request rather than
+    /// holding it forever unconsumed. A browser's own `setSelectionRange`
+    /// throws `InvalidStateError` on such a control (`<input type="checkbox">`,
+    /// a `<select>`); rinch's backends do not raise an equivalent error —
+    /// `rinch-web` gets the browser's own refusal for free (the call itself
+    /// throws, caught and discarded), desktop's refusal is this paragraph.
+    ///
+    /// [`NodeHandle::set_selection_range`](super::NodeHandle::set_selection_range)
+    /// is the caller-facing spelling. Defaulted to a no-op so a backend with
+    /// no text-control selection to set (and `MockDomDocument`, which
+    /// overrides it) keeps compiling.
+    fn set_selection_range(
+        &mut self,
+        _node_id: NodeId,
+        _start: usize,
+        _end: usize,
+        _direction: SelectionDirection,
+    ) {
+    }
+
+    /// Select a text control's **entire** text — `NodeHandle::select()`
+    /// (issue #552), the DOM's `HTMLInputElement.select()`.
+    ///
+    /// The default is exactly `set_selection_range(node_id, 0, len, Forward)`
+    /// where `len` is [`live_value`](Self::live_value)'s UTF-16 length (`0` if
+    /// the node carries no value this backend can name), so a backend needs
+    /// only to implement [`set_selection_range`](Self::set_selection_range) to
+    /// get this for free — both inherit its "apply now or stash for the next
+    /// focus" rule.
+    fn select_text(&mut self, node_id: NodeId) {
+        let len = self
+            .live_value(node_id)
+            .map(|v| v.encode_utf16().count())
+            .unwrap_or(0);
+        self.set_selection_range(node_id, 0, len, SelectionDirection::Forward);
+    }
 
     /// The node that currently holds keyboard focus in this document, if any
     /// (issue #695).
@@ -610,9 +699,10 @@ pub trait DomDocument {
     /// absolutely-positioned child anchors to. On the web that is the node's border
     /// width (`clientLeft`/`clientTop`): CSS positions an `absolute` child against the
     /// padding box, while `getBoundingClientRect` differences report against the border
-    /// box, so the editor's overlay container offset must subtract this once. Default
-    /// `(0, 0)` — the desktop renderer positions overlays against the same origin it
-    /// lays children out against.
+    /// box, so the editor's overlay container offset must subtract this once. The
+    /// desktop renderer is the same (its layout origins are border-box-relative, an
+    /// absolute child's insets padding-box-relative) and answers the border widths
+    /// too. Default `(0, 0)`, for a backend with no borders to report.
     fn content_origin_inset(&self, _node_id: u64) -> (f32, f32) {
         (0.0, 0.0)
     }
@@ -659,6 +749,19 @@ pub trait DomDocument {
     /// text under collapsing `white-space` would have to count differently.
     fn tab_flat_bytes(&self) -> usize {
         1
+    }
+
+    /// The characters of a text node under preserved `white-space` that this
+    /// backend lays out as something of another length, and the bytes each
+    /// then occupies in the flat byte offsets of [`Self::tab_flat_bytes`]
+    /// (#1181). None by default — the browser's DOM ranges count the
+    /// characters themselves. rinch-dom hands parley a substitute for U+2028,
+    /// U+2029, U+0085 and U+000C (its `ifc::PRESERVED_SUBSTITUTES`, the same
+    /// table its layout reads), so the rich-text editor's caret map counts
+    /// each as that many bytes. Like a tab's, the answer holds only where
+    /// `white-space` preserves the text, which the editor's does.
+    fn substituted_char_flat_bytes(&self) -> &'static [(char, usize)] {
+        &[]
     }
 
     /// The caret beside the atomic inline `box_id` (an `<img>`) that the

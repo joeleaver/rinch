@@ -38,11 +38,14 @@ fn doc_of(s: &Schema, blocks: Vec<Node>) -> Node {
     s.branch("doc", Fragment::from_children(blocks)).unwrap()
 }
 
-/// A `blockquote` — deliberately outside the A22 scope, and the shape a real paste or
-/// "wrap in quote" command produces.
-fn blockquote(s: &Schema, text: &str) -> Node {
-    s.branch("blockquote", Fragment::from_node(para(s, text)))
-        .unwrap()
+/// A `task_list` holding one item — deliberately outside the A22 scope, and the shape a
+/// real paste or "toggle task list" command produces. (A `blockquote` was this fixture
+/// until quotes came into scope.)
+fn task_list(s: &Schema, text: &str) -> Node {
+    let item = s
+        .branch("task_item", Fragment::from_node(para(s, text)))
+        .unwrap();
+    s.branch("task_list", Fragment::from_node(item)).unwrap()
 }
 
 /// One editor plus its session, driven the way `EditorHandle::commit` drives them: the
@@ -85,9 +88,9 @@ impl Peer {
         })
     }
 
-    /// Append an out-of-scope `blockquote` — the "paste a table" gesture.
-    fn paste_blockquote(&mut self) -> Option<CollabError> {
-        let bq = blockquote(&self.schema, "q");
+    /// Append an out-of-scope `task_list` — the "paste a table" gesture.
+    fn paste_task_list(&mut self) -> Option<CollabError> {
+        let bq = task_list(&self.schema, "q");
         let end = self.state.doc.content().size();
         self.edit(|tr| {
             tr.replace(end, end, Slice::from_fragment(Fragment::from_node(bq)))
@@ -128,15 +131,15 @@ fn an_out_of_scope_edit_is_refused_loud_and_names_the_content() {
     let mut p = Peer::new(&schema, vec![para(&schema, "hello")]);
 
     let err = p
-        .paste_blockquote()
-        .expect("a blockquote is out of A22 scope");
+        .paste_task_list()
+        .expect("a task list is out of A22 scope");
     assert!(
-        matches!(&err, CollabError::Unsupported(m) if m.contains("blockquote")),
+        matches!(&err, CollabError::Unsupported(m) if m.contains("task_list")),
         "the refusal must name the offending content, got {err:?}"
     );
     // Outbound is stalled, and says why — the app can render this verbatim.
     let stall = p.session.outbound_stall().expect("outbound is stalled");
-    assert!(stall.to_string().contains("blockquote"));
+    assert!(stall.to_string().contains("task_list"));
     // Not poison: this is local-outbound-only and the shared document is untouched.
     assert!(
         !p.session.is_poisoned(),
@@ -152,13 +155,13 @@ fn a_later_edit_while_out_of_scope_still_names_the_real_cause() {
     // after the paste said that, so an app had nothing to show the user.
     let schema = Rc::new(Schema::starter_kit());
     let mut p = Peer::new(&schema, vec![para(&schema, "hello")]);
-    p.paste_blockquote().expect("refused");
+    p.paste_task_list().expect("refused");
 
     for _ in 0..3 {
         let err = p.type_at(3, "x").expect("still out of scope");
         assert!(
-            matches!(&err, CollabError::Unsupported(m) if m.contains("blockquote")),
-            "every later refusal must still name the blockquote, got {err:?}"
+            matches!(&err, CollabError::Unsupported(m) if m.contains("task_list")),
+            "every later refusal must still name the task list, got {err:?}"
         );
     }
     assert!(!p.session.is_poisoned());
@@ -172,7 +175,7 @@ fn removing_the_out_of_scope_content_resumes_outbound_immediately() {
     // realigned.
     let schema = Rc::new(Schema::starter_kit());
     let mut p = Peer::new(&schema, vec![para(&schema, "hello")]);
-    p.paste_blockquote().expect("refused");
+    p.paste_task_list().expect("refused");
     p.type_at(3, "x").expect("refused");
 
     assert!(
@@ -205,12 +208,12 @@ fn an_edit_made_during_the_stall_is_not_silently_lost() {
     // ones this transaction touched.
     let schema = Rc::new(Schema::starter_kit());
     let mut p = Peer::new(&schema, vec![para(&schema, "one"), para(&schema, "two")]);
-    p.paste_blockquote().expect("refused");
+    p.paste_task_list().expect("refused");
 
     // Block 1's content is 6..10; type at its end. Refused — nothing broadcast.
     p.type_at(9, "Q").expect("refused while out of scope");
 
-    // Removing the blockquote clears the stall. The transaction itself touches only the
+    // Removing the task list clears the stall. The transaction itself touches only the
     // last block, so a `before`-based diff would reconcile nothing else; the re-base is
     // what carries block 1's "Q" across.
     assert!(p.drop_last_block().is_none(), "the cure projects");
@@ -228,7 +231,7 @@ fn an_edit_made_during_the_stall_is_not_silently_lost() {
 }
 
 /// The same hole, in the shape the other tests miss: an out-of-scope edit that
-/// **preserves the block count**. `wrapInBlockquote` on a paragraph is one — and so is
+/// **preserves the block count**. `toggleTaskList` on a paragraph is one — and so is
 /// any replace-in-place — so this is a command away, not a corner.
 ///
 /// The count-changing shape is caught because the block-count gate fails and forces the
@@ -238,7 +241,7 @@ fn an_edit_made_during_the_stall_is_not_silently_lost() {
 /// already diverged:
 ///
 /// ```text
-/// model     = <paragraph>Zone<blockquote>two
+/// model     = <paragraph>Zone<task_list>two
 /// projected = <paragraph>Zone<paragraph>two
 /// model == projected ? false
 /// stall     = None            <-- reporting healthy
@@ -252,37 +255,37 @@ fn a_count_preserving_out_of_scope_edit_stalls_too_and_still_ships_the_backlog()
     let schema = Rc::new(Schema::starter_kit());
     let mut p = Peer::new(&schema, vec![para(&schema, "one"), para(&schema, "two")]);
 
-    // Replace block 1 with a blockquote — two blocks before, two after.
+    // Replace block 1 with a task list — two blocks before, two after.
     let start: usize = p.state.doc.child(0).node_size();
     let end = start + p.state.doc.child(1).node_size();
-    let bq = blockquote(&schema, "two");
+    let bq = task_list(&schema, "two");
     let err = p
         .edit(|tr| {
             tr.replace(start, end, Slice::from_fragment(Fragment::from_node(bq)))
                 .unwrap();
         })
-        .expect("a blockquote is out of A22 scope however it got there");
-    assert!(matches!(&err, CollabError::Unsupported(m) if m.contains("blockquote")));
+        .expect("a task list is out of A22 scope however it got there");
+    assert!(matches!(&err, CollabError::Unsupported(m) if m.contains("task_list")));
     assert_eq!(
         p.state.doc.child_count(),
         2,
         "the block count did not change"
     );
 
-    // An edit that touches only block 0 leaves the blockquote in the diff's suffix.
+    // An edit that touches only block 0 leaves the task list in the diff's suffix.
     let err = p
         .type_at(1, "Z")
         .expect("still out of scope — the model holds content the CRDT cannot");
     assert!(
-        matches!(&err, CollabError::Unsupported(m) if m.contains("blockquote")),
-        "and it must still name the blockquote, not answer Ok, got {err:?}"
+        matches!(&err, CollabError::Unsupported(m) if m.contains("task_list")),
+        "and it must still name the task list, not answer Ok, got {err:?}"
     );
     assert!(
         p.session.outbound_stall().is_some(),
         "outbound is still stalled; reporting healthy here is the silent-divergence bug"
     );
 
-    // Unwrap the quote — also count-preserving. The "Z" typed while stalled ships too.
+    // Unwrap the task list — also count-preserving. The "Z" typed while stalled ships too.
     let start: usize = p.state.doc.child(0).node_size();
     let end = start + p.state.doc.child(1).node_size();
     let plain = para(&schema, "two");
@@ -318,7 +321,7 @@ fn a_peer_receives_everything_that_accumulated_during_the_stall() {
     let mut b_state = EditorState::create(schema.clone(), b_doc, default_plugins());
     let _ = a.session.save_incremental().unwrap(); // B joined from the snapshot
 
-    a.paste_blockquote().expect("refused");
+    a.paste_task_list().expect("refused");
     a.type_at(9, "Q").expect("refused");
     assert!(a.drop_last_block().is_none(), "outbound resumes");
     assert!(a.type_at(1, "Z").is_none(), "and stays healthy");
@@ -345,7 +348,7 @@ fn inbound_keeps_working_while_outbound_is_stalled() {
     let b_state = EditorState::create(schema.clone(), b_doc, default_plugins());
     let _ = a.session.save_incremental().unwrap();
 
-    a.paste_blockquote().expect("refused");
+    a.paste_task_list().expect("refused");
     assert!(a.session.outbound_stall().is_some());
 
     // B types; A integrates it fine.

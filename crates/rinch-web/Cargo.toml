@@ -40,6 +40,9 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
     "HtmlTextAreaElement", "HtmlSelectElement", "HtmlOptionElement", "HtmlHeadElement",
+    # `<video>`/`<audio>`'s live `.muted` property, mirrored from the `muted`
+    # attribute's presence the same way `checked`/`selected` are (#754).
+    "HtmlMediaElement",
     "Node", "NodeList", "Text", "Comment",
     "CssStyleDeclaration", "DomRect", "DomRectList",
     "Event", "MouseEvent", "KeyboardEvent",
@@ -91,6 +94,9 @@ wasm-bindgen-test = "0.3"
 # Awaiting a macrotask in the keyboard-activation tests (#240): the pointer-gesture
 # flag clears at the end of the task that consumed the trailing click.
 wasm-bindgen-futures = "0.4"
+# The freeze fixture (rv6_frozen_keys) forges a peer's oversized-table update through
+# the collab adapter's test seam rather than linking yrs here.
+rinch-editor-collab = { workspace = true, features = ["test-util"] }
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which

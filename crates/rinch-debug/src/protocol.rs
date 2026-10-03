@@ -101,6 +101,46 @@ pub enum DebugCommandKind {
         #[serde(default)]
         modifiers: Vec<String>,
     },
+    /// Press a key WITHOUT releasing it — the `key_press` of #485's
+    /// `key_down`/`key_up` pair, mirroring `mouse_down`/`mouse_up`: a
+    /// `KeyPress` always ends in a matching release (so it reads as one
+    /// physical keystroke), but a held key — "is W still held", a chord that
+    /// ends on release, a drag armed by a key — needs the press and the
+    /// release as two separate commands. Goes through the same menu-shortcut
+    /// check `key_press` does (issue #533): a chord a menu owns is consumed
+    /// here and dispatches no `PlatformEvent::KeyDown` at all, exactly as a
+    /// real press would never reach the app either.
+    #[serde(rename = "key_down")]
+    KeyDown {
+        key: String,
+        #[serde(default)]
+        shift: bool,
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        alt: bool,
+        /// See [`KeyPress::modifiers`](DebugCommandKind::KeyPress).
+        #[serde(default)]
+        modifiers: Vec<String>,
+    },
+    /// Release a key previously held with `key_down` (issue #485). Translates
+    /// to a `PlatformEvent::KeyUp` with the same `key`/`logical_key`
+    /// resolution `key_down`/`key_press` use, so a consumer pairing a press
+    /// with its release by that string sees them match. Does **not** check
+    /// menu shortcuts — a real release never fires one either.
+    #[serde(rename = "key_up")]
+    KeyUp {
+        key: String,
+        #[serde(default)]
+        shift: bool,
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        alt: bool,
+        /// See [`KeyPress::modifiers`](DebugCommandKind::KeyPress).
+        #[serde(default)]
+        modifiers: Vec<String>,
+    },
     #[serde(rename = "ime")]
     Ime {
         /// One of `"enable"`, `"preedit"`, `"commit"`, `"disable"`.
@@ -378,5 +418,56 @@ mod pointer_modifiers_tests {
         )
         .unwrap();
         assert_eq!(modifiers_of(req.command), Some(vec![]));
+    }
+}
+
+#[cfg(test)]
+mod key_down_up_485_tests {
+    //! Issue #485: `key_down`/`key_up` are new wire commands, so their shape
+    //! needs the same round-trip coverage `key_press` has — a typo in a
+    //! `#[serde(rename = ...)]` or a missing `#[serde(default)]` would be
+    //! silent otherwise (a request that just fails to deserialize at all).
+
+    use super::*;
+
+    #[test]
+    fn key_down_deserializes_with_only_key_required() {
+        let req: Request =
+            serde_json::from_str(r#"{"id":1,"method":"key_down","params":{"key":"w"}}"#).unwrap();
+        let DebugCommandKind::KeyDown {
+            key,
+            shift,
+            ctrl,
+            alt,
+            modifiers,
+        } = req.command
+        else {
+            panic!("expected KeyDown");
+        };
+        assert_eq!(key, "w");
+        assert!(!shift && !ctrl && !alt);
+        assert!(modifiers.is_empty());
+    }
+
+    #[test]
+    fn key_up_round_trips_with_modifiers() {
+        let original = Request {
+            id: 9,
+            command: DebugCommandKind::KeyUp {
+                key: "w".into(),
+                shift: false,
+                ctrl: true,
+                alt: false,
+                modifiers: vec!["ctrl".into()],
+            },
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"method\":\"key_up\""));
+        let back: Request = serde_json::from_str(&json).unwrap();
+        let DebugCommandKind::KeyUp { key, ctrl, alt, .. } = back.command else {
+            panic!("expected KeyUp");
+        };
+        assert_eq!(key, "w");
+        assert!(ctrl && !alt);
     }
 }

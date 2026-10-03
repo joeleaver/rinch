@@ -272,6 +272,10 @@ fn emit_border_style(
             "Dotted" => "dotted",
             "Double" => "double",
             "Hidden" => "hidden",
+            "Inset" => "inset",
+            "Outset" => "outset",
+            "Groove" => "groove",
+            "Ridge" => "ridge",
             // "None" is the default; nothing to emit.
             _ => return,
         };

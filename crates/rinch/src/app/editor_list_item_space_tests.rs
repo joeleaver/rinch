@@ -1,8 +1,9 @@
 //! Typing a space at the end of a bulleted list item leaves the bullet and the
 //! caret on the item's line, driven through the real `PlatformEvent` path.
 //!
-//! The editor's `li` is a flex row (`align-items: baseline`) of the list marker
-//! and the item's paragraph, and its text is `white-space: pre-wrap`. The
+//! The editor's `li` was then a flex row (`align-items: baseline`) of the list
+//! marker and the item's paragraph (a block with a hanging marker since #1246),
+//! and its text is `white-space: pre-wrap`. The
 //! paragraph used to be measured without its trailing space and then laid out
 //! at that width with the space in it, which parley wrapped onto a second,
 //! empty line: the paragraph went two lines tall, the marker (baseline-aligned

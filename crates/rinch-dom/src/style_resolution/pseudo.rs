@@ -7,6 +7,8 @@ use style::properties::ComputedValues;
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
 
+use super::resolve::style_is_flex_or_grid_container;
+
 impl RinchDocument {
     /// Resolve a pseudo-element (::before or ::after) for a given parent node.
     ///
@@ -34,6 +36,19 @@ impl RinchDocument {
         use crate::stylo_impl::RinchNode;
 
         let is_before = matches!(pseudo, PseudoElement::Before);
+
+        // #542: the generated box's flex/grid-item-ness, from the same layout
+        // parent `layout_parent` below blockifies against — computed ahead of
+        // that (narrower-scoped) local so it survives to where the box is
+        // created.
+        let layout_parent_is_flex_or_grid = if parent_style.clone_display().is_contents() {
+            let start = self.tree.nodes[parent_id].parent;
+            self.nearest_non_contents_style(start)
+                .map(|s| style_is_flex_or_grid_container(&s))
+                .unwrap_or_else(|| style_is_flex_or_grid_container(parent_style))
+        } else {
+            style_is_flex_or_grid_container(parent_style)
+        };
 
         // Query Stylo for pseudo-element declarations
         let pseudo_computed = {
@@ -157,15 +172,18 @@ impl RinchDocument {
         // Compute counter values for this element (needed for content: counter(...))
         let counter_values = self.compute_list_item_counters(parent_id);
 
-        // Extract text content from the content property
+        // Extract text content from the content property. `ineffective_content_property()`
+        // above is the "no pseudo at all" check (`none` / `normal`); an empty
+        // string here is NOT that — css-content-3 makes `content: ''` a valid,
+        // present box with no text in it (#773), which is the only spelling a
+        // purely decorative `::before`/`::after` (an arrow, a divider stroke, a
+        // dot) ever wants. So this does not early-return on an empty string: it
+        // only decides whether the box gets a text child below.
         let text = Self::extract_content_text_with_counters(
             &pseudo_computed,
             &counter_values,
             &self.tree.nodes[parent_id].attributes,
         );
-        if text.is_empty() {
-            return;
-        }
 
         // Convert pseudo computed style to our ComputedStyle
         let pseudo_style = ComputedStyle::from_stylo(&pseudo_computed);
@@ -174,11 +192,14 @@ impl RinchDocument {
         // Create a wrapper span element for the pseudo-element
         use rinch_core::dom::DomDocument;
         let span_id = self.create_element("span");
-        let text_node_id = self.create_text(&text);
 
-        // Append the text node to the span (using raw tree manipulation
-        // to avoid triggering style recomputation via DomDocument::append_child)
-        {
+        // Append a text child only when there is text to show it — an empty
+        // `content: ''` box is a shape (sized and painted from its own style),
+        // not an empty text node for the IFC to lay out.
+        if !text.is_empty() {
+            let text_node_id = self.create_text(&text);
+            // Append the text node to the span (using raw tree manipulation
+            // to avoid triggering style recomputation via DomDocument::append_child)
             let span_raw = span_id.0;
             let text_raw = text_node_id.0;
             self.tree.nodes[text_raw].parent = Some(span_raw);
@@ -201,8 +222,21 @@ impl RinchDocument {
         // with a fresh pseudo cascade, whenever its originator is cascaded.
         {
             let span_raw = span_id.0;
+            // #542 (perf review): read before `pseudo_style` moves into the
+            // node below — the cached filter check, same reasoning as the
+            // main cascade in `style_resolution/mod.rs`.
+            let filter_creates_stacking_context = pseudo_style.has_non_identity_filter();
             self.tree.nodes[span_raw].computed_style = pseudo_style;
             self.tree.nodes[span_raw].is_pseudo_element = true;
+            // #542: the same layout parent that blockified this generated box
+            // decides whether it is a flex/grid item for
+            // `Node::creates_stacking_context`'s flex/grid z-index creator.
+            self.tree.nodes[span_raw]
+                .is_flex_or_grid_item
+                .set(layout_parent_is_flex_or_grid);
+            self.tree.nodes[span_raw]
+                .filter_creates_stacking_context
+                .set(filter_creates_stacking_context);
             let mut data = style::data::ElementData::default();
             data.styles.primary = Some(pseudo_computed);
             *self.tree.nodes[span_raw].stylo_element_data.borrow_mut() = Some(data);

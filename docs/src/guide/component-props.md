@@ -191,9 +191,9 @@ and no stylesheet in the workspace matches that class.
 | `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `required` | `bool` | `false` | |
-| `autosize` | `bool` | `false` | Auto-resize textarea |
+| `autosize` | `bool` | `false` | Grows `rows` to the controlled value's `\n`-line count, clamped to `[min_rows, max_rows]` (issue #715). Reactive only through `value_fn` |
 | `min_rows` | `Option<u32>` | `None` | Visible rows; sizes the control to that many lines. Defaults to 2 (HTML default) when unset. A larger CSS `min-height` wins |
-| `max_rows` | `Option<u32>` | `None` | **Declared and inert on desktop (#715).** A textarea's content height is its `rows` lines, not its text (#297), and the sheet's 60–120px `min-height` beats any `max-height`, so no cap can bind at any value. On the allowlist in `no_dead_props.rs` until a textarea's height can follow its content |
+| `max_rows` | `Option<u32>` | `None` | Caps the control's height at that many lines via `max-height` (issue #715, fixed: the control's `rows` is a Taffy measure, not a `min-height`, so the cap can bind). The sheet's 60–120px size-step `min-height` still wins when it is taller than the cap — ordinary CSS `min` over `max`, not a bug |
 | `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
@@ -1355,7 +1355,8 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `color` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `icon_size` | `String` | `""` | |
-| `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), a step that arrives later included (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. **Decorative** — `Stepper` registers no click handler and takes no callback (#737) |
+| `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), a step that arrives later included (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. With no `on_step_click` set, this grants only the class — exactly as before #737 |
+| `on_step_click` | `Option<ValueCallback<u32>>` | `None` | Fired with a step's 0-based position when it is clicked or activated (Enter/Space) on a step the stepper considers reachable (#737). Mantine's default: a strictly **completed** step (`position < active`) is clickable without `allow_next_steps_select`; the active step itself and every step past it need that flag or its own `allow_step_click`/`allow_step_select` (Mantine's active state is `'stepProgress'`, not `'stepCompleted'`, so it is not reachable by default either). `Stepper` does not move `active` itself — the caller does, from this callback, as `Tabs` moves its own selection. The index is read from the step's current position **at click time**, not baked in when the handler was wired (#714's pattern), since a later insertion or removal can renumber a step (#716, #745) — and the clickable class is removed the moment a shift makes a step unreachable, unless the step's own ask keeps it |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for the steps that set none (#707); the step's own wins, and a step that arrives later takes this one as it lands (#716) |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for the steps that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon`. A step that arrives later takes it as it lands (#716) |
 
@@ -1368,9 +1369,10 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `icon` | `Option<TablerIcon>` | `None` | Default icon |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Per-step override |
-| `allow_step_click` | `bool` | `false` | |
-| `allow_step_select` | `bool` | `false` | |
+| `allow_step_click` | `bool` | `false` | Grants this step the clickable class regardless of its position against `active`. With `Stepper::on_step_click` set, also grants the wiring (handler, `tabindex="0"`, `data-rid`) unless `disabled` is set (#737) |
+| `allow_step_select` | `bool` | `false` | The same grant as `allow_step_click` — Mantine keeps both names, so rinch does too |
 | `loading` | `bool` | `false` | |
+| `disabled` | `bool` | `false` | Never clickable, never focusable, whatever else grants it (#737) — the plain HTML `disabled` attribute, read tag-agnostically |
 | `state` | `String` | `""` | `"completed"` or `"progress"`; anything else is inactive. Leave it unset and the parent `Stepper` derives it from this step's position against `active` (#709). Set it to override that for this one step: what a step names, it keeps |
 | `step` | `Option<u32>` | `None` | Step index, 0-based. Set by the parent `Stepper` from this step's position unless named here, in which case that is the index shown — and the number in the icon box, one higher. An index named here changes the label, **not** the position the state derives from |
 

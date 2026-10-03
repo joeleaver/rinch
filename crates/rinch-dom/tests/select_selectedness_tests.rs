@@ -431,32 +431,93 @@ fn two_options_selected_at_once_resolve_to_the_last_in_tree_order() {
     );
 }
 
-/// The select's own `value` attribute still outranks selectedness.
+/// The select's own `value` attribute and an option's live selectedness are
+/// two separate mechanisms rinch tracks (HTML has only the second — a browser
+/// has no `value` content attribute on `<select>` at all; Chrome 150 ignores
+/// one: `selectedIndex` stays 0 and `.value` stays the first option's). The
+/// desktop popup's pick writes the first (`app/select_widget.rs`'s
+/// `commit_select`); a script writing `option.selected` moves the second.
+/// Whichever happens **most recently** wins (issue #757) — matching Chrome
+/// and rinch-web's single "last write wins" model, where picking and
+/// scripting are the same kind of event.
 ///
-/// That ordering is rinch's, not HTML's — a browser has no `value` content
-/// attribute on `<select>` at all (Chrome 150 ignores one: `selectedIndex`
-/// stays 0 and `.value` stays the first option's). It is how the desktop popup
-/// records a user's pick (`app/select_widget.rs` writes the select's `value`),
-/// so a programmatic `selected` write afterwards must not silently undo it.
+/// This used to be the opposite: the `value` attribute won unconditionally
+/// once present, so a user's pick could never be overtaken by a later
+/// programmatic `selected` write — pinned, before the fix, by this very test
+/// under the name `the_selects_value_attribute_still_outranks_selectedness`.
 #[test]
-fn the_selects_value_attribute_still_outranks_selectedness() {
+fn the_most_recent_write_wins_pick_then_programmatic_write() {
     let (mut doc, sel, o) = select_with(3, &[]);
     doc.set_attribute(o[2], "selected", "");
     assert_eq!(selected(&doc, sel), Some(2), "precondition");
 
     // The user picks option 1 through the popup.
     doc.set_attribute(sel, "value", "v1");
-    assert_eq!(selected(&doc, sel), Some(1), "the pick wins");
-
-    // A later programmatic `selected` write moves selectedness but not the pick.
-    doc.set_attribute(o[0], "selected", "");
     assert_eq!(
         selected(&doc, sel),
         Some(1),
-        "the select's `value` still answers first"
+        "the pick wins — nothing fresher yet"
     );
 
-    // Clear the pick and the selectedness underneath it shows through.
+    // A LATER programmatic `selected` write now outranks the pick (#757):
+    // Chrome and rinch-web would answer the same way, since there the pick
+    // and the script write are the same kind of event and the later one wins.
+    doc.set_attribute(o[0], "selected", "");
+    assert_eq!(
+        selected(&doc, sel),
+        Some(0),
+        "the later programmatic write outranks the earlier pick"
+    );
+
+    // Clearing the (now-stale) `value` attribute changes nothing — the
+    // selectedness underneath was already the answer.
     doc.remove_attribute(sel, "value");
     assert_eq!(selected(&doc, sel), Some(0));
+}
+
+/// The reverse order from the fixture above: a programmatic `selected` write
+/// first, then the user's pick — the pick, being the later write, wins
+/// (issue #757).
+#[test]
+fn the_most_recent_write_wins_programmatic_write_then_pick() {
+    let (mut doc, sel, o) = select_with(3, &[]);
+
+    // A script selects option 2 first.
+    doc.set_attribute(o[2], "selected", "");
+    assert_eq!(selected(&doc, sel), Some(2), "precondition");
+
+    // The user's pick (option 1) is the later write and wins.
+    doc.set_attribute(sel, "value", "v1");
+    assert_eq!(
+        selected(&doc, sel),
+        Some(1),
+        "the pick, being later, outranks the earlier programmatic write"
+    );
+
+    // A second pick of the same option changes nothing (no-op write), and a
+    // further programmatic write again overtakes it, round-tripping cleanly.
+    doc.set_attribute(o[0], "selected", "");
+    assert_eq!(selected(&doc, sel), Some(0), "fresher again");
+}
+
+/// A live **deselect** is a write too (#757's review): removing `selected` from
+/// the option the select's `value` attribute names retires that attribute, so
+/// the select falls back to its first non-disabled option, as Chrome's reset
+/// does. Option 0 is disabled so the fallback (option 1) differs from both the
+/// deselected option and option 0.
+///
+/// Red before the fix: the `value` attribute stayed fresh and kept answering 2.
+#[test]
+fn a_live_deselect_retires_the_selects_value_attribute() {
+    let (mut doc, sel, o) = select_with(3, &[0]);
+    doc.set_attribute(o[2], "selected", "");
+    doc.set_attribute(sel, "value", "v2");
+    assert_eq!(selected(&doc, sel), Some(2), "precondition");
+
+    doc.remove_attribute(o[2], "selected");
+    assert_eq!(
+        selected(&doc, sel),
+        Some(1),
+        "the deselect is the latest write; the select resets to its first enabled option"
+    );
 }

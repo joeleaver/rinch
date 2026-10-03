@@ -206,6 +206,13 @@ fn bridge() -> &'static Bridge {
 /// [`jni_try`](crate::jni_exception::jni_try) — because the scope only runs
 /// when `f` is done.
 ///
+/// **No local reference outlives the call either** (issue #1217). `f` runs in
+/// a JNI local frame that is popped when it returns, so every local it made —
+/// including the two `jni`'s `get_string` makes and never deletes — is freed.
+/// Without it they lived for the life of the app on the `android_main`
+/// thread, which android-activity attaches permanently and which never returns
+/// to Java to have them freed for it.
+///
 /// [`ExceptionScope`]: crate::jni_exception::ExceptionScope
 #[track_caller]
 pub fn with_jni_env<R>(f: impl FnOnce(&mut JNIEnv) -> R) -> R {
@@ -214,10 +221,13 @@ pub fn with_jni_env<R>(f: impl FnOnce(&mut JNIEnv) -> R) -> R {
     let mut env =
         b.vm.attach_current_thread()
             .expect("failed to attach JNI thread");
-    // Declared after `env`, so it drops first: the exception is settled while
-    // the thread is still attached.
-    let _scope = crate::jni_exception::native_scope(&env, caller);
-    f(&mut env)
+    // Both are dropped inside `run_framed`, before `env`: the exception is
+    // settled and the frame popped while the thread is still attached.
+    // SAFETY: two more handles to this thread's `JNIEnv`, used only on this
+    // thread and only in their guards' `Drop` and constructor, where no
+    // borrow of `env` is mid-call.
+    let (frame, scope) = unsafe { (env.unsafe_clone(), env.unsafe_clone()) };
+    crate::jni_exception::run_framed(&mut *env, frame, scope, caller, f)
 }
 
 /// [`with_jni_env`] with the activity object at hand; the same exception

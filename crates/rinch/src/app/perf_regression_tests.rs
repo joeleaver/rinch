@@ -164,7 +164,15 @@ fn an_idle_app_redraws_nothing() {
             (ClipMaskPx, 25600),
             (HitTests, 1),
             (HitTestNodesVisited, 3),
-            (HitExtentsComputed, 14),
+            // 14 → 15 (#509, #826): `static_page`'s `<style>` element is
+            // `display: none` by the UA sheet and carries its CSS source as
+            // a text child — the exact #509 shape. Before the fix that text
+            // was wrongly flowed by the `<style>` element's own (dead) IFC,
+            // so `flow_extent`'s `child.is_text() && child.ifc_root.is_some()`
+            // skip excused it from a `hit_extents_computed` bump of its own;
+            // fixed, it carries no `ifc_root` and is walked as an ordinary
+            // (0x0, harmless) child once.
+            (HitExtentsComputed, 15),
         ],
     );
 }
@@ -189,6 +197,16 @@ fn a_focused_input_idles_for_free() {
     assert_eq!(redraws, 0);
     expect_frame("idle, input focused", &total, &[]);
 
+    // #536 moved these two: `.field`'s UA `input { border: 2px inset; }`
+    // alongside its `overflow: clip !important` means the clip is now the
+    // padding box, 2px inset from the border box on every side. That is a
+    // tighter clip than before, so `clip_cuts_nothing`'s elision (card K43 —
+    // a clip that provably removes nothing is never pushed) stops applying:
+    // the field's own content used to fit inside the old (border-box) clip
+    // with enough slack to elide the push outright, and no longer fits inside
+    // the new (smaller) one. One extra `push_clip` — the field's own, where
+    // before only something else in this frame's damage pushed one — and the
+    // extra pixels are that bracket's own area.
     let typed = interaction(&mut app, |app| key(app, KeyCode::KeyX, Some("x")));
     expect_frame(
         "type one character into an input",
@@ -206,8 +224,8 @@ fn a_focused_input_idles_for_free() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 5),
             (GlyphCacheMisses, 1),
-            (ClipMasks, 1),
-            (ClipMaskPx, 7632),
+            (ClipMasks, 2),
+            (ClipMaskPx, 12432),
         ],
     );
 }
@@ -741,9 +759,16 @@ fn mount_scroller() -> (RinchApp, NodeHandle) {
 /// **One hit test** routes the notch (#911 — the render-surface check and the
 /// scroll routing used to run one each). It finds the hit cache **cold** — the
 /// mount's layout dropped it and nothing has probed since — so it computes
-/// **498** extents, once: the next notch keeps them (see
+/// **499** extents, once: the next notch keeps them (see
 /// `a_second_wheel_notch_recomputes_no_extent`). Paint visits **24** nodes for
 /// the ~20 rows on screen; it visited all 504 until #910.
+///
+/// 498 → 499 (#509, #826): `mount_scroller`'s `<style>` element is
+/// `display: none` with its CSS source as a text child, the #509 shape —
+/// before the fix that text was wrongly flowed by the `<style>` element's
+/// own (dead) IFC, so `flow_extent`'s text-with-an-`ifc_root` skip excused it
+/// from its own extent computation; fixed, it is walked once as an ordinary
+/// (0x0) child.
 #[test]
 fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
     let (mut app, scroller) = mount_scroller();
@@ -779,7 +804,7 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (PaintSurfaceAllocs, 1),
             (HitTests, 1),
             (HitTestNodesVisited, 4),
-            (HitExtentsComputed, 498),
+            (HitExtentsComputed, 499),
         ],
     );
 }
@@ -967,8 +992,16 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536, see `full_repaint_resize` above: `.field`'s UA `overflow:
+            // clip` now clips to its padding box, 2px inset for its `border:
+            // 2px inset`, tight enough that `clip_cuts_nothing`'s elision no
+            // longer applies — one extra `push_clip` (the field's own) and
+            // the extra pixels are that bracket's own area. This fixture is
+            // `theme`-gated so it was not caught by the original PR's
+            // `--features desktop` run; a merge-with-main CI failure under
+            // `--features desktop,embed,theme,clipboard,debug` found it.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
         ],
     );
 }
@@ -1005,10 +1038,17 @@ fn a_scale_factor_change_restyles_and_repaints_in_full() {
             (SurfacePx, 1920000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 115),
-            (GlyphCacheMisses, 21),
-            (ClipMasks, 1),
-            (ClipMaskPx, 132496),
+            // The field's "typed" is in the UA sheet's 13.3333px since #1194,
+            // not the body's 14px, so its `e` and `d` no longer share the
+            // 14px images "side" rasterised: two hits became misses.
+            (GlyphCacheHits, 113),
+            (GlyphCacheMisses, 23),
+            // #536: the field's UA `overflow: clip` now clips to its padding
+            // box (2px inset for its `border: 2px inset`), which is tight
+            // enough that `clip_cuts_nothing` no longer elides the push — see
+            // the comment on the same move in `a_focused_input_idles_for_free`.
+            (ClipMasks, 2),
+            (ClipMaskPx, 149920),
             (PaintSurfaceAllocs, 1),
         ],
     );
@@ -1081,8 +1121,13 @@ fn full_repaint_resize() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536: `.field`'s UA `overflow: clip` now clips to its padding
+            // box, 2px inset on every side for its `border: 2px inset` — tight
+            // enough that `clip_cuts_nothing` no longer elides the push (see
+            // `a_focused_input_idles_for_free`). All four `full_repaint_*`
+            // fixtures below share `static_page()` and move identically.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
             (PaintSurfaceAllocs, 1),
         ],
     );
@@ -1108,8 +1153,9 @@ fn full_repaint_unattributed() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536, see `full_repaint_resize` above.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
         ],
     );
 }
@@ -1157,6 +1203,13 @@ fn full_repaint_region_too_large() {
 
 /// A `<style>` element was added: a whole-document restyle, which can change
 /// any node's paint without naming one.
+///
+/// `shape_ifc_build` and `ifc_signature_changes` are 0, not 1 (#509, #826):
+/// the appended `<style>` is `display: none` with its CSS text as a child —
+/// the #509 shape — and no longer establishes an IFC over that text at all,
+/// so it is never queued for a Parley build or counted as a changed
+/// signature. Before the fix it was wrongly flowed by its own (dead,
+/// unpainted) IFC and paid both.
 #[test]
 fn full_repaint_restyle() {
     let mut app = static_page();
@@ -1180,10 +1233,8 @@ fn full_repaint_restyle() {
             (FullRestyleStylesheet, 1),
             (FullStyleWalks, 1),
             (TaffyStyleSyncs, 217),
-            (ShapeIfcBuild, 1),
             (ShapePaint, 1),
             (IfcMeasureInvalidations, 2),
-            (IfcSignatureChanges, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
@@ -1198,8 +1249,9 @@ fn full_repaint_restyle() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536, see `full_repaint_resize` above.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
         ],
     );
 }
@@ -1224,8 +1276,9 @@ fn full_repaint_invalidated() {
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 136),
-            (ClipMasks, 1),
-            (ClipMaskPx, 33856),
+            // #536, see `full_repaint_resize` above.
+            (ClipMasks, 2),
+            (ClipMaskPx, 38656),
         ],
     );
 }

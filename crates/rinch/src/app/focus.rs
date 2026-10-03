@@ -352,7 +352,7 @@ impl RinchApp {
                 // refuses the commit and shows no preedit), so the OS input method
                 // stays off for it: no candidate window over text that cannot take
                 // the result. Re-read on every reconcile, so it follows the switch.
-                let enabled = !handle.as_ref().is_some_and(|h| h.is_read_only());
+                let enabled = !handle.as_ref().is_some_and(|h| h.refuses_edits());
                 let cursor_area = handle.and_then(|handle| {
                     let head = handle.selection().head();
                     self.editor_caret_point(&handle, head)
@@ -454,12 +454,89 @@ impl RinchApp {
     }
 
     /// Whether a generic focusable node (`tabindex`, `FocusTarget::Node`,
-    /// issue #228) holds focus. It consumes Enter/Space (and anchors Tab), so
-    /// embed hosts must route keyboard input to rinch while one is focused
-    /// (`RinchContext::wants_keyboard` includes it). Public beside
+    /// issue #228) holds focus — **any** one, including a plain `<button>` or
+    /// `<a href>` a mousedown just claimed (issue #252 made every such tag
+    /// focusable with no `tabindex` needed). Public beside
     /// [`Self::has_focused_input`] / [`Self::has_focused_contenteditable`].
+    ///
+    /// This is **not** the right question for "should an embed host hand me
+    /// its keyboard" — see [`Self::has_focused_key_consumer`] (issue #548):
+    /// most generic-node focus is a plain button that only ever consumes
+    /// Enter/Space through the runtime's own activation path, so an embed
+    /// host that withholds every key while *any* node is focused ends up
+    /// swallowing its own Esc/hotkeys the moment the user mouse-clicks a
+    /// button.
     pub fn has_focused_node(&self) -> bool {
         matches!(self.focus_target, FocusTarget::Node(_))
+    }
+
+    /// Whether the focused target is one an embed host should hand its
+    /// keyboard to (issue #548, [`crate::embed::RinchContext::wants_keyboard`]
+    /// is this plus the text targets it already covers).
+    ///
+    /// The real distinction turned out to be **how the node got focus, not
+    /// whether it registered anything** — the review of #1311 caught the
+    /// first cut (registered-`on_key` only) breaking Tab navigation and
+    /// Enter/Space activation of ordinary controls, since Tab-focus and
+    /// mouse-click focus both land on plain `FocusTarget::Node` with
+    /// nothing registered. A browser's own answer to this is
+    /// `:focus-visible`: keyboard-driven focus shows the ring, a mouse click
+    /// does not. rinch already tracks that bit —
+    /// [`Node::is_focus_visible`](rinch_dom::node::Node::is_focus_visible),
+    /// set `true` only by Tab/`request_focus`/programmatic
+    /// [`NodeHandle::focus`](rinch_core::dom::NodeHandle::focus)
+    /// (`RinchApp`'s Tab-handling and `try_focus_node`, `mod.rs`), and
+    /// **not** set by a mouse press claiming the node — `claim_press_focus`
+    /// (`event_dispatch.rs`) only clears the *previous* node's ring, it never
+    /// sets the new one. So:
+    ///
+    /// - A **mouse-clicked** plain `<button>`/`<a href>` (no `tabindex`
+    ///   needed, issue #252): `is_focus_visible` is `false` and nothing is
+    ///   registered ⇒ `false`. This is #548's actual repro, and the one case
+    ///   that must answer `false`.
+    /// - A **Tab-focused** (or `NodeHandle::focus()`-focused) plain control:
+    ///   `is_focus_visible` is `true` ⇒ `true` — so Tab navigation and
+    ///   Enter/Space activation keep reaching rinch under the documented
+    ///   host pattern, exactly as they did before #1311 (`has_focused_node`)
+    ///   and matching a browser's own click-vs-keyboard-focus split.
+    /// - A **registered** custom widget ([`FocusEntry::on_key`][k], arrow-key
+    ///   navigation, a shortcut of its own) ⇒ `true` whether it was clicked
+    ///   or Tabbed to — the runtime cannot know which keys it wants without
+    ///   seeing them.
+    /// - An open native **`<select>`** popup (`FocusTarget::Select`) ⇒
+    ///   `true` unconditionally: its own arrow/Enter/Escape handling needs
+    ///   every key, and this target has no "registered" or "focus-visible"
+    ///   concept of its own (pre-existing gap found in the same review,
+    ///   unrelated to the click-vs-Tab question — `has_focused_node()`
+    ///   never matched `Select` either, before or after #1311).
+    /// - Every other target (`None`, `Surface`, and `Input`/`Editor` — which
+    ///   `wants_keyboard()` already covers through
+    ///   [`Self::has_focused_input`]/[`Self::has_focused_contenteditable`])
+    ///   ⇒ `false`.
+    ///
+    /// [k]: crate::focus_registry::FocusEntry::on_key
+    pub fn has_focused_key_consumer(&self) -> bool {
+        match self.focus_target {
+            FocusTarget::Node(id) => {
+                self.node_is_focus_visible(id)
+                    || crate::focus_registry::wants_key_routing(self.doc_key(), id)
+            }
+            FocusTarget::Select(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether `node_id` currently shows the keyboard focus ring —
+    /// [`Node::is_focus_visible`](rinch_dom::node::Node::is_focus_visible),
+    /// set only by keyboard/programmatic focus, never by a mouse press
+    /// claiming `FocusTarget::Node`. See [`Self::has_focused_key_consumer`].
+    fn node_is_focus_visible(&self, node_id: usize) -> bool {
+        self.doc.as_ref().is_some_and(|doc| {
+            doc.borrow()
+                .tree
+                .get(node_id)
+                .is_some_and(|n| n.is_focus_visible)
+        })
     }
 
     /// The container id of the focused new-editor, if one holds focus. Drives
@@ -512,5 +589,61 @@ impl RinchApp {
         {
             false
         }
+    }
+
+    /// Whether a widget that types text holds the keyboard: a text-taking
+    /// `<input>` or `<textarea>`, the rich-text editor (read-only too — it
+    /// still owns the keys it would type), or a registered target that
+    /// consumes composition (`FocusEntry::on_ime`, #176).
+    ///
+    /// The question a modifier-less menu chord asks before it takes a key
+    /// (#1169, [`crate::menu::chord_yields_to_text_input`]). Not
+    /// [`Self::ime_state`]: that one is off for a blurred window and a
+    /// read-only editor, neither of which makes `/` a menu key.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn text_target_holds_keyboard(&self) -> bool {
+        match self.focus_target {
+            // An `<input type=checkbox>` carrying `data-oninput` takes this
+            // claim too, and has no text to type `/` into.
+            FocusTarget::Input(id) => self.doc.as_ref().is_none_or(|doc| {
+                let d = doc.borrow();
+                d.tree.get(id).is_none_or(|node| {
+                    node.tag() != Some("input")
+                        || node
+                            .attributes
+                            .get("type")
+                            .is_none_or(|t| crate::menu::input_type_takes_text(t))
+                })
+            }),
+            FocusTarget::Editor(_) => true,
+            FocusTarget::Node(id) => crate::focus_registry::wants_ime(self.doc_key(), id),
+            FocusTarget::None | FocusTarget::Surface(_) | FocusTarget::Select(_) => false,
+        }
+    }
+
+    /// Try the menu chords for a key press the shell has not yet handed the
+    /// app, answering whether one ran — in which case the shell swallows the
+    /// key. A chord with no Ctrl/Cmd/Alt yields its key to a focused text
+    /// target and runs nothing (#1169).
+    ///
+    /// `key_without_modifiers` is winit's layout-resolved key for this press,
+    /// ignoring Shift/Caps — issue #1170's letter-by-character matching reads
+    /// it to answer "what does this layout type for the key the user pressed".
+    #[cfg(feature = "desktop")]
+    pub(crate) fn try_menu_shortcut(
+        &self,
+        mods: Modifiers,
+        key: winit::keyboard::KeyCode,
+        key_without_modifiers: &winit::keyboard::Key,
+    ) -> bool {
+        crate::menu::match_shortcut(
+            mods.ctrl,
+            mods.meta,
+            mods.alt,
+            mods.shift,
+            key,
+            key_without_modifiers,
+            self.text_target_holds_keyboard(),
+        )
     }
 }

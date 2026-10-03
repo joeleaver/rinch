@@ -13,7 +13,7 @@ use style::context::QuirksMode;
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
 use crate::layout;
-use crate::node::{DirtyFlags, DisplayMode, NodeTree};
+use crate::node::{DirtyFlags, DisplayMode, NodeKind, NodeTree};
 
 impl RinchDocument {
     /// Load CSS into the document's stylesheet.
@@ -494,11 +494,39 @@ impl RinchDocument {
     }
 
     /// Tell the document that faces were registered on its `font_cx` after it
-    /// was laid out (#1177). A text control is sized from its primary font's
-    /// metrics, cached on the node against its font properties; this moves
-    /// the document's font generation, which every cached entry is keyed on,
-    /// and re-sizes every `<input>` / `<textarea>` now, so a control sized in
-    /// a fallback face is sized in the new face at the next layout.
+    /// was laid out (#1177, widened by #1297). A text control is sized from
+    /// its primary font's metrics, cached on the node against its font
+    /// properties; this moves the document's font generation, which every
+    /// cached entry is keyed on, and re-sizes every `<input>` / `<textarea>`
+    /// now, so a control sized in a fallback face is sized in the new face at
+    /// the next layout.
+    ///
+    /// **General text pays the same bill (#1297).** `App::fonts`/the `fonts`
+    /// builder exist precisely so a bundled face is registered *before* the
+    /// first layout (see CLAUDE.md "App-bundled fonts"); this is the late
+    /// path, for a face that arrives afterwards — `RinchApp::register_font_data`
+    /// (the wasm/embed front door) and any late `register_app_font` call. A
+    /// font registration changes no *computed style* — `font-family` is the
+    /// same string before and after, only what it resolves to changed — so
+    /// the cascade's own staleness gate (`ComputedStyle::same_text_layout_inputs`,
+    /// read by `apply_stylo_styles_to_taffy`) never fires for it, unlike a
+    /// theme restyle, which gets there by re-cascading everything.
+    ///
+    /// Nothing about the tree's *structure* moved, so this does not ask for
+    /// a whole-document structural pass (`request_full_ifc`) the way a theme
+    /// restyle does — that would re-derive every root's display/position for
+    /// no reason. It instead drops exactly what a font change can touch:
+    /// every registered IFC root's `text_layout` and measure-cache entry
+    /// (`invalidate_ifc_root`, regardless of whether its content signature
+    /// moved — the signature doesn't encode typography), every registered
+    /// atomic inline queued for the ordinary `remeasure_dirty_atomic_inlines`
+    /// pass (`mark_atomic_inline_dirty`, which also clears a `fit-content`/
+    /// `stretch` box's `keyword_inline_cb_width` entry as a side effect of
+    /// the next re-measure having no containing-block width yet —
+    /// #691/#1281's own "no longer stands" branch), and every flex/grid text
+    /// leaf's Taffy node marked dirty directly, since nothing else
+    /// invalidates `NodeContext::Text`'s cached size when only font
+    /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
         let controls: Vec<usize> = self
@@ -522,6 +550,49 @@ impl RinchDocument {
                 self.tree.push_dirty(node_id);
             }
         }
+
+        // Every IFC root (a paragraph, a heading, a split span's run box, an
+        // anonymous block box around text beside a block sibling) keeps its
+        // `text_layout` and cached measure sizes until something drops them;
+        // force that regardless of whether its content signature moved.
+        let ifc_roots: Vec<usize> = self.tree.ifc_root_registry.iter().copied().collect();
+        for root_id in ifc_roots {
+            self.invalidate_ifc_root(root_id);
+        }
+
+        // Atomic inlines (`inline-block`/`-flex`/`-grid`) are detached from
+        // their parent's Taffy child list, so the ordinary root compute
+        // never reaches them (#661, #784). `mark_atomic_inline_dirty` queues
+        // each into `dirty_atomic_inlines`, which whichever structural branch
+        // the next layout takes (full, scoped, or neither) drains through
+        // `remeasure_dirty_atomic_inlines` — the same path a `set_text_content`
+        // or restyle already relies on.
+        let atomic_inlines: Vec<usize> = self.tree.atomic_inline_registry.iter().copied().collect();
+        for id in atomic_inlines {
+            self.mark_atomic_inline_dirty(id);
+        }
+
+        // A text node measured directly through `NodeContext::Text` (a flex
+        // or grid item, including the interior of an `inline-flex`/
+        // `inline-grid`) has no `ifc_root` and so is missed by the loop
+        // above. `sync_text_contexts`/`sync_dirty_text_contexts` only refresh
+        // that context's *fields* (unchanged here — the font-family string
+        // did not move); neither invalidates Taffy's cached size, so the
+        // leaf's own Taffy node needs marking directly.
+        let text_leaves: Vec<taffy::NodeId> = self
+            .tree
+            .nodes
+            .iter()
+            .filter_map(|(_, n)| match n.kind {
+                NodeKind::Text(_) => n.taffy_id,
+                _ => None,
+            })
+            .collect();
+        for taffy_id in text_leaves {
+            let _ = self.tree.taffy.mark_dirty(taffy_id);
+        }
+
+        self.tree.layout_dirty = true;
     }
 
     /// Recompute taffy styles for all element nodes, clearing cached style props
@@ -846,6 +917,17 @@ impl RinchDocument {
             // Convert Stylo ComputedValues to our ComputedStyle
             let mut new_style = ComputedStyle::from_stylo(&computed_values);
 
+            // #542 (perf review): cache the filter-identity check here, once
+            // per cascade of this node, rather than let
+            // `Node::creates_stacking_context` recompute it on every
+            // hit-test/paint walk. Nothing below here ever assigns a filter
+            // scalar (`filter` is not transition-animatable — it has no
+            // `TransitionProperty` variant — so the transition-overwrite loop
+            // further down never touches it either), so `new_style`'s filter
+            // fields are already final.
+            node.filter_creates_stacking_context
+                .set(new_style.has_non_identity_filter());
+
             // `user-select` has no UA rule and this Stylo build does not parse
             // the property at all (which is also why the inline `style`
             // attribute is re-read for it further down), so the presentational
@@ -866,6 +948,23 @@ impl RinchDocument {
             // two consumers disagreeing.
             if matches!(node.tag(), Some("code" | "pre" | "kbd" | "samp")) {
                 new_style.user_select = crate::computed_style::UserSelectValue::Text;
+            }
+
+            // A `<textarea>` is a scroll container whatever the author says:
+            // Chrome 153 computes `overflow: visible` on one as `auto` (and
+            // `overflow-x: visible; overflow-y: hidden` as `auto hidden`),
+            // which no UA *rule* can say — `!important` would also override
+            // the author's `hidden`, and Chrome keeps that (issue #1194). So
+            // the adjustment is made after the cascade, as Chrome makes it.
+            // It is what gives a raw textarea a flex item's zero automatic
+            // minimum size: in a 100px row it shrinks to 100px.
+            if node.tag() == Some("textarea") {
+                use crate::computed_style::OverflowValue;
+                for axis in [&mut new_style.overflow_x, &mut new_style.overflow_y] {
+                    if *axis == OverflowValue::Visible {
+                        *axis = OverflowValue::Auto;
+                    }
+                }
             }
 
             // A closed `<select>` shows one option's label, so browsers size it to
@@ -894,7 +993,7 @@ impl RinchDocument {
                     + new_style.padding_bottom.to_px()
                     + new_style.border_top_width.to_px()
                     + new_style.border_bottom_width.to_px();
-                if new_style.width.lays_out_as_auto() {
+                if new_style.width.is_auto_or_keyword() {
                     let model = crate::select::resolve_select_model(&self.tree, node_id);
                     let labels: Vec<&str> =
                         model.options.iter().map(|o| o.label.as_str()).collect();
@@ -918,7 +1017,7 @@ impl RinchDocument {
                     new_style.min_width =
                         crate::computed_style::DimensionValue::Length(intrinsic.max(author_min));
                 }
-                if new_style.height.lays_out_as_auto() {
+                if new_style.height.is_auto_or_keyword() {
                     let intrinsic = new_style.line_height_px()
                         + 2.0 * crate::select::SELECT_INNER_BLOCK
                         + border_padding_y;
@@ -1409,6 +1508,20 @@ impl RinchDocument {
                     DisplayMode::InlineBlock
                 }
                 crate::computed_style::DisplayValue::Inline => DisplayMode::Inline,
+                // A control or replaced element has no inner display of its
+                // own (#1288): `replaced::ignores_inner_display`.
+                crate::computed_style::DisplayValue::Flex
+                | crate::computed_style::DisplayValue::Grid
+                    if crate::replaced::ignores_inner_display(&self.tree.nodes[node_id]) =>
+                {
+                    DisplayMode::Block
+                }
+                crate::computed_style::DisplayValue::InlineFlex
+                | crate::computed_style::DisplayValue::InlineGrid
+                    if crate::replaced::ignores_inner_display(&self.tree.nodes[node_id]) =>
+                {
+                    DisplayMode::InlineBlock
+                }
                 crate::computed_style::DisplayValue::InlineBlock => DisplayMode::InlineBlock,
                 crate::computed_style::DisplayValue::InlineFlex => DisplayMode::InlineFlex,
                 crate::computed_style::DisplayValue::Block => DisplayMode::Block,
@@ -1515,15 +1628,7 @@ impl RinchDocument {
 
             // Body node needs flex_grow: 1 and height: auto to fill the viewport
             if node_id == self.tree.body_id {
-                if taffy_style.flex_grow == 0.0 {
-                    taffy_style.flex_grow = 1.0;
-                }
-                if taffy_style.size.height == taffy::Dimension::auto() {
-                    taffy_style.size.height = taffy::Dimension::auto();
-                }
-                if taffy_style.size.width == taffy::Dimension::auto() {
-                    taffy_style.size.width = taffy::Dimension::percent(1.0);
-                }
+                crate::node::body_taffy_overrides(&mut taffy_style);
             }
 
             // An out-of-flow box whose containing block is not the Taffy parent
@@ -1608,6 +1713,12 @@ impl RinchDocument {
                 &mut self.layout_cx,
                 node_id,
             ) {
+                self.tree.layout_dirty = true;
+                self.mark_atomic_inline_dirty(node_id);
+            }
+            // A canvas's natural size is its `width`/`height` attributes
+            // (#1173), which reach no Taffy style either.
+            if crate::replaced::sync_replaced_measure(&mut self.tree, node_id) {
                 self.tree.layout_dirty = true;
                 self.mark_atomic_inline_dirty(node_id);
             }
@@ -1790,6 +1901,11 @@ impl RinchDocument {
     pub(crate) fn taffy_style_from_computed(&self, node_id: usize) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
+        // A block container does not stretch a replaced element to its width
+        // (CSS 2.1 §10.3.4); Taffy's block layout reads this flag (#1173, and
+        // #788 for an `<img>`).
+        style.item_is_replaced =
+            crate::replaced::is_unstretched_replaced(&self.tree.nodes[node_id]);
         if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
             style.flex_direction = dir;
         }

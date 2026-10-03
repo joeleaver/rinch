@@ -2,10 +2,11 @@
 //!
 //! The most important variant is [`CollabError::Unsupported`]: per design amendment
 //! **A22**, the staged first-milestone scope is **flat text-blocks + marks**, the list
-//! containers, **leaf block atoms** (a block-level node with no content of its own,
-//! such as `horizontal_rule`) and the **inline atoms** `image`/`hard_break`. When the
-//! adapter meets a model shape it cannot faithfully project onto the CRDT (a nested
-//! block outside that scope, a table, a multi-block paste it cannot reduce), it
+//! and quote containers, tables, **leaf block atoms** (a block-level node with no
+//! content of its own, such as `horizontal_rule`) and the **inline atoms**
+//! `image`/`hard_break`. When the adapter meets a model shape it cannot faithfully
+//! project onto the CRDT (a nested block outside that scope, a ragged table, a
+//! multi-block paste it cannot reduce), it
 //! **fails loud** with `Unsupported` rather than
 //! silently dropping the change. A silent drop would reintroduce the exact "the two
 //! sides disagree" divergence class the editor rewrite set out to kill.
@@ -21,7 +22,8 @@ pub enum CollabError {
     Engine(String),
 
     /// The model shape is outside the staged first-milestone scope (nested blocks
-    /// other than the list containers, tables, task lists). **Fail-loud, never a
+    /// other than the list and quote containers and tables: task lists; a table whose
+    /// cells do not tile its grid). **Fail-loud, never a
     /// silent drop** (design A22). Leaf block atoms such as `horizontal_rule` and the
     /// inline atoms `image`/`hard_break` are **in** scope and do not reach here.
     #[error("collab does not support this content yet: {0}")]
@@ -52,6 +54,22 @@ pub enum CollabError {
         "collab session poisoned — the shared CRDT is no longer projectable; stop and rejoin: {0}"
     )]
     SessionPoisoned(String),
+
+    /// The shared document holds a table too large to read (one a peer grew past the
+    /// read's budget, which the model shows as a one-cell placeholder). While it does,
+    /// a session refuses **every** local change — outbound is frozen, inbound keeps
+    /// integrating — because no diff against a placeholder can be trusted not to delete
+    /// real content. An editor refuses the edits themselves, as a read-only one does
+    /// (typing and commands answer `false`; the selection, the caret and copying still
+    /// work), so nothing is kept to ship later and nothing is lost. It ends when the
+    /// table is deleted through `CollabSession::delete_oversized_table` (by its id,
+    /// listed by `CollabSession::oversized_tables`), or a peer deletes or shrinks it.
+    /// The message names the table ids. A new variant of an exhaustive enum: a
+    /// downstream `match` needs an arm for it.
+    #[error(
+        "collab outbound is frozen: the shared document holds a table too large to read ({0}); delete it to resume"
+    )]
+    OversizedTable(String),
 }
 
 impl CollabError {

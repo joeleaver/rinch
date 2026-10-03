@@ -84,7 +84,14 @@ const CHILD_LIST_FLAGS: ElementSelectorFlags = ElementSelectorFlags::HAS_SLOW_SE
 /// state an ancestor passes down), and that Stylo's attribute maps therefore
 /// cannot see a dependency on. Each restyles its element, the element's
 /// subtree and its later siblings.
-const PSEUDO_CLASS_ATTRIBUTES: &[&str] = &["disabled", "href"];
+///
+/// `lang` joins this list for `:lang()` (#681) rather than riding the
+/// state-bit mechanism `:required`/`:read-only`/`:placeholder-shown` use
+/// (`stylo_impl::element_state`): `:lang()` resolves through the nearest
+/// ancestor that carries `lang` (`stylo_impl::resolve_lang`), so a write on
+/// an ancestor changes a *descendant's* answer without the descendant's own
+/// state moving — exactly the shape `disabled`/`href` are already here for.
+const PSEUDO_CLASS_ATTRIBUTES: &[&str] = &["disabled", "href", "lang"];
 
 /// Stylo's attribute-and-state invalidation processor, but walking into the
 /// descendants of a `display: none` element as well.
@@ -212,6 +219,33 @@ impl RinchDocument {
             // them for the write to matter.
             (Some("textarea"), "rows" | "cols") => self.mark_restyle(node, false),
             (Some("input"), "type" | "size") => self.mark_restyle(node, false),
+            // A `submit`/`reset`/`button` input's measure is its `value` —
+            // its label text (#1195, `button_label_content_width`) — which,
+            // like `rows`/`cols`/`size` above, matches no selector either
+            // (#1306). Scoped to those three types so an ordinary text
+            // field's `value`, rewritten on every keystroke, does not pay a
+            // restyle it has no use for: `value` sizes nothing else.
+            // A `submit`/`reset`/`button` input's measure is its `value` —
+            // its label text (#1195, `button_label_content_width`) — which,
+            // like `rows`/`cols`/`size` above, matches no selector either
+            // (#1306). Scoped to those three types so an ordinary text
+            // field's `value`, rewritten on every keystroke, does not pay a
+            // restyle it has no use for: `value` sizes nothing else.
+            (Some("input"), "value")
+                if matches!(
+                    self.tree.nodes[node]
+                        .attributes
+                        .get("type")
+                        .map(|t| t.trim().to_ascii_lowercase())
+                        .as_deref(),
+                    Some("submit" | "reset" | "button")
+                ) =>
+            {
+                self.mark_restyle(node, false);
+            }
+            // A canvas's natural size is its `width` and `height` (#1173,
+            // `replaced.rs`), re-read by the same restyle.
+            (Some("canvas"), "width" | "height") => self.mark_restyle(node, false),
             (Some("ol"), "start") => self.mark_element_children(node, false),
             (Some("li"), "value") => {
                 self.mark_restyle(node, false);

@@ -15,6 +15,7 @@
 //! | `shape_paint` | `paint/select.rs` (closed `<select>` label) | [`a_select_label_is_shaped_by_paint`] |
 //! | `shape_select_label` | `select.rs` `widest_select_label` (an auto-width select's size) | [`an_auto_width_select_shapes_its_labels_only_when_they_change`] |
 //! | `shape_form_control_metrics` | `form_control.rs` `cached_char_metrics` (a text control's intrinsic width, #1177) | [`a_text_control_finds_its_font_only_when_the_font_changes`] |
+//! | `shape_form_control_label` | `form_control.rs` `cached_label_width` (a button label or picker representative string, #1195, review of #1302) | [`a_form_control_label_is_shaped_only_when_the_font_changes`] |
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
@@ -30,8 +31,12 @@
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
+//! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks`] |
+//! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`break_leaf_lines`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way`] |
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
+//! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
+//! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
 //! exact, anything unlisted `0` (`support/perf_expect.rs`). A failure prints the
@@ -207,11 +212,10 @@ fn a_text_control_finds_its_font_only_when_the_font_changes() {
             (TaffyStyleSyncs, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (IfcMeasureCacheHits, 2),
             (IfcMeasureInvalidations, 2),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 3),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
         ],
     );
@@ -231,11 +235,10 @@ fn a_text_control_finds_its_font_only_when_the_font_changes() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (ShapeFormControlMetrics, 1),
-            (IfcMeasureCacheHits, 2),
             (IfcMeasureInvalidations, 1),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 3),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
         ],
     );
@@ -273,8 +276,13 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
             (StyleNodesVisited, 3),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 3),
-            (ShapeIfcBuild, 3),
-            (IfcMeasureInvalidations, 3),
+            // 3 → 1 (#509, #826): each `<option>` is `display: none` by the
+            // UA sheet, so before the fix each one was *also* wrongly
+            // classified as an IFC root over its own label text — a Parley
+            // build nobody ever paints. Only the `<select>` itself (a value
+            // control, root whatever its children are) still builds.
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 1),
             (LayoutResolves, 1),
             (LayoutSkippedTextOnly, 1),
         ],
@@ -292,12 +300,14 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
             (TaffyStyleSyncs, 1),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
-            (ShapeIfcBuild, 2),
-            (IfcMeasureCacheHits, 2),
+            // 2 → 1 (#509, #826): the edited `<option>`'s label is no
+            // longer its own dead IFC build either — only the `<select>`'s
+            // own root still builds.
+            (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 4),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 3),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
         ],
     );
@@ -354,7 +364,6 @@ fn an_ifc_root_ellipsis() {
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
             (EllipsisShapes, 2),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -363,7 +372,7 @@ fn an_ifc_root_ellipsis() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
         ],
@@ -402,7 +411,6 @@ fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
             (EllipsisShapes, 2),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -411,7 +419,7 @@ fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
         ],
@@ -449,7 +457,6 @@ fn a_rich_nowrap_root_ellipsis_shapes_its_prefix_search() {
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
             (EllipsisShapes, 8),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -458,7 +465,7 @@ fn a_rich_nowrap_root_ellipsis_shapes_its_prefix_search() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
         ],
@@ -560,7 +567,7 @@ fn a_contents_wrapped_flex_item_ellipsis() {
             (FullStyleWalks, 4),
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 4),
-            (ShapeMeasureIfc, 2),
+            (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
             (EllipsisShapes, 2),
@@ -573,7 +580,7 @@ fn a_contents_wrapped_flex_item_ellipsis() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 3),
+            (TaffyMeasureCalls, 2),
             (PaintNodesVisited, 4),
             (StackingOrderBuilds, 1),
         ],
@@ -607,7 +614,6 @@ fn an_inline_block_holding_an_ifc() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 2),
             (ShapeAtomicInline, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 2),
             (LayoutResolves, 2),
@@ -616,7 +622,7 @@ fn an_inline_block_holding_an_ifc() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
             (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
@@ -651,7 +657,6 @@ fn an_inline_flex_holding_a_text_leaf() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (ShapeAtomicInline, 4),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -660,7 +665,7 @@ fn an_inline_flex_holding_a_text_leaf() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
             (PaintNodesVisited, 4),
             (StackingOrderBuilds, 1),
@@ -846,7 +851,6 @@ fn only_before_rules() {
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 3),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -855,7 +859,7 @@ fn only_before_rules() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
         ],
@@ -884,7 +888,6 @@ fn only_after_rules() {
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 3),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -893,7 +896,7 @@ fn only_after_rules() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
         ],
@@ -1006,7 +1009,6 @@ fn a_blurred_text_shadow_is_rasterised_once() {
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -1015,7 +1017,7 @@ fn a_blurred_text_shadow_is_rasterised_once() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
             (TextShadowMasksRasterised, 1),
@@ -1063,7 +1065,6 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
             (IfcHangPasses, 2),
@@ -1074,8 +1075,91 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A paragraph of 1600 words all glued by NBSPs (#1218, review of #1257 F1),
+/// at a width parley hangs an NBSP at: one line, overflowing. The re-break
+/// that moves parley's break off the NBSP searches the line by galloping, so
+/// it is a handful of breaks of the line — not one per glued word, which made
+/// this paragraph quadratic (62 ms where main took 4).
+#[test]
+fn an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks() {
+    let mut doc = doc_with(".p { width: 40px; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, &vec!["ab"; 1600].join("\u{a0}"));
+    let s = cold_frame(&mut doc);
+    expect(
+        "nbsp-glued chain",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            // One hang pass, one line re-broken, 15 breaks of it, from each
+            // site (the measure and the paint layout).
+            (IfcHangPasses, 2),
+            (IfcHangLines, 2),
+            (IfcUnglueRebreaks, 30),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The text-leaf site of the same re-break: a flex item's own text.
+#[test]
+fn an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way() {
+    let mut doc = doc_with(".p { width: 40px; display: flex; flex-direction: column; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, &vec!["ab"; 1600].join("\u{a0}"));
+    let s = cold_frame(&mut doc);
+    expect(
+        "nbsp-glued chain, text leaf",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureText, 4),
+            (IfcMeasureInvalidations, 2),
+            // 15 breaks of the one line per measure, four measures.
+            (IfcHangPasses, 4),
+            (IfcHangLines, 4),
+            (IfcUnglueRebreaks, 60),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+            (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1106,7 +1190,6 @@ fn an_inline_block_hangs_its_spaces_in_one_pass() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 2),
             (ShapeAtomicInline, 2),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 3),
             (IfcSignatureChanges, 2),
             (IfcHangPasses, 2),
@@ -1117,7 +1200,7 @@ fn an_inline_block_hangs_its_spaces_in_one_pass() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 2),
             (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
@@ -1151,7 +1234,6 @@ fn an_overflowing_last_chip_is_rebroken_without_parleys_empty_line() {
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 3),
             (IfcSignatureChanges, 1),
             (IfcPhantomRebreaks, 2),
@@ -1161,7 +1243,7 @@ fn an_overflowing_last_chip_is_rebroken_without_parleys_empty_line() {
             (IfcFullPasses, 1),
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
             (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
@@ -1282,7 +1364,6 @@ fn a_detached_atomic_inline_is_not_remeasured() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 2),
             (ShapeAtomicInline, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 1),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 1),
@@ -1291,7 +1372,7 @@ fn a_detached_atomic_inline_is_not_remeasured() {
             (IfcScopeContainers, 1),
             (IfcScopeNodes, 2),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
         ],
     );
@@ -1397,14 +1478,13 @@ fn a_detached_atomic_inline_is_not_measured_by_the_whole_document_pass() {
             (StyleResolves, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcFullPasses, 1),
             (IfcFullTheme, 1),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
         ],
     );
@@ -1429,7 +1509,6 @@ fn a_detached_percentage_atomic_inline_is_not_remeasured() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 2),
             (ShapeAtomicInline, 1),
-            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 1),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 1),
@@ -1438,7 +1517,7 @@ fn a_detached_percentage_atomic_inline_is_not_remeasured() {
             (IfcScopeContainers, 1),
             (IfcScopeNodes, 2),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 2),
+            (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 1),
         ],
     );
@@ -1506,4 +1585,235 @@ fn a_detached_atomic_inline_is_sized_again_when_reattached() {
             }
         }
     }
+}
+
+// ── inline_block_computes: keyword atomic inlines (#691) ─────────────────────
+
+/// A `fit-content` atomic inline is sized by three computes (its max-content,
+/// its min-content, and the pinned pass) and a `stretch` one by one, once its
+/// containing block has a width (`resolve_percentage_inline_blocks`). Before
+/// the review of #1281 that ran after **every** root compute, so twenty such
+/// boxes cost 60 + 20 detached computes on a frame that changed something
+/// else entirely. They are cached on the containing block's width now: the
+/// unrelated change pays **none**, and a change of that width (the second
+/// frame, the positive control) pays them all again.
+#[test]
+fn fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change() {
+    const N: usize = 10;
+    let mut doc = doc_with(
+        ".cb { width: 300px; font-size: 0; line-height: 0 }
+         .fit { display: inline-block; width: fit-content }
+         .str { display: inline-block; width: stretch }
+         .c { display: inline-block; width: 100px; height: 20px }
+         .other { height: 10px }",
+    );
+    let body = doc.body();
+    let cb = el(&mut doc, body, "div", "cb");
+    for class in ["fit", "str"] {
+        for _ in 0..N {
+            let k = el(&mut doc, cb, "span", class);
+            el(&mut doc, k, "span", "c");
+            el(&mut doc, k, "span", "c");
+        }
+    }
+    let other = el(&mut doc, body, "div", "other");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+
+    doc.set_style(other, "width", "50px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "an unrelated width change",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+        ],
+    );
+
+    doc.set_style(cb, "width", "150px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    // 10 fit-content boxes x 3 + 10 stretch boxes x 1.
+    expect(
+        "the containing block's width changes",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 21),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 2),
+            (ShapeIfcBuild, 21),
+            (ShapeAtomicInline, 40),
+            (IfcMeasureInvalidations, 20),
+            (IfcPhantomRebreaks, 11),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 2),
+            // 4 → 2 and the 2 cache hits gone with #1260: `<body>`'s flex
+            // basis is no longer measured, so the content is asked once.
+            (TaffyMeasureCalls, 2),
+            (InlineBlockComputes, 40),
+        ],
+    );
+}
+
+/// `shape_form_control_label`: `form_control.rs` `cached_label_width` (a
+/// `submit`/`reset`/`button` label's or a date/time/`file` picker's
+/// representative-string shape, #1195, review of #1302). A colour-only
+/// restyle reshapes neither; a font-size change reshapes both.
+#[test]
+fn a_form_control_label_is_shaped_only_when_the_font_changes() {
+    let mut doc = doc_with("");
+    let body = doc.body();
+    let submit = el(&mut doc, body, "input", "");
+    doc.set_attribute(submit, "type", "submit");
+    let date = el(&mut doc, body, "input", "");
+    doc.set_attribute(date, "type", "date");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+
+    doc.set_style(submit, "color", "red");
+    doc.set_style(date, "color", "red");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "form control label colour restyle",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 2),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 2),
+            (TaffyStyleSyncs, 2),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+        ],
+    );
+
+    doc.set_style(submit, "font-size", "20px");
+    doc.set_style(date, "font-size", "20px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "form control label font-size change",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 2),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 2),
+            (TaffyStyleSyncs, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (ShapeFormControlLabel, 2),
+            (IfcMeasureInvalidations, 4),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            // 3 → 1 and no cache hits since #1260: `<body>`'s flex basis is
+            // no longer measured.
+            (TaffyMeasureCalls, 1),
+            (InlineBlockComputes, 2),
+        ],
+    );
+}
+
+// ── inline_font_family_resolves ─────────────────────────────────────────────
+
+/// A `<span>` that declares no `font-family` of its own inherits the root's
+/// unchanged — `inline_style_props` skips `fonts::parley_font_family`
+/// entirely for it (review of #1326's perf finding). `inline_font_family_resolves`
+/// is absent from the baseline below, i.e. `0`.
+#[test]
+fn a_spans_unchanged_font_family_resolves_nothing() {
+    let mut doc = doc_with("");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "");
+    let span = el(&mut doc, p, "span", "");
+    text(&mut doc, span, "hello");
+    let s = cold_frame(&mut doc);
+    expect(
+        "unchanged font-family span",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 12),
+            (FullStyleWalks, 3),
+            (TaffyStyleSyncs, 4),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A `<span style="font-family: monospace">` whose family differs from the
+/// root's resolves it exactly once per `build_inline_layout` rebuild (one for
+/// the measure, one for the painted layout) — the counter this PR adds to
+/// prove the skip above is not a tautology: something still fires when the
+/// family actually changes.
+#[test]
+fn a_spans_changed_font_family_resolves_once_per_rebuild() {
+    let mut doc = doc_with("");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "");
+    let span = el(&mut doc, p, "span", "");
+    doc.set_attribute(span, "style", "font-family: monospace");
+    text(&mut doc, span, "hello");
+    let s = cold_frame(&mut doc);
+    expect(
+        "changed font-family span",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 5),
+            (StyleNodesVisited, 12),
+            (StyleInvalidations, 1),
+            (FullStyleWalks, 3),
+            (TaffyStyleSyncs, 5),
+            (TaffyStyleChanges, 3),
+            (InlineFontFamilyResolves, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
 }

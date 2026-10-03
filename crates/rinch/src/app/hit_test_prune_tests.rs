@@ -99,11 +99,20 @@ fn random_style(r: &mut Rng, depth: usize) -> String {
     if r.chance(25) {
         s += &format!("z-index: {}; ", r.below(7) as i64 - 3);
     }
-    match r.below(10) {
+    match r.below(12) {
         0 => s += "overflow: hidden; ",
         1 => s += "overflow: auto; ",
         2 => s += "overflow: clip; ",
         3 => s += "overflow-y: scroll; ",
+        // The one pair css-overflow-3 lets stay asymmetric (#535) — every
+        // other combination Stylo normalizes to a symmetric pair (see
+        // `clip_predicate_tests::stylo_pairs_a_non_visible_axis_with_auto`),
+        // so these two arms are the only way this generator can ever produce
+        // a node whose `clips_overflow_x()` and `clips_overflow_y()`
+        // disagree, which is exactly the shape `reference_hit_test_node` and
+        // the fast path have to keep agreeing on.
+        4 => s += "overflow-x: clip; overflow-y: visible; ",
+        5 => s += "overflow-y: clip; overflow-x: visible; ",
         _ => {}
     }
     match r.below(14) {
@@ -740,9 +749,18 @@ fn reference_hit_test_node(
     let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
     // Nodes with overflow clipping must restrict child hit testing to within
-    // bounds — the same predicate paint clips pixels with (#324), so a box
-    // cannot be drawn somewhere it cannot be tapped.
-    let check_children = !node.clips_overflow() || point_in_bounds;
+    // the same box paint clips pixels to (#324) — the **padding** box, not
+    // the border box (#536), per axis (#535); see `hit_test_node`'s identical
+    // arm, which this function is a verbatim pre-prune copy of.
+    let (clip_x, clip_y) = node.clip_axes();
+    let check_children = if !clip_x && !clip_y {
+        true
+    } else {
+        let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(node);
+        let x_ok = !clip_x || (x >= nx + left && x <= nx + nw - right);
+        let y_ok = !clip_y || (y >= ny + top && y <= ny + nh - bottom);
+        x_ok && y_ok
+    };
 
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
@@ -863,4 +881,65 @@ fn reference_hit_test_node(
     }
 
     Some(node_id)
+}
+
+/// #535 review: `reference_hit_test_node`'s own doc comment claims it is "a
+/// verbatim pre-prune copy of `hit_test_node`'s identical arm", but its
+/// `check_children` was not updated when `hit_test_node`'s became per-axis
+/// (#535) — it kept the old `!clips_overflow() || <both-axes border-box
+/// test>` shape. The random fuzzer below never generated the one pair
+/// (`overflow-x: clip; overflow-y: visible`, or its mirror) that could expose
+/// that divergence, so it went unnoticed by `random_documents_hit_identically`
+/// even though that test is specifically the oracle for this function.
+///
+/// Direct, not fuzzed: on the exact fixture the production `hit_test_node`
+/// fixture in `hit_testing.rs` uses (#535's own
+/// `a_click_past_an_open_axis_still_reaches_overflowing_content_...`), the
+/// real path and the oracle must now agree — a click past the container's
+/// own box on the *open* (`overflow-y: visible`) axis still reaches the
+/// overflowing child.
+///
+/// The mutant this kills: reverting `reference_hit_test_node`'s
+/// `check_children` to `!node.clips_overflow() || <border-box-both-axes
+/// test>` makes the oracle answer `Some(container)` here while the real path
+/// answers `Some(child)` — this was true before `check_children` was fixed
+/// (`real != oracle`, confirmed by this test's own first draft) and the fix
+/// is what turns it into equality.
+#[test]
+fn reference_hit_test_node_is_per_axis_like_the_real_one() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "width: 100px; height: 100px; overflow-x: clip; overflow-y: visible",
+    );
+    doc.append_child(body, container);
+    let child = doc.create_element("div");
+    doc.set_attribute(child, "style", "width: 200px; height: 200px");
+    doc.append_child(container, child);
+    doc.resolve_layout(800.0, 600.0);
+
+    let real = hit_test(&doc.tree, 50.0, 150.0);
+    let oracle = reference_hit_test_node(
+        &doc.tree,
+        doc.tree.body_id,
+        0.0,
+        0.0,
+        50.0,
+        150.0,
+        50.0,
+        150.0,
+    );
+    assert_eq!(
+        real,
+        Some(child.0),
+        "the real path must reach the overflowing child on the open axis"
+    );
+    assert_eq!(
+        real, oracle,
+        "real={real:?} oracle={oracle:?} — reference_hit_test_node must agree \
+         with hit_test_node's per-axis check_children (#535)"
+    );
 }

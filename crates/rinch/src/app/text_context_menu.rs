@@ -211,8 +211,8 @@ const TEXT_CONTEXT_MENU_CSS: &str = r#"
     z-index: 9999;
     box-sizing: border-box;
     /* Explicit: a `width: auto` fixed block fills the viewport (the `<select>`
-       popup sizes itself the same way), and rinch lays `max-content` out as
-       `auto` (#626). */
+       popup sizes itself the same way). `max-content` would lay out since
+       #691; the fixed width is kept so the panel does not change size. */
     width: 200px;
     padding: 4px;
     background: var(--rinch-color-body, #ffffff);
@@ -361,7 +361,7 @@ impl RinchApp {
                 // A read-only editor (`EditorHandle::set_read_only`) is a
                 // `readonly` field: it copies and selects, and offers neither
                 // Cut (copy plus a delete it would refuse) nor Paste.
-                let writable = !handle.is_read_only();
+                let writable = !handle.refuses_edits();
                 Some(TextEditState {
                     can_cut: can_copy && writable,
                     can_copy,

@@ -27,7 +27,7 @@ impl ComputedStyle {
 
         let scaled_font_size = self.font_size * scale;
 
-        let font_family = crate::fonts::parley_font_family(font_cx, &self.font_family);
+        let font_family = crate::fonts::parley_text_family(font_cx, &self.font_family, text);
         let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
 
         // Set font size (scaled for DPI)
@@ -35,7 +35,7 @@ impl ComputedStyle {
 
         // Font family: empty is sans-serif, a stack that resolves to nothing
         // is finished with the primary sans-serif face (#1198).
-        builder.push_default(StyleProperty::FontFamily(font_family));
+        font_family.push_to(&mut builder);
 
         // Set font weight if not normal (400)
         if (self.font_weight - 400.0).abs() > 1.0 {
@@ -130,7 +130,7 @@ impl ComputedStyle {
     /// |---|---|
     /// | [`Self::build_parley_layout`] | `font_size`, `font_family`, `font_weight`, `font_style`, `line_height`, `letter_spacing`, `word_spacing`, `overflow_wrap` |
     /// | `RinchDocument::build_inline_layout`'s `root_text_style` | the above plus `color`, `text_decoration`, `text_underline_offset`, `white_space` (both the collapse mode and whether `max_width` applies at all) and `text_align` |
-    /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height`, `letter_spacing`, `word_spacing` |
+    /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_family` (#677), `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height`, `letter_spacing`, `word_spacing` |
     /// | `RinchDocument::push_inline_spans`, which builds `InlineLayout::background_spans` and `::decoration_spans` | `background_color()`, the four paddings, `border_radius_top_left`, `text_decoration` |
     /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `text_overflow`, `overflow_x` |
     ///
@@ -226,6 +226,7 @@ impl ComputedStyle {
             && self.overflow_wrap == other.overflow_wrap
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x
+            && self.vertical_align == other.vertical_align
             && self.display.is_flex_or_grid_container() == other.display.is_flex_or_grid_container()
             && (!inline_level || self.same_inline_background_inputs(other))
     }

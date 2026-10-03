@@ -119,6 +119,19 @@ define_counters! {
     TaffyStyleChanges = "taffy_style_changes",
 
     // ── Text ───────────────────────────────────────────────────────────
+    /// `RinchDocument::inline_style_props` resolved a span's `font-family`
+    /// through `fonts::parley_font_family` (review of #1326): a generic
+    /// expansion plus a cache lookup and an owned `Cow` clone even on a hit,
+    /// which is not free per span. Pushed only when the element's own
+    /// computed `font_family` differs from the enclosing IFC context's —
+    /// `font-family` is inherited, so an element that does not declare its
+    /// own already carries the right value and needs no per-span override —
+    /// so this counts resolutions actually done, never the common
+    /// unchanged-family case. `perf_regression_scenarios.rs`'s
+    /// `inline_font_family_resolve_scenarios` pins both halves: zero for a
+    /// document of spans that don't change the family, and one per span
+    /// that does.
+    InlineFontFamilyResolves = "inline_font_family_resolves",
     /// Parley layouts built by the Taffy measure function for an IFC root.
     ShapeMeasureIfc = "shape_measure_ifc",
     /// Parley layouts built by the Taffy measure function for a text leaf.
@@ -154,6 +167,14 @@ define_counters! {
     /// control when it is first sized and when its font family, weight or
     /// style changes; a restyle that moves none of them shapes none.
     ShapeFormControlMetrics = "shape_form_control_metrics",
+    /// Parley layouts built to shape a `submit`/`reset`/`button` `<input>`'s
+    /// label, or a date/time-family/`file` `<input>`'s representative
+    /// picker string (#1195, review of #1302). Cached the same way
+    /// [`ShapeFormControlMetrics`](Counter::ShapeFormControlMetrics) is — one
+    /// per control when it is first sized and when its label, font family,
+    /// weight, style, letter-spacing or word-spacing changes; a restyle that
+    /// moves none of them shapes none.
+    ShapeFormControlLabel = "shape_form_control_label",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",
     /// Per-root invalidations of the IFC measure cache by a restyle or a
@@ -164,12 +185,14 @@ define_counters! {
     /// The roots it left alone keep both.
     IfcSignatureChanges = "ifc_signature_changes",
     /// Parley layouts (of any of the kinds above) broken a second time to
-    /// hang preserved trailing spaces at a soft wrap
-    /// (`break_lines_hanging_spaces`). At most one per layout, however many
-    /// lines it fixes — the linearity pin.
+    /// hang preserved trailing spaces at a soft wrap, or to move a break
+    /// parley put after a no-break space it hung (#1218)
+    /// (`break_lines_hanging_spaces`, `break_leaf_lines`). At most one per
+    /// layout, however many lines it fixes — the linearity pin.
     IfcHangPasses = "ifc_hang_passes",
-    /// Lines those passes broke again at a widened width to keep their
-    /// spaces and tabs on the line they hang from.
+    /// Lines those passes broke again: at a widened width to keep their
+    /// spaces and tabs on the line they hang from, or once per line that
+    /// ended after a hung NBSP.
     IfcHangLines = "ifc_hang_lines",
     /// Parley layouts broken once more to drop the empty line parley commits
     /// after an inline box placed by an emergency break (#1050), or after a
@@ -180,6 +203,11 @@ define_counters! {
     /// ending in a forced break. On the `pre-wrap` route it is the second hanging
     /// pass, which `ifc_hang_passes` does not count again.
     IfcPhantomRebreaks = "ifc_phantom_rebreaks",
+    /// Breaks of a single line `ifc::unglue` made to move a line break
+    /// parley put after a no-break space it hung (#1218): a few per such
+    /// line — logarithmic, not linear, in the length of an NBSP-glued chain,
+    /// which a search over the line's units keeps it.
+    IfcUnglueRebreaks = "ifc_unglue_rebreaks",
 
     // ── Layout ─────────────────────────────────────────────────────────
     /// `resolve_layout` calls.

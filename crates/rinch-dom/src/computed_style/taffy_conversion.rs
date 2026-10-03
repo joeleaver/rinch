@@ -60,12 +60,12 @@ impl ComputedStyle {
                 height: self.height.to_taffy(),
             },
             min_size: Size {
-                width: self.min_width.to_taffy(),
-                height: self.min_height.to_taffy(),
+                width: self.min_width.to_taffy_lpa(),
+                height: self.min_height.to_taffy_lpa(),
             },
             max_size: Size {
-                width: self.max_width.to_taffy(),
-                height: self.max_height.to_taffy(),
+                width: self.max_width.to_taffy_lpa(),
+                height: self.max_height.to_taffy_lpa(),
             },
 
             flex_direction,
