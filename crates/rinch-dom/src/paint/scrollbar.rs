@@ -519,6 +519,65 @@ fn auto_thumb_color(color: Option<peniko::Color>) -> AlphaColor<Srgb> {
     AlphaColor::<Srgb>::new([c, c, c, AUTO_THUMB_ALPHA])
 }
 
+/// The container's own **content-box** extent `(width, height)` — its
+/// border-box [`LayoutResult`](crate::LayoutResult) size less its own padding
+/// and border — in logical pixels.
+///
+/// This is the "visible" half of the overflow test [`scrollbars`] answers by
+/// painting a bar: a node overflows an axis when [`content_extents`] on that
+/// axis exceeds this. Exposed so `rinch/src/app/hit_testing.rs`'s
+/// `find_*_scroll_container` walks (the wheel's routing) ask the exact same
+/// question rather than re-deriving "visible" against the **border** box,
+/// which is strictly larger whenever there is any padding or border: that
+/// drift is #769 (a container whose content overflows its content box but
+/// not its border box painted, and let you drag, a bar the wheel routed past
+/// — the bar and the wheel agreed only on an unpadded, borderless container,
+/// which is every scroll region in the component library and so hid the bug
+/// for a long time). Prefer [`overflows`] when only the yes/no answer is
+/// wanted.
+pub fn visible_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
+    let Some(node) = tree.get(node_id) else {
+        return (0.0, 0.0);
+    };
+    let cs = &node.computed_style;
+    let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64;
+    let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64;
+    let pad_h = (cs.padding_left.to_px() + cs.padding_right.to_px()) as f64;
+    let border_h = (cs.border_left_width.to_px() + cs.border_right_width.to_px()) as f64;
+    let box_w = node.layout.width as f64;
+    let box_h = node.layout.height as f64;
+    (
+        (box_w - pad_h - border_h).max(0.0),
+        (box_h - pad_v - border_v).max(0.0),
+    )
+}
+
+/// Whether `node_id` is scrollable on `axis` **and** its content overflows —
+/// exactly the test [`scrollbars`] makes before painting a bar on that axis,
+/// exposed as a boolean so a caller that only wants "is this a scroll
+/// container the wheel should move with" is not tempted to re-derive it
+/// against the wrong box (#769). `scrollable` alone is not enough: a
+/// container can declare `overflow: auto` and still fit its content, in
+/// which case neither the bar nor the wheel should claim it.
+pub fn overflows(tree: &NodeTree, node_id: usize, axis: ScrollbarAxis) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    let scrollable = match axis {
+        ScrollbarAxis::Vertical => node.scrolls_y(),
+        ScrollbarAxis::Horizontal => node.scrolls_x(),
+    };
+    if !scrollable {
+        return false;
+    }
+    let (visible_w, visible_h) = visible_extents(tree, node_id);
+    let (content_w, content_h) = content_extents(tree, node_id);
+    match axis {
+        ScrollbarAxis::Vertical => content_h > visible_h,
+        ScrollbarAxis::Horizontal => content_w > visible_w,
+    }
+}
+
 /// The overlay scrollbars of `node_id`, at `scale`.
 ///
 /// A bar exists on an axis when that axis is scrollable **and** overflowing.
@@ -573,14 +632,9 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
     }
 
     let (content_w, content_h) = content_extents(tree, node_id);
-    let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64;
-    let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64;
-    let pad_h = (cs.padding_left.to_px() + cs.padding_right.to_px()) as f64;
-    let border_h = (cs.border_left_width.to_px() + cs.border_right_width.to_px()) as f64;
+    let (visible_w, visible_h) = visible_extents(tree, node_id);
     let box_w = node.layout.width as f64;
     let box_h = node.layout.height as f64;
-    let visible_w = (box_w - pad_h - border_h).max(0.0);
-    let visible_h = (box_h - pad_v - border_v).max(0.0);
 
     let show_vertical = scrollable_y && content_h > visible_h;
     let show_horizontal = scrollable_x && content_w > visible_w;

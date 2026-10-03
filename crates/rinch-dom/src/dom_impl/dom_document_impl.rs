@@ -1376,30 +1376,20 @@ impl DomDocument for RinchDocument {
         crate::paint::scrollbar::content_extents(&self.tree, node.0).0
     }
 
+    /// The container's own content-box height, from
+    /// [`crate::paint::scrollbar::visible_extents`] — the same "visible"
+    /// extent `scrollbars()` compares [`Self::scroll_height`] against to
+    /// decide whether to paint a bar (issue #769). This used to be a second,
+    /// independent copy of that padding/border subtraction; a third lived in
+    /// `rinch/src/app/hit_testing.rs`'s `find_*_scroll_container` walks, which
+    /// skipped the subtraction entirely and compared against the border box.
     fn client_height(&self, node: NodeId) -> f64 {
-        let node = match self.tree.nodes.get(node.0) {
-            Some(n) => n,
-            None => return 0.0,
-        };
-        let cs = &node.computed_style;
-        let pad_top = cs.padding_top.to_px() as f64;
-        let pad_bottom = cs.padding_bottom.to_px() as f64;
-        let border_top = cs.border_top_width.to_px() as f64;
-        let border_bottom = cs.border_bottom_width.to_px() as f64;
-        (node.layout.height as f64 - pad_top - pad_bottom - border_top - border_bottom).max(0.0)
+        crate::paint::scrollbar::visible_extents(&self.tree, node.0).1
     }
 
+    /// The container's content-box width; see [`Self::client_height`].
     fn client_width(&self, node: NodeId) -> f64 {
-        let node = match self.tree.nodes.get(node.0) {
-            Some(n) => n,
-            None => return 0.0,
-        };
-        let cs = &node.computed_style;
-        let pad_left = cs.padding_left.to_px() as f64;
-        let pad_right = cs.padding_right.to_px() as f64;
-        let border_left = cs.border_left_width.to_px() as f64;
-        let border_right = cs.border_right_width.to_px() as f64;
-        (node.layout.width as f64 - pad_left - pad_right - border_left - border_right).max(0.0)
+        crate::paint::scrollbar::visible_extents(&self.tree, node.0).0
     }
 
     fn request_scroll_into_view(&mut self, node: NodeId) {

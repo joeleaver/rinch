@@ -2407,11 +2407,19 @@ and a block container above is non-positioned flowed inline elements and
 list (#591, reached since #995; a positioned span is **#1049**) — Chrome gives it to that
 ancestor (measured: a 700x1500 absolute under a static `overflow: auto` div
 lands on `documentElement.scrollHeight`), and rinch used to give it to the
-wrong box, which is what grew the phantom bar (**#770**). And
-`find_vertical_scroll_container` compares the same extent against the
-container's **border**-box height where `scrollbars` compares it against the
-content box, so a padded container can paint and drag a thumb the wheel routes
-straight past (**#769**). A **positioned** child — `absolute`, or `relative`
+wrong box, which is what grew the phantom bar (**#770**). **#769 is fixed**:
+`find_vertical_scroll_container`/`find_horizontal_scroll_container` (and their
+`_at_point` twins, and the body fallback both fall back to) used to compare
+the content extent against the container's **border**-box size where
+`scrollbars` compares it against the content box — strictly smaller whenever
+there is padding or a border — so a padded or bordered container could paint
+and let you drag a thumb the wheel routed straight past; the two agreed only
+on an unpadded, borderless container, which is every scroll region in the
+component library. `paint::scrollbar::visible_extents` is now the one
+content-box computation (`scrollbars`, `DomDocument::client_height`/
+`client_width`, and the four wheel-routing walks all call it, directly or
+through `paint::scrollbar::overflows`), the same move #400 made for
+`content_extents`. A **positioned** child — `absolute`, or `relative`
 with an offset — is measured differently from Chrome. The paddings of rinch's
 content-box frame and Chrome's padding-box frame cancel for a **non-positioned**
 child only. An `absolute` child's overflow is over-reported by **up to** the

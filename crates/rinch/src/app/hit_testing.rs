@@ -706,29 +706,17 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) ->
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
-        if node.scrolls_y() {
-            let content_h = compute_content_height(tree, node_id);
-            if content_h > node.layout.height as f64 {
-                return Some(node_id);
-            }
+        if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Vertical) {
+            return Some(node_id);
         }
         current = node.parent;
     }
     // Fall back to body if content overflows
-    let body = tree.get(tree.body_id)?;
-    let content_h = compute_content_height(tree, tree.body_id);
-    if content_h > body.layout.height as f64 {
+    tree.get(tree.body_id)?;
+    if rinch_dom::paint::scrollbar::overflows(tree, tree.body_id, ScrollbarAxis::Vertical) {
         return Some(tree.body_id);
     }
     None
-}
-
-/// Compute the total content height of a node from its children's layout bounds.
-///
-/// Delegates to [`rinch_dom::paint::scrollbar::content_extents`] so this and
-/// the paint pass cannot disagree about what "content" means (#400).
-pub(crate) fn compute_content_height(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
-    rinch_dom::paint::scrollbar::content_extents(tree, node_id).1
 }
 
 /// Find the nearest ancestor (or self) that is a horizontal scroll container.
@@ -739,18 +727,14 @@ pub(crate) fn find_horizontal_scroll_container(
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
-        if node.scrolls_x() {
-            let content_w = compute_content_width(tree, node_id);
-            if content_w > node.layout.width as f64 {
-                return Some(node_id);
-            }
+        if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Horizontal) {
+            return Some(node_id);
         }
         current = node.parent;
     }
     // Fall back to body if content overflows
-    let body = tree.get(tree.body_id)?;
-    let content_w = compute_content_width(tree, tree.body_id);
-    if content_w > body.layout.width as f64 {
+    tree.get(tree.body_id)?;
+    if rinch_dom::paint::scrollbar::overflows(tree, tree.body_id, ScrollbarAxis::Horizontal) {
         return Some(tree.body_id);
     }
     None
@@ -818,11 +802,8 @@ fn find_scroll_container_at_point_recursive(
     }
 
     // Check this node
-    if node.scrolls_y() {
-        let content_h = compute_content_height(tree, node_id);
-        if content_h > node.layout.height as f64 {
-            return Some(node_id);
-        }
+    if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Vertical) {
+        return Some(node_id);
     }
 
     None
@@ -889,23 +870,11 @@ fn find_hscroll_container_at_point_recursive(
         }
     }
 
-    if node.scrolls_x() {
-        let content_w = compute_content_width(tree, node_id);
-        if content_w > node.layout.width as f64 {
-            return Some(node_id);
-        }
+    if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Horizontal) {
+        return Some(node_id);
     }
 
     None
-}
-
-/// Compute the total content width of a node from its children's layout bounds.
-///
-/// The horizontal twin of [`compute_content_height`], and the same delegation:
-/// one definition, so a padded container cannot decide it overflows when paint
-/// says it does not.
-pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
-    rinch_dom::paint::scrollbar::content_extents(tree, node_id).0
 }
 
 /// The width of the invisible strip along a container's edge that counts as
