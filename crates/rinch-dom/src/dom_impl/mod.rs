@@ -265,9 +265,19 @@ impl RinchDocument {
 
             html, body, div, section, article, aside, header, footer, main, nav,
             h1, h2, h3, h4, h5, h6, p, blockquote, pre, figure, figcaption,
-            ul, ol, menu, dir, li, dl, dt, dd, table, form, fieldset, legend, hr,
+            ul, ol, menu, dir, dl, dt, dd, table, form, fieldset, legend, hr,
             address, details, summary {
                 display: block;
+            }
+
+            /* #725: `li` is `display: list-item`, not plain `block` — the
+               only thing that makes `resolve_list_marker` draw a marker for
+               it at all (`DisplayValue::ListItem`, `Display::is_list_item`).
+               It still lays out exactly like `block` (both map to
+               `taffy::Display::Block`), so this changes nothing about an
+               `<li>`'s own box. */
+            li {
+                display: list-item;
             }
 
             head, style, script, link, meta, title, noscript {
@@ -531,6 +541,29 @@ impl RinchDocument {
                desktop/web divergence for one token per rule. */
             ul, ol, menu, dir {
                 padding-left: 40px;
+            }
+
+            /* Default marker shape (#725), measured in Chrome 150: a bare
+               `<ul>` is `disc`, a `<ul>` nested inside another `ul` is
+               `circle`, a `ul` nested two deep is `square`, and `<ol>` is
+               `decimal` — only these four are implemented
+               (`resolve_list_marker`); any other `list-style-type` keyword
+               still draws *a* marker (the old bullet/number fallback) rather
+               than none. Written as plain descendant selectors, matching the
+               issue's own measured table, rather than `:is(ul, ol, menu,
+               dir)` chains — `menu`/`dir` nesting marker shape was not
+               separately measured and isn't claimed here. */
+            ul {
+                list-style-type: disc;
+            }
+            ol {
+                list-style-type: decimal;
+            }
+            ul ul {
+                list-style-type: circle;
+            }
+            ul ul ul {
+                list-style-type: square;
             }
 
             /* The block-level default margins, from the HTML Standard's

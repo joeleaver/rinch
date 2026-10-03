@@ -108,8 +108,10 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 /* ── Lists ─────────────────────────────────────────────────────────────── */
 /* A list item is an ordinary block whose marker hangs outside it, as a browser's
    `display: list-item` does. rinch-web keeps the browser's own `::marker` (it sets
-   `ul > li, ol > li { display: list-item }`). rinch-dom has no `list-item`: it
-   generates the marker as a `span` holding "•" or "N." and an en space at the
+   `ul > li, ol > li { display: list-item }`). rinch-dom has `DisplayValue::ListItem`
+   too now (#725), but no native marker *box*: `resolve_list_marker` generates the
+   marker as a `span` holding a glyph from the item's own `list-style-type`
+   ("•"/"◦"/"▪" for disc/circle/square, "N." for decimal) and an en space at the
    start of the `li`, which `li > span:not([data-pm-type])` picks out (an item's
    own children are blocks, each carrying `data-pm-type`) and takes out of flow,
    right-aligned against the item's left edge on its first line.

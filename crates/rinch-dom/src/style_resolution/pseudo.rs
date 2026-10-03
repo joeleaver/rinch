@@ -405,34 +405,74 @@ impl RinchDocument {
     /// Generate a list marker pseudo-element for `<li>` elements.
     ///
     /// If the `<li>` doesn't already have a `::before` pseudo-element from CSS,
-    /// this creates a marker span with the appropriate text:
-    /// - Ordered lists (`<ol>`): "1. ", "2. ", etc.
-    /// - Unordered lists (`<ul>`): bullet character
+    /// this creates a marker span whose text depends on the item's computed
+    /// `list-style-type` (#725):
+    /// - `disc` → "•", `circle` → "◦", `square` → "▪"
+    /// - `decimal` (or any `<ol>`/`<li>` combination not in that set, kept for
+    ///   back-compat) → "1.", "2.", … via [`Self::compute_list_item_counters`]
+    /// - anything else not covered above falls back to the old tag-based
+    ///   heuristic (a bullet under `<ul>`, a number under `<ol>`) rather than
+    ///   drawing nothing, so an unsupported keyword (`lower-alpha`,
+    ///   `upper-roman`, …) still shows *a* marker — tracked for a real
+    ///   rendering as a follow-up (alphabetic/roman types aren't even in
+    ///   Stylo's servo-build `list-style-type` keyword set for roman numerals).
+    /// - `none` → no marker, as before.
+    ///
+    /// Each gets a trailing en-space (`\u{2002}`) — wider than a normal space
+    /// and not subject to whitespace collapsing in the IFC.
+    ///
+    /// This is still the #725 "inside"-shaped marker: the span is an ordinary
+    /// first inline child of the `<li>`, so it participates in the item's own
+    /// line rather than being painted in the parent `<ul>`/`<ol>`'s padding
+    /// as a real `outside` marker box would be. For a single-line item that
+    /// is visually indistinguishable from `outside`; it diverges on a
+    /// wrapped multi-line item, where a real `outside` marker leaves every
+    /// continuation line flush with the first line's text and this one
+    /// leaves it indented by the marker's own width instead. Filed as a
+    /// follow-up (paint-side marker box, `list-style-position: inside`
+    /// support) rather than landed here.
     pub(crate) fn resolve_list_marker(&mut self, node_id: usize) {
         let node = match self.tree.nodes.get(node_id) {
             Some(n) => n,
             None => return,
         };
 
-        // Only process <li> elements
+        // Only process <li> elements.
         if node.tag() != Some("li") {
             return;
         }
 
-        // Check Stylo computed list-style-type — skip if "none"
-        // (list-style-type is inherited, so checking the <li> covers both
-        // inline `list-style: none` and inherited from parent <ul>/<ol>)
-        {
-            use style::properties::longhands::list_style_type::computed_value::T as ListStyleType;
+        // Check Stylo's own freshly-cascaded data for `display: list-item`
+        // and `list-style-type` together, in one borrow. `node.computed_style`
+        // (rinch's own `ComputedStyle`) is NOT yet synced with this cascade —
+        // that happens later, in `apply_stylo_styles_to_taffy` — so reading
+        // it here would see the *previous* pass's value (`Flex`, rinch's
+        // `DisplayValue::default()`, on this node's very first cascade) and
+        // suppress every marker's first paint. An author who overrides
+        // `display` off `list-item` gets no marker, matching Chrome; one
+        // who sets `list-style-type: none` (inherited, so checking the
+        // `<li>` covers both an inline override and inheriting it from the
+        // parent `<ul>`/`<ol>`) gets none either.
+        use style::properties::longhands::list_style_type::computed_value::T as ListStyleType;
+        let keyword = {
             let stylo_data = node.stylo_element_data.borrow();
-            if let Some(ref data) = *stylo_data {
-                if let Some(ref primary) = data.styles.primary {
-                    if primary.get_list().list_style_type == ListStyleType::None {
-                        return;
+            match &*stylo_data {
+                Some(data) => match &data.styles.primary {
+                    Some(primary) => {
+                        if !primary.get_box().display.is_list_item() {
+                            return;
+                        }
+                        let kw = primary.get_list().list_style_type;
+                        if kw == ListStyleType::None {
+                            return;
+                        }
+                        kw
                     }
-                }
+                    None => return,
+                },
+                None => return,
             }
-        }
+        };
 
         // Skip if already has a pseudo-element child (from CSS ::before)
         let has_pseudo = node.children.iter().any(|&cid| {
@@ -457,17 +497,24 @@ impl RinchDocument {
             .and_then(|n| n.tag())
             .unwrap_or("");
 
-        // Determine marker text based on parent list type.
-        // Use en-space (\u{2002}) after the marker — wider than a normal space
-        // and not subject to whitespace collapsing in the IFC.
-        let marker_text = if parent_tag == "ol" {
-            let counters = self.compute_list_item_counters(node_id);
-            let num = counters.get("list-item").copied().unwrap_or(1);
-            format!("{}.\u{2002}", num)
-        } else if parent_tag == "ul" {
-            "\u{2022}\u{2002}".to_string() // bullet + en-space
-        } else {
+        if parent_tag != "ol" && parent_tag != "ul" {
             return; // Not inside a list
+        }
+
+        // Pick the marker glyph from the keyword, not just the parent tag
+        // (#725's core complaint: `list-style-type` was parsed and ignored).
+        // `Decimal`, and any keyword this match doesn't know yet, fall back
+        // to the pre-#725 tag-based heuristic.
+        let marker_text = match keyword {
+            ListStyleType::Disc => "\u{2022}\u{2002}".to_string(), // •
+            ListStyleType::Circle => "\u{25E6}\u{2002}".to_string(), // ◦
+            ListStyleType::Square => "\u{25AA}\u{2002}".to_string(), // ▪
+            _ if parent_tag == "ol" || keyword == ListStyleType::Decimal => {
+                let counters = self.compute_list_item_counters(node_id);
+                let num = counters.get("list-item").copied().unwrap_or(1);
+                format!("{}.\u{2002}", num)
+            }
+            _ => "\u{2022}\u{2002}".to_string(),
         };
 
         // Create the marker pseudo-element (span + text node)

@@ -84,6 +84,15 @@ pub enum DisplayValue {
     /// box was therefore classified block-level and ended the inline run it
     /// should have joined.
     InlineGrid,
+    /// `display: list-item` (#725) — a block box with a marker drawn from
+    /// `list-style-type`/`list-style-position`. Stylo carries "is a list
+    /// item" as an orthogonal bit on `Display` (`Display::is_list_item`),
+    /// not a `DisplayInside` variant, so `display_from_stylo` checks it
+    /// before the `(outside, inside)` match. Lays out exactly like
+    /// [`Self::Block`] (`to_taffy` → `taffy::Display::Block`,
+    /// `DisplayMode::Block`); the only thing this variant changes is which
+    /// nodes `resolve_list_marker` draws a marker for.
+    ListItem,
 }
 
 /// Which part of a CSS table a box is, from its computed `display` (#1083).
@@ -150,7 +159,7 @@ impl DisplayValue {
     pub fn to_taffy(&self) -> taffy::Display {
         match self {
             Self::Flex | Self::InlineFlex => taffy::Display::Flex,
-            Self::Block => taffy::Display::Block,
+            Self::Block | Self::ListItem => taffy::Display::Block,
             Self::Grid | Self::InlineGrid => taffy::Display::Grid,
             Self::None => taffy::Display::None,
             Self::Contents => taffy::Display::Flex, // transparent container

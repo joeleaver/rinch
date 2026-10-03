@@ -26,6 +26,15 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
     if display.is_contents() {
         return DisplayValue::Contents;
     }
+    // `list-item` is an orthogonal bit on `Display` (#725), not a
+    // `DisplayInside` variant — Stylo's servo build parses it combined with
+    // any outside/inside, but the UA sheet's only source of it, `li {
+    // display: list-item }`, is block-outside/flow-inside, so this is
+    // checked ahead of the `(outside, inside)` match rather than folded
+    // into it.
+    if display.is_list_item() {
+        return DisplayValue::ListItem;
+    }
 
     let outside = display.outside();
     let inside = display.inside();
