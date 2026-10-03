@@ -668,6 +668,13 @@ impl DomDocument for RinchDocument {
         if selects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, true);
         }
+        // A `<select>`'s own `value` write is a live selection write too
+        // (#757): it is the freshest of the two mechanisms until a later
+        // `selected` write on one of its options clears it — see
+        // `NodeTree::select_value_fresh`'s doc.
+        if name == "value" && self.tree.nodes[node.0].tag() == Some("select") {
+            self.tree.select_value_fresh.insert(node.0);
+        }
 
         // Parse inline style into Stylo PropertyDeclarationBlock
         if name == "style" {
@@ -772,6 +779,12 @@ impl DomDocument for RinchDocument {
         // first non-disabled option, which is HTML's "ask for a reset".
         if deselects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, false);
+        }
+        // Removing the select's own `value` attribute retires its claim to
+        // freshness too (#757) — there's nothing left for step 1 to answer
+        // from, and a later re-write starts the race over cleanly.
+        if name == "value" && self.tree.nodes[node.0].tag() == Some("select") {
+            self.tree.select_value_fresh.remove(&node.0);
         }
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
