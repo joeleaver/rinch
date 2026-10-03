@@ -354,6 +354,17 @@ impl Component for NumberInput {
         // Controls (unless hidden)
         if !self.hide_controls {
             let controls = rinch_macros::rsx! { div { class: "rinch-number-input__controls" } };
+            // A stepper press takes the click without the keyboard (#1324,
+            // the CLAUDE.md "data-nofocus" mechanism #312 already used by
+            // editor toolbars and `Select`'s dropdown). The up/down buttons
+            // below are real `<button>`s — `tabindex="-1"` only removes them
+            // from the Tab order, a press still claims the nearest focusable
+            // ancestor of the hit node — so without this a stepper click
+            // blurred the field, firing its #226 commit with the stale typed
+            // value a beat before `apply_step` fired a second `onchange` with
+            // the freshly-stepped one. Set once on the container, like a
+            // toolbar, rather than on each button.
+            controls.set_attribute("data-nofocus", "");
 
             // The stepper write (#501). Uncontrolled, a click computes the
             // next value from the field's LIVE text, clamps it to
