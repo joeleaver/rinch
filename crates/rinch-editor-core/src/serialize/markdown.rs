@@ -29,6 +29,10 @@
 //! written outside it, so the text round-trips and that whitespace leaves the
 //! mark.
 //!
+//! A hard break is `\` and a newline, except where that does not read back —
+//! at the end of a textblock and anywhere in a heading — where it is `<br>`;
+//! the reader takes `<br>` and `<br/>` anywhere.
+//!
 //! A table with a header row, no merged cells and one inline
 //! paragraph per cell is a GFM pipe table (column alignment is the cells'
 //! `text_align`); any other table is an HTML `<table>` block (`colspan`/`rowspan`,
@@ -517,6 +521,9 @@ impl<'a> MdBuilder<'a> {
     // ── inline HTML marks ──
 
     fn inline_html(&mut self, html: &str) -> Result<(), MarkdownError> {
+        if is_br_tag(html) {
+            return self.push_hard_break();
+        }
         let Some(tag) = parse_inline_tag(html) else {
             return self.refuse(Construct::InlineHtml);
         };
@@ -907,6 +914,14 @@ const MARK_TAGS: [(&str, &str); 11] = [
     ("del", "strike"),
 ];
 
+/// `<br>`, `<br/>` or `<br />`, in any case: a hard break.
+fn is_br_tag(html: &str) -> bool {
+    html.strip_prefix('<')
+        .and_then(|h| h.strip_suffix('>'))
+        .map(|h| h.trim_end().trim_end_matches('/').trim_end())
+        .is_some_and(|name| name.eq_ignore_ascii_case("br"))
+}
+
 /// Parse `<u>`, `</u>`, `<mark>`, `<mark style="background-color:C">`,
 /// `<span style="color:C">`, `<sub>`, `<sup>` and their closing tags; anything
 /// else is `None`.
@@ -1286,6 +1301,17 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
     };
     for (i, node) in nodes.iter().enumerate() {
         if node.type_name() == "hard_break" {
+            // A `\` break needs a line after it with something on it, and a
+            // heading has one line: a `<br>` instead (the reader takes it).
+            let content_follows = nodes[i + 1..].iter().any(|n| match n.text() {
+                Some(t) => !t.trim_matches([' ', '\t']).is_empty(),
+                None => n.type_name() != "hard_break",
+            });
+            if ctx == Ctx::Heading || !content_follows {
+                w.flush_ws();
+                w.write_raw("<br>");
+                continue;
+            }
             // A delimiter cannot close at the start of the next line: close the
             // runs the content after the break does not continue.
             let next_md = nodes[i + 1..]
@@ -2465,7 +2491,7 @@ mod tests {
                 Construct::InlineHtml,
             ),
             ("a <u title=\"x\">b</u>", Construct::InlineHtml),
-            ("a <br> b", Construct::InlineHtml),
+            ("a <br class=\"x\"> b", Construct::InlineHtml),
             ("a <kbd>b</kbd>", Construct::InlineHtml),
         ] {
             let doc = doc_from_markdown(&schema, md).unwrap();
@@ -2778,7 +2804,7 @@ mod tests {
             (Construct::HtmlBlock, 5)
         );
         assert_eq!(refusal("<!-- note -->"), (Construct::HtmlBlock, 1));
-        assert_eq!(refusal("one\ntwo <br> three"), (Construct::InlineHtml, 2));
+        assert_eq!(refusal("one\ntwo <kbd> three"), (Construct::InlineHtml, 2));
         assert_eq!(
             refusal("a\n\nsome <u>underlined"),
             (Construct::UnmatchedTag, 3)
