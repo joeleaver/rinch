@@ -1218,6 +1218,15 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
     };
     for (i, node) in nodes.iter().enumerate() {
         if node.type_name() == "hard_break" {
+            // A delimiter cannot close at the start of the next line: close the
+            // runs the content after the break does not continue.
+            let next_md = nodes[i + 1..]
+                .iter()
+                .find(|n| n.type_name() != "hard_break")
+                .map(|n| syntax_marks(n).0)
+                .unwrap_or_default();
+            let keep = w.common_prefix(&next_md);
+            w.close_md_to(keep);
             w.flush_ws();
             w.out.push_str("\\\n");
             w.line_start = ctx != Ctx::Cell;
@@ -1248,7 +1257,11 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
             .filter(|(_, m)| !w.active.contains(m))
             .map(|(rank, m)| (run_length(nodes, i, m), rank, m.clone()))
             .collect();
-        to_open.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        to_open.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then((b.2.type_name() == "link").cmp(&(a.2.type_name() == "link")))
+                .then(a.1.cmp(&b.1))
+        });
         let (lead, core, trail) = match node.text() {
             Some(t) if !is_code_text => split_ws(t),
             _ => ("", node.text().unwrap_or(""), ""),
@@ -1261,6 +1274,9 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
         for (k, (_, _, m)) in to_open.iter().enumerate() {
             if k == first_delim {
                 w.write_raw(lead);
+            }
+            if m.type_name() == "link" {
+                w.escape_trailing_bang();
             }
             w.write_raw(&open_mark(m));
             w.active.push(m.clone());
@@ -1300,7 +1316,23 @@ impl InlineWriter {
     fn write_raw(&mut self, s: &str) {
         if !s.is_empty() {
             self.out.push_str(s);
-            self.line_start = false;
+            // Leading whitespace does not end the line start: a block marker
+            // after it must still be escaped.
+            if s.chars().any(|c| !c.is_whitespace()) {
+                self.line_start = false;
+            }
+        }
+    }
+
+    /// Escape a `!` the output ends with, unless it is escaped already: `![`
+    /// would open an image where a link was meant.
+    fn escape_trailing_bang(&mut self) {
+        let Some(head) = self.out.strip_suffix('!') else {
+            return;
+        };
+        let backslashes = head.len() - head.trim_end_matches('\\').len();
+        if backslashes % 2 == 0 {
+            self.out.insert(self.out.len() - 1, '\\');
         }
     }
 
