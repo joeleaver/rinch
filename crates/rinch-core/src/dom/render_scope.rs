@@ -135,9 +135,9 @@ impl Ancestry {
         }
     }
 
-    /// Whether `node` was minted by `owner` or by a scope descended from it.
-    fn owns(&self, owner: ScopeId, node: NodeId) -> bool {
-        let mut current = self.minted_by.get(&node).copied();
+    /// Whether `scope` is `owner` or descended from it.
+    fn descends_from(&self, scope: ScopeId, owner: ScopeId) -> bool {
+        let mut current = Some(scope);
         while let Some(scope) = current {
             if scope == owner {
                 return true;
@@ -191,19 +191,47 @@ pub(crate) fn sweep_for_discard(
     };
     let doc = doc.borrow();
     let mut table = table.borrow_mut();
+    // Siblings are mostly minted by one scope (a row and its text), so the
+    // last answer and the references owed to the last scope are kept.
+    let mut last_answer: Option<(ScopeId, bool)> = None;
+    let mut owed: Option<(ScopeId, i64)> = None;
     let mut stack = vec![root.node_id()];
     let mut is_root = true;
     while let Some(id) = stack.pop() {
-        if !is_root
-            && let Some(owner) = owner
-            && !table.owns(owner, id)
-        {
-            captured.push(NodeHandle::new(id, root.doc.clone()));
-            continue;
+        let record = table.minted_by.remove(&id);
+        if !is_root && let Some(owner) = owner {
+            let owned = match (record, last_answer) {
+                (None, _) => false,
+                (Some(scope), Some((last, answer))) if last == scope => answer,
+                (Some(scope), _) => {
+                    let answer = table.descends_from(scope, owner);
+                    last_answer = Some((scope, answer));
+                    answer
+                }
+            };
+            if !owned {
+                if let Some(scope) = record {
+                    table.minted_by.insert(id, scope);
+                }
+                captured.push(NodeHandle::new(id, root.doc.clone()));
+                continue;
+            }
         }
         is_root = false;
-        table.purge(id);
+        if let Some(scope) = record {
+            match &mut owed {
+                Some((last, n)) if *last == scope => *n += 1,
+                _ => {
+                    if let Some((last, n)) = owed.replace((scope, 1)) {
+                        table.release(last, n);
+                    }
+                }
+            }
+        }
         stack.extend(doc.get_children(id));
+    }
+    if let Some((last, n)) = owed {
+        table.release(last, n);
     }
 }
 
@@ -762,11 +790,18 @@ impl Drop for RenderScope {
             );
             return;
         };
-        if let Some(entry) = table.scopes.get_mut(&self.id) {
-            entry.alive = false;
-            entry.refs += self.minted;
+        let Some(entry) = table.scopes.get_mut(&self.id) else {
+            return;
+        };
+        entry.alive = false;
+        entry.refs += self.minted;
+        if entry.refs <= 0 {
+            let parent = entry.parent;
+            table.scopes.remove(&self.id);
+            if let Some(parent) = parent {
+                table.release(parent, 1);
+            }
         }
-        table.release(self.id, 0);
     }
 }
 
