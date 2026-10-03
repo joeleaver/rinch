@@ -510,15 +510,23 @@ impl RinchDocument {
     /// same string before and after, only what it resolves to changed — so
     /// the cascade's own staleness gate (`ComputedStyle::same_text_layout_inputs`,
     /// read by `apply_stylo_styles_to_taffy`) never fires for it, unlike a
-    /// theme restyle, which gets there by re-cascading everything. So every
-    /// IFC root and atomic inline is force-dropped here regardless of
-    /// signature, and every flex/grid text leaf's Taffy node is marked dirty
-    /// directly, and the whole document is handed a structural pass
-    /// (`request_full_ifc`) so the next layout actually reshapes rather than
-    /// skipping on "nothing changed". The `fit-content`/`stretch` keyword
-    /// cache (`keyword_inline_cb_width`, #691/#1281) is keyed only on the
-    /// containing block's width, which a font change does not move, so it is
-    /// cleared outright rather than invalidated per entry.
+    /// theme restyle, which gets there by re-cascading everything.
+    ///
+    /// Nothing about the tree's *structure* moved, so this does not ask for
+    /// a whole-document structural pass (`request_full_ifc`) the way a theme
+    /// restyle does — that would re-derive every root's display/position for
+    /// no reason. It instead drops exactly what a font change can touch:
+    /// every registered IFC root's `text_layout` and measure-cache entry
+    /// (`invalidate_ifc_root`, regardless of whether its content signature
+    /// moved — the signature doesn't encode typography), every registered
+    /// atomic inline queued for the ordinary `remeasure_dirty_atomic_inlines`
+    /// pass (`mark_atomic_inline_dirty`, which also clears a `fit-content`/
+    /// `stretch` box's `keyword_inline_cb_width` entry as a side effect of
+    /// the next re-measure having no containing-block width yet —
+    /// #691/#1281's own "no longer stands" branch), and every flex/grid text
+    /// leaf's Taffy node marked dirty directly, since nothing else
+    /// invalidates `NodeContext::Text`'s cached size when only font
+    /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
         let controls: Vec<usize> = self
@@ -552,22 +560,13 @@ impl RinchDocument {
             self.invalidate_ifc_root(root_id);
         }
 
-        // The next layout gets a whole-document structural pass. Nothing
-        // about the tree's structure, display or position changed, so this
-        // is heavier than it needs to be — but a font registration is rare
-        // (CLAUDE.md: app startup, or a late `.fonts`/`register_font_data`
-        // call) and the simplest correct answer is the one a theme restyle
-        // already uses.
-        self.tree
-            .request_full_ifc(crate::ifc_scope::IfcFullReason::FontRegistered);
-
         // Atomic inlines (`inline-block`/`-flex`/`-grid`) are detached from
-        // their parent's Taffy child list, so the structural pass's own
-        // compute never reaches them (#661, #784): called after
-        // `request_full_ifc` above, so each walk marks the atomic inline's
-        // own Taffy node dirty directly rather than queuing it, which is what
-        // makes the full pass actually re-measure it instead of serving its
-        // old cached size.
+        // their parent's Taffy child list, so the ordinary root compute
+        // never reaches them (#661, #784). `mark_atomic_inline_dirty` queues
+        // each into `dirty_atomic_inlines`, which whichever structural branch
+        // the next layout takes (full, scoped, or neither) drains through
+        // `remeasure_dirty_atomic_inlines` — the same path a `set_text_content`
+        // or restyle already relies on.
         let atomic_inlines: Vec<usize> = self.tree.atomic_inline_registry.iter().copied().collect();
         for id in atomic_inlines {
             self.mark_atomic_inline_dirty(id);
@@ -576,10 +575,10 @@ impl RinchDocument {
         // A text node measured directly through `NodeContext::Text` (a flex
         // or grid item, including the interior of an `inline-flex`/
         // `inline-grid`) has no `ifc_root` and so is missed by the loop
-        // above. The structural pass's `sync_text_contexts` only refreshes
+        // above. `sync_text_contexts`/`sync_dirty_text_contexts` only refresh
         // that context's *fields* (unchanged here — the font-family string
-        // did not move); it does not itself invalidate Taffy's cached size,
-        // so the leaf's own Taffy node needs marking directly.
+        // did not move); neither invalidates Taffy's cached size, so the
+        // leaf's own Taffy node needs marking directly.
         let text_leaves: Vec<taffy::NodeId> = self
             .tree
             .nodes
@@ -593,7 +592,6 @@ impl RinchDocument {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
         }
 
-        self.tree.keyword_inline_cb_width.clear();
         self.tree.layout_dirty = true;
     }
 
