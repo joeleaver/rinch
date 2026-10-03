@@ -1069,7 +1069,8 @@ impl Container {
 
 /// The task marker a list item starting at `start` opens with, if its source
 /// does: the bullet (`-`, `*`, `+`, or up to nine digits and `.` or `)`),
-/// spaces or tabs, then `[ ]`, `[x]` or `[X]` and whitespace or the end.
+/// spaces or tabs, then `[ ]`, `[x]` or `[X]` and a space or tab (pulldown-cmark's
+/// rule: `- [ ]` at the end of its line is text).
 fn task_marker_at(source: &str, start: usize) -> Option<TaskMarker> {
     let bytes = source.as_bytes();
     let mut i = start;
@@ -1102,7 +1103,7 @@ fn task_marker_at(source: &str, start: usize) -> Option<TaskMarker> {
         _ => return None,
     };
     let range = i..i + 3;
-    if !matches!(bytes.get(i + 3), None | Some(b' ' | b'\t' | b'\n' | b'\r')) {
+    if !matches!(bytes.get(i + 3), Some(b' ' | b'\t')) {
         return None;
     }
     Some(TaskMarker { checked, range })
