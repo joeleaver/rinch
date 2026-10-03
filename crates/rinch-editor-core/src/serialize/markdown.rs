@@ -867,7 +867,9 @@ impl<'a> MdBuilder<'a> {
     }
 
     /// A `TaskListMarker` event belongs to the innermost open item it falls
-    /// in, which has normally found it already; one it has not is taken here.
+    /// in, which has found it already ([`task_marker_at`]). One it has not
+    /// would be a marker the source scan misses: debug builds say so, and a
+    /// release build takes it, rather than lose the text pulldown consumed.
     fn claim_task_marker(&mut self, checked: bool) {
         let range = self.range.clone();
         let owner = self
@@ -878,6 +880,10 @@ impl<'a> MdBuilder<'a> {
         if let Some(item) = owner
             && item.task.is_none()
         {
+            debug_assert!(
+                false,
+                "a task marker at {range:?} the source scan did not find"
+            );
             item.task = Some(TaskMarker { checked, range });
         }
     }

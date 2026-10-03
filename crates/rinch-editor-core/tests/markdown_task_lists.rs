@@ -283,6 +283,29 @@ fn a_task_item_that_starts_with_another_block_round_trips() {
     }
 }
 
+/// A first paragraph that writes nothing (whitespace) is dropped, and the
+/// block after it is then the item's first: it goes on the next line.
+#[test]
+fn a_task_item_whose_first_paragraph_is_blank_keeps_the_next_block() {
+    let s = s();
+    let quote = n(
+        &s,
+        "blockquote",
+        Attrs::new(),
+        vec![p(&s, "q1"), p(&s, "q2")],
+    );
+    let d = doc(
+        &s,
+        vec![tasks(
+            &s,
+            vec![task(&s, true, vec![p(&s, " "), quote.clone()])],
+        )],
+    );
+    let md = doc_to_markdown(&d);
+    let want = doc(&s, vec![tasks(&s, vec![task(&s, true, vec![quote])])]);
+    assert_eq!(doc_from_markdown_strict(&s, &md).unwrap(), want, "{md:?}");
+}
+
 #[test]
 fn an_empty_task_item_round_trips_wherever_it_is() {
     let s = s();
@@ -455,6 +478,27 @@ fn a_marker_before_another_block_is_still_the_items() {
         assert_eq!(doc_from_markdown_strict(&s, md).unwrap(), want, "{md:?}");
         assert_eq!(doc_from_markdown(&s, md).unwrap(), want, "{md:?}");
     }
+    // A marker before an HTML table on its line: the table, and nothing
+    // else (pulldown reports a stray space there).
+    let cell = n(&s, "table_cell", Attrs::new(), vec![p(&s, "a")]);
+    let table = n(
+        &s,
+        "table",
+        Attrs::new(),
+        vec![n(&s, "table_row", Attrs::new(), vec![cell])],
+    );
+    let want = doc(&s, vec![tasks(&s, vec![task(&s, false, vec![table])])]);
+    let md = "- [ ] <table><tr><td>a</td></tr></table>";
+    assert_eq!(doc_from_markdown_strict(&s, md).unwrap(), want);
+    // Not a marker: an indented code block starts before it.
+    let code = n(
+        &s,
+        "code_block",
+        Attrs::new(),
+        vec![s.text("[ ] x").unwrap()],
+    );
+    let want = doc(&s, vec![bullets(&s, vec![vec![code]])]);
+    assert_eq!(doc_from_markdown_strict(&s, "-     [ ] x").unwrap(), want);
     // Not a marker: nothing follows it on its line, not even a space.
     for md in ["- [ ]\n- [x]\n  next", "- [ ]\n  > q"] {
         let d = doc_from_markdown_strict(&s, md).unwrap();
