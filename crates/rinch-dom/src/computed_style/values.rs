@@ -835,6 +835,35 @@ impl TextAlignValue {
     }
 }
 
+/// CSS `vertical-align` property (#724). Non-inherited; the initial value is
+/// `baseline`.
+///
+/// Only [`Baseline`](Self::Baseline), [`Sub`](Self::Sub), [`Super`](Self::Super)
+/// and [`LengthPercentage`](Self::LengthPercentage) have a layout consumer
+/// today — see `ifc::vertical_align_shift_px` and its module doc.
+/// `Top`/`TextTop`/`Middle`/`Bottom`/`TextBottom` parse and round-trip through
+/// `get_computed_styles` so an author's declaration is reported faithfully,
+/// but lay out identically to `Baseline` (no shift): those five only have a
+/// defined effect against an atomic inline (an `inline-block`/image) or a
+/// table cell, which is out of scope here — filed as #1357.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum VerticalAlignValue {
+    #[default]
+    Baseline,
+    Sub,
+    Super,
+    Top,
+    TextTop,
+    Middle,
+    Bottom,
+    TextBottom,
+    /// `<length>` or `<percentage>`. A percentage resolves against the
+    /// element's own `line-height` (CSS 2.1 §10.8.1, measured in Chrome 153);
+    /// a length is absolute. Positive raises the box, matching
+    /// [`LengthPercentageValue::resolve`]'s sign.
+    LengthPercentage(LengthPercentageValue),
+}
+
 /// CSS `text-decoration-style` — how the decoration line is drawn.
 ///
 /// Only [`Solid`](Self::Solid) and [`Wavy`](Self::Wavy) are distinguished when

@@ -761,13 +761,14 @@ fn calc_transform_origin_y() {
     assert_near(oy, 80.0, "transform-origin-y");
 }
 
-/// letter-/word-spacing keep the length part of a mixed calc — the named
-/// limitation at `typography.rs`: the percentage part is font-relative at
-/// used-value time (Chrome keeps `calc(50% + 5px)` unresolved in the
-/// computed value) and px-only spacing cannot express it. Before the fix the
-/// whole value was dropped to 0.
+/// letter-/word-spacing resolve a mixed calc's percentage against the
+/// element's own `font-size` (#743) — the default UA font-size is 16px here,
+/// so `calc(5px + 50%)` is `5 + 0.5 * 16 = 13.0` and `calc(3px + 25%)` is
+/// `3 + 0.25 * 16 = 7.0`. Before #743 the percentage part was dropped
+/// entirely and these computed to the length part alone (5.0 / 3.0) — this
+/// fixture used to pin that wrong behaviour; it now pins the fix.
 #[test]
-fn calc_letter_and_word_spacing_keep_px_part() {
+fn calc_letter_and_word_spacing_resolve_percentage_against_font_size() {
     let mut doc = RinchDocument::new();
     let c = container(&mut doc);
     let a = doc.create_element("div");
@@ -779,8 +780,8 @@ fn calc_letter_and_word_spacing_keep_px_part() {
     doc.append_child(c, a);
     doc.resolve_layout(800.0, 600.0);
     let cs = &doc.tree.get(a.0).unwrap().computed_style;
-    assert_near(cs.letter_spacing, 5.0, "letter-spacing px part");
-    assert_near(cs.word_spacing, 3.0, "word-spacing px part");
+    assert_near(cs.letter_spacing, 13.0, "letter-spacing: 5px + 50% of 16px");
+    assert_near(cs.word_spacing, 7.0, "word-spacing: 3px + 25% of 16px");
 }
 
 /// Grid tracks keep only the percentage component of a mixed calc — the named

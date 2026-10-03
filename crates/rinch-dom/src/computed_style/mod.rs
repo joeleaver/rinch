@@ -24,6 +24,9 @@ pub struct ComputedStyle {
     /// table part to a flex or block container and cannot say.
     pub table_part: TablePart,
     pub position: PositionValue,
+    /// `vertical-align` (#724): non-inherited, not carried to an anonymous
+    /// box (see [`ComputedStyle::for_anonymous_box`]).
+    pub vertical_align: VerticalAlignValue,
     pub overflow_x: OverflowValue,
     pub overflow_y: OverflowValue,
     /// How the overlay scrollbar of a scroll container is drawn. Both come
@@ -248,6 +251,7 @@ impl Default for ComputedStyle {
             display: DisplayValue::default(),
             table_part: TablePart::None,
             position: PositionValue::default(),
+            vertical_align: VerticalAlignValue::default(),
             overflow_x: OverflowValue::default(),
             overflow_y: OverflowValue::default(),
             scrollbar_color: ScrollbarColorValue::default(),

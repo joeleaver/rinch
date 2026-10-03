@@ -683,11 +683,17 @@ impl RinchDocument {
                0.05px at every level.
 
                `vertical-align: sub`/`super` is the other half of `<sub>`/`<sup>`
-               and is **not** here: `ComputedStyle` carries no `vertical_align`
-               field at all, so it needs property plumbing before a rule could
-               mean anything. Tracked separately as issue #724 (#674 §5). */
+               (issue #724, #674 §5): `ComputedStyle::vertical_align` and its
+               `ifc::vertical_align_shift_px` consumer now give it an effect on
+               a text run, so the two rules below land it. */
             small, sub, sup {
                 font-size: smaller;
+            }
+            sub {
+                vertical-align: sub;
+            }
+            sup {
+                vertical-align: super;
             }
 
             /* Default body margin - set to 0 for GUI apps */

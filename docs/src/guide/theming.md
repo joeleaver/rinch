@@ -209,12 +209,18 @@ the 13.3333px size — as it does in a browser under the same sheet. The colours
 (`FieldText` on `Field`) are **not** copied: the theme gives form controls
 `color: inherit` on purpose, so they stay readable in dark mode.
 
-`vertical-align: sub`/`super` on `<sub>`/`<sup>` (issue #724) and list markers on
-`<li>` (issue #725) are **not** part of this: neither is a stylesheet line —
-`ComputedStyle` carries no `vertical_align` field and `DisplayValue` no
-`ListItem` — so both need property and layout work first. Until then a `<sub>`
-is smaller but not lowered, and a list item is not a `list-item` box. What
-desktop draws instead is a text marker — `•` or `N.` followed by an en space —
+`vertical-align: sub`/`super` on `<sub>`/`<sup>` is now part of this (issue
+#724): `ComputedStyle::vertical_align` plus its `ifc::vertical_align_shift_px`
+consumer shift the glyph post-layout, calibrated against Chrome 153 and the
+bundled Inter at a 16px parent font-size (exact only there — see that doc for
+the numbers). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
+lay out as `baseline`, and the shift does not grow the line box the way
+Chrome's does, both filed as #1357.
+
+List markers on `<li>` (issue #725) are **not** part of this: it is not a
+stylesheet line — `DisplayValue` has no `ListItem` — so it needs layout work
+first, and a list item is not a `list-item` box. What desktop draws instead is
+a text marker — `•` or `N.` followed by an en space —
 generated as a span at the start of every `<li>` whose parent is a `<ul>` or
 `<ol>`, whose `list-style-type` is not `none` and which has no `::before` of
 its own. It is inline content of the
@@ -258,12 +264,13 @@ rsx! {
 }
 ```
 
-**A percentage is dropped, and that is a divergence.** rinch keeps only the
-length part of `letter-spacing` / `word-spacing`, so `50%` spaces by nothing and
-`calc(5px + 50%)` spaces by 5px. Chrome 150 resolves the percentage against the
-element's own font-size — measured, `letter-spacing: 50%` at `font-size: 20px`
-adds 10px per character — so a percentage that works in a browser does nothing
-here. Use `px`, `em` or `rem`, all of which are exact. Tracked as issue #743.
+**A percentage resolves against the element's own font-size** (issue #743),
+on both properties: `letter-spacing: 50%` / `word-spacing: 50%` add 10px per
+affected character at `font-size: 20px`, and `calc(5px + 50%)` adds 15px —
+measured in Chrome 153 and matched here, including `word-spacing`, whose
+percentage css-text-4 describes as relative to the space glyph's own advance
+rather than the font-size; Chrome's actual behaviour (and rinch's, now) is
+the font-size basis, not that reading.
 
 `normal` is zero, as in CSS, and it is a genuine reset: an inline element
 declaring it inside a spaced ancestor gets no spacing on its own characters,
