@@ -1183,7 +1183,10 @@ fn a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch(
             // `RenderScope`). It is minted strictly AFTER `wrap`, so its id
             // is higher -- but `s` never created it.
             let indep_doc = doc_weak_for_closure.upgrade().unwrap();
-            let indep_id = indep_doc.borrow_mut().create_element("section");
+            let body_id = indep_doc.borrow().body();
+            let mut sibling = RenderScope::new(indep_doc, body_id);
+            let indep_id = sibling.create_element("section").node_id();
+            std::mem::forget(sibling);
             *slot_for_closure.borrow_mut() = Some(indep_id);
 
             // The app threads it into the branch's markup, exactly like
