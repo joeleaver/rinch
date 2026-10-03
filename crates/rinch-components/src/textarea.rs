@@ -25,29 +25,44 @@ pub struct Textarea {
     pub disabled: bool,
     /// Whether the textarea is required.
     pub required: bool,
-    /// Whether the textarea should auto-resize.
+    /// Whether the textarea should grow with its content, up to `max_rows`.
+    ///
+    /// Chrome's own `<textarea>` never does this — its height is always
+    /// exactly `rows` lines, content or no content (autosize is a component
+    /// convention, not an HTML one; see [`Self::max_rows`]). With this on, the
+    /// control's `rows` attribute is recomputed on every value change from the
+    /// number of `\n`-separated lines in the (controlled) value, clamped to
+    /// `min_rows` (default 2) and `max_rows` (default unbounded) — a `rows`
+    /// change re-measures the control exactly as a user-written one would
+    /// (#297). This counts *explicit* lines, not wrapped ones: a long
+    /// unbroken line that wraps visually does not grow the control, which is
+    /// the one way this is not a faithful stand-in for a browser's own
+    /// autosize library (those measure `scrollHeight` in pixels; rinch has no
+    /// such signal for an attribute-valued control to read). Reactive only
+    /// through [`Self::value_fn`] — an uncontrolled `value` sets the initial
+    /// `rows` once, at mount, same as it always has.
     pub autosize: bool,
     /// Minimum number of visible text rows.
     ///
     /// Renders as the `rows` attribute, which sizes the control to that many
     /// lines (plus padding and border). Defaults to 2 rows when unset, matching
-    /// HTML. A larger CSS `min-height` still wins.
+    /// HTML. A larger CSS `min-height` still wins. With [`Self::autosize`] on,
+    /// this is the floor `rows` never shrinks below rather than the fixed
+    /// value.
     pub min_rows: Option<u32>,
     /// Maximum number of visible text rows.
     ///
-    /// **Declared and inert on desktop** (issue #715). It is not that nothing
-    /// reads it — a `max-height` cannot *bind* on a rinch `<textarea>` at all.
-    /// The control holds its value in an attribute, not as a text child, so its
-    /// content height is its `rows` lines and never its text (#297 measures the
-    /// `rows`; it does not follow the value), and the stylesheet declares a
-    /// 60–120px `min-height` floor, which beats `max-height` in CSS. Measured
-    /// before #297, when `rows` was a `min-height` too: `min_rows: 20` with
-    /// `max_rows: 2` laid out at 446px either way, and a textarea holding 40
-    /// lines is the same 80px as an empty one.
-    ///
-    /// This is the reason `tests/no_dead_props.rs` still allowlists it. Wiring
-    /// it is #715's job, not a component's: the control's height has to be able
-    /// to follow its content first.
+    /// Sets `max-height` to `rows` lines (at the control's own `normal` —
+    /// 1.2× font-size — line height, plus its padding and border), which binds
+    /// because the control's content height is now a Taffy *measure*
+    /// (#297/#1152) rather than a `min-height` rinch wrote — before that fix,
+    /// one `min-height` always beat the other in CSS, so nothing here could
+    /// ever cap anything (issue #715). The stylesheet's own 60–120px
+    /// `min-height` floor still wins when it is taller than this cap, exactly
+    /// as an author's `min-height` beats `max-height` on any element — so a
+    /// `max_rows` under about 3 lines is unreachable at every size step,
+    /// which is a CSS fact about the two declarations, not a bug in this
+    /// prop.
     pub max_rows: Option<u32>,
     /// Current value.
     pub value: String,
@@ -145,7 +160,40 @@ impl Component for Textarea {
         if self.required {
             textarea.set_attribute("required", "");
         }
-        if let Some(rows) = self.min_rows {
+
+        // `max_rows` caps the control's height at that many lines of its own
+        // `normal` (1.2× font-size) line height, plus its padding and border
+        // — the same terms the stylesheet's own box uses, so this tracks the
+        // control's actual font-size and size step rather than a baked-in
+        // pixel value (issue #715).
+        if let Some(rows) = self.max_rows {
+            textarea.set_style(
+                "max-height",
+                &format!("calc(1.2em * {rows} + 2 * var(--rinch-spacing-sm) + 2px)"),
+            );
+        }
+
+        let min_rows = self.min_rows.unwrap_or(2).max(1);
+        if self.autosize {
+            let max_rows = self.max_rows;
+            let rows_for = move |value: &str| -> u32 {
+                let lines = (value.lines().count().max(1) as u32).max(min_rows);
+                match max_rows {
+                    Some(max) => lines.min(max.max(min_rows)),
+                    None => lines,
+                }
+            };
+            if let Some(ref value_fn) = self.value_fn {
+                let value_fn = value_fn.clone();
+                textarea.set_attribute("rows", &rows_for(&value_fn()).to_string());
+                let field = textarea.clone();
+                __scope.create_effect(move || {
+                    field.set_attribute("rows", &rows_for(&value_fn()).to_string());
+                });
+            } else {
+                textarea.set_attribute("rows", &rows_for(&self.value).to_string());
+            }
+        } else if let Some(rows) = self.min_rows {
             textarea.set_attribute("rows", &rows.to_string());
         }
 

@@ -191,9 +191,9 @@ and no stylesheet in the workspace matches that class.
 | `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `required` | `bool` | `false` | |
-| `autosize` | `bool` | `false` | Auto-resize textarea |
+| `autosize` | `bool` | `false` | Grows `rows` to the controlled value's `\n`-line count, clamped to `[min_rows, max_rows]` (issue #715). Reactive only through `value_fn` |
 | `min_rows` | `Option<u32>` | `None` | Visible rows; sizes the control to that many lines. Defaults to 2 (HTML default) when unset. A larger CSS `min-height` wins |
-| `max_rows` | `Option<u32>` | `None` | **Declared and inert on desktop (#715).** A textarea's content height is its `rows` lines, not its text (#297), and the sheet's 60–120px `min-height` beats any `max-height`, so no cap can bind at any value. On the allowlist in `no_dead_props.rs` until a textarea's height can follow its content |
+| `max_rows` | `Option<u32>` | `None` | Caps the control's height at that many lines via `max-height` (issue #715, fixed: the control's `rows` is a Taffy measure, not a `min-height`, so the cap can bind). The sheet's 60–120px size-step `min-height` still wins when it is taller than the cap — ordinary CSS `min` over `max`, not a bug |
 | `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
