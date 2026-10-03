@@ -5252,6 +5252,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "image",
+ "rinch-core",
  "rinch-debug",
  "serde",
  "serde_json",

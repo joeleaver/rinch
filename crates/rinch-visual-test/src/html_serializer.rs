@@ -63,12 +63,19 @@ pub fn serialize_to_html(dom: &Value, config: &HtmlConfig) -> String {
 
 /// Remove CSS property declarations that contain unresolved CSS variables.
 /// The computed_styles already have resolved values, so we don't need the var() references.
+///
+/// Filters by whole **declaration** (via
+/// [`rinch_core::dom::split_declarations`], the workspace's one inline-style
+/// parser), not by a bare-`;` fragment of one (issue #705): a `;` inside a
+/// quoted string or `url(...)` is part of the value, and judging fragments
+/// separately can tear a string in two and leave a dangling quote in the
+/// survivor.
 fn strip_css_variables(style: &str) -> String {
-    style
-        .split(';')
-        .filter(|decl| !decl.contains("var(--"))
-        .collect::<Vec<_>>()
-        .join(";")
+    let decls: Vec<(String, String)> = rinch_core::dom::split_declarations(style)
+        .into_iter()
+        .filter(|(name, value)| !name.contains("var(--") && !value.contains("var(--"))
+        .collect();
+    rinch_core::dom::serialize_declarations(&decls)
 }
 
 /// Recursively serialize a DOM node.

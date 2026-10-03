@@ -971,15 +971,14 @@ fn attr<'b>(attributes: &'b [(String, String)], name: &str) -> Option<&'b str> {
 }
 
 /// Extract a single CSS property value from an inline `style` attribute.
+///
+/// Quote- and bracket-aware (issue #705): a `;` or `:` inside `url(...)` or a
+/// quoted string is part of the value, not a declaration boundary — see
+/// [`super::style_scan`].
 fn parse_style(style: &str, property: &str) -> Option<String> {
-    for decl in style.split(';') {
-        if let Some((k, v)) = decl.split_once(':')
-            && k.trim().eq_ignore_ascii_case(property)
-        {
-            let value = v.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
+    for (name, value) in super::style_scan::style_declarations(style) {
+        if name.eq_ignore_ascii_case(property) && !value.is_empty() {
+            return Some(value.to_string());
         }
     }
     None
