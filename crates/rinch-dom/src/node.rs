@@ -3258,6 +3258,70 @@ pub fn tag_is_disableable(tag: Option<&str>) -> bool {
     )
 }
 
+/// Tags HTML lets be `required` — the set `:required`/`:optional` are
+/// defined over (HTML Standard §4.10.5.3's "candidate for constraint
+/// validation" minus the kinds rinch doesn't special-case per `type=`).
+/// Narrower than [`tag_is_disableable`]: a `<button>`/`<option>`/`<optgroup>`/
+/// `<fieldset>` has no `required` attribute at all.
+pub fn tag_supports_required(tag: Option<&str>) -> bool {
+    matches!(tag, Some("input" | "select" | "textarea"))
+}
+
+/// Tags `:read-only`/`:read-write`/`:placeholder-shown` apply to in this
+/// implementation (#681): `input`, `textarea`. `select` has neither
+/// `readonly` nor `placeholder` of its own.
+///
+/// **Narrower than the full CSS definition**, deliberately, same spirit as
+/// [`tag_is_disableable`]'s own narrowing: Selectors 4 also matches
+/// `:read-only` on every element that cannot be edited at all (a `<div>`,
+/// which is never "mutable"), and factors a `<fieldset disabled>` ancestor
+/// into whether an `<input>` inside it is "mutable". Neither is implemented
+/// here — only the element's own `readonly` attribute decides — so do not
+/// read `tag_is_readonly_capable` as the full predicate.
+pub fn tag_is_readonly_capable(tag: Option<&str>) -> bool {
+    matches!(tag, Some("input" | "textarea"))
+}
+
+/// `:required` (#681): a `required` attribute on a tag that supports one.
+pub fn node_is_required(node: &Node) -> bool {
+    tag_supports_required(node.tag()) && node.attributes.contains_key("required")
+}
+
+/// `:optional` (#681): the inverse of [`node_is_required`] — a tag that
+/// supports `required` but doesn't carry it. `false` for a tag the
+/// attribute doesn't apply to at all, matching `:required`'s own gate (a
+/// `<div>` is neither required nor optional).
+pub fn node_is_optional(node: &Node) -> bool {
+    tag_supports_required(node.tag()) && !node.attributes.contains_key("required")
+}
+
+/// `:read-only` (#681): a `readonly` attribute on a tag that supports one.
+/// See [`tag_is_readonly_capable`] for the scope this deliberately leaves out.
+pub fn node_is_read_only(node: &Node) -> bool {
+    tag_is_readonly_capable(node.tag()) && node.attributes.contains_key("readonly")
+}
+
+/// `:read-write` (#681): the inverse of [`node_is_read_only`], gated the
+/// same way.
+pub fn node_is_read_write(node: &Node) -> bool {
+    tag_is_readonly_capable(node.tag()) && !node.attributes.contains_key("readonly")
+}
+
+/// `:placeholder-shown` (#681): a `placeholder` attribute present and the
+/// field's current value empty — "current" meaning the `value` attribute,
+/// which the desktop runtime mirrors every edit into before dispatching
+/// `oninput` (see `value_fn`/`live_value` in CLAUDE.md), so this also tracks
+/// a live edit, not only the initial markup.
+pub fn node_is_placeholder_shown(node: &Node) -> bool {
+    tag_is_readonly_capable(node.tag())
+        && node.attributes.contains_key("placeholder")
+        && node
+            .attributes
+            .get("value")
+            .map(|v| v.is_empty())
+            .unwrap_or(true)
+}
+
 /// What a node was last painted with, besides its box ([`Node::painted`]).
 #[derive(Clone, Debug, Default)]
 pub struct PaintedState {
