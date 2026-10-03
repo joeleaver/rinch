@@ -84,14 +84,19 @@ pub enum DisplayValue {
     /// box was therefore classified block-level and ended the inline run it
     /// should have joined.
     InlineGrid,
-    /// `display: list-item` (#725) — a block box with a marker drawn from
-    /// `list-style-type`/`list-style-position`. Stylo carries "is a list
-    /// item" as an orthogonal bit on `Display` (`Display::is_list_item`),
-    /// not a `DisplayInside` variant, so `display_from_stylo` checks it
-    /// before the `(outside, inside)` match. Lays out exactly like
-    /// [`Self::Block`] (`to_taffy` → `taffy::Display::Block`,
-    /// `DisplayMode::Block`); the only thing this variant changes is which
-    /// nodes `resolve_list_marker` draws a marker for.
+    /// `display: list-item` (#725) — **block-outside, flow-inside** only: a
+    /// block box with a marker. Stylo carries "is a list item" as an
+    /// orthogonal bit on `Display` (`Display::is_list_item`), so
+    /// `display_from_stylo` returns this for `list-item` / `block list-item`
+    /// / `flow-root list-item` and lets every other combination (`inline
+    /// list-item`, `flex list-item`, …) take its plain `(outside, inside)`
+    /// value — `inline list-item` stays inline-level, as in Chrome 153.
+    ///
+    /// It lays out as [`Self::Block`] does, and every layout site that asks
+    /// for `Block` must ask for this too (`to_taffy` → `taffy::Display::Block`,
+    /// `DisplayMode::Block`, `compute_content_height`'s stacking). The marker
+    /// itself does not read this value: `resolve_list_marker` reads Stylo's
+    /// `is_list_item()`.
     ListItem,
 }
 

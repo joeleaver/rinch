@@ -23,6 +23,7 @@ pub fn computed_style_to_css(styles: &Value) -> String {
             "InlineBlock" => "inline-block",
             "InlineFlex" => "inline-flex",
             "InlineGrid" => "inline-grid",
+            "ListItem" => "list-item",
             _ => "flex",
         };
         css.push_str(&format!("display: {}; ", css_val));

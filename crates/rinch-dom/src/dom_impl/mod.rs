@@ -272,10 +272,9 @@ impl RinchDocument {
 
             /* #725: `li` is `display: list-item`, not plain `block` — the
                only thing that makes `resolve_list_marker` draw a marker for
-               it at all (`DisplayValue::ListItem`, `Display::is_list_item`).
-               It still lays out exactly like `block` (both map to
-               `taffy::Display::Block`), so this changes nothing about an
-               `<li>`'s own box. */
+               it at all (it reads Stylo's `Display::is_list_item`). Its box
+               lays out as a `block` one does: `DisplayValue::ListItem` maps
+               to `taffy::Display::Block` and `DisplayMode::Block`. */
             li {
                 display: list-item;
             }
@@ -543,26 +542,28 @@ impl RinchDocument {
                 padding-left: 40px;
             }
 
-            /* Default marker shape (#725), measured in Chrome 150: a bare
-               `<ul>` is `disc`, a `<ul>` nested inside another `ul` is
-               `circle`, a `ul` nested two deep is `square`, and `<ol>` is
-               `decimal` — only these four are implemented
-               (`resolve_list_marker`); any other `list-style-type` keyword
-               still draws *a* marker (the old bullet/number fallback) rather
-               than none. Written as plain descendant selectors, matching the
-               issue's own measured table, rather than `:is(ul, ol, menu,
-               dir)` chains — `menu`/`dir` nesting marker shape was not
-               separately measured and isn't claimed here. */
+            /* Default marker shape (#725): Chrome's own html.css rules,
+               verbatim. `:is()` matches in this Stylo. An `ol` counts as a
+               nesting level, so measured in Chrome 153 (`getComputedStyle`):
+               `ul` disc, `ul ul` circle, `ul ul ul` square, `ol > li > ul`
+               circle, `ol ol ul` and `ul ol ul` square, `menu` disc. Only
+               disc / circle / square / decimal are drawn as such
+               (`resolve_list_marker`); any other keyword still draws *a*
+               marker (the old bullet/number fallback) rather than none. A
+               `menu`/`dir` item gets no marker yet (#1370). */
             ul {
                 list-style-type: disc;
             }
             ol {
                 list-style-type: decimal;
             }
-            ul ul {
+            menu, dir {
+                list-style-type: disc;
+            }
+            :is(dir, menu, ol, ul) :is(dir, menu, ul) {
                 list-style-type: circle;
             }
-            ul ul ul {
+            :is(dir, menu, ol, ul) :is(dir, menu, ol, ul) :is(dir, menu, ul) {
                 list-style-type: square;
             }
 
