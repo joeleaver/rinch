@@ -556,3 +556,51 @@ fn text_shaped_like_an_email_autolink_stays_text() {
         rt(&s, &doc(&s, vec![p(&s, vec![t(&s, text, &[])])]));
     }
 }
+
+#[test]
+fn delimiter_runs_between_punctuation_and_autolink_shapes_round_trip() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    let st = mark(&s, "strike", &[]);
+    let hl = mark(&s, "highlight", &[]);
+    let u = mark(&s, "underline", &[]);
+    // `***'#*<mark>-</mark><u>*\*<***</u>`: the `*` after `#` can open and
+    // close, and the rule of 3 paired the runs wrongly.
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![
+                    t(&s, "'#", &[&bold, &it]),
+                    t(&s, "-", &[&bold, &hl]),
+                    t(&s, "*<", &[&bold, &it, &u]),
+                ],
+            )],
+        ),
+    );
+    // A `<` ending one text node, then a delimiter and text that together
+    // look like an email autolink (`<~~a~~@b>`, `<**#{@b>`).
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![t(&s, "x<", &[]), t(&s, "a", &[&st]), t(&s, "@b>", &[])],
+            )],
+        ),
+    );
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![t(&s, "x<", &[]), t(&s, "#{@b", &[&bold]), t(&s, ">;", &[])],
+            )],
+        ),
+    );
+}
