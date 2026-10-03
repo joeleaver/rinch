@@ -1953,7 +1953,8 @@ fn escape_text(text: &str, ctx: Ctx, line_start: bool) -> String {
                 !(prev.is_some_and(char::is_alphanumeric)
                     && next.is_some_and(char::is_alphanumeric))
             }
-            '<' => next.is_some_and(|n| n.is_ascii_alphabetic() || matches!(n, '/' | '!' | '?')),
+            // Before anything but whitespace: a tag, or an autolink (`<a@b.c>`).
+            '<' => next.is_some_and(|n| !n.is_whitespace()),
             '&' => looks_like_entity(&chars[i + 1..]),
             '|' => ctx == Ctx::Cell,
             _ => Some(i) == line_escape || Some(i) == trailing_hash,
