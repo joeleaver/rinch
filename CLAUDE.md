@@ -2509,8 +2509,16 @@ box:
   paint's on-demand fallback. The **form-control** text path (`<input>`,
   `<textarea>`, `<select>`) is deliberately not among them: paint and the two
   hit-test builders there have to move as one piece, which is #320. A
-  percentage spacing is still dropped where Chrome resolves it against the
-  font-size (#743).
+  percentage `letter-spacing`/`word-spacing` resolves against the element's
+  own `font-size` (#743, `typography::letter_spacing_from_stylo`/
+  `word_spacing_from_stylo`) — measured in Chrome 153, not against either
+  property's glyph-level reading of the spec (a space's own advance, for
+  `word-spacing`): `50%` at `font-size: 20px` adds 10px per affected cluster
+  on either property, and doubling `font-size` doubles it, where 50% of the
+  font's own (much narrower) glyph advance would not. `font_size` is already
+  one of the fields `same_text_layout_inputs`/`same_measured_text_inputs`
+  compare, so a later `font-size` change still re-shapes this text with no
+  change needed there.
 - **An atomic inline is sized by its own passes and no compute (#661).**
   `inline-block`, `inline-flex` and `inline-grid` boxes are detached from their
   parent's Taffy child list so the enclosing IFC can measure them as Parley

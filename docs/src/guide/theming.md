@@ -264,12 +264,13 @@ rsx! {
 }
 ```
 
-**A percentage is dropped, and that is a divergence.** rinch keeps only the
-length part of `letter-spacing` / `word-spacing`, so `50%` spaces by nothing and
-`calc(5px + 50%)` spaces by 5px. Chrome 150 resolves the percentage against the
-element's own font-size — measured, `letter-spacing: 50%` at `font-size: 20px`
-adds 10px per character — so a percentage that works in a browser does nothing
-here. Use `px`, `em` or `rem`, all of which are exact. Tracked as issue #743.
+**A percentage resolves against the element's own font-size** (issue #743),
+on both properties: `letter-spacing: 50%` / `word-spacing: 50%` add 10px per
+affected character at `font-size: 20px`, and `calc(5px + 50%)` adds 15px —
+measured in Chrome 153 and matched here, including `word-spacing`, whose
+percentage css-text-4 describes as relative to the space glyph's own advance
+rather than the font-size; Chrome's actual behaviour (and rinch's, now) is
+the font-size basis, not that reading.
 
 `normal` is zero, as in CSS, and it is a genuine reset: an inline element
 declaring it inside a spaced ancestor gets no spacing on its own characters,
