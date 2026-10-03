@@ -781,6 +781,7 @@ mod tests {
             ("Contents", "display: contents;"),
             ("None", "display: none;"),
             ("Flex", "display: flex;"),
+            ("ListItem", "display: list-item;"),
             // The control: this is what the fallback is for, and why a missing
             // arm is silent rather than an error.
             ("SomethingNew", "display: flex;"),
