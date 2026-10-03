@@ -130,3 +130,76 @@ fn a_max_rows_cap_below_the_size_floor_loses_to_the_floor() {
         "a 1-row cap is below the md size floor, so the floor still wins"
     );
 }
+
+/// Exact px, pinning the formula's coefficients
+/// (not just "cuts to under 70%"). Default size (sm font 14px, spacing-sm
+/// 12px), max_rows=4. Hand calc: round(1.2*14*4 + 2*12 + 2) = round(93.2) = 93.
+#[test]
+fn exact_px_default_size_max_rows_4() {
+    let capped = mount(|scope| {
+        Textarea {
+            min_rows: Some(20),
+            max_rows: Some(4),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    let h = input_height(&capped);
+    assert_eq!(h, 93.0, "got {h}");
+}
+
+/// xl size (font-size-md=16px), max_rows=8: cap = round(1.2*16*8 + 24 + 2)
+/// = round(179.6) = 180, above the 120px floor, so the cap genuinely binds.
+#[test]
+fn exact_px_xl_size_max_rows_8() {
+    let capped = mount(|scope| {
+        Textarea {
+            size: "xl".into(),
+            min_rows: Some(20),
+            max_rows: Some(8),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    let h = input_height(&capped);
+    assert_eq!(h, 180.0, "got {h}");
+}
+
+/// `min_rows > max_rows` with `autosize` on. `rows_for`'s
+/// `max.max(min_rows)` clamp on the WRITTEN `rows` ATTRIBUTE looks like it
+/// defends `min_rows` as a floor, but the rendered HEIGHT is governed by the
+/// independently-written `max-height` (unaffected by that clamp) regardless
+/// — so the rendered height here tracks `max_rows`, not `min_rows`. This
+/// matches ordinary CSS (`max-height` always wins over a measured/intrinsic
+/// size) and is not a visible-behaviour bug; the `max.max(min_rows)` clamp
+/// is provably inert for layout (the review of #1349 has the killing
+/// mutant that proves it — M3 in the kill matrix).
+#[test]
+fn min_rows_above_max_rows_autosize_height_follows_max_rows() {
+    let value = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12";
+    let mounted = mount(move |scope| {
+        Textarea {
+            size: "xl".into(),
+            autosize: true,
+            min_rows: Some(20),
+            max_rows: Some(6),
+            value: value.into(),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    let h = input_height(&mounted);
+    // xl: font-size-md=16px, floor=120px. max_rows=6 cap: round(1.2*16*6 +
+    // 24 + 2) = round(141.2) = 141 (above the 120px floor, so it binds for
+    // real). A genuine 20-row floor would need >= ~410px.
+    assert!(
+        h < 200.0,
+        "min_rows=20 should mean >= ~410px if it were a real floor under \
+         autosize — got {h}, i.e. the control is sized by max_rows=6 \
+         (~141px) despite min_rows=20"
+    );
+    assert!(
+        (135.0..=147.0).contains(&h),
+        "expected roughly the max_rows=6 cap (~141px), got {h}"
+    );
+}
