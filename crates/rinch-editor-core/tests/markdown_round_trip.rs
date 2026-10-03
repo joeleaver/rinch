@@ -672,3 +672,128 @@ fn the_run_that_lasts_longer_opens_outside() {
     );
     assert_eq!(rt(&s, &d), "***a**\\\nb*");
 }
+
+// ── review round 2: strict accepts everything the writer writes ──
+
+#[test]
+fn a_textblock_of_only_a_hard_break_round_trips() {
+    let s = Schema::starter_kit();
+    let node = |name: &str, kids: Vec<Node>| {
+        s.create_node(name, Attrs::new(), Fragment::from_children(kids))
+            .unwrap()
+    };
+    // Shift+Enter on an empty line: `<br>` alone on a line is an HTML block.
+    rt(&s, &doc(&s, vec![p(&s, vec![br(&s)])]));
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![
+                p(&s, vec![t(&s, "a", &[])]),
+                p(&s, vec![br(&s)]),
+                p(&s, vec![t(&s, "b", &[])]),
+            ],
+        ),
+    );
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![node(
+                "bullet_list",
+                vec![node("list_item", vec![p(&s, vec![br(&s)])])],
+            )],
+        ),
+    );
+    rt(
+        &s,
+        &doc(&s, vec![node("blockquote", vec![p(&s, vec![br(&s)])])]),
+    );
+    // Leading whitespace before the break is stripped, the break kept.
+    let md = doc_to_markdown(&doc(&s, vec![p(&s, vec![t(&s, " ", &[]), br(&s)])]));
+    assert_eq!(
+        doc_from_markdown_strict(&s, &md).unwrap(),
+        doc(&s, vec![p(&s, vec![br(&s)])]),
+        "{md:?}"
+    );
+    // And the lenient reader keeps it too.
+    assert_eq!(
+        doc_from_markdown(&s, "<br>").unwrap(),
+        doc(&s, vec![p(&s, vec![br(&s)])])
+    );
+}
+
+fn one_cell_table(s: &Schema, cell_attrs: Attrs, blocks: Vec<Node>) -> Node {
+    let cell = s
+        .create_node("table_cell", cell_attrs, Fragment::from_children(blocks))
+        .unwrap();
+    let empty = s
+        .create_node(
+            "table_cell",
+            Attrs::new(),
+            Fragment::from_node(p(s, vec![])),
+        )
+        .unwrap();
+    let row = s
+        .create_node(
+            "table_row",
+            Attrs::new(),
+            Fragment::from_children(vec![cell, empty]),
+        )
+        .unwrap();
+    s.create_node("table", Attrs::new(), Fragment::from_node(row))
+        .unwrap()
+}
+
+#[test]
+fn a_task_list_in_a_table_cell_is_dropped_as_everywhere_else() {
+    let s = Schema::starter_kit();
+    let item = s
+        .create_node(
+            "task_item",
+            Attrs::from_iter([("checked", AttrValue::Bool(true))]),
+            Fragment::from_node(p(&s, vec![t(&s, "buy milk", &[])])),
+        )
+        .unwrap();
+    let list = s
+        .create_node("task_list", Attrs::new(), Fragment::from_node(item))
+        .unwrap();
+    let d = doc(
+        &s,
+        vec![one_cell_table(
+            &s,
+            Attrs::new(),
+            vec![p(&s, vec![t(&s, "a", &[])]), list],
+        )],
+    );
+    let md = doc_to_markdown(&d);
+    let back = doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+    let want = doc(
+        &s,
+        vec![one_cell_table(
+            &s,
+            Attrs::new(),
+            vec![p(&s, vec![t(&s, "a", &[])])],
+        )],
+    );
+    assert_eq!(back, want, "{md:?}");
+}
+
+#[test]
+fn spans_past_what_the_import_reads_are_written_clamped() {
+    let s = Schema::starter_kit();
+    for (name, big, cap) in [("rowspan", 70_000, 65_534), ("colspan", 5_000, 1_000)] {
+        let attrs = Attrs::from_iter([(name, AttrValue::Int(big))]);
+        let d = doc(
+            &s,
+            vec![one_cell_table(
+                &s,
+                attrs,
+                vec![p(&s, vec![t(&s, "a", &[])])],
+            )],
+        );
+        let md = doc_to_markdown(&d);
+        assert!(md.contains(&format!("{name}=\"{cap}\"")), "{md:?}");
+        doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+    }
+}
