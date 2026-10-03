@@ -11,6 +11,173 @@ use super::painter::{PaintShape, Painter};
 use crate::computed_style::BorderStyleValue;
 use crate::node::Node;
 
+/// Shading math for the four "3D" border styles (`inset`/`outset`/`groove`/
+/// `ridge`, #731).
+///
+/// This is Chromium's own `CalculateInsetOutsetColor` /
+/// `Color::Light`/`Color::Dark` (the `TableDefaultBorderColorCurrentColorEnabled`
+/// path, which has shipped at `status: "stable"` since before Chrome 153 —
+/// read from `box_border_painter.cc` and `color.cc` directly rather than
+/// re-derived, because the two colour functions are not CSS-spec text: they
+/// are Chromium's own tuned constants). Measuring a 1px border against this
+/// is unreliable (antialiasing blends the computed shade with whatever is
+/// behind it — the #731 issue's own measured `(154, 238)` for a 1px `<hr>` is
+/// such a blend of this module's `(44, 212)` with the white page behind it,
+/// not a different formula), which is exactly why the fixtures in
+/// `border_bevel_tests.rs` use a several-px-wide border.
+mod bevel {
+    use peniko::color::{AlphaColor, Srgb};
+
+    /// Which of the four sides is being painted. `top_left()` is the one bit
+    /// every formula below keys on: CSS always darkens top/left and lightens
+    /// bottom/right for `inset` (the reverse for `outset`), regardless of box
+    /// size or which side physically touches the content box.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Side {
+        Top,
+        Right,
+        Bottom,
+        Left,
+    }
+
+    impl Side {
+        fn top_left(self) -> bool {
+            matches!(self, Side::Top | Side::Left)
+        }
+    }
+
+    /// `nextafterf(256.0f, 0.0f)` — the largest `f32` strictly below 256,
+    /// used by Chromium's `QuantizeTo8Bit` so that a component of exactly
+    /// 1.0 quantizes to 255 rather than overflowing to 256.
+    fn quantize_scale() -> f32 {
+        f32::from_bits(256.0f32.to_bits() - 1)
+    }
+
+    /// Chromium's `QuantizeTo8Bit`: round a `[0, 1]` component to the nearest
+    /// representable 8-bit sRGB value, expressed back as a `[0, 1]` float.
+    fn quantize_to_8bit(v: f32) -> f32 {
+        ((v * quantize_scale()) as i32) as f32 / 255.0
+    }
+
+    /// `color_utils::Linearize` (sRGB -> linear), the IEC 61966-2-1 transfer
+    /// function with the 0.04045 breakpoint color_utils.cc uses (not the
+    /// 0.03928 the W3C formula's text uses — see that file's own comment).
+    fn linearize(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// `color_utils::GetRelativeLuminance4f`.
+    fn relative_luminance(c: AlphaColor<Srgb>) -> f32 {
+        let [r, g, b, _] = c.components;
+        0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
+    }
+
+    /// `blink::Color::Light()`.
+    fn light(c: AlphaColor<Srgb>) -> AlphaColor<Srgb> {
+        let [r, g, b, a] = c.components;
+        // Hardcoded fast path for opaque black, matching Chromium exactly.
+        if r == 0.0 && g == 0.0 && b == 0.0 && a == 1.0 {
+            return AlphaColor::new([84.0 / 255.0, 84.0 / 255.0, 84.0 / 255.0, 1.0]);
+        }
+        let v = r.max(g).max(b);
+        if v == 0.0 {
+            // Lightened black, alpha preserved.
+            return AlphaColor::new([84.0 / 255.0, 84.0 / 255.0, 84.0 / 255.0, a]);
+        }
+        let multiplier = (v + 0.33).min(1.0) / v;
+        AlphaColor::new([
+            quantize_to_8bit(r * multiplier),
+            quantize_to_8bit(g * multiplier),
+            quantize_to_8bit(b * multiplier),
+            a,
+        ])
+    }
+
+    /// `blink::Color::Dark()`.
+    fn dark(c: AlphaColor<Srgb>) -> AlphaColor<Srgb> {
+        let [r, g, b, a] = c.components;
+        if r == 1.0 && g == 1.0 && b == 1.0 && a == 1.0 {
+            return AlphaColor::new([171.0 / 255.0, 171.0 / 255.0, 171.0 / 255.0, 1.0]);
+        }
+        let v = r.max(g).max(b);
+        let multiplier = if v == 0.0 {
+            0.0
+        } else {
+            (v - 0.33).max(0.0) / v
+        };
+        AlphaColor::new([
+            quantize_to_8bit(r * multiplier),
+            quantize_to_8bit(g * multiplier),
+            quantize_to_8bit(b * multiplier),
+            a,
+        ])
+    }
+
+    /// Luminance of `rgb(32, 32, 32)` — very dark colours get extra contrast
+    /// instead of darkening further into near-invisibility.
+    const BASE_DARK_LUMINANCE: f32 = 0.014443844;
+    /// Luminance of `rgb(235, 235, 235)` — very light colours are left alone
+    /// on their light side rather than clipped to white.
+    const BASE_LIGHT_LUMINANCE: f32 = 0.83077;
+
+    /// `blink::CalculateInsetOutsetColor`. `is_darken` is this side/half's own
+    /// `DarkenBoxSide` bit — true for the shadow side, false for the
+    /// highlight side.
+    fn inset_outset_color(is_darken: bool, color: AlphaColor<Srgb>) -> AlphaColor<Srgb> {
+        let luminance = relative_luminance(color);
+        if luminance <= BASE_DARK_LUMINANCE {
+            return if is_darken {
+                light(color)
+            } else {
+                light(light(color))
+            };
+        }
+        if is_darken {
+            return dark(color);
+        }
+        if luminance > BASE_LIGHT_LUMINANCE {
+            color
+        } else {
+            light(color)
+        }
+    }
+
+    /// The whole-edge colour for `border-style: inset` or `outset`.
+    pub(super) fn inset_or_outset(
+        inset: bool,
+        side: Side,
+        color: AlphaColor<Srgb>,
+    ) -> AlphaColor<Srgb> {
+        // `DarkenBoxSide`: top/left darkens under `inset`, and the opposite
+        // sides darken under `outset`.
+        let darken = side.top_left() == inset;
+        inset_outset_color(darken, color)
+    }
+
+    /// The `(outer, inner)` half-colours for `border-style: groove` or
+    /// `ridge`, where "outer" is the half nearer the box's own outer edge
+    /// and "inner" is the half nearer the padding/content box.
+    ///
+    /// `groove`'s outer half takes `inset`'s shading and its inner half
+    /// takes `outset`'s (the reverse for `ridge`) — Chromium's
+    /// `DrawRidgeOrGrooveBoxSide` does this by literally recursing into the
+    /// solid-edge painter with `style` swapped to `Inset`/`Outset` per half;
+    /// this is that recursion collapsed to the two colours it produces.
+    pub(super) fn groove_or_ridge(
+        groove: bool,
+        side: Side,
+        color: AlphaColor<Srgb>,
+    ) -> (AlphaColor<Srgb>, AlphaColor<Srgb>) {
+        let outer = inset_or_outset(groove, side, color);
+        let inner = inset_or_outset(!groove, side, color);
+        (outer, inner)
+    }
+}
+
 /// Paint a CSS box-shadow effect.
 ///
 /// Paint per-side borders with style support (solid, dashed, dotted, double).
@@ -52,10 +219,21 @@ pub(super) fn paint_borders(
         ),
     ];
 
-    // Fast path: if all sides have the same width, color, and style, use single stroke
+    // Fast path: if all sides have the same width, color, and style, use single stroke.
+    // Excluded for the four "3D" styles even when every side's (width, color,
+    // style) tuple is literally equal: the PAINTED colour still differs per
+    // side (and per half, for groove/ridge), so a single stroke in one colour
+    // would be #731 all over again.
     let all_same = sides
         .windows(2)
-        .all(|pair| pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 && pair[0].2 == pair[1].2);
+        .all(|pair| pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 && pair[0].2 == pair[1].2)
+        && !matches!(
+            sides[0].2,
+            BorderStyleValue::Inset
+                | BorderStyleValue::Outset
+                | BorderStyleValue::Groove
+                | BorderStyleValue::Ridge
+        );
 
     if all_same {
         let (bw, color, style) = sides[0];
@@ -98,67 +276,192 @@ pub(super) fn paint_borders(
         && (top_w - bottom_w).abs() < 0.01
         && (top_w - left_w).abs() < 0.01;
 
-    if widths_uniform && has_radius && top_w > 0.0 {
+    // groove/ridge split each edge into two differently-coloured halves along
+    // its own thickness, which the arc path below has no way to express (it
+    // strokes one whole-edge colour per side) — so a radius combined with
+    // groove/ridge falls through to the straight-line path instead, which
+    // loses the rounding at the corners but keeps the two-tone split. That is
+    // a narrower version of the pre-existing limitation just above (per-side
+    // rendering already ignores `border-radius` whenever widths aren't
+    // uniform); not covered by this issue.
+    let has_split_style = sides
+        .iter()
+        .any(|s| matches!(s.2, BorderStyleValue::Groove | BorderStyleValue::Ridge));
+
+    if widths_uniform && has_radius && top_w > 0.0 && !has_split_style {
         paint_borders_arc_per_side(painter, &sides, scale, x, y, w, h, radii, top_w, transform);
         return;
     }
 
     // Fallback: straight lines per side (no border-radius)
-
-    // Top border
-    if top_w > 0.0
-        && !matches!(
+    if let Some(bc) = sides[0].1 {
+        paint_border_side(
+            painter,
+            bevel::Side::Top,
+            top_w,
             sides[0].2,
-            BorderStyleValue::None | BorderStyleValue::Hidden
-        )
-        && let Some(bc) = sides[0].1
-    {
-        let stroke = make_border_stroke(top_w, sides[0].2);
-        let half = top_w * 0.5;
-        let path = peniko::kurbo::Line::new((x, y + half), (x + w, y + half));
-        painter.stroke_color(&stroke, transform, bc, &path.into());
+            bc,
+            x,
+            y,
+            w,
+            h,
+            transform,
+        );
     }
-
-    // Right border
-    if right_w > 0.0
-        && !matches!(
+    if let Some(bc) = sides[1].1 {
+        paint_border_side(
+            painter,
+            bevel::Side::Right,
+            right_w,
             sides[1].2,
-            BorderStyleValue::None | BorderStyleValue::Hidden
-        )
-        && let Some(bc) = sides[1].1
-    {
-        let stroke = make_border_stroke(right_w, sides[1].2);
-        let half = right_w * 0.5;
-        let path = peniko::kurbo::Line::new((x + w - half, y), (x + w - half, y + h));
-        painter.stroke_color(&stroke, transform, bc, &path.into());
+            bc,
+            x,
+            y,
+            w,
+            h,
+            transform,
+        );
     }
-
-    // Bottom border
-    if bottom_w > 0.0
-        && !matches!(
+    if let Some(bc) = sides[2].1 {
+        paint_border_side(
+            painter,
+            bevel::Side::Bottom,
+            bottom_w,
             sides[2].2,
-            BorderStyleValue::None | BorderStyleValue::Hidden
-        )
-        && let Some(bc) = sides[2].1
-    {
-        let stroke = make_border_stroke(bottom_w, sides[2].2);
-        let half = bottom_w * 0.5;
-        let path = peniko::kurbo::Line::new((x, y + h - half), (x + w, y + h - half));
-        painter.stroke_color(&stroke, transform, bc, &path.into());
+            bc,
+            x,
+            y,
+            w,
+            h,
+            transform,
+        );
     }
-
-    // Left border
-    if left_w > 0.0
-        && !matches!(
+    if let Some(bc) = sides[3].1 {
+        paint_border_side(
+            painter,
+            bevel::Side::Left,
+            left_w,
             sides[3].2,
-            BorderStyleValue::None | BorderStyleValue::Hidden
-        )
-        && let Some(bc) = sides[3].1
-    {
-        let stroke = make_border_stroke(left_w, sides[3].2);
-        let half = left_w * 0.5;
-        let path = peniko::kurbo::Line::new((x + half, y), (x + half, y + h));
-        painter.stroke_color(&stroke, transform, bc, &path.into());
+            bc,
+            x,
+            y,
+            w,
+            h,
+            transform,
+        );
+    }
+}
+
+/// The straight-line path of one border side at `(x, y, w, h)`, offset
+/// `offset_from_outer` logical units in from that side's own outer edge
+/// (toward the box's content), perpendicular to the edge.
+fn side_perpendicular_line(
+    side: bevel::Side,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    offset_from_outer: f64,
+) -> peniko::kurbo::Line {
+    use peniko::kurbo::Line;
+    match side {
+        bevel::Side::Top => Line::new((x, y + offset_from_outer), (x + w, y + offset_from_outer)),
+        bevel::Side::Bottom => Line::new(
+            (x, y + h - offset_from_outer),
+            (x + w, y + h - offset_from_outer),
+        ),
+        bevel::Side::Left => Line::new((x + offset_from_outer, y), (x + offset_from_outer, y + h)),
+        bevel::Side::Right => Line::new(
+            (x + w - offset_from_outer, y),
+            (x + w - offset_from_outer, y + h),
+        ),
+    }
+}
+
+/// Paint one straight (non-rounded) border side, splitting it into two
+/// differently-shaded halves for `groove`/`ridge` and resolving the
+/// whole-edge shade for `inset`/`outset` (#731). `width` is already scaled.
+#[allow(clippy::too_many_arguments)]
+fn paint_border_side(
+    painter: &mut dyn Painter,
+    side: bevel::Side,
+    width: f64,
+    style: BorderStyleValue,
+    color: AlphaColor<Srgb>,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    transform: Affine,
+) {
+    if width <= 0.0 || matches!(style, BorderStyleValue::None | BorderStyleValue::Hidden) {
+        return;
+    }
+    // Chromium's `BorderEdge::EffectiveStyle`: a groove/ridge edge one
+    // (device) pixel thick has no room for two visible halves and paints
+    // solid, in its own undarkened colour.
+    let style =
+        if width <= 1.0 && matches!(style, BorderStyleValue::Groove | BorderStyleValue::Ridge) {
+            BorderStyleValue::Solid
+        } else {
+            style
+        };
+    match style {
+        BorderStyleValue::Groove | BorderStyleValue::Ridge => {
+            let groove = matches!(style, BorderStyleValue::Groove);
+            let (outer_color, inner_color) = bevel::groove_or_ridge(groove, side, color);
+            // The outer half gets the extra pixel on an odd width, matching
+            // Chromium's `(y1 + y2 + 1) / 2` midpoint rounding.
+            let outer_w = (width * 0.5).ceil();
+            let inner_w = width - outer_w;
+            // `Stroke::new`'s default cap is `Round`, which bleeds a
+            // half-width half-disc beyond each open line's endpoint. The
+            // `all_same` fast path strokes a closed rect/rrect instead
+            // (where "cap" doesn't apply), so this round bleed was never
+            // visible for a uniform border until this per-side path — which
+            // every bevel style now always takes (see the comment on
+            // `all_same` above) — started drawing open line segments for
+            // what used to be a single rect stroke. `Butt` reaches exactly
+            // to each line's own endpoint, which is already the box's own
+            // corner, so the perpendicular side fills in the rest with no
+            // gap and no bleed, the same "reach exactly the corner" result
+            // `make_border_stroke`'s doc comment already relies on `Miter`
+            // for on a closed path.
+            let outer_line = side_perpendicular_line(side, x, y, w, h, outer_w * 0.5);
+            painter.stroke_color(
+                &Stroke::new(outer_w)
+                    .with_join(Join::Miter)
+                    .with_caps(Cap::Butt),
+                transform,
+                outer_color,
+                &outer_line.into(),
+            );
+            if inner_w > 0.0 {
+                let inner_line = side_perpendicular_line(side, x, y, w, h, outer_w + inner_w * 0.5);
+                painter.stroke_color(
+                    &Stroke::new(inner_w)
+                        .with_join(Join::Miter)
+                        .with_caps(Cap::Butt),
+                    transform,
+                    inner_color,
+                    &inner_line.into(),
+                );
+            }
+        }
+        BorderStyleValue::Inset | BorderStyleValue::Outset => {
+            let resolved =
+                bevel::inset_or_outset(matches!(style, BorderStyleValue::Inset), side, color);
+            // `Butt`, not whatever `make_border_stroke` returns (`Round`):
+            // see the long comment on the groove/ridge case above.
+            let stroke = make_border_stroke(width, style).with_caps(Cap::Butt);
+            let line = side_perpendicular_line(side, x, y, w, h, width * 0.5);
+            painter.stroke_color(&stroke, transform, resolved, &line.into());
+        }
+        _ => {
+            let stroke = make_border_stroke(width, style);
+            let line = side_perpendicular_line(side, x, y, w, h, width * 0.5);
+            painter.stroke_color(&stroke, transform, color, &line.into());
+        }
     }
 }
 
@@ -195,15 +498,32 @@ fn paint_borders_arc_per_side(
     // Build arc paths for each side
     let paths = build_per_side_arc_paths(ix, iy, iw, ih, tl, tr, br, bl);
 
-    // sides: [top, right, bottom, left]
+    // sides: [top, right, bottom, left]. The caller never routes a
+    // groove/ridge side here (it falls back to the straight-line path, which
+    // can express a two-tone split and this arc path cannot); inset/outset
+    // resolve to their one whole-side shade.
+    const SIDE_ORDER: [bevel::Side; 4] = [
+        bevel::Side::Top,
+        bevel::Side::Right,
+        bevel::Side::Bottom,
+        bevel::Side::Left,
+    ];
     for (i, path) in paths.iter().enumerate() {
         let (_, color, style) = sides[i];
         if matches!(style, BorderStyleValue::None | BorderStyleValue::Hidden) {
             continue;
         }
         if let Some(bc) = color {
+            let resolved = match style {
+                BorderStyleValue::Inset | BorderStyleValue::Outset => bevel::inset_or_outset(
+                    matches!(style, BorderStyleValue::Inset),
+                    SIDE_ORDER[i],
+                    bc,
+                ),
+                _ => bc,
+            };
             let stroke = make_border_stroke(bw, style);
-            painter.stroke_color(&stroke, transform, bc, &path.clone().into());
+            painter.stroke_color(&stroke, transform, resolved, &path.clone().into());
         }
     }
 }

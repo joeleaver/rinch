@@ -18,10 +18,14 @@
 //! pixel count is **0**, and `a_bare_hr_paints_a_grey_rule` fails on its first
 //! assertion.
 //!
-//! **The colours here are rinch's, not Chrome's.** Chrome paints `inset` as a
-//! bevel (154 over 238 at scale 1); rinch collapses every bevelled border style
-//! to `solid` in `border_style_from_stylo`, so both rows are the flat 128. See
-//! the comment on that assertion.
+//! **#731 (fixed):** `inset` now paints a two-tone bevel, matching Chromium's
+//! own `CalculateInsetOutsetColor` formula (`border_bevel_tests.rs` is the
+//! dedicated fixture, with a wide border so antialiasing can't be blamed for
+//! the shade). This file's rows are **not** the issue's own measured Chrome
+//! values (154 over 238 at scale 1) — this renderer gives the formula's exact
+//! theoretical output (44 over 212) with no antialiasing blend on a crisp
+//! 1px line, where Chrome's own hairline rendering blends its edge with
+//! whatever is behind it. See the comment on the assertion below.
 
 use peniko::Brush;
 use rinch_core::dom::{DomDocument, NodeId};
@@ -74,30 +78,6 @@ fn near_count(px: &[u8], rgb: (u8, u8, u8), tol: i32) -> u32 {
     n
 }
 
-/// `(x0, y0, x1, y1)` inclusive bounding box of the pixels `near_count` counts.
-fn near_bbox(px: &[u8], rgb: (u8, u8, u8), tol: i32) -> Option<(u32, u32, u32, u32)> {
-    let w = VW as u32;
-    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
-    let mut any = false;
-    for i in (0..px.len()).step_by(4) {
-        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
-        if px[i + 3] > 250
-            && d(px[i], rgb.0) <= tol
-            && d(px[i + 1], rgb.1) <= tol
-            && d(px[i + 2], rgb.2) <= tol
-        {
-            let p = (i / 4) as u32;
-            let (x, y) = (p % w, p / w);
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x);
-            y1 = y1.max(y);
-            any = true;
-        }
-    }
-    any.then_some((x0, y0, x1, y1))
-}
-
 /// Any pixel at all that is not fully transparent.
 ///
 /// `as_chunks::<4>` rather than `chunks_exact(4)`: the pixmap is RGBA8, so the
@@ -139,50 +119,65 @@ fn a_bare_hr_paints_a_grey_rule() {
     doc.resolve_layout(VW, VH);
     let px = rasterize(&mut doc);
 
-    let n = near_count(&px, GRAY, 2);
-    assert!(
-        n > 0,
-        "a bare <hr> must paint grey ink; found none (this is the assertion that \
-         fails at HEAD, where the UA `* {{ border-width: 0 }}` reset left <hr> \
-         borderless)"
-    );
+    // #731: `inset` darkens the top (and left) side and lightens the bottom
+    // (and right) side of `gray` (128,128,128) rather than painting it flat.
+    // Measured against this renderer's own output (no antialiasing blend on
+    // a crisp 1px line; `border_bevel_tests.rs` is the dedicated fixture with
+    // a wide border, and cross-checks these same two values independently):
+    // top row (44, 44, 44), bottom row (212, 212, 212). The *columns* at
+    // x=0 and x=799 are the 1px left/right border too, which the UA sheet
+    // also gives `inset`: the left column is dark for the full two-row
+    // height (it's `inset`'s own top/left side, not split by row) and the
+    // right column is light for the full height — so a whole-image colour
+    // count would find the dark shade in row 11 too (via that left column)
+    // and isn't the right check for "the TOP row is darkened"; columns
+    // 1..=798, away from those two border columns, are.
+    const DARK: (u8, u8, u8) = (44, 44, 44);
+    const LIGHT: (u8, u8, u8) = (212, 212, 212);
 
-    let (x0, y0, x1, y1) = near_bbox(&px, GRAY, 2).expect("counted grey but found no bbox");
-    assert_eq!(
-        (y0, y1),
-        (10, 11),
-        "the rule sits at its 0.5em = 10px margin and is 2 rows tall (two 1px \
-         borders around a `height: 0` box), got rows {y0}..={y1}"
-    );
+    fn count_in_row(px: &[u8], row: u32, rgb: (u8, u8, u8), tol: i32) -> u32 {
+        let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+        let mut n = 0;
+        for x in 1..799u32 {
+            let i = ((row * VW as u32 + x) * 4) as usize;
+            if px[i + 3] > 250
+                && d(px[i], rgb.0) <= tol
+                && d(px[i + 1], rgb.1) <= tol
+                && d(px[i + 2], rgb.2) <= tol
+            {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    let n_top = count_in_row(&px, 10, DARK, 2);
+    let n_bottom = count_in_row(&px, 11, LIGHT, 2);
     assert!(
-        x0 <= 1 && x1 >= 798,
-        "the rule spans its container's full width, got columns {x0}..={x1}"
+        n_top > 0 && n_bottom > 0,
+        "a bare <hr> must paint a two-tone grey bevel; found none (this is the \
+         assertion that fails at HEAD, where the UA `* {{ border-width: 0 }}` \
+         reset left <hr> borderless)"
+    );
+    assert_eq!(
+        n_top, 798,
+        "the whole top row (minus the two border-column pixels) must be the \
+         darkened shade; got {n_top} of 798"
+    );
+    assert_eq!(
+        n_bottom, 798,
+        "the whole bottom row (minus the two border-column pixels) must be \
+         the lightened shade; got {n_bottom} of 798"
     );
 
     // The whole surface, row by row: exactly two rows of exactly 800 opaque
-    // pixels and nothing anywhere else. Six of those 1600 are the antialiased
-    // corner caps where the horizontal and vertical borders meet, which is why
-    // the exact-grey count is 1594 rather than 1600 and why the bbox above
-    // allows one column of slack at each end.
+    // pixels and nothing anywhere else.
     assert_eq!(
         ink_rows(&px),
         [(10u32, 800u32), (11, 800)].into_iter().collect(),
         "the <hr> must be the only thing painted, as two solid 800px rows"
     );
     assert_eq!(ink_count(&px), 1600);
-    // **This pins rinch's rendering of `inset`, not Chrome's.** Chrome paints a
-    // bevel — measured at scale 1, the top row is (154, 154, 154) and the bottom
-    // (238, 238, 238), so not one pixel of a default `<hr>` is actually `gray`.
-    // rinch paints the flat `solid` row twice because
-    // `computed_style/from_stylo/box_model.rs`'s `border_style_from_stylo` ends
-    // `_ => BorderStyleValue::Solid`, collapsing groove/ridge/inset/outset. That
-    // mapping is pre-existing and #674 is only what makes it visible, since an
-    // `<hr>` painted nothing at all before. If rinch ever grows a bevel painter
-    // this assertion is the one it will hit, and 154 over 238 is the target.
-    assert!(
-        (1590..=1600).contains(&n),
-        "almost all of that ink is exactly gray; got {n} of 1600"
-    );
 }
 
 /// The oracle discriminates: an author `border: none` puts the surface back to
@@ -228,10 +223,20 @@ fn an_authored_color_repaints_the_rule() {
         0,
         "the rule must no longer be grey once the element declares a colour"
     );
-    let n = near_count(&px, (0, 128, 0), 2);
+    // #731: the border shades whatever colour it resolves to, not just grey —
+    // the top half darkens (0,128,0) to (0,44,0), the bottom half lightens it
+    // to (0,212,0), by the same formula `border_bevel_tests.rs` pins directly.
+    let n_top = near_count(&px, (0, 44, 0), 2);
+    let n_bottom = near_count(&px, (0, 212, 0), 2);
     assert!(
-        (1590..=1600).contains(&n),
-        "…and must be painted in that colour instead; got {n} green pixels"
+        (790..=800).contains(&n_top),
+        "the darkened top half must be painted in the resolved colour's dark \
+         shade; got {n_top} matching pixels"
+    );
+    assert!(
+        (790..=800).contains(&n_bottom),
+        "…and the lightened bottom half in its light shade; got {n_bottom} \
+         matching pixels"
     );
     assert_eq!(
         ink_rows(&px),

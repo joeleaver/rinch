@@ -412,10 +412,11 @@ fn a_bare_hr_carries_the_browser_ua_box() {
     let s = &doc.tree.get(rule.0).unwrap().computed_style;
     assert_eq!(
         s.border_top_style,
-        BorderStyleValue::Solid,
-        "Chrome's `inset` has no rinch spelling — `border_style_from_stylo` maps \
-         groove/ridge/inset/outset to Solid. If this ever becomes `None`, the \
-         `border-style` declaration stopped reaching the cascade."
+        BorderStyleValue::Inset,
+        "the UA sheet's `inset` must reach the cascade as `Inset` (#731 — it \
+         used to collapse to `Solid` in `border_style_from_stylo`, which is \
+         what `paint::borders::bevel` now shades on). If this ever becomes \
+         `None`, the `border-style` declaration stopped reaching the cascade."
     );
     assert!(
         matches!(s.height, DimensionValue::Length(v) if v == 0.0),

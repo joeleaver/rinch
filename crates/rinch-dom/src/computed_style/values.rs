@@ -950,6 +950,18 @@ pub enum BorderStyleValue {
     Dotted,
     Double,
     Hidden,
+    /// Top/left darkened, bottom/right lightened — a "pressed in" bevel.
+    Inset,
+    /// The reverse of `Inset` — top/left lightened, bottom/right darkened —
+    /// a "pushed out" bevel.
+    Outset,
+    /// Each edge split into two halves along its thickness: the half nearer
+    /// the box's outer edge takes `Inset`'s shading, the half nearer the
+    /// content takes `Outset`'s — a bevel that looks carved into the page.
+    Groove,
+    /// The reverse split of `Groove` — a bevel that looks raised off the
+    /// page.
+    Ridge,
 }
 
 /// CSS visibility property values.
