@@ -44,7 +44,7 @@ pub struct MockDomDocument {
     /// **Test-only.** How many times [`DomDocument::get_children`] has been
     /// called (issue #732). `get_children` takes `&self`, so this is a `Cell`
     /// rather than a plain counter. What makes a fixture able to measure
-    /// `collect_captured_descendants`'s walk against the whole-document size
+    /// the discard walk (`sweep_for_discard`) against the whole-document size
     /// rather than only the discarded subtree's: a bounded walk's count does
     /// not move when an unrelated sibling subtree grows.
     get_children_calls: std::cell::Cell<usize>,

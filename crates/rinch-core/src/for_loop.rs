@@ -477,12 +477,9 @@ where
 
     let parent_id = parent.node_id();
 
-    // The scope this call was itself invoked from (issue #732, round 4) —
-    // see the matching note in `show_dom`. Fixed once; every row scope this
-    // call ever builds — at the initial render, on a later `Insert`, or on a
-    // later data-changed re-render — gets this as its ancestry parent,
-    // regardless of how much later the reconcile `Effect` that builds it
-    // fires relative to this call's own synchronous return.
+    // Every row scope — initial, inserted later, or re-rendered for changed
+    // data — names the scope this call was made from as its parent (issue
+    // #732) — see the matching note in `show_dom`.
     let creator_scope_id = scope.id();
 
     // Get weak doc reference for creating new scopes in Effect

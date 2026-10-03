@@ -61,10 +61,8 @@ where
     let doc_weak = scope.doc_weak();
     let branches = Rc::new(branches);
 
-    // The scope `match_dom` was itself called from (issue #732, round 4) —
-    // see the matching note in `show_dom`. Fixed once; every arm scope this
-    // call ever builds, at the initial render or from a later arm swap, gets
-    // this as its ancestry parent.
+    // Every arm scope names the scope `match_dom` was called from as its
+    // parent (issue #732) — see the matching note in `show_dom`.
     let creator_scope_id = scope.id();
 
     // Track current state

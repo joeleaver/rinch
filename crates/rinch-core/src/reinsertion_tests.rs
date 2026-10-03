@@ -871,14 +871,11 @@ fn a_for_row_preserves_a_nested_captured_handle_across_removal_and_reinsertion()
 
 // ── #732 cost: the walk must be bounded by the discarded subtree ───────────
 
-/// `collect_captured_descendants`' walk must cost proportionally to the
-/// subtree being discarded, not to the whole document (issue #732's own
-/// design note 2 called out "a full subtree walk ... paid by every app
-/// whether or not it ever captures a handle" as the risk to avoid).
-///
-/// Measured via [`MockDomDocument::__get_children_calls`]: an unrelated
-/// sibling subtree, never touched by the branch, must not move the call
-/// count at all when it grows from 10 nodes to 2000.
+/// The discard walk (`sweep_for_discard`) costs in proportion to the subtree
+/// being discarded, not to the whole document. Measured via
+/// [`MockDomDocument::__get_children_calls`]: an unrelated sibling subtree,
+/// never touched by the branch, must not move the call count at all when it
+/// grows from 10 nodes to 2000.
 #[test]
 fn the_capture_walk_is_bounded_by_the_discarded_subtree_not_the_document() {
     let doc = doc();
@@ -940,21 +937,12 @@ fn the_capture_walk_is_bounded_by_the_discarded_subtree_not_the_document() {
     );
 }
 
-// ── adversarial review of PR #1360: a nested `for`'s rows are NOT captured ──
+// ── nested helpers inside a branch are the branch's, not captured ─────────
 
-/// A `for` loop nested inside a `show_dom` branch builds its rows through a
-/// *child* `RenderScope` the `for` machinery creates internally
-/// (`for_loop.rs`'s `RenderScope::new(doc, parent_id)` per item) — not through
-/// the branch's own scope. `collect_captured_descendants` (PR #1360, issue
-/// #732) asks only the branch's own `scope.created(..)` of each descendant,
-/// so every row built by that child scope answers `false` and is classified
-/// as "captured" even though nothing outside the branch is holding it. The
-/// walk stops descending there (by design, for genuine captures) and the row
-/// is DETACHED instead of discarded. Each hide->show cycle creates a fresh
-/// set of rows (through a fresh for_each_dom_typed/child_scope) and detaches
-/// (not discards) the old set, so the old rows are never freed: a leak on a
-/// retiring backend (rinch-web), exactly the #719 shape PR #1360 was
-/// supposed to have fully closed for nested reactive content.
+/// A `for` nested in a branch builds its rows through scopes of its own, not
+/// the branch's: `created` answers `false` for them. They are still the
+/// branch's render's (their scopes name the branch's scope as parent), so a
+/// hide discards them rather than detaching them as captured.
 #[test]
 fn a_nested_for_inside_a_branch_does_not_grow_the_document() {
     let doc = doc();
@@ -1036,7 +1024,7 @@ fn a_nested_component_inside_a_branch_does_not_grow_the_document() {
     );
 }
 
-// ── #732 review: match_dom twin, release_scratch_container, ordering ───────
+// ── match_dom twin, release_scratch_container ────────────────────────────────
 
 /// `match_dom`'s twin of the two leaks above: an arm nested inside the match
 /// builds a `for` loop (and, separately, a re-rendering component) through
@@ -1120,15 +1108,8 @@ fn a_nested_component_inside_a_match_arm_does_not_grow_the_document() {
 /// entirely separate, earlier `RenderScope` (`sc`), never by the component
 /// site's own scope (`site_scope`), so it must be detached, not discarded —
 /// and the leftover wrapper plus the scratch `<template>` container must
-/// still be fully discarded (retired).
-///
-/// This is also the fixture the review's mutation matrix found missing:
-/// it kills both (2) reordering `discard_owned_preserving_captured`'s two
-/// statements (`root.discard()` before detaching `captured` would retire
-/// `panel` along with `leftover`, since discard is recursive and nothing
-/// would have pulled `panel` out first) and (4) replacing
-/// `discard_owned_preserving_captured` with a bare `leftover.discard()` in
-/// `release_scratch_container` (same effect).
+/// still be fully discarded (retired). Discarding the leftover before
+/// detaching `panel`, or with no capture walk at all, retires `panel` too.
 #[test]
 fn release_scratch_container_detaches_a_nested_captured_leftover_rather_than_discarding_it() {
     use crate::dom::release_scratch_container;
@@ -1169,19 +1150,12 @@ fn release_scratch_container_detaches_a_nested_captured_leftover_rather_than_dis
     );
 }
 
-// ── review2-1360: the watermark is an id-ordering proxy for ownership, and ──
-// ── id ordering is not ownership ────────────────────────────────────────────
+// ── id order is not ownership ───────────────────────────────────────────────
 
-/// A genuinely independent node — minted via raw document access (no scope at
-/// all, standing in for anything built by code other than this branch's own
-/// `s`: a sibling render, a portal, a helper that calls `RenderScope::new`
-/// directly) **chronologically after** the branch's wrapper — is appended as
-/// a child of the branch's markup, exactly the `{captured}`-nested-in-markup
-/// shape of #732. The watermark rule (`node.id >= scope's smallest minted
-/// id`) says this node is "owned" by the branch purely because its id is
-/// higher, even though the branch's own scope `s` never created it and holds
-/// no relationship to it at all. If the watermark is unsound, hiding the
-/// branch retires this independent node instead of merely detaching it.
+/// A node minted outside any scope (raw document access, standing in for any
+/// code other than the branch's render) *after* the branch's wrapper, and put
+/// inside it, is not the branch's: a hide detaches it. Ownership is ancestry,
+/// not id order.
 #[test]
 fn a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch() {
     let doc = doc();
@@ -1199,7 +1173,7 @@ fn a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch(
         &body,
         move || visible.get(),
         move |s: &mut RenderScope| {
-            // The branch's own wrapper -- this fixes `s`'s watermark.
+            // The branch's own wrapper.
             let wrap = s.create_element("div");
 
             // A node minted by something that is NOT `s` -- raw document
@@ -1207,7 +1181,7 @@ fn a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch(
             // through `s` (a sibling scope, a portal, a cache that lazily
             // builds its content on first need via its own fresh
             // `RenderScope`). It is minted strictly AFTER `wrap`, so its id
-            // is higher than `s`'s watermark -- but `s` never created it.
+            // is higher -- but `s` never created it.
             let indep_doc = doc_weak_for_closure.upgrade().unwrap();
             let indep_id = indep_doc.borrow_mut().create_element("section");
             *slot_for_closure.borrow_mut() = Some(indep_id);
@@ -1234,19 +1208,14 @@ fn a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch(
     assert_eq!(
         doc.borrow().tag_name(indep_id).as_deref(),
         Some("section"),
-        "the watermark misclassified a node minted by UNRELATED code (not by \
-         `s`, not by any scope nested inside `s`'s render) as owned, purely \
-         because its id happened to be minted after `s`'s watermark -- it \
-         was retired with the wrapper instead of merely detached"
+        "a node minted by unrelated code (not by `s`, not by any scope \
+         descended from it) was read as the branch's because its id is \
+         newer, and retired with the wrapper instead of detached"
     );
 }
 
-/// Same shape, but the independent node is minted BEFORE the branch's first
-/// render even starts, and the branch is toggled through several renders so
-/// its watermark keeps climbing -- a sanity check that ordinary monotonic
-/// captures (the shape every other #732 fixture above already covers) still
-/// work, so the preceding fixture is attacking the watermark specifically via
-/// *post*-watermark minting, not via some other mistake in the harness.
+/// Same shape, the node minted before the branch first renders, over several
+/// renders: an ordinary capture, as a control for the fixture above.
 #[test]
 fn a_node_minted_before_the_branch_first_shows_is_still_captured_after_many_toggles() {
     let doc = doc();
@@ -1311,15 +1280,11 @@ fn a_sweep_for_an_owner_that_built_nothing_captures_every_child() {
     assert_eq!(ids, [child_a.node_id(), child_b.node_id()]);
 }
 
-// ── review2-1360: scope-ancestry tables must not leak either ───────────────
+// ── the ancestry tables are bounded ─────────────────────────────────────────
 
-/// The scope-ancestry tables this round introduced (`MINTED_BY`,
-/// `SCOPE_PARENTS`) must not grow without bound across many toggles — the
-/// coordinator's own cost requirement for real ownership tracking. Every
-/// toggle mints a fresh wrapper, a fresh `for` marker and three fresh rows
-/// (and their own per-row scopes); if discarding the old set did not purge
-/// their `MINTED_BY` entries and dispose their scopes' `SCOPE_PARENTS`
-/// entries, both tables would grow by a fixed amount every toggle, forever.
+/// The ancestry tables (minting records, scope entries) do not grow across
+/// toggles of a branch holding a `for`: each hide drops the records of what it
+/// discards, and the scope entries go with their scopes.
 #[test]
 fn the_scope_ancestry_tables_do_not_grow_with_a_nested_for_inside_a_branch() {
     let doc = doc();
@@ -1368,13 +1333,13 @@ fn the_scope_ancestry_tables_do_not_grow_with_a_nested_for_inside_a_branch() {
 
     assert_eq!(
         minted_by_delta, 0,
-        "#732 round 3: MINTED_BY must not grow across toggles of a nested \
+        "#732: the minting records must not grow across toggles of a nested \
          `for` inside a branch — baseline {minted_by_baseline}, delta {minted_by_delta} \
          over 198 toggles"
     );
     assert_eq!(
         scope_parents_delta, 0,
-        "#732 round 3: SCOPE_PARENTS must not grow across toggles of a \
+        "#732: the scope entries must not grow across toggles of a \
          nested `for` inside a branch — baseline {scope_parents_baseline}, \
          delta {scope_parents_delta} over 198 toggles"
     );
@@ -1425,39 +1390,22 @@ fn the_scope_ancestry_tables_do_not_grow_with_a_plain_captured_handle() {
 
     assert_eq!(
         minted_by_delta, 0,
-        "#732 round 3: MINTED_BY must not grow across toggles of a plain \
+        "#732: the minting records must not grow across toggles of a plain \
          captured handle — baseline {minted_by_baseline}, delta {minted_by_delta}"
     );
     assert_eq!(
         scope_parents_delta, 0,
-        "#732 round 3: SCOPE_PARENTS must not grow across toggles of a plain \
+        "#732: the scope entries must not grow across toggles of a plain \
          captured handle — baseline {scope_parents_baseline}, delta {scope_parents_delta}"
     );
 }
 
-// ── adversarial review round 3: a row minted by the reconcile EFFECT, not ──
-// ── the branch's initial synchronous render, is not linked as owned ───────
+// ── content built later, by an effect, is still the branch's ──────────────
 
-/// Round 3's `owns_transitively` links a `for` row's (or component's) scope
-/// as a child of the branch's scope only via `RENDER_SCOPE_STACK`, which is
-/// pushed by `RenderScope::push_owner` and popped when that call returns —
-/// i.e. only while the branch's **initial, synchronous** render call is on
-/// the stack. Every one of this PR's own "nested for/component" fixtures
-/// uses a `for` loop whose `collection` closure returns the SAME list every
-/// time (`|| vec![1, 2, 3]`), so `diff_keyed` never produces an `Insert` after
-/// the first pass — every row in those fixtures is minted during that first,
-/// synchronous, push_owner-wrapped call.
-///
-/// A real list grows later: `for_each_dom_typed`'s own **reconcile Effect**
-/// (`for_loop.rs`, the `Effect::new(move || { ... })` after the initial
-/// render block) creates a *new* `RenderScope::new(doc, parent_id)` for each
-/// `ListOp::Insert` when the backing signal changes — and that Effect body
-/// runs later, from the reactive flush, with nothing pushed onto
-/// `RENDER_SCOPE_STACK` on the branch's behalf. The new row's recorded parent
-/// is therefore whatever (if anything) was ambient at FLUSH time — not the
-/// branch — so `owns_transitively(branch_scope, new_row)` answers `false`:
-/// the row added after the branch's first render is treated as captured and
-/// is only ever `.remove()`d, never `.discard()`d, on every subsequent hide.
+/// A row a `for` inserts later, from its reconcile effect (the list grows while
+/// the branch is open), is built with nothing of the branch's render on the
+/// stack. Its scope still names the branch's scope as parent, so the hide
+/// discards it.
 #[test]
 fn a_row_added_to_a_growing_list_after_the_branch_first_shows_leaks_on_hide() {
     let doc = doc();
@@ -1490,8 +1438,7 @@ fn a_row_added_to_a_growing_list_after_the_branch_first_shows_leaks_on_hide() {
         None::<fn(&mut RenderScope) -> NodeHandle>,
     );
 
-    // Initial show: one row, minted during the branch's own synchronous
-    // push_owner window -- correctly linked under round 3's own mechanism.
+    // Initial show: one row, minted during the branch's own render.
     visible.set(true);
     // Grow the list WHILE the branch stays visible: this is the for-loop's
     // reconcile Effect's `Insert` path, firing from the reactive flush, not
@@ -1519,21 +1466,16 @@ fn a_row_added_to_a_growing_list_after_the_branch_first_shows_leaks_on_hide() {
     let delta = after - baseline;
     assert_eq!(
         delta, 0,
-        "#732 round 3: a row minted by the for-loop's RECONCILE EFFECT \
-         (added to the list after the branch's first render) must not leak \
-         when the branch repeatedly hides and reshows -- leaked {delta} \
-         nodes over 200 toggles. If this fails, the new row's RenderScope \
-         parent was not linked to the branch's scope (RENDER_SCOPE_STACK was \
-         not populated at reconcile-effect-run time), so it is misclassified \
-         as captured and only detached, never discarded."
+        "#732: a row the for-loop's reconcile effect added after the \
+         branch's first render leaked {delta} nodes over 200 toggles: its \
+         scope does not chain to the branch's, so it was read as captured \
+         and only detached"
     );
 }
 
-/// Surgical variant of the above: measures node count immediately AROUND the
-/// single hide that follows the reconcile-inserted rows, rather than after
-/// many toggles (where a later full re-render of the for-loop, which reads
-/// the already-grown list on its OWN initial pass, re-links everything
-/// correctly and can mask an earlier leak baked into a later "baseline").
+/// The single hide right after one insert, measured on its own: a growth
+/// fixture over many toggles bakes a leak on the first hide into its baseline
+/// (every later show re-renders the list at its new size).
 #[test]
 fn a_single_hide_after_a_reconcile_insert_does_not_strand_the_inserted_rows() {
     let doc = doc();
@@ -1590,27 +1532,16 @@ fn a_single_hide_after_a_reconcile_insert_does_not_strand_the_inserted_rows() {
     assert_eq!(
         after_hide,
         before_anything,
-        "#732 round 3: hiding the branch once, right after the for-loop's \
-         reconcile Effect inserted two new rows into an already-visible \
-         list, left {} extra node(s) in the document table -- they were \
-         detached rather than discarded because the reconcile-inserted \
-         rows' RenderScope was not linked as a descendant of the branch's \
-         scope (RENDER_SCOPE_STACK is only populated during the branch's \
-         own synchronous push_owner call, not during a later Effect run)",
+        "#732: hiding the branch once, right after the reconcile effect \
+         inserted two rows, left {} extra node(s): the inserted rows' scope \
+         does not chain to the branch's, so they were only detached",
         after_hide - before_anything
     );
 }
 
-/// A document that is dropped WITHOUT walking its tree through
-/// `NodeHandle::discard` (closing an embed `RinchContext`, a window torn
-/// down directly, or simply letting a `Rc<RefCell<dyn DomDocument>>` and its
-/// `RenderScope`s go out of scope) leaks every `MINTED_BY` entry it ever
-/// created, for the rest of the thread's life -- `purge_minted_by_subtree`
-/// is only ever called from `NodeHandle::discard`, and nothing hooks
-/// document teardown itself. `SCOPE_PARENTS` self-heals (removed by each
-/// `RenderScope`'s own `Drop`, which still runs when the Rust values are
-/// simply dropped), but `MINTED_BY` has no such hook: it is a map keyed by
-/// `(doc_key, NodeId)`, not owned by any `RenderScope`.
+/// A document whose scopes are dropped without anything being discarded (an
+/// embed context dropped, a window closed) leaves no minting records: the
+/// tables belong to the document's scopes and go with the last one.
 #[test]
 fn a_document_dropped_without_discarding_its_tree_leaks_minted_by_forever() {
     let minted_by_baseline = crate::dom::__minted_by_len();
@@ -1636,25 +1567,14 @@ fn a_document_dropped_without_discarding_its_tree_leaks_minted_by_forever() {
     let leaked = minted_by_after as isize - minted_by_baseline as isize;
     assert_eq!(
         leaked, 0,
-        "#732 round 3: dropping a document's Rc/RenderScope tree directly \
-         (no `NodeHandle::discard` call on anything) leaked {leaked} \
-         MINTED_BY entries that will never be purged for the rest of this \
-         thread's life -- MINTED_BY is a bare thread-local with no \
-         document-teardown hook, only a per-discard one"
+        "#732: dropping a document's scopes without discarding anything \
+         left {leaked} minting records behind"
     );
 }
 
-// ── round 4: the static parent link, exercised for the two remaining ───────
-// ── "later" shapes the round-3 review named but did not fixture ────────────
-
-/// A nested `show_dom` branch that flips **later** — via its own persistent
-/// Effect, while the outer branch stays visible — must still be fully
-/// discarded (not stranded) when the OUTER branch is hidden. Same mechanism
-/// as the reconcile-insert fixtures above (round 3's dynamic
-/// `RENDER_SCOPE_STACK` link was only ever live during the outer branch's
-/// own initial, synchronous render; the inner branch's later flip runs from
-/// a separate reactive flush with nothing of the outer's on the stack),
-/// fixed the same way (round 4's static, helper-captured parent id).
+/// A nested branch flipped later, from its own effect, builds content whose
+/// scope names the scope the nested `show_dom` was called from: the outer
+/// hide reclaims it.
 #[test]
 fn a_nested_branch_flipped_later_is_still_discarded_when_the_outer_branch_hides() {
     let doc = doc();
@@ -1700,9 +1620,8 @@ fn a_nested_branch_flipped_later_is_still_discarded_when_the_outer_branch_hides(
     assert_eq!(
         after,
         baseline - 3, // wrap + inner show_dom's marker + the inner <p>
-        "#732 round 4: a nested branch flipped later (not during the outer \
-         branch's initial render) must still be fully discarded when the \
-         outer branch hides -- {} node(s) were stranded instead",
+        "#732: a nested branch flipped later must be discarded with the \
+         outer branch -- {} node(s) were stranded instead",
         after - (baseline - 3)
     );
 }
@@ -1754,12 +1673,12 @@ fn the_scope_ancestry_tables_do_not_grow_with_a_branch_flipped_later() {
         crate::dom::__scope_parents_len() as isize - scope_parents_baseline as isize;
     assert_eq!(
         minted_by_delta, 0,
-        "#732 round 4: MINTED_BY must not grow across a branch-flipped-later \
+        "#732: the minting records must not grow across a branch-flipped-later \
          cycle -- baseline {minted_by_baseline}, delta {minted_by_delta}"
     );
     assert_eq!(
         scope_parents_delta, 0,
-        "#732 round 4: SCOPE_PARENTS must not grow across a \
+        "#732: the scope entries must not grow across a \
          branch-flipped-later cycle -- baseline {scope_parents_baseline}, \
          delta {scope_parents_delta}"
     );
@@ -1965,7 +1884,7 @@ fn depth_three_later_runs_of_every_helper_are_all_discarded() {
         items.set(vec![1]);
     }
     assert_eq!(crate::dom::__minted_by_len(), mb0, "minting table grew");
-    assert_eq!(crate::dom::__scope_parents_len(), sp0, "SCOPE_PARENTS grew");
+    assert_eq!(crate::dom::__scope_parents_len(), sp0, "scope entries grew");
 }
 
 /// A captured handle that itself CONTAINS live helpers (built by the root
@@ -2149,7 +2068,7 @@ fn two_documents_on_one_thread_do_not_cross_classify() {
 }
 
 /// Dropping 1000 documents (each with a live branch) leaves no live table, but
-/// how many SLOTS stay in DOC_MINTED_BY?
+/// how many per-document slots stay behind?
 #[test]
 fn dropping_many_documents_leaves_no_table_slots_behind() {
     let slots0 = crate::dom::__doc_table_slots();
@@ -2177,7 +2096,7 @@ fn dropping_many_documents_leaves_no_table_slots_behind() {
     let slots = crate::dom::__doc_table_slots() - slots0;
     assert_eq!(
         slots, 0,
-        "{slots} dead DOC_MINTED_BY slots left behind after 1000 documents"
+        "{slots} dead ancestry-table slots left behind after 1000 documents"
     );
 }
 

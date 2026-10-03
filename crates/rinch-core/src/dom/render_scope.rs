@@ -512,17 +512,8 @@ impl RenderScope {
     /// let node = { let _owner = child_scope.push_owner(); view(&item, &mut child_scope) };
     /// ```
     ///
-    /// Issue #732, round 4: this guard no longer carries any scope-ancestry
-    /// bookkeeping (round 3's `RENDER_SCOPE_STACK` push/pop is gone). The
-    /// ancestry link a reactive helper's content needs is now a **fixed**
-    /// id that helper captured once from [`RenderScope::id`] at the moment
-    /// it was called, threaded explicitly into [`RenderScope::with_parent`]
-    /// at every point it constructs content — including from a later
-    /// `Effect` re-run — rather than inferred from whatever is ambient on a
-    /// call stack at construction time, which round 3 got wrong for exactly
-    /// that later-Effect case (a `for` row insert, a nested branch flip, a
-    /// nested component re-render, all happening after the outer branch's
-    /// own initial render had already returned).
+    /// It says nothing about node ownership (issue #732): that is the parent
+    /// a scope is given at construction ([`RenderScope::with_parent`]).
     ///
     /// Takes `&self` and returns a lifetime-free guard, so the `&mut` borrow of
     /// the same scope on the next line is still legal.

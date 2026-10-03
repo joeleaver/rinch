@@ -4307,149 +4307,42 @@ It falls out of that, with no special cases:
 | `if open { {panel} }` — a captured handle (the #654 shape) | `remove` | the closure was handed it; the next show puts it back |
 | a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
 | a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
+| `if open { div { {panel} } }` — a captured handle *inside* branch-built markup | `remove` for `panel`, `discard` for the `div` | the walk below takes `panel` out before the recursive discard reaches it (#732) |
 
-Ownership is asked of the **content root only**, but discarding a root the
-scope minted does not blindly take its whole subtree with it any more
-(**#732**). Before discarding, each of the four helpers walks the content
-root's subtree (`rinch_core::dom::collect_captured_descendants`) and detaches —
-never discards — the first genuinely-captured node on every branch, without
-descending into it further (that subtree is not this scope's business either,
-having never been reached by a render this scope ran). So a captured handle
-*nested inside* branch-built markup (`if open { div { {panel} } }`) survives
-the wrapper's discard: `panel` comes out of the tree before the discard
-reaches it, and the next show rebuilds a fresh wrapper around the same
-`panel`. The walk's cost is bounded by the discarded subtree, not by the
-document —
-`reinsertion_tests::the_capture_walk_is_bounded_by_the_discarded_subtree_not_the_document`
-measures it via `MockDomDocument::__get_children_calls`.
+**A root is asked `created`; everything under a root the helper discards is
+asked whether the branch's render built it (#732).** "Built it" is scope
+ancestry, not `created` (a `for` row, a nested branch, a component re-render or
+a late patch is minted by a scope of its own) and not id order (code that merely
+runs during the render is not the render's). Every `RenderScope` has a
+`ScopeId` and a parent fixed at construction (`RenderScope::with_parent(doc,
+node, Some(scope.id()))`); every node it mints is recorded against its id; a
+node is owned when the chain from its minting scope reaches the branch's scope.
+The four helpers, `virtual_list`'s rows and spacers and rinch-components'
+`late_children` patches (`List::icon`, `Stepper`, `RadioGroup`) all pass the
+scope they were called from, captured once, so content built later by an effect
+or an observer still chains back. **`RenderScope::new` has no parent**, and is
+not defaulted from whatever is rendering: nodes a parentless scope mints inside a
+branch are nobody's, and a hide only detaches them — a leak, never a loss. Any
+code that builds nodes on another scope's behalf must use `with_parent`.
 
-**The ownership test is NOT `scope.created(id)`, and it is NOT a numeric id
-comparison either — both were tried, and both were caught by review before
-merge.** `created` answers only "did *this exact* `RenderScope` instance mint
-`id`", which is `false` for a node minted by a **nested** child scope — every
-`for` row, every re-rendered component's output, every nested `if`/`match`
-branch builds through a fresh `RenderScope::new(..)` of its own, never
-recorded in the outer branch's `created`. Reading `created` alone
-misclassified every one of those as captured, detached them instead of
-leaving them for the discard, and leaked the whole set on every hide —
-`if open { div { for x in xs { li{} } } }` leaked 3 `<li>`s per hide (594
-nodes over 198 toggles), a nested component 198. A second round replaced that
-with a per-scope **id watermark** ("minted no earlier than the first id this
-scope itself minted"), which fixed the leak but is an id-ordering *proxy* for
-ownership, not ownership: a node minted by **unrelated** code — not this
-scope, not a descendant of it, merely something else that happens to run
-synchronously while this scope's render is on the call stack (a sibling
-scope, a lazily-built cache, raw backend access) — gets a higher id than the
-watermark purely by chronological accident and was swept into the discard as
-"owned," silently retiring a handle its caller still held.
-
-**The real fix is scope ancestry — and even that needed a second round.**
-Every `RenderScope` gets a globally unique `ScopeId`
-(`rinch_core::dom::render_scope`'s module doc) and records a parent in a
-thread-local `SCOPE_PARENTS: ScopeId -> Option<ScopeId>`; every node a scope
-mints is recorded against that scope's id in the document's own minting
-table (below). `RenderScope::owns_transitively` walks from `node`'s minting
-scope up through `SCOPE_PARENTS` looking for `self` — a node minted by a
-descendant scope (nested arbitrarily deep) finds it and is owned; a node
-minted by an unrelated scope, or by raw backend access with no scope at all,
-runs out of chain (or has none) and is correctly not owned, *regardless of
-id order*.
-
-A first attempt at this (round 3) established the parent link
-**dynamically**: a thread-local "currently rendering" stack, pushed by
-[`RenderScope::push_owner`]'s guard for exactly the duration of a
-`render_fn`/`view` call, and a scope read the top of that stack as its parent
-at construction time. That window is only the outer scope's own **initial,
-synchronous** render — a `for` row inserted later by the for-loop's own
-reconcile `Effect` (the list grows while the branch stays open), a nested
-branch flipping later, or a nested component re-rendering later all
-construct their new content from a *later* reactive flush, with nothing of
-the outer branch's push on the stack any more, so the link was never made:
-misclassified as captured, detached instead of discarded, leaked on every
-subsequent hide. Caught by review before merge — "a list inside a
-conditional, growing while the conditional is open" is ordinary app
-behaviour, not an edge case, and every one of round 3's own fixtures
-happened to use a `for` loop whose `collection` closure returned the same
-list forever, so none of them exercised the insert path at all. (The review
-also found this masking a second time, more subtly: a "grow once, then
-measure delta across 200 further toggles" fixture *passes* even with the bug
-present, because the leak happens on the hide right after the growth, before
-any baseline is taken — every later show/hide cycle re-renders the whole
-list fresh at its now-larger size, so every later row IS correctly linked
-and the earlier leak is baked invisibly into the baseline. The permanent
-fixture for this has to isolate the single hide right after one insert, not
-only measure growth over many cycles.)
-
-Round 4 makes the link **static** instead: each of the four reactive helpers
-captures the [`ScopeId`] of the scope it was itself called from — its own
-`scope: &mut RenderScope` parameter's id — **once**, the moment the helper
-is invoked, and threads that one fixed id into every `RenderScope` it ever
-constructs for this call's content from then on, via
-`RenderScope::with_parent`, at the initial render **and** at every later
-reconcile/re-render its own persistent `Effect` performs, however much later
-that runs. There is no more ambient stack to get the timing of wrong — the
-parent is decided once, by the helper that will always be the content's
-logical parent, not inferred from whatever else happens to be executing when
-a scope happens to be constructed. `push_owner` no longer carries any
-ancestry bookkeeping at all; it is back to only the reactive-ownership guard
-it always was.
-
-**This also makes the id-monotonicity question moot** for the ancestry walk
-itself — nothing compares raw `NodeId` values any more, so #723 (rinch-dom's
-slab recycling elsewhere) can be fixed independently without reopening this.
-
-Both tracking structures are bounded, not permanent, and in two different
-ways. `SCOPE_PARENTS`' entry for a scope is removed when the scope itself is
-dropped (`RenderScope`'s `Drop` impl) — which happens no later than its
-content is discarded, on every existing disposal path. The minting table is
-**one shared table per document**, not a single flat thread-local keyed by
-`(doc_key, NodeId)`: each `RenderScope` holds a strong `Rc` to its own
-document's table (created lazily, looked up by `doc_key` in a thread-local
-registry that holds only a `Weak` to it), so the table deallocates itself —
-by ordinary `Rc` counting — the moment the last `RenderScope` for that
-document is dropped, which is also no later than the document itself stops
-being used. `NodeHandle::discard` purges incrementally as it goes (one
-extra `get_children` pass over exactly what is being thrown away, no more
-expensive than the backend's own recursive retire) for the common case; the
-per-document `Rc`/`Weak` structure is what closes the OTHER case review
-found round 3 missing entirely — **a document torn down without ever
-calling `discard` on anything** (an embed `RinchContext` dropped directly, a
-window closed without a node-by-node walk), which round 3's single flat map
-had no hook for and leaked every entry it had ever recorded, forever.
-`__minted_by_len`/`__scope_parents_len` (test-only; the former now sums
-across every document that still has a live scope) are what the growth
-fixtures compare across many toggles, and what the document-teardown fixture
-compares immediately before and after dropping a whole document's scope tree
-with nothing discarded, to prove neither leaks either way.
-`reinsertion_tests::a_single_hide_after_a_reconcile_insert_does_not_strand_the_inserted_rows`
-(the surgical, non-masked pin for the dynamic-link gap),
-`a_nested_branch_flipped_later_is_still_discarded_when_the_outer_branch_hides`,
-`a_document_dropped_without_discarding_its_tree_leaks_minted_by_forever`,
-`a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch`
-(round 2's counter-example, still passing for the right reason), and the
-`the_scope_ancestry_tables_do_not_grow_with_*` family are the pins for this
-round.
-
-The walk has to run **before** the branch's old `RenderScope` is disposed —
-disposing it can cascade into disposing the very nested scopes
-(`for_each_dom_typed`'s per-row scopes, a nested component's own
-`current_scope`) whose `SCOPE_PARENTS` entry the ancestry walk needs to climb
-through, since the list-reconciliation effect that owns them is itself
-registered on the branch's own scope. So `show_dom`/`match_dom`/
-`reactive_component_dom` collect the captured descendants in the same pass
-that already reads `created` for the content root, ahead of the existing
-"dispose old scope before touching DOM nodes" step; the actual detach happens
-after disposal, alongside the content root's own discard/remove.
-`for_each_dom_typed`'s parked rows do the same inside `ParkedRow::new`, while
-a row's scope is still alive, and carry the collected list alongside the row
-to `release_parked`.
-`reinsertion_tests::show_dom_can_re_show_a_captured_handle_nested_inside_fresh_markup`,
-its `match_dom`/`reactive_component_dom`/`for_each_dom_typed` twins, and
-`crates/rinch-web/tests/reinsertion.rs`'s
-`a_captured_handle_nested_inside_branch_built_markup_comes_back` are the pins
-for the original captured-handle half; the old pinned-limitation fixture
-(`a_captured_handle_nested_inside_fresh_markup_is_still_lost`) is gone per its
-own instruction.
+The walk is `render_scope::sweep_for_discard`: one pass over the subtree (ids
+from `get_children`, document and table borrowed once) that drops the records of
+what is about to be discarded and collects the first non-owned node on each
+branch without entering it; the helper detaches those, then discards with
+`NodeHandle::discard_swept`. `show_dom`/`match_dom`/`reactive_component_dom`
+sweep before disposing the old scope; a parked `for`/`virtual_list` row sweeps
+at release, by its scope's id. The tables are per document (`Ancestry`), held
+by that document's `RenderScope`s and dropped with the last one, slot included.
+A scope's entry outlives the scope while a node it minted is recorded or a child
+entry names it, so a throwaway scope's nodes (a late patch, a spacer) still
+chain to its parent. A record goes when its node is discarded or replaced by
+`NodeHandle::set_inner_html`; a node that is only detached keeps it. Cost: one
+hash insert per minted node, and the sweep per hide (`shell::branch_hide` in
+`rinch-bench`). Pins: `reinsertion_tests` (the `*_nested_*`, `*_later_*`,
+`virtual_list_*`, `a_late_child_*`, `depth_three_*` and table-growth fixtures),
+`render_scope::ancestry_tests`, `rinch-components/tests/list_in_branch_732.rs`,
+`rinch-web/tests/{reinsertion,branch_reclaim_732}.rs`,
+`rinch/tests/embed_drop_minting_732.rs`.
 
 **One more shape is lost on web, and only `for` can reach it: #733.** A `view`
 closure that builds *lazily through the row's own scope* and caches afterwards

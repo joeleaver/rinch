@@ -101,13 +101,10 @@ where
 
     let parent_id = parent.node_id();
 
-    // The scope `show_dom` was itself CALLED from (issue #732, round 4):
-    // captured once, here, rather than read off an ambient "what's on the
-    // call stack right now" stack at content-scope-construction time. Every
-    // content scope this call ever builds — at the initial render below AND
-    // from the Effect's later re-runs, however much later that fires — is
-    // given this SAME fixed id as its ancestry parent, so a nested branch
-    // flipping later still chains back to whatever called `show_dom`.
+    // Every content scope this call builds — now, or from the effect much
+    // later — names the scope `show_dom` was called from as its parent, so
+    // what it builds belongs to that render (issue #732). Captured once: by
+    // the time the effect re-runs, nothing of that render is on the stack.
     let creator_scope_id = scope.id();
 
     // Store render functions as Rc for sharing with Effect

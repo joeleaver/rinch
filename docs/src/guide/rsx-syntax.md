@@ -834,6 +834,15 @@ on every show and discarded on every hide as usual; `panel` is detached rather
 than discarded along with it, and the next show puts the same `panel` back
 inside a fresh wrapper.
 
+What counts as "built by the branch" is anything minted through the branch's
+`RenderScope` or through a scope created on its behalf — a `for`'s rows, a
+nested `if`, a component, a `List` patching a late row. If your own code builds
+nodes through a separate `RenderScope` and puts them inside a branch (an
+observer, a timer, a cache), create it with
+`RenderScope::with_parent(doc, node, Some(scope.id()))`, naming the scope whose
+content it is. A plain `RenderScope::new` has no parent: its nodes belong to no
+branch, so a hide only detaches them and they are never reclaimed.
+
 Two more things to know. The branch's `RenderScope` is disposed on every hide,
 so effects *created inside the branch closure* stop; put the reactive wiring in
 the same scope as the `panel` binding, not in the closure. And a subtree that is

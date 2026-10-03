@@ -1202,10 +1202,8 @@ where
     let current_scope: Rc<RefCell<Option<RenderScope>>> = Rc::new(RefCell::new(None));
     let doc_weak = scope.doc_weak();
     let parent_id = parent.node_id();
-    // The scope this call was itself invoked from (issue #732, round 4) —
-    // see the matching note in `show_dom`. Fixed once; every output scope
-    // this call ever builds, on the first run or any later re-render, gets
-    // this as its ancestry parent.
+    // Every output scope names the scope this call was made from as its
+    // parent (issue #732) — see the matching note in `show_dom`.
     let creator_scope_id = scope.id();
 
     let cc = current_content.clone();
