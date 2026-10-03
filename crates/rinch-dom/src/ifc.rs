@@ -1714,13 +1714,17 @@ impl RinchDocument {
         paint_layout_cx: &mut parley::LayoutContext<Brush>,
     ) {
         self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
-        let mut inline_layout = Self::build_inline_layout(
+        let (mut inline_layout, font_family_resolves) = Self::build_inline_layout(
             &self.tree.nodes,
             root_id,
             max_width,
             1.0,
             &mut self.font_cx,
             paint_layout_cx,
+        );
+        self.tree.perf.add(
+            crate::perf::Counter::InlineFontFamilyResolves,
+            font_family_resolves,
         );
         inline_layout.hang.record(&self.tree.perf);
 
@@ -5514,8 +5518,13 @@ impl RinchDocument {
                                     };
                                 }
                                 perf.bump(crate::perf::Counter::ShapeAtomicInline);
-                                let inline_layout = Self::build_inline_layout(
-                                    nodes, root_id, max_width, 1.0, font_cx, layout_cx,
+                                let (inline_layout, font_family_resolves) =
+                                    Self::build_inline_layout(
+                                        nodes, root_id, max_width, 1.0, font_cx, layout_cx,
+                                    );
+                                perf.add(
+                                    crate::perf::Counter::InlineFontFamilyResolves,
+                                    font_family_resolves,
                                 );
                                 inline_layout.hang.record(perf);
                                 first_baseline = first_line_baseline(&inline_layout.layout);
@@ -6027,6 +6036,9 @@ impl RinchDocument {
     ///
     /// Walks the IFC root's children, collecting text nodes and inline elements
     /// into a single Parley TreeBuilder layout. Returns the InlineLayout.
+    /// Returns the built layout and the number of per-span `font-family`
+    /// resolutions `inline_style_props` actually performed (review of #1326);
+    /// see the doc on [`Counter::InlineFontFamilyResolves`](crate::perf::Counter::InlineFontFamilyResolves).
     pub(crate) fn build_inline_layout(
         nodes: &slab::Slab<Node>,
         root_id: usize,
@@ -6034,7 +6046,7 @@ impl RinchDocument {
         scale: f32,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<Brush>,
-    ) -> InlineLayout {
+    ) -> (InlineLayout, u64) {
         // Get root style properties from typed ComputedStyle
         let root_computed = &nodes[root_id].computed_style;
         let root_font_size = root_computed.font_size * scale;
@@ -6153,6 +6165,13 @@ impl RinchDocument {
         // Walk children into an `IfcText`, which collapses white space across
         // the whole IFC (#1180), each text node by its own element's
         // `white-space` (#1192), then replay it into the Parley tree.
+        //
+        // `font_family_resolves` counts `inline_style_props`'s actual
+        // `parley_font_family` calls (review of #1326's perf finding) — this
+        // function has no `&PerfCounters` of its own (only the node slab), so
+        // the three callers bump `Counter::InlineFontFamilyResolves` by the
+        // second element of the returned tuple.
+        let font_family_resolves = std::cell::Cell::new(0u64);
         let mut ifc_text = IfcText::new(is_contenteditable);
         Self::walk_inline_children(
             nodes,
@@ -6165,6 +6184,7 @@ impl RinchDocument {
             &mut flat_pos,
             scale,
             font_cx,
+            &font_family_resolves,
         );
         // An emoji-presentation cluster is shaped with the root's stack, its
         // generics replaced by their primary face (#1204), whatever family an
@@ -6261,17 +6281,20 @@ impl RinchDocument {
         let alignment = root_computed.text_align.to_parley();
         text_layout.align(alignment, parley::layout::AlignmentOptions::default());
 
-        InlineLayout {
-            layout: text_layout,
-            text_content,
-            child_positions,
-            text_ranges,
-            background_spans,
-            decoration_spans,
-            max_width: max_width.unwrap_or(f32::INFINITY),
-            preserves_spaces,
-            hang,
-        }
+        (
+            InlineLayout {
+                layout: text_layout,
+                text_content,
+                child_positions,
+                text_ranges,
+                background_spans,
+                decoration_spans,
+                max_width: max_width.unwrap_or(f32::INFINITY),
+                preserves_spaces,
+                hang,
+            },
+            font_family_resolves.get(),
+        )
     }
 
     /// Whether anything in an IFC may soft-wrap: the root itself (between its
@@ -6700,19 +6723,37 @@ impl RinchDocument {
     /// with the *root's* emoji family ([`Self::build_inline_layout`]'s
     /// `emoji_family`, computed once from `root_computed.font_family`), not the
     /// span's — out of scope for #677, which is about text glyphs, not emoji.
-    // The leading unconditional pushes (`FontFamily` through `FontStyle`) read
+    ///
+    /// **`parent_family` is the cheap skip (review of #1326).** `font-family`
+    /// is an inherited CSS property, so an element that does not declare its
+    /// own carries its parent's value already — `resolve_property`'s
+    /// `FontFamily` resolution is the expensive half of this push (a cache
+    /// lookup plus an owned `Cow` clone even on a hit), and calling it for
+    /// every one of a document's spans whether or not the family actually
+    /// changed cost 30-50% of wall time on an adversarial 3000-span document
+    /// (measured, review of #1326). `parent_family` is every call site's own
+    /// `nodes[parent_id].computed_style.font_family` — the enclosing IFC
+    /// context's family — so `computed.font_family == parent_family` means
+    /// Parley already has the right value from whichever ancestor last
+    /// changed it, and no span-level override is needed at all.
+    // The leading unconditional pushes (`FontSize` through `FontStyle`) read
     // as a `vec![]` candidate in isolation, but the conditional pushes further
     // down mean the whole function cannot be one literal.
     #[allow(clippy::vec_init_then_push)]
     fn inline_style_props(
         computed: &crate::computed_style::ComputedStyle,
+        parent_family: &str,
         scale: f32,
         font_cx: &mut parley::FontContext,
+        font_family_resolves: &std::cell::Cell<u64>,
     ) -> Vec<parley::style::StyleProperty<'static, Brush>> {
         let mut props: Vec<parley::style::StyleProperty<'static, Brush>> = Vec::new();
-        props.push(parley::style::StyleProperty::FontFamily(
-            crate::fonts::parley_font_family(font_cx, &computed.font_family),
-        ));
+        if computed.font_family != parent_family {
+            props.push(parley::style::StyleProperty::FontFamily(
+                crate::fonts::parley_font_family(font_cx, &computed.font_family),
+            ));
+            font_family_resolves.set(font_family_resolves.get() + 1);
+        }
         props.push(parley::style::StyleProperty::FontSize(
             computed.font_size * scale,
         ));
@@ -6898,6 +6939,7 @@ impl RinchDocument {
         flat_pos: &mut usize,
         scale: f32,
         font_cx: &mut parley::FontContext,
+        font_family_resolves: &std::cell::Cell<u64>,
     ) {
         // As in `mark_inline_descendants`: an anonymous box's content is its
         // recorded run, not its (empty) `children` (#566). The two must walk
@@ -7004,7 +7046,13 @@ impl RinchDocument {
             };
             let bridged = bridged_style.is_some();
             if let Some(owner_style) = bridged_style {
-                builder.push_span(Self::inline_style_props(owner_style, scale, font_cx));
+                builder.push_span(Self::inline_style_props(
+                    owner_style,
+                    &nodes[parent_id].computed_style.font_family,
+                    scale,
+                    font_cx,
+                    font_family_resolves,
+                ));
             }
             match &child.kind {
                 NodeKind::Text(text_data) => {
@@ -7078,7 +7126,13 @@ impl RinchDocument {
                     let bg_start = *flat_pos;
                     let has_bg = child_computed.background_color().is_some();
 
-                    builder.push_span(Self::inline_style_props(child_computed, scale, font_cx));
+                    builder.push_span(Self::inline_style_props(
+                        child_computed,
+                        &nodes[parent_id].computed_style.font_family,
+                        scale,
+                        font_cx,
+                        font_family_resolves,
+                    ));
                     child_positions.push((child_id, LayoutResult::default()));
 
                     // Recurse into inline element's children
@@ -7093,6 +7147,7 @@ impl RinchDocument {
                         flat_pos,
                         scale,
                         font_cx,
+                        font_family_resolves,
                     );
 
                     builder.pop_span();
@@ -7153,8 +7208,10 @@ impl RinchDocument {
                     if styled {
                         builder.push_span(Self::inline_style_props(
                             &child.computed_style,
+                            &nodes[parent_id].computed_style.font_family,
                             scale,
                             font_cx,
+                            font_family_resolves,
                         ));
                     }
                     Self::walk_inline_children(
@@ -7168,6 +7225,7 @@ impl RinchDocument {
                         flat_pos,
                         scale,
                         font_cx,
+                        font_family_resolves,
                     );
                     if styled {
                         builder.pop_span();

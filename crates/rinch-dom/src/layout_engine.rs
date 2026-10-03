@@ -595,6 +595,7 @@ impl RinchDocument {
         let hang = std::cell::Cell::new(crate::ifc::HangStats::default());
         let shape_text = std::cell::Cell::new(0u64);
         let cache_hits = std::cell::Cell::new(0u64);
+        let font_family_resolves = std::cell::Cell::new(0u64);
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
@@ -819,9 +820,10 @@ impl RinchDocument {
 
                                     // Full Parley rebuild (text changed or cache miss)
                                     shape_ifc.set(shape_ifc.get() + 1);
-                                    let inline_layout = Self::build_inline_layout(
+                                    let (inline_layout, resolved) = Self::build_inline_layout(
                                         nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                                     );
+                                    font_family_resolves.set(font_family_resolves.get() + resolved);
                                     let mut h = hang.get();
                                     h.add(inline_layout.hang);
                                     hang.set(h);
@@ -888,6 +890,10 @@ impl RinchDocument {
         hang.get().record(perf);
         perf.add(Counter::ShapeMeasureText, shape_text.get());
         perf.add(Counter::IfcMeasureCacheHits, cache_hits.get());
+        perf.add(
+            Counter::InlineFontFamilyResolves,
+            font_family_resolves.get(),
+        );
         perf.add_elapsed(Counter::TimeTaffyComputeNs, t);
 
         text_layout_cache.into_inner()
