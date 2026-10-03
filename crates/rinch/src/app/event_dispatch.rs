@@ -1764,6 +1764,9 @@ impl RinchApp {
                     self.apply_focus_request(request);
                     actions.push(AppAction::RequestRedraw);
                 }
+                // And any pending set_selection_range()/select() (issue #552),
+                // drained after the focus request above for the same reason.
+                self.drain_pending_text_selection();
             }
             PlatformEvent::UserEvent(UserEvent::MinimizeWindow) => {
                 actions.push(AppAction::SetMinimized(true));
@@ -1897,6 +1900,9 @@ impl RinchApp {
                     self.apply_focus_request(request);
                     actions.push(AppAction::RequestRedraw);
                 }
+                // And any pending set_selection_range()/select() (issue #552),
+                // drained after the focus request above for the same reason.
+                self.drain_pending_text_selection();
 
                 // Poll active video players for signal updates (position, duration, etc.)
                 // and keep the render loop active while video is playing.

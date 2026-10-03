@@ -391,6 +391,19 @@ impl RinchApp {
         drop(d);
 
         if let Some((nid, handler_id, value)) = found_input_focus {
+            // Drain the text-selection channel *before* doing anything else
+            // (review of #1325 round 2, finding 1): a `set_selection_range()`
+            // posted for this node and not yet drained — `drain_pending_text_selection`
+            // runs at per-frame checkpoints separate from click dispatch, so
+            // "post, then click, same tick, no drain in between" is the
+            // ordinary case, not a contrived one — would otherwise still be
+            // sitting in the lower-level `PENDING_TEXT_SELECTIONS` channel
+            // when the click's own `self.pending_text_selection.remove(&nid)`
+            // below runs, clearing a map that request had not reached yet.
+            // Drained here, it lands in `pending_text_selection` (applied
+            // live, since nothing has focused `nid` yet to race it) and the
+            // `remove(&nid)` below then clears exactly that entry.
+            self.drain_pending_text_selection();
             // Take input focus through the arbiter: tears down a prior surface /
             // CE / editor / different input (re-clicking the same input is a no-op
             // teardown, so we just move its cursor below). The blurred input's
@@ -419,6 +432,14 @@ impl RinchApp {
             let byte_offset = input_cursor_offset.unwrap_or(value.len());
             state.selection = Selection::cursor(byte_offset);
             self.focused_input_state = Some(state);
+            // The click just placed the caret itself, which supersedes any
+            // `set_selection_range()`/`select()` stashed for this node before
+            // it was focused — the same way a browser's click overrides a
+            // pending `setSelectionRange()`. Clearing it (rather than only
+            // `try_focus_input` clearing its own stash reads) is what stops a
+            // stale pre-click request from reappearing on a *later*
+            // programmatic/Tab focus (review of #1325, finding 1).
+            self.pending_text_selection.remove(&nid);
             self.sync_input_cursor_to_dom();
             self.scene_dirty = true;
 
@@ -525,6 +546,11 @@ impl RinchApp {
                 if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
                     self.apply_or_repark_focus_request(request);
                 }
+                // Likewise a pending set_selection_range()/select() (issue
+                // #552) — drained *after* the focus request above, so a
+                // selection posted alongside a focus() for the same node
+                // lands on the input the focus request just focused.
+                self.drain_pending_text_selection();
                 actions.push(AppAction::RequestRedraw);
                 return actions;
             }

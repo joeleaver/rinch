@@ -1155,6 +1155,31 @@ impl DomDocument for RinchDocument {
         rinch_core::request_focus(self.doc_key, node_id.0);
     }
 
+    /// Posts the request via the same kind of channel [`focus_element`]
+    /// uses, keyed by this document (issue #134) — but a **separate** one
+    /// from [`FocusRequest`](rinch_core::FocusRequest), so a `focus()` and a
+    /// `set_selection_range()`/`select()` posted from the same effect (the
+    /// "open a rename box, focused with its name selected" shape #552 exists
+    /// for) both survive to be applied, rather than the later post silently
+    /// discarding the earlier one in a shared slot.
+    ///
+    /// The runtime (`RinchApp`) applies this directly to the focused input's
+    /// `EditableState` if `node_id` already holds the keyboard, converting
+    /// the UTF-16 offsets to the byte offsets that state keeps; otherwise it
+    /// stashes the request for the next time `node_id` is focused
+    /// (`try_focus_input` consults the stash instead of defaulting to a caret
+    /// at the text's end). `start`/`end` are passed through unchanged — the
+    /// runtime is what knows the control's text and can convert and swap.
+    fn set_selection_range(
+        &mut self,
+        node_id: NodeId,
+        start: usize,
+        end: usize,
+        direction: rinch_core::dom::SelectionDirection,
+    ) {
+        rinch_core::post_text_selection_request(self.doc_key, node_id.0, start, end, direction);
+    }
+
     /// The DOM mirror of the focus arbiter's claim (issue #695).
     ///
     /// `focused_node` is what `RinchApp::set_focus_target` and its teardown keep

@@ -504,6 +504,45 @@ impl NodeHandle {
         }
     }
 
+    /// Select a `[start, end)` range of this text control's text, in
+    /// **UTF-16 code units** — matching the DOM's
+    /// `HTMLInputElement.setSelectionRange(start, end, direction)` exactly
+    /// (issue #552), so one offset pair means the same thing whether this
+    /// handle's document is the desktop backend or `rinch-web`.
+    ///
+    /// Applied now if this node already holds the keyboard; otherwise stashed
+    /// for the next time it gains it — a `setSelectionRange()` call on an
+    /// unfocused control works the same way in a browser. A no-op before this
+    /// handle is mounted, like [`focus`](Self::focus).
+    ///
+    /// ```ignore
+    /// // A rename box that opens with its text selected, so the first
+    /// // keystroke replaces it rather than appending to it:
+    /// input.focus();
+    /// input.set_selection_range(0, name.encode_utf16().count(), SelectionDirection::Forward);
+    /// ```
+    ///
+    /// See [`DomDocument::set_selection_range`] for the backend contract.
+    pub fn set_selection_range(&self, start: usize, end: usize, direction: SelectionDirection) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut()
+                .set_selection_range(self.node_id, start, end, direction);
+        }
+    }
+
+    /// Select this text control's **entire** text — the DOM's
+    /// `HTMLInputElement.select()` (issue #552). Equivalent to
+    /// `set_selection_range(0, <the control's UTF-16 length>,
+    /// SelectionDirection::Forward)`, and subject to the same "applied now or
+    /// stashed for the next focus" rule.
+    ///
+    /// See [`DomDocument::select_text`] for the backend contract.
+    pub fn select(&self) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut().select_text(self.node_id);
+        }
+    }
+
     /// The element currently holding keyboard focus **in this node's document**
     /// (issue #695).
     ///
@@ -1703,5 +1742,42 @@ mod tests {
         // Positive control: a write the re-render effect legitimately tracks.
         rev.set(2);
         assert_eq!(renders.get(), renders_before + 1);
+    }
+
+    /// `NodeHandle::select()`/`set_selection_range()` route to the backend's
+    /// `DomDocument::select_text`/`set_selection_range` with this handle's own
+    /// node id (issue #552) — the same shape `focus()` already has. A mutant
+    /// passing the *parent* node's id instead of `self.node_id` would still
+    /// pass a test that only checks "a selection was recorded", so this one
+    /// asserts the node too.
+    #[test]
+    fn select_and_set_selection_range_reach_the_backend_for_this_node() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let weak: std::rc::Weak<RefCell<dyn DomDocument>> = Rc::downgrade(&doc) as _;
+        let (input, other) = {
+            let mut d = doc.borrow_mut();
+            let body = d.body();
+            let input = d.create_element("input");
+            d.set_attribute(input, "value", "hello");
+            d.append_child(body, input);
+            let other = d.create_element("input");
+            d.append_child(body, other);
+            (input, other)
+        };
+        let handle = NodeHandle::new(input, weak.clone());
+        let other_handle = NodeHandle::new(other, weak);
+
+        handle.set_selection_range(1, 3, SelectionDirection::Backward);
+        assert_eq!(
+            doc.borrow().__selection_range(),
+            Some((input, 1, 3, SelectionDirection::Backward))
+        );
+
+        // A different handle's select() must not be attributed to `input`.
+        other_handle.select();
+        assert_eq!(
+            doc.borrow().__selection_range().map(|(n, ..)| n),
+            Some(other)
+        );
     }
 }

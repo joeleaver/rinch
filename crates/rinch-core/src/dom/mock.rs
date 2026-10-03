@@ -1,7 +1,7 @@
 //! Mock DOM document for testing.
 
 use super::NodeId;
-use super::traits::{DomDocument, GlyphBounds};
+use super::traits::{DomDocument, GlyphBounds, SelectionDirection};
 
 /// A mock DOM document for testing.
 pub struct MockDomDocument {
@@ -34,6 +34,13 @@ pub struct MockDomDocument {
     /// offered keys only while focus is inside its owner, so a component test
     /// needs a focus to put somewhere). Nothing moves it but `focus_element`.
     focused: Option<NodeId>,
+    /// The last [`DomDocument::set_selection_range`] (and, through its
+    /// default, [`DomDocument::select_text`]) request, whichever node it
+    /// named and whether or not that node is `focused` — issue #552's "stash
+    /// for the next focus" rule needs no separate stash here, since the mock
+    /// has nothing else competing for the slot. Read by
+    /// [`__selection_range`](MockDomDocument::__selection_range).
+    selection_range: Option<(NodeId, usize, usize, SelectionDirection)>,
 }
 
 struct MockNode {
@@ -110,6 +117,16 @@ impl MockDomDocument {
         }
     }
 
+    /// **Test-only.** The `(node, start, end, direction)` of the last
+    /// [`DomDocument::set_selection_range`]/[`DomDocument::select_text`] call,
+    /// whichever node it named — a test reads this to assert on a selection
+    /// request regardless of whether that node was focused when it arrived
+    /// (issue #552).
+    #[doc(hidden)]
+    pub fn __selection_range(&self) -> Option<(NodeId, usize, usize, SelectionDirection)> {
+        self.selection_range
+    }
+
     pub fn new() -> Self {
         let mut doc = Self {
             doc_key: crate::dom::next_doc_key(),
@@ -123,6 +140,7 @@ impl MockDomDocument {
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             focused: None,
+            selection_range: None,
         };
 
         // Create root and body
@@ -567,6 +585,22 @@ impl DomDocument for MockDomDocument {
         self.focused
     }
 
+    /// Records `(node_id, start, end, direction)` as-is — swapped so `start
+    /// <= end`, the way a browser's own `setSelectionRange` would (issue
+    /// #552). The mock does not model "stash until this node is focused"
+    /// separately from "applied now": there is nothing else that could be
+    /// holding a selection, so recording unconditionally gives both for free.
+    fn set_selection_range(
+        &mut self,
+        node_id: NodeId,
+        start: usize,
+        end: usize,
+        direction: SelectionDirection,
+    ) {
+        let (start, end) = (start.min(end), start.max(end));
+        self.selection_range = Some((node_id, start, end, direction));
+    }
+
     fn resolve_layout(&mut self, _width: f32, _height: f32) {
         // Mock does nothing
     }
@@ -1009,5 +1043,38 @@ mod tests {
         doc.set_attribute(div, "value", "attr");
         doc.__type_into(div, "ignored");
         assert_eq!(doc.live_value(div).as_deref(), Some("attr"));
+    }
+
+    /// `DomDocument::set_selection_range` records the normalized `(node,
+    /// start, end, direction)` exactly — issue #552's basic contract, which a
+    /// mutant swapping `start.min(end)`/`start.max(end)` (or dropping the
+    /// swap) would still pass if `start <= end` already, so the range here is
+    /// deliberately given reversed (`5, 1`) to prove the swap runs.
+    #[test]
+    fn set_selection_range_records_a_normalized_range() {
+        let mut doc = MockDomDocument::new();
+        let input = doc.create_element("input");
+        doc.set_selection_range(input, 5, 1, SelectionDirection::Backward);
+        assert_eq!(
+            doc.__selection_range(),
+            Some((input, 1, 5, SelectionDirection::Backward))
+        );
+    }
+
+    /// `DomDocument::select_text`'s trait default is exactly
+    /// `set_selection_range(node, 0, <UTF-16 len>, Forward)` (issue #552) —
+    /// using a string with a surrogate pair (an emoji, 2 UTF-16 units) so a
+    /// mutant reporting the **byte** length instead would be caught: `"a🙂"`
+    /// is 2 chars / 5 bytes / 3 UTF-16 units.
+    #[test]
+    fn select_text_selects_the_full_utf16_length() {
+        let mut doc = MockDomDocument::new();
+        let input = doc.create_element("input");
+        doc.set_attribute(input, "value", "a🙂");
+        doc.select_text(input);
+        assert_eq!(
+            doc.__selection_range(),
+            Some((input, 0, 3, SelectionDirection::Forward))
+        );
     }
 }
