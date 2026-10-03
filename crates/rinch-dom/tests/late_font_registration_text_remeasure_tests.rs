@@ -94,6 +94,54 @@ fn a_late_registered_face_resizes_an_inline_block_paragraph() {
     );
 }
 
+/// General text, a plain `display: block` box with `width: max-content` —
+/// an ordinary IFC root, never detached from its parent's Taffy tree and so
+/// never touched by the `inline-block`/`-flex`/`-grid` atomic-inline
+/// machinery (#661/#784) that an `inline-block` fixture would also exercise.
+/// This is the shape the issue names directly ("`auto` and `max-content`
+/// boxes are stale on main today"), and it is the one that isolates
+/// `invalidate_ifc_root`'s own IFC-root loop: an atomic inline's own Taffy
+/// node gets marked dirty by `mark_atomic_inline_dirty` regardless, which is
+/// enough to force its detached compute to re-measure — this box is never in
+/// `atomic_inline_registry`, so nothing but the IFC-root loop touches it.
+#[test]
+fn a_late_registered_face_resizes_a_max_content_block() {
+    let fresh = {
+        let mut doc = RinchDocument::new();
+        register_face(&mut doc, SPACE_GROTESK, "LateFace");
+        let body = doc.body();
+        let c = doc.create_element("div");
+        doc.set_attribute(c, "style", &format!("{CSS}; width: max-content"));
+        doc.append_child(body, c);
+        doc.set_text_content(c, TEXT);
+        doc.resolve_layout(800.0, 600.0);
+        width(&doc, c)
+    };
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = doc.create_element("div");
+    doc.set_attribute(c, "style", &format!("{CSS}; width: max-content"));
+    doc.append_child(body, c);
+    doc.set_text_content(c, TEXT);
+    doc.resolve_layout(800.0, 600.0);
+    let before = width(&doc, c);
+    assert_ne!(
+        before, fresh,
+        "sized from the monospace fallback before LateFace exists"
+    );
+
+    register_face(&mut doc, SPACE_GROTESK, "LateFace");
+    doc.note_fonts_registered();
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        width(&doc, c),
+        fresh,
+        "now sized from LateFace, like `fresh` — a frozen measurement would \
+         still read `before`"
+    );
+}
+
 /// The `fit-content`/`stretch` keyword width cache #1281 added
 /// (`NodeTree::keyword_inline_cb_width`) is keyed only on the containing
 /// block's width, which a font registration does not move — so a box sized
@@ -191,5 +239,57 @@ fn a_late_registered_face_still_resizes_a_text_input() {
     register_face(&mut doc, INTER, "LateFace");
     doc.note_fonts_registered();
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(width(&doc, c), fresh, "now sized from LateFace, like `fresh`");
+    assert_eq!(
+        width(&doc, c),
+        fresh,
+        "now sized from LateFace, like `fresh`"
+    );
+}
+
+/// A text node measured directly through `NodeContext::Text` — a bare text
+/// child of a `display: flex` container, with no wrapping element — rather
+/// than through an IFC. Neither `ifc_root_registry` nor
+/// `atomic_inline_registry` names such a node, so this is the one shape the
+/// other three fixtures above cannot reach: it pins the Taffy node of a
+/// flex/grid text leaf being marked dirty directly.
+#[test]
+fn a_late_registered_face_resizes_a_flex_item_text_leaf() {
+    let css = |family_css: &str| format!("font: 16px/20px {family_css}; display: flex");
+
+    let fresh = {
+        let mut doc = RinchDocument::new();
+        register_face(&mut doc, SPACE_GROTESK, "LateFace");
+        let body = doc.body();
+        let flex = doc.create_element("div");
+        doc.set_attribute(flex, "style", &css("LateFace, monospace"));
+        doc.append_child(body, flex);
+        let t = doc.create_text(TEXT);
+        doc.append_child(flex, t);
+        doc.resolve_layout(800.0, 600.0);
+        width(&doc, t)
+    };
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let flex = doc.create_element("div");
+    doc.set_attribute(flex, "style", &css("LateFace, monospace"));
+    doc.append_child(body, flex);
+    let t = doc.create_text(TEXT);
+    doc.append_child(flex, t);
+    doc.resolve_layout(800.0, 600.0);
+    let before = width(&doc, t);
+    assert_ne!(
+        before, fresh,
+        "sized from the monospace fallback before LateFace exists"
+    );
+
+    register_face(&mut doc, SPACE_GROTESK, "LateFace");
+    doc.note_fonts_registered();
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        width(&doc, t),
+        fresh,
+        "now sized from LateFace, like `fresh` — a frozen measurement would \
+         still read `before`"
+    );
 }
