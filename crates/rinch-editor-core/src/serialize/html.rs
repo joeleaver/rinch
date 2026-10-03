@@ -2273,4 +2273,31 @@ mod tests {
             vec![vec![1], vec![3], vec![1], vec![1, 1]]
         );
     }
+
+    // #705: `parse_style` must not treat a `;` or `:` inside `url(...)` or a
+    // quoted string as a declaration boundary.
+
+    /// A `;` inside an unquoted `url(...)` is part of the value, not a
+    /// separator — a data URL is exactly where one turns up.
+    #[test]
+    fn parse_style_keeps_a_semicolon_inside_a_data_url_whole() {
+        let style = "background-image: url(data:image/png;base64,QUJD); color: red";
+        assert_eq!(
+            parse_style(style, "background-image"),
+            Some("url(data:image/png;base64,QUJD)".to_string())
+        );
+        assert_eq!(parse_style(style, "color"), Some("red".to_string()));
+    }
+
+    /// A `;` (and a `:`) inside a quoted `content` value must not fabricate a
+    /// declaration that hijacks a later real one of the same name.
+    #[test]
+    fn parse_style_does_not_let_a_quoted_value_hijack_a_later_declaration() {
+        let style = r#"content: "a; color: blue"; color: red"#;
+        assert_eq!(parse_style(style, "color"), Some("red".to_string()));
+        assert_eq!(
+            parse_style(style, "content"),
+            Some(r#""a; color: blue""#.to_string())
+        );
+    }
 }
