@@ -4,7 +4,8 @@
 //! `MarkSpec`) — one table, used both ways — unifying the old engine's three
 //! divergent hardcoded tag maps (`wrap_mark`, `block_type_to_tag`,
 //! `mark_type_to_tag`). A few genuinely attr-dependent cases (heading level,
-//! ordered-list `start`, `<span style>` → `text_color`/`highlight`) are handled
+//! ordered-list `start`, `<span style>` → `text_color`/`highlight`, a task list's
+//! `<ul data-type="taskList">` and its items' `data-checked`) are handled
 //! explicitly, mirroring ProseMirror's per-type `toDOM`/`parseDOM`.
 //!
 //! HTML is a **lossy clipboard interchange** — the durable, total format is
@@ -102,6 +103,18 @@ fn block_tags(node: &Node) -> (String, String) {
             }
         }
         "code_block" => ("<pre>".to_string(), "</pre>".to_string()),
+        // TipTap's markup for a task list, which the import reads back.
+        "task_list" => (
+            format!("<ul {TASK_TYPE}=\"{TASK_LIST}\">"),
+            "</ul>".to_string(),
+        ),
+        "task_item" => {
+            let checked = node.attrs().get_bool("checked").unwrap_or(false);
+            (
+                format!("<li {TASK_TYPE}=\"{TASK_ITEM}\" {TASK_CHECKED}=\"{checked}\">"),
+                "</li>".to_string(),
+            )
+        }
         "table_cell" | "table_header_cell" => {
             let tag = primary_tag(node.node_type());
             let mut open = format!("<{tag}");
@@ -122,6 +135,14 @@ fn block_tags(node: &Node) -> (String, String) {
         }
     }
 }
+
+/// The attribute naming a task list (`<ul>`) or a task item (`<li>`), and
+/// its values: TipTap's markup, which copy-out writes and paste-in reads.
+const TASK_TYPE: &str = "data-type";
+const TASK_LIST: &str = "taskList";
+const TASK_ITEM: &str = "taskItem";
+/// A task item's `checked` attribute: `"true"` or `"false"`.
+const TASK_CHECKED: &str = "data-checked";
 
 /// The ` style="text-align:…"` fragment for a textblock's `text_align` attribute,
 /// or an empty string for the default (`left`) or an unrecognized value. Whitelisted
@@ -183,7 +204,8 @@ pub fn mark_dom_tag(mark: &Mark) -> Option<String> {
 
 /// The HTML tag a node type serializes to: its first `parse_html_tags` entry, or
 /// a group-based fallback (`div` for blocks, `span` otherwise) for types with no
-/// declared tags (e.g. `task_list`). HTML is lossy here by design; DocNode is not.
+/// declared tags (e.g. `task_list`, whose copy-out [`block_tags`] writes as a
+/// `<ul>` itself). HTML is lossy here by design; DocNode is not.
 fn primary_tag(nt: &NodeType) -> String {
     if let Some(tag) = nt.spec().parse_html_tags.first() {
         return tag.clone();
@@ -452,6 +474,25 @@ impl<'a> HtmlParser<'a> {
                 let inner = self.ensure_block_plus(self.parse_blocks(children)?)?;
                 self.make_node(nt, Attrs::new(), Fragment::from_children(inner))
             }
+            "bullet_list"
+                if is_task_list(attributes)
+                    && let (Some(list), Some(item)) = (
+                        self.schema.node_type("task_list"),
+                        self.schema.node_type("task_item"),
+                    ) =>
+            {
+                let mut items = Vec::new();
+                for (li, checked) in list_items(children) {
+                    let inner = self.ensure_block_plus(self.parse_blocks(li)?)?;
+                    let attrs = Attrs::from_iter([("checked", AttrValue::Bool(checked))]);
+                    items.push(self.make_node(item, attrs, Fragment::from_children(inner))?);
+                }
+                if items.is_empty() {
+                    let para = self.make_node(self.paragraph, Attrs::new(), Fragment::empty())?;
+                    items.push(self.make_node(item, Attrs::new(), Fragment::from_node(para))?);
+                }
+                self.make_node(list, Attrs::new(), Fragment::from_children(items))
+            }
             "bullet_list" | "ordered_list" => {
                 let mut items = self.parse_list_items(children)?;
                 if items.is_empty() {
@@ -499,19 +540,7 @@ impl<'a> HtmlParser<'a> {
 
     fn parse_list_items(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
         let mut items = Vec::new();
-        for child in children {
-            // Only <li> children become items; whitespace / stray tags are dropped.
-            let ParsedNode::Element {
-                tag,
-                children: li_children,
-                ..
-            } = child
-            else {
-                continue;
-            };
-            if tag != "li" || is_dropped(tag) {
-                continue;
-            }
+        for (li_children, _) in list_items(children) {
             let inner = self.ensure_block_plus(self.parse_blocks(li_children)?)?;
             items.push(self.make_node(
                 self.list_item,
@@ -972,6 +1001,27 @@ fn align_attrs(attributes: &[(String, String)]) -> Attrs {
 }
 
 /// Find an attribute value (case-insensitive name) in a parsed attribute list.
+/// A `<ul>` whose `data-type` is `taskList`.
+fn is_task_list(attributes: &[(String, String)]) -> bool {
+    attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_LIST)
+}
+
+/// A list's `<li>` children, each with its content and whether it says
+/// `data-checked="true"`. Whitespace and stray tags are dropped.
+fn list_items(children: &[ParsedNode]) -> impl Iterator<Item = (&[ParsedNode], bool)> {
+    children.iter().filter_map(|child| match child {
+        ParsedNode::Element {
+            tag,
+            attributes,
+            children,
+        } if tag == "li" => {
+            let checked = attr(attributes, TASK_CHECKED).is_some_and(|v| v.trim() == "true");
+            Some((children.as_slice(), checked))
+        }
+        _ => None,
+    })
+}
+
 fn attr<'b>(attributes: &'b [(String, String)], name: &str) -> Option<&'b str> {
     attributes
         .iter()
@@ -1079,9 +1129,16 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
             .into_iter()
             .all(|(name, value)| ok(&name.to_ascii_lowercase(), value.trim()))
     }
-    fn element(tag: &str, attributes: &[(String, String)]) -> Option<DroppedAttr> {
+    fn element(
+        tag: &str,
+        attributes: &[(String, String)],
+        in_task_list: bool,
+    ) -> Option<DroppedAttr> {
         for (name, value) in attributes {
             let kept = match (tag, name.as_str()) {
+                ("ul", TASK_TYPE) => value.trim() == TASK_LIST,
+                ("li", TASK_TYPE) => in_task_list && value.trim() == TASK_ITEM,
+                ("li", TASK_CHECKED) => in_task_list && matches!(value.trim(), "true" | "false"),
                 ("a", "href") if !is_safe_url(value, false) => {
                     return Some(DroppedAttr::UnsafeLink);
                 }
@@ -1124,19 +1181,24 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
             _ => None,
         }
     }
-    fn walk(nodes: &[ParsedNode]) -> Option<DroppedAttr> {
+    /// `in_task_list`: `nodes` are the children of a task list's `<ul>`.
+    fn walk(nodes: &[ParsedNode], in_task_list: bool) -> Option<DroppedAttr> {
         nodes.iter().find_map(|n| match n {
             ParsedNode::Text(_) => None,
             ParsedNode::Element {
                 tag,
                 attributes,
                 children,
-            } => element(&tag.to_ascii_lowercase(), attributes).or_else(|| walk(children)),
+            } => {
+                let tag = tag.to_ascii_lowercase();
+                let task_list = tag == "ul" && is_task_list(attributes);
+                element(&tag, attributes, in_task_list).or_else(|| walk(children, task_list))
+            }
         })
     }
     let mut parser = HtmlFragmentParser::new(html);
     parser.all_attributes = true;
-    walk(&parser.parse())
+    walk(&parser.parse(), false)
 }
 
 // ─── Salvaged zero-dependency HTML tokenizer ─────────────────────────────────
@@ -1501,6 +1563,8 @@ fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
                     | "class"
                     | "colspan"
                     | "rowspan"
+                    | TASK_TYPE
+                    | TASK_CHECKED
             )
         })
         .collect()

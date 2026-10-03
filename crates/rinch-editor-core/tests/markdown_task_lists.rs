@@ -175,7 +175,10 @@ fn a_task_list_inside_a_bullet_list_and_the_reverse_round_trip() {
         vec![task(
             &s,
             false,
-            vec![p(&s, "t"), bullets(&s, vec![vec![p(&s, "b1")], vec![p(&s, "b2")]])],
+            vec![
+                p(&s, "t"),
+                bullets(&s, vec![vec![p(&s, "b1")], vec![p(&s, "b2")]]),
+            ],
         )],
     );
     rt(&s, &doc(&s, vec![in_tasks]));
@@ -234,17 +237,25 @@ fn a_task_item_that_starts_with_another_block_round_trips() {
         Attrs::new(),
         vec![p(&s, "q1"), p(&s, "q2")],
     );
-    let code = n(&s, "code_block", Attrs::new(), vec![s.text("c\nd").unwrap()]);
+    let code = n(
+        &s,
+        "code_block",
+        Attrs::new(),
+        vec![s.text("c\nd").unwrap()],
+    );
     let rule = n(&s, "horizontal_rule", Attrs::new(), vec![]);
-    let cell = |text: &str, name: &str| {
-        n(&s, name, Attrs::new(), vec![p(&s, text)])
-    };
+    let cell = |text: &str, name: &str| n(&s, name, Attrs::new(), vec![p(&s, text)]);
     let table = n(
         &s,
         "table",
         Attrs::new(),
         vec![
-            n(&s, "table_row", Attrs::new(), vec![cell("h", "table_header_cell")]),
+            n(
+                &s,
+                "table_row",
+                Attrs::new(),
+                vec![cell("h", "table_header_cell")],
+            ),
             n(&s, "table_row", Attrs::new(), vec![cell("v", "table_cell")]),
         ],
     );
@@ -285,16 +296,29 @@ fn an_empty_task_item_round_trips_wherever_it_is() {
             &s,
             vec![tasks(
                 &s,
-                vec![task(&s, true, vec![p(&s, "a")]), empty(), task(&s, false, vec![p(&s, "b")])],
+                vec![
+                    task(&s, true, vec![p(&s, "a")]),
+                    empty(),
+                    task(&s, false, vec![p(&s, "b")]),
+                ],
             )],
         ),
     );
     // Last in a blockquote, and last in a nested list.
-    let quoted = n(&s, "blockquote", Attrs::new(), vec![tasks(&s, vec![empty()])]);
+    let quoted = n(
+        &s,
+        "blockquote",
+        Attrs::new(),
+        vec![tasks(&s, vec![empty()])],
+    );
     rt(&s, &doc(&s, vec![quoted, p(&s, "after")]));
     let nested = tasks(
         &s,
-        vec![task(&s, true, vec![p(&s, "outer"), tasks(&s, vec![empty()])])],
+        vec![task(
+            &s,
+            true,
+            vec![p(&s, "outer"), tasks(&s, vec![empty()])],
+        )],
     );
     rt(&s, &doc(&s, vec![nested]));
 }
@@ -358,7 +382,10 @@ fn html_copy_out_writes_task_lists_and_paste_in_reads_them() {
         &[tasks(&s, vec![task(&s, false, vec![p(&s, "x")])])][..]
     );
     let slice = slice_from_html(&s, "<ul><li data-checked=\"true\">x</li></ul>").unwrap();
-    assert_eq!(slice.content.children(), &[bullets(&s, vec![vec![p(&s, "x")]])][..]);
+    assert_eq!(
+        slice.content.children(),
+        &[bullets(&s, vec![vec![p(&s, "x")]])][..]
+    );
 }
 
 #[test]
@@ -414,18 +441,30 @@ fn a_marker_before_another_block_is_still_the_items() {
     let s = s();
     for (md, first) in [
         ("- [ ] # h", h(&s, 1, "h")),
-        ("- [ ]\n  > q", n(&s, "blockquote", Attrs::new(), vec![p(&s, "q")])),
-        ("- [ ] > q", n(&s, "blockquote", Attrs::new(), vec![p(&s, "q")])),
+        (
+            "- [ ] \n  > q",
+            n(&s, "blockquote", Attrs::new(), vec![p(&s, "q")]),
+        ),
+        (
+            "- [ ] > q",
+            n(&s, "blockquote", Attrs::new(), vec![p(&s, "q")]),
+        ),
         ("- [ ] - a", bullets(&s, vec![vec![p(&s, "a")]])),
     ] {
         let want = doc(&s, vec![tasks(&s, vec![task(&s, false, vec![first])])]);
         assert_eq!(doc_from_markdown_strict(&s, md).unwrap(), want, "{md:?}");
         assert_eq!(doc_from_markdown(&s, md).unwrap(), want, "{md:?}");
     }
-    // Not a marker: nothing follows it on its line.
-    let d = doc_from_markdown_strict(&s, "- [ ]\n- [x]\n  next").unwrap();
-    assert_eq!(d.child(0).type_name(), "bullet_list");
-    assert_eq!(d.child(0).child(0).child(0).child(0).text(), Some("[ ]"));
+    // Not a marker: nothing follows it on its line, not even a space.
+    for md in ["- [ ]\n- [x]\n  next", "- [ ]\n  > q"] {
+        let d = doc_from_markdown_strict(&s, md).unwrap();
+        assert_eq!(d.child(0).type_name(), "bullet_list", "{md:?}");
+        assert_eq!(
+            d.child(0).child(0).child(0).child(0).text(),
+            Some("[ ]"),
+            "{md:?}"
+        );
+    }
 }
 
 #[test]
@@ -433,12 +472,18 @@ fn bracketed_text_in_a_bullet_item_stays_text() {
     let s = s();
     let d = doc(
         &s,
-        vec![bullets(&s, vec![vec![p(&s, "[ ] not a task")], vec![p(&s, "[x] nor this")]])],
+        vec![bullets(
+            &s,
+            vec![vec![p(&s, "[ ] not a task")], vec![p(&s, "[x] nor this")]],
+        )],
     );
     rt(&s, &d);
     let d = doc(
         &s,
-        vec![tasks(&s, vec![task(&s, false, vec![p(&s, "[x] text after a marker")])])],
+        vec![tasks(
+            &s,
+            vec![task(&s, false, vec![p(&s, "[x] text after a marker")])],
+        )],
     );
     rt(&s, &d);
 }

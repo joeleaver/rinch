@@ -231,6 +231,7 @@ syntax for:
 | `subscript`, `superscript` | `<sub>…</sub>`, `<sup>…</sup>` | |
 | `link`, `image`, `code`, `hard_break` | Markdown syntax; a hard break is `<br>` at a textblock's end and in a heading | `<br>`, `<br/>` |
 | `table` | a GFM pipe table when it has one header row, no merged cells and one inline paragraph per cell; otherwise an HTML `<table>` block | |
+| `task_list` > `task_item` | GFM's `- [ ] …` / `- [x] …`; in a table written as HTML, `<ul data-type="taskList">` > `<li data-type="taskItem" data-checked="true">` | `[X]` |
 
 `C` is a colour `is_safe_css_color` accepts (the HTML paste path's check). The writer
 writes a colour only when it passes: a `highlight` with any other colour is written as
@@ -241,6 +242,22 @@ copy-out (`node_to_html`) applies the same check, so it no longer writes a colou
 names are case-insensitive; the `style` attribute must be lowercase and quoted (either
 quote) and hold that one declaration.
 
+**Task lists** (#1365). An item's marker starts its first paragraph, and the item's
+other blocks are indented under it like any list item's. An item that starts with
+another block (a heading, a quote, a list, …) is written with the marker alone on its
+line, `- [ ] ` with its trailing space, and the block on the next line: written after the
+marker, pulldown-cmark misreads a quote's or a nested list's later lines. A bullet or task
+list that directly follows another is written with `*` instead of `-` (and back), because
+CommonMark continues a list across blank lines when the bullet is the same, which would
+turn a bullet list and the task list after it into one list. On reading, a bullet list
+whose items all start with a marker is a `task_list`; the reader also finds a marker that
+pulldown-cmark consumes without reporting it (`- [ ] # Heading`). A marker on an item of
+an **ordered** list, or of a list where some items have none, has no place in the model:
+the strict reader refuses it (`Construct::TaskList`) and the lenient one keeps it as the
+text it was (`[ ] todo`). HTML copy-out (`node_to_html`, `slice_to_html`) writes a task list with the same
+`data-type` / `data-checked` markup (TipTap's), and paste-in (`slice_from_html`) reads it
+back as one.
+
 **What round-trips.** A document of the starter kit's marks and nodes written with
 `doc_to_markdown` reads back with `doc_from_markdown_strict` as the same document, and
 writing it again changes nothing — except for the losses below.
@@ -250,7 +267,8 @@ marker at a line's start, `<` (a tag or an autolink), an entity-shaped `&`, a tr
 `#` run in a heading, and a line break inside text (written `&#10;`).
 
 **Strict reading.** `doc_from_markdown` is lenient: what it cannot represent (other
-raw HTML, unsafe URLs, footnotes, task-list markers) it drops or keeps as text.
+raw HTML, unsafe URLs, footnotes, a task-list marker in an ordered or mixed list) it
+drops or keeps as text.
 `doc_from_markdown_strict` parses the same way but fails with
 `MarkdownError::Unsupported { construct, line, source }` on the first construct the
 lenient read would drop or degrade, naming it with a `Construct` (`InlineHtml`,
@@ -263,7 +281,8 @@ line — which CommonMark reads as an HTML block — reads back as one. Inside a
 block strict refuses another tag, stray text, an unsafe `href` or `src`
 (`UnsafeLink` / `UnsafeImage`), and any attribute the import does not keep — a `style`
 other than a safe colour or `text-align`, a `colspan` above 1000, a `class`, an event
-handler (`HtmlBlock`). What strict accepts, it parses exactly as the lenient reader
+handler, a `data-type` other than `taskList` on a `<ul>`, a `data-checked` other than
+`true`/`false` or outside a task list (`HtmlBlock`). What strict accepts, it parses exactly as the lenient reader
 does.
 
 **Known losses.**
@@ -271,10 +290,8 @@ does.
   not in a table written as HTML, where it round-trips), and
   whitespace at the edge of a bold, italic, strike or link run is written outside the
   run: the text round-trips and that whitespace leaves the mark.
-- Task lists are not written (#1365): `doc_to_markdown` drops them, in a table cell
-  as everywhere else.
-- A code block's language is lost in a table written as HTML; two adjacent lists or
-  blockquotes of one type merge; empty paragraphs are dropped; a link `href`
+- A code block's language is lost in a table written as HTML; two adjacent ordered
+  lists, or two adjacent blockquotes, merge; empty paragraphs are dropped; a link `href`
   containing `\` before punctuation or an entity is decoded on read (#1366).
 - A line break inside inline code becomes a space (a code span is literal), and one
   inside a link `href` reads back as text.

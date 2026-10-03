@@ -7,11 +7,11 @@
 //! here is a new loss, not a known one:
 //! - whitespace at a textblock's edge (CommonMark strips it), and at the edge
 //!   of a bold, italic, strike or link run (written outside the run, by design);
-//! - two adjacent lists or blockquotes of one type (they merge, #1366);
+//! - two adjacent ordered lists or blockquotes (they merge, #1366; bullet and
+//!   task lists are written with alternating bullets and stay apart);
 //! - empty paragraphs (dropped, #1366);
 //! - a code block's language in a table cell written as HTML (#1366);
-//! - a line break inside code (a code span is literal);
-//! - task lists (#1365).
+//! - a line break inside code (a code span is literal).
 //!
 //! `strict_reads_everything_the_writer_writes` generates those too, and asks
 //! only that the strict reader accept what the writer wrote.
@@ -58,7 +58,7 @@ struct Gen<'s> {
     mode: Mode,
     pool: Vec<Mark>,
     /// Generate the losses too (edge whitespace, empty paragraphs, adjacent
-    /// lists, task lists, languages in cells, oversized spans): for the
+    /// lists, languages in cells, oversized spans): for the
     /// property that strict reads whatever the writer writes.
     unruly: bool,
 }
@@ -272,7 +272,7 @@ impl Gen<'_> {
             if let Some(prev) = out.last()
                 && !self.unruly
                 && prev.type_name() == b.type_name()
-                && matches!(b.type_name(), "bullet_list" | "ordered_list" | "blockquote")
+                && matches!(b.type_name(), "ordered_list" | "blockquote")
             {
                 let sep = self.schema.text("sep").unwrap();
                 out.push(self.node("paragraph", Attrs::new(), vec![sep]));
@@ -344,11 +344,29 @@ impl Gen<'_> {
                     self.node("bullet_list", Attrs::new(), items)
                 }
             }
-            80..=84 if self.unruly => {
+            80..=89 => {
+                // Task lists (#1365): an item starts with a paragraph or,
+                // sometimes, any other block, and may hold more blocks.
                 let mut items = Vec::new();
-                for _ in 0..1 + self.rng.below(2) {
+                for _ in 0..1 + self.rng.below(3) {
                     let checked = AttrValue::Bool(self.rng.chance(50));
-                    let kids = vec![self.para(Attrs::new())];
+                    let first = if self.rng.chance(75) {
+                        self.para(Attrs::new())
+                    } else {
+                        self.block(depth + 1, in_cell)
+                    };
+                    let mut kids = vec![first];
+                    if self.rng.chance(30) {
+                        let next = self.block(depth + 1, in_cell);
+                        if !self.unruly
+                            && next.type_name() == kids[0].type_name()
+                            && matches!(next.type_name(), "ordered_list" | "blockquote")
+                        {
+                            let sep = self.schema.text("sep").unwrap();
+                            kids.push(self.node("paragraph", Attrs::new(), vec![sep]));
+                        }
+                        kids.push(next);
+                    }
                     items.push(self.node(
                         "task_item",
                         Attrs::from_iter([("checked", checked)]),
