@@ -512,3 +512,39 @@ fn the_reader_takes_br_as_a_hard_break() {
     }
     assert_eq!(refusal(&s, "a<br class=\"x\">b"), Construct::InlineHtml);
 }
+
+// ── a newline in text ──
+
+#[test]
+fn a_newline_in_text_stays_in_its_block() {
+    let s = Schema::starter_kit();
+    for text in ["a\n\nb", "a\n# b", "a\n- b", "a\nb", "a\r\nb", "\n> a"] {
+        rt(&s, &doc(&s, vec![p(&s, vec![t(&s, text, &[])])]));
+        let heading = s
+            .create_node(
+                "heading",
+                Attrs::from_iter([("level", AttrValue::Int(1))]),
+                Fragment::from_node(t(&s, text, &[])),
+            )
+            .unwrap();
+        rt(&s, &doc(&s, vec![heading]));
+    }
+    // In a link's title and an image's alt text.
+    let link = mark(
+        &s,
+        "link",
+        &[("href", "https://x.y"), ("title", "l1\n\nl2")],
+    );
+    rt(&s, &doc(&s, vec![p(&s, vec![t(&s, "a", &[&link])])]));
+    let img = s
+        .create_node(
+            "image",
+            Attrs::from_iter([
+                ("src", AttrValue::from("a.png".to_string())),
+                ("alt", AttrValue::from("x\n\ny".to_string())),
+            ]),
+            Fragment::empty(),
+        )
+        .unwrap();
+    rt(&s, &doc(&s, vec![p(&s, vec![img])]));
+}
