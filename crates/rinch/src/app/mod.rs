@@ -45,6 +45,8 @@ mod css_hook_760_tests;
 mod damage_clip_chain_tests;
 #[cfg(feature = "debug")]
 mod debug_commands;
+#[cfg(test)]
+mod decorative_pseudo_773_tests;
 mod deferred_work;
 #[cfg(test)]
 mod device_pixel_ratio_tests;
