@@ -26,6 +26,22 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
     if display.is_contents() {
         return DisplayValue::Contents;
     }
+    // `list-item` is an orthogonal bit on `Display` (#725), not a
+    // `DisplayInside` variant, and Stylo parses it combined with any
+    // outside/inside. Only the block-outside, flow-inside forms are
+    // `ListItem`; `inline list-item` falls through to `Inline` (Chrome 153
+    // lays two of them on one line). Stylo's servo build rejects
+    // `flex list-item`, `grid list-item` and the `flow-root` forms, so they
+    // never reach this match.
+    if display.is_list_item()
+        && display.outside() == DisplayOutside::Block
+        && matches!(
+            display.inside(),
+            DisplayInside::Flow | DisplayInside::FlowRoot
+        )
+    {
+        return DisplayValue::ListItem;
+    }
 
     let outside = display.outside();
     let inside = display.inside();

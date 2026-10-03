@@ -217,14 +217,23 @@ the numbers). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
 lay out as `baseline`, and the shift does not grow the line box the way
 Chrome's does, both filed as #1357.
 
-List markers on `<li>` (issue #725) are **not** part of this: it is not a
-stylesheet line — `DisplayValue` has no `ListItem` — so it needs layout work
-first, and a list item is not a `list-item` box. What desktop draws instead is
-a text marker — `•` or `N.` followed by an en space —
-generated as a span at the start of every `<li>` whose parent is a `<ul>` or
-`<ol>`, whose `list-style-type` is not `none` and which has no `::before` of
-its own. It is inline content of the
-item, not an outside marker hanging in its padding. The rich-text editor's
+List markers on `<li>` (issue #725) are partly part of this. `li` computes
+`display: list-item`, and the UA sheet gives lists Chrome's own defaults: `ul`,
+`menu` and `dir` are `disc`, `ol` is `decimal`, a list inside one other list is
+`circle` and inside two is `square` — an `ol` counts as a level, so `ol > li >
+ul` is `circle`, measured in Chrome 153. A block-level `list-item` box lays out
+as a `block` one does (its children stack, its height is theirs); `display: inline list-item` stays inline.
+
+What desktop draws is a text marker followed by an en space: `•`, `◦` or `▪`
+for `disc`, `circle` or `square`, `N.` for `decimal` (`<ol start>` and
+`<li value>` included), and the old bullet or number for any other keyword. It
+is generated as a span at the start of an `<li>` whose parent is a `<ul>` or
+`<ol>`, whose computed `display` is `list-item`, whose `list-style-type` is not
+`none` and which has no `::before` or `::after` of its own (Chrome draws the
+marker beside either; a `menu`/`dir` item gets none yet — #1370). So an item
+restyled to `display: flex` — a `List` item with an icon — draws no marker.
+The marker is inline content of the item, not an outside marker hanging in its
+padding, and `list-style-position` is not read (#1356). The rich-text editor's
 stylesheet takes that span out of flow and hangs it against the item's left
 edge, as a browser's outside marker hangs, and draws its task-list checkbox
 itself as a `::before` hung the same way (#1246).

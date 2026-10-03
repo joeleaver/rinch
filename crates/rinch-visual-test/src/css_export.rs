@@ -23,6 +23,7 @@ pub fn computed_style_to_css(styles: &Value) -> String {
             "InlineBlock" => "inline-block",
             "InlineFlex" => "inline-flex",
             "InlineGrid" => "inline-grid",
+            "ListItem" => "list-item",
             _ => "flex",
         };
         css.push_str(&format!("display: {}; ", css_val));
@@ -781,6 +782,7 @@ mod tests {
             ("Contents", "display: contents;"),
             ("None", "display: none;"),
             ("Flex", "display: flex;"),
+            ("ListItem", "display: list-item;"),
             // The control: this is what the fallback is for, and why a missing
             // arm is silent rather than an error.
             ("SomethingNew", "display: flex;"),

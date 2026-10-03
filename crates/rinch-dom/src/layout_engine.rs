@@ -1448,6 +1448,7 @@ impl RinchDocument {
         let is_column = matches!(
             node.computed_style.display,
             crate::computed_style::DisplayValue::Block
+                | crate::computed_style::DisplayValue::ListItem
         ) || matches!(
             node.computed_style.flex_direction,
             crate::computed_style::FlexDirectionValue::Column

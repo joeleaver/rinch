@@ -265,9 +265,18 @@ impl RinchDocument {
 
             html, body, div, section, article, aside, header, footer, main, nav,
             h1, h2, h3, h4, h5, h6, p, blockquote, pre, figure, figcaption,
-            ul, ol, menu, dir, li, dl, dt, dd, table, form, fieldset, legend, hr,
+            ul, ol, menu, dir, dl, dt, dd, table, form, fieldset, legend, hr,
             address, details, summary {
                 display: block;
+            }
+
+            /* #725: `li` is `display: list-item`, not plain `block` — the
+               only thing that makes `resolve_list_marker` draw a marker for
+               it at all (it reads Stylo's `Display::is_list_item`). Its box
+               lays out as a `block` one does: `DisplayValue::ListItem` maps
+               to `taffy::Display::Block` and `DisplayMode::Block`. */
+            li {
+                display: list-item;
             }
 
             head, style, script, link, meta, title, noscript {
@@ -531,6 +540,31 @@ impl RinchDocument {
                desktop/web divergence for one token per rule. */
             ul, ol, menu, dir {
                 padding-left: 40px;
+            }
+
+            /* Default marker shape (#725): Chrome's own html.css rules,
+               verbatim. `:is()` matches in this Stylo. An `ol` counts as a
+               nesting level, so measured in Chrome 153 (`getComputedStyle`):
+               `ul` disc, `ul ul` circle, `ul ul ul` square, `ol > li > ul`
+               circle, `ol ol ul` and `ul ol ul` square, `menu` disc. Only
+               disc / circle / square / decimal are drawn as such
+               (`resolve_list_marker`); any other keyword still draws *a*
+               marker (the old bullet/number fallback) rather than none. A
+               `menu`/`dir` item gets no marker yet (#1370). */
+            ul {
+                list-style-type: disc;
+            }
+            ol {
+                list-style-type: decimal;
+            }
+            menu, dir {
+                list-style-type: disc;
+            }
+            :is(dir, menu, ol, ul) :is(dir, menu, ul) {
+                list-style-type: circle;
+            }
+            :is(dir, menu, ol, ul) :is(dir, menu, ol, ul) :is(dir, menu, ul) {
+                list-style-type: square;
             }
 
             /* The block-level default margins, from the HTML Standard's
