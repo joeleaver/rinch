@@ -2736,15 +2736,41 @@ fn paint_node(
         // `scroll_offset` too far down and right. That was #408 — a latent
         // trap rather than a live bug, because a node only carries a scroll
         // offset if it scrolls and a node that scrolls answers
-        // `clips_overflow`, so the guard one line up already returned. Both
-        // halves of that argument read the same predicate, except in one place
-        // since #591 PR 1: a non-atomic inline element never clips, while the
-        // scroll-container walks (`find_scroll_container_at_point_recursive`,
-        // `clamp_scroll_offsets`, the scrollbar geometry) read `overflow`
-        // against `Scroll | Auto` directly, so a `<span style="overflow: auto">`
-        // can carry a scroll offset and not clip. Its box is `0x0`, so no ink is
-        // at stake — and correctness here should not depend on a guard above it
-        // at all.
+        // `clips_overflow`, so the guard one line up — before #535 — always
+        // returned first. Both halves of that argument read the same
+        // predicate, except in one place since #591 PR 1: a non-atomic inline
+        // element never clips, while the scroll-container walks
+        // (`find_scroll_container_at_point_recursive`, `clamp_scroll_offsets`,
+        // the scrollbar geometry) read `overflow` against `Scroll | Auto`
+        // directly, so a `<span style="overflow: auto">` can carry a scroll
+        // offset and not clip. Its box is `0x0`, so no ink is at stake — and
+        // correctness here should not depend on a guard above it at all.
+        //
+        // **This branch is reachable by a partially-clipping node since
+        // #535** (the guard above only excludes both-axes-clipping), and
+        // unlike the fully-unclipping case the comment above describes, such
+        // a node's children genuinely need a bracket on the clipping axis —
+        // dropping it entirely, as the pre-#535 "skip-drawing branch returns
+        // before the clip push" shape did, would let a child overflow straight
+        // through the axis that *does* clip. So this pushes the same
+        // `clip_shape` the normal drawing path below would, skipping only the
+        // background/border/etc paint that `node_outside_dirty` makes
+        // pointless — never the clip itself.
+        let clip = clip_shape(node, scale, x, y);
+        let root_clip: Option<PaintShape> = clip.map(|(clip_rect, clip_radii)| {
+            if clip_radii.top_left > 0.0
+                || clip_radii.top_right > 0.0
+                || clip_radii.bottom_right > 0.0
+                || clip_radii.bottom_left > 0.0
+            {
+                clip_rect.to_rounded_rect(clip_radii).into()
+            } else {
+                clip_rect.into()
+            }
+        });
+        if let Some(shape) = &root_clip {
+            painter.push_clip(Fill::NonZero, node_transform, shape);
+        }
         let scroll_x = node.scroll_offset.0 * scale;
         let scroll_y = node.scroll_offset.1 * scale;
         paint_children_with_stacking(
@@ -2757,10 +2783,12 @@ fn paint_node(
             font_cx,
             layout_cx,
             node_transform,
-            // Ditto: the skip-drawing branch returns before the clip push.
-            None,
+            root_clip.as_ref(),
             false,
         );
+        if root_clip.is_some() {
+            painter.pop_layer();
+        }
         return;
     }
 

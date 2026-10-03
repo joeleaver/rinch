@@ -708,6 +708,67 @@ mod painted {
         );
     }
 
+    /// #535 review: `paints_nothing_without_visit` (the dirty-region subtree
+    /// prune a parent asks of a child before entering `paint_node` for it) has
+    /// to require **both** axes clipping before it may skip a subtree
+    /// unvisited — a box open on one axis lets a child paint past it on
+    /// exactly that axis, so the box's own ink missing the dirty region does
+    /// not mean its children's does too.
+    ///
+    /// `container` only clips x; its child overflows vertically into a dirty
+    /// region that misses `container`'s own 100x100 box entirely. A correct
+    /// per-axis gate falls through to ask the child directly, finds it
+    /// intersects, and paints it; a both-axes-together gate stops at
+    /// `container` and never visits the child at all — the subtree is
+    /// skipped, not merely "painted but then clipped away", so the pixel
+    /// stays whatever it already was (here, unpainted).
+    ///
+    /// The mutant this kills: reverting the gate from
+    /// `clips_overflow_x() && clips_overflow_y()` to `clips_overflow()` (OR)
+    /// makes `paints_nothing_without_visit(container)` return `true` on the
+    /// strength of the x clip alone, so the `continue;` in the paint sequence
+    /// loop skips `container` — and therefore its child — unvisited, and
+    /// (50, 200) stays `NOTHING` instead of `RED`.
+    #[test]
+    fn paints_nothing_without_visit_requires_both_axes_to_skip_a_subtree() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; overflow-x: clip; overflow-y: visible",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 40px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Misses `container`'s own box (y: 0..100) but reaches the child's
+        // vertical overhang (y: 0..300) — the same shape
+        // `a_culled_node_paints_its_children_at_the_scrolled_origin` uses for
+        // the analogous `paint_node`-level gate.
+        rinch_dom::paint::set_dirty_region(Some(peniko::kurbo::Rect::new(
+            0.0, 150.0, 300.0, 300.0,
+        )));
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+        rinch_dom::paint::set_dirty_region(None);
+
+        assert_eq!(
+            pixel_at(&painter, 20, 200),
+            RED,
+            "the open y axis must let the child's overhang be visited and \
+             painted even though its clipping ancestor's own box misses the \
+             dirty region"
+        );
+    }
+
     /// Paint and hit testing now answer the same question at every probe. Read
     /// as a pair rather than as two assertions: before the predicates were
     /// unified, (150, 50) was painted red *and* unreachable, which is the
