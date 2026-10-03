@@ -1198,36 +1198,49 @@ impl RinchDocument {
             return;
         }
 
-        // A **text node folded into an inline formatting context** (#466's
-        // leaf invariant) owns no Taffy box of its own either (#653). Its
-        // `taffy_id` is a real leaf — every text node gets one at creation
-        // (`create_text`), before anything knows whether it will ever join an
-        // IFC — and `mark_inline_descendants` only ever *detaches* it from its
-        // Taffy parent (`taffy.remove_child`) when it is folded in; it never
-        // clears the node's own `taffy_id` field. So `taffy.layout(taffy_id)`
-        // below would keep serving a **stale** box: whatever the orphaned leaf
-        // last reported the one time (if any) a Taffy compute reached it while
-        // it was still attached — typically a standalone measurement from
-        // before the fold, which is exactly `#653`'s "two text nodes keep or
-        // drop a stale box depending on timing": whether an extra relayout
-        // pass happened to compute this leaf attached *before* the structural
-        // pass detached it decides whether the stale box is zero (never
-        // computed attached) or a real measured size, and nothing here chose
-        // between them on purpose.
+        // A **text node folded into an inline formatting context, nested
+        // inside a flowed inline element** (`<span>text</span>`, not a direct
+        // text child of the root) owns no Taffy box of its own (#466's leaf
+        // invariant), and #653 is exactly it keeping a stale one. Every text
+        // node gets a real Taffy leaf at creation (`create_text`), before
+        // anything knows whether it will ever join an IFC.
+        // `mark_inline_descendants` detaches an inline-level member from its
+        // *outermost root's* Taffy children
+        // (`root_taffy_children.contains(&child_taffy)`, read once per call
+        // and held through the whole recursion) — correct for a `<span>` that
+        // is itself a direct Taffy child of the root, but never true for a
+        // text node nested one level deeper: its own `taffy_id` is attached
+        // to the *span's* Taffy node, never the root's, so that check can
+        // never match it and the detach branch never runs for it. It still
+        // gets `ifc_root = Some(root)`; its Taffy attachment is simply left
+        // in place, orphaned only because the span above it was detached. So
+        // `taffy.layout(taffy_id)` below can keep serving a **stale** box —
+        // whatever that orphaned leaf last reported the one time (if any) a
+        // Taffy compute reached it while still attached and unmarked — and
+        // nothing ever corrects it afterward: the only thing that gives an
+        // IFC member text node a box, `Self::write_inline_positions`, only
+        // sizes a *direct* child, and only when `build_ifc_layouts` decides
+        // the root needs reshaping, which it does not once the root's
+        // content and width are unchanged.
         //
-        // The authority for a direct text child's box is
-        // `Self::write_inline_positions`, called later in this same resolve
-        // (`build_ifc_layouts`) whenever the root is reshaped; for a member
-        // that is *not* a direct child (nested inside a flowed `<span>`)
-        // nothing ever gives it a box, by the same leaf invariant. Either way
-        // this generic Taffy read must not run for it. Skipping the read
-        // rather than zeroing: `write_inline_positions` does not run on every
-        // pass (`build_ifc_layouts` skips a root whose text and width are
-        // unchanged), and zeroing unconditionally here would erase a correct
-        // box between two such skipped passes. A text node has no children of
-        // its own to recurse into.
-        if self.tree.nodes[node_id].is_text() && self.tree.nodes[node_id].ifc_root.is_some() {
-            return;
+        // A **direct** text child does not need this guard: a true direct
+        // Taffy child of the root passes the detach check above and is
+        // reliably orphaned at the moment it is marked, before anything
+        // could compute it unmarked, and the generic read below still
+        // carries the paint-dirty bookkeeping (`paint_dirty_nodes.push`)
+        // every other IFC-member direct text child relies on — most of a
+        // rich-text editor's own text. Narrowing to the nested case is what
+        // keeps that bookkeeping intact (a broader skip here answered every
+        // `perf_regression_editor_tests` baseline with fewer repaints than
+        // its pin, because it silently dropped that side effect for them).
+        {
+            let node = &self.tree.nodes[node_id];
+            if node.is_text()
+                && let Some(root) = node.ifc_root
+                && node.parent != Some(root)
+            {
+                return;
+            }
         }
 
         // A `display: none` element generates no box, and neither does anything

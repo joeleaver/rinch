@@ -104,7 +104,10 @@ fn a_text_node_already_folded_into_an_ifc_does_not_regain_a_stale_leaf_box() {
     let container_taffy = taffy_id_of(&doc, container);
     let span_taffy = taffy_id_of(&doc, span);
     let text_taffy = taffy_id_of(&doc, text);
-    doc.tree.taffy.add_child(container_taffy, span_taffy).unwrap();
+    doc.tree
+        .taffy
+        .add_child(container_taffy, span_taffy)
+        .unwrap();
     let _ = doc.tree.taffy.mark_dirty(span_taffy);
     let _ = doc.tree.taffy.mark_dirty(text_taffy);
 
