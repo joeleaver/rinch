@@ -1286,36 +1286,39 @@ mod tests {
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 
-    /// A falsey write of `checked` / `selected` reaches the backend even when
-    /// the content attribute is already absent (issue #687).
+    /// A falsey write of `checked` / `selected` / `muted` reaches the backend
+    /// even when the content attribute is already absent (issues #687, #754).
     ///
     /// `write_attribute`'s removal is otherwise guarded on the attribute being
     /// present, which reads as "already off" — true for every attribute whose
-    /// whole state is the attribute, and false for these two on the web, where
-    /// a user toggle moves the live IDL property and leaves the attribute
-    /// behind. Only the backend can see that property, so the writer must call
-    /// it; whether the call is worth making is not the writer's question.
+    /// whole state is the attribute, and false for these three on the web,
+    /// where a user toggle (or, for `muted`, a `<video controls>`'s own mute
+    /// button) moves the live IDL property and leaves the attribute behind.
+    /// Only the backend can see that property, so the writer must call it;
+    /// whether the call is worth making is not the writer's question.
     ///
     /// The mock records every mutation as a dirty node, so "did the call reach
-    /// the backend" is observable here without a browser. Three mutants die:
-    /// restoring the guard for the pair (row 1 and row 2), listing only
-    /// `checked` in it (row 2), and dropping the guard for *everything* (row 3,
+    /// the backend" is observable here without a browser. Four mutants die:
+    /// restoring the guard for the trio (rows 1-3), listing only `checked` in
+    /// it (row 2 or row 3), and dropping the guard for *everything* (row 4,
     /// which would restyle a node on every falsey write of any boolean
     /// attribute).
     #[test]
-    fn a_falsey_write_of_the_presence_pair_always_reaches_the_backend() {
+    fn a_falsey_write_of_the_presence_trio_always_reaches_the_backend() {
         let doc = Rc::new(RefCell::new(MockDomDocument::new()));
         let body = doc.borrow().body();
         let mut scope = RenderScope::new(doc.clone(), body);
 
         let input = scope.create_element("input");
         let option = scope.create_element("option");
+        let video = scope.create_element("video");
         let dirtied = |doc: &Rc<RefCell<MockDomDocument>>, n: &NodeHandle| {
             doc.borrow_mut().take_dirty_nodes().contains(&n.node_id())
         };
         doc.borrow_mut().take_dirty_nodes(); // drop the creation noise
 
-        // Neither attribute is present, so the guard would skip both writes.
+        // None of the three attributes is present, so the guard would skip
+        // every write.
         input.write_attribute("checked", "false");
         assert!(
             dirtied(&doc, &input),
@@ -1325,12 +1328,18 @@ mod tests {
         option.write_attribute("selected", "false");
         assert!(
             dirtied(&doc, &option),
-            "`selected` is the other half of the pair — an option's selectedness              goes dirty the same way"
+            "`selected` is another member of the trio — an option's selectedness              goes dirty the same way"
+        );
+
+        video.write_attribute("muted", "false");
+        assert!(
+            dirtied(&doc, &video),
+            "`muted` joined the trio in #754 — a media element's live `.muted`              can move with no attribute write at all, same as checked/selected"
         );
 
         // The name is ASCII case-insensitive, like every HTML attribute name
         // (#688). `is_boolean_attribute` folds, so an uppercase spelling reaches
-        // the falsey branch; the pair check has to fold with it or `CHECKED:
+        // the falsey branch; the trio check has to fold with it or `CHECKED:
         // {|| false}` keeps the bug. Sampled off the fixed point on purpose —
         // with the attribute *present* the guard finds it either way, because
         // `get_attribute` folds too.
