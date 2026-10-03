@@ -245,18 +245,19 @@ quote) and hold that one declaration.
 **Task lists** (#1365). An item's marker starts its first paragraph, and the item's
 other blocks are indented under it like any list item's. An item that starts with
 another block (a heading, a quote, a list, …) is written with the marker alone on its
-line, `- [ ] ` with its trailing space, and the block on the next line: written after the
-marker, pulldown-cmark misreads a quote's or a nested list's later lines. A bullet or task
-list that directly follows another is written with `*` instead of `-` (and back), because
-CommonMark continues a list across blank lines when the bullet is the same, which would
-turn a bullet list and the task list after it into one list. On reading, a bullet list
-whose items all start with a marker is a `task_list`; the reader also finds a marker that
-pulldown-cmark consumes without reporting it (`- [ ] # Heading`). A marker on an item of
-an **ordered** list, or of a list where some items have none, has no place in the model:
-the strict reader refuses it (`Construct::TaskList`) and the lenient one keeps it as the
-text it was (`[ ] todo`). HTML copy-out (`node_to_html`, `slice_to_html`) writes a task list with the same
-`data-type` / `data-checked` markup (TipTap's), and paste-in (`slice_from_html`) reads it
-back as one.
+line, `- [ ] ` with its trailing space, and the block on the next line: written after
+the marker, pulldown-cmark misreads a quote's or a nested list's later lines. A bullet
+or task list that directly follows another is written with `*` instead of `-` (and
+back), because CommonMark continues a list across blank lines when the bullet is the
+same, which would turn a bullet list and the task list after it into one list. On
+reading, a bullet list whose items all start with a marker is a `task_list`; the reader
+also finds a marker that pulldown-cmark consumes without reporting it
+(`- [ ] # Heading`). A marker on an item of an **ordered** list, or of a list where some items
+have none, has no place in the model: the strict reader refuses it
+(`Construct::TaskList`) and the lenient one keeps it as the text it was (`[ ] todo`).
+HTML copy-out (`node_to_html`, `slice_to_html`) writes a task list with the same
+`data-type` / `data-checked` markup (TipTap's), and paste-in (`slice_from_html`) reads
+it back as one.
 
 **What round-trips.** A document of the starter kit's marks and nodes written with
 `doc_to_markdown` reads back with `doc_from_markdown_strict` as the same document, and
@@ -266,24 +267,23 @@ documents. Text is escaped so it reads back as text: Markdown punctuation, a blo
 marker at a line's start, `<` (a tag or an autolink), an entity-shaped `&`, a trailing
 `#` run in a heading, and a line break inside text (written `&#10;`).
 
-**Strict reading.** `doc_from_markdown` is lenient: what it cannot represent (other
-raw HTML, unsafe URLs, footnotes, a task-list marker in an ordered or mixed list) it
-drops or keeps as text.
-`doc_from_markdown_strict` parses the same way but fails with
+**Strict reading.** `doc_from_markdown` is lenient: what it cannot represent (other raw
+HTML, unsafe URLs, footnotes, a task-list marker in an ordered or mixed list) it drops
+or keeps as text. `doc_from_markdown_strict` parses the same way but fails with
 `MarkdownError::Unsupported { construct, line, source }` on the first construct the
 lenient read would drop or degrade, naming it with a `Construct` (`InlineHtml`,
 `HtmlBlock`, `UnmatchedTag`, `Footnote`, `TaskList`, `UnsafeLink`, `UnsafeImage`,
 `UnsupportedMark`, `Other`; the enum is `#[non_exhaustive]`) and its 1-based line.
 `MarkdownError::Invalid` carries a schema validation error. Strict accepts everything
 the writer writes (`strict_reads_everything_the_writer_writes` in the fuzz holds it to
-that, losses included): a textblock of only hard breaks, written `<br>` alone on a
-line — which CommonMark reads as an HTML block — reads back as one. Inside an HTML `<table>`
-block strict refuses another tag, stray text, an unsafe `href` or `src`
-(`UnsafeLink` / `UnsafeImage`), and any attribute the import does not keep — a `style`
-other than a safe colour or `text-align`, a `colspan` above 1000, a `class`, an event
-handler, a `data-type` other than `taskList` on a `<ul>`, a `data-checked` other than
-`true`/`false` or outside a task list (`HtmlBlock`). What strict accepts, it parses exactly as the lenient reader
-does.
+that, losses included): a textblock of only hard breaks, written `<br>` alone on a line
+— which CommonMark reads as an HTML block — reads back as one. Inside an HTML `<table>`
+block strict refuses another tag, stray text, an unsafe `href` or `src` (`UnsafeLink` /
+`UnsafeImage`), and any attribute the import does not keep — a `style` other than a safe
+colour or `text-align`, a `colspan` above 1000, a `class`, an event handler, a
+`data-type` other than `taskList` on a `<ul>`, a `data-checked` other than
+`true`/`false` or outside a task list (`HtmlBlock`). What strict accepts, it parses
+exactly as the lenient reader does.
 
 **Known losses.**
 - Whitespace at the start or end of a textblock or line is stripped (CommonMark;
