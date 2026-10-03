@@ -171,8 +171,10 @@ fn ancestry_for_or_new(doc_key: u64) -> AncestryRef {
 /// Prepare `root`'s subtree for a discard, in one walk (issue #732).
 ///
 /// Every node visited loses its minting record (the discard is about to
-/// retire it). With `owner = Some(s)`, a descendant `s` does not own — one the
-/// render was handed rather than built — is pushed to `captured` instead: its
+/// retire it). With `owner = Some(s)`, a descendant recorded against a scope
+/// that is not `s` or descended from it — one the render was handed rather
+/// than built — is pushed to `captured` instead (a descendant with no record
+/// at all, minted by raw backend access, goes with the owned node above it): its
 /// record is kept and its subtree not entered, and the caller detaches it
 /// before discarding `root`, so it can be shown again. With `None`, everything
 /// under `root` is purged and nothing is captured.
@@ -201,7 +203,10 @@ pub(crate) fn sweep_for_discard(
         let record = table.minted_by.remove(&id);
         if !is_root && let Some(owner) = owner {
             let owned = match (record, last_answer) {
-                (None, _) => false,
+                // No record: raw backend access (the editor view,
+                // `parse_html`). It belongs to the owned node above it, as
+                // every nested node did before #732.
+                (None, _) => true,
                 (Some(scope), Some((last, answer))) if last == scope => answer,
                 (Some(scope), _) => {
                     let answer = table.descends_from(scope, owner);
@@ -355,6 +360,10 @@ impl RenderScope {
 
     /// Create a render scope whose nodes belong to `parent`'s render
     /// (issue #732). `None` is [`new`](Self::new).
+    ///
+    /// Name a parent only for content that lives and dies with that parent's
+    /// render: the parent's hide discards it. Content that must outlive it (a
+    /// cache) is built with [`new`](Self::new), or outside the render.
     ///
     /// Capture the parent's [`id`](Self::id) when you are handed its scope —
     /// a component's `render`, a helper's call — and pass that id to every

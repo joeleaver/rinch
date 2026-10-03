@@ -4323,7 +4323,14 @@ scope they were called from, captured once, so content built later by an effect
 or an observer still chains back. **`RenderScope::new` has no parent**, and is
 not defaulted from whatever is rendering: nodes a parentless scope mints inside a
 branch are nobody's, and a hide only detaches them — a leak, never a loss. Any
-code that builds nodes on another scope's behalf must use `with_parent`.
+code that builds nodes on another scope's behalf must use `with_parent`; content
+meant to outlive a branch (a cache) must not name the branch's scope, or the
+hide discards it under the cache. **A node with no record at all** — minted by
+raw backend access: the editor view's blocks, `parse_html` — belongs to whatever
+owned node it sits under and is discarded with it. That is how every nested node
+was treated before #732, and it includes a raw-minted handle the app captured
+and nests in branch markup: it is retired with the wrapper, exactly as on main
+(`raw_minted_nodes_732.rs` pins both).
 
 The walk is `render_scope::sweep_for_discard`: one pass over the subtree (ids
 from `get_children`, document and table borrowed once) that drops the records of
@@ -4337,11 +4344,16 @@ A scope's entry outlives the scope while a node it minted is recorded or a child
 entry names it, so a throwaway scope's nodes (a late patch, a spacer) still
 chain to its parent. A record goes when its node is discarded or replaced by
 `NodeHandle::set_inner_html`; a node that is only detached keeps it. Cost: one
-hash insert per minted node, and the sweep per hide (`shell::branch_hide` in
+hash insert per minted node, and the sweep per hide — and every plain
+`NodeHandle::discard()` sweeps its subtree too (`sweep_for_discard(self, None,
+..)`), including the editor's `ViewDesc` discards; on web each `get_children`
+there is a JS call. Measured: +9.8% instructions on a 1000-row hide (`shell::branch_hide` in
 `rinch-bench`). Pins: `reinsertion_tests` (the `*_nested_*`, `*_later_*`,
 `virtual_list_*`, `a_late_child_*`, `depth_three_*` and table-growth fixtures),
-`render_scope::ancestry_tests`, `rinch-components/tests/list_in_branch_732.rs`,
-`rinch-web/tests/{reinsertion,branch_reclaim_732}.rs`,
+`render_scope::ancestry_tests`, `rinch-core/tests/raw_minted_nodes_732.rs`,
+`rinch-editor-view/tests/editor_in_branch_732.rs`,
+`rinch-components/tests/list_in_branch_732.rs`,
+`rinch-web/tests/{reinsertion,branch_reclaim_732,editor_in_branch_732}.rs`,
 `rinch/tests/embed_drop_minting_732.rs`.
 
 **One more shape is lost on web, and only `for` can reach it: #733.** A `view`
