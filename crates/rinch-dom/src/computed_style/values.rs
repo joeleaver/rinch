@@ -836,8 +836,7 @@ impl TextAlignValue {
 /// `get_computed_styles` so an author's declaration is reported faithfully,
 /// but lay out identically to `Baseline` (no shift): those five only have a
 /// defined effect against an atomic inline (an `inline-block`/image) or a
-/// table cell, which is out of scope here — filed as a follow-up (#724's PR
-/// body names the issue).
+/// table cell, which is out of scope here — filed as #1357.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum VerticalAlignValue {
     #[default]

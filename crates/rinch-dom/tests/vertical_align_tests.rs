@@ -12,13 +12,13 @@
 //! through the public query functions and the painter). `Top`/`TextTop`/
 //! `Middle`/`Bottom`/`TextBottom` parse and round-trip through
 //! `ComputedStyle` but lay out as `Baseline` — they only have a defined effect
-//! against an atomic inline or a table cell, which is out of scope here (see
-//! [`VerticalAlignValue`]'s doc for the filed follow-up).
+//! against an atomic inline or a table cell, which is out of scope here —
+//! filed as #1357.
 //!
 //! The shift is a **post-layout glyph move**, not a Parley style (0.11.1 has
 //! no per-run baseline offset), so it does **not** grow the line box the way
-//! Chrome's does — a raised `<sup>` can paint into the line above. Known,
-//! filed alongside the five keywords above.
+//! Chrome's does — a raised `<sup>` can paint into the line above. Also
+//! #1357, alongside the five keywords above.
 //!
 //! # Where the `sub`/`super` ratios come from
 //!

@@ -562,8 +562,8 @@ pub struct InlineDecorationSpan {
 /// **Known gap:** this is a pure post-layout shift. It does not grow the line
 /// box the way Chrome's does (a raised `<sup>` can paint into the line above),
 /// because Parley computed the line's own ascent/descent with no idea the glyph
-/// would move — filed as a follow-up alongside the five `vertical-align`
-/// keywords this crate does not lay out at all.
+/// would move — filed as #1357, alongside the five `vertical-align` keywords
+/// this crate does not lay out at all.
 #[derive(Debug, Clone, Copy)]
 pub struct InlineVerticalAlignSpan {
     /// Byte range start in the IFC `text_content`.

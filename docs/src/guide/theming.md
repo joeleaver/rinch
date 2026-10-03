@@ -209,12 +209,18 @@ the 13.3333px size — as it does in a browser under the same sheet. The colours
 (`FieldText` on `Field`) are **not** copied: the theme gives form controls
 `color: inherit` on purpose, so they stay readable in dark mode.
 
-`vertical-align: sub`/`super` on `<sub>`/`<sup>` (issue #724) and list markers on
-`<li>` (issue #725) are **not** part of this: neither is a stylesheet line —
-`ComputedStyle` carries no `vertical_align` field and `DisplayValue` no
-`ListItem` — so both need property and layout work first. Until then a `<sub>`
-is smaller but not lowered, and a list item is not a `list-item` box. What
-desktop draws instead is a text marker — `•` or `N.` followed by an en space —
+`vertical-align: sub`/`super` on `<sub>`/`<sup>` is now part of this (issue
+#724): `ComputedStyle::vertical_align` plus its `ifc::vertical_align_shift_px`
+consumer shift the glyph post-layout, calibrated against Chrome 153 and the
+bundled Inter at a 16px parent font-size (exact only there — see that doc for
+the numbers). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
+lay out as `baseline`, and the shift does not grow the line box the way
+Chrome's does, both filed as #1357.
+
+List markers on `<li>` (issue #725) are **not** part of this: it is not a
+stylesheet line — `DisplayValue` has no `ListItem` — so it needs layout work
+first, and a list item is not a `list-item` box. What desktop draws instead is
+a text marker — `•` or `N.` followed by an en space —
 generated as a span at the start of every `<li>` whose parent is a `<ul>` or
 `<ol>`, whose `list-style-type` is not `none` and which has no `::before` of
 its own. It is inline content of the
