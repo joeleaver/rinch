@@ -177,6 +177,27 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 
 `SurfaceKeyData` contains `key`, `code`, `ctrl`, `shift`, `alt`, `meta`. `key` is spelled like the browser's `KeyboardEvent.key` on both backends, so the space bar is `key == " "` and `code == "Space"`.
 
+**A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
+keeps receiving every `KeyDown`/`KeyUp` exactly as above — that delivery is unaffected.
+`set_key_handler(handler: impl Fn(&SurfaceKeyData) -> bool)` is a separate, additive
+registration asked *after*: should this key stop at the surface? Leave it unset — the
+default — and the surface claims nothing, so a host's own `window`-level keybindings (and,
+on the web, the browser's own reload/find/… shortcuts) keep working the moment the canvas
+is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I) and Tab:
+
+```rust
+surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space"));
+```
+
+The document-level keyboard interceptor (`set_keyboard_interceptor`) is unaffected either
+way — it already sees every key before a focused surface does, on both backends.
+
+**On the web, an unclaimed key also keeps the browser's default action** — no longer
+`preventDefault()`ed just because the surface is focused, matching an unfocused `<canvas>`.
+Space, PageUp/Down and the arrow keys can scroll the page, and Tab leaves the canvas. A web
+game steering with any of those must claim them via `set_key_handler`, or the page scrolls
+under it.
+
 ### Web (canvas viewport)
 
 The **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted. On the web the **browser** composites, so rinch only creates and manages a real `<canvas>` "viewport hole" sized by layout; the **app owns the GPU context** (rinch links no wgpu on web). This mirrors desktop symmetrically: **desktop** = rinch owns the window and you submit frames; **web** = you own the canvas surface.
@@ -231,6 +252,7 @@ Notes:
 | `writer()` | Get a `SurfaceWriter` for CPU pixel submission |
 | `gpu_registrar()` | Get a `GpuTextureRegistrar` for GPU texture compositing |
 | `set_event_handler(handler)` | Set input event callback (main thread closure) |
+| `set_key_handler(handler)` | `Fn(&SurfaceKeyData) -> bool`; whether a key already delivered to `set_event_handler` should stop here instead of continuing to a window-level host keybinding (web) or DevTools/inspect/Tab (desktop). Unset: claims nothing (issue #482) |
 | `set_render_callback(cb)` | Per-frame `FnMut(&SurfaceWriter, w, h)` — drives `requestAnimationFrame` on web |
 | `set_resize_callback(cb)` | `FnMut(w, h)` fired on backing-size change (physical px) — reconfigure a GPU surface |
 | `layout_size()` | Get current physical `(width, height)` (web: CSS px × devicePixelRatio) |
