@@ -66,18 +66,24 @@ impl RenderScope {
     /// is the caller's, may come back on the next show, and is only detached
     /// ([`NodeHandle::remove`]).
     ///
-    /// **Only the content root is asked**, and that is deliberate: discarding is
-    /// recursive, so a root this scope built takes its whole subtree with it —
-    /// including nodes minted by *nested* scopes (a `for`'s rows, an inner
-    /// branch), which is exactly right, since nothing outside can be holding
-    /// them either.
+    /// **Only the content root is asked here**, and that is deliberate:
+    /// discarding is recursive, so a root this scope built takes its whole
+    /// subtree with it — including nodes minted by *nested* scopes (a `for`'s
+    /// rows, an inner branch), which is exactly right, since nothing outside
+    /// can be holding them either.
     ///
-    /// The one shape it gets wrong is a captured handle nested **inside**
-    /// branch-built markup (`if open { div { {panel} } }`): the `div` is this
-    /// scope's, the recursion reaches `panel`, and `panel` is retired. That is
-    /// issue #732, it is the behaviour on both backends before #719 as well as
-    /// after, and `a_captured_handle_nested_inside_fresh_markup_is_still_lost`
-    /// pins it so a future fix is deliberate rather than accidental.
+    /// A captured handle nested **inside** branch-built markup
+    /// (`if open { div { {panel} } }`) used to get this wrong: the `div` is
+    /// this scope's, the recursion reached straight through to `panel`, and
+    /// `panel` was retired with the wrapper (issue #732). It no longer does —
+    /// every caller that discards a content root this scope created first
+    /// calls [`collect_captured_descendants`](super::collect_captured_descendants)
+    /// (or the convenience
+    /// [`discard_owned_preserving_captured`](super::discard_owned_preserving_captured)
+    /// that wraps it) over that root, which stops descending the moment a
+    /// node answers `created` as `false` and detaches it rather than letting
+    /// the discard reach it. A caller must do this **before** disposing the
+    /// scope, since the walk itself reads `created`.
     ///
     /// **The verb is chosen before the scope is disposed**, so a cleanup that
     /// re-parents a scope-built node while disposal runs cannot rescue it: the

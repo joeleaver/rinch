@@ -826,12 +826,13 @@ hidden. That is guaranteed on **both** backends — issue #719 was a period duri
 which `rinch-web` lost the subtree on the first hide, silently, while desktop
 kept it.
 
-**Yield the handle as the branch's whole body.** The subtree is kept because the
-branch closure was *handed* it rather than building it, and that is asked of the
-branch's top-level result only. Wrapping it in markup the branch builds —
-`if open.get() { div { {panel.clone()} } }` — puts it inside something the branch
-owns, and it is thrown away with the wrapper (issue #732). Put the wrapper
-outside the `if`.
+**The subtree is kept wherever it sits in the branch's markup**, including
+nested inside something the branch builds itself —
+`if open.get() { div { {panel.clone()} } }` — which used to throw it away with
+the wrapper (issue #732). The wrapper `div` is the branch's own and is rebuilt
+on every show and discarded on every hide as usual; `panel` is detached rather
+than discarded along with it, and the next show puts the same `panel` back
+inside a fresh wrapper.
 
 Two more things to know. The branch's `RenderScope` is disposed on every hide,
 so effects *created inside the branch closure* stop; put the reactive wiring in

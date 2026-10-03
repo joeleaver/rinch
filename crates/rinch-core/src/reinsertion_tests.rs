@@ -41,7 +41,7 @@
 //! gave signals and effects, applied to nodes.
 
 use crate::dom::mock::MockDomDocument;
-use crate::dom::{DomDocument, NodeHandle, RenderScope};
+use crate::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
 use crate::reactive::Signal;
 use crate::{for_each_dom_typed, match_dom, show_dom};
 use std::cell::RefCell;
@@ -69,6 +69,25 @@ fn body_tags(doc: &Rc<RefCell<MockDomDocument>>) -> Vec<String> {
         .into_iter()
         .filter_map(|c| d.tag_name(c))
         .collect()
+}
+
+/// The one **element** child of `parent` — every marker-based helper also
+/// leaves its own comment marker as a permanent sibling, so "the mounted
+/// wrapper" is not simply `get_children(parent)[0]`. Panics if there isn't
+/// exactly one.
+fn mounted_element(doc: &Rc<RefCell<MockDomDocument>>, parent: NodeId) -> NodeId {
+    let d = doc.borrow();
+    let elements: Vec<NodeId> = d
+        .get_children(parent)
+        .into_iter()
+        .filter(|&c| d.tag_name(c).is_some())
+        .collect();
+    assert_eq!(
+        elements.len(),
+        1,
+        "expected exactly one mounted element child, found {elements:?}"
+    );
+    elements[0]
 }
 
 // ── the primitive: remove detaches, discard retires ─────────────────────────
@@ -590,30 +609,29 @@ fn a_memoising_component_render_fn_keeps_its_subtree() {
     assert_eq!(body_tags(&doc), ["article"], "#719: and be re-inserted");
 }
 
-// ── the documented gap ──────────────────────────────────────────────────────
+// ── #732: a captured handle nested inside branch-built markup ──────────────
 
-/// **Pins a known limitation, not a desired behaviour** (issue #732).
+/// A captured handle nested inside branch-built markup — `if open { div {
+/// {panel} } }` — is detached (not discarded) when the wrapper hides, and the
+/// next show puts it back (issue #732).
 ///
-/// Ownership is asked of the **content root only**, because discarding is
-/// recursive: a root the branch built takes its whole subtree with it, which is
-/// what correctly reclaims a nested `for`'s rows and an inner branch's markup.
-/// The cost is that a *captured* handle nested inside branch-built markup —
-/// `if open { div { {panel} } }` — is inside that recursion and is retired with
-/// the wrapper.
-///
-/// This is the behaviour on both backends before #719 as well as after, so it is
-/// not a regression; the fixture exists so that closing #732 is a deliberate
-/// change with a test to update, rather than a silent side effect. The
-/// unwrapped form (`if open { {panel} }`) is the shape #654 reported and it
-/// works — `show_dom_can_re_show_a_captured_handle` is the contrast.
+/// Before the fix, `discard`ing the wrapper was recursive and reached straight
+/// through to `panel`, retiring it with the wrapper; this is the fixture that
+/// used to pin that as a known limitation
+/// (`a_captured_handle_nested_inside_fresh_markup_is_still_lost`, now deleted
+/// per its own instruction). The unwrapped form (`if open { {panel} }`) is the
+/// shape #654 reported and already worked —
+/// `show_dom_can_re_show_a_captured_handle` is the contrast.
 #[test]
-fn a_captured_handle_nested_inside_fresh_markup_is_still_lost() {
+fn show_dom_can_re_show_a_captured_handle_nested_inside_fresh_markup() {
     let doc = doc();
     let mut sc = scope(&doc);
     let body = body_handle(&doc);
 
     let panel = sc.create_element("section");
     let panel_id = panel.node_id();
+    let inner = sc.create_element("p");
+    panel.append_child(&inner);
 
     let visible = Signal::new(true);
     let captured = panel.clone();
@@ -632,11 +650,292 @@ fn a_captured_handle_nested_inside_fresh_markup_is_still_lost() {
     assert_eq!(body_tags(&doc), ["div"], "precondition: shown");
 
     visible.set(false);
+    assert_eq!(
+        doc.borrow().tag_name(panel_id).as_deref(),
+        Some("section"),
+        "#732: the nested captured handle must survive the wrapper's discard — \
+         detached, not retired"
+    );
+    assert_eq!(
+        body_tags(&doc),
+        Vec::<String>::new(),
+        "precondition: hidden — the wrapper itself IS discarded"
+    );
+
+    visible.set(true);
+    assert_eq!(
+        body_tags(&doc),
+        ["div"],
+        "#732: re-showing rebuilds a fresh wrapper"
+    );
+    let new_wrap = mounted_element(&doc, body.node_id());
+    assert_eq!(
+        doc.borrow().get_children(new_wrap),
+        vec![panel_id],
+        "#732: the fresh wrapper holds the SAME captured panel, with its \
+         own children intact"
+    );
+    assert_eq!(
+        panel.children().len(),
+        1,
+        "#732: the captured panel's own subtree was never touched"
+    );
+
+    // Twice, so the fixture is not sitting on a single toggle.
+    visible.set(false);
+    visible.set(true);
+    assert_eq!(
+        doc.borrow().tag_name(panel_id).as_deref(),
+        Some("section"),
+        "#732: and on every later toggle"
+    );
+}
+
+/// The nested-wrapper shape must not grow the document either (issue #732):
+/// every hide discards a *fresh* wrapper and detaches the *same* captured
+/// panel, so nothing accumulates on either side.
+#[test]
+fn a_nested_captured_handle_does_not_grow_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let panel = sc.create_element("section");
+    let visible = Signal::new(false);
+    let captured = panel.clone();
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            let text = s.create_text("hi");
+            wrap.append_child(&text);
+            wrap.append_child(&captured);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    let delta = growth(&doc, |i| visible.set(i % 2 == 0), 200);
+    assert_eq!(
+        delta, 0,
+        "#732: a nested captured handle must not grow the document — leaked {delta} nodes"
+    );
+}
+
+/// `match_dom`'s twin: an arm's own markup wraps a captured handle.
+#[test]
+fn match_dom_can_re_show_a_captured_arm_nested_inside_fresh_markup() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let panel = sc.create_element("section");
+    let panel_id = panel.node_id();
+    let other = sc.create_element("aside");
+
+    let arm = Signal::new(0usize);
+    let captured = panel.clone();
+    let other_arm = other.clone();
+    match_dom(
+        &mut sc,
+        &body,
+        move || arm.get(),
+        vec![
+            Box::new(move |s: &mut RenderScope| {
+                let wrap = s.create_element("div");
+                wrap.append_child(&captured);
+                wrap
+            }) as Box<dyn Fn(&mut RenderScope) -> NodeHandle>,
+            Box::new(move |_: &mut RenderScope| other_arm.clone()),
+        ],
+    );
+    assert_eq!(body_tags(&doc), ["div"]);
+
+    arm.set(1);
+    assert_eq!(
+        doc.borrow().tag_name(panel_id).as_deref(),
+        Some("section"),
+        "#732: switching away must detach the nested captured panel, not retire it"
+    );
+    assert_eq!(body_tags(&doc), ["aside"]);
+
+    arm.set(0);
+    assert_eq!(
+        body_tags(&doc),
+        ["div"],
+        "#732: switching back rebuilds the wrapper"
+    );
+    let wrap_id = mounted_element(&doc, body.node_id());
+    assert_eq!(
+        doc.borrow().get_children(wrap_id),
+        vec![panel_id],
+        "#732: holding the SAME captured panel"
+    );
+}
+
+/// `reactive_component_dom`'s twin: a re-rendering `render_fn` wraps a
+/// captured handle in fresh markup.
+#[test]
+fn a_rerendering_component_preserves_a_nested_captured_handle() {
+    use crate::dom::reactive_component_dom;
+
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let panel = sc.create_element("section");
+    let panel_id = panel.node_id();
+
+    let version = Signal::new(0u32);
+    let captured = panel.clone();
+    reactive_component_dom(&mut sc, &body, move |s: &mut RenderScope| {
+        let _ = version.get();
+        let wrap = s.create_element("div");
+        wrap.append_child(&captured);
+        wrap
+    });
+    assert_eq!(body_tags(&doc), ["div"], "precondition: mounted");
+
+    version.set(1);
+    assert_eq!(
+        doc.borrow().tag_name(panel_id).as_deref(),
+        Some("section"),
+        "#732: a re-render must detach the nested captured panel, not retire it \
+         with the previous output's wrapper"
+    );
+    assert_eq!(body_tags(&doc), ["div"], "exactly one output is mounted");
+    let wrap_id = mounted_element(&doc, body.node_id());
+    assert_eq!(
+        doc.borrow().get_children(wrap_id),
+        vec![panel_id],
+        "#732: the fresh wrapper holds the SAME captured panel"
+    );
+}
+
+/// `for_each_dom_typed`'s twin: a `view` that builds fresh markup around a
+/// handle it was handed (not one it built itself), per row.
+#[test]
+fn a_for_row_preserves_a_nested_captured_handle_across_removal_and_reinsertion() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    // Built once, outside any row scope — the row's `view` wraps it in fresh
+    // per-row markup rather than handing it straight back.
+    let panel = sc.create_element("article");
+    let panel_id = panel.node_id();
+
+    let rows = Signal::new(vec![1u32]);
+    let captured = panel.clone();
+    for_each_dom_typed(
+        &mut sc,
+        &body,
+        move || rows.get(),
+        |n: &u32| n.to_string(),
+        move |_n: u32, s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            wrap.append_child(&captured);
+            wrap
+        },
+    );
+    assert_eq!(body_tags(&doc), ["div"], "precondition: mounted");
+
+    rows.set(vec![]);
+    assert_eq!(
+        doc.borrow().tag_name(panel_id).as_deref(),
+        Some("article"),
+        "#732: dropping the row must detach its nested captured panel, not \
+         retire it with the row's own wrapper"
+    );
+    assert_eq!(
+        body_tags(&doc),
+        Vec::<String>::new(),
+        "precondition: removed"
+    );
+
+    rows.set(vec![1u32]);
+    assert_eq!(
+        body_tags(&doc),
+        ["div"],
+        "#732: the row comes back with a fresh wrapper"
+    );
+    let wrap_id = mounted_element(&doc, body.node_id());
+    assert_eq!(
+        doc.borrow().get_children(wrap_id),
+        vec![panel_id],
+        "#732: holding the SAME captured panel"
+    );
+}
+
+// ── #732 cost: the walk must be bounded by the discarded subtree ───────────
+
+/// `collect_captured_descendants`' walk must cost proportionally to the
+/// subtree being discarded, not to the whole document (issue #732's own
+/// design note 2 called out "a full subtree walk ... paid by every app
+/// whether or not it ever captures a handle" as the risk to avoid).
+///
+/// Measured via [`MockDomDocument::__get_children_calls`]: an unrelated
+/// sibling subtree, never touched by the branch, must not move the call
+/// count at all when it grows from 10 nodes to 2000.
+#[test]
+fn the_capture_walk_is_bounded_by_the_discarded_subtree_not_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let panel = sc.create_element("section");
+    let inner = sc.create_element("p");
+    panel.append_child(&inner);
+
+    let visible = Signal::new(true);
+    let captured = panel.clone();
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            wrap.append_child(&captured);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    // An unrelated sibling subtree, sized by `width` — not part of the
+    // branch, so a bounded walk must never reach it.
+    let add_elsewhere = |sc: &mut RenderScope, width: usize| {
+        for _ in 0..width {
+            let leaf = sc.create_element("i");
+            body.append_child(&leaf);
+        }
+    };
+
+    add_elsewhere(&mut sc, 10);
+    let before_small = doc.borrow().__get_children_calls();
+    visible.set(false);
+    visible.set(true);
+    let small_delta = doc.borrow().__get_children_calls() - before_small;
+
+    add_elsewhere(&mut sc, 2000);
+    let before_large = doc.borrow().__get_children_calls();
+    visible.set(false);
+    visible.set(true);
+    let large_delta = doc.borrow().__get_children_calls() - before_large;
 
     assert_eq!(
-        doc.borrow().tag_name(panel_id),
-        None,
-        "#732: a captured handle inside branch-built markup goes with the wrapper. \
-         If this now answers Some(..), #732 is fixed — delete the fixture, do not relax it"
+        small_delta, large_delta,
+        "#732: the capture walk's cost must depend only on the discarded \
+         subtree, not on an unrelated sibling subtree elsewhere in the \
+         document — {small_delta} get_children calls with a 10-node sibling \
+         subtree vs {large_delta} with a 2000-node one"
+    );
+    // A positive control: the count really does move with the DISCARDED
+    // subtree's own size, so a walk that silently did nothing (and so could
+    // never fail the equality above either) is caught too.
+    assert!(
+        small_delta > 0,
+        "positive control: the walk must call get_children at least once"
     );
 }

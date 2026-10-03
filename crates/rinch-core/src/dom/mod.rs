@@ -1128,6 +1128,57 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 /// generated `render_fn` does exactly that: prop closures tracked, children +
 /// `Component::render` untracked.
 ///
+/// Collect every descendant of `root` that `scope` did **not** create,
+/// stopping at the first one found on each branch (issue #732).
+///
+/// A node this scope minted may itself hold a *captured* `NodeHandle` — one
+/// the branch closure was handed rather than built — nested arbitrarily deep
+/// inside otherwise branch-built markup (`if open { div { {panel} } } }`).
+/// Discarding is recursive, so such a node has to be pulled out of the tree
+/// (detached, not retired) **before** the discard reaches it, or it goes with
+/// the wrapper.
+///
+/// The walk never descends into a node it finds non-owned: that subtree was
+/// never reached by this scope's render in the first place (it is some other
+/// scope's, or no scope's at all — a plain captured handle), so anything
+/// under it is not this call's business either. That bound is what keeps the
+/// cost proportional to the discarded subtree rather than to the whole
+/// document: a nested `for`'s rows or an inner branch's own markup, which
+/// *are* owned (minted by a child scope the outer discard's recursion is
+/// right to reach — see [`RenderScope::created`]), are walked and left for
+/// the discard; only a genuinely captured node is pulled out, and pulling it
+/// out stops the walk from going any deeper there.
+pub(crate) fn collect_captured_descendants(
+    root: &NodeHandle,
+    scope: &RenderScope,
+    out: &mut Vec<NodeHandle>,
+) {
+    for child in root.children() {
+        if scope.created(child.node_id()) {
+            collect_captured_descendants(&child, scope, out);
+        } else {
+            out.push(child);
+        }
+    }
+}
+
+/// Discard `root` — which `scope` created — except for any descendant it did
+/// **not** create (issue #732). Such a descendant is detached first, so the
+/// caller may show it again; the discard then proceeds over whatever remains.
+///
+/// Call this in place of a bare `root.discard()` wherever `root` was found
+/// owned by `scope` and `scope` has not been disposed yet — every marker-based
+/// reactive helper reads `created` before disposing the old scope already, for
+/// exactly this reason (see `show_dom`'s `old_scope` comment).
+pub(crate) fn discard_owned_preserving_captured(root: &NodeHandle, scope: &RenderScope) {
+    let mut captured = Vec::new();
+    collect_captured_descendants(root, scope, &mut captured);
+    for node in captured {
+        node.remove();
+    }
+    root.discard();
+}
+
 /// Release the scratch container an `rsx!` component site builds its children
 /// in (issue #719).
 ///
@@ -1144,14 +1195,17 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 /// by the same ownership rule the reactive helpers use, applied one level down:
 /// a leftover the site built is discarded, a leftover the site was *handed*
 /// (`Card { {captured.clone()} }` where `Card` ignores its children) is only
-/// detached, so a caller's subtree is never retired out from under it.
+/// detached, so a caller's subtree is never retired out from under it. A
+/// leftover the site built may itself hold a captured handle nested further
+/// in (issue #732), so a discarded leftover goes by
+/// [`discard_owned_preserving_captured`] rather than a bare `discard`.
 ///
 /// Call it **after** `Component::render`, so the children it adopted have
 /// already been re-parented out.
 pub fn release_scratch_container(scope: &RenderScope, container: &NodeHandle) {
     for leftover in container.children() {
         if scope.created(leftover.node_id()) {
-            leftover.discard();
+            discard_owned_preserving_captured(&leftover, scope);
         } else {
             leftover.remove();
         }
@@ -1199,18 +1253,29 @@ where
         // creates it through this scope, so the previous output is `discard`ed
         // and the backend lets go of it. A `render_fn` that memoises and hands
         // back a subtree it built once is supported too: that node is not this
-        // scope's, so it is only detached and the next run re-inserts it.
+        // scope's, so it is only detached and the next run re-inserts it. A
+        // *nested* captured handle (issue #732) has to be found while `old` can
+        // still answer `created`, before it is disposed below.
+        let mut captured: Vec<NodeHandle> = Vec::new();
         let doomed: Vec<(NodeHandle, bool)> = cc
             .borrow_mut()
             .drain(..)
             .map(|node| {
                 let owned = old.as_ref().is_some_and(|s| s.created(node.node_id()));
+                if owned && let Some(s) = old.as_ref() {
+                    collect_captured_descendants(&node, s, &mut captured);
+                }
                 (node, owned)
             })
             .collect();
 
         if let Some(old) = old {
             old.dispose();
+        }
+        // Detach every captured descendant before any discard below can reach
+        // it (issue #732).
+        for node in captured {
+            node.remove();
         }
         // Removal of either kind cancels the subtree's transitions and
         // animations in the document implementation (#699); stamping inline

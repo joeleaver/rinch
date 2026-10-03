@@ -274,13 +274,31 @@ struct ItemState {
 pub(crate) struct ParkedRow {
     node: NodeHandle,
     owned: bool,
+    /// Every descendant of `node` the row's own scope did **not** create,
+    /// found while the scope could still answer `created` — issue #732. A
+    /// `view` that memoises a *nested* captured handle (`div { {panel} }`,
+    /// built by a closure the row's scope did not run) would otherwise have
+    /// it retired with the row's own branch-built markup, because discarding
+    /// is recursive. Only populated for an owned row — a row that is itself
+    /// only detached is never discarded, so nothing under it needs pulling
+    /// out.
+    captured: Vec<NodeHandle>,
     scope: Option<RenderScope>,
 }
 
 impl ParkedRow {
     pub(crate) fn new(node: NodeHandle, scope: Option<RenderScope>) -> Self {
         let owned = scope.as_ref().is_some_and(|s| s.created(node.node_id()));
-        Self { node, owned, scope }
+        let mut captured = Vec::new();
+        if owned && let Some(s) = scope.as_ref() {
+            crate::dom::collect_captured_descendants(&node, s, &mut captured);
+        }
+        Self {
+            node,
+            owned,
+            captured,
+            scope,
+        }
     }
 }
 
@@ -313,7 +331,7 @@ pub(crate) fn release_parked(
     let _release = ReleaseNodes {
         nodes: parked
             .iter()
-            .map(|row| (row.node.clone(), row.owned))
+            .map(|row| (row.node.clone(), row.owned, row.captured.clone()))
             .collect(),
         shown: Some(shown),
     };
@@ -327,7 +345,7 @@ pub(crate) fn release_parked(
 /// The node half of [`release_parked`], run when it is dropped — at the end of
 /// the call, or on unwind out of a row's cleanup.
 struct ReleaseNodes<F: FnOnce() -> std::collections::HashSet<NodeId>> {
-    nodes: Vec<(NodeHandle, bool)>,
+    nodes: Vec<(NodeHandle, bool, Vec<NodeHandle>)>,
     shown: Option<F>,
 }
 
@@ -340,11 +358,16 @@ impl<F: FnOnce() -> std::collections::HashSet<NodeId>> Drop for ReleaseNodes<F> 
         // Either verb cancels the subtree's transitions and animations in the
         // document implementation (#699); stamping inline `transition: none`
         // here disarmed that permanently (#704).
-        for (node, owned) in self.nodes.drain(..) {
+        for (node, owned, captured) in self.nodes.drain(..) {
             if shown.contains(&node.node_id()) {
                 continue;
             }
             if owned {
+                // Detach every captured descendant first (issue #732): the
+                // discard below is recursive and must not reach it.
+                for captured_node in captured {
+                    captured_node.remove();
+                }
                 node.discard();
             } else {
                 node.remove();

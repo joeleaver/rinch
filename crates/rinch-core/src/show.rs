@@ -204,7 +204,12 @@ where
             //
             // Read before the dispose below, not after: `dispose` runs user
             // code, and the ownership answer must be the one that was true when
-            // the branch rendered.
+            // the branch rendered. A content root the branch built may itself
+            // hold a *captured* handle nested further in (issue #732); that
+            // has to be found while `old_scope` is still alive too, since
+            // discarding is recursive and the capture must come out of the
+            // tree before the discard reaches it.
+            let mut captured: Vec<NodeHandle> = Vec::new();
             let doomed: Vec<(NodeHandle, bool)> = current_content_clone
                 .borrow_mut()
                 .drain(..)
@@ -212,6 +217,9 @@ where
                     let owned = old_scope
                         .as_ref()
                         .is_some_and(|s| s.created(node.node_id()));
+                    if owned && let Some(s) = old_scope.as_ref() {
+                        crate::dom::collect_captured_descendants(&node, s, &mut captured);
+                    }
                     (node, owned)
                 })
                 .collect();
@@ -220,6 +228,12 @@ where
             // effects are cleaned up first.
             if let Some(old_scope) = old_scope {
                 old_scope.dispose();
+            }
+
+            // Detach every captured descendant before any discard below can
+            // reach it (issue #732).
+            for node in captured {
+                node.remove();
             }
 
             // Removal of either kind cancels the subtree's transitions and

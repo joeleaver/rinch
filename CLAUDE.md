@@ -4308,12 +4308,36 @@ It falls out of that, with no special cases:
 | a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
 | a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
 
-Ownership is asked of the **content root only**. That is what makes the nested
-case above right, and it costs one shape: a captured handle *inside*
-branch-built markup (`if open { div { {panel} } }`) is inside the recursion and
-goes with the wrapper. That is **#732**, it behaved the same way before #719,
-and `reinsertion_tests::a_captured_handle_nested_inside_fresh_markup_is_still_lost`
-pins it.
+Ownership is asked of the **content root only**, but discarding a root the
+scope minted does not blindly take its whole subtree with it any more
+(**#732**). Before discarding, each of the four helpers walks the content
+root's subtree (`rinch_core::dom::collect_captured_descendants`) and detaches —
+never discards — the first non-owned node on every branch, without descending
+into it further (that subtree is not this scope's business either, having
+never been reached by a render this scope ran). So a captured handle *nested
+inside* branch-built markup (`if open { div { {panel} } }`) survives the
+wrapper's discard: `panel` comes out of the tree before the discard reaches it,
+and the next show rebuilds a fresh wrapper around the same `panel`. The walk's
+cost is bounded by the discarded subtree, not by the document —
+`reinsertion_tests::the_capture_walk_is_bounded_by_the_discarded_subtree_not_the_document`
+measures it via `MockDomDocument::__get_children_calls`.
+
+The walk has to run **before** the branch's old `RenderScope` is disposed —
+`created` is the scope's own bookkeeping, gone once `dispose()` consumes it —
+so `show_dom`/`match_dom`/`reactive_component_dom` collect the captured
+descendants in the same pass that already reads `created` for the content
+root, ahead of the existing "dispose old scope before touching DOM nodes"
+step; the actual detach happens after disposal, alongside the content root's
+own discard/remove. `for_each_dom_typed`'s parked rows do the same inside
+`ParkedRow::new`, while a row's scope is still alive, and carry the collected
+list alongside the row to `release_parked`.
+`reinsertion_tests::show_dom_can_re_show_a_captured_handle_nested_inside_fresh_markup`,
+its `match_dom`/`reactive_component_dom`/`for_each_dom_typed` twins, and
+`crates/rinch-web/tests/reinsertion.rs`'s
+`a_captured_handle_nested_inside_branch_built_markup_comes_back` are the pins;
+the old pinned-limitation fixture
+(`a_captured_handle_nested_inside_fresh_markup_is_still_lost`) is gone per its
+own instruction.
 
 **One more shape is lost on web, and only `for` can reach it: #733.** A `view`
 closure that builds *lazily through the row's own scope* and caches afterwards

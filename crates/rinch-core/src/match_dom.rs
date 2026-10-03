@@ -130,7 +130,10 @@ where
             // #719): an arm's own markup is `discard`ed so the backend can let
             // go of it, a *captured* `NodeHandle` the arm merely returned is
             // detached so switching back puts the same subtree in place. Read
-            // before the dispose — see the matching note in `show_dom`.
+            // before the dispose — see the matching note in `show_dom`. A
+            // *nested* captured handle (issue #732) must be found the same
+            // way, while `old_scope` can still answer `created`.
+            let mut captured: Vec<NodeHandle> = Vec::new();
             let doomed: Vec<(NodeHandle, bool)> = content_clone
                 .borrow_mut()
                 .drain(..)
@@ -138,12 +141,21 @@ where
                     let owned = old_scope
                         .as_ref()
                         .is_some_and(|s| s.created(node.node_id()));
+                    if owned && let Some(s) = old_scope.as_ref() {
+                        crate::dom::collect_captured_descendants(&node, s, &mut captured);
+                    }
                     (node, owned)
                 })
                 .collect();
 
             if let Some(old_scope) = old_scope {
                 old_scope.dispose();
+            }
+
+            // Detach every captured descendant before any discard below can
+            // reach it (issue #732).
+            for node in captured {
+                node.remove();
             }
 
             // Removal of either kind cancels the subtree's transitions and
