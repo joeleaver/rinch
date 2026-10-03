@@ -907,3 +907,64 @@ impl Default for UpdateBatch {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod ancestry_tests {
+    use super::*;
+    use crate::dom::mock::MockDomDocument;
+
+    fn doc() -> Rc<RefCell<dyn DomDocument>> {
+        Rc::new(RefCell::new(MockDomDocument::new()))
+    }
+
+    /// A scope that minted nothing is still a link in its children's chains:
+    /// dropping it must not drop its entry while a child entry names it, or
+    /// what the child builds later stops belonging to the grandparent.
+    #[test]
+    fn a_dropped_scope_that_minted_nothing_still_links_its_child_to_the_owner() {
+        let doc = doc();
+        let body = doc.borrow().body();
+        let mut owner = RenderScope::new(doc.clone(), body);
+        let middle = RenderScope::with_parent(doc.clone(), body, Some(owner.id()));
+        let mut child = RenderScope::with_parent(doc.clone(), body, Some(middle.id()));
+        drop(middle);
+
+        let root = owner.create_element("div");
+        root.append_child(&child.create_element("i"));
+        let mut captured = Vec::new();
+        sweep_for_discard(&root, Some(owner.id()), &mut captured);
+        assert!(
+            captured.is_empty(),
+            "the child's node was read as captured: the dropped middle scope's \
+             entry went while the child still named it"
+        );
+    }
+
+    /// An id recorded again without a purge in between (a backend that reuses
+    /// ids, through a route that did not purge) moves the record to the new
+    /// minting scope, and the old scope's entry lets go of it.
+    #[test]
+    fn a_reminted_id_releases_the_previous_minting_scope() {
+        let doc = doc();
+        let body = doc.borrow().body();
+        // Keeps the document's tables alive across the two scopes below.
+        let _anchor = RenderScope::new(doc.clone(), body);
+        let before = __scope_parents_len();
+        let mut first = RenderScope::new(doc.clone(), body);
+        first.own(NodeId(1_000_000));
+        drop(first);
+        assert_eq!(
+            __scope_parents_len(),
+            before + 1,
+            "precondition: a dropped scope's entry stays while its node is recorded"
+        );
+        let mut second = RenderScope::new(doc.clone(), body);
+        second.own(NodeId(1_000_000));
+        assert_eq!(
+            __scope_parents_len(),
+            before + 1,
+            "the first scope's entry was kept for a record that no longer names it"
+        );
+        drop(second);
+    }
+}
