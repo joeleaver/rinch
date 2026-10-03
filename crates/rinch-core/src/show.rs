@@ -230,7 +230,7 @@ where
                         .as_ref()
                         .is_some_and(|s| s.created(node.node_id()));
                     if owned && let Some(s) = old_scope.as_ref() {
-                        crate::dom::collect_captured_descendants(&node, s, &mut captured);
+                        crate::dom::sweep_for_discard(&node, Some(s.id()), &mut captured);
                     }
                     (node, owned)
                 })
@@ -253,7 +253,7 @@ where
             // `transition: none` here disarmed it permanently (#704).
             for (node, owned) in doomed {
                 if owned {
-                    node.discard();
+                    node.discard_swept();
                 } else {
                     node.remove();
                 }

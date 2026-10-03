@@ -33,7 +33,9 @@ use rinch_core::dom::{NodeHandle, RenderScope, on_child_inserted, on_child_remov
 /// container's own scope is a `&mut` borrow that ended when `render` returned.
 /// Nothing here creates a reactive resource, so the scope is a place to mint
 /// nodes from and nothing more. It holds only a `Weak` to the document, so a
-/// registered observer never keeps a document alive.
+/// registered observer never keeps a document alive. Its parent is the
+/// container's scope (issue #732), so what the patch builds belongs to the
+/// container's render: a branch holding the container reclaims it on a hide.
 pub fn adopt_late_children(
     scope: &RenderScope,
     root: &NodeHandle,
@@ -41,6 +43,7 @@ pub fn adopt_late_children(
     patch: impl Fn(&NodeHandle, &mut RenderScope) + 'static,
 ) {
     let doc = scope.doc_weak();
+    let owner = scope.id();
     let watched = root.clone();
     let root_id = root.node_id();
     on_child_inserted(root, move |inserted| {
@@ -50,7 +53,7 @@ pub fn adopt_late_children(
         let Some(doc) = doc.upgrade() else {
             return;
         };
-        let mut scope = RenderScope::new(doc, root_id);
+        let mut scope = RenderScope::with_parent(doc, root_id, Some(owner));
         patch(inserted, &mut scope);
     });
 }
@@ -76,6 +79,7 @@ pub fn adopt_child_removals(
     patch: impl Fn(&mut RenderScope) + 'static,
 ) {
     let doc = scope.doc_weak();
+    let owner = scope.id();
     let watched = root.clone();
     let root_id = root.node_id();
     on_child_removed(root, move |vacated| {
@@ -85,7 +89,7 @@ pub fn adopt_child_removals(
         let Some(doc) = doc.upgrade() else {
             return;
         };
-        let mut scope = RenderScope::new(doc, root_id);
+        let mut scope = RenderScope::with_parent(doc, root_id, Some(owner));
         patch(&mut scope);
     });
 }

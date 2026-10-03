@@ -76,7 +76,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::dom::{NodeHandle, NodeId, RenderScope};
+use crate::dom::{NodeHandle, NodeId, RenderScope, ScopeId};
 use crate::element::ForItem;
 use crate::reactive::Effect;
 use crate::reconcile::diff_keyed;
@@ -273,32 +273,20 @@ struct ItemState {
 /// `rinch-web`, a wrong one costs a subtree someone can still show.
 pub(crate) struct ParkedRow {
     node: NodeHandle,
-    owned: bool,
-    /// Every descendant of `node` the row's own scope did **not** create,
-    /// found while the scope could still answer `created` — issue #732. A
-    /// `view` that memoises a *nested* captured handle (`div { {panel} }`,
-    /// built by a closure the row's scope did not run) would otherwise have
-    /// it retired with the row's own branch-built markup, because discarding
-    /// is recursive. Only populated for an owned row — a row that is itself
-    /// only detached is never discarded, so nothing under it needs pulling
-    /// out.
-    captured: Vec<NodeHandle>,
+    /// The row's scope id when the row's scope built `node`, decided now —
+    /// the row is then `discard`ed, except for anything under it the row's
+    /// render did not build (issue #732), which is only detached.
+    owner: Option<ScopeId>,
     scope: Option<RenderScope>,
 }
 
 impl ParkedRow {
     pub(crate) fn new(node: NodeHandle, scope: Option<RenderScope>) -> Self {
-        let owned = scope.as_ref().is_some_and(|s| s.created(node.node_id()));
-        let mut captured = Vec::new();
-        if owned && let Some(s) = scope.as_ref() {
-            crate::dom::collect_captured_descendants(&node, s, &mut captured);
-        }
-        Self {
-            node,
-            owned,
-            captured,
-            scope,
-        }
+        let owner = scope
+            .as_ref()
+            .filter(|s| s.created(node.node_id()))
+            .map(RenderScope::id);
+        Self { node, owner, scope }
     }
 }
 
@@ -331,7 +319,7 @@ pub(crate) fn release_parked(
     let _release = ReleaseNodes {
         nodes: parked
             .iter()
-            .map(|row| (row.node.clone(), row.owned, row.captured.clone()))
+            .map(|row| (row.node.clone(), row.owner))
             .collect(),
         shown: Some(shown),
     };
@@ -345,7 +333,7 @@ pub(crate) fn release_parked(
 /// The node half of [`release_parked`], run when it is dropped — at the end of
 /// the call, or on unwind out of a row's cleanup.
 struct ReleaseNodes<F: FnOnce() -> std::collections::HashSet<NodeId>> {
-    nodes: Vec<(NodeHandle, bool, Vec<NodeHandle>)>,
+    nodes: Vec<(NodeHandle, Option<ScopeId>)>,
     shown: Option<F>,
 }
 
@@ -358,19 +346,24 @@ impl<F: FnOnce() -> std::collections::HashSet<NodeId>> Drop for ReleaseNodes<F> 
         // Either verb cancels the subtree's transitions and animations in the
         // document implementation (#699); stamping inline `transition: none`
         // here disarmed that permanently (#704).
-        for (node, owned, captured) in self.nodes.drain(..) {
+        for (node, owner) in self.nodes.drain(..) {
             if shown.contains(&node.node_id()) {
                 continue;
             }
-            if owned {
-                // Detach every captured descendant first (issue #732): the
-                // discard below is recursive and must not reach it.
-                for captured_node in captured {
-                    captured_node.remove();
+            match owner {
+                Some(owner) => {
+                    // Anything under the row its render did not build is
+                    // detached first (issue #732): the discard is recursive.
+                    // The row's scope is gone, but its ancestry entry is kept
+                    // while the row's nodes are recorded.
+                    let mut captured = Vec::new();
+                    crate::dom::sweep_for_discard(&node, Some(owner), &mut captured);
+                    for captured_node in captured {
+                        captured_node.remove();
+                    }
+                    node.discard_swept();
                 }
-                node.discard();
-            } else {
-                node.remove();
+                None => node.remove(),
             }
         }
     }

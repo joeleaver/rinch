@@ -1283,52 +1283,32 @@ fn a_node_minted_before_the_branch_first_shows_is_still_captured_after_many_togg
     );
 }
 
-/// `collect_captured_descendants`/`discard_owned_preserving_captured` called
-/// directly with a scope whose `created` is **empty** (it minted nothing of
-/// its own) -- the `watermark()` is `None`, and `watermark_or_newer` answers
-/// `false` for every id, unconditionally. Every real call site guards this by
-/// checking `scope.created(root_id)` before calling (which can only be true
-/// if the scope minted *something*, guaranteeing a watermark) -- this probes
-/// whether the two functions are safe to call WITHOUT that guard, since
-/// nothing in their own signature enforces it and both are `pub(crate)`
-/// (reachable from anywhere else in this crate, now or in a future call
-/// site).
+/// The discard walk asked for an owner that minted nothing under `root`:
+/// every direct child is someone else's, so each is captured and none is
+/// entered. Every real call site first checks `created(root)`; this pins the
+/// walk's own contract without that guard.
 #[test]
-fn collect_captured_descendants_with_an_empty_watermark_treats_every_child_as_captured() {
-    use crate::dom::collect_captured_descendants;
+fn a_sweep_for_an_owner_that_built_nothing_captures_every_child() {
+    use crate::dom::sweep_for_discard;
 
     let doc = doc();
-    let empty_scope = scope(&doc); // minted nothing: created == [], watermark == None
+    let empty_scope = scope(&doc);
     let body = body_handle(&doc);
 
-    // Build a root with real content using a DIFFERENT scope that mints
-    // plenty, so the root's children are unambiguously "owned by *someone*"
-    // -- just not by `empty_scope`.
     let mut builder = scope(&doc);
     let root = builder.create_element("div");
     let child_a = builder.create_element("p");
     let child_b = builder.create_element("span");
+    child_a.append_child(&builder.create_element("i"));
     root.append_child(&child_a);
     root.append_child(&child_b);
     body.append_child(&root);
 
     let mut out = Vec::new();
-    collect_captured_descendants(&root, &empty_scope, &mut out);
-
-    // With no watermark, `watermark_or_newer` is `false` for every id, so
-    // EVERY direct child is collected as "captured" and the walk never
-    // recurses into either -- including into grandchildren that might
-    // themselves be genuinely, unambiguously owned by `empty_scope` (none
-    // here, but the point is the walk stops at the first level regardless).
-    assert_eq!(
-        out.len(),
-        2,
-        "an empty-watermark scope must not silently treat `root`'s whole \
-         subtree as unowned-and-therefore-safe-to-walk-through; every real \
-         call site avoids this by checking `scope.created(root_id)` first, \
-         which this test deliberately skips to probe the function's own \
-         contract"
-    );
+    sweep_for_discard(&root, Some(empty_scope.id()), &mut out);
+    let mut ids: Vec<_> = out.iter().map(NodeHandle::node_id).collect();
+    ids.sort_by_key(|id| id.0);
+    assert_eq!(ids, [child_a.node_id(), child_b.node_id()]);
 }
 
 // ── review2-1360: scope-ancestry tables must not leak either ───────────────
@@ -1839,8 +1819,8 @@ fn a_virtual_list_inside_a_branch_does_not_grow_the_document() {
 
 /// The `late_children` shape (List / Stepper / RadioGroup): an
 /// `on_child_inserted` observer patches a late-arriving row through a
-/// throwaway `RenderScope::new` (no ancestry parent). Inside a branch whose
-/// list grows while it is open, the patch's nodes are detached on hide.
+/// throwaway scope naming the container's scope as parent. The scope is gone
+/// by the hide; its nodes must still be the branch's.
 #[test]
 fn a_late_child_patch_inside_a_branch_does_not_grow_the_document() {
     let doc = doc();
@@ -1857,12 +1837,16 @@ fn a_late_child_patch_inside_a_branch_does_not_grow_the_document() {
             let ul = s.create_element("ul");
             let dw = dw.clone();
             let ul_id = ul.node_id();
+            // What `late_children` does: the patch scope names the scope the
+            // container rendered in.
+            let owner = s.id();
             crate::dom::on_child_inserted(&ul, move |inserted| {
                 if inserted.tag_name().as_deref() != Some("li") {
                     return;
                 }
                 let Some(d) = dw.upgrade() else { return };
-                let mut patch = RenderScope::new(d as Rc<RefCell<dyn DomDocument>>, ul_id);
+                let mut patch =
+                    RenderScope::with_parent(d as Rc<RefCell<dyn DomDocument>>, ul_id, Some(owner));
                 let icon = patch.create_element("i");
                 inserted.append_child(&icon);
             });
