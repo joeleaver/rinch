@@ -326,3 +326,62 @@ fn p13_li_stacks_its_block_children_like_a_block_twin() {
     assert_eq!(geo[0].1, 40.0, "two 20px children stacked");
     assert_eq!(geo[0].5, 20.0, "the second child sits below the first");
 }
+
+/// An `<li>` holding a text run and then a block child: the run gets an
+/// anonymous block box and the child stacks below it, exactly as in its
+/// `display: block` twin. `DisplayMode` is what classifies the run, so this
+/// is the fixture that fails when `ListItem` stops being `DisplayMode::Block`.
+/// The line box is declared (`line-height: 20px`), so no font metric enters.
+#[test]
+fn p14_li_with_text_then_a_block_child_matches_a_block_twin() {
+    let mut geo = Vec::new();
+    for disp in ["list-item", "block"] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let ul = el(&mut doc, body, "ul");
+        let li = el(&mut doc, ul, "li");
+        doc.set_attribute(
+            li,
+            "style",
+            &format!("display: {disp}; list-style: none; width: 200px; line-height: 20px;"),
+        );
+        txt(&mut doc, li, "text");
+        let c = el(&mut doc, li, "div");
+        doc.set_attribute(c, "style", "height: 30px; width: 50px;");
+        doc.resolve_layout(800.0, 600.0);
+        let n = |id: NodeId| doc.tree.get(id.0).unwrap().layout;
+        geo.push((n(li).height, n(c).x, n(c).y, n(c).width));
+    }
+    assert_eq!(geo[0], geo[1], "list-item vs block");
+    assert_eq!(
+        geo[0],
+        (50.0, 0.0, 20.0, 50.0),
+        "one 20px line, then the 30px block"
+    );
+}
+
+/// An `<li>` holding a text run and an inline `<span>` is one inline
+/// formatting context: both sit on one 20px line, as in its `display: block`
+/// twin. This is what `DisplayMode::Block` (a block container) buys a list
+/// item — as `DisplayMode::Flex` the run and the span would not share a line.
+#[test]
+fn p15_li_text_and_span_share_one_line_like_a_block_twin() {
+    let mut heights = Vec::new();
+    for disp in ["list-item", "block"] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let ul = el(&mut doc, body, "ul");
+        let li = el(&mut doc, ul, "li");
+        doc.set_attribute(
+            li,
+            "style",
+            &format!("display: {disp}; list-style: none; width: 200px; line-height: 20px;"),
+        );
+        txt(&mut doc, li, "a ");
+        let s = el(&mut doc, li, "span");
+        txt(&mut doc, s, "b");
+        doc.resolve_layout(800.0, 600.0);
+        heights.push(doc.tree.get(li.0).unwrap().layout.height);
+    }
+    assert_eq!(heights, vec![20.0, 20.0], "list-item vs block");
+}
