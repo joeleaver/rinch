@@ -50,9 +50,14 @@ pub fn caret_position_for_offset_with_affinity(
         caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity)
     };
 
-    // Check inline layout first (IFC root)
+    // Check inline layout first (IFC root). `vertical_align_shift_at` (#724)
+    // is the same lookup `paint::text::draw_text` shifts glyphs by, so a
+    // caret inside a `<sub>`/`<sup>` lands where its glyph is actually drawn
+    // rather than on the line's unshifted baseline.
     if let Some(ref inline_layout) = node.text_layout {
-        return Some(at(&inline_layout.layout));
+        let (x, y) = at(&inline_layout.layout);
+        let shift = inline_layout.vertical_align_shift_at(byte_offset);
+        return Some((x, y + shift));
     }
 
     // Check cached standalone text layout
@@ -92,9 +97,14 @@ pub fn glyph_bounds_for_offset(
 ) -> Option<GlyphBounds> {
     let node = doc.tree.nodes.get(node_id as usize)?;
 
-    // Check inline layout first (IFC root)
+    // Check inline layout first (IFC root). Shifted the same way
+    // `caret_position_for_offset_with_affinity` is, and for the same reason
+    // (#724): this is what makes `get_glyph_bounds` agree with where the
+    // glyph is actually painted.
     if let Some(ref inline_layout) = node.text_layout {
-        return glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset);
+        let mut bounds = glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset)?;
+        bounds.y += inline_layout.vertical_align_shift_at(byte_offset);
+        return Some(bounds);
     }
 
     // Check cached standalone text layout

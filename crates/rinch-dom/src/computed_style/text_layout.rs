@@ -226,6 +226,7 @@ impl ComputedStyle {
             && self.overflow_wrap == other.overflow_wrap
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x
+            && self.vertical_align == other.vertical_align
             && self.display.is_flex_or_grid_container() == other.display.is_flex_or_grid_container()
             && (!inline_level || self.same_inline_background_inputs(other))
     }

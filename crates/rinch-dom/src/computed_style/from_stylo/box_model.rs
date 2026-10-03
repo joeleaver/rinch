@@ -25,6 +25,37 @@ pub(super) fn length_percentage_from_stylo(
     lp_value_from_stylo(&lp.0)
 }
 
+/// `vertical-align` (#724). Stylo's computed value is either one of eight
+/// keywords or a `<length-percentage>`; the catch-all arm is what keeps this
+/// compiling if a gecko-only keyword (`-moz-middle-with-baseline`) ever
+/// becomes reachable in a servo build — it isn't today, so nothing exercises
+/// that arm, and it folds to `Baseline` like the five keywords this crate
+/// does not yet lay out.
+pub(super) fn vertical_align_from_stylo(
+    va: &style::values::computed::box_::VerticalAlign,
+) -> VerticalAlignValue {
+    use style::values::generics::box_::{GenericVerticalAlign, VerticalAlignKeyword};
+    match va {
+        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Baseline) => {
+            VerticalAlignValue::Baseline
+        }
+        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Sub) => VerticalAlignValue::Sub,
+        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Super) => VerticalAlignValue::Super,
+        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Top) => VerticalAlignValue::Top,
+        GenericVerticalAlign::Keyword(VerticalAlignKeyword::TextTop) => VerticalAlignValue::TextTop,
+        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Middle) => VerticalAlignValue::Middle,
+        GenericVerticalAlign::Keyword(VerticalAlignKeyword::Bottom) => VerticalAlignValue::Bottom,
+        GenericVerticalAlign::Keyword(VerticalAlignKeyword::TextBottom) => {
+            VerticalAlignValue::TextBottom
+        }
+        GenericVerticalAlign::Length(lp) => {
+            VerticalAlignValue::LengthPercentage(lp_value_from_stylo(lp))
+        }
+        #[allow(unreachable_patterns)]
+        _ => VerticalAlignValue::Baseline,
+    }
+}
+
 pub(super) fn margin_from_stylo_generic(
     margin: &style::values::computed::Margin,
 ) -> LengthPercentageAutoValue {
