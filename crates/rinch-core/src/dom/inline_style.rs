@@ -174,16 +174,16 @@ pub fn split_declarations(css: &str) -> Vec<(String, String)> {
         // trimming eats a leading or trailing comment (it reads as
         // whitespace in the masked text) while leaving an interior one
         // exactly where the byte offsets say it is in `css`.
-        if name.starts_with("--") {
-            if let Some(mc) = top_level_colon(masked_part) {
-                let masked_value = masked_part[mc + 1..].trim();
-                value = if masked_value.is_empty() {
-                    String::new()
-                } else {
-                    let start = masked_value.as_ptr() as usize - masked_base;
-                    css[start..start + masked_value.len()].to_string()
-                };
-            }
+        if name.starts_with("--")
+            && let Some(mc) = top_level_colon(masked_part)
+        {
+            let masked_value = masked_part[mc + 1..].trim();
+            value = if masked_value.is_empty() {
+                String::new()
+            } else {
+                let start = masked_value.as_ptr() as usize - masked_base;
+                css[start..start + masked_value.len()].to_string()
+            };
         }
 
         if let Some(at) = out.iter().position(|(k, _)| k.as_str() == &*name) {
@@ -196,8 +196,7 @@ pub fn split_declarations(css: &str) -> Vec<(String, String)> {
             // how to look past one (including the `url(...)` exemption); a
             // comment-free value — every non-custom one — passes through
             // that call unchanged (its fast path borrows, no-op).
-            if is_important(&strip_comments(&displaced)) && !is_important(&strip_comments(&value))
-            {
+            if is_important(&strip_comments(&displaced)) && !is_important(&strip_comments(&value)) {
                 value = displaced;
             }
         }
