@@ -1493,11 +1493,19 @@ impl InlineWriter {
                 (true, false) => format!("</{}>", d.tag),
             }
         };
+        let slot = |ch: char| usize::from(ch == '~');
         loop {
             let mut changed = false;
+            // Markdown runs of each character (`*`, `~`) open before `i`.
+            let mut open = [0usize; 2];
+            let mut counted = vec![false; self.pairs];
             let mut i = 0;
             while i < delims.len() {
                 if as_tag[delims[i].pair] {
+                    let d = &delims[i];
+                    if !d.open && counted[d.pair] {
+                        open[slot(d.md.chars().next().unwrap_or('*'))] -= 1;
+                    }
                     i += 1;
                     continue;
                 }
@@ -1526,6 +1534,14 @@ impl InlineWriter {
                 let cell = self.ctx == Ctx::Cell;
                 let opens = delims[i..j].iter().any(|d| d.open);
                 let closes = delims[i..j].iter().any(|d| !d.open);
+                // Runs of this character still open, other than the ones
+                // this run closes.
+                let others_open = open[slot(ch)]
+                    - delims[i..j]
+                        .iter()
+                        .filter(|d| !d.open && counted[d.pair])
+                        .count()
+                    > 0;
                 // Whichever way an unknown character counts as punctuation.
                 let ok = !(opens && closes)
                     && punctuation_readings(prev).iter().all(|&pp| {
@@ -1539,11 +1555,21 @@ impl InlineWriter {
                                 next_punct: np,
                                 cell,
                             };
-                            if opens {
+                            let wanted = if opens {
                                 run.can_open()
                             } else {
                                 run.can_close()
-                            }
+                            };
+                            // A run that can both open and close is paired by
+                            // CommonMark's rule of 3, which the writer does not
+                            // model: with another run of its character open it
+                            // can pair with that one (`***b*é*c***`), and
+                            // between two punctuation characters with one it
+                            // was not written for (`***'#*<…*\\*<***`).
+                            let both = run.can_open()
+                                && run.can_close()
+                                && (others_open || (run.prev_punct && run.next_punct));
+                            wanted && !both
                         })
                     });
                 if !ok {
@@ -1551,6 +1577,14 @@ impl InlineWriter {
                         as_tag[d.pair] = true;
                     }
                     changed = true;
+                }
+                for d in &delims[i..j] {
+                    if d.open && !as_tag[d.pair] {
+                        counted[d.pair] = true;
+                        open[slot(ch)] += 1;
+                    } else if !d.open && counted[d.pair] {
+                        open[slot(ch)] -= 1;
+                    }
                 }
                 i = j;
             }
@@ -1953,8 +1987,9 @@ fn escape_text(text: &str, ctx: Ctx, line_start: bool) -> String {
                 !(prev.is_some_and(char::is_alphanumeric)
                     && next.is_some_and(char::is_alphanumeric))
             }
-            // Before anything but whitespace: a tag, or an autolink (`<a@b.c>`).
-            '<' => next.is_some_and(|n| !n.is_whitespace()),
+            // Unless whitespace follows in the text: a tag, or an autolink
+            // (`<a@b.c>`, and `<~~a~~@b>` across the run that follows).
+            '<' => !next.is_some_and(char::is_whitespace),
             '&' => looks_like_entity(&chars[i + 1..]),
             '|' => ctx == Ctx::Cell,
             _ => Some(i) == line_escape || Some(i) == trailing_hash,
