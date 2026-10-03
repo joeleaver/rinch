@@ -234,6 +234,12 @@ define_counters! {
     /// ...`NodeTree::ifc_dirty` was written directly, with no reason and no
     /// seed — a test forcing a pass, or a structural change nobody scoped.
     IfcFullUnattributed = "ifc_full_unattributed",
+    /// ...a font registered after the first layout
+    /// (`RinchDocument::note_fonts_registered`, issue #1297): no computed
+    /// style changed, so the cascade's own staleness gate would never catch
+    /// it, and every text measurement is re-shaped against whichever face
+    /// now resolves.
+    IfcFullFontRegistered = "ifc_full_font_registered",
     /// ...of which were **scoped** (`crate::ifc_scope`): only the formatting
     /// containers a mutation reached were set up again.
     IfcScopedPasses = "ifc_scoped_passes",

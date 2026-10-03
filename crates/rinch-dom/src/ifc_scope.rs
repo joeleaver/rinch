@@ -116,6 +116,9 @@ pub enum IfcFullReason {
     Initial,
     /// A whole-document restyle (`recompute_all_styles_full`).
     Theme,
+    /// A font registered after the first layout
+    /// (`RinchDocument::note_fonts_registered`, issue #1297).
+    FontRegistered,
 }
 
 impl IfcFullReason {
@@ -123,6 +126,7 @@ impl IfcFullReason {
         match self {
             Self::Initial => Counter::IfcFullInitial,
             Self::Theme => Counter::IfcFullTheme,
+            Self::FontRegistered => Counter::IfcFullFontRegistered,
         }
     }
 }
