@@ -140,14 +140,17 @@ pub struct Stepper {
     /// Fired with a step's 0-based position when the user clicks or activates
     /// (Enter/Space) a step the stepper considers clickable (issue #737).
     ///
-    /// Mantine's default: a step at or before [`Stepper::active`] — completed
-    /// or in progress — is clickable without [`allow_next_steps_select`]; a
-    /// step past it needs that flag, or its own
+    /// Mantine's default: a strictly **completed** step — `position <
+    /// Stepper::active` — is clickable without [`allow_next_steps_select`];
+    /// the active step itself and every step past it need that flag, or the
+    /// step's own
     /// [`allow_step_click`](StepperStep::allow_step_click) /
-    /// [`allow_step_select`](StepperStep::allow_step_select). With no callback
-    /// set, nothing is wired — a step's `cursor: pointer` from its own ask or
-    /// from `allow_next_steps_select` is unchanged, decorative, as it always
-    /// was.
+    /// [`allow_step_select`](StepperStep::allow_step_select) (Mantine's
+    /// `shouldAllowSelect`: `state === 'stepCompleted' || allowNextStepsSelect`,
+    /// and `state` for the active step is `'stepProgress'`, not
+    /// `'stepCompleted'`). With no callback set, nothing is wired — a step's
+    /// `cursor: pointer` from its own ask or from `allow_next_steps_select` is
+    /// unchanged, decorative, as it always was.
     ///
     /// `Stepper` does not move `active` itself: the caller does, from this
     /// callback, exactly as [`Tabs`](crate::tabs::Tabs) moves its own selection
@@ -482,19 +485,30 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
 /// Bring one step's clickability — the class, the keyboard reach, and the
 /// wired handler — into line with its current position (issue #737).
 ///
-/// **Mantine's default**: a step at or before [`Derivation::active`] is
-/// clickable without [`Derivation::allow_next_steps_select`]; one past it
-/// needs that flag, or its own ask (recorded by [`StepperStep::render`] under
-/// [`OWN_CLICKABLE_ATTR`], since a class already on the node cannot be told
-/// from one *this* function granted on an earlier pass). All of that is gated
-/// on [`Derivation::on_step_click`] being set at all — with no callback,
-/// nothing here does anything, and every behaviour `allow_next_steps_select`
-/// and `allow_step_click`/`allow_step_select` had before #737 (cursor and
-/// hover, nothing else) is unchanged; that is why the `allow_next_steps_select`
-/// class grant above lives in [`settle_steps`] rather than here, untouched. A
-/// `disabled` step (the plain HTML attribute, read tag-agnostically the way
-/// rinch's own focus arbiter reads it) is never clickable, whatever else
-/// grants it, and loses the class if an untouched earlier grant gave it one.
+/// **Mantine's default**: a strictly **completed** step — `position <
+/// Derivation::active` — is clickable without
+/// [`Derivation::allow_next_steps_select`]; the active step itself and every
+/// step past it need that flag, or its own ask (recorded by
+/// [`StepperStep::render`] under [`OWN_CLICKABLE_ATTR`], since a class
+/// already on the node cannot be told from one *this* function granted on an
+/// earlier pass). Mantine's own rule is `shouldAllowSelect`:
+/// `state === 'stepCompleted' || allowNextStepsSelect`, and the active step's
+/// `state` is `'stepProgress'`, not `'stepCompleted'` — so `active` itself is
+/// *not* reachable by default, only genuinely prior steps are. All of that is
+/// gated on [`Derivation::on_step_click`] being set at all — with no
+/// callback, nothing here does anything, and every behaviour
+/// `allow_next_steps_select` and `allow_step_click`/`allow_step_select` had
+/// before #737 (cursor and hover, nothing else) is unchanged; that is why the
+/// `allow_next_steps_select` class grant above lives in [`settle_steps`]
+/// rather than here, untouched. A `disabled` step (the plain HTML attribute,
+/// read tag-agnostically the way rinch's own focus arbiter reads it) is never
+/// clickable, whatever else grants it. And **the class always follows
+/// `reachable`, not only `disabled`**: a step that loses its wiring purely
+/// because a sibling insertion or removal shifted it past `active` must lose
+/// the cursor too, or it goes on looking clickable with nothing behind it —
+/// the one exception is `own`, since a step's own ask keeps the class
+/// regardless of position (and such a step never becomes unreachable, so the
+/// two branches never fight over it).
 ///
 /// **The handler is registered once per step, lazily, the first pass that
 /// finds it reachable** — never baked with the step's position, which the
@@ -520,7 +534,7 @@ fn settle_step_clickability(
     d: &Derivation,
 ) {
     let own = step.get_attribute(OWN_CLICKABLE_ATTR).is_some();
-    let reachable = own || position <= d.active || d.allow_next_steps_select;
+    let reachable = own || position < d.active || d.allow_next_steps_select;
     let should_wire = !disabled && reachable && d.on_step_click.is_some();
 
     if should_wire {
@@ -562,7 +576,17 @@ fn settle_step_clickability(
             step.set_attribute("data-rid", &rid);
         }
     } else {
-        if disabled {
+        // The class follows reachability whenever there is a callback to
+        // wire at all — a step that was reachable-and-wired and then shifts
+        // past `active` (a sibling insertion or removal) must lose the
+        // cursor along with `data-rid`, or it keeps looking clickable with
+        // nothing behind it (issue #737's review, Finding 2). With no
+        // callback there is nothing to wire in the first place, so the class
+        // here is purely whatever `allow_next_steps_select`'s own grant (in
+        // `settle_steps`) or `StepperStep::render`'s own-ask grant put there,
+        // and must be left alone — removing it would undo the no-callback
+        // decorative behaviour #737 was explicit about preserving.
+        if d.on_step_click.is_some() {
             step.remove_class(CLICKABLE_CLASS);
         }
         if step.get_attribute("data-rid").is_some() {

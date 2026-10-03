@@ -9,13 +9,17 @@
 //! The fix adds [`Stepper::on_step_click`] (`Option<ValueCallback<u32>>`,
 //! fired with the step's 0-based position) and wires it during the same
 //! `settle_steps` pass that already derives each step's state and index: a
-//! step at or before `active` is clickable without `allow_next_steps_select`
-//! (Mantine's default), a step past it needs that flag or its own
+//! strictly **completed** step (`position < active`) is clickable without
+//! `allow_next_steps_select` (Mantine's default — the active step's own state
+//! is `'stepProgress'`, not `'stepCompleted'`, so it is *not* reachable by
+//! default either), a step at or past `active` needs that flag or its own
 //! `allow_step_click`/`allow_step_select`, and `StepperStep::disabled` always
 //! wins over every grant. The handler reads its step's position back from the
 //! DOM **at click time** rather than from a value captured when it was wired
 //! (the #714 pattern), because a late insertion or removal can renumber a
-//! step after its handler is registered (issues #716, #745).
+//! step after its handler is registered (issues #716, #745) — and the
+//! clickable class follows reachability too: a step that loses its wiring to
+//! such a shift also loses the cursor, unless its own ask keeps it.
 
 use rinch_components as rinch;
 
@@ -107,9 +111,9 @@ fn clicking_a_reachable_step_calls_on_step_click_with_its_position() {
     let steps = tree.steps();
     assert!(
         click(&steps[0]).unwrap_or(false),
-        "step 0 sits before `active: 1` (completed), which Mantine's default \
-         makes clickable with no `allow_next_steps_select` — it must carry a \
-         live `data-rid`"
+        "step 0 sits strictly before `active: 1` (completed), which Mantine's \
+         default makes clickable with no `allow_next_steps_select` — it must \
+         carry a live `data-rid`"
     );
     assert_eq!(
         seen.borrow().as_slice(),
@@ -117,12 +121,17 @@ fn clicking_a_reachable_step_calls_on_step_click_with_its_position() {
         "the callback is called with the step's own 0-based position"
     );
 
-    click(&steps[1]).expect("the active step itself is reachable too");
+    assert!(
+        click(&steps[1]).is_none(),
+        "the active step itself (position == active, Mantine's \
+         'stepProgress') is NOT clickable by default — only a strictly \
+         completed step is, without `allow_next_steps_select` or the step's \
+         own ask"
+    );
     assert_eq!(
         seen.borrow().as_slice(),
-        &[0, 1],
-        "the current (`progress`) step is clickable too — Mantine's \"up to \
-         active\" is inclusive"
+        &[0],
+        "and its callback was never reached"
     );
 }
 
@@ -311,5 +320,181 @@ fn a_late_inserted_step_is_clickable_with_its_own_correct_position() {
          position 0 — firing 1 here is only possible if it reads its current \
          position from the DOM at click time rather than from a value it \
          captured when it registered"
+    );
+}
+#[test]
+fn mantine_parity_active_step_not_clickable_by_default() {
+    // Real Mantine: shouldAllowSelect = (state === 'stepCompleted') || allowNextStepsSelect
+    // state for index === active is 'stepProgress', NOT 'stepCompleted'.
+    // So with no allowNextStepsSelect and no per-step override, the ACTIVE
+    // step itself must NOT be clickable by default -- only strictly-completed
+    // steps (position < active) should be.
+    let seen: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let tree = three_default_steps(Stepper {
+        active: 1,
+        on_step_click: Some(ValueCallback::new(move |i: u32| sink.borrow_mut().push(i))),
+        ..Default::default()
+    });
+    let steps = tree.steps();
+    assert!(
+        click(&steps[1]).is_none(),
+        "the active step (position == active) must NOT be clickable by Mantine's default rule"
+    );
+}
+
+#[test]
+fn a_step_that_becomes_unreachable_via_insertion_keeps_a_stale_clickable_class() {
+    // active: 2, two default steps -> step 1 (position 1 < active 2, strictly
+    // completed) is reachable and wired by default. Insert two steps in
+    // FRONT: the old step 1 is renumbered to position 3, which is now past
+    // `active` with no `allow_next_steps_select` and no own grant -- newly
+    // UNREACHABLE.
+    let seen: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let items = Signal::new(vec!["a", "b"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 2u32, on_step_click: move |i: u32| sink.borrow_mut().push(i),
+                    for it in items.get() { StepperStep { key: it, label: it } }
+                }
+            }
+        }
+    });
+
+    let before = tree.steps();
+    assert_eq!(before.len(), 2);
+    assert!(
+        click(&before[1]).is_some(),
+        "precondition: step 1 (position 1 < active 2) is reachable and wired \
+         by default"
+    );
+    assert!(
+        has_class(&before[1], "rinch-stepper__step--clickable"),
+        "precondition: it carries the clickable class"
+    );
+
+    // Push two steps in front of both -- old step 1 becomes position 3.
+    items.update(|v| v.insert(0, "z"));
+    items.update(|v| v.insert(0, "y"));
+
+    let steps = tree.steps();
+    assert_eq!(steps.len(), 4);
+    assert_eq!(
+        steps[3].get_attribute("data-step-position").as_deref(),
+        Some("3"),
+        "precondition: the old step 1 was renumbered to position 3"
+    );
+    assert!(
+        click(&steps[3]).is_none(),
+        "the step is no longer reachable (position 3 > active 2): it must \
+         carry no live data-rid"
+    );
+    assert!(
+        !has_class(&steps[3], "rinch-stepper__step--clickable"),
+        "BUG: a step that lost its wiring because it became unreachable \
+         must also lose the decorative clickable class -- a stale cursor \
+         on a step that no longer does anything when clicked"
+    );
+}
+
+#[test]
+fn a_step_that_becomes_reachable_via_removal_is_wired() {
+    // active: 2, three steps -> step 2 (position 2, not < active) is
+    // unreachable. Removing step 0 renumbers step 2 down to position 1,
+    // strictly before `active` -- newly reachable.
+    let seen: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let items = Signal::new(vec!["a", "b", "c"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 2u32, on_step_click: move |i: u32| sink.borrow_mut().push(i),
+                    for it in items.get() { StepperStep { key: it, label: it } }
+                }
+            }
+        }
+    });
+    let before = tree.steps();
+    assert_eq!(before.len(), 3);
+    assert!(
+        click(&before[2]).is_none(),
+        "precondition: step 2 unreachable"
+    );
+
+    items.update(|v| {
+        v.remove(0);
+    });
+
+    let steps = tree.steps();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(
+        steps[1].get_attribute("data-step-position").as_deref(),
+        Some("1")
+    );
+    assert!(
+        click(&steps[1]).unwrap_or(false),
+        "the step that is now at position 1 (< active 2) must be wired"
+    );
+    assert_eq!(seen.borrow().as_slice(), &[1]);
+}
+
+// ------------------------- (e) one handler per step, however many passes run
+
+#[test]
+fn a_steps_click_handler_is_registered_exactly_once_across_many_passes() {
+    // active: 9 holds every position reachable throughout, so `data-rid` is
+    // present the whole time and the only thing that can change across
+    // repeated `settle_steps` passes is *which* handler id it names — the
+    // thing `CLICK_HANDLER_ID_ATTR`'s once-only guard exists to pin. A
+    // mutant that drops the guard and calls `register_handler` on every pass
+    // would still pass every other fixture in this file (every one of them
+    // either never re-settles a reachable step, or does so at most once), so
+    // this one is written to resettle the same reachable step repeatedly and
+    // check the id — not merely the click outcome — is unchanged.
+    let items = Signal::new(vec!["a"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 9u32, on_step_click: move |_: u32| {},
+                    for it in items.get() { StepperStep { key: it, label: it } }
+                }
+            }
+        }
+    });
+
+    let first_rid = tree
+        .steps()
+        .into_iter()
+        .next()
+        .expect("one step")
+        .get_attribute("data-rid")
+        .expect("reachable under active: 9, so data-rid is set from the first pass");
+
+    // Three more structural passes over the same step: two insertions that
+    // each renumber it, and a removal that renumbers it back. `active: 9`
+    // keeps it reachable at every position visited, so `settle_steps`
+    // re-touches its clickability on each one.
+    items.update(|v| v.insert(0, "z"));
+    items.update(|v| v.insert(0, "y"));
+    items.update(|v| {
+        v.remove(0);
+    });
+
+    let steps = tree.steps();
+    assert_eq!(steps.len(), 2, "one of the two inserted steps remains");
+    let moved = steps
+        .iter()
+        .find(|s| s.get_attribute("data-step-position").as_deref() == Some("1"))
+        .expect("the original step is now at position 1");
+
+    assert_eq!(
+        moved.get_attribute("data-rid").as_deref(),
+        Some(first_rid.as_str()),
+        "the handler id must be exactly what the first pass registered — a \
+         mutant that re-registers on every pass (dropping the \
+         `CLICK_HANDLER_ID_ATTR` guard) would mint a fresh, larger id here \
+         instead of keeping this one"
     );
 }

@@ -345,17 +345,23 @@ two facts are one fact: a `discard` retires the whole subtree, so discarding a
 wrapper that still held the promoted glyph would retire the glyph with it. The
 selection family **acts now** (issue #737): `Stepper::on_step_click` fires with
 a step's 0-based position when it is clicked or activated (Enter/Space) on a
-step the stepper considers reachable — a step at or before `active` by default
-(Mantine's rule: completed or in progress), one past it needs
-`allow_next_steps_select` or its own `allow_step_click`/`allow_step_select`,
-and `StepperStep::disabled` always wins over every grant. The wiring is done by
-the same `settle_steps` pass that derives state and index, in
-`settle_step_clickability`: a reachable step gets `tabindex="0"`, `role="button"`
-and a `data-rid` — the same shape `Tree`'s own rows use for generic keyboard
-activation, no `register_focus_target` needed. The handler is registered once
-per step, lazily, and reads the step's *current* position back from the DOM at
-**click** time rather than closing over the position it saw when it registered
-(the #714 pattern: a late insertion or removal can renumber a step after its
+step the stepper considers reachable — a strictly **completed** step (`position
+< active`) by default (Mantine's `shouldAllowSelect`: `state === 'stepCompleted'
+|| allowNextStepsSelect`, and the active step's own state is `'stepProgress'`,
+not `'stepCompleted'` — so `active` itself is *not* reachable by default).
+The active step and every step past it need `allow_next_steps_select` or the
+step's own `allow_step_click`/`allow_step_select`, and `StepperStep::disabled`
+always wins over every grant. The wiring is done by the same `settle_steps`
+pass that derives state and index, in `settle_step_clickability`: a reachable
+step gets `tabindex="0"`, `role="button"` and a `data-rid` — the same shape
+`Tree`'s own rows use for generic keyboard activation, no
+`register_focus_target` needed — and loses all three, **and the clickable
+class**, the moment a sibling insertion or removal shifts it past `active`
+with nothing else granting it (a step's own ask is the one thing that keeps
+the class regardless of position). The handler is registered once per step,
+lazily, and reads the step's *current* position back from the DOM at **click**
+time rather than closing over the position it saw when it registered (the
+#714 pattern: a late insertion or removal can renumber a step after its
 handler is wired, issues #716/#745). With no `on_step_click` set, nothing is
 wired and every behaviour `allow_next_steps_select`/`allow_step_click`/
 `allow_step_select` had before #737 — the class, and only the class — is
