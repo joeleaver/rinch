@@ -410,10 +410,12 @@ Measured on the desktop engine:
 | `:link`, `:any-link` | works | `<a>`/`<area>` with an `href` |
 | `:visited` | never matches | rinch tracks no history |
 | `:first-child`, `:nth-child()`, `:not()`, `:is()`, `:where()`, `:root`, `:empty` | works | handled by the selector engine itself |
-| `:has()` | **never matches** | parses, then matches nothing even when the subject is present |
-| `:required`, `:optional`, `:read-only`, `:read-write`, `:placeholder-shown`, `:indeterminate`, `:valid`, `:invalid`, `:default`, `:defined`, `:target`, `:focus-within`, `:fullscreen`, `:lang()` | **never match** | they parse, then fall through to a catch-all `false` |
+| `:has()` | **never matches** | `stylo`'s servo-feature `SelectorParser` answers `parse_has() -> false` (#680), so `div:has(em) { … }` never parses into a relative selector in the first place — an upstream-dependency limitation, not a `rinch-dom` matching bug, and fixing it needs a patched/forked `stylo` (the same shape as the vendored `wgpu` fork) |
+| `:required`, `:optional`, `:read-only`, `:read-write`, `:placeholder-shown`, `:defined`, `:lang()` | works (#681) | narrower than the full CSS definition — see `Node::tag_supports_required` / `Node::tag_is_readonly_capable`'s docs for the exact scope each leaves out (no `<fieldset disabled>` inheritance, no non-form-control `:read-only`; `:lang()`'s invalidation is a forced self+subtree+later-siblings restyle on a `lang` write, not Stylo's state maps) |
+| `:focus-within` | **never matches** | attempted for #681 and reverted: an eager ancestor-propagated bit went stale under `style_invalidation_twin_tests.rs`'s random-mutation oracle (`.a:focus-within`) whenever a subtree was `Move`d while focus lived elsewhere — see `stylo_impl.rs`'s comment at the pseudo-class match's catch-all |
+| `:indeterminate`, `:valid`, `:invalid`, `:in-range`, `:out-of-range`, `:default`, `:target`, `:fullscreen`, `:modal`, `:popover-open`, `:autofill`, `:user-valid`, `:user-invalid` | **never match** | they parse, then fall through to a catch-all `false` — rinch has no constraint validation, no document/fragment concept, and no "default" tracking distinct from current state |
 | `::before`, `::after` | works | |
-| camelCase SVG type selectors (`linearGradient`, `clipPath`) | **never match** | type selectors are lowercased as if every element were HTML |
+| camelCase SVG type selectors (`linearGradient`, `clipPath`) | works (#683) | `is_html_element_in_html_document` answers `false` for SVG content tags (`attr_name::is_svg_content_tag`), so the selector keeps the author's exact spelling instead of being lowercased as if every element were HTML |
 | Presentational attributes (`<img width=100>`, `<td bgcolor>`) | **no effect** | legacy-attribute hints are not synthesized |
 
 Reach for a class where the table says a selector does not match — that is the

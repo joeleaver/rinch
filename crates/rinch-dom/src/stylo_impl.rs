@@ -303,8 +303,24 @@ impl<'a> Element for RinchNode<'a> {
             .map(|&id| self.with(id))
     }
 
+    /// Used by the selectors crate to decide whether a type selector matches
+    /// its local name ASCII case-insensitively (HTML) or exactly (#683).
+    ///
+    /// rinch carries no element namespace — every node hands Stylo the XHTML
+    /// namespace (see [`Self::namespace`]) — so this answers from the tag
+    /// name instead, the same move `attr_name::is_svg_content_tag` makes for
+    /// the sibling question of attribute-name folding (#688): an element
+    /// whose tag is one of SVG's own (`svg`, `linearGradient`, `clipPath`,
+    /// …) is not an HTML element in an HTML document, whatever its ancestry,
+    /// so a type selector against it is compared with the author's exact
+    /// spelling. The four tags that collide with HTML (`a`, `script`,
+    /// `style`, `title`) stay HTML — same four, same reasoning, see that
+    /// function's doc.
     fn is_html_element_in_html_document(&self) -> bool {
-        true
+        !self
+            .node()
+            .tag()
+            .is_some_and(crate::attr_name::is_svg_content_tag)
     }
 
     fn has_local_name(&self, local_name: &BorrowedLocalName) -> bool {
@@ -413,6 +429,54 @@ impl<'a> Element for RinchNode<'a> {
                     .unwrap_or(false)
             }
             NonTSPseudoClass::Visited => false, // We don't track visited links
+
+            // #681. `:required`/`:optional`, `:read-only`/`:read-write` and
+            // `:placeholder-shown` are plain attribute-derived predicates,
+            // same shape as `:enabled`/`:disabled` above (#429) — narrower
+            // than the full CSS definition on purpose; see
+            // `node::tag_supports_required` / `node::tag_is_readonly_capable`
+            // for the exact scope this leaves out. They are ALSO fed into
+            // `element_state` below (as `ElementState::REQUIRED` etc.), so
+            // Stylo's own invalidation maps see the dependency and restyle
+            // precisely — self, descendants or later siblings — whenever a
+            // `required`/`readonly`/`placeholder`/`value` write flips one,
+            // exactly the mechanism `:checked` already rides.
+            NonTSPseudoClass::Required => crate::node::node_is_required(self.node()),
+            NonTSPseudoClass::Optional => crate::node::node_is_optional(self.node()),
+            NonTSPseudoClass::ReadOnly => crate::node::node_is_read_only(self.node()),
+            NonTSPseudoClass::ReadWrite => crate::node::node_is_read_write(self.node()),
+            NonTSPseudoClass::PlaceholderShown => {
+                crate::node::node_is_placeholder_shown(self.node())
+            }
+
+            // `:defined` (#681): rinch has no custom-element registry, so
+            // every element rinch can build is defined — there is no
+            // "unresolved" state to answer `false` for. Constant, so no
+            // invalidation is needed (nothing can ever flip it).
+            NonTSPseudoClass::Defined => true,
+
+            // `:focus-within` is NOT implemented (#681, left open). A first
+            // attempt propagated an eager `is_focus_within` bit to the
+            // focused node's ancestors on every `update_focus`, the same
+            // chain-walk `update_active` does for `:active` — but
+            // `style_invalidation_twin_tests.rs`'s random-mutation oracle
+            // (`.a:focus-within { --r32: 1; }`, already in its battery)
+            // caught it diverging from a fresh rebuild whenever a `Move`
+            // relocated a subtree while focus lived elsewhere: nothing
+            // re-derives the eagerly-set bit when the TREE changes, only
+            // when FOCUS changes, so a moved ancestor can carry a stale
+            // answer. Reverted rather than shipped broken; see the issue for
+            // the fix sketch (either re-derive on every structural verb while
+            // some node is focused, or answer dynamically from
+            // `self.tree.focused_node` and ensure invalidation reaches
+            // whatever moved).
+
+            // `:lang()` (#681). `lang_attr`/`match_element_lang` below exist
+            // for Stylo's invalidation wrapper; ordinary matching (this
+            // function) never goes through them and resolves inline instead.
+            NonTSPseudoClass::Lang(ref lang) => resolve_lang(self.tree, self.id)
+                .is_some_and(|resolved| lang_tag_matches(&resolved, lang)),
+
             _ => false,
         }
     }
@@ -745,16 +809,27 @@ impl<'a> TElement for RinchNode<'a> {
         None
     }
 
+    /// The resolved `lang` (#681): this element's own `lang` attribute, or
+    /// the nearest ancestor's — see [`resolve_lang`]. Used by Stylo's
+    /// invalidation wrapper (`element_wrapper.rs`'s `get_lang`), not by
+    /// ordinary `:lang()` matching, which resolves inline in
+    /// [`Self::match_non_ts_pseudo_class`].
     fn lang_attr(&self) -> Option<style::selector_parser::AttrValue> {
-        None
+        resolve_lang(self.tree, self.id).map(|lang| AtomString::from(lang.as_str()))
     }
 
     fn match_element_lang(
         &self,
-        _override_lang: Option<Option<style::selector_parser::AttrValue>>,
-        _value: &style::selector_parser::Lang,
+        override_lang: Option<Option<style::selector_parser::AttrValue>>,
+        value: &style::selector_parser::Lang,
     ) -> bool {
-        false
+        let resolved = match override_lang {
+            // `Some(None)`: the snapshot says this element and its chain
+            // carried no `lang` at the snapshotted moment — nothing to match.
+            Some(explicit) => explicit.map(|v| v.as_ref().to_owned()),
+            None => resolve_lang(self.tree, self.id),
+        };
+        resolved.is_some_and(|lang| lang_tag_matches(&lang, value))
     }
 
     fn is_html_document_body_element(&self) -> bool {
@@ -1007,7 +1082,70 @@ pub(crate) fn element_state(node: &Node) -> ElementState {
     if node.attributes.contains_key("checked") {
         state |= ElementState::CHECKED;
     }
+    // #681: fed from the same facts `match_non_ts_pseudo_class` reads, so
+    // Stylo's invalidation maps see a state dependency on each and restyle
+    // precisely (self/descendants/siblings) when `note_attribute_change`
+    // snapshots an element whose `required`/`readonly`/`placeholder`/`value`
+    // is about to change — the generic mechanism `:checked` above already
+    // rides, not the manual "restyle self+subtree+later-siblings" forcing
+    // `:disabled`/`:enabled`/`href` use (those need the forcing because a
+    // `<fieldset disabled>` changes a *descendant's* answer without that
+    // descendant's own attributes moving, which no per-element state bit can
+    // express; none of these four has that problem).
+    if crate::node::tag_supports_required(node.tag()) {
+        if node.attributes.contains_key("required") {
+            state |= ElementState::REQUIRED;
+        } else {
+            state |= ElementState::OPTIONAL_;
+        }
+    }
+    if crate::node::tag_is_readonly_capable(node.tag()) {
+        if node.attributes.contains_key("readonly") {
+            state |= ElementState::READONLY;
+        } else {
+            state |= ElementState::READWRITE;
+        }
+        if crate::node::node_is_placeholder_shown(node) {
+            state |= ElementState::PLACEHOLDER_SHOWN;
+        }
+    }
+    // `:defined` (#681): constant — rinch has no custom-element registry, so
+    // nothing is ever "undefined". Included for `state()` callers that read
+    // it as a fact rather than matching through `match_non_ts_pseudo_class`.
+    state |= ElementState::DEFINED;
     state
+}
+
+/// The effective `lang` for `:lang()` (#681): `node`'s own `lang` attribute,
+/// or the nearest ancestor's. An explicit `lang=""` means "no language" per
+/// HTML and stops the walk there (`None`), rather than falling through to an
+/// ancestor that happens to have one.
+pub(crate) fn resolve_lang(tree: &NodeTree, id: RawNodeId) -> Option<String> {
+    let mut cur = Some(id);
+    while let Some(nid) = cur {
+        let node = tree.get(nid)?;
+        if let Some(lang) = node.attributes.get("lang") {
+            return if lang.is_empty() {
+                None
+            } else {
+                Some(lang.clone())
+            };
+        }
+        cur = node.parent;
+    }
+    None
+}
+
+/// Selectors 4 §16.5's basic filtering (RFC 4647 §3.3.1): `want` matches
+/// `resolved` exactly (ASCII case-insensitive), or as a prefix followed by
+/// `-` — so `en` matches `en-US` but not `english`.
+pub(crate) fn lang_tag_matches(resolved: &str, want: &str) -> bool {
+    if resolved.eq_ignore_ascii_case(want) {
+        return true;
+    }
+    resolved.len() > want.len()
+        && resolved.as_bytes()[want.len()] == b'-'
+        && resolved[..want.len()].eq_ignore_ascii_case(want)
 }
 
 /// An element child as selectors count children: an element, and not a
