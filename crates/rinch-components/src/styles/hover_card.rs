@@ -27,12 +27,45 @@ pub fn styles() -> String {
                 visibility var(--rinch-hover-card-open-delay, 150ms) ease;
 }
 
-.rinch-hover-card:hover .rinch-hover-card__dropdown {
+/* #1339: this used to be a plain descendant rule, `.rinch-hover-card:hover
+   .rinch-hover-card__dropdown` — the same shape as #778's Popover bug (and
+   the pre-#774 DropdownMenu/Tooltip bugs), but reached through `:hover`
+   rather than a toggled class. `:hover` propagates to every ancestor of
+   whatever the pointer is physically over, and a descendant combinator
+   matches through ANY ancestor carrying it — so a closed `HoverCard` nested
+   inside an open (hovered) one's dropdown had a `.rinch-hover-card` ancestor
+   matching `:hover` (the outer card), and its own `__dropdown` is a
+   descendant of that ancestor, so the selector matched it too, even though
+   the inner card's own root was never hovered.
+
+   The fix is the same `:not()`-exclusion pattern #778 applies to Popover
+   (`.rinch-popover--opened .rinch-popover__dropdown:not(…)`), respelled for
+   a pseudo-class instead of a toggled class: `:not(:hover)` stands in for
+   "closed" since there is no class to negate. Reveal a dropdown under a
+   hovered ancestor UNLESS a *closed* `.rinch-hover-card` root sits between
+   that ancestor and the dropdown. For the outer card's own dropdown there is
+   no such intervening root, so it still opens; for a closed card nested
+   inside an open one's dropdown, its own root is exactly that intervening
+   closed root, so its dropdown stays hidden. Same known limit as the
+   Popover/DropdownMenu fixes (an open card C inside the target of a closed
+   card B inside an open card A stays hidden, because B sits between A and
+   C's panel) — not separately measured here since the mechanism is
+   identical. */
+.rinch-hover-card:hover .rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card:not(:hover) .rinch-hover-card__dropdown) {
     opacity: 1;
     visibility: visible;
     transition-delay: var(--rinch-hover-card-open-delay, 0ms);
 }
 
+/* Keeps the panel open while the pointer moves from the target onto the
+   panel itself. This needs NO matching `:not()` exclusion (#1339): for this
+   selector to match a dropdown `D` at all, `D` itself (or something inside
+   it) must be the genuinely-hovered node — and hovering marks `D`'s *entire*
+   ancestor chain `:hover`, `D`'s own direct parent card included, with zero
+   gap. So whenever this rule matches `D`, `D`'s own card is unconditionally
+   open too, which can never be the "closed card between a hovered ancestor
+   and the dropdown" the rule above excludes: matching this selector already
+   proves the card is open, so it cannot leak a closed nested card's panel. */
 .rinch-hover-card__dropdown:hover {
     opacity: 1;
     visibility: visible;
@@ -42,12 +75,14 @@ pub fn styles() -> String {
    dropdown is `visibility: hidden`, which is rendered — so an animation inside
    it ran, and kept the app awake, for as long as nobody hovered. The note on
    `.rinch-drawer__root--hidden *` in `styles/drawer.rs` has the reasoning, the
-   `!important`, the `*`, and why no pseudo-elements. The `:not()` is the
-   complement of the two rules above: the dropdown is a descendant of the card,
-   so a hovered dropdown is inside a hovered card and the second rule needs no
-   clause of its own. The pause lands as the close delay starts, so in a
-   browser the spinner stops while the card is still fading out. */
-.rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card__dropdown) * {
+   `!important`, the `*`, and why no pseudo-elements. The `:not()` is the exact
+   complement of the widened reveal rule above (#1339 widened both together,
+   as #778 does for Popover): the dropdown is a descendant of the card, so a
+   hovered dropdown is inside a hovered card and the second rule above needs
+   no clause of its own here either, by the same proof. The pause lands as the
+   close delay starts, so in a browser the spinner stops while the card is
+   still fading out — a closed card nested in an open one's dropdown included. */
+.rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card:not(:hover) .rinch-hover-card__dropdown)) * {
     animation-play-state: paused !important;
 }
 
