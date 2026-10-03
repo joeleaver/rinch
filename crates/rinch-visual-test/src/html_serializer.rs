@@ -393,4 +393,38 @@ mod tests {
         assert!(html.contains("<p"));
         assert!(html.contains("Visible content"));
     }
+
+    // #705: `strip_css_variables` must filter by whole declaration, not by a
+    // bare-`;` fragment of one.
+
+    /// A `;` inside a quoted string must not be treated as a declaration
+    /// boundary — splitting there tears the string in two, and the dropped
+    /// fragment can leave the other half's quote unterminated.
+    #[test]
+    fn strip_css_variables_does_not_tear_a_quoted_string_in_half() {
+        let style = r#"content: "a;var(--injected)b"; color: red"#;
+        // The whole `content` declaration's value mentions `var(--`, so it is
+        // dropped as a unit; what survives is syntactically whole.
+        assert_eq!(strip_css_variables(style), "color: red");
+    }
+
+    /// A `;` inside an unquoted `url(...)` (a data URL) is part of the value;
+    /// a declaration with no `var(--` anywhere in it survives whole.
+    #[test]
+    fn strip_css_variables_keeps_a_semicolon_inside_a_data_url_whole() {
+        let style = "background-image: url(data:image/png;base64,QUJD); color: var(--x)";
+        assert_eq!(
+            strip_css_variables(style),
+            "background-image: url(data:image/png;base64,QUJD)"
+        );
+    }
+
+    /// Surviving declarations are re-joined with `"; "`, matching
+    /// `rinch_core::dom::serialize_declarations` (the workspace's one inline
+    /// style serializer) rather than a bare `";"`.
+    #[test]
+    fn strip_css_variables_rejoins_with_a_space() {
+        let style = "color: red; gap: 4px";
+        assert_eq!(strip_css_variables(style), "color: red; gap: 4px");
+    }
 }
