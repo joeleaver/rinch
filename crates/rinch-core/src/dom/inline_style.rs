@@ -145,7 +145,80 @@ use super::NodeHandle;
 ///
 /// Values are kept verbatim, `!important` included, so a round trip through
 /// [`serialize_declarations`] preserves what the author wrote.
+///
+/// **This collapse is syntactic, not post-validity (#722).** It decides which
+/// of two same-named declarations keeps the slot from the text alone — it has
+/// no Stylo and no cascade, so it cannot tell a valid declaration from one
+/// that will be rejected. A browser's CSSOM collapse runs *after* validity: an
+/// invalid declaration (`color: notacolor`, or a value broken by a doubled
+/// `!important`) is dropped while parsing and never competes for the slot at
+/// all. Where both candidates are valid the two answers agree (nothing to
+/// reject, so the position/priority rule this function applies is exactly
+/// Chrome's), which is every case this function's own tests measure. Where
+/// one candidate is invalid they can diverge: `color: notacolor !important;
+/// color: blue` collapses to the (important, syntactically-first-wins-the-tie)
+/// invalid declaration here, and Stylo then rejects it outright, leaving the
+/// property at its initial value — black — where Chrome computes blue.
+///
+/// Closing that gap needs a parser that knows validity, which lives only in
+/// Stylo (or a browser's CSSOM) — not in this crate. [`split_declarations_keeping_duplicates`]
+/// is the other half: it skips this collapse entirely, so a caller that can
+/// feed its *result* to that validity-aware parser (rinch-dom's
+/// `merged_inline_style`, which hands the re-joined string to Stylo) lets the
+/// cascade pick the winner the way a browser would, duplicates and all. A
+/// caller with no such parser downstream — `StyleProp`'s composition
+/// bookkeeping, `MockDomDocument`, the read-only scanners in #705 — has no way
+/// to ask the question either, so this collapsed form is what they keep using.
+/// `StyleProp::apply` writes the collapsed form straight to the attribute, so
+/// a duplicate it carries is decided here, before Stylo sees it (#1355).
 pub fn split_declarations(css: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (name, value) in split_declarations_keeping_duplicates(css) {
+        if let Some(at) = out.iter().position(|(k, _)| *k == name) {
+            let (_, displaced) = out.remove(at);
+            // The slot moves to the last declaration's position either way;
+            // only the *value* is decided by priority. `is_important` is not
+            // comment-aware (nothing here needs it to be, ordinarily — see
+            // its own doc), so a custom property's possibly-commented raw
+            // value is checked through `strip_comments`, which already knows
+            // how to look past one (including the `url(...)` exemption); a
+            // comment-free value — every non-custom one — passes through
+            // that call unchanged (its fast path borrows, no-op).
+            let mut value = value;
+            if is_important(&strip_comments(&displaced)) && !is_important(&strip_comments(&value)) {
+                value = displaced;
+            }
+            out.push((name, value));
+        } else {
+            out.push((name, value));
+        }
+    }
+    out
+}
+
+/// [`split_declarations`] with its duplicate-property collapse switched off:
+/// every declaration comes back, verbatim, in the order it was written,
+/// including a repeated property name.
+///
+/// This is the half of **#722** `rinch-core` *can* give a caller: it cannot
+/// decide which of two same-named declarations is valid (that needs Stylo or
+/// a browser's CSSOM, neither of which this crate depends on), so instead of
+/// guessing it hands every candidate back and lets whatever parses the
+/// re-joined string decide. `rinch-dom`'s `merged_inline_style` is the
+/// intended caller: it uses this to read the properties it is *not* touching
+/// this call back out of the existing attribute untouched, duplicates and
+/// all, so a `set_style`/`set_styles` call that leaves `color` alone does not
+/// collapse someone else's ambiguous `color: notacolor !important; color:
+/// blue` before Stylo ever sees it. A property this call *is* writing gets an
+/// unambiguous new value supplied by the caller, so collapsing every existing
+/// occurrence of just that one name to the single new value is correct (no
+/// validity question is left to answer) — that collapse is the merge
+/// function's own job, not this parser's.
+///
+/// Same tokenizing as `split_declarations` — comments, quotes, `url(…)`
+/// brackets, custom-property verbatim recovery, case folding — only the
+/// per-name collapse at the end is skipped.
+pub fn split_declarations_keeping_duplicates(css: &str) -> Vec<(String, String)> {
     let stripped = strip_comments(css);
     // Comments the same length as the ones they replace, so a byte offset
     // found in `masked` names the identical byte in `css` — see the
@@ -186,20 +259,6 @@ pub fn split_declarations(css: &str) -> Vec<(String, String)> {
             };
         }
 
-        if let Some(at) = out.iter().position(|(k, _)| k.as_str() == &*name) {
-            let (_, displaced) = out.remove(at);
-            // The slot moves to the last declaration's position either way;
-            // only the *value* is decided by priority. `is_important` is not
-            // comment-aware (nothing here needs it to be, ordinarily — see
-            // its own doc), so a custom property's possibly-commented raw
-            // value is checked through `strip_comments`, which already knows
-            // how to look past one (including the `url(...)` exemption); a
-            // comment-free value — every non-custom one — passes through
-            // that call unchanged (its fast path borrows, no-op).
-            if is_important(&strip_comments(&displaced)) && !is_important(&strip_comments(&value)) {
-                value = displaced;
-            }
-        }
         out.push((name.into_owned(), value));
     }
     out
@@ -989,6 +1048,32 @@ mod tests {
     fn a_part_with_no_colon_is_dropped() {
         let decls = split_declarations("color: red; nonsense; : 4px; gap: 4px");
         assert_eq!(names(&decls), ["color", "gap"]);
+    }
+
+    /// The other half of #722: `split_declarations_keeping_duplicates` is the
+    /// one case where this module deliberately does NOT collapse — every
+    /// declaration comes back, in order, duplicates and all, so a caller that
+    /// can hand the re-joined string to something validity-aware (Stylo, a
+    /// browser's CSSOM) gets to let *that* decide instead of this parser
+    /// guessing. Kills the mutant that has this function call
+    /// `split_declarations` instead of doing its own un-collapsed walk.
+    #[test]
+    fn keeping_duplicates_returns_every_declaration_uncollapsed() {
+        let decls = split_declarations_keeping_duplicates("a: 1; color: red; b: 2; COLOR: blue");
+        assert_eq!(names(&decls), ["a", "color", "b", "color"]);
+        assert_eq!(decls[1].1, "red");
+        assert_eq!(decls[3].1, "blue");
+    }
+
+    /// Case folding, comment stripping and the custom-property verbatim
+    /// recovery are shared with `split_declarations` — only the final
+    /// per-name collapse is skipped. If this regressed to a plain textual
+    /// split, a custom property's commented value would come back wrong.
+    #[test]
+    fn keeping_duplicates_still_normalises_names_and_keeps_custom_values_verbatim() {
+        let decls = split_declarations_keeping_duplicates("--x: 1px /* c */ 2px; COLOR: red");
+        assert_eq!(names(&decls), ["--x", "color"]);
+        assert_eq!(decls[0].1, "1px /* c */ 2px");
     }
 
     // ── StyleProp ───────────────────────────────────────────────────────────
