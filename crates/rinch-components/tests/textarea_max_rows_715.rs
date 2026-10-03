@@ -131,6 +131,9 @@ fn autosize_tracks_the_value_between_min_and_max_rows() {
     assert_eq!(m.field.get_attribute("rows"), Some("3".to_string()));
 
     // Six lines is capped at max_rows.
-    assert!(dispatch_input_event(input_id, "1\n2\n3\n4\n5\n6".to_string()));
+    assert!(dispatch_input_event(
+        input_id,
+        "1\n2\n3\n4\n5\n6".to_string()
+    ));
     assert_eq!(m.field.get_attribute("rows"), Some("4".to_string()));
 }
