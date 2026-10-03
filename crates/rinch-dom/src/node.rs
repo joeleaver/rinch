@@ -548,6 +548,34 @@ pub struct InlineDecorationSpan {
     pub color: peniko::Color,
 }
 
+/// A `vertical-align: sub|super|<length>|<percentage>` span within an IFC
+/// (#724).
+///
+/// Parley 0.11.1's shaping API has no per-run baseline offset, so a non-`baseline`
+/// `vertical-align` is not a Parley style at all — like [`InlineDecorationSpan`]'s
+/// wave, it is recorded here as a byte range over the flat IFC text and applied
+/// by the painter and the text-position queries directly, each glyph shifted by
+/// `shift_px` in *layout* pixels (positive = down, matching rinch's Y-down glyph
+/// convention — see `ifc::vertical_align_shift_px`'s doc for the sign and the
+/// calibration this was measured against).
+///
+/// **Known gap:** this is a pure post-layout shift. It does not grow the line
+/// box the way Chrome's does (a raised `<sup>` can paint into the line above),
+/// because Parley computed the line's own ascent/descent with no idea the glyph
+/// would move — filed as a follow-up alongside the five `vertical-align`
+/// keywords this crate does not lay out at all.
+#[derive(Debug, Clone, Copy)]
+pub struct InlineVerticalAlignSpan {
+    /// Byte range start in the IFC `text_content`.
+    pub start: usize,
+    /// Byte range end (exclusive) in the IFC `text_content`.
+    pub end: usize,
+    /// The shift to apply to every glyph in this range, in unscaled layout
+    /// pixels. Positive moves the glyph down (`sub`, a negative `<length>`),
+    /// negative moves it up (`super`, a positive `<length>`/`<percentage>`).
+    pub shift_px: f32,
+}
+
 /// Cached Parley inline layout for an IFC (Inline Formatting Context) root.
 ///
 /// Stored on the IFC root element. Rebuilt when any inline child mutates.
@@ -565,6 +593,8 @@ pub struct InlineLayout {
     /// Wavy-underline spans (`text-decoration-style: wavy`), which Parley cannot
     /// express as a style and the painter draws itself.
     pub decoration_spans: Vec<InlineDecorationSpan>,
+    /// `vertical-align` spans (#724) — see [`InlineVerticalAlignSpan`].
+    pub vertical_align_spans: Vec<InlineVerticalAlignSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
     /// Whether spaces at the end of a line can be content, not collapsed
@@ -579,6 +609,33 @@ pub struct InlineLayout {
 }
 
 impl InlineLayout {
+    /// The `vertical-align` shift (#724) at layout byte `byte`, or `0.0` when
+    /// no span covers it (the common case: no descendant declared a non-
+    /// `baseline` `vertical-align`).
+    ///
+    /// A **linear** scan, deliberately not [`crate::paint::text::TextMask`]'s
+    /// binary search: unlike a background or a wavy underline, two of these
+    /// spans *can* nest byte-for-byte (`<sub><sup>x</sup></sub>`), and
+    /// `ifc::walk_inline_children` pushes a descendant's span before its
+    /// ancestor's (post-order — a `push_inline_spans` call closes a stretch,
+    /// which happens as each element's own walk returns). So the first match
+    /// in **insertion order** is always the innermost one covering `byte`,
+    /// which is what CSS composes toward anyway for a single level, and is
+    /// close enough for two: `vertical-align` is deliberately not chained
+    /// here (true nested composition — an outer `sub` shifting the *shifted*
+    /// baseline an inner `super` already moved — is out of scope, filed
+    /// alongside the five keywords this crate does not lay out). The list
+    /// stays this short in practice (elements with a non-`baseline`
+    /// `vertical-align` are rare), so the scan costs nothing a sort-then-
+    /// search would have saved.
+    pub(crate) fn vertical_align_shift_at(&self, byte: usize) -> f32 {
+        self.vertical_align_spans
+            .iter()
+            .find(|s| s.start <= byte && byte < s.end)
+            .map(|s| s.shift_px)
+            .unwrap_or(0.0)
+    }
+
     /// The width this inline content asks for: what the IFC root's measure
     /// reports to Taffy.
     ///

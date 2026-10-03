@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use peniko::Brush;
 
 use crate::RinchDocument;
+use crate::computed_style::VerticalAlignValue;
 use crate::layout;
 use crate::node::{
     DisplayMode, InlineFlowRole, InlineLayout, LayoutResult, Node, NodeContext, NodeKind,
@@ -6182,6 +6183,7 @@ impl RinchDocument {
         let mut text_ranges = Vec::new();
         let mut background_spans = Vec::new();
         let mut decoration_spans = Vec::new();
+        let mut vertical_align_spans = Vec::new();
         let mut flat_pos = 0usize;
 
         // Walk children into an `IfcText`, which collapses white space across
@@ -6203,6 +6205,7 @@ impl RinchDocument {
             &mut text_ranges,
             &mut background_spans,
             &mut decoration_spans,
+            &mut vertical_align_spans,
             &mut flat_pos,
             scale,
             font_cx,
@@ -6236,6 +6239,10 @@ impl RinchDocument {
         for d in &mut decoration_spans {
             d.start = ifc_text.remap(d.start);
             d.end = ifc_text.remap(d.end);
+        }
+        for v in &mut vertical_align_spans {
+            v.start = ifc_text.remap(v.start);
+            v.end = ifc_text.remap(v.end);
         }
         let flat_len = ifc_text.final_len();
 
@@ -6311,6 +6318,7 @@ impl RinchDocument {
                 text_ranges,
                 background_spans,
                 decoration_spans,
+                vertical_align_spans,
                 max_width: max_width.unwrap_or(f32::INFINITY),
                 preserves_spaces,
                 hang,
@@ -6571,6 +6579,7 @@ impl RinchDocument {
                 text_ranges: Vec::new(),
                 background_spans: Vec::new(),
                 decoration_spans: Vec::new(),
+                vertical_align_spans: Vec::new(),
                 max_width: container_width,
                 // Every line fits: nothing hangs.
                 preserves_spaces: false,
@@ -6865,18 +6874,74 @@ impl RinchDocument {
         props
     }
 
+    /// The `vertical-align` shift (#724) a `vertical_align` value gives a text
+    /// run, as an unscaled layout-pixel offset in rinch's Y-down convention:
+    /// **positive moves the glyph down**, negative up.
+    ///
+    /// Three cases:
+    ///
+    /// - `Baseline` and the five keywords with no consumer yet
+    ///   (`Top`/`TextTop`/`Middle`/`Bottom`/`TextBottom` — see
+    ///   [`crate::computed_style::VerticalAlignValue`]'s doc) answer `0.0`.
+    /// - `Sub`/`Super` answer a fixed fraction of `parent_font_size` — CSS 2.1
+    ///   §10.8.1 says `sub`/`super` lower/raise the box "to the proper
+    ///   position for subscripts/superscripts **of the parent's box**",
+    ///   UA-defined, so there is no spec algorithm to match: Chrome instead
+    ///   reads the OS/2 table's actual sub/superscript metrics of the
+    ///   parent's font at its size, non-linearly (measured: at 24px Inter the
+    ///   ratio to font-size is ~8% off the 16px ratio, almost certainly
+    ///   device-pixel rounding inside Chrome's own layout, not a simpler
+    ///   closed form). `SUB_RATIO`/`SUPER_RATIO` below are that *ratio*,
+    ///   calibrated once against the one case this issue asks for — Chrome
+    ///   153, the bundled Inter, a 16px parent (`crates/rinch-dom/tests/vertical_align_tests.rs`
+    ///   has the measurement) — and applied linearly to any `parent_font_size`.
+    ///   Exact only at that calibration point; elsewhere it is a documented
+    ///   approximation, like the five keywords above.
+    /// - A `<length>`/`<percentage>` resolves through
+    ///   [`crate::computed_style::values::LengthPercentageValue::resolve`]
+    ///   against **this element's own** `line-height` (its own box, not the
+    ///   parent's — the one place `sub`/`super` and a length disagree about
+    ///   whose metrics apply, both measured against Chrome 153 with Inter).
+    ///   CSS's sign (positive raises) is the opposite of this function's, so
+    ///   the resolved value is negated on the way out.
+    pub(crate) fn vertical_align_shift_px(
+        computed: &crate::computed_style::ComputedStyle,
+        parent_font_size: f32,
+    ) -> f32 {
+        use crate::computed_style::VerticalAlignValue;
+        // Calibration: Chrome 153, bundled Inter, 16px parent `font-size`
+        // (line-height does not move it — verified at 16px/32px line-height,
+        // same 16px font-size, identical shift both times).
+        const SUB_RATIO: f32 = 67.0 / 256.0; // 4.1875px at a 16px parent
+        const SUPER_RATIO: f32 = 405.0 / 1024.0; // 6.328125px at a 16px parent
+        match computed.vertical_align {
+            VerticalAlignValue::Sub => SUB_RATIO * parent_font_size,
+            VerticalAlignValue::Super => -(SUPER_RATIO * parent_font_size),
+            VerticalAlignValue::LengthPercentage(lp) => -lp.resolve(computed.line_height_px()),
+            VerticalAlignValue::Baseline
+            | VerticalAlignValue::Top
+            | VerticalAlignValue::TextTop
+            | VerticalAlignValue::Middle
+            | VerticalAlignValue::Bottom
+            | VerticalAlignValue::TextBottom => 0.0,
+        }
+    }
+
     /// Push the spans `owner` contributes over `start..end` — its background, if
     /// it has a visible one, and its wavy underline, if it has one.
     ///
     /// The one place an inline box becomes a span, so the ordinary `display:
     /// inline` arm and the split-inline bridge below cannot disagree about
     /// padding, radius, or which elements get a squiggle.
+    #[allow(clippy::too_many_arguments)]
     fn push_inline_spans(
+        nodes: &slab::Slab<Node>,
         owner: &Node,
         start: usize,
         end: usize,
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
+        vertical_align_spans: &mut Vec<crate::node::InlineVerticalAlignSpan>,
     ) {
         if end <= start {
             return;
@@ -6895,6 +6960,27 @@ impl RinchDocument {
                     .or(owner.computed_style.color)
                     .unwrap_or(peniko::Color::BLACK),
             });
+        }
+        // `vertical-align` (#724): a post-layout glyph shift, not a Parley
+        // style — recorded the same way the wavy underline above is. The
+        // "parent's box" the spec shifts against (CSS 2.1 §10.8.1) is this
+        // element's own DOM parent, which may sit above whatever enclosing
+        // span called in once a split inline or a `display: contents` bridge
+        // is in the way — so this reads `owner.parent` directly.
+        if owner.computed_style.vertical_align != VerticalAlignValue::Baseline {
+            let parent_font_size = owner
+                .parent
+                .and_then(|p| nodes.get(p))
+                .map(|p| p.computed_style.font_size)
+                .unwrap_or(owner.computed_style.font_size);
+            let shift = Self::vertical_align_shift_px(&owner.computed_style, parent_font_size);
+            if shift != 0.0 {
+                vertical_align_spans.push(crate::node::InlineVerticalAlignSpan {
+                    start,
+                    end,
+                    shift_px: shift,
+                });
+            }
         }
         let Some(color) = owner.computed_style.background_color() else {
             return;
@@ -6958,6 +7044,7 @@ impl RinchDocument {
         text_ranges: &mut Vec<crate::node::IfcTextRange>,
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
+        vertical_align_spans: &mut Vec<crate::node::InlineVerticalAlignSpan>,
         flat_pos: &mut usize,
         scale: f32,
         font_cx: &mut parley::FontContext,
@@ -7010,11 +7097,13 @@ impl RinchDocument {
                 for (owner_id, start) in open.drain(keep..).rev() {
                     if let Some(owner) = nodes.get(owner_id) {
                         Self::push_inline_spans(
+                            nodes,
                             owner,
                             start,
                             *flat_pos,
                             background_spans,
                             decoration_spans,
+                            vertical_align_spans,
                         );
                     }
                 }
@@ -7147,6 +7236,9 @@ impl RinchDocument {
                     // Record background span start position
                     let bg_start = *flat_pos;
                     let has_bg = child_computed.background_color().is_some();
+                    // #724: whether this element needs its own vertical-align
+                    // span over the stretch it owns.
+                    let has_valign = child_computed.vertical_align != VerticalAlignValue::Baseline;
 
                     builder.push_span(Self::inline_style_props(
                         child_computed,
@@ -7166,6 +7258,7 @@ impl RinchDocument {
                         text_ranges,
                         background_spans,
                         decoration_spans,
+                        vertical_align_spans,
                         flat_pos,
                         scale,
                         font_cx,
@@ -7174,17 +7267,19 @@ impl RinchDocument {
 
                     builder.pop_span();
 
-                    // Record background span if the inline element has a visible
-                    // background. Through the shared helper, so this and the
-                    // split-inline bridge below cannot drift about padding or
-                    // radius.
-                    if has_bg {
+                    // Record background and/or vertical-align span if the
+                    // inline element has one. Through the shared helper, so
+                    // this and the split-inline bridge below cannot drift
+                    // about padding, radius, or the vertical shift.
+                    if has_bg || has_valign {
                         Self::push_inline_spans(
+                            nodes,
                             child,
                             bg_start,
                             *flat_pos,
                             background_spans,
                             decoration_spans,
+                            vertical_align_spans,
                         );
                     }
                 }
@@ -7244,6 +7339,7 @@ impl RinchDocument {
                         text_ranges,
                         background_spans,
                         decoration_spans,
+                        vertical_align_spans,
                         flat_pos,
                         scale,
                         font_cx,
@@ -7322,11 +7418,13 @@ impl RinchDocument {
         for (owner_id, start) in open.drain(..).rev() {
             if let Some(owner) = nodes.get(owner_id) {
                 Self::push_inline_spans(
+                    nodes,
                     owner,
                     start,
                     *flat_pos,
                     background_spans,
                     decoration_spans,
+                    vertical_align_spans,
                 );
             }
         }

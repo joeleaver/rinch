@@ -85,6 +85,7 @@ impl ComputedStyle {
             display: display_from_stylo(&box_style.display),
             table_part: table_part_from_stylo(&box_style.display),
             position: position_from_stylo(&box_style.position),
+            vertical_align: vertical_align_from_stylo(&box_style.vertical_align),
             overflow_x: overflow_from_stylo(&box_style.overflow_x),
             overflow_y: overflow_from_stylo(&box_style.overflow_y),
             scrollbar_color: custom_property(cv, &SCROLLBAR_COLOR, ScrollbarColorValue::parse)

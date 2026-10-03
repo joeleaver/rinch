@@ -79,6 +79,7 @@ pub(super) fn paint_inline_layout(
                 scale,
                 mask,
                 None,
+                Some(inline_layout),
             );
         }
     }
@@ -610,6 +611,74 @@ impl GlyphCursor {
     }
 }
 
+/// [`GlyphCursor`]'s shape, for `vertical-align` (#724) instead of
+/// visibility: a per-glyph shift in unscaled layout px rather than a bool.
+/// Needed because [`crate::node::InlineLayout::vertical_align_shift_at`]
+/// answers by **byte**, and a glyph carries no byte offset of its own — only
+/// its cluster does — so the shift has to be looked up once per cluster and
+/// expanded to one entry per glyph, exactly as the hidden flag is.
+#[derive(Default)]
+struct ValignCursor {
+    key: Option<(usize, usize)>,
+    next: usize,
+    /// `(style_index, shift_px)` per glyph of the current run, visual order.
+    glyphs: Vec<(usize, f32)>,
+}
+
+impl ValignCursor {
+    /// This glyph run's per-glyph shifts, or `None` when every one of them is
+    /// `0.0` (the common case, including whenever `inline_layout` has no
+    /// `vertical_align_spans` at all); advances past it either way.
+    fn take(
+        &mut self,
+        glyph_run: &parley::layout::GlyphRun<'_, Brush>,
+        inline_layout: &crate::node::InlineLayout,
+    ) -> Option<Vec<f32>> {
+        let run = glyph_run.run();
+        let key = (run.index(), run.cluster_range().start);
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.next = 0;
+            self.glyphs.clear();
+            for cluster in run.visual_clusters() {
+                let shift = inline_layout.vertical_align_shift_at(cluster.text_range().start);
+                self.glyphs
+                    .extend(cluster.glyphs().map(|g| (g.style_index(), shift)));
+            }
+        }
+        let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
+        let style = rest.first()?.0;
+        let count = rest.iter().take_while(|&&(si, _)| si == style).count();
+        let slice = &rest[..count];
+        self.next += count;
+        slice
+            .iter()
+            .any(|&(_, s)| s != 0.0)
+            .then(|| slice.iter().map(|&(_, s)| s).collect())
+    }
+}
+
+/// [`run_flags`]'s shape for [`ValignCursor`].
+///
+/// Short-circuits on an empty `vertical_align_spans` **before** touching the
+/// cursor, which is the fast path for the overwhelming majority of
+/// documents (nothing declares a non-`baseline` `vertical-align`): without
+/// this check every glyph run would re-walk its clusters for nothing, since
+/// `ValignCursor::take` has no cheaper way to answer "no span starts between
+/// here and the next style change" than building the per-glyph list and
+/// finding it all-zero.
+fn run_shifts(
+    cursor: &mut ValignCursor,
+    glyph_run: &parley::layout::GlyphRun<'_, Brush>,
+    inline_layout: Option<&crate::node::InlineLayout>,
+) -> Option<Vec<f32>> {
+    let inline_layout = inline_layout?;
+    if inline_layout.vertical_align_spans.is_empty() {
+        return None;
+    }
+    cursor.take(glyph_run, inline_layout)
+}
+
 /// A glyph run's hidden flags, or `None` when it is entirely shown (always,
 /// without a mask).
 fn run_flags(
@@ -635,6 +704,10 @@ fn run_flags(
 /// colour (#904): its cached layout is rebuilt only by a layout compute, so a
 /// colour-only change — a hover, a transition frame — is applied here rather
 /// than by re-shaping.
+///
+/// `valign` is the IFC whose `vertical-align` spans (#724) shift this text's
+/// glyphs; `None` — the common case, including every render with no
+/// `InlineLayout` in scope — shifts nothing.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text(
     painter: &mut dyn Painter,
@@ -645,6 +718,7 @@ pub(super) fn render_text(
     scale: f64,
     mask: Option<&TextMask>,
     color: Option<AlphaColor<Srgb>>,
+    valign: Option<&crate::node::InlineLayout>,
 ) {
     let transform = css_transform * Affine::translate((x, y));
     let color_brush = color.map(Brush::Solid);
@@ -656,6 +730,7 @@ pub(super) fn render_text(
         mask,
         color_brush.as_ref(),
         None,
+        valign,
     );
 }
 
@@ -663,11 +738,13 @@ pub(super) fn render_text(
 /// line-through) through `transform`, which already carries the text's
 /// origin. `glyph_brush` overrides the layout's brush for the glyphs and
 /// `decoration_brush` for the decorations; `None` keeps each one's own.
+/// `valign` is [`render_text`]'s.
 ///
 /// [`render_text`] and every `text-shadow` pass draw through this one
 /// function, so a shadow is the main pass's glyphs **and** decorations
 /// (#981), segment for segment — a hidden stretch that draws no underline
-/// casts no underline shadow either (#829).
+/// casts no underline shadow either (#829), and a shifted stretch casts its
+/// shadow at the shifted position.
 #[allow(clippy::too_many_arguments)]
 fn draw_text(
     painter: &mut dyn Painter,
@@ -677,6 +754,7 @@ fn draw_text(
     mask: Option<&TextMask>,
     glyph_brush: Option<&Brush>,
     decoration_brush: Option<&Brush>,
+    valign: Option<&crate::node::InlineLayout>,
 ) {
     let sf = scale as f32;
     for line in layout.lines() {
@@ -684,6 +762,7 @@ fn draw_text(
             continue;
         }
         let mut cursor = GlyphCursor::default();
+        let mut vcursor = ValignCursor::default();
         for item in line.items() {
             let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
@@ -692,6 +771,7 @@ fn draw_text(
             if flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
                 continue;
             }
+            let shifts = run_shifts(&mut vcursor, &glyph_run, valign);
             let mut gx = glyph_run.offset() * sf;
             let gy = glyph_run.baseline() * sf;
             let run = glyph_run.run();
@@ -703,6 +783,17 @@ fn draw_text(
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
             let style = glyph_run.style();
             let brush = glyph_brush.unwrap_or(&style.brush);
+            // The shift this whole run's decorations (underline/line-through)
+            // sit at: the first glyph's, which is exact whenever the run is
+            // wholly inside one `vertical-align` span — the common case, since
+            // `<sub>`/`<sup>` also change `font-size` (#674), which already
+            // forces a run split at the same boundary.
+            let decoration_shift = shifts
+                .as_ref()
+                .and_then(|s| s.first())
+                .copied()
+                .unwrap_or(0.0)
+                * sf;
 
             // The x extents of the shown stretches of this run, for the
             // decorations: the whole run when nothing in it is hidden.
@@ -710,8 +801,9 @@ fn draw_text(
             let mut glyphs: Vec<PaintGlyph> = Vec::new();
             for (i, glyph) in glyph_run.glyphs().enumerate() {
                 let start_x = gx;
+                let shift = shifts.as_ref().map(|s| s[i]).unwrap_or(0.0) * sf;
                 let px = gx + glyph.x * sf;
-                let py = gy + glyph.y * sf;
+                let py = gy + glyph.y * sf + shift;
                 gx += glyph.advance * sf;
                 if flags.as_ref().is_some_and(|f| f[i]) {
                     continue;
@@ -757,7 +849,7 @@ fn draw_text(
             ];
             for (offset, size, own_brush) in decorations.into_iter().flatten() {
                 let dec_brush = decoration_brush.unwrap_or(own_brush);
-                let line_y = (gy - offset * sf) as f64;
+                let line_y = (gy + decoration_shift - offset * sf) as f64;
                 let stroke = Stroke::new((size * sf).max(1.0) as f64);
                 for &(x0, x1) in &segments {
                     let line = peniko::kurbo::Line::new((x0 as f64, line_y), (x1 as f64, line_y));
@@ -790,6 +882,7 @@ pub(super) fn draw_shadow_copy(
         mask,
         Some(brush),
         Some(brush),
+        wavy,
     );
     if let Some(inline_layout) = wavy
         && !inline_layout.decoration_spans.is_empty()
@@ -840,7 +933,17 @@ pub(super) fn render_text_with_shadow(
     );
 
     // Render the main text on top
-    render_text(painter, layout, x, y, css_transform, scale, mask, color);
+    render_text(
+        painter,
+        layout,
+        x,
+        y,
+        css_transform,
+        scale,
+        mask,
+        color,
+        wavy,
+    );
 }
 
 /// The shadow passes of [`render_text_with_shadow`], without the text: every
