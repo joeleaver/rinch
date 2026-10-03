@@ -797,3 +797,30 @@ fn spans_past_what_the_import_reads_are_written_clamped() {
         doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
     }
 }
+
+#[test]
+fn a_list_item_starting_with_an_empty_paragraph_keeps_its_blocks() {
+    let s = Schema::starter_kit();
+    let node = |name: &str, kids: Vec<Node>| {
+        s.create_node(name, Attrs::new(), Fragment::from_children(kids))
+            .unwrap()
+    };
+    let table = one_cell_table(&s, Attrs::new(), vec![p(&s, vec![t(&s, "a", &[])])]);
+    for second in [table, p(&s, vec![br(&s)]), p(&s, vec![t(&s, "b", &[])])] {
+        let d = doc(
+            &s,
+            vec![node(
+                "bullet_list",
+                vec![node("list_item", vec![p(&s, vec![]), second.clone()])],
+            )],
+        );
+        let md = doc_to_markdown(&d);
+        // The empty paragraph is lost (#1366); the item keeps the rest.
+        let back = doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+        let want = doc(
+            &s,
+            vec![node("bullet_list", vec![node("list_item", vec![second])])],
+        );
+        assert_eq!(back, want, "{md:?}");
+    }
+}
