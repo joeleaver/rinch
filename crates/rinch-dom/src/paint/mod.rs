@@ -525,9 +525,10 @@ impl PaintedStyle {
     }
 
     fn now(node: &Node) -> Self {
+        let (clips_x, clips_y) = node.clip_axes();
         Self {
-            clips_x: node.clips_overflow_x(),
-            clips_y: node.clips_overflow_y(),
+            clips_x,
+            clips_y,
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
         }
@@ -2322,7 +2323,10 @@ fn paints_nothing_without_visit(
     // lets a child paint past it on exactly that axis, so a box clipping only
     // one cannot be assumed to confine its children the way a fully clipping
     // one can — fall through to the recursive check instead of this shortcut.
-    if node.clips_overflow_x() && node.clips_overflow_y() {
+    // `clip_axes()` (not the two single-axis predicates) is the shared guard
+    // run once instead of twice.
+    let (clip_x, clip_y) = node.clip_axes();
+    if clip_x && clip_y {
         return true;
     }
     let child_x = x - node.scroll_offset.0 * scale;
@@ -2724,8 +2728,10 @@ fn paint_node(
         // only one axis still lets a child paint past it on the open one, so
         // this node's own box missing the dirty region does not mean its
         // children do too — fall through to the recurse below instead of
-        // returning.
-        if (node.clips_overflow_x() && node.clips_overflow_y()) || node.children.is_empty() {
+        // returning. `clip_axes()` runs the shared display/contents guards
+        // once rather than the two single-axis predicates running them twice.
+        let (node_clips_x, node_clips_y) = node.clip_axes();
+        if (node_clips_x && node_clips_y) || node.children.is_empty() {
             return;
         }
         // Skip drawing this node but recurse into children.

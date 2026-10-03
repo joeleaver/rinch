@@ -211,10 +211,20 @@ fn hit_test_node(
     // Per axis (#535), matching `clip_shape`: an axis whose own `overflow`
     // computes to `visible` does not bound children at all, so
     // `overflow-x: clip; overflow-y: visible` only restricts `x`.
-    let check_children = {
+    //
+    // `clip_axes()` (not the two single-axis predicates) runs the shared
+    // display/contents guards once per node instead of twice, and the common
+    // "neither axis clips" case skips `padding_box_insets` entirely — this is
+    // the hottest node-visit site in the pointer-move path (every visited
+    // node, every probe), and both cost a measured +12% on
+    // `pointer_move_warm` in CI's Callgrind before this (#535 Perf CI).
+    let (clip_x, clip_y) = node.clip_axes();
+    let check_children = if !clip_x && !clip_y {
+        true
+    } else {
         let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(node);
-        let x_ok = !node.clips_overflow_x() || (x >= nx + left && x <= nx + nw - right);
-        let y_ok = !node.clips_overflow_y() || (y >= ny + top && y <= ny + nh - bottom);
+        let x_ok = !clip_x || (x >= nx + left && x <= nx + nw - right);
+        let y_ok = !clip_y || (y >= ny + top && y <= ny + nh - bottom);
         x_ok && y_ok
     };
 
@@ -441,8 +451,7 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::E
         return [0.0; 4];
     };
     let mut e = [0.0, 0.0, node.layout.width, node.layout.height];
-    let clip_x = node.clips_overflow_x();
-    let clip_y = node.clips_overflow_y();
+    let (clip_x, clip_y) = node.clip_axes();
     if !clip_x || !clip_y {
         let sx = node.scroll_offset.0 as f32;
         let sy = node.scroll_offset.1 as f32;

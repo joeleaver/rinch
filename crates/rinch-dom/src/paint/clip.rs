@@ -304,8 +304,7 @@ pub fn padding_box_radii(node: &Node, scale: f64) -> RoundedRectRadii {
 /// a radius to round against on that axis — measured in Chrome 153, not
 /// assumed (see the module doc).
 pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, RoundedRectRadii)> {
-    let clip_x = node.clips_overflow_x();
-    let clip_y = node.clips_overflow_y();
+    let (clip_x, clip_y) = node.clip_axes();
     if !clip_x && !clip_y {
         return None;
     }

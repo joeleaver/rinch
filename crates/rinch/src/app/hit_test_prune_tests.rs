@@ -752,10 +752,13 @@ fn reference_hit_test_node(
     // the same box paint clips pixels to (#324) — the **padding** box, not
     // the border box (#536), per axis (#535); see `hit_test_node`'s identical
     // arm, which this function is a verbatim pre-prune copy of.
-    let check_children = {
+    let (clip_x, clip_y) = node.clip_axes();
+    let check_children = if !clip_x && !clip_y {
+        true
+    } else {
         let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(node);
-        let x_ok = !node.clips_overflow_x() || (x >= nx + left && x <= nx + nw - right);
-        let y_ok = !node.clips_overflow_y() || (y >= ny + top && y <= ny + nh - bottom);
+        let x_ok = !clip_x || (x >= nx + left && x <= nx + nw - right);
+        let y_ok = !clip_y || (y >= ny + top && y <= ny + nh - bottom);
         x_ok && y_ok
     };
 
