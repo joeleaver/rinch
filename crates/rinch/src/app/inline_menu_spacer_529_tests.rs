@@ -20,6 +20,7 @@
 //! title, because ASCII-only labels with no title are the fixed point where
 //! the old estimate happened to be close.
 
+use super::perf_expect;
 use super::*;
 
 use crate::menu::{Menu, MenuItem};
@@ -27,7 +28,7 @@ use rinch_components::BorderlessWindow;
 use rinch_core::Component;
 use rinch_core::reactive::Signal;
 
-const VIEWPORT: (f32, f32) = (1000.0, 400.0);
+const VIEWPORT: (f32, f32) = (perf_expect::SIZE.0 as f32, perf_expect::SIZE.1 as f32);
 
 const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
@@ -91,9 +92,15 @@ fn mount_with(labels: &'static [&'static str], title: &'static str, estimate: u3
         d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
-    // The first resolve lays the row out; the spacer follows it on the next.
-    for _ in 0..3 {
-        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    // Drive it the way the desktop loop does — a redraw, then an
+    // `AboutToWait` that asks for the next one only if something is owed —
+    // so the spacer has to reach its width through the real frame
+    // scheduling, not through a resolve the test forced.
+    for _ in 0..4 {
+        perf_expect::paint(&mut app);
+        if !perf_expect::about_to_wait(&mut app) {
+            break;
+        }
     }
     app
 }
@@ -133,8 +140,8 @@ fn painted(app: &RinchApp, class: &str) -> (f32, f32, f32, f32) {
     crate::app::hit_testing::painted_element_box(&d.tree, matches[0])
 }
 
-/// The spacer's right edge lands on the row's right edge, rounded up to a
-/// whole pixel.
+/// The spacer's right edge lands on the row's right edge (within the layout's
+/// own pixel rounding).
 #[track_caller]
 fn assert_spacer_reserves_the_row(app: &RinchApp) {
     let (rx, _, rw, _) = painted(app, "rinch-app-menu-bar__inline-row");
@@ -204,4 +211,18 @@ fn the_branded_title_is_reserved_with_the_labels() {
 fn the_estimate_is_replaced_by_the_measured_row() {
     let app = mount_with(&["File", "Edit"], "", 600);
     assert_spacer_reserves_the_row(&app);
+}
+
+/// Following the row costs one extra layout, then nothing: once the spacer
+/// matches the row the loop goes idle. A spacer whose width fed back into the
+/// row it measures would ask for a frame on every turn.
+#[test]
+fn the_spacer_settles_and_the_loop_goes_idle() {
+    let mut app = mount(&["ファイル", "Правка"], "Rinch Zoo");
+    assert_spacer_reserves_the_row(&app);
+    let (redraws, _) = perf_expect::idle_turns(&mut app, 5);
+    assert_eq!(
+        redraws, 0,
+        "a settled inline menu bar must not keep asking for frames"
+    );
 }
