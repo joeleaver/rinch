@@ -34,7 +34,35 @@ pub fn styles() -> String {
     transition: opacity 150ms ease, visibility 0s linear 150ms, transform 150ms ease;
 }
 
-.rinch-popover--opened .rinch-popover__dropdown {
+/* #778: this used to be a plain descendant rule, `.rinch-popover--opened
+   .rinch-popover__dropdown`, which a descendant combinator matches through
+   ANY ancestor carrying `--opened` — so an open Popover revealed every closed
+   Popover nested inside its own dropdown (measured on desktop: the inner
+   panel read back `visibility: Visible`, `opacity: 1`, and took pointer
+   input, although its own root carried no `--opened`).
+
+   A plain child combinator (`.rinch-popover--opened > .rinch-popover__dropdown`,
+   the fix `DropdownMenu`'s **backdrop** uses, below) is wrong here for the same
+   reason the review of #774 found for `DropdownMenu`'s **panel**: the dropdown
+   is a caller's child, and `rsx!` is not always handing it over as a direct
+   child. A `{Option<NodeHandle>}` child, every branch of an `if` after the
+   first, a reactive-prop component inside an `if`, and a helper component
+   whose body is control flow each get a `display: contents` wrapper of the
+   macro's own, and a caller may wrap it in a plain `div` too — under `>` a
+   popover built any of those ways never opens.
+
+   So this is the same descendant-rule-with-an-exclusion `DropdownMenu`'s panel
+   rule uses: reveal a dropdown under an open ancestor UNLESS a *closed*
+   `.rinch-popover` root sits between that open ancestor and the dropdown. For
+   the outer popover's own (possibly wrapped) dropdown there is no such root in
+   between, so it still opens; for a closed popover nested inside an open one's
+   dropdown, its own root is exactly that intervening closed root, so its
+   dropdown stays hidden. Same known limit as `DropdownMenu`'s (an open popover
+   C inside the *target* of a closed popover B inside an open popover A stays
+   hidden, because B sits between A and C's panel) — not re-measured here
+   since the mechanism is identical; `css_hook_778_tests` pins the shape that
+   is. */
+.rinch-popover--opened .rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover:not(.rinch-popover--opened) .rinch-popover__dropdown) {
     opacity: 1;
     visibility: visible;
     transition: opacity 150ms ease, transform 150ms ease;
@@ -45,11 +73,12 @@ pub fn styles() -> String {
    awake. The long note on `.rinch-drawer__root--hidden *` in `styles/drawer.rs`
    has the reasoning, the `!important`, the `*`, and why no pseudo-elements.
 
-   The `:not()` is the exact complement of the rule above, so the pause lands on
-   precisely the dropdowns that rule leaves hidden. Resumes on open; the
-   dropdown's 150ms fade-out (#759) shows the spinner stopped, on both
-   backends. */
-.rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover__dropdown) * {
+   The `:not()` is the exact complement of the rule above (#778 widened both
+   together), so the pause lands on precisely the dropdowns that rule leaves
+   hidden — a closed popover nested in an open one's dropdown included.
+   Resumes on open; the dropdown's 150ms fade-out (#759) shows the spinner
+   stopped, on both backends. */
+.rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover:not(.rinch-popover--opened) .rinch-popover__dropdown)) * {
     animation-play-state: paused !important;
 }
 
