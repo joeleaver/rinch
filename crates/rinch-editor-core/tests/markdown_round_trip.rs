@@ -604,3 +604,27 @@ fn delimiter_runs_between_punctuation_and_autolink_shapes_round_trip() {
         ),
     );
 }
+
+#[test]
+fn an_intraword_run_inside_another_run_of_its_character_round_trips() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    // `***b*é*cy***`: the `*`s around `é` can open and close, and with the
+    // bold still open CommonMark paired the second with it.
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![
+                    t(&s, "b", &[&bold, &it]),
+                    t(&s, "é", &[&bold]),
+                    t(&s, "cy", &[&bold, &it]),
+                    t(&s, " z", &[]),
+                ],
+            )],
+        ),
+    );
+}
