@@ -477,3 +477,38 @@ fn leading_whitespace_keeps_the_block_structure() {
     let md = doc_to_markdown(&doc(&s, vec![p(&s, vec![t(&s, "    code?", &[])])]));
     assert_eq!(single_paragraph_text(&s, &md), vec!["code?"], "{md:?}");
 }
+
+// ── hard breaks Markdown has no `\` for ──
+
+#[test]
+fn a_hard_break_at_a_textblock_end_or_in_a_heading_round_trips() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    // Shift+Enter at the end of a paragraph: `a\` would read as a backslash.
+    rt(&s, &doc(&s, vec![p(&s, vec![t(&s, "a", &[]), br(&s)])]));
+    rt(
+        &s,
+        &doc(&s, vec![p(&s, vec![t(&s, "a", &[&bold]), br(&s), br(&s)])]),
+    );
+    rt(&s, &doc(&s, vec![p(&s, vec![br(&s), t(&s, "a", &[])])]));
+    // A heading is one line: every break in it.
+    let heading = s
+        .create_node(
+            "heading",
+            Attrs::from_iter([("level", AttrValue::Int(2))]),
+            Fragment::from_children(vec![t(&s, "a", &[]), br(&s), t(&s, "b", &[&bold]), br(&s)]),
+        )
+        .unwrap();
+    rt(&s, &doc(&s, vec![heading]));
+}
+
+#[test]
+fn the_reader_takes_br_as_a_hard_break() {
+    let s = Schema::starter_kit();
+    for md in ["a<br>b", "a<br/>b", "a<BR />b"] {
+        let d = doc_from_markdown_strict(&s, md).unwrap_or_else(|e| panic!("{md}: {e}"));
+        assert_eq!(d.child(0).child(1).type_name(), "hard_break", "{md}");
+        assert_eq!(d.child(0).child_count(), 3, "{md}");
+    }
+    assert_eq!(refusal(&s, "a<br class=\"x\">b"), Construct::InlineHtml);
+}
