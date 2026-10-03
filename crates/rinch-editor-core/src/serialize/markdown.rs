@@ -207,7 +207,25 @@ struct TextBlock {
     type_name: &'static str,
     attrs: Attrs,
     content: Vec<Node>,
+    /// The last text node, not yet in `content`, and its text so far: text
+    /// pulldown splits at escapes and entities is appended here, so merging
+    /// the pieces is linear in the text, not quadratic.
+    pending: Option<(Node, String)>,
     is_code: bool,
+}
+
+impl TextBlock {
+    /// Move the pending text node into `content`.
+    fn flush_pending(&mut self) {
+        if let Some((node, text)) = self.pending.take() {
+            let node = if node.text() == Some(text.as_str()) {
+                node
+            } else {
+                node.with_text(text.into())
+            };
+            self.content.push(node);
+        }
+    }
 }
 
 /// An open inline-HTML mark tag.
@@ -625,6 +643,7 @@ impl<'a> MdBuilder<'a> {
             type_name,
             attrs,
             content: Vec::new(),
+            pending: None,
             is_code,
         });
     }
@@ -637,9 +656,10 @@ impl<'a> MdBuilder<'a> {
 
     fn flush_inline(&mut self) -> Result<(), MarkdownError> {
         self.close_html_marks()?;
-        let Some(tb) = self.inline.take() else {
+        let Some(mut tb) = self.inline.take() else {
             return Ok(());
         };
+        tb.flush_pending();
         let content = if tb.is_code {
             let mut text = String::new();
             for n in &tb.content {
@@ -685,17 +705,21 @@ impl<'a> MdBuilder<'a> {
     /// carry the same marks (pulldown splits text at escapes and entities).
     fn push_inline_node(&mut self, node: Node) {
         self.ensure_inline();
-        let content = &mut self.inline.as_mut().expect("inline open").content;
-        if let Some(last) = content.last_mut()
-            && last.is_text()
-            && node.is_text()
-            && last.same_markup(&node)
-        {
-            let merged = format!("{}{}", last.text().unwrap_or(""), node.text().unwrap_or(""));
-            *last = last.with_text(merged.into());
+        let tb = self.inline.as_mut().expect("inline open");
+        if node.is_text() {
+            if let Some((last, text)) = &mut tb.pending
+                && last.same_markup(&node)
+            {
+                text.push_str(node.text().unwrap_or(""));
+                return;
+            }
+            tb.flush_pending();
+            let text = node.text().unwrap_or("").to_string();
+            tb.pending = Some((node, text));
             return;
         }
-        content.push(node);
+        tb.flush_pending();
+        tb.content.push(node);
     }
 
     fn push_text(&mut self, t: &str) -> Result<(), MarkdownError> {
