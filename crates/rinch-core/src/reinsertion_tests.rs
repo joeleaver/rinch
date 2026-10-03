@@ -1168,3 +1168,289 @@ fn release_scratch_container_detaches_a_nested_captured_leftover_rather_than_dis
         "the scratch container itself is always discarded"
     );
 }
+
+// ── review2-1360: the watermark is an id-ordering proxy for ownership, and ──
+// ── id ordering is not ownership ────────────────────────────────────────────
+
+/// A genuinely independent node — minted via raw document access (no scope at
+/// all, standing in for anything built by code other than this branch's own
+/// `s`: a sibling render, a portal, a helper that calls `RenderScope::new`
+/// directly) **chronologically after** the branch's wrapper — is appended as
+/// a child of the branch's markup, exactly the `{captured}`-nested-in-markup
+/// shape of #732. The watermark rule (`node.id >= scope's smallest minted
+/// id`) says this node is "owned" by the branch purely because its id is
+/// higher, even though the branch's own scope `s` never created it and holds
+/// no relationship to it at all. If the watermark is unsound, hiding the
+/// branch retires this independent node instead of merely detaching it.
+#[test]
+fn a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let doc_weak = Rc::downgrade(&doc) as std::rc::Weak<RefCell<dyn DomDocument>>;
+
+    let visible = Signal::new(true);
+    let captured_slot: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    let slot_for_closure = captured_slot.clone();
+    let doc_weak_for_closure = doc_weak.clone();
+
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            // The branch's own wrapper -- this fixes `s`'s watermark.
+            let wrap = s.create_element("div");
+
+            // A node minted by something that is NOT `s` -- raw document
+            // access, standing in for any code path that does not route
+            // through `s` (a sibling scope, a portal, a cache that lazily
+            // builds its content on first need via its own fresh
+            // `RenderScope`). It is minted strictly AFTER `wrap`, so its id
+            // is higher than `s`'s watermark -- but `s` never created it.
+            let indep_doc = doc_weak_for_closure.upgrade().unwrap();
+            let indep_id = indep_doc.borrow_mut().create_element("section");
+            *slot_for_closure.borrow_mut() = Some(indep_id);
+
+            // The app threads it into the branch's markup, exactly like
+            // `{panel}` nested inside `div { .. }` in the #732 fixtures above
+            // -- except this handle was never built by `s`.
+            wrap.append_child(&NodeHandle::new(indep_id, doc_weak_for_closure.clone()));
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    assert_eq!(body_tags(&doc), ["div"], "precondition: shown");
+    let indep_id = captured_slot.borrow().unwrap();
+    assert_eq!(
+        doc.borrow().tag_name(indep_id).as_deref(),
+        Some("section"),
+        "precondition: the independent node exists"
+    );
+
+    visible.set(false);
+
+    assert_eq!(
+        doc.borrow().tag_name(indep_id).as_deref(),
+        Some("section"),
+        "the watermark misclassified a node minted by UNRELATED code (not by \
+         `s`, not by any scope nested inside `s`'s render) as owned, purely \
+         because its id happened to be minted after `s`'s watermark -- it \
+         was retired with the wrapper instead of merely detached"
+    );
+}
+
+/// Same shape, but the independent node is minted BEFORE the branch's first
+/// render even starts, and the branch is toggled through several renders so
+/// its watermark keeps climbing -- a sanity check that ordinary monotonic
+/// captures (the shape every other #732 fixture above already covers) still
+/// work, so the preceding fixture is attacking the watermark specifically via
+/// *post*-watermark minting, not via some other mistake in the harness.
+#[test]
+fn a_node_minted_before_the_branch_first_shows_is_still_captured_after_many_toggles() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let panel = sc.create_element("section");
+    let panel_id = panel.node_id();
+
+    let visible = Signal::new(true);
+    let captured = panel.clone();
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            wrap.append_child(&captured);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    for _ in 0..5 {
+        visible.set(false);
+        visible.set(true);
+    }
+    visible.set(false);
+    assert_eq!(
+        doc.borrow().tag_name(panel_id).as_deref(),
+        Some("section"),
+        "sanity: an ordinarily-captured (pre-existing) handle still survives \
+         many toggles"
+    );
+}
+
+/// `collect_captured_descendants`/`discard_owned_preserving_captured` called
+/// directly with a scope whose `created` is **empty** (it minted nothing of
+/// its own) -- the `watermark()` is `None`, and `watermark_or_newer` answers
+/// `false` for every id, unconditionally. Every real call site guards this by
+/// checking `scope.created(root_id)` before calling (which can only be true
+/// if the scope minted *something*, guaranteeing a watermark) -- this probes
+/// whether the two functions are safe to call WITHOUT that guard, since
+/// nothing in their own signature enforces it and both are `pub(crate)`
+/// (reachable from anywhere else in this crate, now or in a future call
+/// site).
+#[test]
+fn collect_captured_descendants_with_an_empty_watermark_treats_every_child_as_captured() {
+    use crate::dom::collect_captured_descendants;
+
+    let doc = doc();
+    let empty_scope = scope(&doc); // minted nothing: created == [], watermark == None
+    let body = body_handle(&doc);
+
+    // Build a root with real content using a DIFFERENT scope that mints
+    // plenty, so the root's children are unambiguously "owned by *someone*"
+    // -- just not by `empty_scope`.
+    let mut builder = scope(&doc);
+    let root = builder.create_element("div");
+    let child_a = builder.create_element("p");
+    let child_b = builder.create_element("span");
+    root.append_child(&child_a);
+    root.append_child(&child_b);
+    body.append_child(&root);
+
+    let mut out = Vec::new();
+    collect_captured_descendants(&root, &empty_scope, &mut out);
+
+    // With no watermark, `watermark_or_newer` is `false` for every id, so
+    // EVERY direct child is collected as "captured" and the walk never
+    // recurses into either -- including into grandchildren that might
+    // themselves be genuinely, unambiguously owned by `empty_scope` (none
+    // here, but the point is the walk stops at the first level regardless).
+    assert_eq!(
+        out.len(),
+        2,
+        "an empty-watermark scope must not silently treat `root`'s whole \
+         subtree as unowned-and-therefore-safe-to-walk-through; every real \
+         call site avoids this by checking `scope.created(root_id)` first, \
+         which this test deliberately skips to probe the function's own \
+         contract"
+    );
+}
+
+// ── review2-1360: scope-ancestry tables must not leak either ───────────────
+
+/// The scope-ancestry tables this round introduced (`MINTED_BY`,
+/// `SCOPE_PARENTS`) must not grow without bound across many toggles — the
+/// coordinator's own cost requirement for real ownership tracking. Every
+/// toggle mints a fresh wrapper, a fresh `for` marker and three fresh rows
+/// (and their own per-row scopes); if discarding the old set did not purge
+/// their `MINTED_BY` entries and dispose their scopes' `SCOPE_PARENTS`
+/// entries, both tables would grow by a fixed amount every toggle, forever.
+#[test]
+fn the_scope_ancestry_tables_do_not_grow_with_a_nested_for_inside_a_branch() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let visible = Signal::new(false);
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            for_each_dom_typed(
+                s,
+                &wrap,
+                || vec![1u32, 2u32, 3u32],
+                |n: &u32| n.to_string(),
+                |n: u32, rs: &mut RenderScope| {
+                    let row = rs.create_element("li");
+                    let text = rs.create_text(&n.to_string());
+                    row.append_child(&text);
+                    row
+                },
+            );
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    // Baseline AFTER the first show/hide pair, same reasoning as `growth`
+    // above: the very first show mints content that was not there before,
+    // which is not growth.
+    visible.set(true);
+    visible.set(false);
+    let minted_by_baseline = crate::dom::__minted_by_len();
+    let scope_parents_baseline = crate::dom::__scope_parents_len();
+
+    for i in 2..200 {
+        visible.set(i % 2 == 0);
+    }
+
+    let minted_by_delta = crate::dom::__minted_by_len() as isize - minted_by_baseline as isize;
+    let scope_parents_delta =
+        crate::dom::__scope_parents_len() as isize - scope_parents_baseline as isize;
+
+    assert_eq!(
+        minted_by_delta, 0,
+        "#732 round 3: MINTED_BY must not grow across toggles of a nested \
+         `for` inside a branch — baseline {minted_by_baseline}, delta {minted_by_delta} \
+         over 198 toggles"
+    );
+    assert_eq!(
+        scope_parents_delta, 0,
+        "#732 round 3: SCOPE_PARENTS must not grow across toggles of a \
+         nested `for` inside a branch — baseline {scope_parents_baseline}, \
+         delta {scope_parents_delta} over 198 toggles"
+    );
+}
+
+/// Same measurement, for the simple captured-handle shape (no nested
+/// reactive helper) — the scope-ancestry tables must not grow even when
+/// nothing nested is involved.
+#[test]
+fn the_scope_ancestry_tables_do_not_grow_with_a_plain_captured_handle() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let panel = sc.create_element("section");
+    let visible = Signal::new(true);
+    let captured = panel.clone();
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            wrap.append_child(&captured);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    // Three toggles, ending HIDDEN — matching the parity the loop below ends
+    // on (its last iteration, i=199, is odd) — so the baseline and the final
+    // measurement are taken in the same state and the only thing a
+    // non-zero delta can mean is growth, not "the branch happens to be
+    // showing at one end and not the other."
+    visible.set(false);
+    visible.set(true);
+    visible.set(false);
+    let minted_by_baseline = crate::dom::__minted_by_len();
+    let scope_parents_baseline = crate::dom::__scope_parents_len();
+
+    for i in 2..200 {
+        visible.set(i % 2 == 0);
+    }
+
+    let minted_by_delta = crate::dom::__minted_by_len() as isize - minted_by_baseline as isize;
+    let scope_parents_delta =
+        crate::dom::__scope_parents_len() as isize - scope_parents_baseline as isize;
+
+    assert_eq!(
+        minted_by_delta, 0,
+        "#732 round 3: MINTED_BY must not grow across toggles of a plain \
+         captured handle — baseline {minted_by_baseline}, delta {minted_by_delta}"
+    );
+    assert_eq!(
+        scope_parents_delta, 0,
+        "#732 round 3: SCOPE_PARENTS must not grow across toggles of a plain \
+         captured handle — baseline {scope_parents_baseline}, delta {scope_parents_delta}"
+    );
+}

@@ -4323,42 +4323,79 @@ document —
 `reinsertion_tests::the_capture_walk_is_bounded_by_the_discarded_subtree_not_the_document`
 measures it via `MockDomDocument::__get_children_calls`.
 
-**The ownership test is NOT `scope.created(id)`**, and the first round of
-this fix got exactly that wrong: `created` answers only "did *this exact*
-`RenderScope` instance mint `id`", which is `false` for a node minted by a
-**nested** child scope — every `for` row, every re-rendered component's
-output, every nested `if`/`match` branch builds through a fresh
-`RenderScope::new(..)` of its own, never recorded in the outer branch's
-`created`. Reading `created` alone misclassified every one of those as
-captured, detached them instead of leaving them for the discard, and leaked
-the whole set on every hide — `if open { div { for x in xs { li{} } } }`
-leaked 3 `<li>`s per hide (594 nodes over 198 toggles), a nested component 198.
-Caught by adversarial review before merge, not shipped.
-[`RenderScope::watermark_or_newer`] is the corrected predicate: was `id`
-minted *during this scope's render at all* — directly, or via a scope nested
-inside it (which only ever runs synchronously inside this render's own call
-tree) — rather than captured from a render that already finished before this
-one started. Since node ids are strictly monotonic per document on this
-discard route (`rinch-web`'s counter never reuses, and `rinch-dom`'s slab is
-never freed by `discard_node`, only by `set_inner_html`/pseudo-element pruning
-— #723, neither reachable from an ordinary branch hide), "minted during this
-render" is exactly "no smaller than the first id this scope itself minted" —
-a per-scope watermark, zero new registries, zero ancestry bookkeeping.
+**The ownership test is NOT `scope.created(id)`, and it is NOT a numeric id
+comparison either — both were tried, and both were caught by review before
+merge.** `created` answers only "did *this exact* `RenderScope` instance mint
+`id`", which is `false` for a node minted by a **nested** child scope — every
+`for` row, every re-rendered component's output, every nested `if`/`match`
+branch builds through a fresh `RenderScope::new(..)` of its own, never
+recorded in the outer branch's `created`. Reading `created` alone
+misclassified every one of those as captured, detached them instead of
+leaving them for the discard, and leaked the whole set on every hide —
+`if open { div { for x in xs { li{} } } }` leaked 3 `<li>`s per hide (594
+nodes over 198 toggles), a nested component 198. A second round replaced that
+with a per-scope **id watermark** ("minted no earlier than the first id this
+scope itself minted"), which fixed the leak but is an id-ordering *proxy* for
+ownership, not ownership: a node minted by **unrelated** code — not this
+scope, not a descendant of it, merely something else that happens to run
+synchronously while this scope's render is on the call stack (a sibling
+scope, a lazily-built cache, raw backend access) — gets a higher id than the
+watermark purely by chronological accident and was swept into the discard as
+"owned," silently retiring a handle its caller still held.
+
+**The real fix is scope ancestry.** Every `RenderScope` gets a globally
+unique `ScopeId` (`rinch_core::dom::render_scope`'s module doc) and records
+its own parent — the id of whichever `RenderScope`'s render is synchronously
+on the call stack when it is constructed (the top of a thread-local
+`RENDER_SCOPE_STACK`, pushed and popped by [`RenderScope::push_owner`]'s
+guard around exactly the `render_fn`/`view` call, same window that already
+attributes signals/effects to the right owner for #141). Every node a scope
+mints is recorded against that scope's id in a thread-local `MINTED_BY: (doc
+key, NodeId) -> ScopeId` (keyed by document too, since `NodeId` collides
+across documents on one thread — issue #134). `RenderScope::owns_transitively`
+then answers the real question: walk from `node`'s minting scope up through
+`SCOPE_PARENTS` looking for `self` — a node minted by a descendant scope
+(nested arbitrarily deep) finds it and is owned; a node minted by an
+unrelated scope, or by raw backend access with no scope at all, runs out of
+chain (or has none) and is correctly not owned, *regardless of id order*.
+**This also makes the id-monotonicity question moot** — the design the
+watermark needed (ids never reused on the routes these four helpers exercise)
+is no longer load-bearing for anything here, since nothing compares ids at
+all; #723 (rinch-dom's slab recycling elsewhere) can be fixed independently
+without reopening this.
+
+Both tables are bounded, not permanent: `MINTED_BY`'s entry for a node is
+removed when that node is discarded (`NodeHandle::discard` purges its whole
+subtree first, while `get_children` still answers — one extra walk no more
+expensive than the backend's own recursive retire), and `SCOPE_PARENTS`'
+entry for a scope is removed when the scope itself is dropped (`RenderScope`'s
+`Drop` impl) — which happens no later than its content is discarded, on every
+existing disposal path. `__minted_by_len`/`__scope_parents_len` (test-only)
+are what the growth fixtures below compare across 198 toggles to prove
+neither table leaks.
 `reinsertion_tests::a_nested_for_inside_a_branch_does_not_grow_the_document`,
-its `match_dom`/component twins, and
+its `match_dom`/component twins,
+`a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch`
+(round 2's counter-example, now passing for the right reason),
+`the_scope_ancestry_tables_do_not_grow_with_a_nested_for_inside_a_branch`/
+`..._with_a_plain_captured_handle`, and
 `release_scratch_container_detaches_a_nested_captured_leftover_rather_than_discarding_it`
 (which also kills reordering `discard_owned_preserving_captured`'s two
 statements) are the pins for this half.
 
 The walk has to run **before** the branch's old `RenderScope` is disposed —
-the watermark is read off that scope's own `created` list, which is gone once
-`dispose()` consumes it — so `show_dom`/`match_dom`/`reactive_component_dom`
-collect the captured descendants in the same pass that already reads
-`created` for the content root, ahead of the existing "dispose old scope
-before touching DOM nodes" step; the actual detach happens after disposal,
-alongside the content root's own discard/remove. `for_each_dom_typed`'s
-parked rows do the same inside `ParkedRow::new`, while a row's scope is still
-alive, and carry the collected list alongside the row to `release_parked`.
+disposing it can cascade into disposing the very nested scopes
+(`for_each_dom_typed`'s per-row scopes, a nested component's own
+`current_scope`) whose `SCOPE_PARENTS` entry the ancestry walk needs to climb
+through, since the list-reconciliation effect that owns them is itself
+registered on the branch's own scope. So `show_dom`/`match_dom`/
+`reactive_component_dom` collect the captured descendants in the same pass
+that already reads `created` for the content root, ahead of the existing
+"dispose old scope before touching DOM nodes" step; the actual detach happens
+after disposal, alongside the content root's own discard/remove.
+`for_each_dom_typed`'s parked rows do the same inside `ParkedRow::new`, while
+a row's scope is still alive, and carry the collected list alongside the row
+to `release_parked`.
 `reinsertion_tests::show_dom_can_re_show_a_captured_handle_nested_inside_fresh_markup`,
 its `match_dom`/`reactive_component_dom`/`for_each_dom_typed` twins, and
 `crates/rinch-web/tests/reinsertion.rs`'s

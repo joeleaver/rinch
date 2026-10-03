@@ -487,6 +487,13 @@ impl NodeHandle {
         // detached and may be retired (issue #745).
         late_child::forget_node(self);
         let vacated = late_child::vacated_parent(self);
+        // Purge this whole subtree's scope-ancestry bookkeeping (issue #732,
+        // round 3) BEFORE the backend retires it, while `get_children` still
+        // answers — this is the one thing that keeps `MINTED_BY` bounded:
+        // every node any `RenderScope` ever minted is recorded there,
+        // regardless of which of the four reactive helpers (if any) is
+        // discarding it.
+        render_scope::purge_minted_by_subtree(self);
         if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().discard_node(self.node_id);
         }
@@ -1153,30 +1160,49 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 /// / `a_nested_component_inside_a_branch_does_not_grow_the_document` measured
 /// 594 / 198 nodes over 198 toggles before this was caught.
 ///
-/// The right question is [`RenderScope::watermark_or_newer`]: was `id` minted
-/// *during this scope's render at all* — directly, or by a scope nested
-/// inside it, which only ever runs synchronously inside this render's own
-/// call tree — rather than captured from a render that already finished
-/// before this one started. Node ids are monotonic per document on this
-/// route (see that method's doc), so "minted during this render" is exactly
-/// "no smaller than the first id this scope minted."
+/// **Nor can it be a numeric id comparison** — a second round tried exactly
+/// that (a per-scope "watermark": `id >= the smallest id this scope minted`)
+/// and it is *also* wrong, for a different reason: id order is chronology,
+/// not ownership. A node minted by **unrelated** code — not this scope, not
+/// a descendant of it, merely something else that happens to run
+/// synchronously while this scope's render is on the call stack, including a
+/// lazily-built cache or a lazily-captured handle built just-in-time — gets a
+/// higher id than the watermark by pure accident of timing and was swept
+/// into the discard as "owned," silently retiring a handle its caller still
+/// held. Caught by review before merge, pinned by
+/// `reinsertion_tests::a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch`.
+///
+/// The right question is [`RenderScope::owns_transitively`]: was `id`
+/// **actually minted by** this scope or by a scope that is a transitive
+/// child of this scope's render — a real ancestry walk over the scope tree
+/// each `RenderScope::new(..)` records its parent into while
+/// [`RenderScope::push_owner`]'s guard is live, not a proxy for it. A scope
+/// built by code this render never called into (even if that code happens to
+/// run while this render is also running, and even if its ids end up
+/// numerically later) gets no parent chain back to `self` and is correctly
+/// `false`.
 ///
 /// The walk never descends into a node it finds non-owned: that subtree was
-/// never reached by this scope's render in the first place (it is some other,
-/// *earlier* scope's, or no scope's at all — a plain captured handle), so
+/// never reached by this scope's render in the first place (it belongs to
+/// some scope whose ancestry does not pass through `self` — possibly no
+/// scope at all, for a plain captured handle built by raw backend access), so
 /// anything under it is not this call's business either. That bound is what
 /// keeps the cost proportional to the discarded subtree rather than to the
 /// whole document: a nested `for`'s rows or an inner branch's own markup,
-/// which *are* owned under the watermark rule, are walked and left for the
-/// discard; only a genuinely captured node is pulled out, and pulling it out
-/// stops the walk from going any deeper there.
+/// which *are* owned under the real ancestry rule, are walked and left for
+/// the discard; only a genuinely captured node is pulled out, and pulling it
+/// out stops the walk from going any deeper there. Each node's own ownership
+/// check costs one more hop per level of scope nesting between it and
+/// `self` (`owns_transitively`'s own doc), which is small in practice and
+/// never a function of document size.
 pub(crate) fn collect_captured_descendants(
     root: &NodeHandle,
     scope: &RenderScope,
     out: &mut Vec<NodeHandle>,
 ) {
+    let doc_key = root.doc_key();
     for child in root.children() {
-        if scope.watermark_or_newer(child.node_id()) {
+        if scope.owns_transitively(doc_key, child.node_id()) {
             collect_captured_descendants(&child, scope, out);
         } else {
             out.push(child);
