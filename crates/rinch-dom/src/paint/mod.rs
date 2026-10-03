@@ -4338,6 +4338,47 @@ mod tests {
         );
     }
 
+    /// #535 review: `clip_chain_bounds` (#909's damage clip chain) must be
+    /// per-axis too — an ancestor clipping only x (open y) bounds the chain's
+    /// x but leaves y effectively unbounded, matching `clip_shape`. No
+    /// existing #535 fixture exercised this function with an asymmetric clip,
+    /// so `a.clips_x`/`a.clips_y` could have regressed to one both-axes rect
+    /// with nothing in the suite noticing.
+    ///
+    /// Mutant this kills: collapsing the per-axis `a.clips_x`/`a.clips_y`
+    /// branches in `clip_chain_bounds_counted` back to one rect taken from
+    /// both insets unconditionally makes this fail — the y side comes back
+    /// `0..100` instead of unbounded.
+    #[test]
+    fn clip_chain_bounds_is_per_axis() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "overflow: visible;");
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 100px; height: 100px; overflow-x: clip; overflow-y: visible;",
+        );
+        let child = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(container),
+            "width: 300px; height: 300px; background: red",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        let chain = super::clip_chain_bounds(&doc.tree, child, 1.0, false)
+            .expect("child has a clipping ancestor");
+        assert_eq!(
+            (chain.x0, chain.x1),
+            (0.0, 100.0),
+            "x is clipped: {chain:?}"
+        );
+        assert!(
+            chain.y0 < -1.0e6 && chain.y1 > 1.0e6,
+            "y must be effectively unbounded, not cut at the box's edge: {chain:?}"
+        );
+    }
+
     /// The asymmetric half of the fixture above: a left/right (or top/bottom)
     /// swap in `padding_box_insets`/`padding_box_insets_for_size` survives a
     /// uniform-border fixture (left == right there), so this one uses four
