@@ -1198,6 +1198,38 @@ impl RinchDocument {
             return;
         }
 
+        // A **text node folded into an inline formatting context** (#466's
+        // leaf invariant) owns no Taffy box of its own either (#653). Its
+        // `taffy_id` is a real leaf — every text node gets one at creation
+        // (`create_text`), before anything knows whether it will ever join an
+        // IFC — and `mark_inline_descendants` only ever *detaches* it from its
+        // Taffy parent (`taffy.remove_child`) when it is folded in; it never
+        // clears the node's own `taffy_id` field. So `taffy.layout(taffy_id)`
+        // below would keep serving a **stale** box: whatever the orphaned leaf
+        // last reported the one time (if any) a Taffy compute reached it while
+        // it was still attached — typically a standalone measurement from
+        // before the fold, which is exactly `#653`'s "two text nodes keep or
+        // drop a stale box depending on timing": whether an extra relayout
+        // pass happened to compute this leaf attached *before* the structural
+        // pass detached it decides whether the stale box is zero (never
+        // computed attached) or a real measured size, and nothing here chose
+        // between them on purpose.
+        //
+        // The authority for a direct text child's box is
+        // `Self::write_inline_positions`, called later in this same resolve
+        // (`build_ifc_layouts`) whenever the root is reshaped; for a member
+        // that is *not* a direct child (nested inside a flowed `<span>`)
+        // nothing ever gives it a box, by the same leaf invariant. Either way
+        // this generic Taffy read must not run for it. Skipping the read
+        // rather than zeroing: `write_inline_positions` does not run on every
+        // pass (`build_ifc_layouts` skips a root whose text and width are
+        // unchanged), and zeroing unconditionally here would erase a correct
+        // box between two such skipped passes. A text node has no children of
+        // its own to recurse into.
+        if self.tree.nodes[node_id].is_text() && self.tree.nodes[node_id].ifc_root.is_some() {
+            return;
+        }
+
         // A `display: none` element generates no box, and neither does anything
         // inside it (CSS 2.1 §9.2.4) — so the whole subtree's `layout` is zero,
         // and this is the place that has to say so (#543).
