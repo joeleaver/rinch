@@ -1649,20 +1649,20 @@ fn known_limit_an_open_menu_in_a_closed_menus_target_inside_an_open_menu_stays_h
 
 // ── the gap this fix had to work around ──────────────────────────────────
 
-/// rinch creates **no** pseudo-element for `content: ''`, which is why the tab
-/// underline is an element and not the `::after` the sheet used to declare.
+/// rinch now creates a pseudo-element for `content: ''` too (#773, fixed —
+/// this used to be a *record* of the gap, not an endorsement: it asserted the
+/// opposite of what's below, and this comment said to invert it once fixed).
 ///
-/// `style_resolution/pseudo.rs` extracts the `content` text and returns early
-/// when it is empty, so a decorative `::before`/`::after` — the only kind that
-/// wants an empty `content` — never exists. Six rules in the shipped component
-/// sheet are written that way (Refs #773); the Tabs one is the only one #760
-/// moved off it.
+/// The tab underline predates the fix and is still a real element rather than
+/// the `::after` the sheet used to declare — #760 didn't need to revisit that,
+/// since the underline also needs a `transition`, which an `::after` can carry
+/// just as well now, but moving it back is out of scope for #773.
 ///
 /// Sampled against a non-empty `content`, which is the positive control: a
-/// fixture that only looked at the empty case could not tell "no pseudo-element
-/// here" from "no pseudo-elements at all".
+/// fixture that only looked at the empty case could not tell "a pseudo-element
+/// here" from "pseudo-elements are created unconditionally".
 #[test]
-fn an_empty_content_creates_no_pseudo_element_but_a_non_empty_one_does() {
+fn an_empty_content_creates_a_pseudo_element_same_as_a_non_empty_one() {
     fn pseudo_count(content: &str) -> usize {
         let css = format!(".probe::after {{ content: {content}; display: block; height: 2px; }}");
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -1690,12 +1690,46 @@ fn an_empty_content_creates_no_pseudo_element_but_a_non_empty_one_does() {
     assert_eq!(
         pseudo_count("'x'"),
         1,
-        "the control: a non-empty `content` does create one"
+        "the control: a non-empty `content` creates one"
     );
     assert_eq!(
         pseudo_count("''"),
-        0,
-        "and an empty one does not — so `.rinch-tabs__tab::after` never existed \
-         on desktop, and the underline had to become a real element"
+        1,
+        "and an empty one now does too — a purely decorative `::before`/`::after` \
+         (an arrow, a divider stroke, a dot) draws, as in Chrome"
     );
+}
+
+/// `content: none` and `content: normal` are the two spellings
+/// `ineffective_content_property()` always correctly rejected, and still do —
+/// #773 only removed the second, over-eager `text.is_empty()` check sitting
+/// right after it.
+#[test]
+fn content_none_and_normal_still_create_no_pseudo_element() {
+    fn pseudo_count(content: &str) -> usize {
+        let css = format!(".probe::after {{ content: {content}; display: block; height: 2px; }}");
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let d = scope.create_element("div");
+            d.set_attribute("class", "probe");
+            d
+        });
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.load_css(&css);
+            d.recompute_all_styles_full();
+        }
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.is_pseudo_element)
+            .count()
+    }
+    for content in ["none", "normal"] {
+        assert_eq!(pseudo_count(content), 0, "`content: {content}` creates nothing");
+    }
 }

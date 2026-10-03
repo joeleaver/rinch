@@ -172,15 +172,18 @@ impl RinchDocument {
         // Compute counter values for this element (needed for content: counter(...))
         let counter_values = self.compute_list_item_counters(parent_id);
 
-        // Extract text content from the content property
+        // Extract text content from the content property. `ineffective_content_property()`
+        // above is the "no pseudo at all" check (`none` / `normal`); an empty
+        // string here is NOT that — css-content-3 makes `content: ''` a valid,
+        // present box with no text in it (#773), which is the only spelling a
+        // purely decorative `::before`/`::after` (an arrow, a divider stroke, a
+        // dot) ever wants. So this does not early-return on an empty string: it
+        // only decides whether the box gets a text child below.
         let text = Self::extract_content_text_with_counters(
             &pseudo_computed,
             &counter_values,
             &self.tree.nodes[parent_id].attributes,
         );
-        if text.is_empty() {
-            return;
-        }
 
         // Convert pseudo computed style to our ComputedStyle
         let pseudo_style = ComputedStyle::from_stylo(&pseudo_computed);
@@ -189,11 +192,14 @@ impl RinchDocument {
         // Create a wrapper span element for the pseudo-element
         use rinch_core::dom::DomDocument;
         let span_id = self.create_element("span");
-        let text_node_id = self.create_text(&text);
 
-        // Append the text node to the span (using raw tree manipulation
-        // to avoid triggering style recomputation via DomDocument::append_child)
-        {
+        // Append a text child only when there is text to show it — an empty
+        // `content: ''` box is a shape (sized and painted from its own style),
+        // not an empty text node for the IFC to lay out.
+        if !text.is_empty() {
+            let text_node_id = self.create_text(&text);
+            // Append the text node to the span (using raw tree manipulation
+            // to avoid triggering style recomputation via DomDocument::append_child)
             let span_raw = span_id.0;
             let text_raw = text_node_id.0;
             self.tree.nodes[text_raw].parent = Some(span_raw);
