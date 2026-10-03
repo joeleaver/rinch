@@ -17,7 +17,17 @@
 //! | `superscript` | `<sup>…</sup>` |
 //!
 //! `C` is a colour the HTML paste path accepts (`#rgb`, `#rrggbb`, `rgb()`, a
-//! named colour, …). A table with a header row, no merged cells and one inline
+//! named colour, …).
+//!
+//! Bold, italic and strike are `**`, `*` and `~~`, except where CommonMark would
+//! not read the delimiter as one (it does not flank: `x**[a](u)**s`,
+//! `*~~a~~*b`, `**a.**b`); there the writer uses `<strong>`, `<em>` and `<s>`
+//! for that run. The reader takes those tags, and `<b>`, `<i>` and `<del>`, as
+//! the same marks. Whitespace at the edge of a bold, italic or strike run is
+//! written outside it, so the text round-trips and that whitespace leaves the
+//! mark.
+//!
+//! A table with a header row, no merged cells and one inline
 //! paragraph per cell is a GFM pipe table (column alignment is the cells'
 //! `text_align`); any other table is an HTML `<table>` block (`colspan`/`rowspan`,
 //! block content in cells), and both read back.
@@ -833,13 +843,21 @@ enum InlineTag {
     },
 }
 
-/// The HTML tag each HTML-only mark is written as.
-const MARK_TAGS: [(&str, &str); 5] = [
+/// The inline HTML tags read as marks: the tag each HTML-only mark is written
+/// as, the tags a bold, italic or strike run is written as where its delimiters
+/// would not flank, and the other common spellings of those three.
+const MARK_TAGS: [(&str, &str); 11] = [
     ("u", "underline"),
     ("mark", "highlight"),
     ("span", "text_color"),
     ("sub", "subscript"),
     ("sup", "superscript"),
+    ("strong", "bold"),
+    ("b", "bold"),
+    ("em", "italic"),
+    ("i", "italic"),
+    ("s", "strike"),
+    ("del", "strike"),
 ];
 
 /// Parse `<u>`, `</u>`, `<mark>`, `<mark style="background-color:C">`,
@@ -1205,7 +1223,8 @@ enum Ctx {
 /// time, so they need not nest with the Markdown runs and are opened and closed
 /// where they start and end. Whitespace at the edge of a bold, italic or strike
 /// run is moved outside its delimiters (CommonMark does not read `**a **` as
-/// bold).
+/// bold). Where a delimiter still would not flank, [`InlineWriter::finish`]
+/// writes its run as tags.
 fn inline_to_md(block: &Node, ctx: Ctx) -> String {
     let nodes = block.content().children();
     let mut w = InlineWriter {
@@ -1215,6 +1234,8 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
         pending_ws: String::new(),
         line_start: ctx != Ctx::Cell,
         ctx,
+        delims: Vec::new(),
+        pairs: 0,
     };
     for (i, node) in nodes.iter().enumerate() {
         if node.type_name() == "hard_break" {
@@ -1241,6 +1262,8 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
             // A whitespace-only run opens no delimiters (`** **` is not bold).
             let keep = w.common_prefix(&md_marks);
             w.close_md_to(keep);
+            // Whitespace still pending belongs to the run before, as below.
+            w.flush_ws();
             w.set_html(&html_marks);
             w.pending_ws.push_str(text);
             continue;
@@ -1278,8 +1301,7 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
             if m.type_name() == "link" {
                 w.escape_trailing_bang();
             }
-            w.write_raw(&open_mark(m));
-            w.active.push(m.clone());
+            w.open_md(m);
         }
         if first_delim == to_open.len() {
             w.write_raw(lead);
@@ -1297,7 +1319,7 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
     w.close_md_to(0);
     w.flush_ws();
     w.set_html(&[]);
-    w.out
+    w.finish()
 }
 
 struct InlineWriter {
@@ -1310,9 +1332,170 @@ struct InlineWriter {
     pending_ws: String,
     line_start: bool,
     ctx: Ctx,
+    /// Where each bold, italic and strike delimiter goes in `out`, in order. They
+    /// are written by [`InlineWriter::finish`], which can only tell once the
+    /// characters on both sides are known whether a delimiter run flanks.
+    delims: Vec<Delim>,
+    /// Pairs opened so far (the next pair's id).
+    pairs: usize,
+}
+
+/// A bold, italic or strike delimiter, written at `pos` in the output.
+struct Delim {
+    pos: usize,
+    /// Its opening and closing delimiter share the id.
+    pair: usize,
+    /// `*`, `**` or `~~`.
+    md: &'static str,
+    /// The tag written instead when the delimiter would not flank.
+    tag: &'static str,
+    open: bool,
 }
 
 impl InlineWriter {
+    /// Open a Markdown mark: a delimiter recorded for [`Self::finish`], or a
+    /// link's `[`.
+    fn open_md(&mut self, m: &Mark) {
+        match delim_syntax(m) {
+            Some((md, tag)) => {
+                self.delims.push(Delim {
+                    pos: self.out.len(),
+                    pair: self.pairs,
+                    md,
+                    tag,
+                    open: true,
+                });
+                self.pairs += 1;
+                self.line_start = false;
+            }
+            None => self.write_raw(&open_mark(m)),
+        }
+        self.active.push(m.clone());
+    }
+
+    /// Close a Markdown mark opened with [`Self::open_md`].
+    fn close_md(&mut self, m: &Mark) {
+        match delim_syntax(m) {
+            Some((md, tag)) => {
+                let pair = self
+                    .delims
+                    .iter()
+                    .rev()
+                    .find(|d| d.open && d.md == md)
+                    .map(|d| d.pair)
+                    .expect("a closed delimiter was opened");
+                self.delims.push(Delim {
+                    pos: self.out.len(),
+                    pair,
+                    md,
+                    tag,
+                    open: false,
+                });
+                self.line_start = false;
+            }
+            None => {
+                let s = close_mark(m, self.ctx);
+                self.write_raw(&s);
+            }
+        }
+    }
+
+    /// The output with every delimiter written: as Markdown where the run it
+    /// joins flanks the way CommonMark needs (an opener left-flanking, a closer
+    /// right-flanking, never both kinds in one run), and otherwise, for both ends
+    /// of its pair, as the HTML tag the reader also takes (`<strong>`, `<em>`,
+    /// `<s>`). So `x**[a](u)**s` and `*~~a~~*b`, which CommonMark reads as
+    /// literal asterisks, are written with tags instead.
+    fn finish(self) -> String {
+        let delims = self.delims;
+        if delims.is_empty() {
+            return self.out;
+        }
+        let out = self.out;
+        let mut as_tag = vec![false; self.pairs];
+        let rendered = |d: &Delim, as_tag: &[bool]| -> String {
+            match (as_tag[d.pair], d.open) {
+                (false, _) => d.md.to_string(),
+                (true, true) => format!("<{}>", d.tag),
+                (true, false) => format!("</{}>", d.tag),
+            }
+        };
+        loop {
+            let mut changed = false;
+            let mut i = 0;
+            while i < delims.len() {
+                if as_tag[delims[i].pair] {
+                    i += 1;
+                    continue;
+                }
+                // The run: adjacent Markdown delimiters of one character.
+                let ch = delims[i].md.chars().next().unwrap_or('*');
+                let mut j = i + 1;
+                while j < delims.len()
+                    && delims[j].pos == delims[i].pos
+                    && !as_tag[delims[j].pair]
+                    && delims[j].md.starts_with(ch)
+                {
+                    j += 1;
+                }
+                let pos = delims[i].pos;
+                let prev = if i > 0 && delims[i - 1].pos == pos {
+                    rendered(&delims[i - 1], &as_tag).chars().last()
+                } else {
+                    out[..pos].chars().last()
+                };
+                let next = if j < delims.len() && delims[j].pos == pos {
+                    rendered(&delims[j], &as_tag).chars().next()
+                } else {
+                    out[pos..].chars().next()
+                };
+                let len: usize = delims[i..j].iter().map(|d| d.md.len()).sum();
+                let cell = self.ctx == Ctx::Cell;
+                let opens = delims[i..j].iter().any(|d| d.open);
+                let closes = delims[i..j].iter().any(|d| !d.open);
+                // Whichever way an unknown character counts as punctuation.
+                let ok = !(opens && closes)
+                    && punctuation_readings(prev).iter().all(|&pp| {
+                        punctuation_readings(next).iter().all(|&np| {
+                            let run = Run {
+                                ch,
+                                len,
+                                prev,
+                                next,
+                                prev_punct: pp,
+                                next_punct: np,
+                                cell,
+                            };
+                            if opens {
+                                run.can_open()
+                            } else {
+                                run.can_close()
+                            }
+                        })
+                    });
+                if !ok {
+                    for d in &delims[i..j] {
+                        as_tag[d.pair] = true;
+                    }
+                    changed = true;
+                }
+                i = j;
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut s = String::with_capacity(out.len() + delims.len() * 4);
+        let mut at = 0;
+        for d in &delims {
+            s.push_str(&out[at..d.pos]);
+            at = d.pos;
+            s.push_str(&rendered(d, &as_tag));
+        }
+        s.push_str(&out[at..]);
+        s
+    }
+
     fn write_raw(&mut self, s: &str) {
         if !s.is_empty() {
             self.out.push_str(s);
@@ -1327,6 +1510,10 @@ impl InlineWriter {
     /// Escape a `!` the output ends with, unless it is escaped already: `![`
     /// would open an image where a link was meant.
     fn escape_trailing_bang(&mut self) {
+        if self.delims.last().is_some_and(|d| d.pos == self.out.len()) {
+            // A delimiter goes between the `!` and the link.
+            return;
+        }
         let Some(head) = self.out.strip_suffix('!') else {
             return;
         };
@@ -1360,8 +1547,7 @@ impl InlineWriter {
             self.flush_ws();
         }
         for (k, m) in closing.iter().enumerate() {
-            let s = close_mark(m, self.ctx);
-            self.write_raw(&s);
+            self.close_md(m);
             if Some(k) == last_delim {
                 self.flush_ws();
             }
@@ -1412,6 +1598,91 @@ fn run_length(nodes: &[Node], i: usize, mark: &Mark) -> usize {
         .iter()
         .take_while(|n| n.type_name() == "hard_break" || n.marks().contains(mark))
         .count()
+}
+
+/// A delimiter mark's Markdown syntax and the HTML tag written when that would
+/// not flank; `None` for any other mark.
+fn delim_syntax(mark: &Mark) -> Option<(&'static str, &'static str)> {
+    match mark.type_name() {
+        "bold" => Some(("**", "strong")),
+        "italic" => Some(("*", "em")),
+        "strike" => Some(("~~", "s")),
+        _ => None,
+    }
+}
+
+/// A run of `len` delimiter characters `ch` between `prev` and `next` (`None`:
+/// the start or end of the inline content), with whether each neighbour counts
+/// as punctuation.
+struct Run {
+    ch: char,
+    len: usize,
+    prev: Option<char>,
+    next: Option<char>,
+    prev_punct: bool,
+    next_punct: bool,
+    cell: bool,
+}
+
+impl Run {
+    /// Whether the run can open emphasis or strikethrough, as pulldown-cmark 0.12
+    /// decides it (`delim_run_can_open`).
+    fn can_open(&self) -> bool {
+        let Some(next) = self.next else {
+            return false;
+        };
+        if next.is_whitespace() {
+            return false;
+        }
+        let Some(prev) = self.prev else {
+            return true;
+        };
+        if self.cell && next == '|' {
+            return false;
+        }
+        if (self.ch == '*' && !self.next_punct) || (self.ch == '~' && self.len > 1) {
+            return true;
+        }
+        prev.is_whitespace() || self.prev_punct
+    }
+
+    /// Whether the run can close (`delim_run_can_close`).
+    fn can_close(&self) -> bool {
+        let Some(prev) = self.prev else {
+            return false;
+        };
+        if prev.is_whitespace() {
+            return false;
+        }
+        let Some(next) = self.next else {
+            return true;
+        };
+        if self.cell && next == '|' {
+            return true;
+        }
+        if (self.ch == '*' || (self.ch == '~' && self.len > 1)) && !self.prev_punct {
+            return true;
+        }
+        next.is_whitespace() || self.next_punct
+    }
+}
+
+/// Whether CommonMark counts `c` as punctuation: one answer for ASCII, letters,
+/// digits and whitespace, both for any other character (Unicode punctuation and
+/// symbols, which this crate has no table for), so a run is written as Markdown
+/// only when it flanks either way.
+fn punctuation_readings(c: Option<char>) -> &'static [bool] {
+    match c {
+        Some(c) if c.is_ascii() => {
+            if c.is_ascii_punctuation() {
+                &[true]
+            } else {
+                &[false]
+            }
+        }
+        Some(c) if !c.is_alphanumeric() && !c.is_whitespace() => &[false, true],
+        _ => &[false],
+    }
 }
 
 /// A mark written as a Markdown delimiter run, which whitespace must not touch.
