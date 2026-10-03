@@ -189,6 +189,8 @@ mod select_keyboard_434_tests;
 mod select_popup_empty_option_1155_tests;
 #[cfg(test)]
 mod select_popup_width_tests;
+#[cfg(test)]
+mod select_value_order_757_tests;
 mod select_widget;
 #[cfg(test)]
 mod shared_hit_tests;
@@ -1242,6 +1244,12 @@ impl RinchApp {
         // click handler, a menu, a timer — is adopted here (issue #238); a
         // string compare when nothing was written.
         self.adopt_focused_input_value_from_dom();
+
+        // A programmatic `selected`/`value` write made while a native
+        // `<select>`'s popup is open moves the highlight to match (issue
+        // #757's "vice versa") — a no-op when no popup is open or nothing
+        // moved the resolved selection since the popup opened.
+        self.sync_open_select_highlight_from_dom();
 
         // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
         #[allow(unused_assignments, unused_mut)]

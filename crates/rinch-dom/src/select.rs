@@ -9,9 +9,11 @@
 //!
 //! Selection follows HTML semantics, resolved in this order:
 //! 1. the option whose value equals the select's own `value` attribute, if the
-//!    select has one (this is what the app writes back when the user picks an
-//!    option, and what the `value:` rsx prop sets — HTML has no `value` content
-//!    attribute on `<select>` at all, so this step is rinch's own);
+//!    select has one AND that attribute is the **freshest** of the two
+//!    selection-moving writes (issue #757, below) — this is what the app
+//!    writes back when the user picks an option, and what the `value:` rsx
+//!    prop sets. HTML has no `value` content attribute on `<select>` at all,
+//!    so this step is rinch's own;
 //! 2. otherwise the option whose **selectedness** is set — the live state, not
 //!    the `selected` attribute, which is only its default; see
 //!    [`set_option_selectedness`];
@@ -26,6 +28,19 @@
 //! the two part company as soon as two options carry the attribute at once. See
 //! [`set_option_selectedness`] for the rule and the Chrome 150 measurements
 //! behind it, and [`options_inserted`] for the four DOM paths that apply it.
+//!
+//! **Step 1 used to win unconditionally once the `value` attribute was
+//! present** (issue #757). Chrome and rinch-web have no such separate
+//! attribute at all — only live selectedness — so there, whichever of "a user
+//! picks an option" or "a script sets `option.selected`" happened most
+//! recently is the selection. Letting step 1 win forever meant a desktop
+//! user's pick (which writes `value`) could never be overtaken by a later
+//! programmatic `selected` write, the one divergence from every other rule in
+//! this file. `NodeTree::select_value_fresh` is what makes step 1
+//! conditional: a live write of either kind — the `value` attribute, or an
+//! option's `selected` attribute while it is already attached — clears the
+//! other mechanism's claim to freshness, so the most recent write wins either
+//! way. See its doc for exactly which writes count as "live".
 //!
 //! `<optgroup>`s are flattened: their `<option>` children are collected in
 //! document order as if the group weren't there. (Rendering the group *labels*
@@ -207,10 +222,12 @@ pub fn resolve_select_model(tree: &NodeTree, select_id: RawNodeId) -> SelectMode
 
     collect_options(tree, select_id, &mut options);
 
-    // The select's own `value` attribute is authoritative when present.
+    // The select's own `value` attribute wins over selectedness only while it
+    // is the freshest of the two (#757) — see `resolve_selected_index`.
     let select_value = select.attributes.get("value").map(|s| s.as_str());
+    let value_is_fresh = tree.select_value_fresh.contains(&select_id);
 
-    let selected_index = resolve_selected_index(&options, select_value);
+    let selected_index = resolve_selected_index(&options, select_value, value_is_fresh);
 
     SelectModel {
         options,
@@ -279,12 +296,24 @@ fn element_text(tree: &NodeTree, id: RawNodeId) -> String {
     buf
 }
 
-fn resolve_selected_index(options: &[SelectOption], select_value: Option<&str>) -> Option<usize> {
+fn resolve_selected_index(
+    options: &[SelectOption],
+    select_value: Option<&str>,
+    value_is_fresh: bool,
+) -> Option<usize> {
     if options.is_empty() {
         return None;
     }
-    // 1. Match the select's `value` attribute.
-    if let Some(val) = select_value
+    // 1. Match the select's `value` attribute — but only while it is the
+    //    *freshest* selection write (issue #757: a user's pick must not
+    //    permanently outrank a later programmatic `selected` write, the way
+    //    Chrome and rinch-web let the later write win). `value_is_fresh`
+    //    answers `tree.select_value_fresh.contains(select_id)`, which
+    //    `set_option_selectedness` clears the moment a **live** write moves
+    //    one of this select's options' selectedness — see its doc and
+    //    `NodeTree::select_value_fresh`'s.
+    if value_is_fresh
+        && let Some(val) = select_value
         && let Some(i) = options.iter().position(|o| o.value == val)
     {
         return Some(i);
@@ -361,7 +390,32 @@ fn resolve_selected_index(options: &[SelectOption], select_value: Option<&str>) 
 /// `multiple` is not honoured: rinch's `<select>` model is single-selection
 /// throughout (`selected_index` is one `Option<usize>`), so a `multiple` select
 /// already collapsed to one selected option before this existed.
+///
+/// A **live** write (the only kind that reaches this function; see
+/// [`apply_selectedness_on_attach`] for the other) also clears the owning
+/// select's entry in [`NodeTree::select_value_fresh`], whichever its sign
+/// (#757): a `selected` attribute set *right now*, on an option already
+/// attached to its select, is a fresher selection write than whatever that
+/// select's own `value` attribute last recorded, so it outranks it —
+/// matching Chrome and rinch-web's single "last write wins" model.
 pub(crate) fn set_option_selectedness(tree: &mut NodeTree, option_id: RawNodeId, on: bool) {
+    set_option_selectedness_impl(tree, option_id, on, true);
+}
+
+/// Apply the exclusivity rule for an option whose selectedness was already
+/// decided while it was detached, now that it has joined a select (#692's
+/// [`options_inserted`]). Unlike [`set_option_selectedness`] this does **not**
+/// touch [`NodeTree::select_value_fresh`] (#757): attaching a node that
+/// already carried `selected` in its markup is construction order showing
+/// through, not a new live write, and must not let it silently outrank a
+/// `value:` rsx prop set around the same time —
+/// `select_value_attribute_wins_over_selected_attribute` in `select_tests.rs`
+/// pins exactly this ordering.
+fn apply_selectedness_on_attach(tree: &mut NodeTree, option_id: RawNodeId, on: bool) {
+    set_option_selectedness_impl(tree, option_id, on, false);
+}
+
+fn set_option_selectedness_impl(tree: &mut NodeTree, option_id: RawNodeId, on: bool, live: bool) {
     let Some(node) = tree.get_mut(option_id) else {
         return;
     };
@@ -375,6 +429,12 @@ pub(crate) fn set_option_selectedness(tree: &mut NodeTree, option_id: RawNodeId,
     // The closed select paints the selected option's label; the option itself
     // has no box (`display: none`), so the select is what changed on screen.
     tree.mark_paint_dirty(select_id);
+    // A live write of either sign is the most recent write, so it retires the
+    // select's own `value` attribute: a deselect with nothing else selected
+    // falls through to the default, as a browser's reset does.
+    if live {
+        tree.select_value_fresh.remove(&select_id);
+    }
     if !on {
         return;
     }
@@ -434,7 +494,7 @@ pub(crate) fn options_inserted(tree: &mut NodeTree, inserted: RawNodeId) {
         .filter(|&id| tree.get(id).and_then(|n| n.selectedness) == Some(true))
         .collect();
     for id in pending {
-        set_option_selectedness(tree, id, true);
+        apply_selectedness_on_attach(tree, id, true);
     }
 }
 

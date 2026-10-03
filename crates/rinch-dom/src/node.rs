@@ -2438,6 +2438,37 @@ pub struct NodeTree {
     /// `max-height`, so it is not a scroll container. Give it either and it
     /// inherits this trap silently.
     pub scroll_lock_exempt: Vec<RawNodeId>,
+    /// `<select>` elements whose own `value` attribute is currently the
+    /// *freshest* selection write — the one `resolve_selected_index`'s step 1
+    /// should answer from (issue #757).
+    ///
+    /// A `<select>`'s `value` attribute is rinch's own invention (HTML has no
+    /// such content attribute); the desktop popup's pick writes it
+    /// (`app/select_widget.rs`'s `commit_select`), and so does the `value:`
+    /// rsx prop. A live `<option selected>` write is the other way to move
+    /// the selection. Chrome and rinch-web have only the second mechanism, so
+    /// whichever happens most recently is "the" selection there; desktop used
+    /// to let the `value` attribute win unconditionally once present, which
+    /// meant a user's pick could never be overtaken by a later script write —
+    /// the opposite of every other browser-matched behaviour in this file.
+    ///
+    /// A select's id is inserted here by every live `value` attribute write
+    /// (`RinchDocument::set_attribute`) and removed by
+    /// [`crate::select::set_option_selectedness`] whenever one of ITS options'
+    /// selectedness is set to `true` through a **live** write — so the most
+    /// recent of the two kinds of write wins, matching a browser's single
+    /// "last write wins" model despite rinch tracking the two as separate
+    /// mechanisms. [`crate::select::options_inserted`] — which re-applies an
+    /// already-decided selectedness when a detached option (built with its
+    /// `selected` attribute already present, the common `rsx!` construction
+    /// order) is attached to its select — deliberately does **not** clear an
+    /// entry here: that call is materializing state decided earlier while
+    /// detached, not a new write, and must not let attachment order override
+    /// a `value:` prop set at the same time
+    /// (`select_value_attribute_wins_over_selected_attribute` in
+    /// `select_tests.rs` pins this half). Removed outright when the `value`
+    /// attribute is removed, and when the select node itself is freed.
+    pub select_value_fresh: HashSet<RawNodeId>,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.
@@ -2829,6 +2860,7 @@ impl NodeTree {
             active_node: None,
             scroll_lock_roots: Vec::new(),
             scroll_lock_exempt: Vec::new(),
+            select_value_fresh: HashSet::new(),
             guard,
             anonymous_block_boxes: Vec::new(),
             split_inlines: Vec::new(),
@@ -3104,6 +3136,8 @@ impl NodeTree {
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
+            // Nor a freshness flag meant for a now-gone `<select>` (#757).
+            self.select_value_fresh.remove(node_id);
         }
         for node_id in to_remove {
             self.nodes.remove(node_id);
