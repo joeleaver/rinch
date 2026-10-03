@@ -69,7 +69,9 @@ pub fn styles() -> String {
 }
 
 /* Spacer that reserves titlebar space for inline menu items overlay.
-   Uses --rinch-menu-spacer-width which is set dynamically; falls back to 0. */
+   Its inline `width` is written by BorderlessWindow: the shell's estimate on
+   the first frame, then the menu row's measured box (issue #529). The custom
+   property is only the fallback for a spacer nobody sized. */
 .rinch-borderlesswindow__menu-spacer {
     flex-shrink: 0;
     width: var(--rinch-menu-spacer-width, 0px);

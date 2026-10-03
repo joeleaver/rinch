@@ -392,8 +392,12 @@ pub struct MenuBarContext {
     pub items_renderer: Option<MenuBarRenderer>,
     /// Renderer for just the click-outside overlay (used by InlineTitlebar layout).
     pub overlay_renderer: Option<MenuBarRenderer>,
-    /// Estimated width (px) of the inline menu row, used by BorderlessWindow
-    /// to insert a titlebar spacer so the title doesn't overlap menu items.
+    /// First-frame estimate (px) of the inline menu row's width, used by
+    /// BorderlessWindow to size the titlebar spacer that keeps the right
+    /// section and window controls clear of the row. The shell makes it
+    /// before any document exists, so it cannot measure text; once the row
+    /// has been laid out, `BorderlessWindow` sizes the spacer from the row's
+    /// measured box instead (issue #529).
     pub spacer_width: u32,
 }
 
