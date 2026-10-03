@@ -1544,6 +1544,14 @@ impl InlineWriter {
     }
 
     fn write_raw(&mut self, s: &str) {
+        // Spaces and tabs at the start of a line are CommonMark's to strip, and
+        // written they would move the block: `-  a` puts a list item's content
+        // one column right of its next block, four make a code block.
+        let s = if self.line_start && self.ctx != Ctx::Cell {
+            s.trim_start_matches([' ', '\t'])
+        } else {
+            s
+        };
         if !s.is_empty() {
             self.out.push_str(s);
             // Leading whitespace does not end the line start: a block marker
