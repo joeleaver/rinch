@@ -607,11 +607,12 @@ impl Component for DropdownMenuItem {
 
         // Click handler — also closes the parent menu if one exists.
         //
-        // The lookup is `find_menu_close_signal(&btn_for_close)`, run from
-        // *inside* the closure at click time, before the item's own callback rather than resolved once here at render
-        // time (issue #714): an item built inside a reactive block nested in
-        // the dropdown renders again on every change to that block's own
-        // condition, long after the container's own render — and a lookup
+        // The lookup is `find_menu_close_signal(&btn_for_close)`, run at click
+        // time rather than resolved once here at render time (issue #714), and
+        // before the item's own callback, which may detach the button. An item
+        // built inside a reactive block nested in the dropdown renders again on
+        // every change to that block's own condition, long after the
+        // container's own render — and a lookup
         // resolved at render time would see the container's render as already
         // finished. Walking the DOM from the clicked button instead finds the
         // menu's content root — which carries `MENU_CLOSE_ID_ATTR` for the
