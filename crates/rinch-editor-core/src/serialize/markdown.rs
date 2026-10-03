@@ -17,7 +17,9 @@
 //! | `superscript` | `<sup>…</sup>` |
 //!
 //! `C` is a colour the HTML paste path accepts (`#rgb`, `#rrggbb`, `rgb()`, a
-//! named colour, …).
+//! named colour, …); a mark whose colour is not one is written without it
+//! (`highlight`) or not at all (`text_color`), so no attribute value reaches the
+//! output unchecked.
 //!
 //! Bold, italic and strike are `**`, `*` and `~~`, except where CommonMark would
 //! not read the delimiter as one (it does not flank: `x**[a](u)**s`,
@@ -1583,6 +1585,8 @@ fn syntax_marks(node: &Node) -> (Vec<Mark>, Vec<Mark>) {
     for m in node.marks() {
         match m.type_name() {
             "bold" | "italic" | "strike" | "link" => md.push(m.clone()),
+            // A colour that would not read back is not written (see `open_mark`).
+            "text_color" if !mark_color(m).is_some_and(is_safe_css_color) => {}
             "underline" | "highlight" | "text_color" | "subscript" | "superscript" => {
                 html.push(m.clone())
             }
@@ -1697,18 +1701,27 @@ fn open_mark(mark: &Mark) -> String {
         "strike" => "~~".to_string(),
         "link" => "[".to_string(),
         "underline" => "<u>".to_string(),
-        "highlight" => match mark.attrs.get_str("color") {
-            Some(c) if !c.is_empty() => format!("<mark style=\"background-color:{c}\">"),
-            _ => "<mark>".to_string(),
+        // Only a colour `is_safe_css_color` accepts is written: the attribute
+        // can arrive unchecked (a `DocNode`, a collaboration peer), and the
+        // value lands inside raw HTML. A `text_color` without one is not
+        // written at all (`syntax_marks`).
+        "highlight" => match mark_color(mark).filter(|c| is_safe_css_color(c)) {
+            Some(c) => format!("<mark style=\"background-color:{c}\">"),
+            None => "<mark>".to_string(),
         },
-        "text_color" => format!(
-            "<span style=\"color:{}\">",
-            mark.attrs.get_str("color").unwrap_or("")
-        ),
+        "text_color" => match mark_color(mark).filter(|c| is_safe_css_color(c)) {
+            Some(c) => format!("<span style=\"color:{c}\">"),
+            None => String::new(),
+        },
         "subscript" => "<sub>".to_string(),
         "superscript" => "<sup>".to_string(),
         _ => String::new(),
     }
+}
+
+/// A colour mark's `color`, trimmed.
+fn mark_color(mark: &Mark) -> Option<&str> {
+    mark.attrs.get_str("color").map(str::trim)
 }
 
 fn close_mark(mark: &Mark, ctx: Ctx) -> String {

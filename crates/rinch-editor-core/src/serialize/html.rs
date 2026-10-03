@@ -217,8 +217,15 @@ fn wrap_mark(mark: &Mark, inner: &str) -> String {
             s.push_str(&format!(">{inner}</a>"));
             s
         }
+        // A colour is written only when `is_safe_css_color` accepts it, the
+        // check the HTML import applies: the attribute can arrive unchecked (a
+        // `DocNode`, a collaboration peer), and escaping keeps it inside the
+        // attribute but not out of the CSS (`red;background:url(…)`).
         "text_color" => {
-            let color = mark.attrs.get_str("color").unwrap_or("");
+            let color = mark.attrs.get_str("color").unwrap_or("").trim();
+            if !is_safe_css_color(color) {
+                return inner.to_string();
+            }
             format!(
                 "<span style=\"color:{}\">{}</span>",
                 escape_attr(color),
@@ -226,8 +233,8 @@ fn wrap_mark(mark: &Mark, inner: &str) -> String {
             )
         }
         "highlight" => {
-            let color = mark.attrs.get_str("color").unwrap_or("");
-            if color.is_empty() {
+            let color = mark.attrs.get_str("color").unwrap_or("").trim();
+            if !is_safe_css_color(color) {
                 format!("<mark>{inner}</mark>")
             } else {
                 format!(
