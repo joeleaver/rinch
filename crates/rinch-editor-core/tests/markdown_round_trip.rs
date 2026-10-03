@@ -1,0 +1,826 @@
+//! Markdown round trips the review of #1242 found broken, each pinned here:
+//! a document written with `doc_to_markdown` and read back with
+//! `doc_from_markdown_strict` must be the same document, and the strict reader
+//! must refuse what it would drop.
+#![cfg(feature = "markdown")]
+
+use rinch_editor_core::serialize::{
+    Construct, MarkdownError, doc_from_markdown, doc_from_markdown_strict, doc_to_markdown,
+};
+use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, Schema};
+
+fn mark(s: &Schema, name: &str, attrs: &[(&str, &str)]) -> Mark {
+    let mt = s.mark_type(name).unwrap();
+    let a = Attrs::from_iter(
+        attrs
+            .iter()
+            .map(|(k, v)| (*k, AttrValue::from(v.to_string()))),
+    );
+    Mark::new(mt.clone(), mt.compute_attrs(&a).unwrap())
+}
+
+fn t(s: &Schema, text: &str, marks: &[&Mark]) -> Node {
+    let mut set: Vec<Mark> = Vec::new();
+    for m in marks {
+        set = m.add_to_set(&set);
+    }
+    s.text_with_marks(text, set).unwrap()
+}
+
+fn br(s: &Schema) -> Node {
+    s.create_node("hard_break", Attrs::new(), Fragment::empty())
+        .unwrap()
+}
+
+fn p(s: &Schema, inline: Vec<Node>) -> Node {
+    s.create_node("paragraph", Attrs::new(), Fragment::from_children(inline))
+        .unwrap()
+}
+
+fn doc(s: &Schema, blocks: Vec<Node>) -> Node {
+    s.create_node("doc", Attrs::new(), Fragment::from_children(blocks))
+        .unwrap()
+}
+
+/// Write `d`, read it back strictly, require the same document, and require a
+/// second write to change nothing. Returns the Markdown.
+fn rt(s: &Schema, d: &Node) -> String {
+    let md = doc_to_markdown(d);
+    let back = doc_from_markdown_strict(s, &md)
+        .unwrap_or_else(|e| panic!("strict read of {md:?} failed: {e}"));
+    assert_eq!(&back, d, "round trip through {md:?}");
+    assert_eq!(doc_to_markdown(&back), md, "second write of {md:?}");
+    md
+}
+
+fn delimiter(mark: &str) -> &'static str {
+    match mark {
+        "bold" => "**",
+        "italic" => "*",
+        _ => "~~",
+    }
+}
+
+// ── F1: a delimiter run that ends at a hard break ──
+
+#[test]
+fn a_delimiter_run_ending_at_a_hard_break_closes_before_it() {
+    let s = Schema::starter_kit();
+    for name in ["bold", "italic", "strike"] {
+        let m = mark(&s, name, &[]);
+        let delim = delimiter(name);
+        // Bold a line, Shift+Enter, keep typing plain text: the run closes
+        // before the break, so it stays Markdown.
+        let d = doc(
+            &s,
+            vec![p(&s, vec![t(&s, "a", &[&m]), br(&s), t(&s, "b", &[])])],
+        );
+        assert_eq!(rt(&s, &d), format!("{delim}a{delim}\\\nb"));
+        // Plain, then a marked line after the break.
+        let d = doc(
+            &s,
+            vec![p(&s, vec![t(&s, "a", &[]), br(&s), t(&s, "b", &[&m])])],
+        );
+        rt(&s, &d);
+    }
+}
+
+#[test]
+fn a_run_across_a_hard_break_still_round_trips() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    let d = doc(
+        &s,
+        vec![p(
+            &s,
+            vec![t(&s, "a", &[&bold]), br(&s), t(&s, "b", &[&bold])],
+        )],
+    );
+    rt(&s, &d);
+    // The break keeps the run the next line continues and closes the rest.
+    let d = doc(
+        &s,
+        vec![p(
+            &s,
+            vec![
+                t(&s, "a", &[&bold, &it]),
+                br(&s),
+                t(&s, "b", &[&bold]),
+                t(&s, " c", &[]),
+            ],
+        )],
+    );
+    rt(&s, &d);
+}
+
+// ── F2: a marked link beside a word ──
+
+#[test]
+fn a_bold_link_beside_a_word_keeps_its_bold() {
+    let s = Schema::starter_kit();
+    let link = mark(&s, "link", &[("href", "https://x.y")]);
+    for name in ["bold", "italic", "strike"] {
+        let m = mark(&s, name, &[]);
+        let delim = delimiter(name);
+        // The link goes outermost, so the delimiters stay Markdown.
+        let d = doc(
+            &s,
+            vec![p(&s, vec![t(&s, "a", &[&m, &link]), t(&s, "s", &[])])],
+        );
+        assert_eq!(rt(&s, &d), format!("[{delim}a{delim}](https://x.y)s"));
+        let d = doc(
+            &s,
+            vec![p(&s, vec![t(&s, "x", &[]), t(&s, "a", &[&m, &link])])],
+        );
+        assert_eq!(rt(&s, &d), format!("x[{delim}a{delim}](https://x.y)"));
+    }
+}
+
+// ── F3: leading whitespace before a block marker ──
+
+/// The one paragraph `md` reads back as, and its text.
+fn single_paragraph_text(s: &Schema, md: &str) -> Vec<String> {
+    let d = doc_from_markdown_strict(s, md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+    assert_eq!(d.child_count(), 1, "{md:?} read as {d:?}");
+    let para = d.child(0);
+    assert_eq!(para.type_name(), "paragraph", "{md:?} read as {d:?}");
+    para.content()
+        .children()
+        .iter()
+        .map(|n| n.text().unwrap_or("<br>").to_string())
+        .collect()
+}
+
+#[test]
+fn leading_whitespace_does_not_unescape_a_block_marker() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    // The leading space is CommonMark's to strip; the marker must stay text.
+    for (text, want) in [
+        (" > not a quote", "> not a quote"),
+        (" - not a list", "- not a list"),
+        ("  # not a heading", "# not a heading"),
+        ("   1. not a list", "1. not a list"),
+    ] {
+        let md = doc_to_markdown(&doc(&s, vec![p(&s, vec![t(&s, text, &[])])]));
+        assert_eq!(single_paragraph_text(&s, &md), vec![want], "{md:?}");
+    }
+    let md = doc_to_markdown(&doc(&s, vec![p(&s, vec![t(&s, " # x", &[&bold])])]));
+    assert_eq!(single_paragraph_text(&s, &md), vec!["# x"], "{md:?}");
+    // After a hard break, too: the break must survive as well.
+    let md = doc_to_markdown(&doc(
+        &s,
+        vec![p(&s, vec![t(&s, "a", &[]), br(&s), t(&s, " > q", &[])])],
+    ));
+    assert_eq!(
+        single_paragraph_text(&s, &md),
+        vec!["a", "<br>", "> q"],
+        "{md:?}"
+    );
+}
+
+// ── F4: `!` before a link ──
+
+#[test]
+fn a_bang_before_a_link_does_not_make_an_image() {
+    let s = Schema::starter_kit();
+    for href in ["https://x.y", "mailto:a@b.c"] {
+        let link = mark(&s, "link", &[("href", href)]);
+        let d = doc(
+            &s,
+            vec![p(&s, vec![t(&s, "Done!", &[]), t(&s, "docs", &[&link])])],
+        );
+        rt(&s, &d);
+    }
+    // Already escaped text before it, and a bold link.
+    let link = mark(&s, "link", &[("href", "https://x.y")]);
+    let bold = mark(&s, "bold", &[]);
+    let d = doc(
+        &s,
+        vec![p(&s, vec![t(&s, "a\\!", &[]), t(&s, "b", &[&link])])],
+    );
+    rt(&s, &d);
+    let d = doc(
+        &s,
+        vec![p(&s, vec![t(&s, "!", &[]), t(&s, "b", &[&bold, &link])])],
+    );
+    rt(&s, &d);
+}
+
+// ── F5: strict refuses what an HTML table drops ──
+
+fn refusal(s: &Schema, md: &str) -> Construct {
+    match doc_from_markdown_strict(s, md) {
+        Err(MarkdownError::Unsupported { construct, .. }) => construct,
+        other => panic!("{md:?}: expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn strict_refuses_unsafe_urls_inside_an_html_table() {
+    let s = Schema::starter_kit();
+    assert_eq!(
+        refusal(
+            &s,
+            "<table><tr><td><a href=\"javascript:alert(1)\">x</a></td></tr></table>"
+        ),
+        Construct::UnsafeLink
+    );
+    assert_eq!(
+        refusal(
+            &s,
+            "<table><tr><td><img src=\"javascript:alert(1)\">x</td></tr></table>"
+        ),
+        Construct::UnsafeImage
+    );
+    assert_eq!(
+        refusal(
+            &s,
+            "<table><tr><td><img src=\"data:image/svg+xml,x\">x</td></tr></table>"
+        ),
+        Construct::UnsafeImage
+    );
+    // Lenient still drops them, as before.
+    let d = doc_from_markdown(
+        &s,
+        "<table><tr><td><a href=\"javascript:alert(1)\">x</a></td></tr></table>",
+    )
+    .unwrap();
+    let text = d.child(0).child(0).child(0).child(0).child(0);
+    assert_eq!(text.text(), Some("x"));
+    assert!(text.marks().is_empty());
+}
+
+#[test]
+fn strict_refuses_attributes_an_html_table_drops() {
+    let s = Schema::starter_kit();
+    for md in [
+        "<table><tr><td><span style=\"font-size:99px\">x</span></td></tr></table>",
+        "<table><tr><td><span style=\"color:expression(1)\">x</span></td></tr></table>",
+        "<table><tr><td><p style=\"margin:9px\">x</p></td></tr></table>",
+        "<table><tr><td><mark style=\"background-color:url(x)\">x</mark></td></tr></table>",
+        "<table><tr><td colspan=\"99999\">x</td></tr></table>",
+        "<table><tr><td onclick=\"alert(1)\">x</td></tr></table>",
+        "<table class=\"wide\"><tr><td>x</td></tr></table>",
+    ] {
+        assert_eq!(refusal(&s, md), Construct::HtmlBlock, "{md}");
+    }
+}
+
+#[test]
+fn strict_accepts_every_attribute_an_html_table_keeps() {
+    let s = Schema::starter_kit();
+    for md in [
+        "<table><tr><td><span style=\"color:red\">x</span></td></tr></table>",
+        "<table><tr><td><mark style=\"background-color:#ffee00\">x</mark></td></tr></table>",
+        "<table><tr><td><p style=\"text-align:center\">x</p></td></tr></table>",
+        "<table><tr><td colspan=\"2\" rowspan=\"2\">x</td></tr></table>",
+        "<table><tr><td><a href=\"https://ok\" title=\"t\" target=\"_blank\" rel=\"noopener noreferrer\">x</a></td></tr></table>",
+        "<table><tr><td><img src=\"a.png\" alt=\"a\" title=\"t\">x</td></tr></table>",
+        "<table><tr><td><ol start=\"5\"><li>x</li></ol></td></tr></table>",
+    ] {
+        doc_from_markdown_strict(&s, md).unwrap_or_else(|e| panic!("{md}: {e}"));
+    }
+}
+
+/// The text-loss check and the tag whitelist each refuse something the other
+/// does not see (mutants M4 and M10 of the review).
+#[test]
+fn strict_refuses_stray_text_and_unknown_tags_in_an_html_table() {
+    let s = Schema::starter_kit();
+    for md in [
+        "<table><tr>stray<td>x</td></tr></table>",
+        "<table>stray<tr><td>x</td></tr></table>",
+        "<table><tr><td><input type=checkbox>x</td></tr></table>",
+        "<table><tr><td><input>x</td></tr></table>",
+    ] {
+        assert_eq!(refusal(&s, md), Construct::HtmlBlock, "{md}");
+    }
+}
+
+// ── F6: the writer never puts an unvalidated colour into HTML ──
+
+#[test]
+fn an_unsafe_colour_is_never_written_into_html() {
+    let s = Schema::starter_kit();
+    let evil = "red\"><img src=x onerror=alert(1)><span x=\"";
+    for name in ["text_color", "highlight"] {
+        let m = mark(&s, name, &[("color", evil)]);
+        let d = doc(&s, vec![p(&s, vec![t(&s, "a", &[&m])])]);
+        let md = doc_to_markdown(&d);
+        assert!(
+            !md.contains("onerror") && !md.contains("<img"),
+            "{name}: {md:?}"
+        );
+        let back = doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+        assert_eq!(back.child(0).child(0).text(), Some("a"), "{md:?}");
+        // The same in a table cell, which is written as HTML.
+        let cell = s
+            .create_node(
+                "table_cell",
+                Attrs::new(),
+                Fragment::from_node(p(&s, vec![t(&s, "a", &[&m])])),
+            )
+            .unwrap();
+        let cell2 = s
+            .create_node(
+                "table_cell",
+                Attrs::new(),
+                Fragment::from_node(p(&s, vec![])),
+            )
+            .unwrap();
+        let row = s
+            .create_node(
+                "table_row",
+                Attrs::new(),
+                Fragment::from_children(vec![cell, cell2]),
+            )
+            .unwrap();
+        let table = s
+            .create_node("table", Attrs::new(), Fragment::from_node(row))
+            .unwrap();
+        let md = doc_to_markdown(&doc(&s, vec![table]));
+        assert!(
+            !md.contains("onerror") && !md.contains("<img"),
+            "{name}: {md:?}"
+        );
+        doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+    }
+    // CSS smuggled through a colour is not written either.
+    let m = mark(
+        &s,
+        "text_color",
+        &[("color", "red;background:url(javascript:x)")],
+    );
+    let md = doc_to_markdown(&doc(&s, vec![p(&s, vec![t(&s, "a", &[&m])])]));
+    assert!(!md.contains("url("), "{md:?}");
+    // A valid colour is still written.
+    let m = mark(&s, "text_color", &[("color", "rgb(1, 2, 3)")]);
+    rt(&s, &doc(&s, vec![p(&s, vec![t(&s, "a", &[&m])])]));
+}
+
+// ── delimiters that would not flank: written as tags ──
+
+#[test]
+fn a_delimiter_run_that_would_not_flank_round_trips() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    let st = mark(&s, "strike", &[]);
+    let sup = mark(&s, "superscript", &[]);
+    let link = mark(&s, "link", &[("href", "https://x.y")]);
+    let cases: Vec<Vec<Node>> = vec![
+        // `*~~a~~*b`: the closing `*` follows `~` and precedes a letter.
+        vec![t(&s, "a", &[&it, &st]), t(&s, "b", &[])],
+        // `x*~~a~~*`: the opening `*` follows a letter and precedes `~`.
+        vec![t(&s, "x", &[]), t(&s, "a", &[&it, &st])],
+        // Punctuation at a run's edge, a letter outside it.
+        vec![t(&s, "a.", &[&bold]), t(&s, "b", &[])],
+        vec![t(&s, "b", &[]), t(&s, "(a", &[&it])],
+        vec![t(&s, "x", &[]), t(&s, "\"q\"", &[&st]), t(&s, "y", &[])],
+        // A run that ends inside an HTML mark and one that starts after a link.
+        vec![
+            t(&s, "y", &[&st, &sup]),
+            t(&s, "a", &[&st, &link]),
+            t(&s, "c", &[]),
+        ],
+        // Bold and italic meeting: one closes where the other opens.
+        vec![t(&s, "a", &[&it]), t(&s, "b", &[&bold])],
+        vec![
+            t(&s, "a", &[&bold]),
+            t(&s, "b", &[&it]),
+            t(&s, "c", &[&bold]),
+        ],
+        // Punctuation outside ASCII (`«` is CommonMark punctuation).
+        vec![t(&s, "x", &[]), t(&s, "«a»", &[&bold]), t(&s, "y", &[])],
+        // One run closing italic and opening bold: `*[a](u)[b](v)***c**`.
+        vec![
+            t(&s, "a", &[&it, &link]),
+            t(&s, "b", &[&it, &mark(&s, "link", &[("href", "https://z")])]),
+            t(&s, "c", &[&bold]),
+        ],
+        // Code beside a delimiter, a letter on the other side.
+        vec![
+            t(&s, "x", &[]),
+            t(&s, "c", &[&bold, &mark(&s, "code", &[])]),
+            t(&s, "s", &[]),
+        ],
+    ];
+    for inline in cases {
+        rt(&s, &doc(&s, vec![p(&s, inline)]));
+    }
+    // Ordinary runs are still plain Markdown.
+    let md = rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![t(&s, "a ", &[]), t(&s, "b", &[&bold]), t(&s, " c", &[])],
+            )],
+        ),
+    );
+    assert_eq!(md, "a **b** c");
+}
+
+#[test]
+fn the_reader_takes_the_html_spellings_of_bold_italic_and_strike() {
+    let s = Schema::starter_kit();
+    for (md, name) in [
+        ("x<strong>a</strong>y", "bold"),
+        ("x<b>a</b>y", "bold"),
+        ("x<em>a</em>y", "italic"),
+        ("x<i>a</i>y", "italic"),
+        ("x<s>a</s>y", "strike"),
+        ("x<del>a</del>y", "strike"),
+    ] {
+        let d = doc_from_markdown_strict(&s, md).unwrap_or_else(|e| panic!("{md}: {e}"));
+        let a = d.child(0).child(1);
+        assert_eq!(a.text(), Some("a"), "{md}");
+        assert_eq!(a.marks().len(), 1, "{md}");
+        assert_eq!(a.marks()[0].type_name(), name, "{md}");
+    }
+    assert_eq!(refusal(&s, "x<strong>a"), Construct::UnmatchedTag);
+    assert_eq!(refusal(&s, "x<strong>a</b>"), Construct::UnmatchedTag);
+}
+
+#[test]
+fn whitespace_before_an_html_mark_stays_outside_it() {
+    let s = Schema::starter_kit();
+    let hl = mark(&s, "highlight", &[]);
+    let d = doc(
+        &s,
+        vec![p(
+            &s,
+            vec![t(&s, "a ", &[]), t(&s, " ", &[&hl]), t(&s, "b", &[])],
+        )],
+    );
+    rt(&s, &d);
+}
+
+// ── leading whitespace never moves a block ──
+
+#[test]
+fn leading_whitespace_keeps_the_block_structure() {
+    let s = Schema::starter_kit();
+    let node = |name: &str, kids: Vec<Node>| {
+        s.create_node(name, Attrs::new(), Fragment::from_children(kids))
+            .unwrap()
+    };
+    let hl = mark(&s, "highlight", &[]);
+    for first in [
+        vec![t(&s, " a", &[])],
+        vec![t(&s, "   a", &[])],
+        vec![t(&s, " ", &[&hl]), t(&s, "a", &[])],
+    ] {
+        // A list item whose first paragraph starts with whitespace keeps its
+        // second paragraph.
+        let d = doc(
+            &s,
+            vec![node(
+                "bullet_list",
+                vec![node(
+                    "list_item",
+                    vec![p(&s, first.clone()), p(&s, vec![t(&s, "b", &[])])],
+                )],
+            )],
+        );
+        let md = doc_to_markdown(&d);
+        let back = doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+        assert_eq!(back.child_count(), 1, "{md:?} read as {back:?}");
+        let item = back.child(0).child(0);
+        assert_eq!(item.child_count(), 2, "{md:?} read as {back:?}");
+        assert_eq!(doc_to_markdown(&back), md, "{md:?}");
+    }
+    // Four spaces at a paragraph's start do not make it a code block.
+    let md = doc_to_markdown(&doc(&s, vec![p(&s, vec![t(&s, "    code?", &[])])]));
+    assert_eq!(single_paragraph_text(&s, &md), vec!["code?"], "{md:?}");
+}
+
+// ── hard breaks Markdown has no `\` for ──
+
+#[test]
+fn a_hard_break_at_a_textblock_end_or_in_a_heading_round_trips() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    // Shift+Enter at the end of a paragraph: `a\` would read as a backslash.
+    rt(&s, &doc(&s, vec![p(&s, vec![t(&s, "a", &[]), br(&s)])]));
+    rt(
+        &s,
+        &doc(&s, vec![p(&s, vec![t(&s, "a", &[&bold]), br(&s), br(&s)])]),
+    );
+    rt(&s, &doc(&s, vec![p(&s, vec![br(&s), t(&s, "a", &[])])]));
+    // A heading is one line: every break in it.
+    let heading = s
+        .create_node(
+            "heading",
+            Attrs::from_iter([("level", AttrValue::Int(2))]),
+            Fragment::from_children(vec![t(&s, "a", &[]), br(&s), t(&s, "b", &[&bold]), br(&s)]),
+        )
+        .unwrap();
+    rt(&s, &doc(&s, vec![heading]));
+}
+
+#[test]
+fn the_reader_takes_br_as_a_hard_break() {
+    let s = Schema::starter_kit();
+    for md in ["a<br>b", "a<br/>b", "a<BR />b"] {
+        let d = doc_from_markdown_strict(&s, md).unwrap_or_else(|e| panic!("{md}: {e}"));
+        assert_eq!(d.child(0).child(1).type_name(), "hard_break", "{md}");
+        assert_eq!(d.child(0).child_count(), 3, "{md}");
+    }
+    assert_eq!(refusal(&s, "a<br class=\"x\">b"), Construct::InlineHtml);
+}
+
+// ── a newline in text ──
+
+#[test]
+fn a_newline_in_text_stays_in_its_block() {
+    let s = Schema::starter_kit();
+    for text in ["a\n\nb", "a\n# b", "a\n- b", "a\nb", "a\r\nb", "\n> a"] {
+        rt(&s, &doc(&s, vec![p(&s, vec![t(&s, text, &[])])]));
+        let heading = s
+            .create_node(
+                "heading",
+                Attrs::from_iter([("level", AttrValue::Int(1))]),
+                Fragment::from_node(t(&s, text, &[])),
+            )
+            .unwrap();
+        rt(&s, &doc(&s, vec![heading]));
+    }
+    // In a link's title and an image's alt text.
+    let link = mark(
+        &s,
+        "link",
+        &[("href", "https://x.y"), ("title", "l1\n\nl2")],
+    );
+    rt(&s, &doc(&s, vec![p(&s, vec![t(&s, "a", &[&link])])]));
+    let img = s
+        .create_node(
+            "image",
+            Attrs::from_iter([
+                ("src", AttrValue::from("a.png".to_string())),
+                ("alt", AttrValue::from("x\n\ny".to_string())),
+            ]),
+            Fragment::empty(),
+        )
+        .unwrap();
+    rt(&s, &doc(&s, vec![p(&s, vec![img])]));
+}
+
+#[test]
+fn text_shaped_like_an_email_autolink_stays_text() {
+    let s = Schema::starter_kit();
+    for text in ["x <^@a> y", "<1@b.c>", "a<{b@c}>"] {
+        rt(&s, &doc(&s, vec![p(&s, vec![t(&s, text, &[])])]));
+    }
+}
+
+#[test]
+fn delimiter_runs_between_punctuation_and_autolink_shapes_round_trip() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    let st = mark(&s, "strike", &[]);
+    let hl = mark(&s, "highlight", &[]);
+    let u = mark(&s, "underline", &[]);
+    // `***'#*<mark>-</mark><u>*\*<***</u>`: the `*` after `#` can open and
+    // close, and the rule of 3 paired the runs wrongly.
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![
+                    t(&s, "'#", &[&bold, &it]),
+                    t(&s, "-", &[&bold, &hl]),
+                    t(&s, "*<", &[&bold, &it, &u]),
+                ],
+            )],
+        ),
+    );
+    // A `<` ending one text node, then a delimiter and text that together
+    // look like an email autolink (`<~~a~~@b>`, `<**#{@b>`).
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![t(&s, "x<", &[]), t(&s, "a", &[&st]), t(&s, "@b>", &[])],
+            )],
+        ),
+    );
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![t(&s, "x<", &[]), t(&s, "#{@b", &[&bold]), t(&s, ">;", &[])],
+            )],
+        ),
+    );
+}
+
+#[test]
+fn an_intraword_run_inside_another_run_of_its_character_round_trips() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    // `***b*é*cy***`: the `*`s around `é` can open and close, and with the
+    // bold still open CommonMark paired the second with it.
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![
+                    t(&s, "b", &[&bold, &it]),
+                    t(&s, "é", &[&bold]),
+                    t(&s, "cy", &[&bold, &it]),
+                    t(&s, " z", &[]),
+                ],
+            )],
+        ),
+    );
+}
+
+#[test]
+fn the_run_that_lasts_longer_opens_outside() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    let d = doc(
+        &s,
+        vec![p(
+            &s,
+            vec![t(&s, "a", &[&bold, &it]), t(&s, " b", &[&bold])],
+        )],
+    );
+    assert_eq!(rt(&s, &d), "***a* b**");
+    // A hard break does not end the run that continues after it.
+    let d = doc(
+        &s,
+        vec![p(
+            &s,
+            vec![t(&s, "a", &[&bold, &it]), br(&s), t(&s, "b", &[&it])],
+        )],
+    );
+    assert_eq!(rt(&s, &d), "***a**\\\nb*");
+}
+
+// ── review round 2: strict accepts everything the writer writes ──
+
+#[test]
+fn a_textblock_of_only_a_hard_break_round_trips() {
+    let s = Schema::starter_kit();
+    let node = |name: &str, kids: Vec<Node>| {
+        s.create_node(name, Attrs::new(), Fragment::from_children(kids))
+            .unwrap()
+    };
+    // Shift+Enter on an empty line: `<br>` alone on a line is an HTML block.
+    rt(&s, &doc(&s, vec![p(&s, vec![br(&s)])]));
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![
+                p(&s, vec![t(&s, "a", &[])]),
+                p(&s, vec![br(&s)]),
+                p(&s, vec![t(&s, "b", &[])]),
+            ],
+        ),
+    );
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![node(
+                "bullet_list",
+                vec![node("list_item", vec![p(&s, vec![br(&s)])])],
+            )],
+        ),
+    );
+    rt(
+        &s,
+        &doc(&s, vec![node("blockquote", vec![p(&s, vec![br(&s)])])]),
+    );
+    // Leading whitespace before the break is stripped, the break kept.
+    let md = doc_to_markdown(&doc(&s, vec![p(&s, vec![t(&s, " ", &[]), br(&s)])]));
+    assert_eq!(
+        doc_from_markdown_strict(&s, &md).unwrap(),
+        doc(&s, vec![p(&s, vec![br(&s)])]),
+        "{md:?}"
+    );
+    // And the lenient reader keeps it too.
+    assert_eq!(
+        doc_from_markdown(&s, "<br>").unwrap(),
+        doc(&s, vec![p(&s, vec![br(&s)])])
+    );
+}
+
+fn one_cell_table(s: &Schema, cell_attrs: Attrs, blocks: Vec<Node>) -> Node {
+    let cell = s
+        .create_node("table_cell", cell_attrs, Fragment::from_children(blocks))
+        .unwrap();
+    let empty = s
+        .create_node(
+            "table_cell",
+            Attrs::new(),
+            Fragment::from_node(p(s, vec![])),
+        )
+        .unwrap();
+    let row = s
+        .create_node(
+            "table_row",
+            Attrs::new(),
+            Fragment::from_children(vec![cell, empty]),
+        )
+        .unwrap();
+    s.create_node("table", Attrs::new(), Fragment::from_node(row))
+        .unwrap()
+}
+
+#[test]
+fn a_task_list_in_a_table_cell_is_dropped_as_everywhere_else() {
+    let s = Schema::starter_kit();
+    let item = s
+        .create_node(
+            "task_item",
+            Attrs::from_iter([("checked", AttrValue::Bool(true))]),
+            Fragment::from_node(p(&s, vec![t(&s, "buy milk", &[])])),
+        )
+        .unwrap();
+    let list = s
+        .create_node("task_list", Attrs::new(), Fragment::from_node(item))
+        .unwrap();
+    let d = doc(
+        &s,
+        vec![one_cell_table(
+            &s,
+            Attrs::new(),
+            vec![p(&s, vec![t(&s, "a", &[])]), list],
+        )],
+    );
+    let md = doc_to_markdown(&d);
+    let back = doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+    let want = doc(
+        &s,
+        vec![one_cell_table(
+            &s,
+            Attrs::new(),
+            vec![p(&s, vec![t(&s, "a", &[])])],
+        )],
+    );
+    assert_eq!(back, want, "{md:?}");
+}
+
+#[test]
+fn spans_past_what_the_import_reads_are_written_clamped() {
+    let s = Schema::starter_kit();
+    for (name, big, cap) in [("rowspan", 70_000, 65_534), ("colspan", 5_000, 1_000)] {
+        let attrs = Attrs::from_iter([(name, AttrValue::Int(big))]);
+        let d = doc(
+            &s,
+            vec![one_cell_table(
+                &s,
+                attrs,
+                vec![p(&s, vec![t(&s, "a", &[])])],
+            )],
+        );
+        let md = doc_to_markdown(&d);
+        assert!(md.contains(&format!("{name}=\"{cap}\"")), "{md:?}");
+        doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+    }
+}
+
+#[test]
+fn a_list_item_starting_with_an_empty_paragraph_keeps_its_blocks() {
+    let s = Schema::starter_kit();
+    let node = |name: &str, kids: Vec<Node>| {
+        s.create_node(name, Attrs::new(), Fragment::from_children(kids))
+            .unwrap()
+    };
+    let table = one_cell_table(&s, Attrs::new(), vec![p(&s, vec![t(&s, "a", &[])])]);
+    for second in [table, p(&s, vec![br(&s)]), p(&s, vec![t(&s, "b", &[])])] {
+        let d = doc(
+            &s,
+            vec![node(
+                "bullet_list",
+                vec![node("list_item", vec![p(&s, vec![]), second.clone()])],
+            )],
+        );
+        let md = doc_to_markdown(&d);
+        // The empty paragraph is lost (#1366); the item keeps the rest.
+        let back = doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+        let want = doc(
+            &s,
+            vec![node("bullet_list", vec![node("list_item", vec![second])])],
+        );
+        assert_eq!(back, want, "{md:?}");
+    }
+}

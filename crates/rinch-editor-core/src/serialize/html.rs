@@ -105,8 +105,10 @@ fn block_tags(node: &Node) -> (String, String) {
         "table_cell" | "table_header_cell" => {
             let tag = primary_tag(node.node_type());
             let mut open = format!("<{tag}");
-            for (name, attr) in [("colspan", "colspan"), ("rowspan", "rowspan")] {
-                let n = node.attrs().get_int(attr).unwrap_or(1);
+            // Clamped to what the import reads (Chrome's limits): a larger
+            // span would read back clamped anyway.
+            for (name, attr, max) in [("colspan", "colspan", 1000), ("rowspan", "rowspan", 65534)] {
+                let n = node.attrs().get_int(attr).unwrap_or(1).min(max);
                 if n > 1 {
                     open.push_str(&format!(" {name}=\"{n}\""));
                 }
@@ -217,8 +219,15 @@ fn wrap_mark(mark: &Mark, inner: &str) -> String {
             s.push_str(&format!(">{inner}</a>"));
             s
         }
+        // A colour is written only when `is_safe_css_color` accepts it, the
+        // check the HTML import applies: the attribute can arrive unchecked (a
+        // `DocNode`, a collaboration peer), and escaping keeps it inside the
+        // attribute but not out of the CSS (`red;background:url(…)`).
         "text_color" => {
-            let color = mark.attrs.get_str("color").unwrap_or("");
+            let color = mark.attrs.get_str("color").unwrap_or("").trim();
+            if !is_safe_css_color(color) {
+                return inner.to_string();
+            }
             format!(
                 "<span style=\"color:{}\">{}</span>",
                 escape_attr(color),
@@ -226,8 +235,8 @@ fn wrap_mark(mark: &Mark, inner: &str) -> String {
             )
         }
         "highlight" => {
-            let color = mark.attrs.get_str("color").unwrap_or("");
-            if color.is_empty() {
+            let color = mark.attrs.get_str("color").unwrap_or("").trim();
+            if !is_safe_css_color(color) {
                 format!("<mark>{inner}</mark>")
             } else {
                 format!(
@@ -1044,6 +1053,92 @@ pub(crate) fn is_safe_css_color(value: &str) -> bool {
     v.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
+/// An attribute the HTML import would drop or degrade, as strict Markdown
+/// reading reports it for an HTML table block.
+#[cfg(feature = "markdown")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DroppedAttr {
+    /// An `<a>` whose `href` [`is_safe_url`] refuses.
+    UnsafeLink,
+    /// An `<img>` whose `src` [`is_safe_url`] refuses.
+    UnsafeImage,
+    /// Any other attribute, or value, the import does not carry into the model.
+    Other,
+}
+
+/// The first attribute in `html` that [`slice_from_html`] would not carry into
+/// the document, for the tags a table block may hold: `href`/`title`/`target`
+/// (`rel` is the writer's own) on `<a>`, `src`/`alt`/`title` on `<img>`,
+/// `colspan`/`rowspan` in range on a cell, `style` holding only `text-align` on
+/// a paragraph or heading, `start` on `<ol>`, and a `style` of safe colours on
+/// `<span>` (`color`, `background-color`) and `<mark>` (`background-color`).
+#[cfg(feature = "markdown")]
+pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
+    fn style_is(style: &str, ok: &dyn Fn(&str, &str) -> bool) -> bool {
+        super::style_scan::style_declarations(style)
+            .into_iter()
+            .all(|(name, value)| ok(&name.to_ascii_lowercase(), value.trim()))
+    }
+    fn element(tag: &str, attributes: &[(String, String)]) -> Option<DroppedAttr> {
+        for (name, value) in attributes {
+            let kept = match (tag, name.as_str()) {
+                ("a", "href") if !is_safe_url(value, false) => {
+                    return Some(DroppedAttr::UnsafeLink);
+                }
+                ("img", "src") if !is_safe_url(value, true) => {
+                    return Some(DroppedAttr::UnsafeImage);
+                }
+                ("a", "href" | "title" | "target" | "rel") | ("img", "src" | "alt" | "title") => {
+                    true
+                }
+                ("td" | "th", "colspan") => value
+                    .trim()
+                    .parse::<u32>()
+                    .is_ok_and(|n| (1..=1000).contains(&n)),
+                ("td" | "th", "rowspan") => value.trim().parse::<u32>().is_ok_and(|n| n <= 65534),
+                ("p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6", "style") => {
+                    style_is(value, &|k, v| {
+                        k == "text-align"
+                            && matches!(
+                                v.to_ascii_lowercase().as_str(),
+                                "left" | "center" | "right" | "justify"
+                            )
+                    })
+                }
+                ("ol", "start") => value.trim().parse::<i64>().is_ok(),
+                ("span", "style") => style_is(value, &|k, v| {
+                    matches!(k, "color" | "background-color") && is_safe_css_color(v)
+                }),
+                ("mark", "style") => style_is(value, &|k, v| {
+                    k == "background-color" && is_safe_css_color(v)
+                }),
+                _ => false,
+            };
+            if !kept {
+                return Some(DroppedAttr::Other);
+            }
+        }
+        match tag {
+            "a" if attr(attributes, "href").is_none() => Some(DroppedAttr::Other),
+            "img" if attr(attributes, "src").is_none() => Some(DroppedAttr::Other),
+            _ => None,
+        }
+    }
+    fn walk(nodes: &[ParsedNode]) -> Option<DroppedAttr> {
+        nodes.iter().find_map(|n| match n {
+            ParsedNode::Text(_) => None,
+            ParsedNode::Element {
+                tag,
+                attributes,
+                children,
+            } => element(&tag.to_ascii_lowercase(), attributes).or_else(|| walk(children)),
+        })
+    }
+    let mut parser = HtmlFragmentParser::new(html);
+    parser.all_attributes = true;
+    walk(&parser.parse())
+}
+
 // ─── Salvaged zero-dependency HTML tokenizer ─────────────────────────────────
 //
 // Ported from `rinch/src/app/html_parser.rs`. Produces a tree of `ParsedNode`s
@@ -1105,11 +1200,26 @@ fn unwrap_body(nodes: Vec<ParsedNode>) -> Vec<ParsedNode> {
 struct HtmlFragmentParser<'a> {
     input: &'a str,
     pos: usize,
+    /// Keep every attribute rather than [`filter_attributes`]' set: for
+    /// [`dropped_table_attr`], which reports what the filter would drop.
+    all_attributes: bool,
 }
 
 impl<'a> HtmlFragmentParser<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input, pos: 0 }
+        Self {
+            input,
+            pos: 0,
+            all_attributes: false,
+        }
+    }
+
+    fn filter(&self, attributes: Vec<(String, String)>) -> Vec<(String, String)> {
+        if self.all_attributes {
+            attributes
+        } else {
+            filter_attributes(attributes)
+        }
     }
 
     fn parse(&mut self) -> Vec<ParsedNode> {
@@ -1172,14 +1282,14 @@ impl<'a> HtmlFragmentParser<'a> {
         if self_closing || is_void {
             return Some(ParsedNode::Element {
                 tag,
-                attributes: filter_attributes(attributes),
+                attributes: self.filter(attributes),
                 children: Vec::new(),
             });
         }
         let children = self.parse_nodes(Some(&tag));
         Some(ParsedNode::Element {
             tag,
-            attributes: filter_attributes(attributes),
+            attributes: self.filter(attributes),
             children,
         })
     }
