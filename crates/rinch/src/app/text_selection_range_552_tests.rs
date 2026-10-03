@@ -304,3 +304,34 @@ fn a_stash_for_a_removed_node_is_pruned() {
         "a removed node's stash entry must not be held forever"
     );
 }
+
+/// `select()`/`set_selection_range()` posted for an unfocused node,
+/// immediately followed — same tick, **no drain in between** — by a mouse
+/// click that focuses it at a *different* position, must not let the stale
+/// request clobber the click's own caret placement at the next drain
+/// (review of #1325 round 2, finding 1). `click_handling.rs`'s own clear
+/// only reached `pending_text_selection`, the already-drained map; a
+/// request still sitting in the lower-level channel at the moment of the
+/// click was untouched and reapplied live once drained.
+#[test]
+fn select_then_click_same_tick_before_any_drain_does_not_clobber_the_click() {
+    let (mut app, ids) = mount_fixture();
+
+    handle_for(&app, ids.b).set_selection_range(1, 3, SelectionDirection::Forward);
+
+    let (cx, cy) = abs_center(&app, ids.b);
+    mouse_click(&mut app, cx, cy);
+    assert_eq!(app.focused_input_node_id, Some(ids.b));
+    let caret_after_click = app.focused_input_state.as_ref().unwrap().selection.range();
+
+    // Simulates the next per-frame checkpoint (`AboutToWait`/`ReRender`)
+    // draining the channel.
+    app.drain_pending_text_selection();
+    let caret_after_drain = app.focused_input_state.as_ref().unwrap().selection.range();
+
+    assert_eq!(
+        caret_after_click, caret_after_drain,
+        "a click's own caret placement must not be clobbered by a stale \
+         set_selection_range() posted before the click and drained after it"
+    );
+}

@@ -391,6 +391,19 @@ impl RinchApp {
         drop(d);
 
         if let Some((nid, handler_id, value)) = found_input_focus {
+            // Drain the text-selection channel *before* doing anything else
+            // (review of #1325 round 2, finding 1): a `set_selection_range()`
+            // posted for this node and not yet drained — `drain_pending_text_selection`
+            // runs at per-frame checkpoints separate from click dispatch, so
+            // "post, then click, same tick, no drain in between" is the
+            // ordinary case, not a contrived one — would otherwise still be
+            // sitting in the lower-level `PENDING_TEXT_SELECTIONS` channel
+            // when the click's own `self.pending_text_selection.remove(&nid)`
+            // below runs, clearing a map that request had not reached yet.
+            // Drained here, it lands in `pending_text_selection` (applied
+            // live, since nothing has focused `nid` yet to race it) and the
+            // `remove(&nid)` below then clears exactly that entry.
+            self.drain_pending_text_selection();
             // Take input focus through the arbiter: tears down a prior surface /
             // CE / editor / different input (re-clicking the same input is a no-op
             // teardown, so we just move its cursor below). The blurred input's
