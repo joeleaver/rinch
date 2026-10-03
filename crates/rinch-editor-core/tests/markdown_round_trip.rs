@@ -53,6 +53,14 @@ fn rt(s: &Schema, d: &Node) -> String {
     md
 }
 
+fn delimiter(mark: &str) -> &'static str {
+    match mark {
+        "bold" => "**",
+        "italic" => "*",
+        _ => "~~",
+    }
+}
+
 // ── F1: a delimiter run that ends at a hard break ──
 
 #[test]
@@ -60,12 +68,14 @@ fn a_delimiter_run_ending_at_a_hard_break_closes_before_it() {
     let s = Schema::starter_kit();
     for name in ["bold", "italic", "strike"] {
         let m = mark(&s, name, &[]);
-        // Bold a line, Shift+Enter, keep typing plain text.
+        let delim = delimiter(name);
+        // Bold a line, Shift+Enter, keep typing plain text: the run closes
+        // before the break, so it stays Markdown.
         let d = doc(
             &s,
             vec![p(&s, vec![t(&s, "a", &[&m]), br(&s), t(&s, "b", &[])])],
         );
-        rt(&s, &d);
+        assert_eq!(rt(&s, &d), format!("{delim}a{delim}\\\nb"));
         // Plain, then a marked line after the break.
         let d = doc(
             &s,
@@ -112,16 +122,18 @@ fn a_bold_link_beside_a_word_keeps_its_bold() {
     let link = mark(&s, "link", &[("href", "https://x.y")]);
     for name in ["bold", "italic", "strike"] {
         let m = mark(&s, name, &[]);
+        let delim = delimiter(name);
+        // The link goes outermost, so the delimiters stay Markdown.
         let d = doc(
             &s,
             vec![p(&s, vec![t(&s, "a", &[&m, &link]), t(&s, "s", &[])])],
         );
-        rt(&s, &d);
+        assert_eq!(rt(&s, &d), format!("[{delim}a{delim}](https://x.y)s"));
         let d = doc(
             &s,
             vec![p(&s, vec![t(&s, "x", &[]), t(&s, "a", &[&m, &link])])],
         );
-        rt(&s, &d);
+        assert_eq!(rt(&s, &d), format!("x[{delim}a{delim}](https://x.y)"));
     }
 }
 
@@ -378,6 +390,14 @@ fn a_delimiter_run_that_would_not_flank_round_trips() {
         vec![
             t(&s, "a", &[&bold]),
             t(&s, "b", &[&it]),
+            t(&s, "c", &[&bold]),
+        ],
+        // Punctuation outside ASCII (`«` is CommonMark punctuation).
+        vec![t(&s, "x", &[]), t(&s, "«a»", &[&bold]), t(&s, "y", &[])],
+        // One run closing italic and opening bold: `*[a](u)[b](v)***c**`.
+        vec![
+            t(&s, "a", &[&it, &link]),
+            t(&s, "b", &[&it, &mark(&s, "link", &[("href", "https://z")])]),
             t(&s, "c", &[&bold]),
         ],
         // Code beside a delimiter, a letter on the other side.

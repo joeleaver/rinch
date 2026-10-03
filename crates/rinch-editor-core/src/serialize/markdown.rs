@@ -1566,9 +1566,7 @@ impl InlineWriter {
                             // can pair with that one (`***b*é*c***`), and
                             // between two punctuation characters with one it
                             // was not written for (`***'#*<…*\\*<***`).
-                            let both = run.can_open()
-                                && run.can_close()
-                                && (others_open || (run.prev_punct && run.next_punct));
+                            let both = run.can_open() && run.can_close() && others_open;
                             wanted && !both
                         })
                     });
@@ -1614,11 +1612,7 @@ impl InlineWriter {
         };
         if !s.is_empty() {
             self.out.push_str(s);
-            // Leading whitespace does not end the line start: a block marker
-            // after it must still be escaped.
-            if s.chars().any(|c| !c.is_whitespace()) {
-                self.line_start = false;
-            }
+            self.line_start = false;
         }
     }
 
