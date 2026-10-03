@@ -1369,7 +1369,7 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
             .unwrap_or(to_open.len());
         for (k, (_, _, m)) in to_open.iter().enumerate() {
             if k == first_delim {
-                w.write_raw(lead);
+                w.write_ws(lead);
             }
             if m.type_name() == "link" {
                 w.escape_trailing_bang();
@@ -1377,7 +1377,7 @@ fn inline_to_md(block: &Node, ctx: Ctx) -> String {
             w.open_md(m);
         }
         if first_delim == to_open.len() {
-            w.write_raw(lead);
+            w.write_ws(lead);
         }
         if is_code_text {
             w.write_raw(&code_span(core, ctx));
@@ -1606,7 +1606,18 @@ impl InlineWriter {
 
     fn flush_ws(&mut self) {
         let ws = std::mem::take(&mut self.pending_ws);
-        self.write_raw(&ws);
+        self.write_ws(&ws);
+    }
+
+    /// Write whitespace from the text, a line break as an entity, as
+    /// `escape_text` writes it.
+    fn write_ws(&mut self, ws: &str) {
+        if ws.contains(['\n', '\r']) {
+            let ws = ws.replace('\n', "&#10;").replace('\r', "&#13;");
+            self.write_raw(&ws);
+        } else {
+            self.write_raw(ws);
+        }
     }
 
     /// How many of the open Markdown marks (from the outside) `marks` keeps.
@@ -1836,7 +1847,11 @@ fn link_target(href: &str, title: &str, ctx: Ctx) -> String {
         href.to_string()
     };
     if !title.is_empty() {
-        let t = title.replace('\\', "\\\\").replace('"', "\\\"");
+        let t = title
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "&#10;")
+            .replace('\r', "&#13;");
         s.push_str(&format!(" \"{t}\""));
     }
     if ctx == Ctx::Cell {
@@ -1917,6 +1932,19 @@ fn escape_text(text: &str, ctx: Ctx, line_start: bool) -> String {
     }
     let mut out = String::with_capacity(text.len() + 8);
     for (i, &c) in chars.iter().enumerate() {
+        // A line break would end the line, or the block: an entity keeps it
+        // in the text.
+        match c {
+            '\n' => {
+                out.push_str("&#10;");
+                continue;
+            }
+            '\r' => {
+                out.push_str("&#13;");
+                continue;
+            }
+            _ => {}
+        }
         let prev = i.checked_sub(1).map(|p| chars[p]);
         let next = chars.get(i + 1).copied();
         let escape = match c {
