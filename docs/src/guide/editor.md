@@ -235,7 +235,9 @@ syntax for:
 `C` is a colour `is_safe_css_color` accepts (the HTML paste path's check). The writer
 writes a colour only when it passes: a `highlight` with any other colour is written as
 a bare `<mark>`, and a `text_color` with one is not written at all, so a colour that
-arrived unchecked (a `DocNode`, a collaboration peer) never reaches the output. Tag
+arrived unchecked (a `DocNode`, a collaboration peer) never reaches the output. HTML
+copy-out (`node_to_html`) applies the same check, so it no longer writes a colour like
+`var(--x)` or `oklch(…)`. Tag
 names are case-insensitive; the `style` attribute must be lowercase and quoted (either
 quote) and hold that one declaration.
 
@@ -254,7 +256,10 @@ raw HTML, unsafe URLs, footnotes, task-list markers) it drops or keeps as text.
 lenient read would drop or degrade, naming it with a `Construct` (`InlineHtml`,
 `HtmlBlock`, `UnmatchedTag`, `Footnote`, `TaskList`, `UnsafeLink`, `UnsafeImage`,
 `UnsupportedMark`, `Other`; the enum is `#[non_exhaustive]`) and its 1-based line.
-`MarkdownError::Invalid` carries a schema validation error. Inside an HTML `<table>`
+`MarkdownError::Invalid` carries a schema validation error. Strict accepts everything
+the writer writes (`strict_reads_everything_the_writer_writes` in the fuzz holds it to
+that, losses included): a textblock of only hard breaks, written `<br>` alone on a
+line — which CommonMark reads as an HTML block — reads back as one. Inside an HTML `<table>`
 block strict refuses another tag, stray text, an unsafe `href` or `src`
 (`UnsafeLink` / `UnsafeImage`), and any attribute the import does not keep — a `style`
 other than a safe colour or `text-align`, a `colspan` above 1000, a `class`, an event
@@ -262,14 +267,20 @@ handler (`HtmlBlock`). What strict accepts, it parses exactly as the lenient rea
 does.
 
 **Known losses.**
-- Whitespace at the start or end of a textblock or line is stripped (CommonMark), and
+- Whitespace at the start or end of a textblock or line is stripped (CommonMark;
+  not in a table written as HTML, where it round-trips), and
   whitespace at the edge of a bold, italic, strike or link run is written outside the
   run: the text round-trips and that whitespace leaves the mark.
-- Task lists are not written (#1365): `doc_to_markdown` drops them.
+- Task lists are not written (#1365): `doc_to_markdown` drops them, in a table cell
+  as everywhere else.
 - A code block's language is lost in a table written as HTML; two adjacent lists or
   blockquotes of one type merge; empty paragraphs are dropped; a link `href`
   containing `\` before punctuation or an entity is decoded on read (#1366).
-- A line break inside inline code becomes a space (a code span is literal).
+- A line break inside inline code becomes a space (a code span is literal), and one
+  inside a link `href` reads back as text.
+- An ordered list numbered past nine digits is not a list to CommonMark.
+- A `colspan` above 1000 or a `rowspan` above 65534 is written clamped to those limits,
+  which the HTML import applies anyway.
 - A paragraph's or heading's `indent` is not written, and a link's `target` and a
   textblock's `text_align` only in a table cell.
 
