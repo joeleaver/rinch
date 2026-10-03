@@ -1,7 +1,8 @@
 //! `DomDocument` trait implementation for `RinchDocument`.
 
 use rinch_core::dom::{
-    CaretAffinity, DomDocument, NodeId, serialize_declarations, split_declarations,
+    CaretAffinity, DomDocument, NodeId, serialize_declarations,
+    split_declarations_keeping_duplicates,
 };
 
 use peniko::color::{AlphaColor, Srgb};
@@ -1638,11 +1639,27 @@ impl RinchDocument {
     /// Still not a browser: a later overlapping declaration that is
     /// `!important` keeps beating a normal write, where CSSOM's write replaces
     /// the important longhand outright (#1298).
+    ///
+    /// **The existing attribute is read with
+    /// [`split_declarations_keeping_duplicates`], not the collapsing
+    /// [`split_declarations`] (#722).** `set_styles` feeds this function's
+    /// result straight to Stylo's own parser (`parse_inline_style`), which
+    /// *is* validity-aware — so a property this call is not touching is left
+    /// exactly as the author wrote it, duplicates included, and Stylo decides
+    /// the winner the way a browser's CSSOM would: `color: notacolor
+    /// !important; color: blue` plus an unrelated `set_style("gap", …)` used
+    /// to collapse to the invalid important declaration *before* Stylo ever
+    /// saw it (rinch computed black where Chrome computes blue); now both
+    /// `color` declarations reach Stylo and it rejects the invalid one itself.
+    /// A property this call *is* writing has no such ambiguity — the caller
+    /// supplies its one new value — so every existing occurrence of that name
+    /// collapses to a single slot (the last one, matching the position rule
+    /// above) and any earlier duplicates of it are dropped.
     fn merged_inline_style(&self, node_id: usize, properties: &[(&str, &str)]) -> String {
         let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
             .get("style")
-            .map(|s| split_declarations(s))
+            .map(|s| split_declarations_keeping_duplicates(s))
             .unwrap_or_default();
         for &(property, value) in properties {
             // The caller's name goes through the same rule the parsed ones did
@@ -1650,8 +1667,29 @@ impl RinchDocument {
             // `set_style("COLOR", …)` overwrites an existing `color` rather
             // than declaring the property a second time.
             let property = rinch_core::dom::normalize_property_name(property);
-            match decls.iter().position(|(k, _)| k.as_str() == &*property) {
+            // Every existing occurrence of this property, in order. With the
+            // duplicate-preserving parse above there can be more than one —
+            // an author's own literal duplicate the attribute never had a
+            // reason to collapse until a write actually touches that name.
+            let mut positions: Vec<usize> = decls
+                .iter()
+                .enumerate()
+                .filter(|(_, (k, _))| k.as_str() == &*property)
+                .map(|(i, _)| i)
+                .collect();
+            match positions.pop() {
                 Some(slot) => {
+                    // `slot` is the LAST occurrence (positions is ascending),
+                    // so every remaining entry in `positions` sits before it.
+                    // Drop them — this write is an unambiguous new value, so
+                    // nothing is lost by collapsing the property's other
+                    // occurrences to it — highest index first to keep the
+                    // rest of `positions` valid as we go.
+                    for &at in positions.iter().rev() {
+                        decls.remove(at);
+                    }
+                    let slot = slot - positions.len();
+
                     let covered_later = slot + 1 < decls.len() && {
                         let written = declared_longhands(&property);
                         decls[slot + 1..]

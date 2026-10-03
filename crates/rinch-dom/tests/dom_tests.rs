@@ -405,22 +405,55 @@ fn set_styles_batch_keeps_its_own_order() {
     );
 }
 
-/// A property declared twice in one authored attribute collapses the way CSSOM
-/// collapses it: the last value, at the **last** declaration's position — so
-/// the `color` here moves past the `gap` that sat between its two
-/// declarations. It said "at the first position" until #670; see
-/// `a_repeated_property_collapses_at_its_last_position` below for the Chrome
-/// measurement and `collapsing_at_the_last_position_is_what_the_cascade_
-/// resolves` for why the position is behaviour rather than spelling.
+/// A property this call is *not* writing keeps every occurrence it already
+/// had, duplicates included (issue #722) — `merged_inline_style` no longer
+/// pre-collapses a property it has no new value for, because doing so can
+/// throw away which of two same-named declarations Stylo would actually keep
+/// (an invalid one can out-rank a valid one syntactically; see
+/// `inline_style_case_tests::a_duplicate_collapses_before_validity_not_after`).
+/// So `color` here is untouched by the `gap` write and both of its
+/// declarations ride through to the string Stylo parses; `gap`, the one
+/// property this call *does* write, still collapses to its one new value in
+/// place. Before #722 this asserted `"gap: 8px; color: green"` — the
+/// collapse used to run on every property regardless of which one was
+/// written.
+///
+/// This is a narrower, deliberate divergence from a browser's `getAttribute`
+/// in its own right (#1353): Chrome's CSSOM collapses `color` to one
+/// declaration the moment the attribute is first parsed, so its
+/// `getAttribute('style')` after this same unrelated write would already
+/// show it collapsed. rinch keeps no persistent, already-resolved
+/// declaration block to match that — the *computed* value still matches
+/// Chrome either way, which is what #722 was about.
 #[test]
-fn parsing_an_attribute_collapses_a_repeated_property_in_place() {
+fn an_untouched_duplicate_rides_through_a_write_to_another_property() {
     let mut doc = RinchDocument::new();
     let div = doc.create_element("div");
     doc.set_attribute(div, "style", "color: red; gap: 4px; color: green");
     doc.set_style(div, "gap", "8px");
     assert_eq!(
         doc.get_attribute(div, "style").unwrap(),
-        "gap: 8px; color: green"
+        "color: red; gap: 8px; color: green"
+    );
+}
+
+/// The property a call *does* write still collapses every existing
+/// occurrence of it to the one new value — the write supplies an
+/// unambiguous answer, so there is no validity question left for Stylo to
+/// settle. It said "at the first position" until #670: the surviving slot is
+/// the **last** occurrence's, so the written property moves past whatever
+/// sat between its old occurrences — see
+/// `collapsing_at_the_last_position_is_what_the_cascade_resolves` below for
+/// why the position is behaviour rather than spelling.
+#[test]
+fn parsing_an_attribute_collapses_a_repeated_property_in_place() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "color: red; gap: 4px; color: green");
+    doc.set_style(div, "color", "blue");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "gap: 4px; color: blue"
     );
 }
 
@@ -733,6 +766,12 @@ fn a_background_url_still_paints_after_an_unrelated_set_style() {
 /// A property declared twice collapses to its **last** position, which is what
 /// Chrome 150 does: `margin: 1px; color: red; gap: 2px; color: blue` serialises
 /// as `margin: 1px; gap: 2px; color: blue`.
+///
+/// The write is to `color` itself, not an unrelated property (issue #722):
+/// since #722, a write only collapses the property it is actually supplying a
+/// new value for — an untouched duplicate is left for Stylo, not collapsed
+/// here — so pinning the *position* half of this needs the write and the
+/// duplicate to be the same property.
 #[test]
 fn a_repeated_property_collapses_at_its_last_position() {
     let mut doc = RinchDocument::new();
@@ -742,10 +781,10 @@ fn a_repeated_property_collapses_at_its_last_position() {
         "style",
         "margin: 1px; color: red; gap: 2px; color: blue",
     );
-    doc.set_style(div, "padding", "12px");
+    doc.set_style(div, "color", "green");
     assert_eq!(
         doc.get_attribute(div, "style").unwrap(),
-        "margin: 1px; gap: 2px; color: blue; padding: 12px"
+        "margin: 1px; gap: 2px; color: green"
     );
 }
 
