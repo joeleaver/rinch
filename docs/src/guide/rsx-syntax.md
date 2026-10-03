@@ -143,20 +143,30 @@ That was a real divergence until issue #622: the web backend mapped truthiness
 onto presence for `checked` and `selected` alone, so the same call unchecked a box
 in the browser and checked it on the desktop backend.
 
-On the web, `checked` and `<option selected>` also drive the control's live
-property, not only the attribute — a browser stops mirroring the attribute into
-the property once the user has toggled the control, and rinch has no such flag, so
-a programmatic write keeps winning. It follows the attribute's presence, matching
-what the desktop backend's `:checked` reads.
+On the web, `checked`, `<option selected>` and a media element's `muted` also
+drive the control's live property, not only the attribute — a browser stops
+mirroring `checked`/`selected`'s attribute into the property once the user has
+toggled the control (and never mirrors `muted`'s dynamically at all; HTML reads
+it once, at load, to seed `defaultMuted`), and rinch has no such flag, so a
+programmatic write keeps winning. `checked`/`selected` follow the attribute's
+presence, matching what the desktop backend's `:checked` reads; `muted` is
+rinch's own invention — deliberately more dynamic than plain HTML — because
+nothing else lets a reactive `muted: {|| m.get()}` binding mute or unmute a
+`<video>`/`<audio>` element at all (issue #754). The name is folded
+ASCII-lowercase before any of this is decided, so `CHECKED`/`MUTED` written in
+any case still mirror (issue #758) — desktop already folds the attribute name
+this way (#738); on the web the browser folds the written attribute itself, so
+only rinch's own Rust-side matching needed the fold.
 
-Those two are also the reason a falsey write of them is never skipped. Turning a
-boolean attribute off is otherwise a no-op when the attribute is already gone,
+These three are also the reason a falsey write of them is never skipped. Turning
+a boolean attribute off is otherwise a no-op when the attribute is already gone,
 and `write_attribute` skips it to save a restyle — but on the web a user's
-toggle leaves the *property* on with the attribute absent, so the skip was
-exactly the write that would have corrected it, and a box the user clicked
-stayed checked against a binding that said `false` (issue #687). `checked` and
-`selected` now always reach the backend, which is the only layer that can see
-the property.
+toggle (or, for `muted`, a `<video controls>`'s own mute button) leaves the
+*property* on with the attribute absent, so the skip was exactly the write that
+would have corrected it, and a box the user clicked stayed checked against a
+binding that said `false` (issue #687, and #754 for `muted`). `checked`,
+`selected` and `muted` now always reach the backend, which is the only layer
+that can see the property.
 
 Component props are unaffected — a component's `disabled: bool` is an ordinary
 typed field, and the component decides how to render it.
