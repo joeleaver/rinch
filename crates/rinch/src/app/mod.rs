@@ -167,6 +167,8 @@ mod perf_regression_editor_tests;
 mod perf_regression_tests;
 #[cfg(all(test, software_shell))]
 mod perf_stats_tests;
+#[cfg(test)]
+mod popover_dropdown_transform_hit_test_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
 #[cfg(test)]
