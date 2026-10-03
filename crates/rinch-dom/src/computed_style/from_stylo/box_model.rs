@@ -102,8 +102,10 @@ pub(super) fn border_style_from_stylo(
         BorderStyle::Dotted => BorderStyleValue::Dotted,
         BorderStyle::Double => BorderStyleValue::Double,
         BorderStyle::Hidden => BorderStyleValue::Hidden,
-        // groove, ridge, inset, outset -> render as solid
-        _ => BorderStyleValue::Solid,
+        BorderStyle::Inset => BorderStyleValue::Inset,
+        BorderStyle::Outset => BorderStyleValue::Outset,
+        BorderStyle::Groove => BorderStyleValue::Groove,
+        BorderStyle::Ridge => BorderStyleValue::Ridge,
     }
 }
 
