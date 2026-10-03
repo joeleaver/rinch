@@ -485,6 +485,14 @@ impl NodeHandle {
         // then fire for a container that no longer exists (issue #716). Read the
         // parent here too, for the same reason — afterwards this node is
         // detached and may be retired (issue #745).
+        let mut none = Vec::new();
+        render_scope::sweep_for_discard(self, None, &mut none);
+        self.discard_swept();
+    }
+
+    /// [`discard`](Self::discard) for a subtree whose ownership records
+    /// `render_scope::sweep_for_discard` has already dropped (issue #732).
+    pub(crate) fn discard_swept(&self) {
         late_child::forget_node(self);
         let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.accessed_doc() {
@@ -924,6 +932,9 @@ impl NodeHandle {
     /// the DOM tree produced by parsing `html`. The underlying document
     /// implementation handles parsing and insertion.
     pub fn set_inner_html(&self, html: &str) {
+        // The replaced children are gone from the backend's point of view; so
+        // are their ownership records (issue #732).
+        render_scope::purge_descendants(self);
         if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_inner_html(self.node_id, html);
         }
@@ -1128,6 +1139,8 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 /// generated `render_fn` does exactly that: prop closures tracked, children +
 /// `Component::render` untracked.
 ///
+pub(crate) use render_scope::sweep_for_discard;
+
 /// Release the scratch container an `rsx!` component site builds its children
 /// in (issue #719).
 ///
@@ -1144,14 +1157,21 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 /// by the same ownership rule the reactive helpers use, applied one level down:
 /// a leftover the site built is discarded, a leftover the site was *handed*
 /// (`Card { {captured.clone()} }` where `Card` ignores its children) is only
-/// detached, so a caller's subtree is never retired out from under it.
+/// detached, so a caller's subtree is never retired out from under it. A
+/// leftover the site built may itself hold a captured handle nested further
+/// in (issue #732), which is detached before the leftover is discarded.
 ///
 /// Call it **after** `Component::render`, so the children it adopted have
 /// already been re-parented out.
 pub fn release_scratch_container(scope: &RenderScope, container: &NodeHandle) {
     for leftover in container.children() {
         if scope.created(leftover.node_id()) {
-            leftover.discard();
+            let mut captured = Vec::new();
+            sweep_for_discard(&leftover, Some(scope.id()), &mut captured);
+            for node in captured {
+                node.remove();
+            }
+            leftover.discard_swept();
         } else {
             leftover.remove();
         }
@@ -1182,6 +1202,9 @@ where
     let current_scope: Rc<RefCell<Option<RenderScope>>> = Rc::new(RefCell::new(None));
     let doc_weak = scope.doc_weak();
     let parent_id = parent.node_id();
+    // Every output scope names the scope this call was made from as its
+    // parent (issue #732) — see the matching note in `show_dom`.
+    let creator_scope_id = scope.id();
 
     let cc = current_content.clone();
     let cs = current_scope.clone();
@@ -1199,12 +1222,18 @@ where
         // creates it through this scope, so the previous output is `discard`ed
         // and the backend lets go of it. A `render_fn` that memoises and hands
         // back a subtree it built once is supported too: that node is not this
-        // scope's, so it is only detached and the next run re-inserts it.
+        // scope's, so it is only detached and the next run re-inserts it. A
+        // *nested* captured handle (issue #732) has to be found while `old` can
+        // still answer `created`, before it is disposed below.
+        let mut captured: Vec<NodeHandle> = Vec::new();
         let doomed: Vec<(NodeHandle, bool)> = cc
             .borrow_mut()
             .drain(..)
             .map(|node| {
                 let owned = old.as_ref().is_some_and(|s| s.created(node.node_id()));
+                if owned && let Some(s) = old.as_ref() {
+                    sweep_for_discard(&node, Some(s.id()), &mut captured);
+                }
                 (node, owned)
             })
             .collect();
@@ -1212,19 +1241,24 @@ where
         if let Some(old) = old {
             old.dispose();
         }
+        // Detach every captured descendant before any discard below can reach
+        // it (issue #732).
+        for node in captured {
+            node.remove();
+        }
         // Removal of either kind cancels the subtree's transitions and
         // animations in the document implementation (#699); stamping inline
         // `transition: none` here disarmed it permanently (#704).
         for (node, owned) in doomed {
             if owned {
-                node.discard();
+                node.discard_swept();
             } else {
                 node.remove();
             }
         }
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {
-            let mut child_scope = RenderScope::new(doc, parent_id);
+            let mut child_scope = RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
             // The component's own resources belong to its own scope, not to the
             // effect that re-renders it (issue #141). This is the deepest reach
             // of the ambient owner: `render_fn` runs arbitrary user

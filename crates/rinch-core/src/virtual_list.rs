@@ -135,6 +135,10 @@ where
     // Empty for every list with unique keys, which is every healthy list.
     let gap_nodes: RefCell<Vec<NodeHandle>> = RefCell::new(Vec::new());
     let doc_weak = scope.doc_weak();
+    // Rows and spacers are built by scopes of their own, from the windowing
+    // effect; they are this call's content, so they name the scope it was
+    // called from (issue #732), or a branch holding the list leaks them.
+    let creator_scope_id = scope.id();
     let window_id = window.node_id();
     let container_handle = container.clone();
     let spacer_handle = spacer.clone();
@@ -273,7 +277,8 @@ where
                 && let Some(&item_data) = new_items_by_key.get(k)
                 && let Some(doc) = doc_weak.upgrade()
             {
-                let mut child_scope = RenderScope::new(doc, window_id);
+                let mut child_scope =
+                    RenderScope::with_parent(doc, window_id, Some(creator_scope_id));
                 // Each virtualized row owns what its view creates, so scrolling
                 // it out of the window takes them with it (issue #141).
                 //
@@ -318,7 +323,8 @@ where
                     if gaps_used == pool.len()
                         && let Some(doc) = doc_weak.upgrade()
                     {
-                        let mut s = RenderScope::new(doc, window_id);
+                        let mut s =
+                            RenderScope::with_parent(doc, window_id, Some(creator_scope_id));
                         let node = s.create_element("div");
                         node.set_attribute("class", "rinch-vlist__gap");
                         pool.push(node);

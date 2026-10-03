@@ -19,3 +19,10 @@ tracing.workspace = true
 # Wall/monotonic clock that works on wasm32-unknown-unknown (JS Date/performance.now).
 # On native it re-exports std::time verbatim, so this is zero-cost off the web.
 web-time = "1"
+
+[dev-dependencies]
+# Turns `test-util` (the `MockDomDocument`) on for this crate's own test
+# targets, so a `tests/*.rs` that mounts on the mock builds under a plain
+# `cargo test -p rinch-core` and `clippy --all-targets`. A build that does not
+# resolve dev-dependencies never sees it.
+rinch-core = { path = ".", features = ["test-util"] }

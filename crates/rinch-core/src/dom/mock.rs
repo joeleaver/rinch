@@ -41,6 +41,13 @@ pub struct MockDomDocument {
     /// has nothing else competing for the slot. Read by
     /// [`__selection_range`](MockDomDocument::__selection_range).
     selection_range: Option<(NodeId, usize, usize, SelectionDirection)>,
+    /// **Test-only.** How many times [`DomDocument::get_children`] has been
+    /// called (issue #732). `get_children` takes `&self`, so this is a `Cell`
+    /// rather than a plain counter. What makes a fixture able to measure
+    /// the discard walk (`sweep_for_discard`) against the whole-document size
+    /// rather than only the discarded subtree's: a bounded walk's count does
+    /// not move when an unrelated sibling subtree grows.
+    get_children_calls: std::cell::Cell<usize>,
 }
 
 struct MockNode {
@@ -85,6 +92,13 @@ impl MockDomDocument {
     #[doc(hidden)]
     pub fn __node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// **Test-only.** How many times [`DomDocument::get_children`] has been
+    /// called so far (issue #732) — see the field doc on `get_children_calls`.
+    #[doc(hidden)]
+    pub fn __get_children_calls(&self) -> usize {
+        self.get_children_calls.get()
     }
 
     /// **Test-only.** Give `node` a border box, so
@@ -141,6 +155,7 @@ impl MockDomDocument {
             scroll_to_fraction_requests: Vec::new(),
             focused: None,
             selection_range: None,
+            get_children_calls: std::cell::Cell::new(0),
         };
 
         // Create root and body
@@ -510,6 +525,8 @@ impl DomDocument for MockDomDocument {
     }
 
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
+        self.get_children_calls
+            .set(self.get_children_calls.get() + 1);
         self.nodes
             .get(&node)
             .map(|n| n.children.clone())

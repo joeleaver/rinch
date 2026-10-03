@@ -136,6 +136,12 @@ fn collab_keystroke(f: CollabFixture) -> CollabFixture {
     black_box(measure(black_box(f), op_collab_keystroke))
 }
 
+#[library_benchmark]
+#[bench::rows_1000(setup = setup_branch_hide)]
+fn branch_hide(f: ShellFixture<Signal<bool>>) -> ShellFixture<Signal<bool>> {
+    black_box(measure(black_box(f), op_branch_hide))
+}
+
 library_benchmark_group!(
     name = shell,
     benchmarks = [
@@ -143,7 +149,8 @@ library_benchmark_group!(
         pointer_move_cold,
         hover_frame,
         keyed_for,
-        memo_flush
+        memo_flush,
+        branch_hide
     ]
 );
 

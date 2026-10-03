@@ -76,7 +76,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::dom::{NodeHandle, NodeId, RenderScope};
+use crate::dom::{NodeHandle, NodeId, RenderScope, ScopeId};
 use crate::element::ForItem;
 use crate::reactive::Effect;
 use crate::reconcile::diff_keyed;
@@ -273,14 +273,20 @@ struct ItemState {
 /// `rinch-web`, a wrong one costs a subtree someone can still show.
 pub(crate) struct ParkedRow {
     node: NodeHandle,
-    owned: bool,
+    /// The row's scope id when the row's scope built `node`, decided now —
+    /// the row is then `discard`ed, except for anything under it the row's
+    /// render did not build (issue #732), which is only detached.
+    owner: Option<ScopeId>,
     scope: Option<RenderScope>,
 }
 
 impl ParkedRow {
     pub(crate) fn new(node: NodeHandle, scope: Option<RenderScope>) -> Self {
-        let owned = scope.as_ref().is_some_and(|s| s.created(node.node_id()));
-        Self { node, owned, scope }
+        let owner = scope
+            .as_ref()
+            .filter(|s| s.created(node.node_id()))
+            .map(RenderScope::id);
+        Self { node, owner, scope }
     }
 }
 
@@ -313,7 +319,7 @@ pub(crate) fn release_parked(
     let _release = ReleaseNodes {
         nodes: parked
             .iter()
-            .map(|row| (row.node.clone(), row.owned))
+            .map(|row| (row.node.clone(), row.owner))
             .collect(),
         shown: Some(shown),
     };
@@ -327,7 +333,7 @@ pub(crate) fn release_parked(
 /// The node half of [`release_parked`], run when it is dropped — at the end of
 /// the call, or on unwind out of a row's cleanup.
 struct ReleaseNodes<F: FnOnce() -> std::collections::HashSet<NodeId>> {
-    nodes: Vec<(NodeHandle, bool)>,
+    nodes: Vec<(NodeHandle, Option<ScopeId>)>,
     shown: Option<F>,
 }
 
@@ -340,14 +346,24 @@ impl<F: FnOnce() -> std::collections::HashSet<NodeId>> Drop for ReleaseNodes<F> 
         // Either verb cancels the subtree's transitions and animations in the
         // document implementation (#699); stamping inline `transition: none`
         // here disarmed that permanently (#704).
-        for (node, owned) in self.nodes.drain(..) {
+        for (node, owner) in self.nodes.drain(..) {
             if shown.contains(&node.node_id()) {
                 continue;
             }
-            if owned {
-                node.discard();
-            } else {
-                node.remove();
+            match owner {
+                Some(owner) => {
+                    // Anything under the row its render did not build is
+                    // detached first (issue #732): the discard is recursive.
+                    // The row's scope is gone, but its ancestry entry is kept
+                    // while the row's nodes are recorded.
+                    let mut captured = Vec::new();
+                    crate::dom::sweep_for_discard(&node, Some(owner), &mut captured);
+                    for captured_node in captured {
+                        captured_node.remove();
+                    }
+                    node.discard_swept();
+                }
+                None => node.remove(),
             }
         }
     }
@@ -461,6 +477,11 @@ where
 
     let parent_id = parent.node_id();
 
+    // Every row scope — initial, inserted later, or re-rendered for changed
+    // data — names the scope this call was made from as its parent (issue
+    // #732) — see the matching note in `show_dom`.
+    let creator_scope_id = scope.id();
+
     // Get weak doc reference for creating new scopes in Effect
     let doc_weak = scope.doc_weak();
 
@@ -507,7 +528,8 @@ where
 
         for item in initial_items {
             if let Some(doc) = doc_weak.upgrade() {
-                let mut child_scope = RenderScope::new(doc, parent_id);
+                let mut child_scope =
+                    RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
                 // Each item owns what its view creates (issue #141). The guard
                 // ends before `state.insert` below, which can displace — and so
                 // dispose — a live item scope on a duplicate key.
@@ -627,7 +649,8 @@ where
                     if let Some(&item) = new_items_map.get(&key)
                         && let Some(doc) = doc_weak_clone.upgrade()
                     {
-                        let mut child_scope = RenderScope::new(doc, parent_id);
+                        let mut child_scope =
+                            RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
                         // Wrap in untracked so signal reads during view rendering
                         // don't subscribe the for-loop's parent effect. Items create
                         // their own effects for reactivity via {|| expr} closures.
@@ -747,7 +770,8 @@ where
                         // Data changed — re-render this item
                         if let Some(doc) = doc_weak_clone.upgrade() {
                             let previous_scope = old_state.scope.take();
-                            let mut child_scope = RenderScope::new(doc, parent_id);
+                            let mut child_scope =
+                                RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
                             // The re-rendered item owns its new resources
                             // (issue #141); the old scope was disposed above,
                             // under the reconcile effect's owner.
