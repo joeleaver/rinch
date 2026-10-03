@@ -27,7 +27,11 @@ const VH: f32 = 200.0;
 
 /// All pseudo-element nodes under the document, regardless of owner.
 fn pseudo_count(doc: &RinchDocument) -> usize {
-    doc.tree.nodes.iter().filter(|(_, n)| n.is_pseudo_element).count()
+    doc.tree
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.is_pseudo_element)
+        .count()
 }
 
 fn generated(doc: &RinchDocument, owner: NodeId) -> Option<usize> {
@@ -58,7 +62,11 @@ fn doc_with(css: &str) -> (RinchDocument, NodeId) {
 #[test]
 fn content_empty_string_creates_a_pseudo_element() {
     let (doc, w) = doc_with(".w::after { content: ''; display: block; height: 2px; }");
-    assert_eq!(pseudo_count(&doc), 1, "an empty `content: ''` now creates a box");
+    assert_eq!(
+        pseudo_count(&doc),
+        1,
+        "an empty `content: ''` now creates a box"
+    );
     let b = generated(&doc, w).expect("the ::after exists");
     assert_eq!(
         doc.tree.get(b).unwrap().computed_style.display,
@@ -105,7 +113,11 @@ fn an_empty_pseudo_element_is_laid_out_and_painted_from_its_own_style() {
         .background_color()
         .expect("background resolves");
     let rgba = bg.to_rgba8();
-    assert_eq!((rgba.r, rgba.g, rgba.b), (0, 128, 0), "own background color");
+    assert_eq!(
+        (rgba.r, rgba.g, rgba.b),
+        (0, 128, 0),
+        "own background color"
+    );
 }
 
 /// An empty pseudo-element gets no text child — the string is empty, so there

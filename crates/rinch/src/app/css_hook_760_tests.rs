@@ -1730,6 +1730,10 @@ fn content_none_and_normal_still_create_no_pseudo_element() {
             .count()
     }
     for content in ["none", "normal"] {
-        assert_eq!(pseudo_count(content), 0, "`content: {content}` creates nothing");
+        assert_eq!(
+            pseudo_count(content),
+            0,
+            "`content: {content}` creates nothing"
+        );
     }
 }

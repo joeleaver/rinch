@@ -19,7 +19,9 @@
 
 use super::*;
 
-use rinch_components::{Badge, Component, Divider, Popover, PopoverDropdown, PopoverTarget, Tooltip};
+use rinch_components::{
+    Badge, Component, Divider, Popover, PopoverDropdown, PopoverTarget, Tooltip,
+};
 use rinch_dom::computed_style::DisplayValue;
 
 const VIEWPORT: (f32, f32) = (800.0, 600.0);
@@ -165,9 +167,17 @@ fn a_tooltip_arrow_is_a_12px_border_triangle() {
          positioned box with no declared `display` a `block` used value"
     );
     let (w, h) = layout_of(&app, arrow);
-    assert_eq!((w, h), (12.0, 12.0), "6px border on all sides, 0 content = 12x12");
+    assert_eq!(
+        (w, h),
+        (12.0, 12.0),
+        "6px border on all sides, 0 content = 12x12"
+    );
     let (bt, br, bb, bl) = border_widths(&app, arrow);
-    assert_eq!((bt, br, bb, bl), (6.0, 6.0, 6.0, 6.0), "0.375rem = 6px at 16px root");
+    assert_eq!(
+        (bt, br, bb, bl),
+        (6.0, 6.0, 6.0, 6.0),
+        "0.375rem = 6px at 16px root"
+    );
     assert_eq!(
         border_top_color(&app, arrow),
         Some(peniko::Color::from_rgb8(40, 40, 40)),
@@ -198,7 +208,11 @@ fn a_popover_arrow_is_an_8px_rotated_square() {
     let panel = node_with_class(&app, "rinch-popover__dropdown");
     let arrow = pseudo_child(&app, panel);
     let (w, h) = layout_of(&app, arrow);
-    assert_eq!((w, h), (8.0, 8.0), "the default `--rinch-popover-arrow-size`");
+    assert_eq!(
+        (w, h),
+        (8.0, 8.0),
+        "the default `--rinch-popover-arrow-size`"
+    );
     assert_eq!(
         background_of(&app, arrow),
         Some(peniko::Color::from_rgb8(250, 250, 250)),
