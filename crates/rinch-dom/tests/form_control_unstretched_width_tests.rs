@@ -410,3 +410,155 @@ fn a_letter_spacing_only_change_reshapes_a_button_label() {
     assert_ne!(w1, w2, "letter-spacing widens the shaped label");
     assert_eq!(after, before + 1, "the letter-spacing change reshapes it");
 }
+
+/// #1306: a `value` write with no accompanying style write still reshapes a
+/// `submit`/`reset`/`button` label. `value` matches no selector, so nothing
+/// restyles this node and the cascade's own call to
+/// `sync_form_control_measure` never runs for it — `set_attribute` has to
+/// call it directly. Before the fix, `w2` stayed pinned at `w1` (the
+/// control's first-layout width): confirmed by reverting
+/// `dom_document_impl.rs`'s new `value`/`rows`/`cols`/`size` block alone.
+#[test]
+fn a_value_only_change_reshapes_a_submit_label() {
+    use rinch_dom::perf::Counter;
+    let mut doc = document();
+    let body = doc.body();
+    let btn = el(
+        &mut doc,
+        body,
+        "input",
+        "font: 16px/20px ProbeFace; padding: 0; border: 0",
+    );
+    doc.set_attribute(btn, "type", "submit");
+    doc.set_attribute(btn, "value", "OK");
+    doc.resolve_layout(800.0, 600.0);
+    let w1 = width(&doc, btn);
+    let before = doc.tree.perf.frame().get(Counter::ShapeFormControlLabel);
+
+    doc.set_attribute(btn, "value", "A Much Longer Label Than OK");
+    doc.resolve_layout(800.0, 600.0);
+    let w2 = width(&doc, btn);
+    let after = doc.tree.perf.frame().get(Counter::ShapeFormControlLabel);
+
+    // A fresh document built with the longer label from the start — the
+    // oracle a value-attribute-only mutation must match.
+    let fresh = {
+        let mut doc = document();
+        let body = doc.body();
+        let btn = el(
+            &mut doc,
+            body,
+            "input",
+            "font: 16px/20px ProbeFace; padding: 0; border: 0",
+        );
+        doc.set_attribute(btn, "type", "submit");
+        doc.set_attribute(btn, "value", "A Much Longer Label Than OK");
+        doc.resolve_layout(800.0, 600.0);
+        width(&doc, btn)
+    };
+
+    assert_ne!(w1, w2, "the longer value must widen the button");
+    assert_eq!(
+        w2, fresh,
+        "matches a document built with the label from the start"
+    );
+    assert_eq!(
+        after,
+        before + 1,
+        "the value change reshapes the label exactly once"
+    );
+}
+
+/// The complement of the test above: writing the SAME `value` the control
+/// already carries is the existing no-op guard in `set_attribute` (identical
+/// writes restyle nothing) and must stay a no-op — it must not reshape the
+/// label on every redundant write (e.g. a reactive `value` prop re-firing
+/// with the same string on every keystroke of an unrelated field).
+#[test]
+fn a_value_write_of_the_same_text_does_not_reshape() {
+    use rinch_dom::perf::Counter;
+    let mut doc = document();
+    let body = doc.body();
+    let btn = el(
+        &mut doc,
+        body,
+        "input",
+        "font: 16px/20px ProbeFace; padding: 0; border: 0",
+    );
+    doc.set_attribute(btn, "type", "submit");
+    doc.set_attribute(btn, "value", "OK");
+    doc.resolve_layout(800.0, 600.0);
+    let before = doc.tree.perf.frame().get(Counter::ShapeFormControlLabel);
+
+    doc.set_attribute(btn, "value", "OK");
+    doc.resolve_layout(800.0, 600.0);
+    let after = doc.tree.perf.frame().get(Counter::ShapeFormControlLabel);
+
+    assert_eq!(after, before, "an identical value write reshapes nothing");
+}
+
+/// #1306's companion case named in the issue: a `type` change (`text` →
+/// `submit`) already reshapes correctly, because the UA stylesheet's
+/// `input[type=...]` rules make it a restyle and the cascade's own call to
+/// `sync_form_control_measure` runs. Pinned so a future change to the
+/// `set_attribute` fast path above cannot quietly start relying on this
+/// case too.
+#[test]
+fn a_type_change_from_text_to_submit_sizes_the_new_label() {
+    let mut doc = document();
+    let body = doc.body();
+    let el_ = el(
+        &mut doc,
+        body,
+        "input",
+        "font: 16px/20px ProbeFace; padding: 0; border: 0",
+    );
+    doc.set_attribute(el_, "value", "A Much Longer Label Than OK");
+    doc.resolve_layout(800.0, 600.0);
+
+    doc.set_attribute(el_, "type", "submit");
+    doc.resolve_layout(800.0, 600.0);
+    let w = width(&doc, el_);
+
+    let fresh = {
+        let mut doc = document();
+        let body = doc.body();
+        let btn = el(
+            &mut doc,
+            body,
+            "input",
+            "font: 16px/20px ProbeFace; padding: 0; border: 0",
+        );
+        doc.set_attribute(btn, "type", "submit");
+        doc.set_attribute(btn, "value", "A Much Longer Label Than OK");
+        doc.resolve_layout(800.0, 600.0);
+        width(&doc, btn)
+    };
+    assert_eq!(
+        w, fresh,
+        "sized to the label once it becomes a submit button"
+    );
+}
+
+/// #1306's general mechanism, not only `value`: a `<textarea>`'s `cols`
+/// attribute also matches no selector, so it needs the same direct call.
+#[test]
+fn a_cols_only_change_resizes_a_textarea() {
+    let mut doc = document();
+    let body = doc.body();
+    let ta = el(
+        &mut doc,
+        body,
+        "textarea",
+        "font: 16px/20px ProbeFace; padding: 0; border: 0",
+    );
+    doc.set_attribute(ta, "cols", "5");
+    doc.resolve_layout(800.0, 600.0);
+    let w1 = width(&doc, ta);
+
+    doc.set_attribute(ta, "cols", "40");
+    doc.resolve_layout(800.0, 600.0);
+    let w2 = width(&doc, ta);
+
+    assert!(w2 > w1, "cols=40 must be wider than cols=5 ({w1} -> {w2})");
+}
