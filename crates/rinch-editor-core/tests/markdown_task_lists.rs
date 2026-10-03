@@ -423,6 +423,10 @@ fn strict_refuses_a_table_task_attribute_the_import_would_not_keep() {
             "data-checked outside a task list",
         ),
         (
+            "<table><tr><td><ul><li data-type=\"taskItem\">x</li></ul></td></tr></table>",
+            "a task item's data-type outside a task list",
+        ),
+        (
             "<table><tr><td><ul data-type=\"other\"><li>x</li></ul></td></tr></table>",
             "a data-type that is not taskList",
         ),
