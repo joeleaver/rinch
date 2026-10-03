@@ -333,10 +333,23 @@ fn hovering_outer_content_does_not_reveal_a_closed_card_nested_in_its_dropdown()
 /// dropdown, so ancestor propagation reaches both) — the inner panel must
 /// still open.
 ///
-/// Kills a mutant that drops `.rinch-hover-card:hover` from the exclusion's
-/// leading compound — which would hide a panel behind **any** closed card
-/// root, hovered ancestor or not, including this one once it stops being the
-/// nearest ancestor.
+/// Kills a mutant that drops `:not(:hover)` from the exclusion's middle
+/// compound (`.rinch-hover-card:hover .rinch-hover-card .rinch-hover-card__dropdown`
+/// instead of `… .rinch-hover-card:not(:hover) …`) — over-broad, excluding a
+/// panel behind **any** nested card root, open or closed, which would hide
+/// this open-in-open panel too and is the exact-complement mistake #778's
+/// review found for Popover's own exclusion.
+///
+/// Measured but *not* independently testable here: dropping the leading
+/// `.rinch-hover-card:hover` from the exclusion instead is harmless for
+/// `:hover` specifically (unlike Popover's independently-toggled
+/// `--opened`), because `update_hover` marks a hovered leaf's **entire**
+/// ancestor chain — so whenever this fixture's inner card is genuinely open,
+/// the outer ancestor is provably open too, and no reachable state has a
+/// closed ancestor on the path to a genuinely hovered descendant. The
+/// leading compound mirrors Popover's pattern for consistency and is not
+/// dead weight against a toggled-class sibling, but no `:hover`-only fixture
+/// can discriminate it.
 #[test]
 fn hovering_the_inner_cards_own_target_still_reveals_it() {
     let mut app = nested_app();
