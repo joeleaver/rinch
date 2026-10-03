@@ -27,3 +27,6 @@ rinch-dom = { workspace = true }
 # behaviour (issue #185) can be asserted against a real rsx! expansion rather
 # than a hand-written mirror of the macro's fallback key.
 rinch-core = { workspace = true, features = ["test-util"] }
+# Test-only: `TablerIcon`, for the #718 reactive-icon-prop fixture (not in the
+# rinch prelude; any crate naming a variant depends on it directly).
+rinch-tabler-icons = { workspace = true }

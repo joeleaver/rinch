@@ -641,7 +641,29 @@ pub fn generate_component_field_assignments(
                 // (e.g., Callback, Option<Callback>, ValueCallback<T>, Option<ValueCallback<T>>).
                 quote! { #name: IntoEventHandler::into_event_handler(#value) }
             } else if name_str == "icon" || name_str.ends_with("_icon") {
-                quote! { #name: Some(#value) }
+                // #718: on the reactive path a closure must be INVOKED before
+                // being wrapped in `Some(...)` — the icon field is
+                // `Option<TablerIcon>`, never `Option<impl Fn() -> TablerIcon>`.
+                // `has_reactive_component_props`/`has_reactive_props` route a
+                // component with a closure-valued `icon`/`*_icon` prop onto the
+                // reactive path (`invoke_closures == true`); the static path
+                // (`invoke_closures == false`) is only reached when no comp
+                // prop is a closure, so `value` here is never a closure there
+                // and the plain `Some(#value)` wrap is unchanged.
+                if invoke_closures {
+                    if let Some(closure) = get_closure_expr(value) {
+                        if is_move_closure(closure) {
+                            let fire = shadow_clones(collect_capture_idents(closure).iter());
+                            quote! { #name: Some({ #fire (#closure)() }) }
+                        } else {
+                            quote! { #name: Some((#closure)()) }
+                        }
+                    } else {
+                        quote! { #name: Some(#value) }
+                    }
+                } else {
+                    quote! { #name: Some(#value) }
+                }
             } else if name_str.ends_with("_fn") {
                 quote! { #name: Some(std::rc::Rc::new(#value)) }
             } else if crate::helpers::is_literal_bool(value)

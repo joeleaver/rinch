@@ -5115,7 +5115,7 @@ Text {
 }
 ```
 
-**All component props support reactive closures** — except the `icon` / `*_icon` family, whose values the macro wraps as `Some(expr)` before the arm that would invoke it, so a reactive icon is a **compile error** naming `TablerIcon` (issue #718). Pass `{|| expr}` to any other component prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the component re-renders automatically:
+**All component props support reactive closures**, `icon` / `*_icon` included (issue #718 — the icon arm in `generate_component_field_assignments` used to wrap the closure itself in `Some(expr)`, ahead of the arm that would have invoked it, so a reactive icon was a **compile error** naming `TablerIcon`; it now invokes a closure before wrapping, exactly as every other reactive prop does). Pass `{|| expr}` to any component prop (`variant`, `color`, `size`, `disabled`, `icon`, etc.) to make it reactive — when signals change, the component re-renders automatically:
 
 ```rust
 let active = Signal::new(false);

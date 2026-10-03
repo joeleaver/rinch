@@ -5102,6 +5102,7 @@ dependencies = [
  "rinch",
  "rinch-core",
  "rinch-dom",
+ "rinch-tabler-icons",
  "syn 2.0.114",
 ]
 
