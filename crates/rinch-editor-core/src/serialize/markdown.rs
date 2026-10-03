@@ -490,6 +490,16 @@ impl<'a> MdBuilder<'a> {
             }
             TagEnd::HtmlBlock => {
                 if let Some((html, range)) = self.html_block.take() {
+                    if let Some(breaks) = br_only_block(&html) {
+                        // `<br>` alone on a line is CommonMark's HTML block; the
+                        // writer writes a textblock of only hard breaks that way.
+                        self.open_inline("paragraph", Attrs::new(), false);
+                        for _ in 0..breaks {
+                            self.push_hard_break()?;
+                        }
+                        self.flush_inline()?;
+                        return Ok(());
+                    }
                     match self.html_tables(&html, &range)? {
                         Some(tables) => self.top_mut().children.extend(tables),
                         None => self.refuse_at(Construct::HtmlBlock, range)?,
@@ -914,6 +924,21 @@ const MARK_TAGS: [(&str, &str); 11] = [
     ("del", "strike"),
 ];
 
+/// The number of `<br>` tags an HTML block consists of, if that is all it holds.
+fn br_only_block(html: &str) -> Option<usize> {
+    let mut rest = html.trim();
+    let mut n = 0;
+    while !rest.is_empty() {
+        let end = rest.find('>')? + 1;
+        if !is_br_tag(&rest[..end]) {
+            return None;
+        }
+        n += 1;
+        rest = rest[end..].trim_start();
+    }
+    (n > 0).then_some(n)
+}
+
 /// `<br>`, `<br/>` or `<br />`, in any case: a hard break.
 fn is_br_tag(html: &str) -> bool {
     html.strip_prefix('<')
@@ -1254,7 +1279,7 @@ fn pipe_row(cells: &[String]) -> String {
 /// An HTML table block. A blank line would end the block, so newlines in cell
 /// text (a code block) are written as `&#10;`; each row gets a line of its own.
 fn html_table(table: &Node) -> String {
-    let html = node_to_html(table)
+    let html = node_to_html(&without_task_lists(table))
         .replace('\n', "&#10;")
         .replace("</tr>", "</tr>\n");
     let html = match html.strip_prefix("<table>") {
@@ -1262,6 +1287,26 @@ fn html_table(table: &Node) -> String {
         None => html,
     };
     format!("{html}\n\n")
+}
+
+/// `node` without its task lists, which the writer drops in a table cell as it
+/// does everywhere else (#1365): HTML has no tag for them the reader takes.
+fn without_task_lists(node: &Node) -> Node {
+    if node.is_text() || node.is_leaf() {
+        return node.clone();
+    }
+    let children: Vec<Node> = node
+        .content()
+        .children()
+        .iter()
+        .filter(|c| c.type_name() != "task_list")
+        .map(without_task_lists)
+        .collect();
+    Node::new_branch(
+        node.node_type().clone(),
+        node.attrs().clone(),
+        Fragment::from_children(children),
+    )
 }
 
 // ── inline content ──

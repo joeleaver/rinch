@@ -105,8 +105,10 @@ fn block_tags(node: &Node) -> (String, String) {
         "table_cell" | "table_header_cell" => {
             let tag = primary_tag(node.node_type());
             let mut open = format!("<{tag}");
-            for (name, attr) in [("colspan", "colspan"), ("rowspan", "rowspan")] {
-                let n = node.attrs().get_int(attr).unwrap_or(1);
+            // Clamped to what the import reads (Chrome's limits): a larger
+            // span would read back clamped anyway.
+            for (name, attr, max) in [("colspan", "colspan", 1000), ("rowspan", "rowspan", 65534)] {
+                let n = node.attrs().get_int(attr).unwrap_or(1).min(max);
                 if n > 1 {
                     open.push_str(&format!(" {name}=\"{n}\""));
                 }
