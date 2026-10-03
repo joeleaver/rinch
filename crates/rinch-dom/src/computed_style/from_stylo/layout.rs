@@ -30,7 +30,9 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
     // `DisplayInside` variant, and Stylo parses it combined with any
     // outside/inside. Only the block-outside, flow-inside forms are
     // `ListItem`; `inline list-item` falls through to `Inline` (Chrome 153
-    // lays two of them on one line), and `flex list-item` to `Flex`.
+    // lays two of them on one line). Stylo's servo build rejects
+    // `flex list-item`, `grid list-item` and the `flow-root` forms, so they
+    // never reach this match.
     if display.is_list_item()
         && display.outside() == DisplayOutside::Block
         && matches!(

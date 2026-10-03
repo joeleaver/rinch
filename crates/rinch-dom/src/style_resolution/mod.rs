@@ -1525,7 +1525,7 @@ impl RinchDocument {
                 crate::computed_style::DisplayValue::InlineBlock => DisplayMode::InlineBlock,
                 crate::computed_style::DisplayValue::InlineFlex => DisplayMode::InlineFlex,
                 crate::computed_style::DisplayValue::Block => DisplayMode::Block,
-                // `list-item` lays out exactly like `block` (#725); the
+                // A block-outside `list-item` is a block box (#725); the
                 // marker is drawn by `resolve_list_marker`, not by anything
                 // keyed on `DisplayMode`.
                 crate::computed_style::DisplayValue::ListItem => DisplayMode::Block,

@@ -221,8 +221,8 @@ List markers on `<li>` (issue #725) are partly part of this. `li` computes
 `display: list-item`, and the UA sheet gives lists Chrome's own defaults: `ul`,
 `menu` and `dir` are `disc`, `ol` is `decimal`, a list inside one other list is
 `circle` and inside two is `square` — an `ol` counts as a level, so `ol > li >
-ul` is `circle`, measured in Chrome 153. A `list-item` box lays out exactly as
-a `block` one does; `display: inline list-item` stays inline.
+ul` is `circle`, measured in Chrome 153. A block-level `list-item` box lays out
+as a `block` one does (its children stack, its height is theirs); `display: inline list-item` stays inline.
 
 What desktop draws is a text marker followed by an en space: `•`, `◦` or `▪`
 for `disc`, `circle` or `square`, `N.` for `decimal` (`<ol start>` and

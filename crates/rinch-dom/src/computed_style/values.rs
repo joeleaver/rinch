@@ -88,9 +88,9 @@ pub enum DisplayValue {
     /// block box with a marker. Stylo carries "is a list item" as an
     /// orthogonal bit on `Display` (`Display::is_list_item`), so
     /// `display_from_stylo` returns this for `list-item` / `block list-item`
-    /// / `flow-root list-item` and lets every other combination (`inline
-    /// list-item`, `flex list-item`, …) take its plain `(outside, inside)`
-    /// value — `inline list-item` stays inline-level, as in Chrome 153.
+    /// and lets `inline list-item` take its plain `(outside, inside)` value —
+    /// it stays inline-level, as in Chrome 153. (Stylo's servo build rejects
+    /// `flex list-item`, `grid list-item` and the `flow-root` forms.)
     ///
     /// It lays out as [`Self::Block`] does, and every layout site that asks
     /// for `Block` must ask for this too (`to_taffy` → `taffy::Display::Block`,
