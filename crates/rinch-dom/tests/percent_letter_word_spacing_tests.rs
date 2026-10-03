@@ -106,7 +106,10 @@ fn letter_spacing_percentage_resolves_against_font_size() {
 #[test]
 fn letter_spacing_calc_adds_its_percentage_part_to_its_length_part() {
     let plain = ifc_line_width(BASE20, "abcde");
-    let spaced = ifc_line_width(&format!("{BASE20}; letter-spacing: calc(5px + 50%)"), "abcde");
+    let spaced = ifc_line_width(
+        &format!("{BASE20}; letter-spacing: calc(5px + 50%)"),
+        "abcde",
+    );
     // 5px + 50% of 20px = 15px per character, 5 characters.
     assert!(
         (spaced - plain - 75.0).abs() < 0.5,
@@ -167,10 +170,10 @@ fn word_spacing_calc_adds_its_percentage_part_to_its_length_part() {
 
 #[test]
 fn word_spacing_percentage_scales_with_the_elements_own_font_size() {
-    let delta_20 =
-        ifc_line_width(&format!("{BASE20}; word-spacing: 50%"), "a a a") - ifc_line_width(BASE20, "a a a");
-    let delta_40 =
-        ifc_line_width(&format!("{BASE40}; word-spacing: 50%"), "a a a") - ifc_line_width(BASE40, "a a a");
+    let delta_20 = ifc_line_width(&format!("{BASE20}; word-spacing: 50%"), "a a a")
+        - ifc_line_width(BASE20, "a a a");
+    let delta_40 = ifc_line_width(&format!("{BASE40}; word-spacing: 50%"), "a a a")
+        - ifc_line_width(BASE40, "a a a");
     assert!(
         (delta_20 - 20.0).abs() < 0.5,
         "expected +20px at font-size 20px, got {delta_20}"
@@ -283,7 +286,10 @@ fn ab_advance(extra: &str) -> f32 {
 #[test]
 fn letter_spacing_percentage_shifts_the_next_glyph_by_the_resolved_amount() {
     let plain = ab_advance("");
-    assert!(plain > 0.0, "positive control: 'a' and 'b' did not advance at all");
+    assert!(
+        plain > 0.0,
+        "positive control: 'a' and 'b' did not advance at all"
+    );
     let spaced = ab_advance("letter-spacing: 50%");
     // 50% of the 20px font-size is 10px, inserted as one letter-spacing step
     // between 'a' and 'b' — on top of 'a's own (Inter) advance, whatever
