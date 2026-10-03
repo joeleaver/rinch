@@ -157,6 +157,8 @@ mod overlay_opacity_tests;
 mod overlay_scroll_lock_tests;
 #[cfg(test)]
 mod overlay_z_index_tests;
+#[cfg(test)]
+mod padded_scroll_overflow_769_tests;
 #[cfg(all(test, any(feature = "desktop", feature = "android")))]
 mod paused_animation_frames_tests;
 #[cfg(all(test, software_shell))]
@@ -1597,7 +1599,8 @@ impl RinchApp {
                 // backend measures against. `elem_top` is from the border
                 // box's top and `client_height` is the content box here, so
                 // both are corrected; the nearest branch below keeps its
-                // pre-existing reading (#769's shape).
+                // pre-existing reading, which mixes that
+                // border-box origin with the content-box height (#1367).
                 let cs = &d.tree.nodes[container_id].computed_style;
                 let border_top = f64::from(cs.border_top_width.to_px());
                 let padding_box = visible_height

@@ -2542,10 +2542,13 @@ mod tests {
         );
     }
 
-    /// The fallback onto `tree.body_id` has the identical border-vs-content
-    /// drift: a padded `<body>` whose content overflows its content box but
-    /// not the viewport (its border box) must still be the container the
-    /// wheel scrolls, exactly as `scrollbars()` paints its bar.
+    /// A padded `<body>` whose content overflows its content box but not the
+    /// viewport (its border box) must be the container the wheel scrolls,
+    /// exactly as `scrollbars()` paints its bar. The walk from a body child
+    /// meets the body as an ancestor, so this does **not** reach the
+    /// fallback onto `tree.body_id`; `padded_scroll_overflow_769_tests`'
+    /// `the_body_fallback_uses_the_content_box` (and its horizontal twin)
+    /// start at `<html>` for that.
     #[test]
     fn a_padded_bodys_overflow_matches_its_own_painted_bar() {
         let mut doc = RinchDocument::new();

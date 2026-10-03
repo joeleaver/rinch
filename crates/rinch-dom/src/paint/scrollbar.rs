@@ -530,11 +530,14 @@ fn auto_thumb_color(color: Option<peniko::Color>) -> AlphaColor<Srgb> {
 /// question rather than re-deriving "visible" against the **border** box,
 /// which is strictly larger whenever there is any padding or border: that
 /// drift is #769 (a container whose content overflows its content box but
-/// not its border box painted, and let you drag, a bar the wheel routed past
-/// — the bar and the wheel agreed only on an unpadded, borderless container,
-/// which is every scroll region in the component library and so hid the bug
-/// for a long time). Prefer [`overflows`] when only the yes/no answer is
-/// wanted.
+/// not its border box painted, and let you drag, a bar the wheel routed
+/// past). The window is only `padding + border` wide, so it opened only when
+/// the overflow was smaller than that — which is why it was rarely seen, not
+/// because components avoided it: the Drawer body, the FloatingPanel body,
+/// the Select dropdown, the menu-bar dropdowns and `Code` are all padded or
+/// bordered scroll regions. `DomDocument::client_height`/`client_width` and
+/// layout's `clamp_scroll_offsets` read it too. Prefer [`overflows`] when
+/// only the yes/no answer is wanted.
 pub fn visible_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
     let Some(node) = tree.get(node_id) else {
         return (0.0, 0.0);
@@ -553,12 +556,18 @@ pub fn visible_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
 }
 
 /// Whether `node_id` is scrollable on `axis` **and** its content overflows —
-/// exactly the test [`scrollbars`] makes before painting a bar on that axis,
-/// exposed as a boolean so a caller that only wants "is this a scroll
-/// container the wheel should move with" is not tempted to re-derive it
-/// against the wrong box (#769). `scrollable` alone is not enough: a
-/// container can declare `overflow: auto` and still fit its content, in
-/// which case neither the bar nor the wheel should claim it.
+/// the scrollable-and-overflowing half of the test [`scrollbars`] makes
+/// before painting a bar on that axis, exposed as a boolean so a caller that
+/// only wants "is this a scroll container the wheel should move with" is not
+/// tempted to re-derive it against the wrong box (#769). `scrollable` alone
+/// is not enough: a container can declare `overflow: auto` and still fit its
+/// content, in which case neither the bar nor the wheel should claim it.
+///
+/// It is deliberately **not** `scrollbars(..).axis(..).is_some()`: it ignores
+/// `--rinch-scrollbar-width: none`, which removes the bar and not the
+/// scrolling — a browser's `scrollbar-width: none` box still takes the wheel
+/// (measured in Chrome 153). Pinned by
+/// `a_barless_padded_container_still_takes_the_wheel`.
 pub fn overflows(tree: &NodeTree, node_id: usize, axis: ScrollbarAxis) -> bool {
     let Some(node) = tree.get(node_id) else {
         return false;
