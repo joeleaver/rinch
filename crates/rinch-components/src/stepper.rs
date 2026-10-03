@@ -5,6 +5,7 @@
 use std::cmp::Ordering;
 
 use rinch_core::Component;
+use rinch_core::ValueCallback;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
@@ -130,11 +131,37 @@ pub struct Stepper {
     /// and is left alone, so this only ever grants — turning it off does not
     /// take a step's own ask away.
     ///
-    /// Clickable is currently **decorative**: the class carries a cursor and a
-    /// hover state, and this component registers no click handler and takes no
-    /// callback (issue #737), as `allow_step_click` and `allow_step_select`
-    /// already did.
+    /// This prop alone is still decorative — the class carries a cursor and a
+    /// hover state, and granting it adds no handler. What makes a grant *act*
+    /// is [`Stepper::on_step_click`] (issue #737): with no callback set, every
+    /// behaviour this prop had before #737 is unchanged (the class, and only
+    /// the class).
     pub allow_next_steps_select: bool,
+    /// Fired with a step's 0-based position when the user clicks or activates
+    /// (Enter/Space) a step the stepper considers clickable (issue #737).
+    ///
+    /// Mantine's default: a strictly **completed** step — `position <
+    /// Stepper::active` — is clickable without [`allow_next_steps_select`];
+    /// the active step itself and every step past it need that flag, or the
+    /// step's own
+    /// [`allow_step_click`](StepperStep::allow_step_click) /
+    /// [`allow_step_select`](StepperStep::allow_step_select) (Mantine's
+    /// `shouldAllowSelect`: `state === 'stepCompleted' || allowNextStepsSelect`,
+    /// and `state` for the active step is `'stepProgress'`, not
+    /// `'stepCompleted'`). With no callback set, nothing is wired — a step's
+    /// `cursor: pointer` from its own ask or from `allow_next_steps_select` is
+    /// unchanged, decorative, as it always was.
+    ///
+    /// `Stepper` does not move `active` itself: the caller does, from this
+    /// callback, exactly as [`Tabs`](crate::tabs::Tabs) moves its own selection
+    /// from a tab click.
+    ///
+    /// The index is read from the clicked step's own position **at click
+    /// time**, not baked into the handler at the render pass that wired it
+    /// (the #714 pattern): a step's position can move after it registers its
+    /// handler, through a later insertion or removal (issues #716, #745), and
+    /// a captured index would then fire the position the step *used to* be at.
+    pub on_step_click: Option<ValueCallback<u32>>,
     /// Default completed-step icon.
     ///
     /// Used by the [`StepperStep`]s in the completed state that set no
@@ -259,8 +286,9 @@ impl Component for Stepper {
             allow_next_steps_select: self.allow_next_steps_select,
             completed_icon: self.completed_icon,
             progress_icon: self.progress_icon,
+            on_step_click: self.on_step_click.clone(),
         };
-        settle_steps(__scope, &steps_container, derivation);
+        settle_steps(__scope, &steps_container, derivation.clone());
 
         // A step that arrives *after* this render — a `for` reconcile, a
         // `show_dom` branch, a hand-rolled `append_child` — needs the same pass,
@@ -269,6 +297,7 @@ impl Component for Stepper {
         // #716). So the whole pass runs again, over every step, and it is
         // written to be idempotent for exactly that reason.
         let watched = steps_container.clone();
+        let d = derivation.clone();
         crate::late_children::adopt_late_children(
             __scope,
             &steps_container,
@@ -279,7 +308,7 @@ impl Component for Stepper {
                 // list gives that — an insertion in front of a step renumbers
                 // it and can restate it, so patching the newcomer alone would
                 // leave the stepper saying two different things.
-                settle_steps(scope, &watched, derivation);
+                settle_steps(scope, &watched, d.clone());
             },
         );
 
@@ -290,12 +319,13 @@ impl Component for Stepper {
         // defaults depends on a sibling's position; this stepper's whole
         // derivation does.
         let watched = steps_container.clone();
+        let d = derivation.clone();
         crate::late_children::adopt_child_removals(
             __scope,
             &steps_container,
             STEP_BOUNDARY,
             move |scope| {
-                settle_steps(scope, &watched, derivation);
+                settle_steps(scope, &watched, d.clone());
             },
         );
 
@@ -308,15 +338,18 @@ impl Component for Stepper {
 /// Everything a [`Stepper`] tells its steps that a step cannot know about
 /// itself.
 ///
-/// `Copy` and prop-shaped rather than a borrow of the component, because the
+/// `Clone` and prop-shaped rather than a borrow of the component, because the
 /// late-arrival observer outlives the `render` call that installed it (issue
-/// #716).
-#[derive(Debug, Clone, Copy)]
+/// #716). No longer `Copy` as of #737: `on_step_click` is an `Rc` underneath,
+/// so every call site that used to move or copy a `Derivation` into a closure
+/// now clones it instead.
+#[derive(Debug, Clone)]
 struct Derivation {
     active: u32,
     allow_next_steps_select: bool,
     completed_icon: Option<TablerIcon>,
     progress_icon: Option<TablerIcon>,
+    on_step_click: Option<ValueCallback<u32>>,
 }
 
 impl Derivation {
@@ -353,7 +386,21 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
     for (position, step) in collect_steps(steps_container).iter().enumerate() {
         let position = position as u32;
 
-        if d.allow_next_steps_select && position > d.active {
+        // The derivation's own position, distinct from `STEP_ATTR` — which a
+        // step's own `step` prop can override, for the *label* only (see
+        // below). A click handler reads this one back at click time, never a
+        // value baked into its closure, because a step's position can move
+        // after the handler is wired, through a later insertion or removal
+        // (issues #716, #745) — the same reason `data-step` itself has to be
+        // re-read rather than captured (#714's pattern).
+        let position_str = position.to_string();
+        if step.get_attribute(POSITION_ATTR).as_deref() != Some(position_str.as_str()) {
+            step.set_attribute(POSITION_ATTR, &position_str);
+        }
+
+        let disabled = step.get_attribute(DISABLED_ATTR).is_some();
+
+        if d.allow_next_steps_select && position > d.active && !disabled {
             // A step that asked to be clickable itself already carries the
             // class. `add_class` is idempotent since #717, so the guard is
             // belt and braces rather than load-bearing.
@@ -361,6 +408,8 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
                 step.add_class(CLICKABLE_CLASS);
             }
         }
+
+        settle_step_clickability(scope, step, position, disabled, &d);
 
         // The index the step shows. Its own wins, so a caller may number a
         // stepper however they like; that changes the *label*, not the position
@@ -429,7 +478,126 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
             .unwrap_or(position)
             + 1;
 
-        settle_step_icon(scope, step, state, named_state.is_some(), number, d);
+        settle_step_icon(scope, step, state, named_state.is_some(), number, &d);
+    }
+}
+
+/// Bring one step's clickability — the class, the keyboard reach, and the
+/// wired handler — into line with its current position (issue #737).
+///
+/// **Mantine's default**: a strictly **completed** step — `position <
+/// Derivation::active` — is clickable without
+/// [`Derivation::allow_next_steps_select`]; the active step itself and every
+/// step past it need that flag, or its own ask (recorded by
+/// [`StepperStep::render`] under [`OWN_CLICKABLE_ATTR`], since a class
+/// already on the node cannot be told from one *this* function granted on an
+/// earlier pass). Mantine's own rule is `shouldAllowSelect`:
+/// `state === 'stepCompleted' || allowNextStepsSelect`, and the active step's
+/// `state` is `'stepProgress'`, not `'stepCompleted'` — so `active` itself is
+/// *not* reachable by default, only genuinely prior steps are. All of that is
+/// gated on [`Derivation::on_step_click`] being set at all — with no
+/// callback, nothing here does anything, and every behaviour
+/// `allow_next_steps_select` and `allow_step_click`/`allow_step_select` had
+/// before #737 (cursor and hover, nothing else) is unchanged; that is why the
+/// `allow_next_steps_select` class grant above lives in [`settle_steps`]
+/// rather than here, untouched. A `disabled` step (the plain HTML attribute,
+/// read tag-agnostically the way rinch's own focus arbiter reads it) is never
+/// clickable, whatever else grants it. And **the class always follows
+/// `reachable`, not only `disabled`**: a step that loses its wiring purely
+/// because a sibling insertion or removal shifted it past `active` must lose
+/// the cursor too, or it goes on looking clickable with nothing behind it —
+/// the one exception is `own`, since a step's own ask keeps the class
+/// regardless of position (and such a step never becomes unreachable, so the
+/// two branches never fight over it).
+///
+/// **The handler is registered once per step, lazily, the first pass that
+/// finds it reachable** — never baked with the step's position, which the
+/// handler instead re-reads from [`POSITION_ATTR`] at **click** time (the
+/// #714 pattern: a thread-local registry's lookup moved from render time to
+/// dispatch time because a render-time snapshot could not see a late
+/// arrival). [`CLICK_HANDLER_ID_ATTR`] is the registration's own record,
+/// kept even while the step is temporarily unreachable, so a position shift
+/// that makes it reachable again restores `data-rid` from it rather than
+/// registering a second handler and leaking the first (issue #141's handler
+/// side: a scope frees what it owns, and nothing here would ever ask the old
+/// one to release itself).
+///
+/// `tabindex="0"` plus `data-rid` is the same shape [`Tree`](crate::tree::Tree)
+/// wires for its own rows — generic keyboard activation (Enter/Space) reads
+/// any focused node's `data-rid`, with no `register_focus_target` needed —
+/// and `role="button"` says what the reach is for.
+fn settle_step_clickability(
+    scope: &mut RenderScope,
+    step: &NodeHandle,
+    position: u32,
+    disabled: bool,
+    d: &Derivation,
+) {
+    let own = step.get_attribute(OWN_CLICKABLE_ATTR).is_some();
+    let reachable = own || position < d.active || d.allow_next_steps_select;
+    let should_wire = !disabled && reachable && d.on_step_click.is_some();
+
+    if should_wire {
+        if !has_class(step, CLICKABLE_CLASS) {
+            step.add_class(CLICKABLE_CLASS);
+        }
+        if step.get_attribute("tabindex").is_none() {
+            step.set_attribute("tabindex", "0");
+        }
+        if step.get_attribute("role").as_deref() != Some("button") {
+            step.set_attribute("role", "button");
+        }
+
+        // SAFETY of the `expect`: `should_wire` just checked `is_some()`.
+        let cb = d.on_step_click.clone().expect("on_step_click is Some");
+        let handler_id = match step
+            .get_attribute(CLICK_HANDLER_ID_ATTR)
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            Some(id) => id,
+            None => {
+                let watched = step.clone();
+                let id = scope
+                    .register_handler(move || {
+                        if let Some(pos) = watched
+                            .get_attribute(POSITION_ATTR)
+                            .and_then(|s| s.parse::<u32>().ok())
+                        {
+                            cb.invoke(pos);
+                        }
+                    })
+                    .0;
+                step.set_attribute(CLICK_HANDLER_ID_ATTR, &id.to_string());
+                id
+            }
+        };
+        let rid = handler_id.to_string();
+        if step.get_attribute("data-rid").as_deref() != Some(rid.as_str()) {
+            step.set_attribute("data-rid", &rid);
+        }
+    } else {
+        // The class follows reachability whenever there is a callback to
+        // wire at all — a step that was reachable-and-wired and then shifts
+        // past `active` (a sibling insertion or removal) must lose the
+        // cursor along with `data-rid`, or it keeps looking clickable with
+        // nothing behind it (issue #737's review, Finding 2). With no
+        // callback there is nothing to wire in the first place, so the class
+        // here is purely whatever `allow_next_steps_select`'s own grant (in
+        // `settle_steps`) or `StepperStep::render`'s own-ask grant put there,
+        // and must be left alone — removing it would undo the no-callback
+        // decorative behaviour #737 was explicit about preserving.
+        if d.on_step_click.is_some() {
+            step.remove_class(CLICKABLE_CLASS);
+        }
+        if step.get_attribute("data-rid").is_some() {
+            step.remove_attribute("data-rid");
+        }
+        if step.get_attribute("tabindex").is_some() {
+            step.remove_attribute("tabindex");
+        }
+        if step.get_attribute("role").as_deref() == Some("button") {
+            step.remove_attribute("role");
+        }
     }
 }
 
@@ -454,7 +622,7 @@ fn settle_step_icon(
     state: StepState,
     named_its_own_state: bool,
     number: u32,
-    d: Derivation,
+    d: &Derivation,
 ) {
     let Some(icon_box) = step_icon_box(step) else {
         return;
@@ -662,6 +830,42 @@ const CLICKABLE_CLASS: &str = "rinch-stepper__step--clickable";
 /// The class a loading step carries.
 const LOADING_CLASS: &str = "rinch-stepper__step--loading";
 
+/// The class a [`StepperStep::disabled`] step carries.
+const DISABLED_CLASS: &str = "rinch-stepper__step--disabled";
+
+/// A step's derivation position, 0-based, set by [`settle_steps`] on every
+/// pass regardless of clickability (issue #737).
+///
+/// Distinct from [`STEP_ATTR`], which a step's own `step` prop can override
+/// for the *label* only — `allow_next_steps_select` and
+/// [`Stepper::on_step_click`] both count positions, and a second notion of
+/// index would disagree with them the same way the state derivation would.
+/// A click handler reads this back at **click** time rather than closing
+/// over the position it saw when it registered (the #714 pattern), because a
+/// later insertion or removal can renumber the step after the handler is
+/// wired (issues #716, #745).
+const POSITION_ATTR: &str = "data-step-position";
+
+/// The plain HTML `disabled` boolean attribute, read tag-agnostically
+/// (`node_is_disabled` honours it on any tag, not only the ones a browser
+/// does) to mean exactly what it means on a `<button>`: never clickable,
+/// never focusable, whatever else granted it the class.
+const DISABLED_ATTR: &str = "disabled";
+
+/// Set by [`StepperStep::render`] when the step asked for its own
+/// clickability (`allow_step_click` or `allow_step_select`), so
+/// [`settle_step_clickability`] can tell that ask apart from a class an
+/// earlier pass of its own granted — a class already on the node cannot say
+/// who put it there.
+const OWN_CLICKABLE_ATTR: &str = "data-step-own-clickable";
+
+/// Set by [`settle_step_clickability`] once a step's click handler is
+/// registered, and never removed while the step lives: the registration
+/// itself is paid once, and `data-rid` is set from this record — not
+/// re-derived — whenever the step becomes reachable again after a position
+/// shift made it briefly unreachable.
+const CLICK_HANDLER_ID_ATTR: &str = "data-stepper-click-handler";
+
 /// The three **content keys** a step's icon box deals in.
 ///
 /// A key is not a state: `completed` and `progress` name the two glyphs a step
@@ -807,11 +1011,25 @@ pub struct StepperStep {
     /// Custom progress icon.
     pub progress_icon: Option<TablerIcon>,
     /// Whether this step can be clicked.
+    ///
+    /// Grants the step the clickable class regardless of its position against
+    /// the parent [`Stepper`]'s `active`. With [`Stepper::on_step_click`] set
+    /// (issue #737), it also grants the wiring — a handler, `tabindex="0"` and
+    /// `data-rid` — unless [`disabled`](StepperStep::disabled) is set, which
+    /// always wins.
     pub allow_step_click: bool,
     /// Whether this step allows selecting next step.
+    ///
+    /// The same grant as [`allow_step_click`](StepperStep::allow_step_click);
+    /// Mantine keeps the two names, so rinch does too, and neither means
+    /// anything the other does not.
     pub allow_step_select: bool,
     /// Loading state.
     pub loading: bool,
+    /// Never clickable, never focusable, whatever else grants it — the plain
+    /// HTML `disabled` attribute (issue #737), read the way rinch's own focus
+    /// arbiter reads it on any tag, not only the ones a browser does.
+    pub disabled: bool,
     /// Step state — `"completed"`, `"progress"`, or anything else for inactive.
     ///
     /// Leave it unset and the parent [`Stepper`] derives it from this step's
@@ -836,13 +1054,12 @@ impl Component for StepperStep {
 
         let loading_class = if self.loading { LOADING_CLASS } else { "" };
 
-        let clickable = if self.allow_step_click || self.allow_step_select {
-            CLICKABLE_CLASS
-        } else {
-            ""
-        };
+        let own_clickable = !self.disabled && (self.allow_step_click || self.allow_step_select);
+        let clickable = if own_clickable { CLICKABLE_CLASS } else { "" };
+        let disabled_class = if self.disabled { DISABLED_CLASS } else { "" };
 
-        let class = format!("{STEP_CLASS} {state_class} {loading_class} {clickable}");
+        let class =
+            format!("{STEP_CLASS} {state_class} {loading_class} {clickable} {disabled_class}");
 
         let step_el = rinch_macros::rsx! { div { class: "rinch-stepper__step" } };
         step_el.set_attribute("class", &class);
@@ -855,6 +1072,20 @@ impl Component for StepperStep {
         }
         if let Some(step) = self.step {
             step_el.set_attribute(STEP_ATTR, &step.to_string());
+        }
+
+        // Recorded separately from the class above (issue #737):
+        // `settle_step_clickability` has to tell "this step asked for its own
+        // clickability" apart from "an earlier pass of mine already granted
+        // the class", which the class alone cannot say.
+        if own_clickable {
+            step_el.set_attribute(OWN_CLICKABLE_ATTR, "");
+        }
+        // The plain HTML boolean attribute, read tag-agnostically by rinch's
+        // own focus arbiter and by `settle_step_clickability` alike — never
+        // clickable, never focusable, whatever else grants it.
+        if self.disabled {
+            step_el.set_attribute(DISABLED_ATTR, "");
         }
 
         // Step number/icon
