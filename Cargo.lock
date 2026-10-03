@@ -4989,6 +4989,7 @@ dependencies = [
 name = "rinch-core"
 version = "0.1.0"
 dependencies = [
+ "rinch-core",
  "thiserror 1.0.69",
  "tracing",
  "web-time",

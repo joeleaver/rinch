@@ -280,8 +280,7 @@ fn cache_survives(name_parent: bool) -> bool {
     visible.set(false);
     visible.set(true);
     let id = cache.borrow().as_ref().unwrap().node_id();
-    let alive = f.doc.borrow().tag_name(id).is_some();
-    alive
+    f.doc.borrow().tag_name(id).is_some()
 }
 
 #[test]
