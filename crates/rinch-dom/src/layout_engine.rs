@@ -1014,16 +1014,15 @@ impl RinchDocument {
             if node.scroll_offset == (0.0, 0.0) {
                 continue;
             }
-            let cs = &node.computed_style;
             // The one extent walk (#995): the range the wheel, the bars and
             // `scroll_height` answer. A walk of its own here — it was the
             // direct `children` only — took back on every layout pass the
             // range that one grants: an anonymous box's lines, a `display:
             // contents` wrapper's children, an IFC root's inline content.
             let content_height = crate::paint::scrollbar::content_extents(&self.tree, node_id).1;
-            let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64;
-            let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64;
-            let visible_h = (node.layout.height as f64 - pad_v - border_v).max(0.0);
+            // The content box `scrollbars`, `client_height` and the wheel's
+            // finders measure against (#769) — one computation, not a copy.
+            let visible_h = crate::paint::scrollbar::visible_extents(&self.tree, node_id).1;
             let max_scroll = (content_height - visible_h).max(0.0);
             if node.scroll_offset.1 > max_scroll {
                 clamps.push((node_id, max_scroll));

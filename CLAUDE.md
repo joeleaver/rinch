@@ -2407,11 +2407,28 @@ and a block container above is non-positioned flowed inline elements and
 list (#591, reached since #995; a positioned span is **#1049**) — Chrome gives it to that
 ancestor (measured: a 700x1500 absolute under a static `overflow: auto` div
 lands on `documentElement.scrollHeight`), and rinch used to give it to the
-wrong box, which is what grew the phantom bar (**#770**). And
-`find_vertical_scroll_container` compares the same extent against the
-container's **border**-box height where `scrollbars` compares it against the
-content box, so a padded container can paint and drag a thumb the wheel routes
-straight past (**#769**). A **positioned** child — `absolute`, or `relative`
+wrong box, which is what grew the phantom bar (**#770**). **#769 is fixed**:
+the wheel's finders — `find_scroll_container` / `find_horizontal_scroll_container`,
+their `_at_point` twins, and the body fallback the two walks share — used to
+compare the content extent against the container's **border**-box size where
+`scrollbars` compares it against the content box, so a padded or bordered
+container whose overflow was smaller than its `padding + border` painted and
+let you drag a thumb the wheel routed straight past. That window is narrow,
+which is why it was rarely seen — not because components avoided it: the
+`Drawer` body, `FloatingPanel` body, `Select` dropdown, the menu-bar dropdowns
+and `Code` are all padded or bordered scroll regions, and had the bug.
+`paint::scrollbar::visible_extents` is now the one content-box computation:
+`scrollbars`, `DomDocument::client_height`/`client_width`, layout's
+`clamp_scroll_offsets` and the four wheel-routing walks all call it, the walks
+through `paint::scrollbar::overflows` — the same move #400 made for
+`content_extents`. `overflows` is the scrollable-and-overflowing half of
+`scrollbars`' test and deliberately **not** its `--rinch-scrollbar-width: none`
+half: that removes the bar, not the scrolling (as `scrollbar-width: none` does
+in Chrome). The body fallback now also asks `scrolls_y()`/`scrolls_x()`, so an
+`overflow: hidden` body is no fallback wheel target (CSS-correct). Still open
+beside it: `apply_scroll_into_view`'s nearest branch mixes a border-box origin
+with the content-box height (**#1367**), and `clamp_scroll_offsets` never
+clamps the x offset (**#1368**). A **positioned** child — `absolute`, or `relative`
 with an offset — is measured differently from Chrome. The paddings of rinch's
 content-box frame and Chrome's padding-box frame cancel for a **non-positioned**
 child only. An `absolute` child's overflow is over-reported by **up to** the

@@ -706,29 +706,17 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) ->
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
-        if node.scrolls_y() {
-            let content_h = compute_content_height(tree, node_id);
-            if content_h > node.layout.height as f64 {
-                return Some(node_id);
-            }
+        if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Vertical) {
+            return Some(node_id);
         }
         current = node.parent;
     }
     // Fall back to body if content overflows
-    let body = tree.get(tree.body_id)?;
-    let content_h = compute_content_height(tree, tree.body_id);
-    if content_h > body.layout.height as f64 {
+    tree.get(tree.body_id)?;
+    if rinch_dom::paint::scrollbar::overflows(tree, tree.body_id, ScrollbarAxis::Vertical) {
         return Some(tree.body_id);
     }
     None
-}
-
-/// Compute the total content height of a node from its children's layout bounds.
-///
-/// Delegates to [`rinch_dom::paint::scrollbar::content_extents`] so this and
-/// the paint pass cannot disagree about what "content" means (#400).
-pub(crate) fn compute_content_height(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
-    rinch_dom::paint::scrollbar::content_extents(tree, node_id).1
 }
 
 /// Find the nearest ancestor (or self) that is a horizontal scroll container.
@@ -739,18 +727,14 @@ pub(crate) fn find_horizontal_scroll_container(
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
-        if node.scrolls_x() {
-            let content_w = compute_content_width(tree, node_id);
-            if content_w > node.layout.width as f64 {
-                return Some(node_id);
-            }
+        if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Horizontal) {
+            return Some(node_id);
         }
         current = node.parent;
     }
     // Fall back to body if content overflows
-    let body = tree.get(tree.body_id)?;
-    let content_w = compute_content_width(tree, tree.body_id);
-    if content_w > body.layout.width as f64 {
+    tree.get(tree.body_id)?;
+    if rinch_dom::paint::scrollbar::overflows(tree, tree.body_id, ScrollbarAxis::Horizontal) {
         return Some(tree.body_id);
     }
     None
@@ -818,11 +802,8 @@ fn find_scroll_container_at_point_recursive(
     }
 
     // Check this node
-    if node.scrolls_y() {
-        let content_h = compute_content_height(tree, node_id);
-        if content_h > node.layout.height as f64 {
-            return Some(node_id);
-        }
+    if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Vertical) {
+        return Some(node_id);
     }
 
     None
@@ -889,23 +870,11 @@ fn find_hscroll_container_at_point_recursive(
         }
     }
 
-    if node.scrolls_x() {
-        let content_w = compute_content_width(tree, node_id);
-        if content_w > node.layout.width as f64 {
-            return Some(node_id);
-        }
+    if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Horizontal) {
+        return Some(node_id);
     }
 
     None
-}
-
-/// Compute the total content width of a node from its children's layout bounds.
-///
-/// The horizontal twin of [`compute_content_height`], and the same delegation:
-/// one definition, so a padded container cannot decide it overflows when paint
-/// says it does not.
-pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
-    rinch_dom::paint::scrollbar::content_extents(tree, node_id).0
 }
 
 /// The width of the invisible strip along a container's edge that counts as
@@ -2463,6 +2432,143 @@ mod tests {
         assert!(
             super::find_scrollbar_hit(&doc.tree, 192.0, 50.0).is_none(),
             "and not at the un-shifted viewport box"
+        );
+    }
+
+    // ── #769: the wheel and the painted bar must agree about a padded or
+    // bordered container's overflow ──────────────────────────────────────
+    //
+    // `scrollbars()` compares the content extent against the container's
+    // **content** box (border box less its own padding and border);
+    // `find_scroll_container`/`find_horizontal_scroll_container` and their
+    // `_at_point` twins used to compare against the **border** box instead —
+    // strictly larger whenever there is padding or a border — so a container
+    // whose content overflowed the content box but not the border box got a
+    // painted, draggable bar the wheel routed straight past.
+
+    /// The exact #769 repro. `width: 200px; height: 100px; padding: 20px` has
+    /// a content box of 160x60; a 160x80 child overflows that content box
+    /// (80 > 60) but not the 100px border box (80 < 100) — the window the
+    /// border-box comparison missed entirely.
+    #[test]
+    fn a_padded_containers_overflow_matches_its_own_painted_bar() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 200px; height: 100px; padding: 20px; overflow: auto",
+        );
+        let child = child_of(&mut doc, container, "width: 160px; height: 80px");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            rinch_dom::paint::scrollbar::scrollbars(&doc.tree, container.0, 1.0)
+                .vertical
+                .is_some(),
+            "positive control: the bar paints (content box 160x60, child 160x80)"
+        );
+        assert_eq!(
+            super::find_scroll_container(&doc.tree, child.0),
+            Some(container.0),
+            "the wheel must claim the container the bar is painted on, not \
+             fall through past it to the body"
+        );
+        assert_eq!(
+            super::find_scroll_container_at_point(&doc.tree, 10.0, 50.0),
+            Some(container.0),
+            "the geometric search must agree too"
+        );
+    }
+
+    /// The horizontal twin, same shape: `width: 100px; height: 200px;
+    /// padding: 20px` has a content box of 60x160; an 80px-wide child
+    /// overflows it (80 > 60) but not the 100px border box (80 < 100).
+    #[test]
+    fn a_padded_containers_horizontal_overflow_matches_its_own_painted_bar() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 100px; height: 200px; padding: 20px; overflow-x: auto",
+        );
+        let child = child_of(&mut doc, container, "width: 80px; height: 160px");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            rinch_dom::paint::scrollbar::scrollbars(&doc.tree, container.0, 1.0)
+                .horizontal
+                .is_some(),
+            "positive control: the bar paints (content box 60x160, child 80px wide)"
+        );
+        assert_eq!(
+            super::find_horizontal_scroll_container(&doc.tree, child.0),
+            Some(container.0),
+            "the wheel must claim the container the bar is painted on"
+        );
+        assert_eq!(
+            super::find_horizontal_scroll_container_at_point(&doc.tree, 50.0, 10.0),
+            Some(container.0),
+            "the geometric search must agree too"
+        );
+    }
+
+    /// The reverse fixed point, off the mutant's blind spot: content that
+    /// fits **both** boxes must not scroll and must not paint a bar either —
+    /// a padded container is not a scroller just because it has padding.
+    #[test]
+    fn a_padded_container_whose_content_fits_both_boxes_does_not_scroll() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "width: 200px; height: 100px; padding: 20px; overflow: auto",
+        );
+        let child = child_of(&mut doc, container, "width: 160px; height: 60px");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            rinch_dom::paint::scrollbar::scrollbars(&doc.tree, container.0, 1.0)
+                .vertical
+                .is_none(),
+            "positive control: content fits the content box exactly, no bar"
+        );
+        assert_eq!(
+            super::find_scroll_container(&doc.tree, child.0),
+            None,
+            "nothing above the body scrolls, and this fixture's body does not overflow"
+        );
+    }
+
+    /// A padded `<body>` whose content overflows its content box but not the
+    /// viewport (its border box) must be the container the wheel scrolls,
+    /// exactly as `scrollbars()` paints its bar. The walk from a body child
+    /// meets the body as an ancestor, so this does **not** reach the
+    /// fallback onto `tree.body_id`; `padded_scroll_overflow_769_tests`'
+    /// `the_body_fallback_uses_the_content_box` (and its horizontal twin)
+    /// start at `<html>` for that.
+    #[test]
+    fn a_padded_bodys_overflow_matches_its_own_painted_bar() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "padding: 20px; overflow: auto");
+        // Viewport 800x600 -> content box 760x560. A 580px-tall child
+        // overflows that (580 > 560) but not the 600px border box (580 < 600).
+        let child = child_of(&mut doc, body, "width: 100%; height: 580px");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            rinch_dom::paint::scrollbar::scrollbars(&doc.tree, body.0, 1.0)
+                .vertical
+                .is_some(),
+            "positive control: the bar paints (content box 560px tall, child 580px)"
+        );
+        assert_eq!(
+            super::find_scroll_container(&doc.tree, child.0),
+            Some(body.0),
+            "the wheel must find the body the bar is painted on"
         );
     }
 
