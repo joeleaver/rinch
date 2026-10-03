@@ -576,14 +576,18 @@ mod painted {
         assert_eq!(pixel_at(&painter, 150, 150), NOTHING);
     }
 
-    /// One axis is enough, and it is the axis the old predicate could not see.
+    /// One axis is enough, and it is the axis the old predicate could not see
+    /// — and, since #535, the *other* axis staying `visible` really does leave
+    /// its overhang unclipped, matching CSS rather than contradicting it.
     ///
-    /// The vertical assertion pins a **known deviation, not the CSS answer**:
     /// `overflow-y` computes to `visible` here (css-overflow-3 pairs `clip`
-    /// with `visible`), so CSS would paint the vertical overhang. rinch clips
-    /// both axes with one rect, which hit testing has always done and paint now
-    /// matches. Per-axis clipping is #535; when it lands, this assertion
-    /// becomes `RED` and the comment goes away.
+    /// with `visible`, measured by `stylo_pairs_a_non_visible_axis_with_auto`
+    /// below), so a correct per-axis clip paints the vertical overhang and
+    /// only the vertical one: (150, 50) is overhanging in x alone and still
+    /// goes, (150, 150) overhangs in x (which alone is enough to cut it,
+    /// whatever y says), and (50, 150) — x inside the container, y
+    /// overhanging — is the one pixel this test exists to flip from `NOTHING`
+    /// to `RED`.
     #[test]
     fn overflow_x_clip_clips_without_the_other_axis_saying_anything() {
         let (mut doc, container, _child) = overhang("overflow-x: clip");
@@ -604,9 +608,164 @@ mod painted {
         );
         assert_eq!(
             pixel_at(&painter, 50, 150),
+            RED,
+            "the y axis says visible, so CSS paints the vertical overhang — \
+             and so must rinch (#535)"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
             NOTHING,
-            "known deviation: rinch clips both axes with one rect, so the \
-             vertical overhang goes too. CSS would paint it."
+            "x alone is enough to cut this corner, whatever y says"
+        );
+    }
+
+    /// [`overflow_x_clip_clips_without_the_other_axis_saying_anything`],
+    /// mirrored: `overflow-y: clip; overflow-x: visible`. Pins that the fix is
+    /// symmetric — the same assertions with x and y swapped — and not an
+    /// `overflow-x` special case: `clip_shape` asks `clips_overflow_x()` and
+    /// `clips_overflow_y()` independently, so a mutant that hard-codes which
+    /// axis is "the clipping one" passes the first test and fails this one.
+    #[test]
+    fn overflow_y_clip_clips_without_the_other_axis_saying_anything() {
+        let (mut doc, container, _child) = overhang("overflow-y: clip");
+        assert_eq!(
+            doc.tree.get(container).unwrap().computed_style.overflow_x,
+            OverflowValue::Visible,
+            "the fixture is only interesting while the x axis stays visible"
+        );
+
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+
+        assert_eq!(pixel_at(&painter, 50, 50), RED);
+        assert_eq!(
+            pixel_at(&painter, 50, 150),
+            NOTHING,
+            "the y axis says clip, so the vertical overhang goes"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 50),
+            RED,
+            "the x axis says visible, so CSS paints the horizontal overhang \
+             (#535)"
+        );
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            NOTHING,
+            "y alone is enough to cut this corner, whatever x says"
+        );
+    }
+
+    /// Rounded corners on a clip open on one axis draw **no curve at all** —
+    /// measured in Chrome 153, not assumed: an infinite strip bounded on only
+    /// one axis has no actual box corner for a radius to round against, so
+    /// `clip_shape` must hand back square (all-zero) radii even though the
+    /// box's own `border-radius` is large. (The *border* itself still paints
+    /// rounded, unaffected — it is drawn before any clip bracket opens.)
+    ///
+    /// This asks `clip_shape` directly rather than reading a painted pixel:
+    /// the unbounded axis is extended by [`AXIS_UNBOUNDED`]-ish magnitude (see
+    /// `paint::clip`'s module doc), which pushes every corner of the clip
+    /// rect's **geometry** tens of millions of px from the visible box either
+    /// way — so a rounded corner there changes nothing any painter draws on
+    /// screen, and a pixel oracle cannot tell a wrongly-rounded clip from a
+    /// correctly-square one. The `radii` value itself is still observable,
+    /// and is what every consumer that reads it (`paint_node`'s `RoundedRect`
+    /// branch, `stacking::ClipRect`) receives.
+    ///
+    /// The mutant this kills: making `clip_shape` call `padding_box_radii`
+    /// unconditionally (dropping the `clip_x && clip_y` gate) hands back the
+    /// box's real (non-zero) corners here instead of all-zero ones.
+    #[test]
+    fn an_overflow_clip_open_on_one_axis_has_square_radii() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; border-radius: 40px; \
+             overflow-x: clip; overflow-y: visible",
+        );
+        doc.append_child(body, container);
+        doc.resolve_layout(800.0, 600.0);
+
+        let node = doc.tree.get(container.0).unwrap();
+        let (_, radii) =
+            rinch_dom::paint::clip_shape(node, 1.0, 0.0, 0.0).expect("the container clips on x");
+        assert_eq!(
+            (
+                radii.top_left,
+                radii.top_right,
+                radii.bottom_right,
+                radii.bottom_left
+            ),
+            (0.0, 0.0, 0.0, 0.0),
+            "a clip open on one axis has no real corner for a radius to \
+             round against — clip_shape must not hand back the box's own \
+             rounded corners here, even though it is holding a legitimate \
+             40px border-radius"
+        );
+    }
+
+    /// #535 review: `paints_nothing_without_visit` (the dirty-region subtree
+    /// prune a parent asks of a child before entering `paint_node` for it) has
+    /// to require **both** axes clipping before it may skip a subtree
+    /// unvisited — a box open on one axis lets a child paint past it on
+    /// exactly that axis, so the box's own ink missing the dirty region does
+    /// not mean its children's does too.
+    ///
+    /// `container` only clips x; its child overflows vertically into a dirty
+    /// region that misses `container`'s own 100x100 box entirely. A correct
+    /// per-axis gate falls through to ask the child directly, finds it
+    /// intersects, and paints it; a both-axes-together gate stops at
+    /// `container` and never visits the child at all — the subtree is
+    /// skipped, not merely "painted but then clipped away", so the pixel
+    /// stays whatever it already was (here, unpainted).
+    ///
+    /// The mutant this kills: reverting the gate from
+    /// `clips_overflow_x() && clips_overflow_y()` to `clips_overflow()` (OR)
+    /// makes `paints_nothing_without_visit(container)` return `true` on the
+    /// strength of the x clip alone, so the `continue;` in the paint sequence
+    /// loop skips `container` — and therefore its child — unvisited, and
+    /// (50, 200) stays `NOTHING` instead of `RED`.
+    #[test]
+    fn paints_nothing_without_visit_requires_both_axes_to_skip_a_subtree() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 100px; height: 100px; overflow-x: clip; overflow-y: visible",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "width: 40px; height: 300px; background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Misses `container`'s own box (y: 0..100) but reaches the child's
+        // vertical overhang (y: 0..300) — the same shape
+        // `a_culled_node_paints_its_children_at_the_scrolled_origin` uses for
+        // the analogous `paint_node`-level gate.
+        rinch_dom::paint::set_dirty_region(Some(peniko::kurbo::Rect::new(
+            0.0, 150.0, 300.0, 300.0,
+        )));
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint(&mut doc, &mut painter);
+        rinch_dom::paint::set_dirty_region(None);
+
+        assert_eq!(
+            pixel_at(&painter, 20, 200),
+            RED,
+            "the open y axis must let the child's overhang be visited and \
+             painted even though its clipping ancestor's own box misses the \
+             dirty region"
         );
     }
 

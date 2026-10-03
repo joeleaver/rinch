@@ -98,13 +98,48 @@
 //! is now its IFC content and owns no box. The guard stays wide regardless —
 //! see [`crate::node::Node::clips_overflow`].)
 //!
-//! ## The deviation this does not fix
+//! ## Per-axis clipping (#535)
 //!
-//! CSS clips per axis; rinch clips both axes with one rect. So an
-//! `overflow-x: clip; overflow-y: visible` box clips vertically too, which CSS
-//! would not — the direction hit testing has always erred in, now matched by
-//! paint rather than contradicted by it. Tracked as #535 and pinned as the
-//! known-wrong answer in `clip_predicate_tests`.
+//! CSS clips per axis; [`clip_shape`] used to clip both axes with one rect
+//! whenever either one asked for it, so an `overflow-x: clip; overflow-y:
+//! visible` box clipped vertically too, which CSS does not. [`Node::clips_overflow_x`](crate::node::Node::clips_overflow_x)
+//! and [`Node::clips_overflow_y`](crate::node::Node::clips_overflow_y) are the
+//! per-axis halves of the shared predicate — [`Node::clips_overflow`](crate::node::Node::clips_overflow)
+//! stays their `||`, "is there anything to push" — and [`clip_shape`] reads
+//! them separately: an axis that does not clip is left unbounded (extended by
+//! [`AXIS_UNBOUNDED`] in both directions) rather than cut at the box's own
+//! edge.
+//!
+//! Since `clip_shape` is the one derivation every consumer this module's doc
+//! lists asks (directly, or — for the hoisted entry's clip chain — through the
+//! `ClipRect` it builds), making the shape itself per-axis carries the fix to
+//! `layer_bounds`'s intersection, the stacking chain and the off-window cull
+//! for free. Three consumers that read the box's insets *directly*, in logical
+//! px, for their own reasons (`hit_testing`'s `check_children` gate and
+//! `RinchApp`'s two viewport walks, all three outside this crate; plus this
+//! crate's own `clip_chain_bounds`, which asks a *painted* ancestor's axes
+//! through [`crate::node::PaintedState::clips_x`]/`clips_y`) apply the same
+//! per-axis test by hand instead. The dirty-region subtree prune
+//! (`paints_nothing_without_visit`) and `paint_node`'s own "nothing to redraw,
+//! skip drawing but still recurse" branch both used to treat `clips_overflow()`
+//! as "children cannot reach outside this box" — true only when **both** axes
+//! clip; either now tests `clips_overflow_x() && clips_overflow_y()` instead,
+//! since a box open on one axis lets its children paint past it on exactly
+//! that axis.
+//!
+//! **Rounded corners with one axis open draw no curve at all — measured in
+//! Chrome 153, not assumed.** A clip open on one axis is an infinite strip
+//! bounded by two parallel lines on the other axis; there is no actual box
+//! corner inside it for a radius to round against; a `border-radius` on such a
+//! box still rounds the *border itself* (painted separately, before any clip
+//! bracket opens), but the overflow clip over content is square. So
+//! `clip_shape` hands back all-zero radii unless `clips_overflow_x() &&
+//! clips_overflow_y()`; `padding_box_radii` is asked only then.
+//!
+//! `clip_predicate_tests::overflow_x_clip_clips_without_the_other_axis_saying_anything`
+//! used to pin the old (wrong) per-box answer as a documented known-defect;
+//! fixing this flipped that assertion, and the comment explaining why it was
+//! wrong is gone with it.
 //!
 //! ## The box: padding, not border (#536)
 //!
@@ -135,6 +170,20 @@ use peniko::kurbo::{Rect, RoundedRectRadii};
 
 use crate::computed_style::LengthPercentageValue;
 use crate::node::Node;
+
+/// How far [`clip_shape`] extends the clip past the box on an axis whose own
+/// `overflow` computes to `visible` (#535) — large enough that no real
+/// document geometry reaches it, and small enough to stay well inside f32/f64
+/// precision through a transform. The same bound `layer_bounds::UNBOUNDED`
+/// already uses for "no limit here" (it cannot be reused directly: that
+/// constant is a whole `Rect`, this is one axis's half-extent).
+///
+/// `pub(crate)` so [`crate::paint::clip_chain_bounds`] — which computes a
+/// *painted* ancestor's clip by hand rather than calling [`clip_shape`]
+/// (its two frames, current and painted, do not both have a `Node` to ask) —
+/// extends the same way on an axis [`crate::node::PaintedState::clips_x`]/
+/// `clips_y` says did not clip.
+pub(crate) const AXIS_UNBOUNDED: f64 = 1.0e7;
 
 /// This box's **outer** `border-radius` — the border box's corners — resolved
 /// and scaled to painter units.
@@ -245,8 +294,18 @@ pub fn padding_box_radii(node: &Node, scale: f64) -> RoundedRectRadii {
 /// The radii come back alongside rather than baked in because the caller picks
 /// the shape: `paint_node` pushes a `RoundedRect` when any corner is rounded
 /// and a plain `Rect` otherwise, which is the branch it has always taken.
+///
+/// Per axis (#535): an axis whose own `overflow` computes to `visible` is left
+/// unbounded, extended by [`AXIS_UNBOUNDED`] on both sides rather than cut at
+/// the box's padding edge — CSS clips per axis, and `overflow-x: clip;
+/// overflow-y: visible` must not stop content escaping vertically. The radii
+/// come back all-zero unless **both** axes clip: a clip open on one axis is an
+/// infinite strip with no actual box corner inside it, so there is nothing for
+/// a radius to round against on that axis — measured in Chrome 153, not
+/// assumed (see the module doc).
 pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, RoundedRectRadii)> {
-    if !node.clips_overflow() {
+    let (clip_x, clip_y) = node.clip_axes();
+    if !clip_x && !clip_y {
         return None;
     }
     let w = node.layout.width as f64 * scale;
@@ -258,10 +317,24 @@ pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, Roun
         right as f64 * scale,
         bottom as f64 * scale,
     );
-    let ix = x + left;
-    let iy = y + top;
-    let iw = (w - left - right).max(0.0);
-    let ih = (h - top - bottom).max(0.0);
-    let radii = padding_box_radii(node, scale);
-    Some((Rect::new(ix, iy, ix + iw, iy + ih), radii))
+    let (x0, x1) = if clip_x {
+        let ix = x + left;
+        let iw = (w - left - right).max(0.0);
+        (ix, ix + iw)
+    } else {
+        (x - AXIS_UNBOUNDED, x + AXIS_UNBOUNDED)
+    };
+    let (y0, y1) = if clip_y {
+        let iy = y + top;
+        let ih = (h - top - bottom).max(0.0);
+        (iy, iy + ih)
+    } else {
+        (y - AXIS_UNBOUNDED, y + AXIS_UNBOUNDED)
+    };
+    let radii = if clip_x && clip_y {
+        padding_box_radii(node, scale)
+    } else {
+        RoundedRectRadii::new(0.0, 0.0, 0.0, 0.0)
+    };
+    Some((Rect::new(x0, y0, x1, y1), radii))
 }
