@@ -648,3 +648,27 @@ fn an_intraword_run_inside_another_run_of_its_character_round_trips() {
         ),
     );
 }
+
+#[test]
+fn the_run_that_lasts_longer_opens_outside() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    let d = doc(
+        &s,
+        vec![p(
+            &s,
+            vec![t(&s, "a", &[&bold, &it]), t(&s, " b", &[&bold])],
+        )],
+    );
+    assert_eq!(rt(&s, &d), "***a* b**");
+    // A hard break does not end the run that continues after it.
+    let d = doc(
+        &s,
+        vec![p(
+            &s,
+            vec![t(&s, "a", &[&bold, &it]), br(&s), t(&s, "b", &[&it])],
+        )],
+    );
+    assert_eq!(rt(&s, &d), "***a**\\\nb*");
+}
