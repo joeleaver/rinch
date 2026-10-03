@@ -36,6 +36,7 @@
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
+//! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
 //! exact, anything unlisted `0` (`support/perf_expect.rs`). A failure prints the
@@ -1727,6 +1728,92 @@ fn a_form_control_label_is_shaped_only_when_the_font_changes() {
             // no longer measured.
             (TaffyMeasureCalls, 1),
             (InlineBlockComputes, 2),
+        ],
+    );
+}
+
+// ── inline_font_family_resolves ─────────────────────────────────────────────
+
+/// A `<span>` that declares no `font-family` of its own inherits the root's
+/// unchanged — `inline_style_props` skips `fonts::parley_font_family`
+/// entirely for it (review of #1326's perf finding). `inline_font_family_resolves`
+/// is absent from the baseline below, i.e. `0`.
+#[test]
+fn a_spans_unchanged_font_family_resolves_nothing() {
+    let mut doc = doc_with("");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "");
+    let span = el(&mut doc, p, "span", "");
+    text(&mut doc, span, "hello");
+    let s = cold_frame(&mut doc);
+    expect(
+        "unchanged font-family span",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 12),
+            (FullStyleWalks, 3),
+            (TaffyStyleSyncs, 4),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A `<span style="font-family: monospace">` whose family differs from the
+/// root's resolves it exactly once per `build_inline_layout` rebuild (one for
+/// the measure, one for the painted layout) — the counter this PR adds to
+/// prove the skip above is not a tautology: something still fires when the
+/// family actually changes.
+#[test]
+fn a_spans_changed_font_family_resolves_once_per_rebuild() {
+    let mut doc = doc_with("");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "");
+    let span = el(&mut doc, p, "span", "");
+    doc.set_attribute(span, "style", "font-family: monospace");
+    text(&mut doc, span, "hello");
+    let s = cold_frame(&mut doc);
+    expect(
+        "changed font-family span",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 5),
+            (StyleNodesVisited, 12),
+            (StyleInvalidations, 1),
+            (FullStyleWalks, 3),
+            (TaffyStyleSyncs, 5),
+            (TaffyStyleChanges, 3),
+            (InlineFontFamilyResolves, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
         ],
     );
 }

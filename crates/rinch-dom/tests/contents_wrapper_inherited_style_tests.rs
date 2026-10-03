@@ -44,6 +44,7 @@
 
 #![cfg(feature = "software-renderer")]
 
+use parley::fontique::{Blob, FontInfoOverride, GenericFamily};
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
@@ -477,4 +478,297 @@ fn a_nested_wrappers_declaration_overrides_the_one_around_it() {
         0,
         "the inner wrapper's own colour must win over the outer's"
     );
+}
+
+// ── font-family (#677) ──────────────────────────────────────────────────────
+//
+// `inline_style_props` pushed every other inherited typography property and
+// never `font-family`, so a `display: inline` element's own family was
+// dropped on the floor and every text inside an IFC shaped in the root's
+// family regardless of what any span's computed style said — `<code>` inside
+// a paragraph being the canonical, shipped case (`rinch-components`' `Code`
+// and `Kbd` both declare `font-family: var(--rinch-font-family-monospace)`).
+// `same_inline_text_style_but_wrap`, the skip predicate a `display: contents`
+// wrapper is compared against, carried the matching hole.
+//
+// These fixtures use two bundled faces registered under their own blob ids
+// (the technique #1204's fixtures use), rather than a CSS generic keyword
+// resolved through the host's installed fonts, so the result does not depend
+// on what the test machine happens to have installed.
+
+const SANS_677: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-VariableFont_wght.ttf");
+const MONO_677: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+
+struct Faces677 {
+    sans: u64,
+    mono_generic: u64,
+    named: u64,
+}
+
+/// `sans-serif` is Space Grotesk, the `monospace` generic and a named family
+/// `"Probe677Named"` are both a second registration of Inter — two different
+/// blob ids, so a glyph run's `font().data.id()` says which one shaped it.
+fn document_677() -> (RinchDocument, Faces677) {
+    let mut doc = RinchDocument::new();
+    let collection = &mut doc.font_cx.collection;
+    let mut register = |data: &'static [u8], name: &str| {
+        let blob = Blob::new(std::sync::Arc::new(data));
+        let id = blob.id();
+        let families = collection.register_fonts(
+            blob,
+            Some(FontInfoOverride {
+                family_name: Some(name),
+                ..Default::default()
+            }),
+        );
+        (id, families.into_iter().map(|(f, _)| f).collect::<Vec<_>>())
+    };
+    let (sans, sans_families) = register(SANS_677, "Probe677Sans");
+    let (mono_generic, mono_families) = register(MONO_677, "Probe677MonoGeneric");
+    let (named, _) = register(MONO_677, "Probe677Named");
+    collection.set_generic_families(GenericFamily::SansSerif, sans_families.iter().copied());
+    collection.set_generic_families(GenericFamily::Monospace, mono_families.iter().copied());
+    (
+        doc,
+        Faces677 {
+            sans,
+            mono_generic,
+            named,
+        },
+    )
+}
+
+/// Every font blob a line of `div`'s IFC root draws a glyph with.
+fn blob_ids_677(doc: &RinchDocument, div: NodeId) -> std::collections::BTreeSet<u64> {
+    let layout = doc
+        .tree
+        .get(div.0)
+        .and_then(|n| n.text_layout.as_ref())
+        .expect("div is an IFC root");
+    let mut out = std::collections::BTreeSet::new();
+    for line in layout.layout.lines() {
+        for item in line.items() {
+            if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                out.insert(run.run().font().data.id());
+            }
+        }
+    }
+    out
+}
+
+/// `before <HOST>MIDDLE</HOST> after`, with `HOST`'s declaration under test.
+/// Returns the set of blob ids every glyph run in the container's IFC used.
+fn ids_for_677(host: Host, decl: &str) -> (std::collections::BTreeSet<u64>, Faces677) {
+    let (mut doc, faces) = document_677();
+    let body = doc.body();
+    let c = el(
+        &mut doc,
+        body,
+        "div",
+        "width: 400px; line-height: 30px; font-size: 24px; color: black; \
+         font-family: sans-serif",
+    );
+    txt(&mut doc, c, "before ");
+    let style = match host {
+        Host::Wrapper => format!("display: contents; {decl}"),
+        Host::Span => decl.to_string(),
+        Host::None => "display: contents".to_string(),
+    };
+    let w = el(&mut doc, c, "span", &style);
+    txt(&mut doc, w, "MIDDLE");
+    txt(&mut doc, c, " after");
+    doc.resolve_layout(VW, VH);
+    (blob_ids_677(&doc, c), faces)
+}
+
+/// **The primary repro: a plain `<span>`, no wrapper at all.** This is the
+/// bug exactly as filed — `inline_style_props` is the only producer in play.
+/// At HEAD the span's text shapes with the root's `sans` face and this fails;
+/// fixed, it shapes with `named`.
+#[test]
+fn a_spans_own_font_family_is_not_ignored() {
+    let (ids, faces) = ids_for_677(Host::Span, "font-family: \"Probe677Named\"");
+    assert!(
+        ids.contains(&faces.sans),
+        "the root's own text (\"before \"/\" after\") must still be in the \
+         root's face: {ids:?}"
+    );
+    assert!(
+        ids.contains(&faces.named),
+        "the span's own font-family must reach its text: got {ids:?}, \
+         wanted the named face {} among them (#677)",
+        faces.named
+    );
+}
+
+/// A **generic** keyword on a span — not a named family — must resolve
+/// through its own generic slot, not the root's.
+#[test]
+fn a_generic_font_family_on_a_span_resolves_through_its_own_slot() {
+    let (ids, faces) = ids_for_677(Host::Span, "font-family: monospace");
+    assert!(ids.contains(&faces.sans), "root text: {ids:?}");
+    assert!(
+        ids.contains(&faces.mono_generic),
+        "`font-family: monospace` on a span must resolve to the `monospace` \
+         generic's face, not fall through to the root's `sans-serif`: {ids:?}"
+    );
+}
+
+/// `wrapper`, `span` and `none`, all built as siblings in **one** document so
+/// their blob ids are comparable (a fresh `RinchDocument` mints fresh blob ids
+/// on every `Blob::new`, even for byte-identical data, so two separate
+/// documents' ids are never comparable to each other).
+fn ids_for_three_677(
+    decl: &str,
+) -> (
+    std::collections::BTreeSet<u64>,
+    std::collections::BTreeSet<u64>,
+    std::collections::BTreeSet<u64>,
+    Faces677,
+) {
+    fn container(doc: &mut RinchDocument, body: NodeId, host: Host, decl: &str) -> NodeId {
+        let c = el(
+            doc,
+            body,
+            "div",
+            "width: 400px; line-height: 30px; font-size: 24px; color: black; \
+             font-family: sans-serif",
+        );
+        txt(doc, c, "before ");
+        let style = match host {
+            Host::Wrapper => format!("display: contents; {decl}"),
+            Host::Span => decl.to_string(),
+            Host::None => "display: contents".to_string(),
+        };
+        let w = el(doc, c, "span", &style);
+        txt(doc, w, "MIDDLE");
+        txt(doc, c, " after");
+        c
+    }
+    let (mut doc, faces) = document_677();
+    let body = doc.body();
+    let wrapper_div = container(&mut doc, body, Host::Wrapper, decl);
+    let span_div = container(&mut doc, body, Host::Span, decl);
+    let none_div = container(&mut doc, body, Host::None, decl);
+    doc.resolve_layout(VW, VH * 3.0);
+    (
+        blob_ids_677(&doc, wrapper_div),
+        blob_ids_677(&doc, span_div),
+        blob_ids_677(&doc, none_div),
+        faces,
+    )
+}
+
+/// The `display: contents` wrapper case — `same_inline_text_style_but_wrap`'s
+/// matching hole. A boxless wrapper's `font-family` must reach its text
+/// exactly as a real `<span>`'s does.
+#[test]
+fn a_wrappers_font_family_reaches_its_text() {
+    let (wrapper, span, none, faces) = ids_for_three_677("font-family: \"Probe677Named\"");
+    assert!(
+        span.contains(&faces.named) && !none.contains(&faces.named),
+        "the fixture is not discriminating: span={span:?}, none={none:?}"
+    );
+    assert_eq!(
+        wrapper, span,
+        "a boxless wrapper's font-family must reach its text exactly as an \
+         inline box's does: wrapper={wrapper:?}, <span>={span:?}, \
+         undeclared={none:?}"
+    );
+}
+
+/// Two wrappers deep, against the same real-`<span>` oracle, all three built
+/// as siblings in one document for the same reason [`ids_for_three_677`] is.
+#[test]
+fn a_wrappers_font_family_reaches_a_nested_wrappers_text() {
+    fn container(doc: &mut RinchDocument, body: NodeId, host: Host) -> NodeId {
+        let c = el(
+            doc,
+            body,
+            "div",
+            "width: 400px; line-height: 30px; font-size: 24px; color: black; \
+             font-family: sans-serif",
+        );
+        txt(doc, c, "before ");
+        let outer = el(doc, c, "span", "display: contents");
+        let style = match host {
+            Host::Wrapper => "display: contents; font-family: \"Probe677Named\"".to_string(),
+            Host::Span => "font-family: \"Probe677Named\"".to_string(),
+            Host::None => "display: contents".to_string(),
+        };
+        let inner = el(doc, outer, "span", &style);
+        txt(doc, inner, "MIDDLE");
+        txt(doc, c, " after");
+        c
+    }
+    let (mut doc, faces) = document_677();
+    let body = doc.body();
+    let wrapper_div = container(&mut doc, body, Host::Wrapper);
+    let span_div = container(&mut doc, body, Host::Span);
+    let none_div = container(&mut doc, body, Host::None);
+    doc.resolve_layout(VW, VH * 3.0);
+    let wrapper = blob_ids_677(&doc, wrapper_div);
+    let span = blob_ids_677(&doc, span_div);
+    let none = blob_ids_677(&doc, none_div);
+    assert!(
+        span.contains(&faces.named) && !none.contains(&faces.named),
+        "the fixture is not discriminating: span={span:?}, none={none:?}"
+    );
+    assert_eq!(
+        wrapper, span,
+        "font-family nested two wrappers deep: wrapper={wrapper:?}, \
+         <span>={span:?}, undeclared={none:?}"
+    );
+}
+
+/// The exact `<code>` mark stack the editor's default stylesheet declares
+/// (`rinch-editor-view/src/styles.rs`): `<code>` inside a paragraph is the
+/// canonical case the issue names. Several of its named fallbacks
+/// (`"Liberation Mono"`, notably) are real fonts on common Linux hosts, so
+/// this does not assert *which* face is picked — only that the span's text no
+/// longer shapes in the same face as the surrounding paragraph, which is
+/// exactly the bug: at HEAD every run in the container used `faces.sans`.
+#[test]
+fn the_editors_code_mark_stack_resolves_on_the_span_not_the_root() {
+    let decl = "font-family: ui-monospace, \"SF Mono\", Menlo, Consolas, \
+                \"Liberation Mono\", monospace";
+    let (ids, faces) = ids_for_677(Host::Span, decl);
+    assert!(ids.contains(&faces.sans), "root text: {ids:?}");
+    assert!(
+        ids.len() > 1,
+        "a <code> mark's stack must shape its own text in a face other than \
+         the surrounding paragraph's: got only {ids:?}"
+    );
+}
+
+/// `text-overflow: ellipsis` takes a cheap per-line rebuild only when
+/// `ellipsis_rebuild_is_faithful` — which reads `same_inline_text_style_but_wrap`
+/// — says every run shares the root's text style; that rebuild strips spans
+/// down to the root's own style (#1091's "every run in the root's text
+/// style"). A span with its own `font-family` is therefore not faithful and
+/// must take the safe "whole text, flat" rebuild instead of the fast one,
+/// which would otherwise silently redraw the span's text in the root's face.
+/// This does not assert which path was taken (that is `ellipsis_rebuild_is_faithful`'s
+/// own business) — only that painting does not panic and the container still
+/// paints *some* ink, i.e. the span is not simply dropped by whichever path
+/// ellipsis truncation takes with a per-span font-family in play.
+#[test]
+fn a_spans_font_family_does_not_break_ellipsis_truncation() {
+    let (mut doc, _faces) = document_677();
+    let body = doc.body();
+    let c = el(
+        &mut doc,
+        body,
+        "div",
+        "width: 120px; line-height: 30px; font-size: 24px; color: black; \
+         font-family: sans-serif; white-space: nowrap; overflow: hidden; \
+         text-overflow: ellipsis",
+    );
+    txt(&mut doc, c, "before ");
+    let w = el(&mut doc, c, "span", "font-family: \"Probe677Named\"");
+    txt(&mut doc, w, "MIDDLE and then some more text to overflow");
+    txt(&mut doc, c, " after");
+    doc.resolve_layout(VW, VH);
+    let px = pixels(&mut doc);
+    assert!(ink(&px) > 0, "ellipsis truncation must still paint text");
 }

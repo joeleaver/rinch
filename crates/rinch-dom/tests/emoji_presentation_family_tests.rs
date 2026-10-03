@@ -301,8 +301,22 @@ fn the_ellipsis_rebuild_takes_the_same_rule() {
 /// Every ranged parley layout rinch builds pushes its families through
 /// `fonts::TextFamily`, so a new site cannot shape an emoji in a generic's
 /// text face again. Scans the non-test sources of `rinch-dom` and `rinch` for
-/// a `FontFamily` style property pushed anywhere else; the IFC's emoji span
-/// is the one allowed outside `fonts.rs`.
+/// a `FontFamily` style property pushed anywhere else; two lines in `ifc.rs`
+/// are allowed:
+///
+/// - the IFC's `emoji_span`, which is a full [`crate::fonts::TextFamily`]
+///   (minus the non-emoji default, already on the builder) over one
+///   emoji-presentation cluster;
+/// - `inline_style_props`'s per-span push (#677), which resolves through
+///   [`crate::fonts::parley_font_family`] — the *same* non-emoji-aware
+///   resolution `build_inline_layout` uses for the IFC root's own family
+///   (there, as a `TextStyle::font_family` struct field, which is why it
+///   does not show up in this grep at all). Neither pushes anything
+///   emoji-aware: an emoji-presentation cluster inside such a span is still
+///   shaped with the *root's* `emoji_family`, by design (see
+///   [`crate::fonts::parley_font_family`]'s doc and the #677 comment on
+///   `inline_style_props`), so this scan's point — nobody re-introduces a
+///   generic's whole text face winning an emoji — still holds.
 #[test]
 fn no_source_pushes_a_font_family_by_hand() {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -330,9 +344,21 @@ fn no_source_pushes_a_font_family_by_hand() {
         }
         let text = std::fs::read_to_string(file).unwrap();
         let text = text.split("#[cfg(test)]").next().unwrap();
-        for (i, line) in text.lines().enumerate() {
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
             if line.contains("StyleProperty::FontFamily(") || line.contains("P::FontFamily(") {
                 if name == "ifc.rs" && line.contains("emoji_span") {
+                    allowed += 1;
+                    continue;
+                }
+                // `inline_style_props`'s push: the family comes from the next
+                // line's call to `parley_font_family` over the element's own
+                // `font_family`, not from `fonts::TextFamily`.
+                let next = lines.get(i + 1).copied().unwrap_or("");
+                if name == "ifc.rs"
+                    && next.contains("parley_font_family")
+                    && next.contains("computed.font_family")
+                {
                     allowed += 1;
                     continue;
                 }
@@ -341,8 +367,9 @@ fn no_source_pushes_a_font_family_by_hand() {
         }
     }
     assert_eq!(
-        allowed, 1,
-        "the IFC's emoji span is where the scan expects it"
+        allowed, 2,
+        "the IFC's emoji span and inline_style_props's per-span push (#677) \
+         are where the scan expects them"
     );
     assert!(offenders.is_empty(), "{offenders:#?}");
 }
