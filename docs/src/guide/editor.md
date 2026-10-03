@@ -211,6 +211,68 @@ numbers (on Taffy 0.12 a row of four `colspan = 20000` cells panicked; 0.14 clam
 the axis at 10000 tracks); there a short row's cells are still lifted into the row
 before it, on the web as well as the desktop.
 
+### Markdown
+
+Under the `markdown` feature, `serialize::doc_to_markdown(&doc)` writes a document
+as Markdown and `doc_from_markdown(&schema, md)` / `doc_from_markdown_strict(&schema,
+md)` read it back. Markdown is for people and language models to read and write; the
+durable format is still the `DocNode` shape above.
+
+The dialect is CommonMark with GFM strikethrough and pipe tables (read by
+pulldown-cmark), plus a small, exact set of inline HTML for what Markdown has no
+syntax for:
+
+| model | written as | also read |
+| --- | --- | --- |
+| `bold`, `italic`, `strike` | `**…**`, `*…*`, `~~…~~`; `<strong>`, `<em>`, `<s>` where a delimiter would not flank | `<b>`, `<i>`, `<del>` |
+| `underline` | `<u>…</u>` | |
+| `highlight` | `<mark>…</mark>`, `<mark style="background-color:C">…</mark>` | |
+| `text_color` | `<span style="color:C">…</span>` | |
+| `subscript`, `superscript` | `<sub>…</sub>`, `<sup>…</sup>` | |
+| `link`, `image`, `code`, `hard_break` | Markdown syntax; a hard break is `<br>` at a textblock's end and in a heading | `<br>`, `<br/>` |
+| `table` | a GFM pipe table when it has one header row, no merged cells and one inline paragraph per cell; otherwise an HTML `<table>` block | |
+
+`C` is a colour `is_safe_css_color` accepts (the HTML paste path's check). The writer
+writes a colour only when it passes: a `highlight` with any other colour is written as
+a bare `<mark>`, and a `text_color` with one is not written at all, so a colour that
+arrived unchecked (a `DocNode`, a collaboration peer) never reaches the output. Tag
+names are case-insensitive; the `style` attribute must be lowercase and quoted (either
+quote) and hold that one declaration.
+
+**What round-trips.** A document of the starter kit's marks and nodes written with
+`doc_to_markdown` reads back with `doc_from_markdown_strict` as the same document, and
+writing it again changes nothing — except for the losses below.
+`tests/markdown_round_trip_fuzz.rs` holds the writer to that over seeded random
+documents. Text is escaped so it reads back as text: Markdown punctuation, a block
+marker at a line's start, `<` (a tag or an autolink), an entity-shaped `&`, a trailing
+`#` run in a heading, and a line break inside text (written `&#10;`).
+
+**Strict reading.** `doc_from_markdown` is lenient: what it cannot represent (other
+raw HTML, unsafe URLs, footnotes, task-list markers) it drops or keeps as text.
+`doc_from_markdown_strict` parses the same way but fails with
+`MarkdownError::Unsupported { construct, line, source }` on the first construct the
+lenient read would drop or degrade, naming it with a `Construct` (`InlineHtml`,
+`HtmlBlock`, `UnmatchedTag`, `Footnote`, `TaskList`, `UnsafeLink`, `UnsafeImage`,
+`UnsupportedMark`, `Other`; the enum is `#[non_exhaustive]`) and its 1-based line.
+`MarkdownError::Invalid` carries a schema validation error. Inside an HTML `<table>`
+block strict refuses another tag, stray text, an unsafe `href` or `src`
+(`UnsafeLink` / `UnsafeImage`), and any attribute the import does not keep — a `style`
+other than a safe colour or `text-align`, a `colspan` above 1000, a `class`, an event
+handler (`HtmlBlock`). What strict accepts, it parses exactly as the lenient reader
+does.
+
+**Known losses.**
+- Whitespace at the start or end of a textblock or line is stripped (CommonMark), and
+  whitespace at the edge of a bold, italic, strike or link run is written outside the
+  run: the text round-trips and that whitespace leaves the mark.
+- Task lists are not written (#1365): `doc_to_markdown` drops them.
+- A code block's language is lost in a table written as HTML; two adjacent lists or
+  blockquotes of one type merge; empty paragraphs are dropped; a link `href`
+  containing `\` before punctuation or an entity is decoded on read (#1366).
+- A line break inside inline code becomes a space (a code span is literal).
+- A paragraph's or heading's `indent` is not written, and a link's `target` and a
+  textblock's `text_align` only in a table cell.
+
 ## The transform engine
 
 Every editing operation is a `Transaction` carrying one or more `Step`s. Steps are
