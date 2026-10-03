@@ -119,6 +119,19 @@ define_counters! {
     TaffyStyleChanges = "taffy_style_changes",
 
     // ── Text ───────────────────────────────────────────────────────────
+    /// `RinchDocument::inline_style_props` resolved a span's `font-family`
+    /// through `fonts::parley_font_family` (review of #1326): a generic
+    /// expansion plus a cache lookup and an owned `Cow` clone even on a hit,
+    /// which is not free per span. Pushed only when the element's own
+    /// computed `font_family` differs from the enclosing IFC context's —
+    /// `font-family` is inherited, so an element that does not declare its
+    /// own already carries the right value and needs no per-span override —
+    /// so this counts resolutions actually done, never the common
+    /// unchanged-family case. `perf_regression_scenarios.rs`'s
+    /// `inline_font_family_resolve_scenarios` pins both halves: zero for a
+    /// document of spans that don't change the family, and one per span
+    /// that does.
+    InlineFontFamilyResolves = "inline_font_family_resolves",
     /// Parley layouts built by the Taffy measure function for an IFC root.
     ShapeMeasureIfc = "shape_measure_ifc",
     /// Parley layouts built by the Taffy measure function for a text leaf.
