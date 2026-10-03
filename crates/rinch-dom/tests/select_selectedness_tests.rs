@@ -499,3 +499,25 @@ fn the_most_recent_write_wins_programmatic_write_then_pick() {
     doc.set_attribute(o[0], "selected", "");
     assert_eq!(selected(&doc, sel), Some(0), "fresher again");
 }
+
+/// A live **deselect** is a write too (#757's review): removing `selected` from
+/// the option the select's `value` attribute names retires that attribute, so
+/// the select falls back to its first non-disabled option, as Chrome's reset
+/// does. Option 0 is disabled so the fallback (option 1) differs from both the
+/// deselected option and option 0.
+///
+/// Red before the fix: the `value` attribute stayed fresh and kept answering 2.
+#[test]
+fn a_live_deselect_retires_the_selects_value_attribute() {
+    let (mut doc, sel, o) = select_with(3, &[0]);
+    doc.set_attribute(o[2], "selected", "");
+    doc.set_attribute(sel, "value", "v2");
+    assert_eq!(selected(&doc, sel), Some(2), "precondition");
+
+    doc.remove_attribute(o[2], "selected");
+    assert_eq!(
+        selected(&doc, sel),
+        Some(1),
+        "the deselect is the latest write; the select resets to its first enabled option"
+    );
+}

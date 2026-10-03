@@ -393,7 +393,7 @@ fn resolve_selected_index(
 ///
 /// A **live** write (the only kind that reaches this function; see
 /// [`apply_selectedness_on_attach`] for the other) also clears the owning
-/// select's entry in [`NodeTree::select_value_fresh`] when `on` is `true`
+/// select's entry in [`NodeTree::select_value_fresh`], whichever its sign
 /// (#757): a `selected` attribute set *right now*, on an option already
 /// attached to its select, is a fresher selection write than whatever that
 /// select's own `value` attribute last recorded, so it outranks it —
@@ -429,11 +429,14 @@ fn set_option_selectedness_impl(tree: &mut NodeTree, option_id: RawNodeId, on: b
     // The closed select paints the selected option's label; the option itself
     // has no box (`display: none`), so the select is what changed on screen.
     tree.mark_paint_dirty(select_id);
-    if !on {
-        return;
-    }
+    // A live write of either sign is the most recent write, so it retires the
+    // select's own `value` attribute: a deselect with nothing else selected
+    // falls through to the default, as a browser's reset does.
     if live {
         tree.select_value_fresh.remove(&select_id);
+    }
+    if !on {
+        return;
     }
     let mut others = Vec::new();
     collect_option_ids(tree, select_id, &mut others);
