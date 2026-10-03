@@ -2381,33 +2381,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             return;
         }
 
-        // If a render surface is focused, route keyboard events to it
-        if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
-            let key_data = rinch::render_surface::SurfaceKeyData {
-                key: event.key(),
-                code: event.code(),
-                ctrl: event.ctrl_key() || event.meta_key(),
-                shift: event.shift_key(),
-                alt: event.alt_key(),
-                meta: event.meta_key(),
-            };
-            rinch::render_surface::dispatch_surface_event(
-                surface_id,
-                rinch::render_surface::SurfaceEvent::KeyDown(key_data),
-            );
-            // Also dispatch TextInput for printable characters
-            let key = event.key();
-            if key.len() == 1 && !event.ctrl_key() && !event.meta_key() && !event.alt_key() {
-                rinch::render_surface::dispatch_surface_event(
-                    surface_id,
-                    rinch::render_surface::SurfaceEvent::TextInput(key),
-                );
-            }
-            event.prevent_default();
-            event.stop_propagation();
-            return;
-        }
-
+        // 1. The document-level interceptor always sees the key first, even
+        //    while a render surface holds focus — matching desktop (issue
+        //    #484: the keyup leg already reached it unconditionally, but
+        //    keydown used to skip it entirely whenever a surface was
+        //    focused) and letting a host's own `set_keyboard_interceptor`
+        //    claim an app-global chord before a focused canvas ever sees it
+        //    (issue #482).
         let key_data = events::KeyEventData::new(event.key(), event.code()).with_modifiers(
             event.ctrl_key() || event.meta_key(),
             event.shift_key(),
@@ -2417,9 +2397,51 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();
-        } else if key_data.key == "Tab"
-            && handle_trapped_tab(&browser_doc_for_tab, event.shift_key())
-        {
+            return;
+        }
+
+        // 2. If a render surface is focused, forward KeyDown + TextInput for
+        //    input (always — unaffected by whether the key is "claimed"
+        //    below) and ask the surface's own `set_key_handler` whether this
+        //    key stops here.
+        //
+        //    Issue #482: this used to call `preventDefault`/
+        //    `stopPropagation` unconditionally, so the moment a canvas took
+        //    focus every key — including ones the surface did nothing with —
+        //    went deaf to the host's own `window`-level keybindings and the
+        //    browser's own shortcuts (reload, find, …). The default, with no
+        //    `set_key_handler` registered, is "claims nothing": an unclaimed
+        //    key now falls through to the Tab-trap/activation/submit handling
+        //    below and keeps propagating to `window` and the browser.
+        if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
+            let surface_key_data = rinch::render_surface::SurfaceKeyData {
+                key: event.key(),
+                code: event.code(),
+                ctrl: event.ctrl_key() || event.meta_key(),
+                shift: event.shift_key(),
+                alt: event.alt_key(),
+                meta: event.meta_key(),
+            };
+            rinch::render_surface::dispatch_surface_event(
+                surface_id,
+                rinch::render_surface::SurfaceEvent::KeyDown(surface_key_data.clone()),
+            );
+            // Also dispatch TextInput for printable characters
+            let key = event.key();
+            if key.len() == 1 && !event.ctrl_key() && !event.meta_key() && !event.alt_key() {
+                rinch::render_surface::dispatch_surface_event(
+                    surface_id,
+                    rinch::render_surface::SurfaceEvent::TextInput(key),
+                );
+            }
+            if rinch::render_surface::dispatch_surface_key_event(surface_id, &surface_key_data) {
+                event.prevent_default();
+                event.stop_propagation();
+                return;
+            }
+        }
+
+        if key_data.key == "Tab" && handle_trapped_tab(&browser_doc_for_tab, event.shift_key()) {
             // `trap_focus` (#474): an open overlay confines Tab to itself. The
             // browser would otherwise walk straight out of the dialog and into
             // the page behind it, so the move is made here and its own default

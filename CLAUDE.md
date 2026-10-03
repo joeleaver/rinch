@@ -3482,7 +3482,8 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `right_click` | Simulate a right-click at (x, y) |
 | `mouse_down` / `mouse_move` / `mouse_up` | The pointer primitives. **This trio is the only way to drive a drag** — `click` cannot, so any test of the DnD suite or a scrollbar thumb needs these. `mouse_down`'s `modifiers` stay held (through moves: a Shift- or Alt-drag) until the next `mouse_up`, which restores the state from before that press after its release; `mouse_up` takes its own `modifiers` for the release |
 | `scroll` | Scroll a container at (x, y) |
-| `key_press` | Press a single key (with modifiers), as distinct from `type_text`'s literal text |
+| `key_press` | Press and release a single key (with modifiers) — one physical keystroke, as distinct from `type_text`'s literal text. Issue #485: now sends a matching `KeyUp` after the `KeyDown`, so a release-aware app (a document-level interceptor, a registered node's `on_key`) sees both halves, not just the press |
+| `key_down` / `key_up` | The keyboard primitives, mirroring `mouse_down`/`mouse_up` (issue #485) — **the only way to hold a key** across other commands ("is W still held", a chord that ends on release, a drag armed by a key), which `key_press`'s single press+release cannot drive. `key_up`'s `key` (and modifiers) should match the `key_down` it releases so the press and release pair up by the same string a real keystroke's would |
 | `get_caret_position` | A caret point (`x`, `y`) for a `byte_offset`, in logical px in the same frame as `absolute` (#421). It can differ from where the caret is painted (a vertically centred `<input>`, password bullets, a padded element's text, a textarea's wrap width) — tracked in #1136 |
 | `get_glyph_bounds` | The box of the **one** glyph cluster at a given `byte_offset` in a text node — not every glyph; logical px in the same frame as `absolute` (#421), with the same painted-geometry caveat (#1136) |
 | `disconnect` | Disconnect from the app without closing it |
@@ -4059,7 +4060,7 @@ Rinch owns the window. Your renderer submits frames into a `RenderSurface` compo
 
 | Type | Purpose |
 |------|---------|
-| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()` |
+| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()`, `set_key_handler()` |
 | `RenderSurface` | Component — `RenderSurface { surface: Some(handle) }` |
 | `SurfaceWriter` | Thread-safe CPU pixel submission (`Send + Sync + Clone`) |
 | `GpuTextureRegistrar` | Thread-safe GPU texture registration (`Send + Sync + Clone`) |
@@ -4083,6 +4084,34 @@ registrar.notify_frame_ready();
 
 rsx! { RenderSurface { surface: Some(surface), style: "flex: 1;" } }
 ```
+
+**A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
+still receives every `KeyDown`/`KeyUp` while the surface is focused — that delivery is
+unaffected. `set_key_handler(|key: &SurfaceKeyData| -> bool)` answers a separate, additive
+question asked *after*: should this key stop at the surface, or continue past it? Leave it
+unset (the default) and the surface claims nothing, so a host's own `window`-level
+keybindings (and, on the web, the browser's own shortcuts — reload, find, …) keep working
+the moment a canvas takes focus, and on desktop so do DevTools (F12), inspect mode (Alt+I)
+and Tab. Return `true` only for a key the surface genuinely uses (WASD steering a
+character, Space to jump):
+
+```rust
+surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space"));
+```
+
+Before this existed, a focused surface swallowed **every** key unconditionally — on the web
+via `preventDefault()`/`stopPropagation()` on every `keydown`, on desktop by never falling
+through to the same DevTools/inspect/Tab handling an unfocused canvas always had. The
+document-level keyboard interceptor (`rinch_core::events::set_keyboard_interceptor`) is
+unaffected either way: it already saw every key before a focused surface did, on both
+backends, and still does — a host that wants an app-global chord to win regardless of
+surface focus should register it there rather than through `set_key_handler`.
+
+**On `rinch-web`, an unclaimed key also keeps the browser's own default action** — no
+longer `preventDefault()`ed just because the surface is focused, matching how an unfocused
+`<canvas>` already behaves. Space, PageUp/Down and the arrow keys can scroll the page, and
+Tab leaves the canvas for the next tab stop. A web game that steers with any of those must
+claim them through `set_key_handler`, or the page scrolls under it.
 
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 

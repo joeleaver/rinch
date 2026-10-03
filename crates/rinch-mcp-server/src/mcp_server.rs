@@ -144,6 +144,43 @@ pub struct KeyPressParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct KeyDownParams {
+    /// Key name, same names as key_press.
+    pub key: String,
+    /// Shift modifier
+    #[serde(default)]
+    pub shift: bool,
+    /// Ctrl modifier
+    #[serde(default)]
+    pub ctrl: bool,
+    /// Alt modifier
+    #[serde(default)]
+    pub alt: bool,
+    /// Modifier names as an array. Same names as key_press.
+    #[serde(default)]
+    pub modifiers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct KeyUpParams {
+    /// Key name, same names as key_press. Must match the key_down this
+    /// releases so the press and release pair up.
+    pub key: String,
+    /// Shift modifier
+    #[serde(default)]
+    pub shift: bool,
+    /// Ctrl modifier
+    #[serde(default)]
+    pub ctrl: bool,
+    /// Alt modifier
+    #[serde(default)]
+    pub alt: bool,
+    /// Modifier names as an array. Same names as key_press.
+    #[serde(default)]
+    pub modifiers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct LaunchAppParams {
     /// Cargo package name to run (e.g. "hello-rinch-dom" or "ui-zoo-desktop")
     pub package: String,
@@ -505,6 +542,65 @@ impl RinchMcpServer {
             }
         }
         self.forward_json_command(DebugCommandKind::KeyPress {
+            key: params.0.key,
+            shift,
+            ctrl,
+            alt,
+            modifiers: params.0.modifiers,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Press a key WITHOUT releasing it. Use with key_up for keys that must stay held across other commands (checking whether a game still sees it held, a chord that ends on release). key_press is a complete press+release and is what you want for an ordinary keystroke."
+    )]
+    async fn key_down(
+        &self,
+        params: Parameters<KeyDownParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut shift = params.0.shift;
+        let mut ctrl = params.0.ctrl;
+        let mut alt = params.0.alt;
+        if let Some(err) = unknown_modifier_error(&params.0.modifiers) {
+            return Ok(err);
+        }
+        for name in &params.0.modifiers {
+            match name.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => ctrl = true,
+                "shift" => shift = true,
+                "alt" | "option" => alt = true,
+                _ => {}
+            }
+        }
+        self.forward_json_command(DebugCommandKind::KeyDown {
+            key: params.0.key,
+            shift,
+            ctrl,
+            alt,
+            modifiers: params.0.modifiers,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Release a key previously held with key_down. The key (and modifiers) should match the key_down call so the press and release pair up."
+    )]
+    async fn key_up(&self, params: Parameters<KeyUpParams>) -> Result<CallToolResult, McpError> {
+        let mut shift = params.0.shift;
+        let mut ctrl = params.0.ctrl;
+        let mut alt = params.0.alt;
+        if let Some(err) = unknown_modifier_error(&params.0.modifiers) {
+            return Ok(err);
+        }
+        for name in &params.0.modifiers {
+            match name.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => ctrl = true,
+                "shift" => shift = true,
+                "alt" | "option" => alt = true,
+                _ => {}
+            }
+        }
+        self.forward_json_command(DebugCommandKind::KeyUp {
             key: params.0.key,
             shift,
             ctrl,
