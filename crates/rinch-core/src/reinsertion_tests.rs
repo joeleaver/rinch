@@ -939,3 +939,232 @@ fn the_capture_walk_is_bounded_by_the_discarded_subtree_not_the_document() {
         "positive control: the walk must call get_children at least once"
     );
 }
+
+// ── adversarial review of PR #1360: a nested `for`'s rows are NOT captured ──
+
+/// A `for` loop nested inside a `show_dom` branch builds its rows through a
+/// *child* `RenderScope` the `for` machinery creates internally
+/// (`for_loop.rs`'s `RenderScope::new(doc, parent_id)` per item) — not through
+/// the branch's own scope. `collect_captured_descendants` (PR #1360, issue
+/// #732) asks only the branch's own `scope.created(..)` of each descendant,
+/// so every row built by that child scope answers `false` and is classified
+/// as "captured" even though nothing outside the branch is holding it. The
+/// walk stops descending there (by design, for genuine captures) and the row
+/// is DETACHED instead of discarded. Each hide->show cycle creates a fresh
+/// set of rows (through a fresh for_each_dom_typed/child_scope) and detaches
+/// (not discards) the old set, so the old rows are never freed: a leak on a
+/// retiring backend (rinch-web), exactly the #719 shape PR #1360 was
+/// supposed to have fully closed for nested reactive content.
+#[test]
+fn a_nested_for_inside_a_branch_does_not_grow_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let visible = Signal::new(false);
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            for_each_dom_typed(
+                s,
+                &wrap,
+                || vec![1u32, 2u32, 3u32],
+                |n: &u32| n.to_string(),
+                |n: u32, rs: &mut RenderScope| {
+                    let row = rs.create_element("li");
+                    let text = rs.create_text(&n.to_string());
+                    row.append_child(&text);
+                    row
+                },
+            );
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    let delta = growth(&doc, |i| visible.set(i % 2 == 0), 200);
+    assert_eq!(
+        delta, 0,
+        "#732 regression: a `for` nested inside a branch must not grow the \
+         document when the branch hides and re-shows — leaked {delta} nodes \
+         over 198 toggles (its rows were detached as 'captured' rather than \
+         discarded with the rest of the branch)"
+    );
+}
+
+/// Same mechanism as the `for` case above, but with a nested
+/// `reactive_component_dom` instead of a `for` loop — `rsx!`'s PascalCase
+/// component sites build through their own `RenderScope` the same way
+/// (`reactive_component_dom`'s `render_fn` runs inside a fresh
+/// `current_scope`), so a plain `if open { Card {} }`-shaped nesting leaks
+/// the same way.
+#[test]
+fn a_nested_component_inside_a_branch_does_not_grow_the_document() {
+    use crate::dom::reactive_component_dom;
+
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let visible = Signal::new(false);
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            reactive_component_dom(s, &wrap, |inner: &mut RenderScope| {
+                let node = inner.create_element("article");
+                let text = inner.create_text("hi");
+                node.append_child(&text);
+                node
+            });
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    let delta = growth(&doc, |i| visible.set(i % 2 == 0), 200);
+    assert_eq!(
+        delta, 0,
+        "#732 regression: a component nested inside a branch must not grow \
+         the document when the branch hides and re-shows — leaked {delta} \
+         nodes over 198 toggles"
+    );
+}
+
+// ── #732 review: match_dom twin, release_scratch_container, ordering ───────
+
+/// `match_dom`'s twin of the two leaks above: an arm nested inside the match
+/// builds a `for` loop (and, separately, a re-rendering component) through
+/// its own child scope.
+#[test]
+fn a_nested_for_inside_a_match_arm_does_not_grow_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let arm = Signal::new(0usize);
+    match_dom(
+        &mut sc,
+        &body,
+        move || arm.get(),
+        vec![Box::new(|s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            for_each_dom_typed(
+                s,
+                &wrap,
+                || vec![1u32, 2u32, 3u32],
+                |n: &u32| n.to_string(),
+                |n: u32, rs: &mut RenderScope| {
+                    let row = rs.create_element("li");
+                    let text = rs.create_text(&n.to_string());
+                    row.append_child(&text);
+                    row
+                },
+            );
+            wrap
+        }) as Box<dyn Fn(&mut RenderScope) -> NodeHandle>],
+    );
+
+    let delta = growth(&doc, |i| arm.set(i % 2), 200);
+    assert_eq!(
+        delta, 0,
+        "#732 regression: a `for` nested inside a match arm must not grow \
+         the document — leaked {delta} nodes over 198 switches"
+    );
+}
+
+/// The `reactive_component_dom` twin of the same shape, nested inside a
+/// `match` arm.
+#[test]
+fn a_nested_component_inside_a_match_arm_does_not_grow_the_document() {
+    use crate::dom::reactive_component_dom;
+
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let arm = Signal::new(0usize);
+    match_dom(
+        &mut sc,
+        &body,
+        move || arm.get(),
+        vec![Box::new(|s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            reactive_component_dom(s, &wrap, |inner: &mut RenderScope| {
+                let node = inner.create_element("article");
+                let text = inner.create_text("hi");
+                node.append_child(&text);
+                node
+            });
+            wrap
+        }) as Box<dyn Fn(&mut RenderScope) -> NodeHandle>],
+    );
+
+    let delta = growth(&doc, |i| arm.set(i % 2), 200);
+    assert_eq!(
+        delta, 0,
+        "#732 regression: a component nested inside a match arm must not \
+         grow the document — leaked {delta} nodes over 198 switches"
+    );
+}
+
+/// `release_scratch_container` — the fifth discard site, not covered by any
+/// of the above — with a **genuinely captured** handle nested inside an
+/// unadopted leftover, the exact shape `if open { Card { {panel} } } }`
+/// produces when `Card` ignores its children. `panel` is built by an
+/// entirely separate, earlier `RenderScope` (`sc`), never by the component
+/// site's own scope (`site_scope`), so it must be detached, not discarded —
+/// and the leftover wrapper plus the scratch `<template>` container must
+/// still be fully discarded (retired).
+///
+/// This is also the fixture the review's mutation matrix found missing:
+/// it kills both (2) reordering `discard_owned_preserving_captured`'s two
+/// statements (`root.discard()` before detaching `captured` would retire
+/// `panel` along with `leftover`, since discard is recursive and nothing
+/// would have pulled `panel` out first) and (4) replacing
+/// `discard_owned_preserving_captured` with a bare `leftover.discard()` in
+/// `release_scratch_container` (same effect).
+#[test]
+fn release_scratch_container_detaches_a_nested_captured_leftover_rather_than_discarding_it() {
+    use crate::dom::release_scratch_container;
+
+    let doc = doc();
+    let mut sc = scope(&doc); // the OUTER scope that built `panel`, earlier.
+    let panel = sc.create_element("section");
+    let panel_id = panel.node_id();
+
+    // A SEPARATE, later scope — the component call site's own `__scope`
+    // (`component_codegen.rs`'s call), as `if open { Card { {panel} } } }`
+    // would build it.
+    let mut site_scope = scope(&doc);
+    let container = site_scope.create_element("template");
+    let leftover = site_scope.create_element("div");
+    leftover.append_child(&panel);
+    container.append_child(&leftover);
+    let leftover_id = leftover.node_id();
+    let container_id = container.node_id();
+
+    release_scratch_container(&site_scope, &container);
+
+    assert_eq!(
+        doc.borrow().tag_name(panel_id).as_deref(),
+        Some("section"),
+        "#732: a captured handle nested inside an unadopted scratch-container \
+         leftover must be detached, not discarded with it"
+    );
+    assert_eq!(
+        doc.borrow().tag_name(leftover_id),
+        None,
+        "the unadopted leftover itself must still be discarded"
+    );
+    assert_eq!(
+        doc.borrow().tag_name(container_id),
+        None,
+        "the scratch container itself is always discarded"
+    );
+}

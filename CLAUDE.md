@@ -4312,30 +4312,58 @@ Ownership is asked of the **content root only**, but discarding a root the
 scope minted does not blindly take its whole subtree with it any more
 (**#732**). Before discarding, each of the four helpers walks the content
 root's subtree (`rinch_core::dom::collect_captured_descendants`) and detaches —
-never discards — the first non-owned node on every branch, without descending
-into it further (that subtree is not this scope's business either, having
-never been reached by a render this scope ran). So a captured handle *nested
-inside* branch-built markup (`if open { div { {panel} } }`) survives the
-wrapper's discard: `panel` comes out of the tree before the discard reaches it,
-and the next show rebuilds a fresh wrapper around the same `panel`. The walk's
-cost is bounded by the discarded subtree, not by the document —
+never discards — the first genuinely-captured node on every branch, without
+descending into it further (that subtree is not this scope's business either,
+having never been reached by a render this scope ran). So a captured handle
+*nested inside* branch-built markup (`if open { div { {panel} } }`) survives
+the wrapper's discard: `panel` comes out of the tree before the discard
+reaches it, and the next show rebuilds a fresh wrapper around the same
+`panel`. The walk's cost is bounded by the discarded subtree, not by the
+document —
 `reinsertion_tests::the_capture_walk_is_bounded_by_the_discarded_subtree_not_the_document`
 measures it via `MockDomDocument::__get_children_calls`.
 
+**The ownership test is NOT `scope.created(id)`**, and the first round of
+this fix got exactly that wrong: `created` answers only "did *this exact*
+`RenderScope` instance mint `id`", which is `false` for a node minted by a
+**nested** child scope — every `for` row, every re-rendered component's
+output, every nested `if`/`match` branch builds through a fresh
+`RenderScope::new(..)` of its own, never recorded in the outer branch's
+`created`. Reading `created` alone misclassified every one of those as
+captured, detached them instead of leaving them for the discard, and leaked
+the whole set on every hide — `if open { div { for x in xs { li{} } } }`
+leaked 3 `<li>`s per hide (594 nodes over 198 toggles), a nested component 198.
+Caught by adversarial review before merge, not shipped.
+[`RenderScope::watermark_or_newer`] is the corrected predicate: was `id`
+minted *during this scope's render at all* — directly, or via a scope nested
+inside it (which only ever runs synchronously inside this render's own call
+tree) — rather than captured from a render that already finished before this
+one started. Since node ids are strictly monotonic per document on this
+discard route (`rinch-web`'s counter never reuses, and `rinch-dom`'s slab is
+never freed by `discard_node`, only by `set_inner_html`/pseudo-element pruning
+— #723, neither reachable from an ordinary branch hide), "minted during this
+render" is exactly "no smaller than the first id this scope itself minted" —
+a per-scope watermark, zero new registries, zero ancestry bookkeeping.
+`reinsertion_tests::a_nested_for_inside_a_branch_does_not_grow_the_document`,
+its `match_dom`/component twins, and
+`release_scratch_container_detaches_a_nested_captured_leftover_rather_than_discarding_it`
+(which also kills reordering `discard_owned_preserving_captured`'s two
+statements) are the pins for this half.
+
 The walk has to run **before** the branch's old `RenderScope` is disposed —
-`created` is the scope's own bookkeeping, gone once `dispose()` consumes it —
-so `show_dom`/`match_dom`/`reactive_component_dom` collect the captured
-descendants in the same pass that already reads `created` for the content
-root, ahead of the existing "dispose old scope before touching DOM nodes"
-step; the actual detach happens after disposal, alongside the content root's
-own discard/remove. `for_each_dom_typed`'s parked rows do the same inside
-`ParkedRow::new`, while a row's scope is still alive, and carry the collected
-list alongside the row to `release_parked`.
+the watermark is read off that scope's own `created` list, which is gone once
+`dispose()` consumes it — so `show_dom`/`match_dom`/`reactive_component_dom`
+collect the captured descendants in the same pass that already reads
+`created` for the content root, ahead of the existing "dispose old scope
+before touching DOM nodes" step; the actual detach happens after disposal,
+alongside the content root's own discard/remove. `for_each_dom_typed`'s
+parked rows do the same inside `ParkedRow::new`, while a row's scope is still
+alive, and carry the collected list alongside the row to `release_parked`.
 `reinsertion_tests::show_dom_can_re_show_a_captured_handle_nested_inside_fresh_markup`,
 its `match_dom`/`reactive_component_dom`/`for_each_dom_typed` twins, and
 `crates/rinch-web/tests/reinsertion.rs`'s
-`a_captured_handle_nested_inside_branch_built_markup_comes_back` are the pins;
-the old pinned-limitation fixture
+`a_captured_handle_nested_inside_branch_built_markup_comes_back` are the pins
+for the original captured-handle half; the old pinned-limitation fixture
 (`a_captured_handle_nested_inside_fresh_markup_is_still_lost`) is gone per its
 own instruction.
 

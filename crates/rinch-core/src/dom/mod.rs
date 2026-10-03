@@ -1128,8 +1128,10 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 /// generated `render_fn` does exactly that: prop closures tracked, children +
 /// `Component::render` untracked.
 ///
-/// Collect every descendant of `root` that `scope` did **not** create,
-/// stopping at the first one found on each branch (issue #732).
+/// Collect every descendant of `root` that was **captured from outside this
+/// scope's render** — not merely one `scope` itself did not directly create —
+/// stopping at the first one found on each branch (issue #732, and the review
+/// of PR #1360's first round).
 ///
 /// A node this scope minted may itself hold a *captured* `NodeHandle` — one
 /// the branch closure was handed rather than built — nested arbitrarily deep
@@ -1138,23 +1140,43 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 /// (detached, not retired) **before** the discard reaches it, or it goes with
 /// the wrapper.
 ///
+/// **This must NOT be `scope.created(id)`.** That answers only "did *this
+/// exact* `RenderScope` instance mint `id`", which is `false` for a node a
+/// *nested* child scope minted — every `for` row, every re-rendered
+/// component's output, every nested `if`/`match` branch builds through a
+/// fresh `RenderScope::new(..)` of its own, never recorded in the outer
+/// branch's `created`. The first round of this fix used `created` directly
+/// and so misclassified every one of those as "captured": the walk stopped
+/// at a `for`'s rows or a component's output, detached them instead of
+/// leaving them for the discard below, and leaked the whole set on every
+/// hide — `reinsertion_tests::a_nested_for_inside_a_branch_does_not_grow_the_document`
+/// / `a_nested_component_inside_a_branch_does_not_grow_the_document` measured
+/// 594 / 198 nodes over 198 toggles before this was caught.
+///
+/// The right question is [`RenderScope::watermark_or_newer`]: was `id` minted
+/// *during this scope's render at all* — directly, or by a scope nested
+/// inside it, which only ever runs synchronously inside this render's own
+/// call tree — rather than captured from a render that already finished
+/// before this one started. Node ids are monotonic per document on this
+/// route (see that method's doc), so "minted during this render" is exactly
+/// "no smaller than the first id this scope minted."
+///
 /// The walk never descends into a node it finds non-owned: that subtree was
-/// never reached by this scope's render in the first place (it is some other
-/// scope's, or no scope's at all — a plain captured handle), so anything
-/// under it is not this call's business either. That bound is what keeps the
-/// cost proportional to the discarded subtree rather than to the whole
-/// document: a nested `for`'s rows or an inner branch's own markup, which
-/// *are* owned (minted by a child scope the outer discard's recursion is
-/// right to reach — see [`RenderScope::created`]), are walked and left for
-/// the discard; only a genuinely captured node is pulled out, and pulling it
-/// out stops the walk from going any deeper there.
+/// never reached by this scope's render in the first place (it is some other,
+/// *earlier* scope's, or no scope's at all — a plain captured handle), so
+/// anything under it is not this call's business either. That bound is what
+/// keeps the cost proportional to the discarded subtree rather than to the
+/// whole document: a nested `for`'s rows or an inner branch's own markup,
+/// which *are* owned under the watermark rule, are walked and left for the
+/// discard; only a genuinely captured node is pulled out, and pulling it out
+/// stops the walk from going any deeper there.
 pub(crate) fn collect_captured_descendants(
     root: &NodeHandle,
     scope: &RenderScope,
     out: &mut Vec<NodeHandle>,
 ) {
     for child in root.children() {
-        if scope.created(child.node_id()) {
+        if scope.watermark_or_newer(child.node_id()) {
             collect_captured_descendants(&child, scope, out);
         } else {
             out.push(child);
@@ -1162,14 +1184,20 @@ pub(crate) fn collect_captured_descendants(
     }
 }
 
-/// Discard `root` — which `scope` created — except for any descendant it did
-/// **not** create (issue #732). Such a descendant is detached first, so the
-/// caller may show it again; the discard then proceeds over whatever remains.
+/// Discard `root` — which `scope` created — except for any descendant that
+/// was captured from outside `scope`'s render entirely (issue #732; not
+/// merely a descendant `scope` itself did not directly create — see
+/// [`collect_captured_descendants`]'s doc for why that distinction is the
+/// whole fix). Such a descendant is detached first, so the caller may show it
+/// again; the discard then proceeds over whatever remains.
 ///
 /// Call this in place of a bare `root.discard()` wherever `root` was found
 /// owned by `scope` and `scope` has not been disposed yet — every marker-based
 /// reactive helper reads `created` before disposing the old scope already, for
-/// exactly this reason (see `show_dom`'s `old_scope` comment).
+/// exactly this reason (see `show_dom`'s `old_scope` comment). The two
+/// statements below must stay in this order: detach every captured
+/// descendant **before** discarding `root`, since the discard is recursive
+/// and would otherwise retire a captured node this very call just found.
 pub(crate) fn discard_owned_preserving_captured(root: &NodeHandle, scope: &RenderScope) {
     let mut captured = Vec::new();
     collect_captured_descendants(root, scope, &mut captured);

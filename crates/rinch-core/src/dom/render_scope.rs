@@ -80,10 +80,16 @@ impl RenderScope {
     /// calls [`collect_captured_descendants`](super::collect_captured_descendants)
     /// (or the convenience
     /// [`discard_owned_preserving_captured`](super::discard_owned_preserving_captured)
-    /// that wraps it) over that root, which stops descending the moment a
-    /// node answers `created` as `false` and detaches it rather than letting
-    /// the discard reach it. A caller must do this **before** disposing the
-    /// scope, since the walk itself reads `created`.
+    /// that wraps it) over that root, which stops descending the moment a node
+    /// answers [`watermark_or_newer`](Self::watermark_or_newer) as `false` and
+    /// detaches it rather than letting the discard reach it — **not**
+    /// `created`, which answers `false` for a node a nested child scope
+    /// minted (a `for` row, a re-rendered component's output) just as it does
+    /// for a genuine capture, and so cannot tell the two apart; the first
+    /// round of this fix used `created` directly and leaked every nested
+    /// `for`/component inside a branch (caught by review before merge). A
+    /// caller must collect before disposing the scope, since the watermark is
+    /// read off `created`.
     ///
     /// **The verb is chosen before the scope is disposed**, so a cleanup that
     /// re-parents a scope-built node while disposal runs cannot rescue it: the
@@ -104,6 +110,44 @@ impl RenderScope {
     /// lookup, it runs once per node per branch flip.
     pub fn created(&self, node: NodeId) -> bool {
         self.created.contains(&node)
+    }
+
+    /// The smallest id this scope minted, if it minted any — this scope's
+    /// render **watermark** (issue #732's review of PR #1360).
+    ///
+    /// `created` alone answers "did *this exact* `RenderScope` mint `node`",
+    /// which is wrong for a node minted by a **nested** child scope — every
+    /// `for` row, every re-rendered component's output, every nested
+    /// `if`/`match` branch builds through a *fresh* `RenderScope::new(..)` of
+    /// its own, never recorded in the outer branch's `created`. Asking only
+    /// `created` of such a node answers `false`, which
+    /// `collect_captured_descendants` read as "externally captured" and
+    /// detached rather than discarded — an unbounded leak for the single most
+    /// common nesting shape in the framework (a list or a component inside a
+    /// conditional), reopening #719 for it.
+    ///
+    /// Node ids are strictly monotonic per document on every backend **for
+    /// this discard route** — `rinch-web`'s counter is a bare `fetch_add` with
+    /// no free list, and `rinch-dom`'s slab is never freed by `discard_node`
+    /// (only by `set_inner_html` and pseudo-element pruning, issue #723,
+    /// neither reachable from an ordinary branch hide). So anything minted
+    /// *while this scope's render ran* — directly, or by a nested scope the
+    /// render called into synchronously — carries an id no smaller than the
+    /// first thing this scope minted; anything genuinely captured from
+    /// outside was minted before this render started, and so is strictly
+    /// smaller. `watermark_or_newer` below is the predicate this powers.
+    fn watermark(&self) -> Option<NodeId> {
+        self.created.iter().map(|n| n.0).min().map(NodeId)
+    }
+
+    /// Whether `node` was minted during this scope's render — by this scope
+    /// directly, or (unlike [`created`](Self::created)) by any scope nested
+    /// inside it — rather than captured from outside. `None` watermark (this
+    /// scope minted nothing, so it cannot itself be "owned": callers only ask
+    /// this of descendants of an *owned* root, whose root being owned already
+    /// guarantees a watermark exists) answers `false`.
+    pub(crate) fn watermark_or_newer(&self, node: NodeId) -> bool {
+        self.watermark().is_some_and(|w| node.0 >= w.0)
     }
 
     /// Record a node this scope just minted. See [`created`](Self::created).
