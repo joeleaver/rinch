@@ -3814,20 +3814,28 @@ impl RinchApp {
         }
     }
 
-    /// Drain and apply a pending [`NodeHandle::set_selection_range`]/`select()`
-    /// request (issue #552), at the same points [`take_pending_focus_request`](
-    /// rinch_core::take_pending_focus_request) is drained — including, when
-    /// both were posted from the same effect (`focus()` then
-    /// `set_selection_range()`, the "open a rename box, focused and with its
-    /// name selected" shape), **after** that drain, so a request for a node
-    /// this very turn just focused lands on the live `EditableState` rather
-    /// than finding it not-yet-focused and being stashed.
+    /// Drain and apply every pending [`NodeHandle::set_selection_range`]/
+    /// `select()` request (issue #552), at the same points
+    /// [`take_pending_focus_request`](rinch_core::take_pending_focus_request)
+    /// is drained — including, when both were posted from the same effect
+    /// (`focus()` then `set_selection_range()`, the "open a rename box,
+    /// focused and with its name selected" shape), **after** that drain, so
+    /// a request for a node this very turn just focused lands on the live
+    /// `EditableState` rather than finding it not-yet-focused and being
+    /// stashed.
+    ///
+    /// Drains **all** of them, not one: the channel is keyed per node (review
+    /// of #1325, finding 2), so two different nodes' requests posted in the
+    /// same tick — a form restoring two independent selections, with no
+    /// `focus()` between them — must both land rather than the second
+    /// silently discarding the first.
     pub(crate) fn drain_pending_text_selection(&mut self) {
-        if let Some((node_id, start, end, direction)) =
-            rinch_core::take_pending_text_selection_request(self.doc_key())
+        for (node_id, start, end, direction) in
+            rinch_core::take_pending_text_selection_requests(self.doc_key())
         {
             self.apply_or_stash_text_selection(node_id, start, end, direction);
         }
+        self.prune_stale_text_selection_stash();
     }
 
     /// Apply a text-selection request (issue #552) to the focused input
@@ -3839,6 +3847,14 @@ impl RinchApp {
     /// `setSelectionRange()`/`select()` on an unfocused control: the range is
     /// set immediately and simply shows up the first time the control is
     /// focused.
+    ///
+    /// **Only stashes for a node `node_takes_text_focus` would accept**
+    /// (review of #1325, finding 3): a checkbox, a `<select>`, or a generic
+    /// `FocusTarget::Node` never reaches `try_focus_input`'s stash-consuming
+    /// branch at all, so stashing for one would sit forever, unconsumed — a
+    /// silent, unbounded leak. A browser's own `setSelectionRange` throws
+    /// `InvalidStateError` on such a control; dropping the request is rinch's
+    /// equivalent (see `DomDocument::set_selection_range`'s doc comment).
     pub(crate) fn apply_or_stash_text_selection(
         &mut self,
         node_id: usize,
@@ -3858,8 +3874,48 @@ impl RinchApp {
             self.scene_dirty = true;
             return;
         }
-        self.pending_text_selection
-            .insert(node_id, (start, end, direction));
+        let takes_text_focus = self.doc.as_ref().is_some_and(|doc| {
+            doc.borrow()
+                .tree
+                .get(node_id)
+                .is_some_and(Self::node_takes_text_focus)
+        });
+        if takes_text_focus {
+            self.pending_text_selection
+                .insert(node_id, (start, end, direction));
+        }
+    }
+
+    /// Drop any `pending_text_selection` entry whose node is no longer
+    /// **connected** to the document (`DomDocument::is_connected`) — review
+    /// of #1325, finding 3 — so a node that is stashed and then removed
+    /// before ever being focused does not hold its entry forever. Checked by
+    /// connectivity rather than slab presence: `remove()`/`discard()` are
+    /// both a detach on desktop today (#723 — `discard` does not actually
+    /// free the slot), so a slab-presence check would never fire. Cheap and
+    /// called on every drain (`pending_text_selection` holds only nodes a
+    /// `set_selection_range` named and that have not yet been focused, which
+    /// is small in practice).
+    ///
+    /// **Does not close the #304 recycled-slab-id hazard** CLAUDE.md
+    /// documents for every node-keyed registry: a removed node's id can be
+    /// handed to an unrelated new node before this prune next runs, and that
+    /// node would then inherit the stale request. Accepted as a pre-existing,
+    /// project-wide hazard class (shared with `active_element`,
+    /// `register_focus_target`'s registry, …) rather than one this map
+    /// introduces or could close alone.
+    fn prune_stale_text_selection_stash(&mut self) {
+        if self.pending_text_selection.is_empty() {
+            return;
+        }
+        let Some(doc) = self.doc.clone() else {
+            self.pending_text_selection.clear();
+            return;
+        };
+        let d = doc.borrow();
+        self.pending_text_selection.retain(|&node_id, _| {
+            rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(node_id))
+        });
     }
 
     /// Give the keyboard back now that the overlay rooted at `root` has closed,

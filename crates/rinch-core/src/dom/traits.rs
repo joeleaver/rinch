@@ -498,9 +498,20 @@ pub trait DomDocument {
     /// `setSelectionRange`/`select()` called on an unfocused control: the
     /// range is set immediately, before the control is ever focused, and is
     /// simply what the control shows the first time it is. There is no
-    /// "no-op on an unfocused control" case to document, unlike
-    /// [`focus_element`](Self::focus_element) — a selection has somewhere to
-    /// live even without the keyboard.
+    /// "no-op on an unfocused control" case to document for a text control,
+    /// unlike [`focus_element`](Self::focus_element) — a selection has
+    /// somewhere to live even without the keyboard.
+    ///
+    /// **A node that is not a text control — a checkbox, a `<select>`, a
+    /// generic `tabindex` node — is a no-op, silently, on desktop** (review of
+    /// #1325, finding 4): such a node never installs the `EditableState` a
+    /// selection would apply to, so there is nowhere for the "stash" half of
+    /// the rule above to land, and desktop drops the request rather than
+    /// holding it forever unconsumed. A browser's own `setSelectionRange`
+    /// throws `InvalidStateError` on such a control (`<input type="checkbox">`,
+    /// a `<select>`); rinch's backends do not raise an equivalent error —
+    /// `rinch-web` gets the browser's own refusal for free (the call itself
+    /// throws, caught and discarded), desktop's refusal is this paragraph.
     ///
     /// [`NodeHandle::set_selection_range`](super::NodeHandle::set_selection_range)
     /// is the caller-facing spelling. Defaulted to a no-op so a backend with

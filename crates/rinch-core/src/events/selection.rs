@@ -293,26 +293,38 @@ pub fn take_pending_focus_request(doc_key: u64) -> Option<FocusRequest> {
 
 // --- Text selection request mechanism (issue #552) ---
 // `NodeHandle::select()` / `set_selection_range()`, posted the same way a
-// `focus()` call posts a `FocusRequest` — a separate single-slot channel,
-// never folded into `FocusRequest` itself, because a `focus()` and a
+// `focus()` call posts a `FocusRequest` — a **separate** channel, never
+// folded into `FocusRequest` itself, because a `focus()` and a
 // `select()`/`set_selection_range()` posted from the same effect (the "open a
 // rename box, focused and with its name selected" shape #552 exists for) must
 // both survive to be applied: one slot holding both would let the later post
 // silently discard the earlier one.
+//
+// Keyed per **node**, not a single slot like `PENDING_FOCUS_REQUEST` — only
+// one node can hold the keyboard, so `FocusRequest`'s last-wins slot is
+// right, but two *different* nodes' `set_selection_range` calls posted in the
+// same tick (no `focus()` in between — a form restoring two independent
+// selections) are independent requests and must not clobber each other
+// (review of #1325, finding 2).
 
-/// `(node_id, start, end, direction)` — UTF-16 code-unit offsets,
+/// `(start, end, direction)` — UTF-16 code-unit offsets,
 /// [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
 /// unit.
-type TextSelectionRequest = (usize, usize, usize, crate::dom::SelectionDirection);
+type TextSelectionRequest = (usize, usize, crate::dom::SelectionDirection);
 
 thread_local! {
-    /// `(doc_key, request)`, the same shape `PENDING_FOCUS_REQUEST` scopes by.
-    static PENDING_TEXT_SELECTION: Cell<Option<(u64, TextSelectionRequest)>> =
-        const { Cell::new(None) };
+    /// `doc_key -> node_id -> request`. The outer map is drained whole by
+    /// [`take_pending_text_selection_requests`]; the inner one is what keeps
+    /// two nodes' posts in the same tick from clobbering each other.
+    static PENDING_TEXT_SELECTIONS: RefCell<std::collections::HashMap<u64, std::collections::HashMap<usize, TextSelectionRequest>>> =
+        RefCell::new(std::collections::HashMap::new());
 }
 
 /// Park a text-selection request for `doc_key`/`node_id`, replacing whatever
-/// was parked. Called by [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
+/// was parked **for that node** (a second `set_selection_range` on the same
+/// node before the first was drained is simply superseded, as two calls to
+/// the DOM's own `setSelectionRange` on one control would be). Called by
+/// [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
 /// desktop implementation; the runtime applies it to the node if it already
 /// holds the keyboard, or stashes it for the next time the node is focused
 /// (issue #552).
@@ -323,19 +335,33 @@ pub fn post_text_selection_request(
     end: usize,
     direction: crate::dom::SelectionDirection,
 ) {
-    PENDING_TEXT_SELECTION.with(|c| c.set(Some((doc_key, (node_id, start, end, direction)))));
+    PENDING_TEXT_SELECTIONS.with(|m| {
+        m.borrow_mut()
+            .entry(doc_key)
+            .or_default()
+            .insert(node_id, (start, end, direction));
+    });
 }
 
-/// Consume the pending text-selection request **if it targets the given
-/// document**, mirroring [`take_pending_focus_request`]'s document scoping
-/// (issue #134).
-pub fn take_pending_text_selection_request(doc_key: u64) -> Option<TextSelectionRequest> {
-    PENDING_TEXT_SELECTION.with(|c| match c.get() {
-        Some((key, request)) if key == doc_key => {
-            c.set(None);
-            Some(request)
-        }
-        _ => None,
+/// Consume **every** pending text-selection request posted for the given
+/// document, as `(node_id, start, end, direction)` — mirroring
+/// [`take_pending_focus_request`]'s document scoping (issue #134), but
+/// draining the whole per-node map rather than one slot, since a node not
+/// drained here would otherwise wait for the *next* document on this thread
+/// to drain its own (#134's hazard, applied to this channel).
+pub fn take_pending_text_selection_requests(
+    doc_key: u64,
+) -> Vec<(usize, usize, usize, crate::dom::SelectionDirection)> {
+    PENDING_TEXT_SELECTIONS.with(|m| {
+        m.borrow_mut()
+            .remove(&doc_key)
+            .map(|pending| {
+                pending
+                    .into_iter()
+                    .map(|(node_id, (start, end, direction))| (node_id, start, end, direction))
+                    .collect()
+            })
+            .unwrap_or_default()
     })
 }
 

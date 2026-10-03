@@ -116,7 +116,7 @@ pub use events::{
     set_click_context, set_configuration_change_handler, set_input_context,
     set_keyboard_interceptor, set_modifier_state, set_paste_interceptor, set_selection_callback,
     set_selection_sync_callback, suppress_drag_ghost, take_pending_focus_request,
-    take_pending_text_selection_request, update_drag, update_drag_with_button,
+    take_pending_text_selection_requests, update_drag, update_drag_with_button,
 };
 
 // Re-export DOM types for fine-grained rendering

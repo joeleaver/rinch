@@ -175,7 +175,15 @@ way a browser's own `setSelectionRange()`/`select()` do: the range is set
 immediately and simply shows up the first time the control *is* focused — a
 component does not need to call `focus()` first, or in any particular order
 relative to `select()`/`set_selection_range()`. Like `focus()`, both are
-no-ops before this handle is mounted.
+no-ops before this handle is mounted — and, on desktop, also a no-op on a
+node that is not a text control (a checkbox, a `<select>`, a generic
+`tabindex` node): such a node never installs the state a selection would
+apply to, so there is nothing to apply it to or hold it for, the same
+divergence a browser's own thrown-and-discarded `InvalidStateError` would
+be papering over. A mouse click that focuses a field places its own caret
+and clears a selection that was pre-armed for it but never applied —
+calling `set_selection_range()` on a field and then clicking somewhere else
+in it does what you would expect: the click wins.
 
 A focused `<select>` is **closed**, like a browser's: Enter, Space or Alt+Down
 opens its popup, and the popup then owns the keyboard until it commits or is

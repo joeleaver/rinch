@@ -1792,17 +1792,41 @@ Applied to the control directly if it already holds the keyboard; otherwise
 stashed for the next time it gains it, the same thing a browser's own
 `setSelectionRange()`/`select()` does on an unfocused control — so
 `focus()` and `select()` posted together from one effect do not need to run
-in either particular order. Desktop posts both through a single-slot
-channel per document (`DomDocument::set_selection_range`,
-`rinch_core::post_text_selection_request`/`take_pending_text_selection_request`) —
-**separate** from `FocusRequest`'s own slot, since folding the two together
-would let a `select()` posted right after a `focus()` silently discard the
-focus request — drained at the same points `FocusRequest` is, applied live to
-`RinchApp::focused_input_state`'s `EditableState` (converting UTF-16 to the
-byte offsets it keeps) if the node is the focused input, or stashed in
-`RinchApp::pending_text_selection` for `try_focus_input` to consult the next
-time that node is focused. `rinch-web` calls the element's own
-`setSelectionRange` directly — already UTF-16 units, so nothing to convert.
+in either particular order. Desktop posts both through a channel keyed
+**per node** (`DomDocument::set_selection_range`,
+`rinch_core::post_text_selection_request`/`take_pending_text_selection_requests`) —
+**separate** from `FocusRequest`'s own single slot, since folding the two
+together would let a `select()` posted right after a `focus()` silently
+discard the focus request, and per-node because two *different* nodes'
+`set_selection_range` calls posted in the same tick (no `focus()` between
+them — a form restoring two independent selections) must not clobber each
+other the way `FocusRequest`'s slot correctly does for focus itself (only
+one node can hold the keyboard; any node can hold a pending selection) —
+review of #1325, finding 2. Drained in full at the same points
+`FocusRequest` is, applied live to `RinchApp::focused_input_state`'s
+`EditableState` (converting UTF-16 to the byte offsets it keeps) if the
+node is the focused input, or stashed in `RinchApp::pending_text_selection`
+for `try_focus_input` to consult the next time that node is focused —
+**but only for a node `node_takes_text_focus` would accept**: a checkbox,
+a `<select>`, or a generic `tabindex` node never reaches that
+stash-consuming branch, so stashing for one would never be consumed and the
+request is dropped instead (review of #1325, finding 3 — the desktop
+equivalent of a browser's `InvalidStateError` on such a control).
+A **mouse-click** focus (`click_handling.rs`'s own `EditableState`
+construction, not `try_focus_input`'s) places its own caret and must clear
+any stash for that node too, not only consult-and-clear it — otherwise a
+stale pre-click stash reappears on the *next* programmatic/Tab focus
+(review of #1325, finding 1). A stash entry for a node that is removed
+before ever being focused is pruned by connectivity
+(`DomDocument::is_connected`, not slab presence — `discard()`/`remove()`
+are both a detach on desktop today, #723) on every drain, which does not
+close the #304 recycled-slab-id hazard for a node-keyed registry: a freed
+id handed to an unrelated new node before the next prune would inherit a
+stale entry, accepted as the same pre-existing hazard class every other
+node-keyed registry here carries. `rinch-web` calls the element's own
+`setSelectionRange` directly — already UTF-16 units, so nothing to
+convert, and the browser's own refusal on a non-text control (a thrown,
+caught `Err`) stands in for desktop's explicit drop.
 
 Focusability on desktop comes from the **tag** or an explicit `tabindex` (or a
 `data-oninput` on a custom control), and an explicit `tabindex` always wins —
