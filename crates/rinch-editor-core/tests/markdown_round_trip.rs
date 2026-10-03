@@ -347,3 +347,94 @@ fn an_unsafe_colour_is_never_written_into_html() {
     let m = mark(&s, "text_color", &[("color", "rgb(1, 2, 3)")]);
     rt(&s, &doc(&s, vec![p(&s, vec![t(&s, "a", &[&m])])]));
 }
+
+// ── delimiters that would not flank: written as tags ──
+
+#[test]
+fn a_delimiter_run_that_would_not_flank_round_trips() {
+    let s = Schema::starter_kit();
+    let bold = mark(&s, "bold", &[]);
+    let it = mark(&s, "italic", &[]);
+    let st = mark(&s, "strike", &[]);
+    let sup = mark(&s, "superscript", &[]);
+    let link = mark(&s, "link", &[("href", "https://x.y")]);
+    let cases: Vec<Vec<Node>> = vec![
+        // `*~~a~~*b`: the closing `*` follows `~` and precedes a letter.
+        vec![t(&s, "a", &[&it, &st]), t(&s, "b", &[])],
+        // `x*~~a~~*`: the opening `*` follows a letter and precedes `~`.
+        vec![t(&s, "x", &[]), t(&s, "a", &[&it, &st])],
+        // Punctuation at a run's edge, a letter outside it.
+        vec![t(&s, "a.", &[&bold]), t(&s, "b", &[])],
+        vec![t(&s, "b", &[]), t(&s, "(a", &[&it])],
+        vec![t(&s, "x", &[]), t(&s, "\"q\"", &[&st]), t(&s, "y", &[])],
+        // A run that ends inside an HTML mark and one that starts after a link.
+        vec![
+            t(&s, "y", &[&st, &sup]),
+            t(&s, "a", &[&st, &link]),
+            t(&s, "c", &[]),
+        ],
+        // Bold and italic meeting: one closes where the other opens.
+        vec![t(&s, "a", &[&it]), t(&s, "b", &[&bold])],
+        vec![
+            t(&s, "a", &[&bold]),
+            t(&s, "b", &[&it]),
+            t(&s, "c", &[&bold]),
+        ],
+        // Code beside a delimiter, a letter on the other side.
+        vec![
+            t(&s, "x", &[]),
+            t(&s, "c", &[&bold, &mark(&s, "code", &[])]),
+            t(&s, "s", &[]),
+        ],
+    ];
+    for inline in cases {
+        rt(&s, &doc(&s, vec![p(&s, inline)]));
+    }
+    // Ordinary runs are still plain Markdown.
+    let md = rt(
+        &s,
+        &doc(
+            &s,
+            vec![p(
+                &s,
+                vec![t(&s, "a ", &[]), t(&s, "b", &[&bold]), t(&s, " c", &[])],
+            )],
+        ),
+    );
+    assert_eq!(md, "a **b** c");
+}
+
+#[test]
+fn the_reader_takes_the_html_spellings_of_bold_italic_and_strike() {
+    let s = Schema::starter_kit();
+    for (md, name) in [
+        ("x<strong>a</strong>y", "bold"),
+        ("x<b>a</b>y", "bold"),
+        ("x<em>a</em>y", "italic"),
+        ("x<i>a</i>y", "italic"),
+        ("x<s>a</s>y", "strike"),
+        ("x<del>a</del>y", "strike"),
+    ] {
+        let d = doc_from_markdown_strict(&s, md).unwrap_or_else(|e| panic!("{md}: {e}"));
+        let a = d.child(0).child(1);
+        assert_eq!(a.text(), Some("a"), "{md}");
+        assert_eq!(a.marks().len(), 1, "{md}");
+        assert_eq!(a.marks()[0].type_name(), name, "{md}");
+    }
+    assert_eq!(refusal(&s, "x<strong>a"), Construct::UnmatchedTag);
+    assert_eq!(refusal(&s, "x<strong>a</b>"), Construct::UnmatchedTag);
+}
+
+#[test]
+fn whitespace_before_an_html_mark_stays_outside_it() {
+    let s = Schema::starter_kit();
+    let hl = mark(&s, "highlight", &[]);
+    let d = doc(
+        &s,
+        vec![p(
+            &s,
+            vec![t(&s, "a ", &[]), t(&s, " ", &[&hl]), t(&s, "b", &[])],
+        )],
+    );
+    rt(&s, &d);
+}
