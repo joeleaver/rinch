@@ -40,6 +40,9 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
     "HtmlTextAreaElement", "HtmlSelectElement", "HtmlOptionElement", "HtmlHeadElement",
+    # `<video>`/`<audio>`'s live `.muted` property, mirrored from the `muted`
+    # attribute's presence the same way `checked`/`selected` are (#754).
+    "HtmlMediaElement",
     "Node", "NodeList", "Text", "Comment",
     "CssStyleDeclaration", "DomRect", "DomRectList",
     "Event", "MouseEvent", "KeyboardEvent",
