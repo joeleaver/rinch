@@ -158,13 +158,28 @@ pub fn styles() -> String {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
 }
 
-/* Clickable step */
-.rinch-stepper__step--clickable .rinch-stepper__step-icon {
+/* Clickable step (issue #737: the whole step is interactive now, not just
+   the icon — it is what carries `tabindex`/`data-rid`) */
+.rinch-stepper__step--clickable {
     cursor: pointer;
 }
 
 .rinch-stepper__step--clickable .rinch-stepper__step-icon:hover {
     opacity: 0.9;
+}
+
+.rinch-stepper__step--clickable:focus-visible {
+    outline: 2px solid var(--rinch-stepper-color, var(--rinch-primary-color));
+    outline-offset: 2px;
+}
+
+/* Disabled step (issue #737) */
+.rinch-stepper__step--disabled {
+    cursor: not-allowed;
+}
+
+.rinch-stepper__step--disabled .rinch-stepper__step-icon {
+    opacity: 0.5;
 }
 
 /* Loading state */

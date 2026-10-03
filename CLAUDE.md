@@ -343,8 +343,23 @@ the parent promotes the one it needs. Promotion re-parents
 **`discard`** (#719) because `rinch-web` compiles this crate. Those
 two facts are one fact: a `discard` retires the whole subtree, so discarding a
 wrapper that still held the promoted glyph would retire the glyph with it. The
-selection family stays decorative: no step carries a `data-rid` and `Stepper`
-takes no callback (issue #737).
+selection family **acts now** (issue #737): `Stepper::on_step_click` fires with
+a step's 0-based position when it is clicked or activated (Enter/Space) on a
+step the stepper considers reachable — a step at or before `active` by default
+(Mantine's rule: completed or in progress), one past it needs
+`allow_next_steps_select` or its own `allow_step_click`/`allow_step_select`,
+and `StepperStep::disabled` always wins over every grant. The wiring is done by
+the same `settle_steps` pass that derives state and index, in
+`settle_step_clickability`: a reachable step gets `tabindex="0"`, `role="button"`
+and a `data-rid` — the same shape `Tree`'s own rows use for generic keyboard
+activation, no `register_focus_target` needed. The handler is registered once
+per step, lazily, and reads the step's *current* position back from the DOM at
+**click** time rather than closing over the position it saw when it registered
+(the #714 pattern: a late insertion or removal can renumber a step after its
+handler is wired, issues #716/#745). With no `on_step_click` set, nothing is
+wired and every behaviour `allow_next_steps_select`/`allow_step_click`/
+`allow_step_select` had before #737 — the class, and only the class — is
+unchanged.
 
 **A container default reaches a child that arrives after the container rendered**
 (#716), **and a container that counts positions is re-derived when one leaves**
