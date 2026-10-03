@@ -199,7 +199,7 @@ impl Component for ContextMenu {
         // The cleanup removes the node and drops the registry entry above —
         // it touches no signal. `opened` is freed by the same disposal, so a
         // "close it on the way out" write here would be dropped and would
-        // warn — see `close_nearest_menu`'s own freed-signal no-op.
+        // warn — see `close_menu_signal`'s freed-signal no-op.
         // `unregister_menu_close_signal` is what keeps a menu built and torn
         // down many times (a reactive block rebuilding its row) from growing
         // the registry by one dead entry per rebuild.
@@ -333,6 +333,30 @@ mod tests {
         );
     }
 
+    /// Disposing a menu's owner releases its close-signal registration too, so
+    /// rebuilding a menu does not grow the registry (#714's review).
+    #[test]
+    fn disposing_the_owning_scope_releases_the_close_registration() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let before = crate::dropdown_menu::registered_menu_count();
+        for _ in 0..3 {
+            let owner = Scope::new();
+            owner.run(|| {
+                let _ = render_menu(&mut scope);
+            });
+            assert_eq!(crate::dropdown_menu::registered_menu_count(), before + 1);
+            owner.dispose();
+        }
+        assert_eq!(
+            crate::dropdown_menu::registered_menu_count(),
+            before,
+            "every disposed menu released its entry"
+        );
+    }
+
     /// Rebuilding five times must leave one portal, not five — the shape a tree
     /// that refreshes under the pointer produces.
     #[test]
@@ -446,6 +470,165 @@ mod tests {
             Some(false),
             "and the menu it was built inside of closes, even though it \
              rendered after ContextMenu::render had already returned"
+        );
+    }
+
+    /// An item whose own action hides it (a "Paste" that consumes the
+    /// clipboard its `if` reads) still closes the menu. A lookup run *after*
+    /// the callback starts with a `NodeHandle` access, which flushes the
+    /// queued `show_dom` effect and detaches the button before the walk can
+    /// climb past it — so the item resolves its menu before the callback runs
+    /// (#714's review).
+    #[test]
+    fn an_item_that_hides_itself_on_click_still_closes_the_menu() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let show_item = rinch_core::Signal::new(false);
+        let clicked = Rc::new(Cell::new(false));
+        let clicked_for_item = clicked.clone();
+        let show_item_for_item = show_item;
+
+        let target = scope.create_element("div");
+        let items = scope.create_element("div");
+        rinch_core::show_dom(
+            &mut scope,
+            &items,
+            move || show_item.get(),
+            move |s: &mut RenderScope| {
+                crate::dropdown_menu::DropdownMenuItem {
+                    onclick: Some(rinch_core::Callback::new({
+                        let clicked = clicked_for_item.clone();
+                        move || {
+                            clicked.set(true);
+                            // the item's own action hides itself, same as a
+                            // "Paste" item consuming the clipboard it was
+                            // conditioned on.
+                            show_item_for_item.set(false);
+                        }
+                    })),
+                    ..Default::default()
+                }
+                .render(s, &[])
+            },
+            None::<fn(&mut RenderScope) -> NodeHandle>,
+        );
+
+        let menu = ContextMenu::default();
+        let opened = menu.opened;
+        let _root = menu.render(&mut scope, &[target, items]);
+
+        opened.set(true);
+        show_item.set(true);
+
+        let rid = item_rid(&doc).expect("the late-rendered item carries a handler");
+        dispatch_event(EventHandlerId(rid));
+
+        assert!(clicked.get(), "the item's own onclick still runs");
+        assert_eq!(
+            opened.try_get(),
+            Some(false),
+            "the menu must still close even though the item's own click hid itself"
+        );
+    }
+
+    /// Coverage gap probe (not in the PR): two independent ContextMenus open
+    /// at once must not cross-wire their close signals via id collision.
+    #[test]
+    fn two_simultaneous_menus_do_not_cross_close() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let target_a = scope.create_element("div");
+        let items_a = scope.create_element("div");
+        let item_a = crate::dropdown_menu::DropdownMenuItem {
+            onclick: Some(rinch_core::Callback::new(|| {})),
+            ..Default::default()
+        };
+        let item_a_node = item_a.render(&mut scope, &[]);
+        items_a.append_child(&item_a_node);
+        let menu_a = ContextMenu::default();
+        let opened_a = menu_a.opened;
+        let _root_a = menu_a.render(&mut scope, &[target_a, items_a]);
+        opened_a.set(true);
+
+        let target_b = scope.create_element("div");
+        let items_b = scope.create_element("div");
+        let item_b = crate::dropdown_menu::DropdownMenuItem {
+            onclick: Some(rinch_core::Callback::new(|| {})),
+            ..Default::default()
+        };
+        let item_b_node = item_b.render(&mut scope, &[]);
+        items_b.append_child(&item_b_node);
+        let menu_b = ContextMenu::default();
+        let opened_b = menu_b.opened;
+        let _root_b = menu_b.render(&mut scope, &[target_b, items_b]);
+        opened_b.set(true);
+
+        let rid_a: usize = item_a_node
+            .get_attribute("data-rid")
+            .unwrap()
+            .parse()
+            .unwrap();
+        dispatch_event(EventHandlerId(rid_a));
+
+        assert_eq!(opened_a.try_get(), Some(false), "menu A closes");
+        assert_eq!(opened_b.try_get(), Some(true), "menu B must stay open");
+    }
+
+    /// Nested menu attack: a `DropdownMenu` (submenu) rendered inside a
+    /// `ContextMenu`'s dropdown. Clicking an item inside the inner
+    /// `DropdownMenu` must close the INNER menu (nearest ancestor), not the
+    /// outer `ContextMenu`.
+    #[test]
+    fn nested_menu_closes_the_nearest_one() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        // Build the inner DropdownMenu with one item.
+        let inner_item = crate::dropdown_menu::DropdownMenuItem {
+            onclick: Some(rinch_core::Callback::new(|| {})),
+            ..Default::default()
+        };
+        let inner_item_node = inner_item.render(&mut scope, &[]);
+        let inner_menu = crate::dropdown_menu::DropdownMenu::default();
+        let inner_opened_signal = inner_menu._close_signal;
+        let inner_root = inner_menu.render(&mut scope, std::slice::from_ref(&inner_item_node));
+
+        // Outer ContextMenu, with the inner DropdownMenu's root as one of its
+        // dropdown's children.
+        let target = scope.create_element("div");
+        let items = scope.create_element("div");
+        items.append_child(&inner_root);
+        let outer_menu = ContextMenu::default();
+        let outer_opened = outer_menu.opened;
+        let _outer_root = outer_menu.render(&mut scope, &[target, items]);
+
+        outer_opened.set(true);
+        // inner_opened_signal: DropdownMenu::_close_signal starts true; a
+        // click sets it false (its own "closed" marker), unrelated to the
+        // outer `opened` signal.
+        assert_eq!(inner_opened_signal.try_get(), Some(true));
+
+        let rid: usize = inner_item_node
+            .get_attribute("data-rid")
+            .unwrap()
+            .parse()
+            .unwrap();
+        dispatch_event(EventHandlerId(rid));
+
+        assert_eq!(
+            inner_opened_signal.try_get(),
+            Some(false),
+            "the inner (nearest) menu's close signal fires"
+        );
+        assert_eq!(
+            outer_opened.try_get(),
+            Some(true),
+            "the outer ContextMenu must NOT be closed by an inner submenu's item"
         );
     }
 }

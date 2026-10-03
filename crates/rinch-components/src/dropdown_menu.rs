@@ -35,7 +35,7 @@ const OPENED_CLASS: &str = "rinch-dropdown-menu--opened";
 /// The fix moves the lookup from render time to **click** time, and keys it
 /// off the live DOM rather than off whatever happened to be rendering when the
 /// item was built: a menu's content root carries [`MENU_CLOSE_ID_ATTR`] for as
-/// long as the menu exists, so [`close_nearest_menu`] — called from inside the
+/// long as the menu exists, so [`find_menu_close_signal`] — called from inside the
 /// click handler, not baked into it at render — finds it by walking up from
 /// whichever button was actually clicked, however late that button arrived.
 use std::cell::{Cell, RefCell};
@@ -78,32 +78,39 @@ pub(crate) fn unregister_menu_close_signal(id: u64) {
     });
 }
 
-/// Walk from `node` up through its ancestors (inclusive) for the nearest one
-/// carrying [`MENU_CLOSE_ID_ATTR`], and close that menu if its signal is still
-/// alive.
+/// The close signal of the menu whose content root is `node` or its nearest
+/// ancestor carrying [`MENU_CLOSE_ID_ATTR`], if that menu is still registered.
 ///
-/// Called from inside a `DropdownMenuItem`'s click handler, so the walk runs
-/// against the DOM as it is at click time — independent of when `node` itself
-/// was built. A dead id (unregistered, or never registered) or a freed signal
-/// is simply a no-op, the same way a direct `Signal::set` on a freed signal
-/// would be, but without the warning: there is nothing left to close, which is
-/// the ordinary end of "the item's own action removed the menu's row".
-pub(crate) fn close_nearest_menu(node: &NodeHandle) {
+/// An item resolves this **before** running its own callback: the callback may
+/// queue a write that removes the clicked button itself (a Paste item inside an
+/// `if` its own action flips), and the walk's first `NodeHandle` access flushes
+/// that write — leaving a detached button with no menu above it.
+pub(crate) fn find_menu_close_signal(node: &NodeHandle) -> Option<Signal<bool>> {
     let mut current = Some(node.clone());
     while let Some(here) = current {
         if let Some(raw) = here.get_attribute(MENU_CLOSE_ID_ATTR) {
-            if let Ok(id) = raw.parse::<u64>() {
-                let signal = MENU_CLOSE_REGISTRY.with(|r| r.borrow().get(&id).copied());
-                if let Some(signal) = signal
-                    && signal.is_alive()
-                {
-                    signal.set(false);
-                }
-            }
-            return;
+            let id = raw.parse::<u64>().ok()?;
+            return MENU_CLOSE_REGISTRY.with(|r| r.borrow().get(&id).copied());
         }
         current = here.parent_node();
     }
+    None
+}
+
+/// Close the menu `signal` belongs to. A freed signal — the item's callback
+/// disposed the scope that owns it — is a no-op: there is nothing left to close.
+pub(crate) fn close_menu_signal(signal: Option<Signal<bool>>) {
+    if let Some(signal) = signal
+        && signal.is_alive()
+    {
+        signal.set(false);
+    }
+}
+
+/// How many menus are registered on this thread (tests: a leak shows as growth).
+#[cfg(test)]
+pub(crate) fn registered_menu_count() -> usize {
+    MENU_CLOSE_REGISTRY.with(|r| r.borrow().len())
 }
 
 /// Reactive callback type for opened state.
@@ -600,8 +607,8 @@ impl Component for DropdownMenuItem {
 
         // Click handler — also closes the parent menu if one exists.
         //
-        // The lookup is `close_nearest_menu(&btn_for_close)`, run from *inside*
-        // the closure at click time rather than resolved once here at render
+        // The lookup is `find_menu_close_signal(&btn_for_close)`, run from
+        // *inside* the closure at click time, before the item's own callback rather than resolved once here at render
         // time (issue #714): an item built inside a reactive block nested in
         // the dropdown renders again on every change to that block's own
         // condition, long after the container's own render — and a lookup
@@ -612,15 +619,16 @@ impl Component for DropdownMenuItem {
         //
         // A freed signal (the callback above disposed the scope that owns it
         // — an item whose action removes the very row the menu hangs off) is a
-        // no-op inside `close_nearest_menu`, same as it was here: there is
+        // no-op inside `close_menu_signal`, same as it was here: there is
         // nothing left to close.
         if let Some(ref cb) = self.onclick {
             let btn_for_close = btn.clone();
             let handler_id = __scope.register_handler({
                 let cb = cb.clone();
                 move || {
+                    let close = find_menu_close_signal(&btn_for_close);
                     cb.invoke();
-                    close_nearest_menu(&btn_for_close);
+                    close_menu_signal(close);
                 }
             });
             btn.set_attribute("data-rid", &handler_id.0.to_string());
