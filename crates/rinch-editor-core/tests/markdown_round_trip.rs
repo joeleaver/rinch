@@ -548,3 +548,11 @@ fn a_newline_in_text_stays_in_its_block() {
         .unwrap();
     rt(&s, &doc(&s, vec![p(&s, vec![img])]));
 }
+
+#[test]
+fn text_shaped_like_an_email_autolink_stays_text() {
+    let s = Schema::starter_kit();
+    for text in ["x <^@a> y", "<1@b.c>", "a<{b@c}>"] {
+        rt(&s, &doc(&s, vec![p(&s, vec![t(&s, text, &[])])]));
+    }
+}
