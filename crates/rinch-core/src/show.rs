@@ -101,6 +101,15 @@ where
 
     let parent_id = parent.node_id();
 
+    // The scope `show_dom` was itself CALLED from (issue #732, round 4):
+    // captured once, here, rather than read off an ambient "what's on the
+    // call stack right now" stack at content-scope-construction time. Every
+    // content scope this call ever builds — at the initial render below AND
+    // from the Effect's later re-runs, however much later that fires — is
+    // given this SAME fixed id as its ancestry parent, so a nested branch
+    // flipping later still chains back to whatever called `show_dom`.
+    let creator_scope_id = scope.id();
+
     // Store render functions as Rc for sharing with Effect
     let then_fn = Rc::new(then_fn);
     let else_fn = else_fn.map(Rc::new);
@@ -124,9 +133,10 @@ where
         render_fn: &dyn Fn(&mut RenderScope) -> NodeHandle,
         current_content: &Rc<RefCell<Vec<NodeHandle>>>,
         current_scope: &Rc<RefCell<Option<RenderScope>>>,
+        creator_scope_id: crate::dom::ScopeId,
     ) {
         if let Some(doc) = doc_weak.upgrade() {
-            let mut child_scope = RenderScope::new(doc, parent_id);
+            let mut child_scope = RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
             // Resources the branch creates belong to the branch's own scope, so
             // flipping the condition takes them with it (issue #141). Covers
             // both entry paths — initial render and the effect-driven swap.
@@ -151,6 +161,7 @@ where
                 then_fn.as_ref(),
                 &current_content,
                 &current_scope,
+                creator_scope_id,
             );
         } else if let Some(ref else_fn) = else_fn {
             insert_content_after_marker(
@@ -160,6 +171,7 @@ where
                 else_fn.as_ref(),
                 &current_content,
                 &current_scope,
+                creator_scope_id,
             );
         }
     }
@@ -260,6 +272,7 @@ where
                         then_fn_clone.as_ref(),
                         &current_content_clone,
                         &current_scope_clone,
+                        creator_scope_id,
                     );
                 });
             } else if let Some(ref else_fn) = else_fn_clone {
@@ -271,6 +284,7 @@ where
                         else_fn.as_ref(),
                         &current_content_clone,
                         &current_scope_clone,
+                        creator_scope_id,
                     );
                 });
             }

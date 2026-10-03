@@ -4343,45 +4343,92 @@ scope, a lazily-built cache, raw backend access) — gets a higher id than the
 watermark purely by chronological accident and was swept into the discard as
 "owned," silently retiring a handle its caller still held.
 
-**The real fix is scope ancestry.** Every `RenderScope` gets a globally
-unique `ScopeId` (`rinch_core::dom::render_scope`'s module doc) and records
-its own parent — the id of whichever `RenderScope`'s render is synchronously
-on the call stack when it is constructed (the top of a thread-local
-`RENDER_SCOPE_STACK`, pushed and popped by [`RenderScope::push_owner`]'s
-guard around exactly the `render_fn`/`view` call, same window that already
-attributes signals/effects to the right owner for #141). Every node a scope
-mints is recorded against that scope's id in a thread-local `MINTED_BY: (doc
-key, NodeId) -> ScopeId` (keyed by document too, since `NodeId` collides
-across documents on one thread — issue #134). `RenderScope::owns_transitively`
-then answers the real question: walk from `node`'s minting scope up through
-`SCOPE_PARENTS` looking for `self` — a node minted by a descendant scope
-(nested arbitrarily deep) finds it and is owned; a node minted by an
-unrelated scope, or by raw backend access with no scope at all, runs out of
-chain (or has none) and is correctly not owned, *regardless of id order*.
-**This also makes the id-monotonicity question moot** — the design the
-watermark needed (ids never reused on the routes these four helpers exercise)
-is no longer load-bearing for anything here, since nothing compares ids at
-all; #723 (rinch-dom's slab recycling elsewhere) can be fixed independently
-without reopening this.
+**The real fix is scope ancestry — and even that needed a second round.**
+Every `RenderScope` gets a globally unique `ScopeId`
+(`rinch_core::dom::render_scope`'s module doc) and records a parent in a
+thread-local `SCOPE_PARENTS: ScopeId -> Option<ScopeId>`; every node a scope
+mints is recorded against that scope's id in the document's own minting
+table (below). `RenderScope::owns_transitively` walks from `node`'s minting
+scope up through `SCOPE_PARENTS` looking for `self` — a node minted by a
+descendant scope (nested arbitrarily deep) finds it and is owned; a node
+minted by an unrelated scope, or by raw backend access with no scope at all,
+runs out of chain (or has none) and is correctly not owned, *regardless of
+id order*.
 
-Both tables are bounded, not permanent: `MINTED_BY`'s entry for a node is
-removed when that node is discarded (`NodeHandle::discard` purges its whole
-subtree first, while `get_children` still answers — one extra walk no more
-expensive than the backend's own recursive retire), and `SCOPE_PARENTS`'
-entry for a scope is removed when the scope itself is dropped (`RenderScope`'s
-`Drop` impl) — which happens no later than its content is discarded, on every
-existing disposal path. `__minted_by_len`/`__scope_parents_len` (test-only)
-are what the growth fixtures below compare across 198 toggles to prove
-neither table leaks.
-`reinsertion_tests::a_nested_for_inside_a_branch_does_not_grow_the_document`,
-its `match_dom`/component twins,
+A first attempt at this (round 3) established the parent link
+**dynamically**: a thread-local "currently rendering" stack, pushed by
+[`RenderScope::push_owner`]'s guard for exactly the duration of a
+`render_fn`/`view` call, and a scope read the top of that stack as its parent
+at construction time. That window is only the outer scope's own **initial,
+synchronous** render — a `for` row inserted later by the for-loop's own
+reconcile `Effect` (the list grows while the branch stays open), a nested
+branch flipping later, or a nested component re-rendering later all
+construct their new content from a *later* reactive flush, with nothing of
+the outer branch's push on the stack any more, so the link was never made:
+misclassified as captured, detached instead of discarded, leaked on every
+subsequent hide. Caught by review before merge — "a list inside a
+conditional, growing while the conditional is open" is ordinary app
+behaviour, not an edge case, and every one of round 3's own fixtures
+happened to use a `for` loop whose `collection` closure returned the same
+list forever, so none of them exercised the insert path at all. (The review
+also found this masking a second time, more subtly: a "grow once, then
+measure delta across 200 further toggles" fixture *passes* even with the bug
+present, because the leak happens on the hide right after the growth, before
+any baseline is taken — every later show/hide cycle re-renders the whole
+list fresh at its now-larger size, so every later row IS correctly linked
+and the earlier leak is baked invisibly into the baseline. The permanent
+fixture for this has to isolate the single hide right after one insert, not
+only measure growth over many cycles.)
+
+Round 4 makes the link **static** instead: each of the four reactive helpers
+captures the [`ScopeId`] of the scope it was itself called from — its own
+`scope: &mut RenderScope` parameter's id — **once**, the moment the helper
+is invoked, and threads that one fixed id into every `RenderScope` it ever
+constructs for this call's content from then on, via
+`RenderScope::with_parent`, at the initial render **and** at every later
+reconcile/re-render its own persistent `Effect` performs, however much later
+that runs. There is no more ambient stack to get the timing of wrong — the
+parent is decided once, by the helper that will always be the content's
+logical parent, not inferred from whatever else happens to be executing when
+a scope happens to be constructed. `push_owner` no longer carries any
+ancestry bookkeeping at all; it is back to only the reactive-ownership guard
+it always was.
+
+**This also makes the id-monotonicity question moot** for the ancestry walk
+itself — nothing compares raw `NodeId` values any more, so #723 (rinch-dom's
+slab recycling elsewhere) can be fixed independently without reopening this.
+
+Both tracking structures are bounded, not permanent, and in two different
+ways. `SCOPE_PARENTS`' entry for a scope is removed when the scope itself is
+dropped (`RenderScope`'s `Drop` impl) — which happens no later than its
+content is discarded, on every existing disposal path. The minting table is
+**one shared table per document**, not a single flat thread-local keyed by
+`(doc_key, NodeId)`: each `RenderScope` holds a strong `Rc` to its own
+document's table (created lazily, looked up by `doc_key` in a thread-local
+registry that holds only a `Weak` to it), so the table deallocates itself —
+by ordinary `Rc` counting — the moment the last `RenderScope` for that
+document is dropped, which is also no later than the document itself stops
+being used. `NodeHandle::discard` purges incrementally as it goes (one
+extra `get_children` pass over exactly what is being thrown away, no more
+expensive than the backend's own recursive retire) for the common case; the
+per-document `Rc`/`Weak` structure is what closes the OTHER case review
+found round 3 missing entirely — **a document torn down without ever
+calling `discard` on anything** (an embed `RinchContext` dropped directly, a
+window closed without a node-by-node walk), which round 3's single flat map
+had no hook for and leaked every entry it had ever recorded, forever.
+`__minted_by_len`/`__scope_parents_len` (test-only; the former now sums
+across every document that still has a live scope) are what the growth
+fixtures compare across many toggles, and what the document-teardown fixture
+compares immediately before and after dropping a whole document's scope tree
+with nothing discarded, to prove neither leaks either way.
+`reinsertion_tests::a_single_hide_after_a_reconcile_insert_does_not_strand_the_inserted_rows`
+(the surgical, non-masked pin for the dynamic-link gap),
+`a_nested_branch_flipped_later_is_still_discarded_when_the_outer_branch_hides`,
+`a_document_dropped_without_discarding_its_tree_leaks_minted_by_forever`,
 `a_node_minted_by_unrelated_code_after_the_wrapper_is_not_owned_by_the_branch`
-(round 2's counter-example, now passing for the right reason),
-`the_scope_ancestry_tables_do_not_grow_with_a_nested_for_inside_a_branch`/
-`..._with_a_plain_captured_handle`, and
-`release_scratch_container_detaches_a_nested_captured_leftover_rather_than_discarding_it`
-(which also kills reordering `discard_owned_preserving_captured`'s two
-statements) are the pins for this half.
+(round 2's counter-example, still passing for the right reason), and the
+`the_scope_ancestry_tables_do_not_grow_with_*` family are the pins for this
+round.
 
 The walk has to run **before** the branch's old `RenderScope` is disposed —
 disposing it can cascade into disposing the very nested scopes

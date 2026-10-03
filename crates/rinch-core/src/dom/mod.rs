@@ -1200,9 +1200,8 @@ pub(crate) fn collect_captured_descendants(
     scope: &RenderScope,
     out: &mut Vec<NodeHandle>,
 ) {
-    let doc_key = root.doc_key();
     for child in root.children() {
-        if scope.owns_transitively(doc_key, child.node_id()) {
+        if scope.owns_transitively(child.node_id()) {
             collect_captured_descendants(&child, scope, out);
         } else {
             out.push(child);
@@ -1290,6 +1289,11 @@ where
     let current_scope: Rc<RefCell<Option<RenderScope>>> = Rc::new(RefCell::new(None));
     let doc_weak = scope.doc_weak();
     let parent_id = parent.node_id();
+    // The scope this call was itself invoked from (issue #732, round 4) —
+    // see the matching note in `show_dom`. Fixed once; every output scope
+    // this call ever builds, on the first run or any later re-render, gets
+    // this as its ancestry parent.
+    let creator_scope_id = scope.id();
 
     let cc = current_content.clone();
     let cs = current_scope.clone();
@@ -1343,7 +1347,7 @@ where
         }
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {
-            let mut child_scope = RenderScope::new(doc, parent_id);
+            let mut child_scope = RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
             // The component's own resources belong to its own scope, not to the
             // effect that re-renders it (issue #141). This is the deepest reach
             // of the ambient owner: `render_fn` runs arbitrary user

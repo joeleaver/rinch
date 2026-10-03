@@ -484,6 +484,14 @@ where
 
     let parent_id = parent.node_id();
 
+    // The scope this call was itself invoked from (issue #732, round 4) —
+    // see the matching note in `show_dom`. Fixed once; every row scope this
+    // call ever builds — at the initial render, on a later `Insert`, or on a
+    // later data-changed re-render — gets this as its ancestry parent,
+    // regardless of how much later the reconcile `Effect` that builds it
+    // fires relative to this call's own synchronous return.
+    let creator_scope_id = scope.id();
+
     // Get weak doc reference for creating new scopes in Effect
     let doc_weak = scope.doc_weak();
 
@@ -530,7 +538,8 @@ where
 
         for item in initial_items {
             if let Some(doc) = doc_weak.upgrade() {
-                let mut child_scope = RenderScope::new(doc, parent_id);
+                let mut child_scope =
+                    RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
                 // Each item owns what its view creates (issue #141). The guard
                 // ends before `state.insert` below, which can displace — and so
                 // dispose — a live item scope on a duplicate key.
@@ -650,7 +659,8 @@ where
                     if let Some(&item) = new_items_map.get(&key)
                         && let Some(doc) = doc_weak_clone.upgrade()
                     {
-                        let mut child_scope = RenderScope::new(doc, parent_id);
+                        let mut child_scope =
+                            RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
                         // Wrap in untracked so signal reads during view rendering
                         // don't subscribe the for-loop's parent effect. Items create
                         // their own effects for reactivity via {|| expr} closures.
@@ -770,7 +780,8 @@ where
                         // Data changed — re-render this item
                         if let Some(doc) = doc_weak_clone.upgrade() {
                             let previous_scope = old_state.scope.take();
-                            let mut child_scope = RenderScope::new(doc, parent_id);
+                            let mut child_scope =
+                                RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
                             // The re-rendered item owns its new resources
                             // (issue #141); the old scope was disposed above,
                             // under the reconcile effect's owner.

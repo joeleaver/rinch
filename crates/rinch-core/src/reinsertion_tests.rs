@@ -1454,3 +1454,333 @@ fn the_scope_ancestry_tables_do_not_grow_with_a_plain_captured_handle() {
          captured handle — baseline {scope_parents_baseline}, delta {scope_parents_delta}"
     );
 }
+
+// ── adversarial review round 3: a row minted by the reconcile EFFECT, not ──
+// ── the branch's initial synchronous render, is not linked as owned ───────
+
+/// Round 3's `owns_transitively` links a `for` row's (or component's) scope
+/// as a child of the branch's scope only via `RENDER_SCOPE_STACK`, which is
+/// pushed by `RenderScope::push_owner` and popped when that call returns —
+/// i.e. only while the branch's **initial, synchronous** render call is on
+/// the stack. Every one of this PR's own "nested for/component" fixtures
+/// uses a `for` loop whose `collection` closure returns the SAME list every
+/// time (`|| vec![1, 2, 3]`), so `diff_keyed` never produces an `Insert` after
+/// the first pass — every row in those fixtures is minted during that first,
+/// synchronous, push_owner-wrapped call.
+///
+/// A real list grows later: `for_each_dom_typed`'s own **reconcile Effect**
+/// (`for_loop.rs`, the `Effect::new(move || { ... })` after the initial
+/// render block) creates a *new* `RenderScope::new(doc, parent_id)` for each
+/// `ListOp::Insert` when the backing signal changes — and that Effect body
+/// runs later, from the reactive flush, with nothing pushed onto
+/// `RENDER_SCOPE_STACK` on the branch's behalf. The new row's recorded parent
+/// is therefore whatever (if anything) was ambient at FLUSH time — not the
+/// branch — so `owns_transitively(branch_scope, new_row)` answers `false`:
+/// the row added after the branch's first render is treated as captured and
+/// is only ever `.remove()`d, never `.discard()`d, on every subsequent hide.
+#[test]
+fn a_row_added_to_a_growing_list_after_the_branch_first_shows_leaks_on_hide() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let visible = Signal::new(false);
+    let items = Signal::new(vec![1u32]);
+
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            for_each_dom_typed(
+                s,
+                &wrap,
+                move || items.get(),
+                |n: &u32| n.to_string(),
+                |n: u32, rs: &mut RenderScope| {
+                    let row = rs.create_element("li");
+                    let text = rs.create_text(&n.to_string());
+                    row.append_child(&text);
+                    row
+                },
+            );
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    // Initial show: one row, minted during the branch's own synchronous
+    // push_owner window -- correctly linked under round 3's own mechanism.
+    visible.set(true);
+    // Grow the list WHILE the branch stays visible: this is the for-loop's
+    // reconcile Effect's `Insert` path, firing from the reactive flush, not
+    // from inside show_dom's push_owner call.
+    items.set(vec![1, 2, 3]);
+
+    // End on a known, stable state (shown) before measuring, same as the
+    // existing #732 growth fixtures, to avoid measuring across a parity
+    // artifact rather than real growth.
+    visible.set(false);
+    visible.set(true);
+    let baseline = doc.borrow().__node_count() as isize;
+
+    for i in 0..200 {
+        visible.set(i % 2 == 0);
+        // Keep the list at 3 items on every re-show so the per-cycle cost is
+        // identical across iterations (no further growth/shrink noise).
+        if i % 2 == 0 {
+            items.set(vec![1, 2, 3]);
+        }
+    }
+    visible.set(true);
+
+    let after = doc.borrow().__node_count() as isize;
+    let delta = after - baseline;
+    assert_eq!(
+        delta, 0,
+        "#732 round 3: a row minted by the for-loop's RECONCILE EFFECT \
+         (added to the list after the branch's first render) must not leak \
+         when the branch repeatedly hides and reshows -- leaked {delta} \
+         nodes over 200 toggles. If this fails, the new row's RenderScope \
+         parent was not linked to the branch's scope (RENDER_SCOPE_STACK was \
+         not populated at reconcile-effect-run time), so it is misclassified \
+         as captured and only detached, never discarded."
+    );
+}
+
+/// Surgical variant of the above: measures node count immediately AROUND the
+/// single hide that follows the reconcile-inserted rows, rather than after
+/// many toggles (where a later full re-render of the for-loop, which reads
+/// the already-grown list on its OWN initial pass, re-links everything
+/// correctly and can mask an earlier leak baked into a later "baseline").
+#[test]
+fn a_single_hide_after_a_reconcile_insert_does_not_strand_the_inserted_rows() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let visible = Signal::new(false);
+    let items = Signal::new(vec![1u32]);
+
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            for_each_dom_typed(
+                s,
+                &wrap,
+                move || items.get(),
+                |n: &u32| n.to_string(),
+                |n: u32, rs: &mut RenderScope| {
+                    let row = rs.create_element("li");
+                    let text = rs.create_text(&n.to_string());
+                    row.append_child(&text);
+                    row
+                },
+            );
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    let before_anything = doc.borrow().__node_count() as isize;
+
+    // Initial show: ONE row, minted synchronously inside the branch's
+    // push_owner window.
+    visible.set(true);
+
+    // Grow the list while visible: for_loop's reconcile Effect inserts TWO
+    // more rows (4 nodes: 2 <li> + 2 text) via its own `RenderScope::new`
+    // call, made from inside the Effect's later run -- not nested inside
+    // show_dom's push_owner call.
+    items.set(vec![1, 2, 3]);
+
+    // Hide ONCE. If every row the for-loop built is correctly owned by the
+    // branch's scope, this discards everything the branch holds (wrap, all
+    // three rows, their text, the for-loop's own marker) and node count
+    // returns to the pre-show baseline. If the two reconcile-inserted rows
+    // were misclassified as captured, they are only detached -- still
+    // present in the mock's table, stranded with no parent.
+    visible.set(false);
+
+    let after_hide = doc.borrow().__node_count() as isize;
+    assert_eq!(
+        after_hide,
+        before_anything,
+        "#732 round 3: hiding the branch once, right after the for-loop's \
+         reconcile Effect inserted two new rows into an already-visible \
+         list, left {} extra node(s) in the document table -- they were \
+         detached rather than discarded because the reconcile-inserted \
+         rows' RenderScope was not linked as a descendant of the branch's \
+         scope (RENDER_SCOPE_STACK is only populated during the branch's \
+         own synchronous push_owner call, not during a later Effect run)",
+        after_hide - before_anything
+    );
+}
+
+/// A document that is dropped WITHOUT walking its tree through
+/// `NodeHandle::discard` (closing an embed `RinchContext`, a window torn
+/// down directly, or simply letting a `Rc<RefCell<dyn DomDocument>>` and its
+/// `RenderScope`s go out of scope) leaks every `MINTED_BY` entry it ever
+/// created, for the rest of the thread's life -- `purge_minted_by_subtree`
+/// is only ever called from `NodeHandle::discard`, and nothing hooks
+/// document teardown itself. `SCOPE_PARENTS` self-heals (removed by each
+/// `RenderScope`'s own `Drop`, which still runs when the Rust values are
+/// simply dropped), but `MINTED_BY` has no such hook: it is a map keyed by
+/// `(doc_key, NodeId)`, not owned by any `RenderScope`.
+#[test]
+fn a_document_dropped_without_discarding_its_tree_leaks_minted_by_forever() {
+    let minted_by_baseline = crate::dom::__minted_by_len();
+
+    {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        // Mint 50 nodes through the scope -- a realistic small page.
+        let parent = body_handle(&doc);
+        for i in 0..50 {
+            let el = sc.create_element("div");
+            let text = sc.create_text(&i.to_string());
+            el.append_child(&text);
+            parent.append_child(&el);
+        }
+        // `doc` and `sc` are dropped here at the end of the block -- NOT
+        // via `NodeHandle::discard()` on anything, which is exactly what
+        // happens when an embed `RinchContext` (or a desktop window) is torn
+        // down directly rather than walked node-by-node.
+    }
+
+    let minted_by_after = crate::dom::__minted_by_len();
+    let leaked = minted_by_after as isize - minted_by_baseline as isize;
+    assert_eq!(
+        leaked, 0,
+        "#732 round 3: dropping a document's Rc/RenderScope tree directly \
+         (no `NodeHandle::discard` call on anything) leaked {leaked} \
+         MINTED_BY entries that will never be purged for the rest of this \
+         thread's life -- MINTED_BY is a bare thread-local with no \
+         document-teardown hook, only a per-discard one"
+    );
+}
+
+// ── round 4: the static parent link, exercised for the two remaining ───────
+// ── "later" shapes the round-3 review named but did not fixture ────────────
+
+/// A nested `show_dom` branch that flips **later** — via its own persistent
+/// Effect, while the outer branch stays visible — must still be fully
+/// discarded (not stranded) when the OUTER branch is hidden. Same mechanism
+/// as the reconcile-insert fixtures above (round 3's dynamic
+/// `RENDER_SCOPE_STACK` link was only ever live during the outer branch's
+/// own initial, synchronous render; the inner branch's later flip runs from
+/// a separate reactive flush with nothing of the outer's on the stack),
+/// fixed the same way (round 4's static, helper-captured parent id).
+#[test]
+fn a_nested_branch_flipped_later_is_still_discarded_when_the_outer_branch_hides() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let outer_visible = Signal::new(false);
+    let inner_visible = Signal::new(false);
+    show_dom(
+        &mut sc,
+        &body,
+        move || outer_visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            show_dom(
+                s,
+                &wrap,
+                move || inner_visible.get(),
+                |inner_s: &mut RenderScope| inner_s.create_element("p"),
+                None::<fn(&mut RenderScope) -> NodeHandle>,
+            );
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    // Show the outer branch (builds `wrap` + the inner `show_dom`'s own
+    // marker, inner hidden). Then flip the INNER branch on, LATER, from its
+    // own Effect -- not from the outer branch's initial render, which
+    // already returned.
+    outer_visible.set(true);
+    inner_visible.set(true);
+
+    let baseline = doc.borrow().__node_count() as isize;
+
+    // Hide the outer branch ONCE. If the inner `<p>` (minted by the inner
+    // show_dom's later-firing Effect) is correctly linked as a descendant of
+    // the outer branch's scope, discarding `wrap` takes it with it.
+    // Misclassified as captured, it is only detached and stranded.
+    outer_visible.set(false);
+
+    let after = doc.borrow().__node_count() as isize;
+    assert_eq!(
+        after,
+        baseline - 3, // wrap + inner show_dom's marker + the inner <p>
+        "#732 round 4: a nested branch flipped later (not during the outer \
+         branch's initial render) must still be fully discarded when the \
+         outer branch hides -- {} node(s) were stranded instead",
+        after - (baseline - 3)
+    );
+}
+
+/// The scope-ancestry tables must not leak either, across many toggles of
+/// this exact "inner branch flips later" shape.
+#[test]
+fn the_scope_ancestry_tables_do_not_grow_with_a_branch_flipped_later() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let outer_visible = Signal::new(false);
+    let inner_visible = Signal::new(false);
+    show_dom(
+        &mut sc,
+        &body,
+        move || outer_visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            show_dom(
+                s,
+                &wrap,
+                move || inner_visible.get(),
+                |inner_s: &mut RenderScope| inner_s.create_element("p"),
+                None::<fn(&mut RenderScope) -> NodeHandle>,
+            );
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    // End on a stable, parity-matched baseline: outer hidden, inner hidden.
+    outer_visible.set(true);
+    inner_visible.set(true);
+    outer_visible.set(false);
+    let minted_by_baseline = crate::dom::__minted_by_len();
+    let scope_parents_baseline = crate::dom::__scope_parents_len();
+
+    for _ in 0..100 {
+        outer_visible.set(true);
+        inner_visible.set(true);
+        outer_visible.set(false);
+        inner_visible.set(false);
+    }
+
+    let minted_by_delta = crate::dom::__minted_by_len() as isize - minted_by_baseline as isize;
+    let scope_parents_delta =
+        crate::dom::__scope_parents_len() as isize - scope_parents_baseline as isize;
+    assert_eq!(
+        minted_by_delta, 0,
+        "#732 round 4: MINTED_BY must not grow across a branch-flipped-later \
+         cycle -- baseline {minted_by_baseline}, delta {minted_by_delta}"
+    );
+    assert_eq!(
+        scope_parents_delta, 0,
+        "#732 round 4: SCOPE_PARENTS must not grow across a \
+         branch-flipped-later cycle -- baseline {scope_parents_baseline}, \
+         delta {scope_parents_delta}"
+    );
+}

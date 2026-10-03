@@ -61,6 +61,12 @@ where
     let doc_weak = scope.doc_weak();
     let branches = Rc::new(branches);
 
+    // The scope `match_dom` was itself called from (issue #732, round 4) —
+    // see the matching note in `show_dom`. Fixed once; every arm scope this
+    // call ever builds, at the initial render or from a later arm swap, gets
+    // this as its ancestry parent.
+    let creator_scope_id = scope.id();
+
     // Track current state
     let current_index: Rc<RefCell<usize>> = Rc::new(RefCell::new(usize::MAX)); // sentinel
     let current_content: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
@@ -76,9 +82,10 @@ where
         branch_fn: &dyn Fn(&mut RenderScope) -> NodeHandle,
         current_content: &Rc<RefCell<Vec<NodeHandle>>>,
         current_scope: &Rc<RefCell<Option<RenderScope>>>,
+        creator_scope_id: crate::dom::ScopeId,
     ) {
         if let Some(doc) = doc_weak.upgrade() {
-            let mut child_scope = RenderScope::new(doc, parent_id);
+            let mut child_scope = RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
             // Attribute the branch's resources to the branch's own scope
             // (issue #141). Covers the initial render and the arm swap alike.
             let content = {
@@ -102,6 +109,7 @@ where
             branches[initial_idx].as_ref(),
             &current_content,
             &current_scope,
+            creator_scope_id,
         );
     }
 
@@ -180,6 +188,7 @@ where
                         branches_clone[new_idx].as_ref(),
                         &content_clone,
                         &scope_clone,
+                        creator_scope_id,
                     );
                 });
             }

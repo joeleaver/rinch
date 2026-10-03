@@ -10,7 +10,7 @@ use super::traits::DomDocument;
 use super::{NodeHandle, NodeId, next_reactive_id};
 
 // ============================================================================
-// Scope ancestry (issue #732, round 3)
+// Scope ancestry (issue #732, rounds 3 and 4)
 // ============================================================================
 //
 // Rounds 1 and 2 of #732 both tried to answer "is this node owned by my
@@ -23,52 +23,76 @@ use super::{NodeHandle, NodeId, next_reactive_id};
 // accident, so it gets swept into a discard it should have been excluded
 // from). Both were caught by adversarial review before merge.
 //
-// This is real ownership: every `RenderScope` gets a globally unique
-// [`ScopeId`], records its own **parent** scope id (the one whose render is
-// synchronously on the call stack when this scope is constructed — see
-// [`RenderScope::push_owner`]), and every node a scope mints is recorded
-// against that scope's id. "Is `node` owned by `scope`" is then a literal
-// walk up `node`'s minting scope's ancestor chain, looking for `scope` — not
-// a numeric proxy for it.
+// Round 3 introduced real ancestry (a [`ScopeId`] per scope, a recorded
+// parent, a `node -> minting scope` table) but established the parent link
+// **dynamically**: a scope constructed while some outer scope's
+// `push_owner()` guard happened to be on the call stack recorded that
+// scope's id as its parent. That window is only the outer scope's own
+// **initial, synchronous** render call — a `for` row inserted later by its
+// own reconcile `Effect` (list growth), a nested branch flipping later, or a
+// nested component re-rendering later all construct their new content's
+// `RenderScope` from a later reactive flush, with nothing of the outer
+// branch's on the stack any more, so the link was never made and the new
+// content was misclassified as captured. Caught by review before merge.
+//
+// Round 4 makes the link **static** instead: each of the four reactive
+// helpers (`show_dom`, `match_dom`, `for_each_dom_typed`,
+// `reactive_component_dom`) captures the [`ScopeId`] of the scope it was
+// itself called from — [`RenderScope::id`] of its `scope: &mut RenderScope`
+// parameter — once, at the moment the helper is invoked, and threads that
+// one fixed id into every `RenderScope` it ever constructs for this call's
+// content from then on, via [`RenderScope::with_parent`] — at the initial
+// render AND at every later reconcile/re-render the helper's own persistent
+// `Effect` performs, however much later that runs. There is no more ambient
+// stack to get the timing of wrong: the parent a scope is given is decided
+// once, by the helper that will always be its logical parent, not by
+// whatever else happens to be executing when it happens to be constructed.
 
 /// A globally unique id for one `RenderScope` instance, for exactly as long
 /// as that scope (or any node it minted) might still be asked about.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ScopeId(u64);
 
+/// One document's minting table — see [`DOC_MINTED_BY`].
+type MintedByTable = Rc<RefCell<HashMap<NodeId, ScopeId>>>;
+/// A non-owning reference to one document's minting table — what
+/// [`DOC_MINTED_BY`] itself holds.
+type WeakMintedByTable = Weak<RefCell<HashMap<NodeId, ScopeId>>>;
+
 thread_local! {
     /// Monotonic generator for [`ScopeId`] — one counter per thread, since
     /// `RenderScope`s (like `NodeId`s) are never compared across threads.
     static NEXT_SCOPE_ID: Cell<u64> = const { Cell::new(0) };
 
-    /// The ambient "currently rendering" stack: the id of every `RenderScope`
-    /// whose render call (`render_fn`/`view`, wrapped in
-    /// [`RenderScope::push_owner`]) is synchronously on the call stack right
-    /// now, innermost last. A scope constructed while this is non-empty
-    /// records its top as its parent — exactly the nesting a `for` row, a
-    /// re-rendered component's output, or a nested `if`/`match` branch is
-    /// built through, and exactly what a node minted by *unrelated* code
-    /// (nothing pushed here) does not get.
-    static RENDER_SCOPE_STACK: RefCell<Vec<ScopeId>> = const { RefCell::new(Vec::new()) };
-
-    /// Every live scope's parent, `None` for one built with nothing ambient
-    /// (a document's root scope, or any scope built outside a render call).
-    /// Removed when the scope itself is dropped — see `RenderScope`'s `Drop`
-    /// impl — which is safe once nothing can walk through it any more: a
-    /// walk only ever needs an *ancestor's* parent, read while collecting
-    /// before the branch's own scope is disposed (every caller already must,
-    /// since the watermark this replaced was read the same way), and a
-    /// descendant scope (a row, a nested branch) outlives or is disposed no
-    /// later than its own content, independently of this map.
+    /// Every live scope's parent, `None` for one built with nothing
+    /// explicitly supplied ([`RenderScope::new`] — a document's root scope,
+    /// or any scope built outside a reactive helper entirely). Removed when
+    /// the scope itself is dropped — see `RenderScope`'s `Drop` impl — which
+    /// is safe once nothing can walk through it any more: a walk only ever
+    /// needs an *ancestor's* parent, read while collecting before the
+    /// branch's own scope is disposed, and a descendant scope (a row, a
+    /// nested branch) outlives or is disposed no later than its own
+    /// content, independently of this map.
     static SCOPE_PARENTS: RefCell<HashMap<ScopeId, Option<ScopeId>>> = RefCell::new(HashMap::new());
 
-    /// Which scope minted each live node, keyed by `(doc_key, NodeId)` since
-    /// `NodeId` is a per-document slab index and collides across documents on
-    /// one thread (issue #134). Removed when the node is discarded —
-    /// [`NodeHandle::discard`] purges its whole subtree before handing it to
-    /// the backend — so this holds exactly the nodes some live `RenderScope`
-    /// minted and nothing has yet discarded, not every node ever created.
-    static MINTED_BY: RefCell<HashMap<(u64, NodeId), ScopeId>> = RefCell::new(HashMap::new());
+    /// One shared minting table **per document**, so it can be dropped with
+    /// the document instead of living in a single flat thread-local forever
+    /// (issue #732, round 4's second finding). Keyed by `doc_key` (issue
+    /// #134: `NodeId` collides across documents on one thread), holding only
+    /// a [`Weak`] reference — the [`Rc`] strong reference lives on every
+    /// `RenderScope` for that document (`RenderScope::minted_by`), so the
+    /// table deallocates itself, by ordinary `Rc` counting, the moment the
+    /// last `RenderScope` referencing that document is dropped. That happens
+    /// no later than the document itself stops being used — an embed
+    /// `RinchContext` dropped directly, a window closed without an explicit
+    /// node-by-node discard walk — which is exactly the teardown path round
+    /// 3's single flat map had no hook for at all. A document that calls
+    /// [`NodeHandle::discard`] on everything purges incrementally as it goes
+    /// (see `purge_minted_by_subtree`) and this table is already near-empty
+    /// by the time its last scope drops; one that doesn't still cannot leak
+    /// past that point.
+    static DOC_MINTED_BY: RefCell<HashMap<u64, WeakMintedByTable>> =
+        RefCell::new(HashMap::new());
 }
 
 fn next_scope_id() -> ScopeId {
@@ -79,38 +103,70 @@ fn next_scope_id() -> ScopeId {
     })
 }
 
-/// Remove every `(doc_key, id)` under `root`'s subtree from [`MINTED_BY`]
-/// (issue #732, round 3) — called from [`NodeHandle::discard`] before the
-/// backend retires the subtree, while `get_children` still answers.
+/// The shared minting table for `doc_key`, creating it if this is the first
+/// `RenderScope` on this thread to ask for it. Returns a **strong**
+/// reference — see [`DOC_MINTED_BY`]'s own doc for why holding it is what
+/// keeps the table alive for exactly as long as it is needed.
+fn doc_minted_by_table(doc_key: u64) -> MintedByTable {
+    DOC_MINTED_BY.with(|r| {
+        let mut r = r.borrow_mut();
+        if let Some(existing) = r.get(&doc_key).and_then(Weak::upgrade) {
+            return existing;
+        }
+        let table = Rc::new(RefCell::new(HashMap::new()));
+        r.insert(doc_key, Rc::downgrade(&table));
+        table
+    })
+}
+
+/// Remove every id under `root`'s subtree from its document's minting table
+/// (issue #732) — called from [`NodeHandle::discard`] before the backend
+/// retires the subtree, while `get_children` still answers.
 ///
 /// Bounded by the discarded subtree, the same shape as
 /// [`collect_captured_descendants`](super::collect_captured_descendants)'s
 /// walk and no more expensive than the recursive retire the backend itself
 /// performs: one extra `get_children` pass over exactly what is being thrown
-/// away, never over the whole document. This is what keeps `MINTED_BY` from
-/// growing without bound — every node any `RenderScope` ever minted is
-/// recorded there, so without this every discard anywhere in the app (not
-/// only the four reactive helpers) would leak one entry per node, forever.
+/// away, never over the whole document. This is the **incremental** half of
+/// keeping the minting table bounded; the other half, for a document torn
+/// down WITHOUT ever calling `discard`, is `DOC_MINTED_BY`'s own `Rc`/`Weak`
+/// structure (see its doc). If no `RenderScope` for this document is alive
+/// any more, there is nothing to purge — `doc_minted_by_table` would only
+/// mint a fresh, empty table, so this is a no-op rather than resurrecting one.
 pub(crate) fn purge_minted_by_subtree(root: &NodeHandle) {
     let doc_key = root.doc_key();
-    fn walk(node: &NodeHandle, doc_key: u64) {
-        MINTED_BY.with(|m| {
-            m.borrow_mut().remove(&(doc_key, node.node_id()));
-        });
+    let Some(table) = DOC_MINTED_BY.with(|r| r.borrow().get(&doc_key).and_then(Weak::upgrade))
+    else {
+        return;
+    };
+    fn walk(node: &NodeHandle, table: &RefCell<HashMap<NodeId, ScopeId>>) {
+        table.borrow_mut().remove(&node.node_id());
         for child in node.children() {
-            walk(&child, doc_key);
+            walk(&child, table);
         }
     }
-    walk(root, doc_key);
+    walk(root, &table);
 }
 
-/// **Test-only.** How many nodes [`MINTED_BY`] currently holds a minting
-/// scope for — every node some live `RenderScope` has minted and no discard
-/// has yet purged (issue #732, round 3). What a growth fixture compares
-/// across many toggles to prove this table does not leak.
+/// **Test-only.** How many nodes some document's minting table currently
+/// holds a minting scope for, summed across every document that still has a
+/// live `RenderScope` on this thread — every node some live `RenderScope`
+/// has minted and no discard has yet purged, in a document that has not
+/// (yet) been dropped out from under its scopes entirely (issue #732).
+/// What a growth fixture compares across many toggles to prove this does
+/// not leak, and what a document-teardown fixture compares before and after
+/// dropping a whole document's scope tree to prove that path does not leak
+/// either — a dropped document's table is gone from this sum the moment its
+/// last `RenderScope` is dropped, with no further action needed.
 #[doc(hidden)]
 pub fn __minted_by_len() -> usize {
-    MINTED_BY.with(|m| m.borrow().len())
+    DOC_MINTED_BY.with(|r| {
+        r.borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(|t| t.borrow().len())
+            .sum()
+    })
 }
 
 /// **Test-only.** How many scopes [`SCOPE_PARENTS`] currently holds a parent
@@ -155,50 +211,54 @@ pub struct RenderScope {
     /// [`RenderScope::on_cleanup`]. Cleanups deliberately live here and not in a
     /// second list on `RenderScope`, so they run on drop as well as on dispose.
     reactive_scope: Scope,
-    /// This scope's own identity in the ancestry tracking above (issue #732,
-    /// round 3). Assigned once, at construction, and never reused.
+    /// This scope's own identity in the ancestry tracking above (issue #732).
+    /// Assigned once, at construction, and never reused.
     id: ScopeId,
-}
-
-/// Returned by [`RenderScope::push_owner`]. Pops this scope's id off
-/// [`RENDER_SCOPE_STACK`] on drop, alongside disposing the reactive
-/// ownership guard it wraps.
-#[doc(hidden)]
-pub struct RenderOwnerGuard {
-    _reactive: crate::reactive::OwnerGuard,
-    scope_id: ScopeId,
-}
-
-impl Drop for RenderOwnerGuard {
-    fn drop(&mut self) {
-        RENDER_SCOPE_STACK.with(|s| {
-            let mut s = s.borrow_mut();
-            debug_assert_eq!(
-                s.last().copied(),
-                Some(self.scope_id),
-                "RenderOwnerGuard dropped out of order — the render-scope \
-                 ambient stack must be LIFO, like the reactive owner stack it \
-                 mirrors"
-            );
-            s.pop();
-        });
-    }
+    /// This scope's document's shared minting table — a strong reference,
+    /// which is what keeps [`DOC_MINTED_BY`]'s entry for this document alive
+    /// for exactly as long as any `RenderScope` for it still exists. See that
+    /// static's own doc.
+    minted_by: MintedByTable,
 }
 
 impl RenderScope {
-    /// Create a new render scope rooted at the given node.
+    /// Create a new render scope rooted at the given node, with **no**
+    /// parent in the ancestry tracking above — correct for a document's
+    /// root scope, or any scope built outside a reactive helper entirely.
     ///
-    /// Records this scope's **parent** as whatever `RenderScope`'s render is
-    /// synchronously on the call stack right now (the top of
-    /// [`RENDER_SCOPE_STACK`]) — `None` if nothing is, which is correct for a
-    /// document's root scope and for any scope built outside a render call
-    /// entirely. See the module-level doc above [`ScopeId`].
+    /// A reactive helper (`show_dom`, `match_dom`, `for_each_dom_typed`,
+    /// `reactive_component_dom`) must call
+    /// [`with_parent`](Self::with_parent) instead, naming the scope it was
+    /// itself invoked from — see the module-level doc above [`ScopeId`] for
+    /// why that has to be a fixed id captured once rather than read from an
+    /// ambient stack at construction time.
     pub fn new(doc: Rc<RefCell<dyn DomDocument>>, parent_id: NodeId) -> Self {
+        Self::with_parent(doc, parent_id, None)
+    }
+
+    /// Create a new render scope rooted at the given node, recording
+    /// `parent` as its ancestry parent (issue #732, round 4) — `None` is
+    /// exactly [`new`](Self::new).
+    ///
+    /// Every reactive helper that constructs content on behalf of an outer
+    /// scope — including from a later `Effect` re-run, not only its own
+    /// initial render — must pass that outer scope's
+    /// [`id`](Self::id), captured once when the helper itself was called, so
+    /// that content a `for` row insert, a nested branch flip, or a nested
+    /// component re-render builds **later** still chains back to the right
+    /// ancestor; an ambient "what's on the call stack right now" answer is
+    /// wrong exactly at this moment, since a later `Effect`'s flush is not
+    /// nested inside anything the outer branch's own render call pushed.
+    pub(crate) fn with_parent(
+        doc: Rc<RefCell<dyn DomDocument>>,
+        parent_id: NodeId,
+        parent: Option<ScopeId>,
+    ) -> Self {
         let id = next_scope_id();
-        let parent = RENDER_SCOPE_STACK.with(|s| s.borrow().last().copied());
         SCOPE_PARENTS.with(|m| {
             m.borrow_mut().insert(id, parent);
         });
+        let doc_key = doc.borrow().doc_key();
         Self {
             doc: Rc::downgrade(&doc),
             parent_id,
@@ -207,7 +267,16 @@ impl RenderScope {
             children: Vec::new(),
             reactive_scope: Scope::new(),
             id,
+            minted_by: doc_minted_by_table(doc_key),
         }
+    }
+
+    /// This scope's own [`ScopeId`] (issue #732, round 4) — what a reactive
+    /// helper captures, once, at the moment it is called, to hand to every
+    /// `RenderScope` it later constructs via
+    /// [`with_parent`](Self::with_parent).
+    pub(crate) fn id(&self) -> ScopeId {
+        self.id
     }
 
     /// Whether this scope minted `node` (issue #719).
@@ -273,25 +342,26 @@ impl RenderScope {
     }
 
     /// Whether `node` was minted by **this scope, or by any scope that is
-    /// transitively a child of this scope's render** (issue #732, round 3) —
-    /// real ownership, not a numeric proxy for it. Walks `node`'s minting
-    /// scope's recorded parent chain ([`SCOPE_PARENTS`]) looking for `self`'s
-    /// own id; answers `false` once the chain runs out (reaches a scope with
-    /// no parent, which is where an unrelated/outer scope — the thing round 2
+    /// transitively a child of this scope's render** (issue #732) — real
+    /// ownership, not a numeric proxy for it. Walks `node`'s minting scope's
+    /// recorded parent chain ([`SCOPE_PARENTS`]) looking for `self`'s own
+    /// id; answers `false` once the chain runs out (reaches a scope with no
+    /// parent, which is where an unrelated/outer scope — the thing round 2
     /// misclassified as owned — always ends up) or if `node` was never
     /// minted through any `RenderScope` at all (raw backend access — also
-    /// correctly "not owned").
+    /// correctly "not owned"). `node` must belong to `self`'s own document —
+    /// every real call site asks this only of a descendant inside a subtree
+    /// it is already walking, which is always true.
     ///
-    /// Cost is one `HashMap` lookup in [`MINTED_BY`] plus one further lookup
-    /// per level of scope nesting between `node`'s own scope and `self` — the
-    /// "× scope depth" the walk in
+    /// Cost is one `HashMap` lookup in `self`'s document's minting table
+    /// plus one further lookup per level of scope nesting between `node`'s
+    /// own scope and `self` — the "× scope depth" the walk in
     /// [`collect_captured_descendants`](super::collect_captured_descendants)
     /// pays per node, which is small and bounded (a document rarely nests
     /// reactive helpers more than a handful of levels deep), never a function
     /// of document size.
-    pub(crate) fn owns_transitively(&self, doc_key: u64, node: NodeId) -> bool {
-        let Some(mut current) = MINTED_BY.with(|m| m.borrow().get(&(doc_key, node)).copied())
-        else {
+    pub(crate) fn owns_transitively(&self, node: NodeId) -> bool {
+        let Some(mut current) = self.minted_by.borrow().get(&node).copied() else {
             return false;
         };
         if current == self.id {
@@ -317,12 +387,7 @@ impl RenderScope {
     /// and, for the cross-scope question, [`owns_transitively`](Self::owns_transitively).
     fn own(&mut self, id: NodeId) -> NodeId {
         self.created.push(id);
-        if let Some(doc) = self.doc() {
-            let doc_key = doc.borrow().doc_key();
-            MINTED_BY.with(|m| {
-                m.borrow_mut().insert((doc_key, id), self.id);
-            });
-        }
+        self.minted_by.borrow_mut().insert(id, self.id);
         id
     }
 
@@ -400,25 +465,23 @@ impl RenderScope {
     /// let node = { let _owner = child_scope.push_owner(); view(&item, &mut child_scope) };
     /// ```
     ///
-    /// **Also** pushes this scope's id onto [`RENDER_SCOPE_STACK`] for the
-    /// guard's lifetime (issue #732, round 3): this is the *only* place that
-    /// stack is pushed, and it is exactly the window in which a
-    /// `RenderScope::new(..)` a nested helper (a `for` row, a re-rendered
-    /// component) constructs should record this scope as its parent. A
-    /// scope built outside this window — before the branch's render even
-    /// starts, or by code this render merely happens to run alongside rather
-    /// than call into — gets no parent here, which is the fix for round 2's
-    /// hole.
+    /// Issue #732, round 4: this guard no longer carries any scope-ancestry
+    /// bookkeeping (round 3's `RENDER_SCOPE_STACK` push/pop is gone). The
+    /// ancestry link a reactive helper's content needs is now a **fixed**
+    /// id that helper captured once from [`RenderScope::id`] at the moment
+    /// it was called, threaded explicitly into [`RenderScope::with_parent`]
+    /// at every point it constructs content — including from a later
+    /// `Effect` re-run — rather than inferred from whatever is ambient on a
+    /// call stack at construction time, which round 3 got wrong for exactly
+    /// that later-Effect case (a `for` row insert, a nested branch flip, a
+    /// nested component re-render, all happening after the outer branch's
+    /// own initial render had already returned).
     ///
     /// Takes `&self` and returns a lifetime-free guard, so the `&mut` borrow of
     /// the same scope on the next line is still legal.
     #[doc(hidden)]
-    pub fn push_owner(&self) -> RenderOwnerGuard {
-        RENDER_SCOPE_STACK.with(|s| s.borrow_mut().push(self.id));
-        RenderOwnerGuard {
-            _reactive: self.reactive_scope.push_owner(),
-            scope_id: self.id,
-        }
+    pub fn push_owner(&self) -> crate::reactive::OwnerGuard {
+        self.reactive_scope.push_owner()
     }
 
     /// What this scope owns. See [`OwnedCounts`](crate::reactive::OwnedCounts).
