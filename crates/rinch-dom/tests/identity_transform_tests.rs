@@ -279,10 +279,47 @@ fn a_transition_that_finishes_at_none_stops_being_a_context() {
     assert!(n.establishes_abs_containing_block(), "mid-run");
     rinch_dom::transition::tick_transitions(&mut doc.tree, t0 + 1500.0);
     let n = &doc.tree.nodes[div.0];
-    assert!(n.computed_style.transform.functions.is_empty(), "finished: none");
+    assert!(
+        n.computed_style.transform.functions.is_empty(),
+        "finished: none"
+    );
     assert!(!n.creates_stacking_context(), "finished at none");
     assert!(!n.establishes_abs_containing_block(), "finished at none");
-    assert!(!n.has_applied_transform(), "finished at none: nothing to paint");
+    assert!(
+        !n.has_applied_transform(),
+        "finished at none: nothing to paint"
+    );
+}
+
+/// The same through the document's own tick, which is what the shells call:
+/// the finishing frame stops the div being the containing block, and the abs
+/// under it — whose box is baked into its Taffy style — resolves against the
+/// initial containing block again with no cascade of its own (Chrome: the abs
+/// fills the viewport once the transition has finished).
+#[test]
+fn the_abs_child_follows_a_transition_that_finishes_at_none() {
+    let (mut doc, div) = transition_doc("translateX(20px)", "none");
+    let abs = NodeId(doc.tree.nodes[div.0].children[0]);
+    transition_start(&mut doc, div);
+    assert_eq!(
+        size(&doc, abs),
+        (200.0, 80.0),
+        "mid-run: the div contains it"
+    );
+    // Back-date the run so the wall-clock tick finishes it.
+    for t in doc
+        .tree
+        .active_transitions
+        .get_mut(&div.0)
+        .unwrap()
+        .values_mut()
+    {
+        t.start_time_ms -= 10_000.0;
+    }
+    doc.tick_transitions();
+    assert!(!doc.tree.nodes[div.0].establishes_abs_containing_block());
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(size(&doc, abs), VIEWPORT, "finished at none");
 }
 
 /// The twin: a transition that finishes at `translateX(0)` stays a context.
@@ -323,4 +360,31 @@ fn an_animation_filled_at_an_identity_stays_a_context() {
     // A resize forces the re-layout the finished fill needs.
     doc.resolve_layout(VIEWPORT.0 + 1.0, VIEWPORT.1);
     assert_eq!(size(&doc, abs), (200.0, 80.0));
+}
+
+/// Chrome: an animation filled `forwards` at a `transform: none` keyframe
+/// reports `matrix(1, 0, 0, 1, 0, 0)` — the padded identity list, not `none` —
+/// and is still the containing block of its abs. The fill is written through
+/// the same path as every frame, which never writes `none`.
+#[test]
+fn an_animation_filled_at_a_none_keyframe_stays_a_context() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let style_el = doc.create_element("style");
+    let css = doc.create_text(
+        "@keyframes k { from { transform: translateX(30px); } to { transform: none; } } \
+         .a { width: 200px; height: 80px; animation: k 1000ms linear forwards; }",
+    );
+    doc.append_child(style_el, css);
+    doc.append_child(body, style_el);
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "a");
+    doc.append_child(body, div);
+    el(&mut doc, "div", div, "position: absolute; inset: 0");
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    let t0 = doc.tree.active_animations[&div.0][0].start_time_ms;
+    rinch_dom::animation::tick_animations(&mut doc.tree, t0 + 1500.0);
+    let n = &doc.tree.nodes[div.0];
+    assert!(n.creates_stacking_context());
+    assert!(n.establishes_abs_containing_block());
 }
