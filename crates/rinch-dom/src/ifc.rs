@@ -4947,13 +4947,35 @@ impl RinchDocument {
                 // IFC discovery (`build_ifc_layouts` finds roots by marked
                 // children) seeing a comment-only container.
                 InlineFlowRole::Comment | InlineFlowRole::Inline => {
+                    // Detach from the Taffy node's *actual current parent*
+                    // (`taffy.parent`), not from a test against
+                    // `root_taffy_children` (#653, review of #1333). That test
+                    // only ever matches a member whose own `taffy_id` is a
+                    // *direct* Taffy child of the outermost root — true for a
+                    // `<span>` found at this recursion's top level, never true
+                    // for a text node (or anything else) nested one level
+                    // deeper inside it, because *its* Taffy parent is the
+                    // span's Taffy node, not the root's. Such a member used to
+                    // be marked `ifc_root = Some(root_id)` with its Taffy
+                    // attachment left untouched, orphaned only as a side
+                    // effect of the span above it being detached — and if
+                    // that attachment was ever reachable and computed again
+                    // (e.g. the span briefly became its own IFC root on an
+                    // intervening `display` toggle, #1333's review fixture),
+                    // the stale box it picked up then survived every pass
+                    // after, forever, with nothing to correct it. Asking Taffy
+                    // for the actual parent instead removes the member from
+                    // wherever it really is, at any nesting depth, so no
+                    // lingering attachment is ever left for a later,
+                    // unrelated reachability change to feed a real compute.
                     if let Some(child_taffy) = child_taffy
-                        && root_taffy_children.contains(&child_taffy)
+                        && let Some(actual_parent) = self.tree.taffy.parent(child_taffy)
                     {
-                        let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
+                        let _ = self.tree.taffy.remove_child(actual_parent, child_taffy);
                         // Record the departure (#597). Only where the removal
-                        // actually happened: a node this root never held is not
-                        // this root's to claim.
+                        // actually happened: a node with no current Taffy
+                        // parent is already detached and is not this root's to
+                        // claim.
                         if let Some(c) = self.tree.nodes.get_mut(child_id) {
                             c.ifc_detached = true;
                         }
