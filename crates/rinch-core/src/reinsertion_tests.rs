@@ -1784,3 +1784,534 @@ fn the_scope_ancestry_tables_do_not_grow_with_a_branch_flipped_later() {
          delta {scope_parents_delta}"
     );
 }
+
+// ── A branch reclaims what nested helpers and late patches built (issue #732) ──
+
+fn node_count(doc: &Rc<RefCell<MockDomDocument>>) -> isize {
+    doc.borrow().__node_count() as isize
+}
+
+/// A `virtual_list` inside a branch: its rows are built by scopes of its own,
+/// which must name the scope `virtual_list` was called from as their parent,
+/// or the branch's hide reads them as captured and only detaches them.
+#[test]
+fn a_virtual_list_inside_a_branch_does_not_grow_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let visible = Signal::new(false);
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            let list = crate::virtual_list(
+                s,
+                20.0,
+                || (0u32..50).collect::<Vec<_>>(),
+                |n: &u32| *n,
+                2,
+                |n: u32, rs: &mut RenderScope| {
+                    let row = rs.create_element("div");
+                    row.append_child(&rs.create_text(&n.to_string()));
+                    row
+                },
+            );
+            wrap.append_child(&list);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    visible.set(true);
+    visible.set(false);
+    let base = node_count(&doc);
+    for _ in 0..100 {
+        visible.set(true);
+        visible.set(false);
+    }
+    assert_eq!(
+        node_count(&doc) - base,
+        0,
+        "virtual_list rows leak per toggle"
+    );
+}
+
+/// The `late_children` shape (List / Stepper / RadioGroup): an
+/// `on_child_inserted` observer patches a late-arriving row through a
+/// throwaway `RenderScope::new` (no ancestry parent). Inside a branch whose
+/// list grows while it is open, the patch's nodes are detached on hide.
+#[test]
+fn a_late_child_patch_inside_a_branch_does_not_grow_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let visible = Signal::new(false);
+    let items = Signal::new(vec![1u32]);
+    let dw = Rc::downgrade(&doc);
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let ul = s.create_element("ul");
+            let dw = dw.clone();
+            let ul_id = ul.node_id();
+            crate::dom::on_child_inserted(&ul, move |inserted| {
+                if inserted.tag_name().as_deref() != Some("li") {
+                    return;
+                }
+                let Some(d) = dw.upgrade() else { return };
+                let mut patch = RenderScope::new(d as Rc<RefCell<dyn DomDocument>>, ul_id);
+                let icon = patch.create_element("i");
+                inserted.append_child(&icon);
+            });
+            for_each_dom_typed(
+                s,
+                &ul,
+                move || items.get(),
+                |n: &u32| n.to_string(),
+                |n: u32, rs: &mut RenderScope| {
+                    let row = rs.create_element("li");
+                    row.append_child(&rs.create_text(&n.to_string()));
+                    row
+                },
+            );
+            ul
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    visible.set(true);
+    items.set(vec![1, 2]);
+    visible.set(false);
+    items.set(vec![1]);
+    let base = node_count(&doc);
+    for i in 0..100u32 {
+        visible.set(true);
+        items.set(vec![1, 2 + i]);
+        visible.set(false);
+        items.set(vec![1]);
+    }
+    assert_eq!(
+        node_count(&doc) - base,
+        0,
+        "late-child patch nodes leak per toggle"
+    );
+}
+
+/// Depth 3, every helper re-running LATER: outer show → match (arm swapped
+/// later) → inner show (flipped later) → for (rows inserted later) +
+/// reactive_component_dom (re-rendered later). One outer hide must return the
+/// document to the baseline, and the tables must not grow over many cycles.
+#[test]
+fn depth_three_later_runs_of_every_helper_are_all_discarded() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let outer = Signal::new(false);
+    let arm = Signal::new(0usize);
+    let inner = Signal::new(false);
+    let items = Signal::new(vec![1u32]);
+    let rev = Signal::new(0u32);
+    show_dom(
+        &mut sc,
+        &body,
+        move || outer.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("section");
+            match_dom(
+                s,
+                &wrap,
+                move || arm.get(),
+                vec![
+                    Box::new(|a: &mut RenderScope| a.create_element("em")),
+                    Box::new(move |a: &mut RenderScope| {
+                        let d = a.create_element("div");
+                        show_dom(
+                            a,
+                            &d,
+                            move || inner.get(),
+                            move |b: &mut RenderScope| {
+                                let ul = b.create_element("ul");
+                                for_each_dom_typed(
+                                    b,
+                                    &ul,
+                                    move || items.get(),
+                                    |n: &u32| n.to_string(),
+                                    move |n: u32, rs: &mut RenderScope| {
+                                        let li = rs.create_element("li");
+                                        crate::dom::reactive_component_dom(
+                                            rs,
+                                            &li,
+                                            move |c: &mut RenderScope| {
+                                                let _ = rev.get();
+                                                let x = c.create_element("b");
+                                                x.append_child(&c.create_text(&n.to_string()));
+                                                x
+                                            },
+                                        );
+                                        li
+                                    },
+                                );
+                                ul
+                            },
+                            None::<fn(&mut RenderScope) -> NodeHandle>,
+                        );
+                        d
+                    }),
+                ],
+            );
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    let base = node_count(&doc);
+    let mb0 = crate::dom::__minted_by_len();
+    let sp0 = crate::dom::__scope_parents_len();
+    for i in 0..1000u32 {
+        outer.set(true);
+        arm.set(1); // later arm swap
+        inner.set(true); // later flip
+        items.set(vec![1, 2 + i, 3 + i]); // later inserts
+        rev.set(i); // later re-render of every row's component
+        outer.set(false); // one hide
+        assert_eq!(node_count(&doc), base, "iteration {i}: stranded nodes");
+        arm.set(0);
+        inner.set(false);
+        items.set(vec![1]);
+    }
+    assert_eq!(crate::dom::__minted_by_len(), mb0, "minting table grew");
+    assert_eq!(crate::dom::__scope_parents_len(), sp0, "SCOPE_PARENTS grew");
+}
+
+/// A captured handle that itself CONTAINS live helpers (built by the root
+/// scope), nested inside branch markup at depth 2. Hide detaches it intact;
+/// its own for loop keeps working while hidden and after re-show; the outer
+/// branch's own markup is still reclaimed.
+#[test]
+fn a_captured_handle_containing_live_helpers_survives_and_stays_reactive() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let items = Signal::new(vec![1u32]);
+    let panel = sc.create_element("aside");
+    for_each_dom_typed(
+        &mut sc,
+        &panel,
+        move || items.get(),
+        |n: &u32| n.to_string(),
+        |n: u32, rs: &mut RenderScope| {
+            let p = rs.create_element("p");
+            p.append_child(&rs.create_text(&n.to_string()));
+            p
+        },
+    );
+    let visible = Signal::new(false);
+    let pc = panel.clone();
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let a = s.create_element("div");
+            let b = s.create_element("div");
+            a.append_child(&b);
+            b.append_child(&pc);
+            a
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    let rows = |doc: &Rc<RefCell<MockDomDocument>>, panel: &NodeHandle| {
+        doc.borrow()
+            .get_children(panel.node_id())
+            .into_iter()
+            .filter(|c| doc.borrow().tag_name(*c).as_deref() == Some("p"))
+            .count()
+    };
+    visible.set(true);
+    items.set(vec![1, 2, 3]);
+    visible.set(false);
+    assert_eq!(rows(&doc, &panel), 3, "panel lost rows on hide");
+    items.set(vec![1, 2, 3, 4]); // while hidden
+    assert_eq!(rows(&doc, &panel), 4);
+    let base = node_count(&doc);
+    for _ in 0..200 {
+        visible.set(true);
+        visible.set(false);
+    }
+    assert_eq!(node_count(&doc) - base, 0);
+    visible.set(true);
+    items.set(vec![9]);
+    assert_eq!(rows(&doc, &panel), 1);
+    assert!(panel.parent_node().is_some(), "panel re-shown");
+}
+
+/// A handle created by a nested LATER run (a row inserted later builds a
+/// panel through its own scope) and captured by a closure that a nested
+/// LATER-flipped branch returns inside its own markup. Inner hide keeps it
+/// (it is the row's, not the inner branch's); outer hide reclaims everything.
+#[test]
+fn a_handle_captured_inside_a_nested_later_run() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let outer = Signal::new(false);
+    let inner = Signal::new(false);
+    let items = Signal::new(Vec::<u32>::new());
+    let kept: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let kept2 = kept.clone();
+    show_dom(
+        &mut sc,
+        &body,
+        move || outer.get(),
+        move |s: &mut RenderScope| {
+            let ul = s.create_element("ul");
+            let kept = kept2.clone();
+            for_each_dom_typed(
+                s,
+                &ul,
+                move || items.get(),
+                |n: &u32| n.to_string(),
+                move |n: u32, rs: &mut RenderScope| {
+                    let li = rs.create_element("li");
+                    let panel = rs.create_element("aside");
+                    panel.append_child(&rs.create_text(&n.to_string()));
+                    kept.borrow_mut().push(panel.clone());
+                    show_dom(
+                        rs,
+                        &li,
+                        move || inner.get(),
+                        move |b: &mut RenderScope| {
+                            let w = b.create_element("span");
+                            w.append_child(&panel);
+                            w
+                        },
+                        None::<fn(&mut RenderScope) -> NodeHandle>,
+                    );
+                    li
+                },
+            );
+            ul
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    let base = node_count(&doc);
+    for i in 0..100u32 {
+        kept.borrow_mut().clear();
+        outer.set(true);
+        items.set(vec![i, i + 1000]); // rows minted by a LATER reconcile run
+        inner.set(true); // nested branches flipped LATER
+        inner.set(false); // inner hide: panel must be detached, not retired
+        for p in kept.borrow().iter() {
+            assert!(
+                doc.borrow().tag_name(p.node_id()).is_some(),
+                "panel retired by inner hide"
+            );
+        }
+        inner.set(true);
+        outer.set(false);
+        inner.set(false);
+        items.set(vec![]);
+        assert_eq!(node_count(&doc), base, "iteration {i}");
+    }
+}
+
+/// Two documents on one thread, interleaved, colliding NodeIds.
+#[test]
+fn two_documents_on_one_thread_do_not_cross_classify() {
+    let d1 = doc();
+    let d2 = doc();
+    let mut s1 = scope(&d1);
+    let mut s2 = scope(&d2);
+    let b1 = body_handle(&d1);
+    let b2 = body_handle(&d2);
+    let v1 = Signal::new(false);
+    let v2 = Signal::new(false);
+    // d2's captured panel; same NodeId as some d1 branch node very likely.
+    let p2 = s2.create_element("aside");
+    let p2c = p2.clone();
+    show_dom(
+        &mut s1,
+        &b1,
+        move || v1.get(),
+        |s: &mut RenderScope| {
+            let d = s.create_element("div");
+            d.append_child(&s.create_element("i"));
+            d
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    show_dom(
+        &mut s2,
+        &b2,
+        move || v2.get(),
+        move |s: &mut RenderScope| {
+            let d = s.create_element("div");
+            d.append_child(&p2c);
+            d
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    let (c1, c2) = (node_count(&d1), node_count(&d2));
+    for _ in 0..200 {
+        v1.set(true);
+        v2.set(true);
+        v1.set(false);
+        v2.set(false);
+    }
+    assert_eq!((node_count(&d1), node_count(&d2)), (c1, c2));
+    v2.set(true);
+    assert!(p2.parent_node().is_some());
+}
+
+/// Dropping 1000 documents (each with a live branch) leaves no live table, but
+/// how many SLOTS stay in DOC_MINTED_BY?
+#[test]
+fn dropping_many_documents_leaves_no_table_slots_behind() {
+    let slots0 = crate::dom::__doc_table_slots();
+    let len0 = crate::dom::__minted_by_len();
+    for _ in 0..1000 {
+        let d = doc();
+        let mut s = scope(&d);
+        let b = body_handle(&d);
+        let v = Signal::new(true);
+        show_dom(
+            &mut s,
+            &b,
+            move || v.get(),
+            |s: &mut RenderScope| {
+                let x = s.create_element("div");
+                x.append_child(&s.create_text("t"));
+                x
+            },
+            None::<fn(&mut RenderScope) -> NodeHandle>,
+        );
+        drop(s);
+        drop(d);
+    }
+    assert_eq!(crate::dom::__minted_by_len(), len0, "live entries leaked");
+    let slots = crate::dom::__doc_table_slots() - slots0;
+    assert_eq!(
+        slots, 0,
+        "{slots} dead DOC_MINTED_BY slots left behind after 1000 documents"
+    );
+}
+
+/// A row whose DATA changed (same key) is re-rendered by the reconcile
+/// effect's `Changed` arm — a third later-run site. Outer hide must reclaim it.
+#[test]
+fn a_row_rerendered_for_changed_data_is_discarded_with_the_branch() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let visible = Signal::new(false);
+    let items = Signal::new(vec![(1u32, 0u32)]);
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let ul = s.create_element("ul");
+            for_each_dom_typed(
+                s,
+                &ul,
+                move || items.get(),
+                |t: &(u32, u32)| t.0.to_string(),
+                |t: (u32, u32), rs: &mut RenderScope| {
+                    let li = rs.create_element("li");
+                    li.append_child(&rs.create_text(&t.1.to_string()));
+                    li
+                },
+            );
+            ul
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    let base = node_count(&doc);
+    for i in 0..50u32 {
+        visible.set(true);
+        items.set(vec![(1, i + 1)]); // same key, new data -> Changed arm
+        visible.set(false);
+        items.set(vec![(1, 0)]);
+        assert_eq!(node_count(&doc), base, "iteration {i}");
+    }
+}
+
+/// The spacers `virtual_list` pools for a slot a duplicate key left empty are
+/// minted by a scope that is dropped as soon as the spacer exists. The node
+/// outlives its minting scope, and still belongs to the branch: its ancestry
+/// must outlive the scope too, or the hide leaks every spacer.
+#[test]
+fn virtual_list_gap_spacers_inside_a_branch_are_reclaimed() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let visible = Signal::new(false);
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            let wrap = s.create_element("div");
+            let list = crate::virtual_list(
+                s,
+                20.0,
+                || (0u32..50).collect::<Vec<_>>(),
+                // Every other key repeats, so the window carries spacers.
+                |n: &u32| *n / 2,
+                2,
+                |n: u32, rs: &mut RenderScope| {
+                    let row = rs.create_element("div");
+                    row.append_child(&rs.create_text(&n.to_string()));
+                    row
+                },
+            );
+            wrap.append_child(&list);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    visible.set(true);
+    fn gaps(n: &NodeHandle) -> usize {
+        let own = usize::from(n.get_attribute("class").as_deref() == Some("rinch-vlist__gap"));
+        own + n.children().iter().map(gaps).sum::<usize>()
+    }
+    assert!(gaps(&body) > 0, "precondition: the window carries spacers");
+    visible.set(false);
+    let base = node_count(&doc);
+    for _ in 0..50 {
+        visible.set(true);
+        visible.set(false);
+    }
+    assert_eq!(
+        node_count(&doc) - base,
+        0,
+        "virtual_list spacers leak per toggle"
+    );
+}
+
+/// `set_inner_html` replaces children the backend then forgets; their entries
+/// in the minting table must go with them, or the table grows by every
+/// scope-built child ever replaced this way (and on a backend that reuses ids,
+/// a recycled id would inherit a stale owner).
+#[test]
+fn set_inner_html_over_scope_built_children_purges_their_minting_entries() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+    let host = sc.create_element("div");
+    body.append_child(&host);
+    let before = crate::dom::__minted_by_len();
+    for i in 0..10 {
+        let c = sc.create_element("p");
+        c.append_child(&sc.create_text(&i.to_string()));
+        host.append_child(&c);
+    }
+    assert_eq!(crate::dom::__minted_by_len(), before + 20, "precondition");
+    host.set_inner_html("");
+    assert_eq!(
+        crate::dom::__minted_by_len(),
+        before,
+        "set_inner_html left the replaced children's minting entries behind"
+    );
+}

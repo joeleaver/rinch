@@ -851,3 +851,10 @@ impl Default for UpdateBatch {
         Self::new()
     }
 }
+
+/// **Test-only.** How many per-document slots the ancestry tables hold, live or
+/// dead (issue #732): a dropped document must leave none behind.
+#[doc(hidden)]
+pub fn __doc_table_slots() -> usize {
+    DOC_MINTED_BY.with(|r| r.borrow().len())
+}
