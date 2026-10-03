@@ -1053,6 +1053,7 @@ pub(crate) fn is_safe_css_color(value: &str) -> bool {
 
 /// An attribute the HTML import would drop or degrade, as strict Markdown
 /// reading reports it for an HTML table block.
+#[cfg(feature = "markdown")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DroppedAttr {
     /// An `<a>` whose `href` [`is_safe_url`] refuses.
@@ -1069,6 +1070,7 @@ pub(crate) enum DroppedAttr {
 /// `colspan`/`rowspan` in range on a cell, `style` holding only `text-align` on
 /// a paragraph or heading, `start` on `<ol>`, and a `style` of safe colours on
 /// `<span>` (`color`, `background-color`) and `<mark>` (`background-color`).
+#[cfg(feature = "markdown")]
 pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
     fn style_is(style: &str, ok: &dyn Fn(&str, &str) -> bool) -> bool {
         super::style_scan::style_declarations(style)
