@@ -438,3 +438,42 @@ fn whitespace_before_an_html_mark_stays_outside_it() {
     );
     rt(&s, &d);
 }
+
+// ── leading whitespace never moves a block ──
+
+#[test]
+fn leading_whitespace_keeps_the_block_structure() {
+    let s = Schema::starter_kit();
+    let node = |name: &str, kids: Vec<Node>| {
+        s.create_node(name, Attrs::new(), Fragment::from_children(kids))
+            .unwrap()
+    };
+    let hl = mark(&s, "highlight", &[]);
+    for first in [
+        vec![t(&s, " a", &[])],
+        vec![t(&s, "   a", &[])],
+        vec![t(&s, " ", &[&hl]), t(&s, "a", &[])],
+    ] {
+        // A list item whose first paragraph starts with whitespace keeps its
+        // second paragraph.
+        let d = doc(
+            &s,
+            vec![node(
+                "bullet_list",
+                vec![node(
+                    "list_item",
+                    vec![p(&s, first.clone()), p(&s, vec![t(&s, "b", &[])])],
+                )],
+            )],
+        );
+        let md = doc_to_markdown(&d);
+        let back = doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+        assert_eq!(back.child_count(), 1, "{md:?} read as {back:?}");
+        let item = back.child(0).child(0);
+        assert_eq!(item.child_count(), 2, "{md:?} read as {back:?}");
+        assert_eq!(doc_to_markdown(&back), md, "{md:?}");
+    }
+    // Four spaces at a paragraph's start do not make it a code block.
+    let md = doc_to_markdown(&doc(&s, vec![p(&s, vec![t(&s, "    code?", &[])])]));
+    assert_eq!(single_paragraph_text(&s, &md), vec!["code?"], "{md:?}");
+}
