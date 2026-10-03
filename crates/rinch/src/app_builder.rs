@@ -467,7 +467,7 @@ fn char_width_units(c: char) -> u32 {
 /// `10px` padding-left + hamburger(`~36px`) + `2px` gap per item + each
 /// label (`~8px` per narrow-unit + `16px` padding) + `10px` padding-right.
 #[cfg(all(feature = "desktop", target_os = "linux"))]
-fn inline_spacer_width(labels: &[&str]) -> u32 {
+pub(crate) fn inline_spacer_width(labels: &[&str]) -> u32 {
     let labels_width: u32 = labels
         .iter()
         .map(|l| {
