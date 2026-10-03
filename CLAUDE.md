@@ -2338,7 +2338,7 @@ nothing enforces it — `scrollable_overflow_tests` pins this predicate against
 Chrome, but no test compares it with `out_of_flow_kind`. They share
 `Node::establishes_abs_containing_block`, but each spells its own `match` on
 `position` and its own initial-containing-block test, so a change to either —
-a transformed ancestor containing a fixed box (#386/#415), say — has to be made
+a transformed ancestor containing a fixed box (#1372), say — has to be made
 in both. A `position:
 fixed` child resolves against the viewport, so it is no part of any scroll
 range below it; an `absolute` child counts only where its containing block is
@@ -3050,7 +3050,8 @@ them clips. That question is `Node::scrolls_y()` / `scrolls_x()`.
 
 **Stacking contexts and the clip chain.** `Node::creates_stacking_context()`
 answers: a positioned box with an explicit `z-index`, `position: fixed` or
-`sticky` whatever the `z-index`, `opacity < 1`, a non-identity `transform`.
+`sticky` whatever the `z-index`, `opacity < 1`, a `transform` other than `none`
+— an identity such as `translateX(0)` included (#415, `Node::has_transform`).
 **None of them on a `display: contents` element** (#1038): it generates no box,
 so it is neither a stacking context nor a positioned layer (`is_positioned_z_auto`),
 its `opacity`/`transform` do not reach its children and its `z-index` scopes
@@ -3059,12 +3060,13 @@ nothing (all measured in Chrome 153). **Nor does a `transform` on a non-atomic
 transformable, so it is no stacking context and no containing block, and its
 transform moves nothing — the same set `clips_overflow` excludes. The computed
 value is kept (Chrome's `getComputedStyle` reports the matrix); every consumer
-of the *effect* — both predicates, `paint::compose_node_transform`,
-`PaintedState`, hit testing's inverse and its subtree prune — asks
-`Node::has_applied_transform()`, not `transform.is_identity`. The one reader
-left on the raw value is the hit cache's `HitStyleKey::transformed`, which sees
-only `ComputedStyle`; on such a span it only costs an extra (harmless) cache
-invalidation when the transform toggles. Where a box is *anchored* depends on the
+of the *effect* asks a `Node` method, not the raw value: both predicates ask
+`Node::has_transform()` (not `none`, #415), and `paint::compose_node_transform`,
+`PaintedState`, hit testing's inverse and its subtree prune ask
+`Node::has_applied_transform()` (a non-identity matrix). The one reader
+left on the raw value is the hit cache's `HitStyleKey::transformed`
+(`!transform.is_none`), which sees only `ComputedStyle`; on such a span it only
+costs an extra (harmless) cache invalidation when the transform toggles. Where a box is *anchored* depends on the
 same fact, so every coordinate walk that can meet a contents node asks
 `Node::box_position()` — the computed `position`, `static` for `display:
 contents` — not `computed_style.position` (the readers left on the raw value are
@@ -3116,9 +3118,20 @@ aren't.**
   flex/grid already re-cascades its children (`child_cascade` follows a
   `display` change).
 
-**#415** is the related, still-open one, in this same function and the same
-class: a `transform` that composes to the identity creates no stacking context
-here, where CSS keys on `not none`.
+**#415** was the related one, in this same function and the same class, and is
+closed: a `transform` that composes to the identity (`translateX(0)`,
+`rotate(0deg)`, `scale(1)`) is a stacking context and an absolute containing
+block, because CSS keys both on the computed value not being `none`
+(`TransformValue::is_none`, read through `Node::has_transform`). The
+paint and hit-test fast paths still ask the other question —
+`Node::has_applied_transform`, a non-identity matrix — so an identity
+transform creates the context without paying a transform at paint. A
+transition or animation frame is never `none` (`AnimatableTransform::to_style`),
+so an element is a stacking context for the whole run; a transition that
+*finishes* at `none` writes `none` and stops being one, and the document's tick
+re-syncs the absolute descendants it stopped containing (Chrome 153 on every
+case; `tests/identity_transform_tests.rs`). The `HitStyleKey` keys
+`is_none`, not identity.
 
 Stage B slightly **widened** that exposure rather than leaving it untouched: a
 box declaring **both** a filter (or a static flex/grid item's `z-index`) and a
@@ -3236,7 +3249,7 @@ attribute or text write returns first), `resolve_styles`, `resolve_layout`
 `NodeTree::push_dirty` and `remove_subtree` bump it, and so does a transition
 or animation tick — **only** for a node whose `HitStyleKey` it changed (the
 `computed_style` inputs the cache depends on: `display`, `position`,
-`overflow`, `opacity < 1`, `visibility`, whether `transform` is the identity,
+`overflow`, `opacity < 1`, `visibility`, whether `transform` is `none` (#415),
 `z-index`, `pointer-events`, left/top padding and border). `AboutToWait` ticks
 after every batch, so an unconditional tick invalidation made every real move
 cold, and a colour animation (a `Loader`) must not either. The transform
@@ -3352,7 +3365,8 @@ containing block of a fixed descendant (and an `opacity` one not), while
 `out_of_flow::out_of_flow_kind` answers "the viewport" for every fixed box. That
 was already wrong before #545 and is exactly as wrong after; what #545 preserves
 is that it is wrong *consistently*, since paint keeps handing a fixed entry the
-body's transform. Tracked with #386 and #415.
+body's transform. Tracked with **#1372** (and #386 for the
+non-parent containing-block machinery it would need).
 
 **Stage C reverted both workarounds.** `.rinch-dropdown-menu__backdrop`,
 `.rinch-select__backdrop` and `.rinch-app-menu-bar__overlay` are `position:
@@ -4862,8 +4876,8 @@ hidden` on a box whose **own** transform turns its back to the viewer (Chrome's
 `IsBackFaceVisible` on the 4×4 — `scaleX(-1)` is a mirror, not a turn;
 `TransformValue::back_facing`) composes it to the zero matrix, so it and its
 subtree are neither drawn nor hit — except a `position: fixed` descendant,
-which rinch does not contain in a transformed ancestor and still draws (#386,
-#415) (#997).
+which rinch does not contain in a transformed ancestor and still draws
+(#1372) (#997).
 `crates/rinch-dom/tests/transform_3d_tests.rs` pins Chrome 153.
 
 ### Native Control Flow (if / for / match)
