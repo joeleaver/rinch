@@ -13,6 +13,9 @@
 //! - a line break inside code (a code span is literal);
 //! - task lists (#1365).
 //!
+//! `strict_reads_everything_the_writer_writes` generates those too, and asks
+//! only that the strict reader accept what the writer wrote.
+//!
 //! `RINCH_MD_FUZZ_SEEDS` raises the seed count (default 1000 per mode).
 #![cfg(feature = "markdown")]
 
@@ -54,6 +57,10 @@ struct Gen<'s> {
     rng: Rng,
     mode: Mode,
     pool: Vec<Mark>,
+    /// Generate the losses too (edge whitespace, empty paragraphs, adjacent
+    /// lists, task lists, languages in cells, oversized spans): for the
+    /// property that strict reads whatever the writer writes.
+    unruly: bool,
 }
 
 fn mark(schema: &Schema, name: &str, attrs: &[(&str, &str)]) -> Mark {
@@ -201,6 +208,16 @@ impl Gen<'_> {
             }
             out.push(node);
         }
+        if self.rng.chance(3) {
+            // Shift+Enter on an empty line.
+            let n = 1 + self.rng.below(2);
+            return (0..n)
+                .map(|_| self.node("hard_break", Attrs::new(), vec![]))
+                .collect();
+        }
+        if self.unruly {
+            return out;
+        }
         // Whitespace at a textblock's or a line's edge is CommonMark's to
         // strip, until none is left there.
         let mut res = out;
@@ -232,14 +249,18 @@ impl Gen<'_> {
                 break;
             }
         }
-        if res.iter().all(|n| n.type_name() == "hard_break") {
+        if res.is_empty() {
             res = vec![self.schema.text("p").unwrap()];
         }
         res
     }
 
     fn para(&mut self, attrs: Attrs) -> Node {
-        let inline = self.inline(true);
+        let inline = if self.unruly && self.rng.chance(5) {
+            vec![]
+        } else {
+            self.inline(true)
+        };
         self.node("paragraph", attrs, inline)
     }
 
@@ -249,6 +270,7 @@ impl Gen<'_> {
         for _ in 0..n {
             let b = self.block(depth, in_cell);
             if let Some(prev) = out.last()
+                && !self.unruly
                 && prev.type_name() == b.type_name()
                 && matches!(b.type_name(), "bullet_list" | "ordered_list" | "blockquote")
             {
@@ -285,7 +307,7 @@ impl Gen<'_> {
                 if text.is_empty() {
                     text.push('c');
                 }
-                let lang = if in_cell {
+                let lang = if in_cell && !self.unruly {
                     ""
                 } else {
                     *self.rng.pick(&["", "rust", "c++"])
@@ -322,6 +344,19 @@ impl Gen<'_> {
                     self.node("bullet_list", Attrs::new(), items)
                 }
             }
+            80..=84 if self.unruly => {
+                let mut items = Vec::new();
+                for _ in 0..1 + self.rng.below(2) {
+                    let checked = AttrValue::Bool(self.rng.chance(50));
+                    let kids = vec![self.para(Attrs::new())];
+                    items.push(self.node(
+                        "task_item",
+                        Attrs::from_iter([("checked", checked)]),
+                        kids,
+                    ));
+                }
+                self.node("task_list", Attrs::new(), items)
+            }
             _ => self.table(depth),
         }
     }
@@ -342,6 +377,11 @@ impl Gen<'_> {
                 if c + 1 < cols && self.rng.chance(10) {
                     attrs = attrs.with("colspan", AttrValue::Int(2));
                     c += 1;
+                }
+                if self.unruly && self.rng.chance(5) {
+                    let span = *self.rng.pick(&[0i64, 1, 1001, 70_000, i64::MAX]);
+                    let name = *self.rng.pick(&["colspan", "rowspan"]);
+                    attrs = attrs.with(name, AttrValue::Int(span));
                 }
                 let pattrs = if aligns[c] == "left" {
                     Attrs::new()
@@ -366,23 +406,32 @@ impl Gen<'_> {
     }
 }
 
-fn run(mode: Mode) {
-    let schema = Schema::starter_kit();
-    let seeds: u64 = std::env::var("RINCH_MD_FUZZ_SEEDS")
+fn seeds() -> u64 {
+    std::env::var("RINCH_MD_FUZZ_SEEDS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(1000);
+        .unwrap_or(1000)
+}
+
+fn gen_doc(schema: &Schema, seed: u64, mode: Mode, unruly: bool) -> Node {
+    let mut g = Gen {
+        schema,
+        rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
+        mode,
+        pool: mark_pool(schema),
+        unruly,
+    };
+    let n = 1 + g.rng.below(4);
+    let blocks = g.blocks(n, 0, false);
+    g.node("doc", Attrs::new(), blocks)
+}
+
+fn run(mode: Mode) {
+    let schema = Schema::starter_kit();
+    let seeds = seeds();
     let mut failures = Vec::new();
     for seed in 1..=seeds {
-        let mut g = Gen {
-            schema: &schema,
-            rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
-            mode,
-            pool: mark_pool(&schema),
-        };
-        let n = 1 + g.rng.below(4);
-        let blocks = g.blocks(n, 0, false);
-        let d = g.node("doc", Attrs::new(), blocks);
+        let d = gen_doc(&schema, seed, mode, false);
         let md = doc_to_markdown(&d);
         let why = match doc_from_markdown_strict(&schema, &md) {
             Err(e) => format!("strict refused it: {e}"),
@@ -403,7 +452,7 @@ fn run(mode: Mode) {
         failures.len(),
         failures
             .iter()
-            .take(3)
+            .take(show())
             .cloned()
             .collect::<Vec<_>>()
             .join("\n\n")
@@ -423,4 +472,42 @@ fn special_characters_round_trip() {
 #[test]
 fn special_characters_and_marks_round_trip() {
     run(Mode::Wild);
+}
+
+/// Whatever the writer writes, the strict reader accepts — the known losses
+/// included: what a document loses on the way out must not make the note
+/// unreadable.
+#[test]
+fn strict_reads_everything_the_writer_writes() {
+    let schema = Schema::starter_kit();
+    let seeds = seeds();
+    let mut failures = Vec::new();
+    for mode in [Mode::Tame, Mode::Wild] {
+        for seed in 1..=seeds {
+            let d = gen_doc(&schema, seed, mode, true);
+            let md = doc_to_markdown(&d);
+            if let Err(e) = doc_from_markdown_strict(&schema, &md) {
+                failures.push(format!("{mode:?} seed {seed}: {md:?}\n{e}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} documents' Markdown was refused; the first:\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .take(show())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+}
+
+/// How many failures to print (`RINCH_MD_FUZZ_SHOW`, default 3).
+fn show() -> usize {
+    std::env::var("RINCH_MD_FUZZ_SHOW")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3)
 }

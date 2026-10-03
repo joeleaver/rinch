@@ -1179,8 +1179,10 @@ fn list_to_md(list: &Node, start: Option<i64>) -> String {
             None => "- ".to_string(),
         };
         let indent = " ".repeat(marker.len());
+        // An empty first paragraph writes nothing, and `- ` before a blank
+        // line ends the item: its next block would fall out of the list.
         out.push_str(&prefix_first_then_rest(
-            item_md.trim_end(),
+            item_md.trim_start_matches('\n').trim_end(),
             &marker,
             &indent,
         ));
