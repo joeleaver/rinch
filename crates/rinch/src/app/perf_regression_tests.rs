@@ -1620,3 +1620,53 @@ fn idle_viewports_repaint_nothing() {
         unregister_render_surface(s.id());
     }
 }
+
+// ── #386: an absolute box written inside a scroller it is not content of ────
+
+/// The second-notch scenario with ONE absolute box (no positioned ancestor)
+/// written inside the scroller's first row.
+#[test]
+fn a_second_wheel_notch_with_an_escaping_absolute_recomputes_no_extent() {
+    for with_abs in [false, true] {
+        let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let out2 = out.clone();
+        let mut app = mount_settled(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let style = scope.create_element("style");
+            let css = scope.create_text(ROW_CSS);
+            style.append_child(&css);
+            root.append_child(&style);
+            let scroller = scope.create_element("div");
+            scroller.set_attribute("class", "scroller");
+            for i in 0..SCROLL_ROWS {
+                let row = scope.create_element("div");
+                row.set_attribute("class", "row");
+                let t = scope.create_text(&format!("row {i}"));
+                row.append_child(&t);
+                if with_abs && i == 0 {
+                    let b = scope.create_element("div");
+                    b.set_attribute(
+                        "style",
+                        "position: absolute; left: 400px; top: 10px; width: 10px; height: 10px",
+                    );
+                    row.append_child(&b);
+                }
+                scroller.append_child(&row);
+            }
+            root.append_child(&scroller);
+            *out2.borrow_mut() = Some(scroller.clone());
+            root
+        });
+        let scroller = out.borrow().clone().unwrap();
+        interaction(&mut app, wheel_notch);
+        let first = scroller.scroll_top();
+        assert!(first > 0.0);
+        let s = interaction(&mut app, wheel_notch);
+        assert!(scroller.scroll_top() > first);
+        assert_eq!(
+            s.get(HitExtentsComputed),
+            0,
+            "with_abs={with_abs}: a notch re-places the box and keeps every extent"
+        );
+    }
+}

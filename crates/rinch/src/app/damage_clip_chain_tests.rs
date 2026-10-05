@@ -837,3 +837,101 @@ fn an_absolute_box_under_a_static_scroller_stays_in_its_containing_block() {
         "the frame after the scroll != a from-scratch frame"
     );
 }
+
+// ── #386: an absolute box written inside a scroller it is not content of ────
+
+/// The box OVERLAPS (and straddles the edge of) the scroller it is written
+/// in; two notches; hit inside the scroller's box.
+#[test]
+fn an_escaping_absolute_overlapping_its_scroller_paints_and_hits_after_scrolls() {
+    for (left, top) in [(60, 40), (210, 110), (100, 120)] {
+        let (mut app, h) = mount_with(Box::new(move |scope, outer| {
+            outer.set_attribute(
+                "style",
+                "width: 600px; height: 400px; position: relative; padding: 10px",
+            );
+            let scroller = el(
+                scope,
+                outer,
+                "margin-left: 20px; margin-top: 20px; width: 200px; height: 100px; overflow: auto; background: rgb(250, 250, 250)",
+            );
+            for i in 0..10 {
+                el(
+                    scope,
+                    &scroller,
+                    &format!("height: 50px; background: rgb({}, 200, 100)", 20 * i),
+                );
+            }
+            let b = el(
+                scope,
+                &scroller,
+                &format!(
+                    "width: 40px; height: 40px; background: rgb(0, 0, 200); position: absolute; \
+                     left: {left}px; top: {top}px"
+                ),
+            );
+            vec![scroller, b]
+        }));
+        let abs = h[1].node_id().0;
+        let at = (left, top, left + 40, top + 40);
+        let before = full_frame(&mut app);
+        let blue = |px: &[u8]| {
+            let mut n = 0;
+            for y in at.1..at.3 {
+                for x in at.0..at.2 {
+                    let i = ((y * 600 + x) * 4) as usize;
+                    if px[i] == 0 && px[i + 1] == 0 && px[i + 2] == 200 {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        assert_eq!(blue(&before), 1600, "({left},{top}) whole before");
+        // Warm the hit cache (extents and sequences) before any scroll.
+        assert_eq!(app.move_hit(left as f32 + 5.0, top as f32 + 5.0), Some(abs));
+        assert_ne!(
+            app.move_hit(left as f32 + 5.0, top as f32 + 45.0),
+            Some(abs)
+        );
+        for notch in 0..2 {
+            let _ = app.handle_event(
+                PlatformEvent::MouseWheel {
+                    x: 50.0,
+                    y: 60.0,
+                    delta_x: 0.0,
+                    delta_y: -60.0,
+                },
+                SIZE,
+                1.0,
+            );
+            assert_eq!(
+                app.move_hit(left as f32 + 5.0, top as f32 + 5.0),
+                Some(abs),
+                "({left},{top}) notch {notch}: hit"
+            );
+            assert_ne!(
+                app.move_hit(left as f32 + 5.0, top as f32 + 45.0),
+                Some(abs),
+                "({left},{top}) notch {notch}: below the box"
+            );
+            assert_ne!(
+                app.move_hit(left as f32 + 5.0, top as f32 - 5.0),
+                Some(abs),
+                "({left},{top}) notch {notch}: above the box"
+            );
+            let (inc, _) = incremental_frame(&mut app);
+            let full = full_frame(&mut app);
+            assert_eq!(
+                blue(&full),
+                1600,
+                "({left},{top}) notch {notch}: full frame"
+            );
+            assert_eq!(
+                diff_in(&inc, &full, WHOLE),
+                0,
+                "({left},{top}) notch {notch}: incremental != full"
+            );
+        }
+    }
+}
