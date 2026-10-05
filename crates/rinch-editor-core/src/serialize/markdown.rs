@@ -231,6 +231,10 @@ struct TaskMarker {
     checked: bool,
     /// The marker's source range.
     range: Range<usize>,
+    /// Nothing follows it on its line (`- [ ]`): pulldown-cmark reads that as
+    /// the text `[ ]`, and the reader takes it as an empty item's marker when
+    /// the item's first paragraph is exactly it.
+    bare: bool,
 }
 
 /// A textblock being assembled (paragraph, heading, code_block).
@@ -743,10 +747,31 @@ impl<'a> MdBuilder<'a> {
         if self.containers.len() <= 1 {
             return Ok(());
         }
-        let c = self.containers.pop().expect("non-root container");
+        let mut c = self.containers.pop().expect("non-root container");
         let task = if c.type_name == "list_item" {
             // An item with no event at all (`-` alone) has no marker.
-            c.task.clone().filter(|_| c.task_settled)
+            let task = c.task.clone().filter(|_| c.task_settled);
+            match task {
+                // `- [ ]` with nothing after it on its line: a marker when it
+                // is the whole first paragraph, which is then not content.
+                Some(t) if t.bare => {
+                    let text = self.source.get(t.range.clone());
+                    let is_marker = c.children.first().is_some_and(|b| {
+                        b.type_name() == "paragraph"
+                            && b.child_count() == 1
+                            && b.child(0).marks().is_empty()
+                            && b.child(0).text().is_some()
+                            && b.child(0).text() == text
+                    });
+                    if is_marker {
+                        c.children.remove(0);
+                        Some(t)
+                    } else {
+                        None
+                    }
+                }
+                task => task,
+            }
         } else {
             None
         };
@@ -792,7 +817,7 @@ impl<'a> MdBuilder<'a> {
                 if let Some(task) = task {
                     self.refuse_at(Construct::TaskList, task.range.clone())?;
                     let text = self.source.get(task.range.clone()).unwrap_or("[ ]");
-                    *item = self.with_marker_text(item, text)?;
+                    *item = self.with_marker_text(item, text, task.bare)?;
                 }
             }
             self.build_container(c)?
@@ -804,9 +829,12 @@ impl<'a> MdBuilder<'a> {
     /// `item` with a task marker's `text` put back at the start of its first
     /// paragraph (a new paragraph, if it starts with another block), as the
     /// parse without task lists read it.
-    fn with_marker_text(&self, item: &Node, text: &str) -> Result<Node, EditorError> {
+    fn with_marker_text(&self, item: &Node, text: &str, bare: bool) -> Result<Node, EditorError> {
         let mut blocks: Vec<Node> = item.content().children().to_vec();
-        let first_para = blocks.first().filter(|b| b.type_name() == "paragraph");
+        // A bare marker was a paragraph of its own.
+        let first_para = blocks
+            .first()
+            .filter(|b| b.type_name() == "paragraph" && !(bare && b.child_count() > 0));
         let para = match first_para {
             Some(para) => {
                 let mut inline: Vec<Node> = para.content().children().to_vec();
@@ -858,7 +886,12 @@ impl<'a> MdBuilder<'a> {
             return;
         };
         let confirmed = match event {
-            Event::TaskListMarker(_) => start == task.range.start,
+            // An item's first event can only be its own marker (pulldown
+            // reports it from the whitespace before `[`, when a tab is there).
+            Event::TaskListMarker(_) => true,
+            // Text, or the paragraph it opens: checked against the item's
+            // first paragraph when the item closes.
+            _ if task.bare => start == task.range.start,
             _ => start >= task.range.end,
         };
         if !confirmed {
@@ -867,9 +900,9 @@ impl<'a> MdBuilder<'a> {
     }
 
     /// A `TaskListMarker` event belongs to the innermost open item it falls
-    /// in, which has found it already ([`task_marker_at`]). One it has not
-    /// would be a marker the source scan misses: debug builds say so, and a
-    /// release build takes it, rather than lose the text pulldown consumed.
+    /// in. That item has normally found it in its source already
+    /// ([`task_marker_at`]); a marker the scan does not know is taken from the
+    /// event, so the text pulldown consumed for it is never lost.
     fn claim_task_marker(&mut self, checked: bool) {
         let range = self.range.clone();
         let owner = self
@@ -878,13 +911,13 @@ impl<'a> MdBuilder<'a> {
             .rev()
             .find(|c| c.type_name == "list_item" && c.start <= range.start);
         if let Some(item) = owner
-            && item.task.is_none()
+            && item.task.as_ref().is_none_or(|t| t.bare)
         {
-            debug_assert!(
-                false,
-                "a task marker at {range:?} the source scan did not find"
-            );
-            item.task = Some(TaskMarker { checked, range });
+            item.task = Some(TaskMarker {
+                checked,
+                range,
+                bare: false,
+            });
         }
     }
 
@@ -1075,8 +1108,9 @@ impl Container {
 
 /// The task marker a list item starting at `start` opens with, if its source
 /// does: the bullet (`-`, `*`, `+`, or up to nine digits and `.` or `)`),
-/// spaces or tabs, then `[ ]`, `[x]` or `[X]` and a space or tab (pulldown-cmark's
-/// rule: `- [ ]` at the end of its line is text).
+/// spaces or tabs, then `[ ]`, `[x]` or `[X]` and a space, tab, VT or FF
+/// (pulldown-cmark's rule), or the end of the line (a `bare` marker, which
+/// pulldown reads as text).
 fn task_marker_at(source: &str, start: usize) -> Option<TaskMarker> {
     let bytes = source.as_bytes();
     let mut i = start;
@@ -1104,15 +1138,22 @@ fn task_marker_at(source: &str, start: usize) -> Option<TaskMarker> {
     }
     i = after_bullet;
     let checked = match bytes.get(i..i + 3)? {
-        b"[ ]" => false,
+        // pulldown takes a tab, VT or FF between the brackets too.
+        [b'[', b' ' | b'\t' | 0x0b | 0x0c, b']'] => false,
         b"[x]" | b"[X]" => true,
         _ => return None,
     };
     let range = i..i + 3;
-    if !matches!(bytes.get(i + 3), Some(b' ' | b'\t')) {
-        return None;
-    }
-    Some(TaskMarker { checked, range })
+    let bare = match bytes.get(i + 3) {
+        Some(b' ' | b'\t' | 0x0b | 0x0c) => false,
+        None | Some(b'\n' | b'\r') => true,
+        Some(_) => return None,
+    };
+    Some(TaskMarker {
+        checked,
+        range,
+        bare,
+    })
 }
 
 fn heading_level(level: HeadingLevel) -> i64 {
@@ -1482,6 +1523,14 @@ fn list_to_md(list: &Node, kind: ListKind) -> String {
             } else if first_is_para {
                 out.push_str(&prefix_first_then_rest(&item_md, &first, &indent));
             } else {
+                // `---` under the marker's line is a setext heading (`[ ]` as
+                // its text) to GitHub: a rule there is written `***`.
+                let item_md = match item_md.strip_prefix("---") {
+                    Some(rest) if rest.is_empty() || rest.starts_with('\n') => {
+                        format!("***{rest}")
+                    }
+                    _ => item_md,
+                };
                 out.push_str(&first);
                 out.push('\n');
                 out.push_str(&prefix_lines_nonblank(&item_md, &indent));

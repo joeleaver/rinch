@@ -503,16 +503,98 @@ fn a_marker_before_another_block_is_still_the_items() {
     );
     let want = doc(&s, vec![bullets(&s, vec![vec![code]])]);
     assert_eq!(doc_from_markdown_strict(&s, "-     [ ] x").unwrap(), want);
-    // Not a marker: nothing follows it on its line, not even a space.
-    for md in ["- [ ]\n- [x]\n  next", "- [ ]\n  > q"] {
-        let d = doc_from_markdown_strict(&s, md).unwrap();
-        assert_eq!(d.child(0).type_name(), "bullet_list", "{md:?}");
-        assert_eq!(
-            d.child(0).child(0).child(0).child(0).text(),
-            Some("[ ]"),
-            "{md:?}"
-        );
+}
+
+/// A marker with nothing after it on its line (`- [ ]`) is text to
+/// pulldown-cmark, and the writer's own empty item once anything strips its
+/// trailing space. Both readers take it as an empty item's marker when it is
+/// the item's whole first paragraph. A bullet whose text is `[ ]` is written
+/// `\[ \]`, so it is never mistaken for one.
+#[test]
+fn a_bare_marker_is_an_empty_task_item() {
+    let s = s();
+    let quote = n(&s, "blockquote", Attrs::new(), vec![p(&s, "q")]);
+    for (md, want) in [
+        ("- [ ]", tasks(&s, vec![task(&s, false, vec![p(&s, "")])])),
+        ("- [x]\n", tasks(&s, vec![task(&s, true, vec![p(&s, "")])])),
+        (
+            "* [X]\r\n* [ ] b",
+            tasks(
+                &s,
+                vec![
+                    task(&s, true, vec![p(&s, "")]),
+                    task(&s, false, vec![p(&s, "b")]),
+                ],
+            ),
+        ),
+        (
+            "- [ ]\n  > q",
+            tasks(&s, vec![task(&s, false, vec![quote])]),
+        ),
+        (
+            "- [ ]\n\n  later",
+            tasks(&s, vec![task(&s, false, vec![p(&s, "later")])]),
+        ),
+    ] {
+        let want = doc(&s, vec![want]);
+        assert_eq!(doc_from_markdown_strict(&s, md).unwrap(), want, "{md:?}");
+        assert_eq!(doc_from_markdown(&s, md).unwrap(), want, "{md:?}");
     }
+    // Text continues its line's paragraph: not a marker.
+    let d = doc_from_markdown_strict(&s, "- [x]\n  next").unwrap();
+    assert_eq!(d, doc(&s, vec![bullets(&s, vec![vec![p(&s, "[x] next")]])]));
+    // The bullet whose text is the brackets, and the same inside a task item.
+    let d = doc(
+        &s,
+        vec![bullets(&s, vec![vec![p(&s, "[ ]")], vec![p(&s, "[x]")]])],
+    );
+    assert_eq!(rt(&s, &d), "- \\[ \\]\n- \\[x\\]");
+    rt(
+        &s,
+        &doc(
+            &s,
+            vec![tasks(&s, vec![task(&s, true, vec![p(&s, "[ ]")])])],
+        ),
+    );
+    // In a list with an item that has no marker it is text again, a
+    // paragraph of its own.
+    assert_eq!(refusal("- a\n- [ ]\n\n  later"), (Construct::TaskList, 2));
+    let d = doc_from_markdown(&s, "- a\n- [ ]\n\n  later").unwrap();
+    assert_eq!(
+        d,
+        doc(
+            &s,
+            vec![bullets(
+                &s,
+                vec![vec![p(&s, "a")], vec![p(&s, "[ ]"), p(&s, "later")]]
+            )]
+        )
+    );
+}
+
+/// `---` under a marker's line is a setext heading to GitHub (its text the
+/// marker): a rule that starts a task item is written `***`.
+#[test]
+fn a_task_item_that_starts_with_a_rule_writes_it_as_stars() {
+    let s = s();
+    let rule = || n(&s, "horizontal_rule", Attrs::new(), vec![]);
+    let d = doc(
+        &s,
+        vec![tasks(
+            &s,
+            vec![
+                task(&s, false, vec![rule(), p(&s, "x")]),
+                task(&s, true, vec![rule()]),
+            ],
+        )],
+    );
+    assert_eq!(rt(&s, &d), "- [ ] \n  ***\n\n  x\n- [x] \n  ***");
+    // A rule anywhere else is still `---`.
+    let d = doc(
+        &s,
+        vec![tasks(&s, vec![task(&s, false, vec![p(&s, "x"), rule()])])],
+    );
+    assert_eq!(rt(&s, &d), "- [ ] x\n  \n  ---");
 }
 
 #[test]

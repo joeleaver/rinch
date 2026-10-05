@@ -19,7 +19,7 @@
 //! `RINCH_MD_FUZZ_SEEDS` raises the seed count (default 1000 per mode).
 #![cfg(feature = "markdown")]
 
-use rinch_editor_core::serialize::{doc_from_markdown_strict, doc_to_markdown};
+use rinch_editor_core::serialize::{doc_from_markdown, doc_from_markdown_strict, doc_to_markdown};
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, Schema};
 
 struct Rng(u64);
@@ -520,6 +520,73 @@ fn strict_reads_everything_the_writer_writes() {
             .collect::<Vec<_>>()
             .join("\n\n")
     );
+}
+
+/// Random Markdown built from list, task-marker and block fragments (the
+/// review of #1374): neither reader panics, strict reads what it accepts
+/// exactly as lenient does, and a document that came out of it writes and
+/// reads back with its task lists.
+#[test]
+fn random_markdown_reads_without_panic_and_strict_agrees_with_lenient() {
+    const PIECES: &[&str] = &[
+        "- ", "* ", "+ ", " ", "  ", "\t", "[ ] ", "[x] ", "[X] ", "[ ]", "[x]", "[", "]", "x",
+        "\n", "\n", "\n\n", "> ", "# ", "1. ", "a", "b", "`", "\\", "\x0b", "\x0c", "---", "***",
+        "```\n", "[\t] ", "[\x0b]", "<br>", "| a |\n", "===\n", "\r\n", "- [ ]\n", "- \t[x] ",
+    ];
+    let schema = Schema::starter_kit();
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut failures = Vec::new();
+    for _ in 0..seeds() * 20 {
+        let len = 2 + rng.below(10);
+        let md: String = (0..len).map(|_| *rng.pick(PIECES)).collect();
+        let lenient = doc_from_markdown(&schema, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+        let Ok(strict) = doc_from_markdown_strict(&schema, &md) else {
+            continue;
+        };
+        if strict != lenient {
+            failures.push(format!("{md:?}: strict {strict:?}\nlenient {lenient:?}"));
+            continue;
+        }
+        // What the writer makes of it, strict accepts; and a task list in it
+        // is still there (other content has the known losses).
+        let written = doc_to_markdown(&strict);
+        match doc_from_markdown_strict(&schema, &written) {
+            Err(e) => failures.push(format!("{md:?} wrote {written:?}, refused: {e}")),
+            Ok(back) => {
+                if task_shape(&back) != task_shape(&strict) {
+                    failures.push(format!(
+                        "{md:?} wrote {written:?}: had {strict:?}\nread {back:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} strings; the first:\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .take(show())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+}
+
+/// Every task item of `node` in document order, as its checked state.
+fn task_shape(node: &Node) -> Vec<bool> {
+    let mut out = Vec::new();
+    fn walk(n: &Node, out: &mut Vec<bool>) {
+        if n.type_name() == "task_item" {
+            out.push(n.attrs().get_bool("checked").unwrap_or(false));
+        }
+        for c in n.content().children() {
+            walk(c, out);
+        }
+    }
+    walk(node, &mut out);
+    out
 }
 
 /// How many failures to print (`RINCH_MD_FUZZ_SHOW`, default 3).
