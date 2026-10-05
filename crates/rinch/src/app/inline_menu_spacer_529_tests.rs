@@ -36,6 +36,36 @@ const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 /// labels and title, the way `app_builder::run_desktop_linux` wires it.
 /// `estimate` is the `MenuBarContext::spacer_width` the shell hands in.
 fn mount_with(labels: &'static [&'static str], title: &'static str, estimate: u32) -> RinchApp {
+    let mut app = build(labels, title, estimate, 0);
+    drive(&mut app);
+    app
+}
+
+/// Drive `app` the way the desktop loop does — a redraw, then an
+/// `AboutToWait` that asks for the next one only if something is owed — so
+/// the spacer has to reach its width through the real frame scheduling, not
+/// through a resolve the test forced. Answers how many frames were painted.
+fn drive(app: &mut RinchApp) -> usize {
+    let mut frames = 0;
+    for _ in 0..6 {
+        perf_expect::paint(app);
+        frames += 1;
+        if !perf_expect::about_to_wait(app) {
+            break;
+        }
+    }
+    frames
+}
+
+/// The mounted window with its stylesheets loaded and **no frame painted
+/// yet**. `right_width` above zero adds a `.probe-right` box of that width as
+/// the titlebar's right section.
+fn build(
+    labels: &'static [&'static str],
+    title: &'static str,
+    estimate: u32,
+    right_width: u32,
+) -> RinchApp {
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let menus: Vec<(String, Menu)> = labels
             .iter()
@@ -71,9 +101,23 @@ fn mount_with(labels: &'static [&'static str], title: &'static str, estimate: u3
         });
 
         let content = scope.create_element("div");
+        let right: Option<rinch_components::SectionRenderer> = (right_width > 0).then(|| {
+            let r: rinch_components::SectionRenderer = Rc::new(move |scope| {
+                let b = scope.create_element("div");
+                b.set_attribute("class", "probe-right");
+                b.set_attribute(
+                    "style",
+                    &format!("width: {right_width}px; height: 20px; flex-shrink: 0;"),
+                );
+                b
+            });
+            r
+        });
+
         BorderlessWindow {
             title: title.to_string(),
             left_section: Some(left),
+            right_section: right,
             show_minimize: true,
             show_maximize: true,
             show_close: true,
@@ -92,16 +136,6 @@ fn mount_with(labels: &'static [&'static str], title: &'static str, estimate: u3
         d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
-    // Drive it the way the desktop loop does — a redraw, then an
-    // `AboutToWait` that asks for the next one only if something is owed —
-    // so the spacer has to reach its width through the real frame
-    // scheduling, not through a resolve the test forced.
-    for _ in 0..4 {
-        perf_expect::paint(&mut app);
-        if !perf_expect::about_to_wait(&mut app) {
-            break;
-        }
-    }
     app
 }
 
@@ -116,8 +150,8 @@ fn mount(labels: &'static [&'static str], title: &'static str) -> RinchApp {
     )
 }
 
-/// The painted box of the one node carrying `class` exactly.
-fn painted(app: &RinchApp, class: &str) -> (f32, f32, f32, f32) {
+/// The one node carrying `class` exactly.
+fn node_of(app: &RinchApp, class: &str) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let matches: Vec<usize> = d
@@ -137,7 +171,44 @@ fn painted(app: &RinchApp, class: &str) -> (f32, f32, f32, f32) {
         "expected one `{class}`, found {}",
         matches.len()
     );
-    crate::app::hit_testing::painted_element_box(&d.tree, matches[0])
+    matches[0]
+}
+
+/// The painted box of the one node carrying `class` exactly.
+fn painted(app: &RinchApp, class: &str) -> (f32, f32, f32, f32) {
+    let id = node_of(app, class);
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    crate::app::hit_testing::painted_element_box(&d.tree, id)
+}
+
+/// Write one inline declaration on the node carrying `class`, as an app's
+/// own `style:` would.
+fn restyle(app: &RinchApp, class: &str, property: &str, value: &str) {
+    let id = node_of(app, class);
+    let doc = app.doc.as_ref().unwrap();
+    doc.borrow_mut()
+        .set_style(rinch_core::dom::NodeId(id), property, value);
+}
+
+/// The inline `style` attribute of the node carrying `class`.
+fn inline_style(app: &RinchApp, class: &str) -> String {
+    let id = node_of(app, class);
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    d.tree.nodes[id]
+        .attributes
+        .get("style")
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Settle after a change and demand the loop goes idle.
+#[track_caller]
+fn settle_and_idle(app: &mut RinchApp) {
+    drive(app);
+    let (redraws, _) = perf_expect::idle_turns(app, 5);
+    assert_eq!(redraws, 0, "the loop must go idle once the spacer settled");
 }
 
 /// The spacer's right edge lands on the row's right edge (within the layout's
@@ -225,4 +296,201 @@ fn the_spacer_settles_and_the_loop_goes_idle() {
         redraws, 0,
         "a settled inline menu bar must not keep asking for frames"
     );
+}
+
+// ---- #1375: the layout frame, the row's offset, and the first frame ----
+
+const ROW: &str = "rinch-app-menu-bar__inline-row";
+const LAYER: &str = "rinch-app-menu-bar__inline-layer";
+const SPACER: &str = "rinch-borderlesswindow__menu-spacer";
+const TITLEBAR: &str = "rinch-borderlesswindow__titlebar";
+const WINDOW: &str = "rinch-borderlesswindow";
+
+/// A window drawn under a transform reserves the same **layout** width. The
+/// spacer's width is a CSS length, so it has to be worked out in the frame
+/// CSS lays out in; subtracting painted (scaled) boxes and writing the result
+/// back as a width reserved half the row under `scale(0.5)` (row right edge
+/// 329, spacer right edge 267 — review of #1373).
+#[test]
+fn a_scaled_window_reserves_the_whole_row() {
+    let mut app = mount(&["Файл", "Правка"], "Rinch Zoo");
+    let unscaled = painted(&app, SPACER).2;
+    restyle(&app, WINDOW, "transform", "scale(0.5)");
+    settle_and_idle(&mut app);
+    let (_, _, rw, _) = painted(&app, ROW);
+    let (_, _, sw, _) = painted(&app, SPACER);
+    assert!(
+        (sw - unscaled / 2.0).abs() < 0.51,
+        "positive control: the spacer is painted at half size ({sw} of {unscaled})"
+    );
+    assert!(rw > 25.0, "positive control: the row is laid out ({rw})");
+    assert_spacer_reserves_the_row(&app);
+}
+
+/// Not only a uniform shrink: a magnified, off-centre window too.
+#[test]
+fn a_magnified_window_reserves_the_whole_row() {
+    let mut app = mount(&["ファイル", "編集"], "Zoo");
+    restyle(&app, WINDOW, "transform-origin", "10px 0px");
+    restyle(&app, WINDOW, "transform", "translate(13px, 5px) scale(1.5)");
+    settle_and_idle(&mut app);
+    assert_spacer_reserves_the_row(&app);
+}
+
+/// The row need not start at the window's left edge: an app that moves the
+/// row itself (`left: 30px`) moves the edge the spacer has to reach. Every
+/// other fixture has the row at x = 0, where dropping its x changes nothing.
+#[test]
+fn a_row_offset_inside_its_layer_is_reserved() {
+    let mut app = mount(&["Файл", "編集"], "");
+    let before = painted(&app, SPACER).2;
+    restyle(&app, ROW, "left", "30px");
+    settle_and_idle(&mut app);
+    assert_eq!(
+        painted(&app, ROW).0,
+        30.0,
+        "positive control: the row moved"
+    );
+    assert_spacer_reserves_the_row(&app);
+    let after = painted(&app, SPACER).2;
+    assert!(
+        (after - before - 30.0).abs() < 1.0,
+        "the spacer grows by the row's offset: {before} -> {after}"
+    );
+}
+
+/// Nor need the layer that holds the row: the layer's own offset counts.
+#[test]
+fn a_layer_offset_inside_the_window_is_reserved() {
+    let mut app = mount(&["Файл", "編集"], "");
+    restyle(&app, LAYER, "left", "17px");
+    settle_and_idle(&mut app);
+    assert_eq!(
+        painted(&app, ROW).0,
+        17.0,
+        "positive control: the row moved"
+    );
+    assert_spacer_reserves_the_row(&app);
+}
+
+/// A window with its own left padding starts the titlebar — and so the
+/// spacer — further right, while the row's layer stays at the padding edge.
+/// The spacer then needs less than the row's width.
+#[test]
+fn a_padded_window_reserves_only_what_is_left_of_the_row() {
+    let mut app = mount(&["Файл", "編集"], "Rinch Zoo");
+    restyle(&app, WINDOW, "padding-left", "40px");
+    settle_and_idle(&mut app);
+    let (rx, _, rw, _) = painted(&app, ROW);
+    let (sx, _, sw, _) = painted(&app, SPACER);
+    assert!(sx >= 40.0, "positive control: the titlebar moved ({sx})");
+    assert!(
+        sw < rx + rw - 39.0,
+        "the spacer is shorter than the row by the padding: row {rw}, spacer {sw}"
+    );
+    assert_spacer_reserves_the_row(&app);
+}
+
+/// A spacer that starts right of the row's end reserves nothing — and says
+/// so as `0px`, never as a negative width. Stylo drops a negative `width`
+/// and falls back to the stylesheet's zero, so the box alone cannot tell the
+/// two apart; a browser's `style.setProperty` ignores one and keeps the
+/// previous value, which would leave the estimate standing.
+#[test]
+fn a_spacer_past_the_rows_end_is_zero_not_negative() {
+    let mut app = mount(&["File"], "");
+    restyle(&app, WINDOW, "padding-left", "400px");
+    settle_and_idle(&mut app);
+    let (rx, _, rw, _) = painted(&app, ROW);
+    let (sx, _, sw, _) = painted(&app, SPACER);
+    assert!(
+        rw > 50.0 && sx > rx + rw,
+        "positive control: the spacer starts past the row (row ends {}, spacer at {sx})",
+        rx + rw
+    );
+    assert_eq!(sw, 0.0);
+    let style = inline_style(&app, SPACER);
+    assert!(
+        style.contains("width: 0px"),
+        "the spacer's inline width must be `0px`, got `{style}`"
+    );
+}
+
+/// The first painted frame reserves the shell's estimate — the row has no
+/// box when that frame is laid out — and exactly one more frame replaces it.
+/// Sampled with an estimate (173) that is neither zero nor near the row.
+#[test]
+fn the_first_frame_reserves_the_estimate_and_the_second_the_row() {
+    let mut app = build(&["Файл", "Правка"], "Rinch Zoo", 173, 0);
+    assert!(
+        inline_style(&app, SPACER).contains("width: 173px"),
+        "before any layout the spacer carries the estimate: `{}`",
+        inline_style(&app, SPACER)
+    );
+    perf_expect::paint(&mut app);
+    assert_eq!(
+        painted(&app, SPACER).2,
+        173.0,
+        "the first frame is laid out with the estimate"
+    );
+    let row = painted(&app, ROW).2;
+    assert!(
+        (row - 173.0).abs() > 20.0,
+        "positive control: the estimate is not the row's width ({row})"
+    );
+    assert!(
+        perf_expect::about_to_wait(&mut app),
+        "the measured row owes one more frame"
+    );
+    perf_expect::paint(&mut app);
+    assert_spacer_reserves_the_row(&app);
+    let (redraws, _) = perf_expect::idle_turns(&mut app, 5);
+    assert_eq!(redraws, 0, "one extra frame, then idle");
+}
+
+/// Where the estimate shows: a titlebar too narrow for what it holds
+/// overflows, so the spacer's width pushes the right section. Between the
+/// first frame and the settled one the right section moves by the estimate's
+/// error and no further, and the loop still settles and idles.
+#[test]
+fn a_narrow_titlebar_jumps_by_the_estimate_error_and_no_more() {
+    let labels: &'static [&'static str] = &["Файл", "Правка", "Вид", "Справка"];
+    let estimate = crate::app_builder::inline_spacer_width(labels);
+    let mut app = build(labels, "", estimate, 40);
+    // The helpers lay out at one viewport size, so the window is narrowed
+    // itself, before its first frame.
+    restyle(&app, WINDOW, "width", "300px");
+
+    perf_expect::paint(&mut app);
+    let first_spacer = painted(&app, SPACER);
+    let first_right = painted(&app, "probe-right").0;
+    assert_eq!(first_spacer.2, estimate as f32);
+
+    let frames = drive(&mut app);
+    assert!(frames <= 2, "settles in one extra frame, took {frames}");
+    let spacer = painted(&app, SPACER);
+    let right = painted(&app, "probe-right").0;
+    assert_spacer_reserves_the_row(&app);
+
+    let (tx, _, tw, _) = painted(&app, TITLEBAR);
+    assert!(
+        right + 40.0 > tx + tw,
+        "positive control: the titlebar overflows, so the right section is \
+         pushed by the spacer (right section ends {}, titlebar ends {})",
+        right + 40.0,
+        tx + tw
+    );
+    let error = (first_spacer.2 - spacer.2).abs();
+    let jump = (first_right - right).abs();
+    assert!(
+        error > 4.0,
+        "positive control: the estimate is off by a visible amount ({error})"
+    );
+    assert!(
+        (jump - error).abs() < 0.01,
+        "the right section jumps by the estimate's error ({error}), not {jump}"
+    );
+
+    let (redraws, _) = perf_expect::idle_turns(&mut app, 5);
+    assert_eq!(redraws, 0, "a settled narrow titlebar asks for no frames");
 }
