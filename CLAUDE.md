@@ -4353,13 +4353,54 @@ It falls out of that, with no special cases:
 | `if open { {panel} }` — a captured handle (the #654 shape) | `remove` | the closure was handed it; the next show puts it back |
 | a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
 | a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
+| `if open { div { {panel} } }` — a captured handle *inside* branch-built markup | `remove` for `panel`, `discard` for the `div` | the walk below takes `panel` out before the recursive discard reaches it (#732) |
 
-Ownership is asked of the **content root only**. That is what makes the nested
-case above right, and it costs one shape: a captured handle *inside*
-branch-built markup (`if open { div { {panel} } }`) is inside the recursion and
-goes with the wrapper. That is **#732**, it behaved the same way before #719,
-and `reinsertion_tests::a_captured_handle_nested_inside_fresh_markup_is_still_lost`
-pins it.
+**A root is asked `created`; everything under a root the helper discards is
+asked whether the branch's render built it (#732).** "Built it" is scope
+ancestry, not `created` (a `for` row, a nested branch, a component re-render or
+a late patch is minted by a scope of its own) and not id order (code that merely
+runs during the render is not the render's). Every `RenderScope` has a
+`ScopeId` and a parent fixed at construction (`RenderScope::with_parent(doc,
+node, Some(scope.id()))`); every node it mints is recorded against its id; a
+node is owned when the chain from its minting scope reaches the branch's scope.
+The four helpers, `virtual_list`'s rows and spacers and rinch-components'
+`late_children` patches (`List::icon`, `Stepper`, `RadioGroup`) all pass the
+scope they were called from, captured once, so content built later by an effect
+or an observer still chains back. **`RenderScope::new` has no parent**, and is
+not defaulted from whatever is rendering: nodes a parentless scope mints inside a
+branch are nobody's, and a hide only detaches them — a leak, never a loss. Any
+code that builds nodes on another scope's behalf must use `with_parent`; content
+meant to outlive a branch (a cache) must not name the branch's scope, or the
+hide discards it under the cache. **A node with no record at all** — minted by
+raw backend access: the editor view's blocks, `parse_html` — belongs to whatever
+owned node it sits under and is discarded with it. That is how every nested node
+was treated before #732, and it includes a raw-minted handle the app captured
+and nests in branch markup: it is retired with the wrapper, exactly as on main
+(`raw_minted_nodes_732.rs` pins both).
+
+The walk is `render_scope::sweep_for_discard`: one pass over the subtree (ids
+from `get_children`, document and table borrowed once) that drops the records of
+what is about to be discarded and collects the first non-owned node on each
+branch without entering it; the helper detaches those, then discards with
+`NodeHandle::discard_swept`. `show_dom`/`match_dom`/`reactive_component_dom`
+sweep before disposing the old scope; a parked `for`/`virtual_list` row sweeps
+at release, by its scope's id. The tables are per document (`Ancestry`), held
+by that document's `RenderScope`s and dropped with the last one, slot included.
+A scope's entry outlives the scope while a node it minted is recorded or a child
+entry names it, so a throwaway scope's nodes (a late patch, a spacer) still
+chain to its parent. A record goes when its node is discarded or replaced by
+`NodeHandle::set_inner_html`; a node that is only detached keeps it. Cost: one
+hash insert per minted node, and the sweep per hide — and every plain
+`NodeHandle::discard()` sweeps its subtree too (`sweep_for_discard(self, None,
+..)`), including the editor's `ViewDesc` discards; on web each `get_children`
+there is a JS call. Measured: +9.8% instructions on a 1000-row hide (`shell::branch_hide` in
+`rinch-bench`). Pins: `reinsertion_tests` (the `*_nested_*`, `*_later_*`,
+`virtual_list_*`, `a_late_child_*`, `depth_three_*` and table-growth fixtures),
+`render_scope::ancestry_tests`, `rinch-core/tests/raw_minted_nodes_732.rs`,
+`rinch-editor-view/tests/editor_in_branch_732.rs`,
+`rinch-components/tests/list_in_branch_732.rs`,
+`rinch-web/tests/{reinsertion,branch_reclaim_732,editor_in_branch_732}.rs`,
+`rinch/tests/embed_drop_minting_732.rs`.
 
 **One more shape is lost on web, and only `for` can reach it: #733.** A `view`
 closure that builds *lazily through the row's own scope* and caches afterwards

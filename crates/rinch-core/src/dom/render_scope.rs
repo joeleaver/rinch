@@ -1,12 +1,297 @@
 //! RenderScope, UpdateBatch, and DomUpdate types.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use crate::reactive::{Effect, Scope};
 
 use super::traits::DomDocument;
 use super::{NodeHandle, NodeId, next_reactive_id};
+
+// ============================================================================
+// Node ownership across scopes (issue #732)
+// ============================================================================
+//
+// A branch helper hiding content it built discards it, recursively. A
+// *captured* `NodeHandle` nested inside that markup must come out first, so the
+// question asked of every descendant is "did this branch's render mint it" —
+// directly, or through a scope its render created (a `for` row, a nested
+// branch, a component re-render, a late patch). That is scope ancestry:
+//
+// - every `RenderScope` has a [`ScopeId`] and an optional parent `ScopeId`,
+//   fixed at construction ([`RenderScope::with_parent`]);
+// - every node a scope mints is recorded against that scope's id;
+// - a node is owned by scope `S` when the chain from its minting scope up
+//   through the recorded parents reaches `S`.
+//
+// The tables are **per document** (a `NodeId` is only unique within one,
+// issue #134) and each entry outlives the scope it describes for as long as
+// something still needs it: a scope's entry is kept while the scope is alive,
+// while any node it minted is still recorded, and while any child scope's entry
+// names it as parent. So a node minted by a throwaway scope (a late patch, a
+// pooled spacer) still chains to that scope's parent after the scope is gone,
+// and nothing is kept once nothing can be asked about. A node leaves the table
+// when it is discarded or its parent's `set_inner_html` replaces it; the whole
+// table goes when the last `RenderScope` of its document is dropped.
+
+/// The identity of one [`RenderScope`] for ownership purposes (issue #732).
+///
+/// Read it with [`RenderScope::id`] and hand it to
+/// [`RenderScope::with_parent`] when a scope you build mints nodes on behalf of
+/// another one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ScopeId(u64);
+
+/// A hasher for the dense integer keys of the ancestry tables. `NodeId` and
+/// `ScopeId` are small integers the program mints, not attacker input, and the
+/// table is hit on every node a scope mints.
+#[derive(Default, Clone, Copy)]
+struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+/// One scope's entry in its document's [`Ancestry`].
+struct ScopeEntry {
+    parent: Option<ScopeId>,
+    /// Whether the `RenderScope` itself still exists.
+    alive: bool,
+    /// Recorded nodes it minted plus child entries naming it. While the scope
+    /// is alive its own mints are counted on the scope (`RenderScope::minted`)
+    /// and settled here when it drops, so this can dip below zero until then.
+    refs: i64,
+}
+
+/// One document's ancestry tables (issue #732).
+pub(crate) struct Ancestry {
+    doc_key: u64,
+    minted_by: IdMap<NodeId, ScopeId>,
+    scopes: IdMap<ScopeId, ScopeEntry>,
+}
+
+type AncestryRef = Rc<RefCell<Ancestry>>;
+
+thread_local! {
+    static NEXT_SCOPE_ID: Cell<u64> = const { Cell::new(0) };
+
+    /// Each document's tables, held weakly: the strong references live on the
+    /// document's `RenderScope`s, and the slot is removed when the tables drop.
+    static DOC_ANCESTRY: RefCell<HashMap<u64, Weak<RefCell<Ancestry>>>> =
+        RefCell::new(HashMap::new());
+}
+
+impl Drop for Ancestry {
+    fn drop(&mut self) {
+        let key = self.doc_key;
+        let _ = DOC_ANCESTRY.try_with(|slots| {
+            if let Ok(mut slots) = slots.try_borrow_mut()
+                && slots.get(&key).is_some_and(|w| w.strong_count() == 0)
+            {
+                slots.remove(&key);
+            }
+        });
+    }
+}
+
+impl Ancestry {
+    /// Drop `n` references to `scope`, removing its entry — and in turn
+    /// releasing its parent — once it is dead and unreferenced.
+    fn release(&mut self, scope: ScopeId, n: i64) {
+        let mut next = Some((scope, n));
+        while let Some((id, n)) = next.take() {
+            let Some(entry) = self.scopes.get_mut(&id) else {
+                return;
+            };
+            entry.refs -= n;
+            if !entry.alive && entry.refs <= 0 {
+                let parent = entry.parent;
+                self.scopes.remove(&id);
+                next = parent.map(|p| (p, 1));
+            }
+        }
+    }
+
+    /// Forget `node`'s minting record, if it has one.
+    fn purge(&mut self, node: NodeId) {
+        if let Some(scope) = self.minted_by.remove(&node) {
+            self.release(scope, 1);
+        }
+    }
+
+    /// Whether `scope` is `owner` or descended from it.
+    fn descends_from(&self, scope: ScopeId, owner: ScopeId) -> bool {
+        let mut current = Some(scope);
+        while let Some(scope) = current {
+            if scope == owner {
+                return true;
+            }
+            current = self.scopes.get(&scope).and_then(|e| e.parent);
+        }
+        false
+    }
+}
+
+fn ancestry_for(doc_key: u64) -> Option<AncestryRef> {
+    DOC_ANCESTRY.with(|slots| slots.borrow().get(&doc_key).and_then(Weak::upgrade))
+}
+
+fn ancestry_for_or_new(doc_key: u64) -> AncestryRef {
+    DOC_ANCESTRY.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        if let Some(existing) = slots.get(&doc_key).and_then(Weak::upgrade) {
+            return existing;
+        }
+        let table = Rc::new(RefCell::new(Ancestry {
+            doc_key,
+            minted_by: IdMap::default(),
+            scopes: IdMap::default(),
+        }));
+        slots.insert(doc_key, Rc::downgrade(&table));
+        table
+    })
+}
+
+/// Prepare `root`'s subtree for a discard, in one walk (issue #732).
+///
+/// Every node visited loses its minting record (the discard is about to
+/// retire it). With `owner = Some(s)`, a descendant recorded against a scope
+/// that is not `s` or descended from it — one the render was handed rather
+/// than built — is pushed to `captured` instead (a descendant with no record
+/// at all, minted by raw backend access, goes with the owned node above it): its
+/// record is kept and its subtree not entered, and the caller detaches it
+/// before discarding `root`, so it can be shown again. With `None`, everything
+/// under `root` is purged and nothing is captured.
+///
+/// Bounded by the subtree being discarded, minus what is captured.
+pub(crate) fn sweep_for_discard(
+    root: &NodeHandle,
+    owner: Option<ScopeId>,
+    captured: &mut Vec<NodeHandle>,
+) {
+    let Some(table) = ancestry_for(root.doc_key()) else {
+        return;
+    };
+    let Some(doc) = root.accessed_doc() else {
+        return;
+    };
+    let doc = doc.borrow();
+    let mut table = table.borrow_mut();
+    // Siblings are mostly minted by one scope (a row and its text), so the
+    // last answer and the references owed to the last scope are kept.
+    let mut last_answer: Option<(ScopeId, bool)> = None;
+    let mut owed: Option<(ScopeId, i64)> = None;
+    let mut stack = vec![root.node_id()];
+    let mut is_root = true;
+    while let Some(id) = stack.pop() {
+        let record = table.minted_by.remove(&id);
+        if !is_root && let Some(owner) = owner {
+            let owned = match (record, last_answer) {
+                // No record: raw backend access (the editor view,
+                // `parse_html`). It belongs to the owned node above it, as
+                // every nested node did before #732.
+                (None, _) => true,
+                (Some(scope), Some((last, answer))) if last == scope => answer,
+                (Some(scope), _) => {
+                    let answer = table.descends_from(scope, owner);
+                    last_answer = Some((scope, answer));
+                    answer
+                }
+            };
+            if !owned {
+                if let Some(scope) = record {
+                    table.minted_by.insert(id, scope);
+                }
+                captured.push(NodeHandle::new(id, root.doc.clone()));
+                continue;
+            }
+        }
+        is_root = false;
+        if let Some(scope) = record {
+            match &mut owed {
+                Some((last, n)) if *last == scope => *n += 1,
+                _ => {
+                    if let Some((last, n)) = owed.replace((scope, 1)) {
+                        table.release(last, n);
+                    }
+                }
+            }
+        }
+        stack.extend(doc.get_children(id));
+    }
+    if let Some((last, n)) = owed {
+        table.release(last, n);
+    }
+}
+
+/// Forget the minting records of everything under `root`, not `root` itself —
+/// what `set_inner_html` replaces.
+pub(crate) fn purge_descendants(root: &NodeHandle) {
+    let Some(table) = ancestry_for(root.doc_key()) else {
+        return;
+    };
+    let Some(doc) = root.accessed_doc() else {
+        return;
+    };
+    let doc = doc.borrow();
+    let mut table = table.borrow_mut();
+    let mut stack = doc.get_children(root.node_id());
+    while let Some(id) = stack.pop() {
+        table.purge(id);
+        stack.extend(doc.get_children(id));
+    }
+}
+
+/// **Test-only.** How many nodes the ancestry tables of every document with a
+/// live `RenderScope` on this thread currently record a minting scope for.
+#[doc(hidden)]
+pub fn __minted_by_len() -> usize {
+    DOC_ANCESTRY.with(|slots| {
+        slots
+            .borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(|t| t.borrow().minted_by.len())
+            .sum()
+    })
+}
+
+/// **Test-only.** How many scope entries those tables hold — live scopes, and
+/// dropped ones something still refers to.
+#[doc(hidden)]
+pub fn __scope_parents_len() -> usize {
+    DOC_ANCESTRY.with(|slots| {
+        slots
+            .borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(|t| t.borrow().scopes.len())
+            .sum()
+    })
+}
+
+/// **Test-only.** How many per-document slots the ancestry tables hold, live or
+/// dead (issue #732): a dropped document must leave none behind.
+#[doc(hidden)]
+pub fn __doc_table_slots() -> usize {
+    DOC_ANCESTRY.with(|slots| slots.borrow().len())
+}
 
 /// Context for building DOM trees with automatic effect tracking.
 ///
@@ -42,11 +327,81 @@ pub struct RenderScope {
     /// [`RenderScope::on_cleanup`]. Cleanups deliberately live here and not in a
     /// second list on `RenderScope`, so they run on drop as well as on dispose.
     reactive_scope: Scope,
+    /// This scope's identity in its document's ancestry tables (issue #732).
+    id: ScopeId,
+    /// Nodes this scope has recorded in the tables and not yet settled onto
+    /// its entry — settled when the scope drops (see `ScopeEntry::refs`).
+    minted: i64,
+    /// The document's ancestry tables. Every scope of a document holds them,
+    /// so they live exactly as long as some `RenderScope` of that document.
+    ancestry: AncestryRef,
 }
 
 impl RenderScope {
-    /// Create a new render scope rooted at the given node.
+    /// Create a render scope with **no ancestry parent** (issue #732).
+    ///
+    /// Right for a document's root scope, a mount, or a test. **Not** right
+    /// for a scope that builds nodes on behalf of another scope's render —
+    /// a list row, a branch's content, a patch a container applies to a late
+    /// child: use [`with_parent`](Self::with_parent) there, naming the scope
+    /// whose content this is. A branch that hides discards everything its
+    /// render built, and a node minted by a parentless scope is not something
+    /// its render built — it is only detached, so inside a branch it leaks on
+    /// every hide.
+    ///
+    /// Deliberately not defaulted from whichever scope happens to be rendering:
+    /// that answer is wrong for content a helper builds later from an effect
+    /// (nothing of the outer render is on the stack then), and it would claim a
+    /// cache that builds its own content during a render as the render's — and
+    /// discard it from under the cache.
     pub fn new(doc: Rc<RefCell<dyn DomDocument>>, parent_id: NodeId) -> Self {
+        Self::with_parent(doc, parent_id, None)
+    }
+
+    /// Create a render scope whose nodes belong to `parent`'s render
+    /// (issue #732). `None` is [`new`](Self::new).
+    ///
+    /// Name a parent only for content that lives and dies with that parent's
+    /// render: the parent's hide discards it. Content that must outlive it (a
+    /// cache) is built with [`new`](Self::new), or outside the render.
+    ///
+    /// Capture the parent's [`id`](Self::id) when you are handed its scope —
+    /// a component's `render`, a helper's call — and pass that id to every
+    /// scope you build for it, including from an effect or observer that runs
+    /// much later: what matters is whose content this is, not what is on the
+    /// stack when it is built. The scope may be dropped as soon as its nodes
+    /// exist; they keep belonging to `parent`.
+    pub fn with_parent(
+        doc: Rc<RefCell<dyn DomDocument>>,
+        parent_id: NodeId,
+        parent: Option<ScopeId>,
+    ) -> Self {
+        let id = NEXT_SCOPE_ID.with(|c| {
+            let id = c.get();
+            c.set(id + 1);
+            ScopeId(id)
+        });
+        let ancestry = ancestry_for_or_new(doc.borrow().doc_key());
+        {
+            let mut table = ancestry.borrow_mut();
+            // A parent with no entry is gone and nothing refers to it, so
+            // nothing alive can be asking whether it owns anything.
+            let parent = parent.filter(|p| match table.scopes.get_mut(p) {
+                Some(entry) => {
+                    entry.refs += 1;
+                    true
+                }
+                None => false,
+            });
+            table.scopes.insert(
+                id,
+                ScopeEntry {
+                    parent,
+                    alive: true,
+                    refs: 0,
+                },
+            );
+        }
         Self {
             doc: Rc::downgrade(&doc),
             parent_id,
@@ -54,30 +409,34 @@ impl RenderScope {
             effects: Vec::new(),
             children: Vec::new(),
             reactive_scope: Scope::new(),
+            id,
+            minted: 0,
+            ancestry,
         }
+    }
+
+    /// This scope's [`ScopeId`] — the `parent` to pass to
+    /// [`with_parent`](Self::with_parent) for a scope that builds content on
+    /// this one's behalf.
+    pub fn id(&self) -> ScopeId {
+        self.id
     }
 
     /// Whether this scope minted `node` (issue #719).
     ///
-    /// The question a reactive branch helper has to answer on a hide: **did my
-    /// branch closure build this, or was it handed to me?** A node this scope
-    /// created can never be shown again once the branch flips, so its
-    /// bookkeeping is released ([`NodeHandle::discard`]); one it did not create
-    /// is the caller's, may come back on the next show, and is only detached
+    /// The question a reactive branch helper asks of its content root on a
+    /// hide: **did my branch closure build this, or was it handed to me?** A
+    /// root this scope created can never be shown again once the branch flips,
+    /// so it is released ([`NodeHandle::discard`]); one it did not create is
+    /// the caller's, may come back on the next show, and is only detached
     /// ([`NodeHandle::remove`]).
     ///
-    /// **Only the content root is asked**, and that is deliberate: discarding is
-    /// recursive, so a root this scope built takes its whole subtree with it —
-    /// including nodes minted by *nested* scopes (a `for`'s rows, an inner
-    /// branch), which is exactly right, since nothing outside can be holding
-    /// them either.
-    ///
-    /// The one shape it gets wrong is a captured handle nested **inside**
-    /// branch-built markup (`if open { div { {panel} } }`): the `div` is this
-    /// scope's, the recursion reaches `panel`, and `panel` is retired. That is
-    /// issue #732, it is the behaviour on both backends before #719 as well as
-    /// after, and `a_captured_handle_nested_inside_fresh_markup_is_still_lost`
-    /// pins it so a future fix is deliberate rather than accidental.
+    /// Inside a root it built, the helper asks a wider question of every
+    /// descendant — minted by this scope *or a scope descended from it* (a
+    /// `for` row, a nested branch, a late patch; issue #732) — and detaches
+    /// whatever is not, so a captured handle nested in branch-built markup
+    /// (`if open { div { {panel} } }`) survives the discard. That walk is
+    /// `sweep_for_discard`, run before the scope is disposed.
     ///
     /// **The verb is chosen before the scope is disposed**, so a cleanup that
     /// re-parents a scope-built node while disposal runs cannot rescue it: the
@@ -103,6 +462,16 @@ impl RenderScope {
     /// Record a node this scope just minted. See [`created`](Self::created).
     fn own(&mut self, id: NodeId) -> NodeId {
         self.created.push(id);
+        let previous = self.ancestry.borrow_mut().minted_by.insert(id, self.id);
+        match previous {
+            // Already ours (an id reused without a purge): counted once.
+            Some(scope) if scope == self.id => {}
+            Some(scope) => {
+                self.minted += 1;
+                self.ancestry.borrow_mut().release(scope, 1);
+            }
+            None => self.minted += 1,
+        }
         id
     }
 
@@ -180,6 +549,9 @@ impl RenderScope {
     /// let node = { let _owner = child_scope.push_owner(); view(&item, &mut child_scope) };
     /// ```
     ///
+    /// It says nothing about node ownership (issue #732): that is the parent
+    /// a scope is given at construction ([`RenderScope::with_parent`]).
+    ///
     /// Takes `&self` and returns a lifetime-free guard, so the `&mut` borrow of
     /// the same scope on the next line is still legal.
     #[doc(hidden)]
@@ -209,11 +581,15 @@ impl RenderScope {
     /// Resources created through the returned `&mut` are attributed to the
     /// **ambient** owner — normally the parent — not to the child, because the
     /// returned reference outlives any guard this method could hand back. Its
-    /// only caller is a test; prefer [`RenderScope::new`] plus
+    /// only caller is a test; prefer [`RenderScope::with_parent`] plus
     /// [`push_owner`](RenderScope::push_owner).
     #[doc(hidden)]
     pub fn child_scope(&mut self, parent: &NodeHandle) -> &mut RenderScope {
-        let scope = RenderScope::new(self.doc().expect("Document dropped"), parent.node_id);
+        let scope = RenderScope::with_parent(
+            self.doc().expect("Document dropped"),
+            parent.node_id,
+            Some(self.id),
+        );
         self.children.push(scope);
         self.children.last_mut().unwrap()
     }
@@ -408,10 +784,33 @@ impl RenderScope {
 
 impl Drop for RenderScope {
     fn drop(&mut self) {
-        // Nothing to do: `children` are `RenderScope`s that drop recursively,
-        // and effects + cleanups belong to `reactive_scope`, whose `Drop` calls
-        // its own iterative `dispose()`. This is what makes `on_cleanup` fire on
+        // `children` are `RenderScope`s that drop recursively, and effects +
+        // cleanups belong to `reactive_scope`, whose `Drop` calls its own
+        // iterative `dispose()`. This is what makes `on_cleanup` fire on
         // drop-only teardown paths (issue #141).
+        //
+        // The scope's ancestry entry outlives it while its nodes are still
+        // recorded or a child entry names it (issue #732): settle its mints
+        // onto the entry and let the count decide.
+        let Ok(mut table) = self.ancestry.try_borrow_mut() else {
+            debug_assert!(
+                false,
+                "a RenderScope dropped while its ancestry table was borrowed"
+            );
+            return;
+        };
+        let Some(entry) = table.scopes.get_mut(&self.id) else {
+            return;
+        };
+        entry.alive = false;
+        entry.refs += self.minted;
+        if entry.refs <= 0 {
+            let parent = entry.parent;
+            table.scopes.remove(&self.id);
+            if let Some(parent) = parent {
+                table.release(parent, 1);
+            }
+        }
     }
 }
 
@@ -541,5 +940,66 @@ impl UpdateBatch {
 impl Default for UpdateBatch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod ancestry_tests {
+    use super::*;
+    use crate::dom::mock::MockDomDocument;
+
+    fn doc() -> Rc<RefCell<dyn DomDocument>> {
+        Rc::new(RefCell::new(MockDomDocument::new()))
+    }
+
+    /// A scope that minted nothing is still a link in its children's chains:
+    /// dropping it must not drop its entry while a child entry names it, or
+    /// what the child builds later stops belonging to the grandparent.
+    #[test]
+    fn a_dropped_scope_that_minted_nothing_still_links_its_child_to_the_owner() {
+        let doc = doc();
+        let body = doc.borrow().body();
+        let mut owner = RenderScope::new(doc.clone(), body);
+        let middle = RenderScope::with_parent(doc.clone(), body, Some(owner.id()));
+        let mut child = RenderScope::with_parent(doc.clone(), body, Some(middle.id()));
+        drop(middle);
+
+        let root = owner.create_element("div");
+        root.append_child(&child.create_element("i"));
+        let mut captured = Vec::new();
+        sweep_for_discard(&root, Some(owner.id()), &mut captured);
+        assert!(
+            captured.is_empty(),
+            "the child's node was read as captured: the dropped middle scope's \
+             entry went while the child still named it"
+        );
+    }
+
+    /// An id recorded again without a purge in between (a backend that reuses
+    /// ids, through a route that did not purge) moves the record to the new
+    /// minting scope, and the old scope's entry lets go of it.
+    #[test]
+    fn a_reminted_id_releases_the_previous_minting_scope() {
+        let doc = doc();
+        let body = doc.borrow().body();
+        // Keeps the document's tables alive across the two scopes below.
+        let _anchor = RenderScope::new(doc.clone(), body);
+        let before = __scope_parents_len();
+        let mut first = RenderScope::new(doc.clone(), body);
+        first.own(NodeId(1_000_000));
+        drop(first);
+        assert_eq!(
+            __scope_parents_len(),
+            before + 1,
+            "precondition: a dropped scope's entry stays while its node is recorded"
+        );
+        let mut second = RenderScope::new(doc.clone(), body);
+        second.own(NodeId(1_000_000));
+        assert_eq!(
+            __scope_parents_len(),
+            before + 1,
+            "the first scope's entry was kept for a record that no longer names it"
+        );
+        drop(second);
     }
 }
