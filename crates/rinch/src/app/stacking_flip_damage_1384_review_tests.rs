@@ -796,3 +796,81 @@ fn h_a_context_only_flip_changes_an_absolute_grandchilds_clip() {
         assert_eq!(o.stale, 0, "changed={}", o.changed);
     }
 }
+
+// ── What the damage of a flip is clipped by (round 1 of the #1399 review) ──
+
+/// `clipper(100x100, overflow: hidden) > p > …` under a positioned holder,
+/// with a blue `z-index: 1` sibling at +150px. `inner` is what sits under
+/// `p`; returns the spec and `p`'s index.
+fn clipped_scene(p_style: &str, inner: &[(usize, &str)]) -> (Spec, usize) {
+    let mut spec = vec![
+        s(None, "position: relative; width: 300px; height: 100px"),
+        s(Some(0), "width: 100px; height: 100px; overflow: hidden"),
+        s(Some(1), p_style),
+    ];
+    for (parent, style) in inner {
+        spec.push(s(Some(*parent), style));
+    }
+    spec.push(s(
+        Some(0),
+        &format!("position: absolute; left: 150px; top: 0; z-index: 1; {BLUE}"),
+    ));
+    (spec, 2)
+}
+
+/// The escaping absolute is two levels under the flipping box, through a
+/// static wrapper: the escape walk has to recurse.
+#[test]
+fn an_escaping_absolute_under_a_wrapper_is_repainted() {
+    let p = "width: 100px; height: 100px;";
+    let k = format!("position: absolute; left: 150px; top: 0; z-index: 5; {RED}");
+    for (from, to) in [("", "opacity: 0.5;"), ("opacity: 0.5;", "")] {
+        let (spec, t) = clipped_scene(
+            &format!("{p} {from}"),
+            &[(2, "width: 100px; height: 100px"), (3, &k)],
+        );
+        let o = probe(&spec, t, &format!("{p} {to}"));
+        assert!(o.changed > 9000, "positive control {}", o.changed);
+        assert_eq!(o.full, 0);
+        assert_eq!(o.stale, 0);
+    }
+}
+
+/// The absolute under the flipping box is contained by a `relative` box
+/// between the two, so it escapes nothing: the clipper cuts it, and cuts the
+/// damage. Exactly the clipper's 100 x 100 (its left and top edges are the
+/// window's; the damage margin is clipped away on the other two).
+#[test]
+fn a_contained_absolute_keeps_the_damage_inside_the_clipper() {
+    let p = "width: 100px; height: 100px;";
+    let k = format!("position: absolute; left: 150px; top: 0; z-index: 5; {RED}");
+    let (spec, t) = clipped_scene(
+        p,
+        &[
+            (2, "position: relative; width: 100px; height: 100px"),
+            (3, &k),
+        ],
+    );
+    let o = probe(&spec, t, &format!("{p} opacity: 0.5"));
+    assert_eq!(o.stale, 0);
+    assert_eq!(o.full, 0);
+    assert_eq!(o.repainted, 100 * 100);
+}
+
+/// The flipping box becomes the containing block of an absolute child that
+/// used to escape the clipper above it: the child's old pixels are outside
+/// the clipper, so the rect it was painted in is not cut by it — and the
+/// reverse.
+#[test]
+fn a_box_that_starts_containing_an_escaping_absolute_clears_where_it_was() {
+    let p = "width: 100px; height: 100px;";
+    let k = format!("position: absolute; left: 150px; top: 0; z-index: 5; {RED}");
+    for (from, to) in [("", "position: relative;"), ("position: relative;", "")] {
+        let (spec, t) = clipped_scene(&format!("{p} {from}"), &[(2, &k)]);
+        let o = probe(&spec, t, &format!("{p} {to}"));
+        report(&format!("starts containing {from:?}->{to:?}"), &o);
+        assert!(o.changed > 9000, "positive control {}", o.changed);
+        assert_eq!(o.full, 0);
+        assert_eq!(o.stale, 0);
+    }
+}
