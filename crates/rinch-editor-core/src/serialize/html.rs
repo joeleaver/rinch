@@ -1464,8 +1464,10 @@ impl<'a> HtmlParser<'a> {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(color))]))?;
             next = with_mark(&next, Mark::new(mt.clone(), attrs));
         }
+        // `transparent` is no highlight: Google Docs says it on every span.
         if let (Some(bg), Some(mt)) = (
-            parse_style(style, "background-color").filter(|c| is_safe_css_color(c)),
+            parse_style(style, "background-color")
+                .filter(|c| is_safe_css_color(c) && !c.trim().eq_ignore_ascii_case("transparent")),
             self.schema.mark_type("highlight"),
         ) {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(bg))]))?;
