@@ -1031,3 +1031,68 @@ fn deep_nesting_reads_without_overflowing_the_stack() {
         validity(&doc).unwrap();
     }
 }
+
+/// Reading is linear in the input: twice the input is twice the work, for
+/// shapes that repeat and for shapes that nest as deep as the reader lets
+/// them. Counted in the reader's own steps (one per tag, text run and
+/// comment read, per open element looked at to place a tag, and per node
+/// visited to build content), not timed.
+#[test]
+fn reading_is_linear_in_the_input() {
+    use rinch_editor_core::serialize::html_reader_steps;
+    let schema = Schema::starter_kit();
+    let deep = |tag: &str, n: usize| format!("<{tag}>").repeat(n);
+    type Shape = (&'static str, Box<dyn Fn(usize) -> String>);
+    let shapes: Vec<Shape> = vec![
+        ("word paragraphs", Box::new(|n| "<p class=MsoNormal>text<o:p></o:p></p>\r\n".repeat(n))),
+        ("list items", Box::new(|n| format!("<ul>{}</ul>", "<li>item".repeat(n)))),
+        ("bare items", Box::new(|n| "<li>item</li>\n".repeat(n))),
+        ("table rows", Box::new(|n| format!("<table>{}</table>", "<tr><td>a<td>b".repeat(n)))),
+        ("bare rows", Box::new(|n| "<tr><td>a</td>stray<td>b</td></tr>".repeat(n))),
+        ("unclosed inline", Box::new(|n| "<b><i><span>x".repeat(n))),
+        ("unclosed blocks", Box::new(|n| "<div><blockquote><p>x".repeat(n))),
+        ("stray end tags", Box::new(move |n| format!("{}{}", deep("div", 200), "x</p></span></o:p></td>".repeat(n)))),
+        (
+            // Every <div> looks through 100 open spans for a <p> to end.
+            "a far barrier",
+            Box::new(move |n| format!("<p><button>{}{}", deep("span", 100), "<div>x</div>".repeat(n))),
+        ),
+        (
+            "deep chains of nothing",
+            Box::new(move |n| format!("{}{}", deep("div", 150), "</div>".repeat(150)).repeat(n / 50)),
+        ),
+        (
+            "deep chains of text",
+            Box::new(move |n| format!("{}x{}", deep("div", 150), "</div>".repeat(150)).repeat(n / 50)),
+        ),
+        (
+            "marks around blocks",
+            Box::new(move |n| format!("{}{}", deep("strong><em><a href=x", 40), "<p>a<br>b</p>".repeat(n))),
+        ),
+        ("inline wrappers", Box::new(|n| "<span><o:p><font>a</font></o:p> </span><b>b</b> ".repeat(n))),
+        ("text and entities", Box::new(|n| "a &amp; b &#233; < c <!-- d --> ".repeat(n))),
+        ("code lines", Box::new(|n| format!("<div style=\"white-space:pre\">{}</div>", "<div><span>x</span></div>".repeat(n)))),
+    ];
+    for (name, shape) in &shapes {
+        let steps = |n: usize| {
+            let html = shape(n);
+            let before = html_reader_steps();
+            slice_from_html(&schema, &html).unwrap();
+            html_reader_steps() - before
+        };
+        let (small, large) = (steps(1000), steps(2000));
+        assert!(small >= 1000, "{name}: the counter counts: {small}");
+        // Quadratic work would be four times as much.
+        assert!(
+            large <= small * 2 + small / 4 + 1000,
+            "{name}: {small} steps for 1000, {large} for 2000"
+        );
+        // And never more than a fixed number of steps for each byte read:
+        // a tag looks at no more open elements than can be open (128).
+        assert!(
+            large <= shape(2000).len() as u64 * 64,
+            "{name}: {large} steps for {} bytes",
+            shape(2000).len()
+        );
+    }
+}
