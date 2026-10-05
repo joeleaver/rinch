@@ -2186,3 +2186,31 @@ fn icb_boxes_inside_a_scroller_are_visited_once_per_layout_and_once_per_scroll()
         &[],
     );
 }
+
+/// A box that stops being ancestor-resolved — its static parent becomes
+/// positioned, so Taffy's own answer is right again — leaves
+/// `NodeTree::ancestor_absolutes` on the next layout and is looked at by no
+/// pass after it.
+#[test]
+fn a_box_that_stops_being_ancestor_resolved_leaves_the_passes() {
+    let (mut doc, cb) =
+        absolute_under_a_grandparent("right: 5px; bottom: 5px; width: 40px; height: 20px;");
+    cold_frame(&mut doc);
+    let mid = NodeId(doc.tree.get(cb.0).unwrap().children[0]);
+    doc.set_attribute(mid, "style", "position: relative");
+    doc.resolve_layout(VP.0, VP.1);
+
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1 + 20.0);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "once ancestor-resolved, now its parent's: a later layout",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+        ],
+    );
+}
