@@ -231,13 +231,11 @@ impl Component for BorderlessWindow {
             // Inline mode: add a spacer to reserve titlebar space for the
             // absolutely-positioned menu items that overlay the titlebar.
             // `spacer_width` is the shell's estimate, made before any
-            // document existed; it holds only until the row has been laid out,
-            // after which the spacer follows the row's measured box (below).
+            // document existed; the effect below writes it, and it holds only
+            // until the row has been laid out, after which the spacer follows
+            // the row's measured box.
             let spacer =
                 rinch_macros::rsx! { div { class: "rinch-borderlesswindow__menu-spacer" } };
-            if let Some(ref ctx) = menu_ctx {
-                spacer.set_style("width", &format!("{}px", ctx.spacer_width));
-            }
             titlebar.append_child(&spacer);
             menu_spacer = Some(spacer);
         }
@@ -452,21 +450,39 @@ impl Component for BorderlessWindow {
             // proportional font, and neither counted the title.
             //
             // The spacer ends where the row ends: the row's right edge minus
-            // the spacer's own left edge, in the painted frame both
-            // `bounds_signal`s report. Neither box depends on the spacer's
-            // width (the row is out of flow in its own layer; the spacer's
-            // left edge is the titlebar's padding), so this settles in one
-            // extra layout and re-runs only when the row or the titlebar
-            // actually moves. Until the row has a box the estimate stands.
+            // the spacer's own left edge, both in the window root's **layout**
+            // frame (issue #1375). The result is written as a CSS width, so
+            // it has to be worked out in the frame CSS lays out in: the
+            // painted boxes the `bounds_signal`s carry are scaled by any
+            // transform on the window or above it, and a width taken from
+            // them reserved half the row under `scale(0.5)`. The signals are
+            // read only to re-run this when either box moves on screen.
+            //
+            // Neither edge depends on the spacer's width (the row is out of
+            // flow in its own layer; the spacer's left edge is the titlebar's
+            // padding), so this settles in one extra layout and re-runs only
+            // when the row or the titlebar actually moves. Until the row has
+            // a box the estimate stands, and this effect's first run — during
+            // this render, before any layout — is what writes it.
             if let Some(spacer) = menu_spacer {
                 let row_bounds = items_row.bounds_signal();
                 let spacer_bounds = spacer.bounds_signal();
                 let estimate = menu_ctx.spacer_width;
+                let layer = menu_layer.clone();
+                let row = items_row.clone();
+                let titlebar = titlebar.clone();
                 Effect::new(move || {
-                    let row = row_bounds.get();
-                    let at = spacer_bounds.get();
-                    let width = if row.width > 0.0 {
-                        (row.x + row.width - at.x).max(0.0)
+                    row_bounds.get();
+                    spacer_bounds.get();
+                    // Parent-relative layout boxes, summed up to the window
+                    // root: root > layer > row, and root > titlebar > spacer.
+                    let layout = |n: &NodeHandle| n.get_layout_bounds().unwrap_or_default();
+                    let (layer_x, ..) = layout(&layer);
+                    let (row_x, _, row_width, _) = layout(&row);
+                    let (titlebar_x, ..) = layout(&titlebar);
+                    let (spacer_x, ..) = layout(&spacer);
+                    let width = if row_width > 0.0 {
+                        (layer_x + row_x + row_width - (titlebar_x + spacer_x)).max(0.0)
                     } else {
                         estimate as f32
                     };

@@ -4076,10 +4076,18 @@ fn app() -> NodeHandle {
 positioned layer drawn over the titlebar, and an empty
 `.rinch-borderlesswindow__menu-spacer` in the titlebar's flex row holds that
 space open for the right section and the controls. The spacer is sized from the
-**row's measured box** (both `bounds_signal`s: the row's right edge minus the
-spacer's left edge), not from a count of the labels (#529): the shell's
+**row's measured box** (the row's right edge minus the spacer's left edge), not
+from a count of the labels (#529): the shell's
 `MenuBarContext::spacer_width` is only the first frame's estimate, made before
-any document exists, and costs one extra layout to replace.
+any document exists, and costs one extra layout to replace. The subtraction is
+made in the window root's **layout** frame — `NodeHandle::get_layout_bounds`
+summed over root > layer > row and root > titlebar > spacer — because the
+result is written as a CSS width (#1375); the two `bounds_signal`s are painted
+boxes, scaled by any transform on the window or above it, and are read only to
+re-run the effect. `rinch-web` publishes no bounds signals and no shell builds
+the inline layout there, so this is a desktop path; a web one could not reuse
+`get_layout_bounds`, which is `getBoundingClientRect`-based (painted) on that
+backend. Pins: `app/inline_menu_spacer_529_tests.rs`.
 
 ### Window Control Functions
 
