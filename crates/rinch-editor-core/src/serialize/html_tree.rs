@@ -454,7 +454,11 @@ impl<'a> HtmlFragmentParser<'a> {
             // What an end tag does not reach across.
             let barrier = match open {
                 "table" => tag != "table",
-                "td" | "th" | "caption" => tag != "table" && !table_part,
+                // A row or a row group with no `<table>` around it stands
+                // for its table.
+                "td" | "th" | "caption" | "tr" | "tbody" | "thead" | "tfoot" => {
+                    tag != "table" && !table_part
+                }
                 "ul" | "ol" => tag == "li" || !special,
                 _ => !special && is_special(open),
             };
@@ -517,7 +521,7 @@ impl<'a> HtmlFragmentParser<'a> {
         if closes_p(tag) {
             self.close_nearest(
                 |open| open == "p",
-                |open| matches!(open, "button" | "table" | "td" | "th" | "caption" | "object"),
+                |open| open == "button" || open == "object" || open == "table" || is_table_part(open),
             );
         }
         match tag {
