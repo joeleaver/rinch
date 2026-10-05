@@ -316,3 +316,174 @@ fn pin_the_depth_limit_is_walked_on_a_two_megabyte_stack() {
         .join()
         .unwrap();
 }
+
+// ── Fix round 2 ──────────────────────────────────────────────────────────────
+
+/// However many elements are left open, a tag closes what it closes with
+/// three open: the lines are the same at every count. (Round 1 looked no
+/// further than 192 open elements, and past them an end tag ended nothing.)
+/// Each shape has a stop or a barrier the tag must still respect from far.
+#[test]
+fn unclosed_elements_change_no_line_however_many() {
+    let shapes = [
+        "<ul><li>{S}a<li>b<li>c</ul>d",
+        "<div>{S}a</div>b<div>c</div>d",
+        "<h1>{S}head</h1>body<h2>h2</h2>",
+        "<pre>{S}l1\nl2</pre>after",
+        // A `<div>` in a cell does not end a `<p>` around the table.
+        "<p>o<table><tr><td>{S}x<div>y</div>z</td></tr></table>w",
+        // An inline end tag does not reach across a block.
+        "<b>k<div>{S}x</b>y</div>z",
+        "<table><tr><td>{S}a<td>b<tr><td>c</table>d",
+        "<dl><dt>{S}a<dd>b<dt>c</dl>d",
+        // An `<li>` in a cell is not the outer list's.
+        "<ul><li>{S}a<table><tr><td>b<li>c</td></tr></table><li>d</ul>e",
+        "<p>{S}a<svg><desc><p>q</p></desc></svg>b<p>c",
+        "<h1>{S}a<h2>b</h2>c",
+        "<table><caption>{S}cap<tr><td>a<tbody><tr><td>b</table>c",
+        "<div>{S}a<svg><g>{S}<p>b</p>c",
+    ];
+    let limit = html_reader_max_depth();
+    for shape in shapes {
+        for tag in ["span", "i", "x-y"] {
+            let read = |n: usize| lines_of(&shape.replace("{S}", &format!("<{tag}>").repeat(n)));
+            let want = read(3);
+            assert!(want.len() >= 2, "{shape}: {want:?}");
+            for n in [limit - 2, limit, limit + 1, limit + 60, 5 * limit] {
+                assert_eq!(read(n), want, "{shape} with {n} <{tag}>");
+            }
+        }
+    }
+}
+
+/// Reading stays linear when a block past the depth limit is split into
+/// parts: its attributes go with one part, not a copy with each. Both the
+/// attribute and the number of parts double here, so a copy a part is four
+/// times the steps (the reader counts the attribute bytes it hands over).
+#[test]
+fn a_flattened_block_is_linear_in_its_attributes_and_parts() {
+    use rinch_editor_core::serialize::html_reader_steps;
+    let schema = Schema::starter_kit();
+    let steps = |n: usize| {
+        let src = format!(
+            "{}<div style=\"{}\">{}",
+            "<div>".repeat(html_reader_max_depth()),
+            "color:red;".repeat(n * 8),
+            "t<p>y</p>".repeat(n)
+        );
+        let before = html_reader_steps();
+        let slice = slice_from_html(&schema, &src).unwrap();
+        assert_eq!(slice.content.children().len(), 2 * n);
+        html_reader_steps() - before
+    };
+    let (small, large) = (steps(1000), steps(2000));
+    assert!(small >= 1000, "{small}");
+    assert!(
+        large <= small * 2 + small / 4,
+        "{small} steps for 1000 parts, {large} for 2000"
+    );
+}
+
+/// The attributes of a block split past the limit go with its first part.
+#[test]
+fn a_flattened_block_keeps_its_attributes_on_its_first_part() {
+    let src = format!(
+        "{}<h2 style=\"text-align:center\">a<div>b</div>c</h2>",
+        "<div>".repeat(html_reader_max_depth())
+    );
+    assert_eq!(
+        node_to_html(&load(&src)),
+        "<h2 style=\"text-align:center\">a</h2><p>b</p><h2>c</h2>"
+    );
+}
+
+/// What padding adds is in proportion to what was written: at most eight
+/// empty cells a cell (sixteen whatever the number), else none.
+#[test]
+fn padding_is_in_proportion_to_the_cells_written() {
+    // 3 cells written, 16 missing: padded.
+    let src = "<td colspan=9>a</td><tr><td>b</td></tr><tr><td>c</td></tr>";
+    assert_eq!(count(&load(src), "table_cell"), 3 + 16);
+    // 3 written, 26 missing (more than 24): as written. 24 missing: padded.
+    let src = "<td colspan=14>a</td><tr><td>b</td></tr><tr><td>c</td></tr>";
+    assert_eq!(count(&load(src), "table_cell"), 3);
+    let src = "<td colspan=13>a</td><tr><td>b</td></tr><tr><td>c</td></tr>";
+    assert_eq!(count(&load(src), "table_cell"), 3 + 24);
+    // Many small tables in one paste: each is bounded by itself.
+    let one = "<td colspan=17>a</td><tr><td>b</td></tr><p>x</p>";
+    let src = one.repeat(500);
+    assert!(count(&load(&src), "table_cell") <= src.len() / 2);
+}
+
+/// Code lines pasted where a line keeps some of its content are paragraphs
+/// wherever the caret is in it: at its start (where the fit would otherwise
+/// replace the line with the code block and take the line's text into it),
+/// in it, at its end, and beside an image alone on a line. A line that keeps
+/// nothing (an empty one, or one selected whole) is where the block lands.
+#[test]
+fn code_lines_are_paragraphs_at_the_start_middle_and_end_of_a_line() {
+    let code = "<pre>l1\nl2\nl3</pre>";
+    let img = "<img src=\"https://e.x/i.png\">";
+    for (target, from, to, want) in [
+        (
+            "<p>abcd</p>",
+            1,
+            1,
+            "<p>l1</p><p>l2</p><p>l3abcd</p>".to_string(),
+        ),
+        (
+            "<p>abcd</p>",
+            3,
+            3,
+            "<p>abl1</p><p>l2</p><p>l3cd</p>".to_string(),
+        ),
+        (
+            "<p>abcd</p>",
+            5,
+            5,
+            "<p>abcdl1</p><p>l2</p><p>l3</p>".to_string(),
+        ),
+        // Part of the line selected, from its start.
+        (
+            "<p>abcd</p>",
+            1,
+            3,
+            "<p>l1</p><p>l2</p><p>l3cd</p>".to_string(),
+        ),
+        (
+            "<ul><li><p>abcd</p></li></ul>",
+            3,
+            3,
+            "<ul><li><p>l1</p><p>l2</p><p>l3abcd</p></li></ul>".to_string(),
+        ),
+        (
+            "<h2>abcd</h2>",
+            1,
+            1,
+            "<h2>l1</h2><p>l2</p><p>l3abcd</p>".to_string(),
+        ),
+        (
+            &format!("<p>{img}</p>"),
+            1,
+            1,
+            format!("<p>l1</p><p>l2</p><p>l3{img}</p>"),
+        ),
+        (
+            &format!("<p>{img}</p>"),
+            2,
+            2,
+            format!("<p>{img}l1</p><p>l2</p><p>l3</p>"),
+        ),
+        // Nothing of the line is kept: the block.
+        ("<p></p>", 1, 1, code.to_string()),
+        ("<p>abcd</p>", 1, 5, code.to_string()),
+        (
+            "<p>x</p><p></p><p>y</p>",
+            4,
+            4,
+            format!("<p>x</p>{code}<p>y</p>"),
+        ),
+    ] {
+        assert_eq!(fit(target, from, to, code), want, "{target} {from}..{to}");
+    }
+}

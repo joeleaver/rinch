@@ -624,21 +624,25 @@ impl<'a> Fitter<'a> {
 }
 
 /// `slice` with the code block open at its start turned into a line of text
-/// for each of its lines, when the slice is about to continue a textblock at
-/// `from` that is not code and the block holds a line end. `None` when it is
-/// not, or when the lines are not valid where the block was.
+/// for each of its lines, when `from..to` is in a textblock that is not code
+/// and keeps some of its content, and the block holds a line end. `None`
+/// when it is not, or when the lines are not valid where the block was.
 ///
 /// Code text keeps its line ends in the text; a paragraph that took that text
-/// as it is would hold them too, as one line that only looks like several.
-/// So the first line continues the textblock at `from`, each further line is
-/// a textblock of its own (a `paragraph`, or the type of the one at `from`
-/// in a schema with no paragraph), and what follows the range joins the
-/// last. A candidate that keeps the code block closed (it lands whole) and a
-/// target that is code are left alone.
+/// as it is would hold them too, as one line that only looks like several,
+/// and a line whose own text was taken into the code block (the fit at a
+/// line's start) would be code. So the first line continues the textblock at
+/// `from`, each further line is a textblock of its own (a `paragraph`, or
+/// the type of the one at `from` in a schema with no paragraph), and what
+/// follows the range joins the last. Decided once for the range, before any
+/// candidate: a range that covers the whole content of its textblock (a
+/// caret in an empty one) takes the code block as a block, and so does a
+/// slice that is closed at its start; a target that is code takes the text.
 pub(crate) fn code_lines_as_blocks(
     schema: &crate::schema::Schema,
     doc: &Node,
     from: usize,
+    to: usize,
     slice: &Slice,
 ) -> Option<Slice> {
     if slice.open_start == 0 {
@@ -647,6 +651,9 @@ pub(crate) fn code_lines_as_blocks(
     let r = doc.resolve(Pos(from)).ok()?;
     let target = r.parent();
     if !target.is_textblock() || target.node_type().spec().code {
+        return None;
+    }
+    if r.parent_offset() == 0 && to >= from + target.content_size() {
         return None;
     }
     let line = schema

@@ -35,8 +35,9 @@
 //!   parser ends foreign content at (`<p>`, `<div>`, `<span>`, `<b>`, …),
 //!   unless a `<foreignObject>`, `<desc>` or `<annotation-xml>` is open
 //!   inside it; and a start tag inside one implies no end tag outside it.
-//! - A tag looks at no more than [`MAX_SCAN`] open elements for the one it
-//!   closes; an element further up stays open.
+//! - A tag finds the element it closes however many are open: it looks
+//!   through the innermost [`MAX_SCAN`], and past those asks an index of
+//!   where each name is open, so no tag costs more than a fixed amount.
 //!
 //! Not followed: a self-closing `<x/>` is an empty element whatever `x` is
 //! (in HTML only a void element is), formatting elements are not reopened
@@ -57,10 +58,90 @@ use super::html_entities::decode_entities;
 /// `the_depth_limit_reads_on_a_small_stack`.
 pub(super) const MAX_DEPTH: usize = 192;
 
-/// The most open elements a tag looks through for the one it closes. A well
-/// nested document closes the innermost; this bounds what a tag costs when
-/// thousands of elements are open.
+/// The most open elements a tag looks through one by one for the one it
+/// closes. A well nested document closes the innermost. Past these the
+/// answer comes from `open_at` — the same answer, at a fixed cost — so
+/// thousands of open elements make a tag no dearer and change nothing it
+/// closes.
 pub(super) const MAX_SCAN: usize = MAX_DEPTH;
+
+/// Every name [`is_special`] or [`is_foreign`] accepts: the only elements
+/// that an implied end tag closes, that stop one, or that an end tag does
+/// not reach across. What the index is asked about.
+const SCOPE_NAMES: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "center",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "header",
+    "hgroup",
+    "main",
+    "menu",
+    "nav",
+    "ol",
+    "p",
+    "search",
+    "section",
+    "summary",
+    "ul",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "pre",
+    "listing",
+    "form",
+    "table",
+    "hr",
+    "li",
+    "dd",
+    "dt",
+    "xmp",
+    "tr",
+    "td",
+    "th",
+    "tbody",
+    "thead",
+    "tfoot",
+    "caption",
+    "colgroup",
+    "col",
+    "applet",
+    "area",
+    "br",
+    "button",
+    "embed",
+    "frame",
+    "frameset",
+    "img",
+    "input",
+    "keygen",
+    "marquee",
+    "object",
+    "param",
+    "select",
+    "source",
+    "textarea",
+    "track",
+    "wbr",
+    "svg",
+    "math",
+    "foreignobject",
+    "desc",
+    "annotation-xml",
+];
 
 thread_local! {
     static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -82,7 +163,11 @@ pub fn html_reader_steps() -> u64 {
 }
 
 pub(super) fn step() {
-    STEPS.with(|c| c.set(c.get() + 1));
+    steps(1);
+}
+
+fn steps(n: u64) {
+    STEPS.with(|c| c.set(c.get() + n));
 }
 
 /// A parsed HTML node.
@@ -128,6 +213,8 @@ pub(super) struct HtmlFragmentParser<'a> {
     flat_dropped: Option<usize>,
     /// How many `<svg>` and `<math>` elements are open.
     foreign: usize,
+    /// Where each tag name is open: indices into `stack`, ascending.
+    open_at: std::collections::HashMap<String, Vec<usize>>,
     /// Inside a `<head>`.
     in_head: bool,
     /// An `<html>`, `<head>` or `<body>` tag was the last tag read: the
@@ -146,6 +233,7 @@ impl<'a> HtmlFragmentParser<'a> {
             flat_blocks: Vec::new(),
             flat_dropped: None,
             foreign: 0,
+            open_at: std::collections::HashMap::new(),
             in_head: false,
             after_document_tag: false,
         }
@@ -263,12 +351,39 @@ impl<'a> HtmlFragmentParser<'a> {
                 self.flat_blocks.push(at);
             }
         }
+        debug_assert!(
+            !(is_special(&tag) || is_foreign(&tag)) || SCOPE_NAMES.contains(&tag.as_str()),
+            "<{tag}> is missing from SCOPE_NAMES"
+        );
+        match self.open_at.get_mut(&tag) {
+            Some(indices) => indices.push(at),
+            None => {
+                self.open_at.insert(tag.clone(), vec![at]);
+            }
+        }
         self.stack.push(Open {
             tag,
             attributes,
             children: Vec::new(),
             split: false,
         });
+    }
+
+    /// The innermost open element named `name`.
+    fn last_open(&self, name: &str) -> Option<usize> {
+        step();
+        self.open_at.get(name)?.last().copied()
+    }
+
+    /// The innermost open element whose name `accepts` accepts, among the
+    /// names that matter to implied and misnested end tags
+    /// ([`SCOPE_NAMES`]).
+    fn nearest_scope(&self, accepts: impl Fn(&str) -> bool) -> Option<usize> {
+        SCOPE_NAMES
+            .iter()
+            .filter(|name| accepts(name))
+            .filter_map(|name| self.last_open(name))
+            .max()
     }
 
     /// Add an element with no end tag to read.
@@ -294,8 +409,21 @@ impl<'a> HtmlFragmentParser<'a> {
         };
         let open = &mut self.stack[at];
         open.split = true;
+        if open.children.is_empty() {
+            return;
+        }
         let children = std::mem::take(&mut open.children);
-        let (tag, attributes) = (open.tag.clone(), open.attributes.clone());
+        // The block's attributes go with its first part that holds anything,
+        // and are moved there: a copy for every part would cost the
+        // attributes once for every block inside the block.
+        let whitespace =
+            matches!(children.as_slice(), [ParsedNode::Text(text)] if text.trim().is_empty());
+        let attributes = if whitespace {
+            Vec::new()
+        } else {
+            std::mem::take(&mut open.attributes)
+        };
+        let tag = open.tag.clone();
         self.push_flat(tag, attributes, children, true);
     }
 
@@ -323,6 +451,8 @@ impl<'a> HtmlFragmentParser<'a> {
                 _ => {}
             }
         }
+        let bytes: usize = attributes.iter().map(|(k, v)| k.len() + v.len()).sum();
+        steps((bytes / 64) as u64);
         into.push(ParsedNode::Element {
             tag,
             attributes,
@@ -543,6 +673,12 @@ impl<'a> HtmlFragmentParser<'a> {
                 _ => {}
             }
         }
+        if self.stack.len() > MAX_SCAN
+            && let Some(i) = self.nearest_scope(is_foreign)
+            && matches!(self.stack[i].tag.as_str(), "svg" | "math")
+        {
+            self.close_to(i);
+        }
     }
 
     /// The text up to the end tag of `tag` (or the end of the input), which
@@ -606,6 +742,17 @@ impl<'a> HtmlFragmentParser<'a> {
         let heading = is_heading(&tag);
         let table_part = is_table_part(&tag);
         let special = is_special(&tag);
+        // What an end tag does not reach across.
+        let barrier = |open: &str| match open {
+            "table" => tag != "table",
+            // A row or a row group with no `<table>` around it stands for
+            // its table.
+            "td" | "th" | "caption" | "tr" | "tbody" | "thead" | "tfoot" => {
+                tag != "table" && !table_part
+            }
+            "ul" | "ol" => tag == "li" || !special,
+            _ => !special && is_special(open),
+        };
         for i in (0..self.stack.len()).rev().take(MAX_SCAN) {
             step();
             let open = self.stack[i].tag.as_str();
@@ -613,20 +760,23 @@ impl<'a> HtmlFragmentParser<'a> {
                 self.close_to(i);
                 return;
             }
-            // What an end tag does not reach across.
-            let barrier = match open {
-                "table" => tag != "table",
-                // A row or a row group with no `<table>` around it stands
-                // for its table.
-                "td" | "th" | "caption" | "tr" | "tbody" | "thead" | "tfoot" => {
-                    tag != "table" && !table_part
-                }
-                "ul" | "ol" => tag == "li" || !special,
-                _ => !special && is_special(open),
-            };
-            if barrier {
+            if barrier(open) {
                 return;
             }
+        }
+        if self.stack.len() <= MAX_SCAN {
+            return;
+        }
+        // Further up than the scan looks: the same rule, from the index.
+        let found = if heading {
+            self.nearest_scope(is_heading)
+        } else {
+            self.last_open(&tag)
+        };
+        if let Some(found) = found
+            && self.nearest_scope(&barrier).is_none_or(|b| b <= found)
+        {
+            self.close_to(found);
         }
     }
 
@@ -636,6 +786,9 @@ impl<'a> HtmlFragmentParser<'a> {
             let Some(open) = self.stack.pop() else { return };
             if matches!(open.tag.as_str(), "svg" | "math") {
                 self.foreign -= 1;
+            }
+            if let Some(indices) = self.open_at.get_mut(&open.tag) {
+                indices.pop();
             }
             let at = self.stack.len();
             if at < MAX_DEPTH {
@@ -672,11 +825,35 @@ impl<'a> HtmlFragmentParser<'a> {
                 return;
             }
         }
+        if self.stack.len() > MAX_SCAN
+            && let Some(found) = self.nearest_scope(&closes)
+            && self.nearest_scope(&stops).is_none_or(|stop| stop <= found)
+        {
+            self.close_to(found);
+        }
     }
 
     /// Close the outermost open element `closes` accepts that is inside the
     /// nearest open `<table>` (or inside none).
     fn close_in_table(&mut self, closes: impl Fn(&str) -> bool) {
+        if self.stack.len() > MAX_SCAN {
+            let inside = self.last_open("table").map_or(0, |table| table + 1);
+            let outermost = SCOPE_NAMES
+                .iter()
+                .filter(|name| closes(name))
+                .filter_map(|name| {
+                    step();
+                    let indices = self.open_at.get(*name)?;
+                    indices
+                        .get(indices.partition_point(|i| *i < inside))
+                        .copied()
+                })
+                .min();
+            if let Some(i) = outermost {
+                self.close_to(i);
+            }
+            return;
+        }
         let mut outermost = None;
         for i in (0..self.stack.len()).rev().take(MAX_SCAN) {
             step();
@@ -948,4 +1125,40 @@ fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`SCOPE_NAMES`] is exactly the names [`is_special`] and
+    /// [`is_foreign`] accept: a name missing from it would be invisible to
+    /// a tag that looks past [`MAX_SCAN`] open elements.
+    #[test]
+    fn scope_names_are_the_special_and_foreign_elements() {
+        for name in SCOPE_NAMES {
+            assert!(is_special(name) || is_foreign(name), "{name}");
+        }
+        // Every HTML element name, and the foreign ones: opening one that is
+        // special and not listed trips the assertion in `open`.
+        let all = "a abbr acronym address applet area article aside audio b base basefont bdi bdo \
+                   bgsound big blink blockquote body br button canvas caption center cite code col \
+                   colgroup data datalist dd del details dfn dialog dir div dl dt em embed fieldset \
+                   figcaption figure font footer form frame frameset h1 h2 h3 h4 h5 h6 head header \
+                   hgroup hr html i iframe img input ins kbd keygen label legend li link listing \
+                   main map mark marquee menu meta meter nav nobr noembed noframes noscript object \
+                   ol optgroup option output p param picture plaintext pre progress q rb rp rt rtc \
+                   ruby s samp script search section select slot small source span strike strong \
+                   style sub summary sup table tbody td template textarea tfoot th thead time title \
+                   tr track tt u ul var video wbr xmp svg math foreignobject desc annotation-xml";
+        let mut listed = 0;
+        for name in all.split_whitespace() {
+            if is_special(name) || is_foreign(name) {
+                assert!(SCOPE_NAMES.contains(&name), "{name}");
+                listed += 1;
+            }
+            HtmlFragmentParser::new(&format!("<{name}>x")).parse();
+        }
+        assert_eq!(listed, SCOPE_NAMES.len());
+    }
 }

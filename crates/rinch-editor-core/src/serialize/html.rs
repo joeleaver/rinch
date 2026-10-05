@@ -1093,12 +1093,37 @@ impl<'a> HtmlParser<'a> {
 
     /// A table made of parts that had no `<table>` around them: fill the
     /// slots no cell covers with empty cells, as a browser renders them, so
-    /// that the table made up for them is a rectangle. Left as it is past
-    /// [`MAX_PAD_CELLS`] empty cells.
+    /// that the table made up for them is a rectangle.
+    ///
+    /// Only when that takes no more than [`PAD_CELLS_PER_CELL`] empty cells
+    /// for each cell the markup wrote (or [`PAD_CELLS_FLOOR`]): a span claims
+    /// slots without writing them, so a few bytes can ask for a grid of any
+    /// size, and what a paste costs must stay in proportion to the paste.
+    /// Past that the rows are left as written. The grid is not laid out at
+    /// all when the spans cannot cover enough of it.
     fn pad_rows(&self, types: &TableTypes<'a>, table: Node) -> Result<Node, EditorError> {
+        let rows = table.content().children();
+        let (mut cells, mut covered) = (0usize, 0usize);
+        for row in rows {
+            for cell in row.content().children() {
+                let span = |name: &str| {
+                    usize::try_from(cell.attrs().get_int(name).unwrap_or(1).max(1))
+                        .unwrap_or(usize::MAX)
+                };
+                cells += 1;
+                covered = covered.saturating_add(
+                    span("colspan").saturating_mul(span("rowspan").min(rows.len())),
+                );
+            }
+        }
+        let allowed = (cells * PAD_CELLS_PER_CELL).max(PAD_CELLS_FLOOR);
+        let slots = crate::tables::column_count(&table).saturating_mul(rows.len());
+        if slots.saturating_sub(covered) > allowed {
+            return Ok(table);
+        }
         let holes = crate::tables::row_holes(&table);
         let total: usize = holes.iter().sum();
-        if total == 0 || total > MAX_PAD_CELLS {
+        if total == 0 || total > allowed {
             return Ok(table);
         }
         let filler = self
@@ -1704,10 +1729,12 @@ pub(super) fn is_dropped(tag: &str) -> bool {
     )
 }
 
-/// The most empty cells added to make bare table parts a rectangle
-/// ([`HtmlParser::pad_rows`]): spans can ask for a grid far larger than the
-/// markup that claims it.
-const MAX_PAD_CELLS: usize = 1 << 16;
+/// How many empty cells may be added for each cell written, to make bare
+/// table parts a rectangle ([`HtmlParser::pad_rows`]).
+const PAD_CELLS_PER_CELL: usize = 8;
+
+/// The empty cells that may be added whatever the number written.
+const PAD_CELLS_FLOOR: usize = 16;
 
 /// A table cell parsed but not yet built: its `rowspan` can be `0`, "to the end
 /// of the row group", which only the whole group resolves
