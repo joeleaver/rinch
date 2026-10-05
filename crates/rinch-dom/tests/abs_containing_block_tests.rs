@@ -1250,3 +1250,53 @@ fn a_parent_that_starts_or_stops_generating_a_box_is_found_at_read_back() {
     assert_rect(c.rect("abs"), [0.0, 0.0, 440.0, 320.0], "contents again");
     assert_rect(c.rect("kid"), [0.0, 0.0, 220.0, 160.0], "its child");
 }
+
+/// A change of containing block moves a box whose **size** does not depend
+/// on it, too: nothing in its Taffy style changes, and the layout that places
+/// it must run all the same. Position-only twins of
+/// `the_box_follows_a_change_of_containing_block`, for both corrected cases.
+#[test]
+fn a_position_only_box_follows_a_change_of_containing_block() {
+    // Under a non-parent ancestor, then under its own parent, and back.
+    let mut c = Case::single("right: 5px; bottom: 7px; width: 40px; height: 20px");
+    let mid = one(&c.doc, "[data-mid]");
+    assert_rect(c.rect("abs"), [355.0, 273.0, 40.0, 20.0], "grandparent");
+    c.doc
+        .set_attribute(NodeId(mid), "style", &format!("{MID}position: relative"));
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("abs"), [285.0, 193.0, 40.0, 20.0], "parent");
+    c.doc.set_attribute(NodeId(mid), "style", MID);
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(
+        c.rect("abs"),
+        [355.0, 273.0, 40.0, 20.0],
+        "grandparent again",
+    );
+
+    // Under the initial containing block, then under a grandparent that
+    // becomes positioned, and back.
+    let mut c = Case::new(&format!(
+        r#"<div data-cb style="width: 400px; height: 300px; margin: 13px 0 0 17px;">{SP}<div data-mid style="{MID}">{}</div></div>"#,
+        abs(
+            "abs",
+            "right: 5px; bottom: 7px; width: 40px; height: 20px",
+            ""
+        )
+    ));
+    let cb = c.cb;
+    assert_rect(c.page_rect("abs"), [755.0, 573.0, 40.0, 20.0], "viewport");
+    c.doc.set_attribute(NodeId(cb), "style", CB);
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("abs"), [355.0, 273.0, 40.0, 20.0], "grandparent");
+    c.doc.set_attribute(
+        NodeId(cb),
+        "style",
+        "width: 400px; height: 300px; margin: 13px 0 0 17px;",
+    );
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(
+        c.page_rect("abs"),
+        [755.0, 573.0, 40.0, 20.0],
+        "viewport again",
+    );
+}
