@@ -634,7 +634,8 @@ impl<'a> MdBuilder<'a> {
 
     // ── HTML tables ──
 
-    /// The tables an HTML block holds, or `None` if it is not (only) tables.
+    /// The tables an HTML block holds (with, lenient, the blocks read from
+    /// what they hold outside their cells), or `None` if it is not tables.
     /// Strict, it refuses (at `range`) an attribute the tables would lose: an
     /// unsafe URL as such, anything else as an HTML block.
     fn html_tables(
@@ -670,7 +671,11 @@ impl<'a> MdBuilder<'a> {
             .iter()
             .map(drop_unit_spans)
             .collect();
-        if tables.is_empty() || tables.iter().any(|t| t.type_name() != "table") {
+        // What a `<table>` holds that has no place in one (a caption, text
+        // between its rows) is read as blocks in front of it. Lenient, they
+        // are kept with the table; strict, such a table is refused.
+        let is_table = |t: &Node| t.type_name() == "table";
+        if !tables.iter().any(is_table) || (self.strict && !tables.iter().all(is_table)) {
             return Ok(None);
         }
         if self.strict {
@@ -1373,13 +1378,9 @@ fn html_text(html: &str) -> String {
             _ => {}
         }
     }
-    out.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", "\u{00A0}")
-        .replace("&amp;", "&")
+    // As the HTML reader decodes them, or text with a reference the reader
+    // knows would never match what it read.
+    super::html_entities::decode_entities(&out)
 }
 
 /// Concatenate all descendant text.

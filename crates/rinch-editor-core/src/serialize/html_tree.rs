@@ -13,9 +13,9 @@
 //!   and `<?xml …>` give nothing. Neither do `<script>`, `<style>`,
 //!   `<title>`, `<iframe>`, `<noscript>`, `<noembed>`, `<noframes>` and
 //!   `<template>` with their content, nor `<meta>` and `<link>`.
-//! - `<html>` and `<body>` tags are skipped (their content stays), and a
-//!   `<head>` ends at its end tag or at the first thing that is not head
-//!   content.
+//! - `<html>` and `<body>` tags are skipped (their content stays) with the
+//!   whitespace after them, and a `<head>` ends at its end tag or at the
+//!   first thing that is not head content.
 //! - End tags are implied as a browser implies them: a `<p>` ends at the next
 //!   block, an `<li>` at the next `<li>`, a cell at the next cell or row, a
 //!   row at the next row. An end tag closes the nearest open element of its
@@ -87,6 +87,9 @@ pub(super) struct HtmlFragmentParser<'a> {
     unopened: usize,
     /// Inside a `<head>`.
     in_head: bool,
+    /// An `<html>`, `<head>` or `<body>` tag was the last tag read: the
+    /// whitespace after it is the source's layout, not content.
+    after_document_tag: bool,
 }
 
 impl<'a> HtmlFragmentParser<'a> {
@@ -99,6 +102,7 @@ impl<'a> HtmlFragmentParser<'a> {
             stack: Vec::new(),
             unopened: 0,
             in_head: false,
+            after_document_tag: false,
         }
     }
 
@@ -134,7 +138,15 @@ impl<'a> HtmlFragmentParser<'a> {
         while self.pos < bytes.len() && bytes[self.pos] != b'<' {
             self.pos += 1;
         }
-        let text = decode_entities(&self.input[start..self.pos]);
+        let mut raw = &self.input[start..self.pos];
+        if self.after_document_tag {
+            raw = raw.trim_start_matches(|c: char| c.is_ascii_whitespace());
+            if raw.is_empty() {
+                return;
+            }
+            self.after_document_tag = false;
+        }
+        let text = decode_entities(raw);
         self.append_text(&text);
     }
 
@@ -318,6 +330,7 @@ impl<'a> HtmlFragmentParser<'a> {
         if self.in_head && !is_head_content(&tag) {
             self.in_head = false;
         }
+        self.after_document_tag = matches!(tag.as_str(), "html" | "head" | "body");
         match tag.as_str() {
             // Their content is the document's; the tags say nothing.
             "html" | "body" => return,
@@ -419,6 +432,7 @@ impl<'a> HtmlFragmentParser<'a> {
         self.pos += 2;
         let tag = self.tag_name();
         self.skip_past(b'>');
+        self.after_document_tag = matches!(tag.as_str(), "html" | "head" | "body");
         match tag.as_str() {
             "html" | "body" => return,
             "head" => {
