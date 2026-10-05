@@ -1082,8 +1082,44 @@ impl<'a> HtmlParser<'a> {
             // `table > table_row+` must be non-empty.
             rows.push(self.empty_table_row(types)?);
         }
-        blocks.push(self.make_node(types.table, Attrs::new(), Fragment::from_children(rows))?);
+        let mut table = self.make_node(types.table, Attrs::new(), Fragment::from_children(rows))?;
+        if !whole {
+            table = self.pad_rows(types, table)?;
+        }
+        blocks.push(table);
         Ok(blocks)
+    }
+
+    /// A table made of parts that had no `<table>` around them: fill the
+    /// slots no cell covers with empty cells, as a browser renders them, so
+    /// that the table made up for them is a rectangle. Left as it is past
+    /// [`MAX_PAD_CELLS`] empty cells.
+    fn pad_rows(&self, types: &TableTypes<'a>, table: Node) -> Result<Node, EditorError> {
+        let holes = crate::tables::row_holes(&table);
+        let total: usize = holes.iter().sum();
+        if total == 0 || total > MAX_PAD_CELLS {
+            return Ok(table);
+        }
+        let filler = self
+            .empty_table_row(types)?
+            .content()
+            .children()
+            .first()
+            .cloned();
+        let Some(filler) = filler else {
+            return Ok(table);
+        };
+        let mut rows = Vec::with_capacity(holes.len());
+        for (row, short) in table.content().children().iter().zip(holes) {
+            if short == 0 {
+                rows.push(row.clone());
+                continue;
+            }
+            let mut cells = row.content().children().to_vec();
+            cells.extend(std::iter::repeat_n(filler.clone(), short));
+            rows.push(row.copy_with_content(Fragment::from_children(cells)));
+        }
+        Ok(table.copy_with_content(Fragment::from_children(rows)))
     }
 
     /// Parse table parts into `table_row` nodes, transparently descending
@@ -1666,6 +1702,11 @@ pub(super) fn is_dropped(tag: &str) -> bool {
             | "frameset"
     )
 }
+
+/// The most empty cells added to make bare table parts a rectangle
+/// ([`HtmlParser::pad_rows`]): spans can ask for a grid far larger than the
+/// markup that claims it.
+const MAX_PAD_CELLS: usize = 1 << 16;
 
 /// A table cell parsed but not yet built: its `rowspan` can be `0`, "to the end
 /// of the row group", which only the whole group resolves
