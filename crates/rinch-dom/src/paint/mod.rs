@@ -218,16 +218,22 @@ pub fn compute_damage(
                 right: bounds.x1 - (ax + w),
                 bottom: bounds.y1 - (ay + h),
             };
-            if reordered && reach.exceeds(ink) {
+            if reordered {
                 let contains = node.establishes_abs_containing_block()
                     && node.painted.as_ref().is_some_and(|p| p.contains_abs);
-                escapes = !contains
-                    && subtree_has_escaping_absolute(tree, node_id, &mut { ESCAPE_WALK_BUDGET });
+                escapes = !contains && subtree_has_escaping_absolute(tree, node_id);
             }
             ink = ink.max(reach);
         }
-        let clip_now = |id: RawNodeId| clip_chain_bounds_from(tree, id, scale, false, escapes);
-        let clip_then = |id: RawNodeId| clip_chain_bounds_from(tree, id, scale, true, escapes);
+        let clip_of = |id: RawNodeId, painted: bool| {
+            if escapes {
+                clip_chain_walk(tree, id, scale, painted, true, &mut 0)
+            } else {
+                clip_chain_bounds(tree, id, scale, painted)
+            }
+        };
+        let clip_now = |id: RawNodeId| clip_of(id, false);
+        let clip_then = |id: RawNodeId| clip_of(id, true);
 
         if w > 0.0
             && h > 0.0
@@ -401,8 +407,13 @@ fn reorders_subtree(node: &Node) -> bool {
 /// block is above `node_id` — one that escapes the clippers between the two,
 /// which `node_id`'s own clip chain therefore cannot speak for. `node_id`
 /// itself is not asked (the caller knows whether it is, or was, a containing
-/// block). `true` when the walk gives up.
-fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId, budget: &mut u32) -> bool {
+/// block).
+///
+/// Linear in the subtree, and asked once, on a frame in which the node's
+/// paint order changed and [`opacity_layer_bounds`] has just bounded the same
+/// subtree (a subtree that walk gives up on repaints in full before this is
+/// reached).
+fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
     let Some(node) = tree.get(node_id) else {
         return false;
     };
@@ -413,10 +424,6 @@ fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId, budget: &m
         if matches!(child.computed_style.display, DisplayValue::None) {
             continue;
         }
-        if *budget == 0 {
-            return true;
-        }
-        *budget -= 1;
         if matches!(
             child.box_position(),
             PositionValue::Absolute | PositionValue::Fixed
@@ -427,16 +434,12 @@ fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId, budget: &m
         if child.establishes_abs_containing_block() {
             continue;
         }
-        if subtree_has_escaping_absolute(tree, child_id, budget) {
+        if subtree_has_escaping_absolute(tree, child_id) {
             return true;
         }
     }
     false
 }
-
-/// How many nodes [`subtree_has_escaping_absolute`] looks at before it
-/// answers `true` unseen.
-const ESCAPE_WALK_BUDGET: u32 = 4096;
 
 /// The screen rect every clipping ancestor of `node_id` confines its paint to
 /// — in the current frame, or as it was last painted — or `None` when nothing
@@ -483,19 +486,6 @@ pub(crate) fn clip_chain_bounds(
     clip_chain_bounds_counted(tree, node_id, scale, painted, &mut 0)
 }
 
-/// [`clip_chain_bounds`]; with `as_absolute`, the chain an absolute box at
-/// `node_id` would have: every clipper below the nearest containing block
-/// above `node_id` is skipped.
-fn clip_chain_bounds_from(
-    tree: &NodeTree,
-    node_id: RawNodeId,
-    scale: f64,
-    painted: bool,
-    as_absolute: bool,
-) -> Option<Rect> {
-    clip_chain_walk(tree, node_id, scale, painted, as_absolute, &mut 0)
-}
-
 /// [`clip_chain_bounds`], adding to `steps` one per ancestor it walks.
 pub(crate) fn clip_chain_bounds_counted(
     tree: &NodeTree,
@@ -507,6 +497,9 @@ pub(crate) fn clip_chain_bounds_counted(
     clip_chain_walk(tree, node_id, scale, painted, false, steps)
 }
 
+/// [`clip_chain_bounds`]; with `as_absolute`, the chain an absolute box at
+/// `node_id` would have: every clipper below the nearest containing block
+/// above `node_id` is skipped.
 fn clip_chain_walk(
     tree: &NodeTree,
     node_id: RawNodeId,
@@ -875,11 +868,6 @@ impl Outsets {
             right: self.right.max(o.right).max(0.0),
             bottom: self.bottom.max(o.bottom).max(0.0),
         }
-    }
-
-    /// Whether `self` reaches past `o` on any side.
-    fn exceeds(self, o: Self) -> bool {
-        self.left > o.left || self.top > o.top || self.right > o.right || self.bottom > o.bottom
     }
 
     fn grow(self, r: Rect) -> Rect {
