@@ -1791,10 +1791,10 @@ impl RinchDocument {
             // the reason `fixed` is: its Taffy *size* is baked from its insets
             // against the initial containing block (#204), so an inset change
             // is not inset-only for it either. One resolved against a
-            // non-parent ancestor (#386) is **not** excluded: its bake is
-            // re-derived from the computed insets after every compute
-            // (`resolve_ancestor_absolutes`), and its position from them as
-            // it is read back.
+            // non-parent ancestor (#386) is **not** excluded: the fast path
+            // re-derives its bake from the new insets
+            // (`rebake_after_inset_write`), and its position comes from them
+            // as it is read back.
             || crate::out_of_flow::out_of_flow_kind(&self.tree, node_id)
                 == Some(crate::out_of_flow::OutOfFlowKind::IcbAbsolute)
         {
@@ -1918,6 +1918,11 @@ impl RinchDocument {
             && let Ok(mut ts) = self.tree.taffy.style(taffy_id).cloned()
         {
             ts.inset = inset;
+            // A box sized by its insets against a non-parent containing
+            // block (#386) carries that size as a bake: write it for the new
+            // insets, or the pass after the compute has to, at the price of
+            // a second compute.
+            crate::out_of_flow::rebake_after_inset_write(&self.tree, node_id, &mut ts);
             let _ = self.tree.taffy.set_style(taffy_id, ts);
         }
 

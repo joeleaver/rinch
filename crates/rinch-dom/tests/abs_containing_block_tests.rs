@@ -1198,3 +1198,52 @@ fn an_absolute_display_contents_element_is_not_placed() {
     assert_eq!((l.x, l.y, l.width, l.height), (0.0, 0.0, 0.0, 0.0));
     assert_rect(c.rect("kid"), [30.0, 20.0, 20.0, 10.0], "in flow");
 }
+
+// ── A box between the two changes, with no restyle of the absolute box ──────
+
+/// The static parent starts or stops generating a box (`display: contents`)
+/// while a contents wrapper between it and the absolute box keeps the box out
+/// of that restyle's reach. No style site sees the absolute box, so nothing
+/// recorded that its containing block is now — or is no longer — one Taffy
+/// does not know; the layout read-back finds out and resolves again in the
+/// same pass (`out_of_flow::note_kind_at_read`).
+///
+/// Off the fixed point both ways: the parent is 300x200 in a 400x300 block,
+/// and on the way back the block is resized in the same pass, so a size
+/// baked for the old block is not the right one by coincidence.
+#[test]
+fn a_parent_that_starts_or_stops_generating_a_box_is_found_at_read_back() {
+    let wrapped = format!(
+        r#"<div style="display: contents">{}</div>"#,
+        abs(
+            "abs",
+            "inset: 0",
+            r#"<div data-m="kid" style="width: 50%; height: 50%"></div>"#
+        )
+    );
+    // The parent generates no box: the block is the box's layout parent, and
+    // Taffy's own answer is right.
+    let mut c = Case::scaffold("", "display: contents;", &wrapped);
+    let mid = one(&c.doc, "[data-mid]");
+    let cb = c.cb;
+    assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "parent contents");
+
+    // It starts generating one: the block is a non-parent ancestor now.
+    c.doc.set_attribute(NodeId(mid), "style", MID);
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "parent a box");
+    assert_rect(c.rect("kid"), [0.0, 0.0, 200.0, 150.0], "its child");
+
+    // And stops, while the block changes size: the size baked for the 400px
+    // block must not survive.
+    c.doc
+        .set_attribute(NodeId(mid), "style", &format!("{MID}display: contents;"));
+    c.doc.set_attribute(
+        NodeId(cb),
+        "style",
+        &format!("{CB}width: 440px; height: 320px;"),
+    );
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("abs"), [0.0, 0.0, 440.0, 320.0], "contents again");
+    assert_rect(c.rect("kid"), [0.0, 0.0, 220.0, 160.0], "its child");
+}

@@ -256,6 +256,15 @@ define_counters! {
     /// an ancestor that is not its layout parent — came out of the compute
     /// at a size the box's Taffy style was not baked for (#386).
     AbsContainingBlockPasses = "abs_containing_block_passes",
+    /// Absolute boxes looked at by the passes that resolve one against a
+    /// containing block Taffy does not know (#386, #204): one per box per
+    /// pass — the size check after each root compute (boxes under a
+    /// non-parent ancestor), the re-placement at the end of a layout, and
+    /// the re-placement a scroll runs (those and boxes with no positioned
+    /// ancestor). An absolute child of its own positioned parent is never
+    /// counted, and a scroll counts only when the scrolled box lies between
+    /// such a box and its containing block.
+    AbsBoxesVisited = "abs_boxes_visited",
 
     // ── Paint ──────────────────────────────────────────────────────────
     /// Frames actually painted (a scene or pixel buffer rebuilt).

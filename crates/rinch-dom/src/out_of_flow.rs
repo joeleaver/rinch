@@ -12,9 +12,10 @@
 //! This module answers the one question the correction needs — *which*
 //! containing block, when it is not the one Taffy would use — and bakes the
 //! resulting **size** into the Taffy style before layout. The matching
-//! **position** correction lives in `layout_engine::read_layout_results`, which
-//! writes the parent-relative delta so `LayoutResult` stays parent-relative and
-//! no coordinate consumer has to learn a new rule.
+//! **position** correction is [`place_absolute`], called as each box is read
+//! back, once more after the layout's late position writes and from a scroll:
+//! it writes a parent-relative value, so `LayoutResult` stays parent-relative
+//! and no coordinate consumer has to learn a new rule.
 //!
 //! ## What is corrected
 //!
@@ -55,9 +56,25 @@
 //! 5px; width: 10px`) is never rewritten and costs no compute: only its
 //! position is patched.
 //!
-//! [`NodeTree::absolute_registry`] is what makes step 2 cheap: every
-//! `position: absolute` node a style site has seen, filtered at use. A
-//! document with none pays one `is_empty`.
+//! ## What each pass iterates
+//!
+//! None of the passes walks the slab, and none of them looks at a box Taffy
+//! already resolves correctly — an absolute child of its own positioned
+//! parent, the ordinary badge, is in no index here:
+//!
+//! - step 2 iterates [`NodeTree::ancestor_absolutes`], the boxes whose
+//!   containing block was a non-parent ancestor when a style site last synced
+//!   them. `read_layout_results` classifies every absolute box anyway, and a
+//!   box it finds to be such a one that the set does not hold — an
+//!   intermediate box started generating a box with no restyle of this one —
+//!   is added there and the layout resolved again in the same pass
+//!   ([`note_kind_at_read`]);
+//! - the re-placement after the late position writes iterates
+//!   `NodeTree::placed_absolutes`, the boxes the read-back placed this layout;
+//! - a scroll looks at one flag on the scrolled node (`Node::on_abs_chain`,
+//!   set on every box between a placed box and its containing block as the
+//!   read-back walks that chain) and iterates `placed_absolutes` only when it
+//!   is set.
 //!
 //! ## The position
 //!
@@ -78,7 +95,9 @@
 //! for the initial containing block the `<body>`'s scroll plays that part (it
 //! is rinch's page scroll). Since a scroll runs no layout,
 //! [`replace_after_scroll`] re-places the affected boxes from
-//! `NodeTree::mark_scrolled`.
+//! `NodeTree::mark_scrolled`. That moves a box and drops no hit-test extent:
+//! an absolute box is positioned, so it is in no ancestor's flow extent, and
+//! the stacking sequences holding its offset are the ones a scroll drops.
 //!
 //! ## What is not corrected
 //!
@@ -322,7 +341,7 @@ impl ContainingBox {
 }
 
 /// Bake `node_id`'s out-of-flow size into a Taffy style a site has just
-/// rebuilt from `computed_style`, and keep [`NodeTree::absolute_registry`] and
+/// rebuilt from `computed_style`, and keep [`NodeTree::ancestor_absolutes`] and
 /// [`NodeTree::ancestor_baked`] telling the truth about it.
 ///
 /// Call this from **every** site that rebuilds a Taffy style out of
@@ -343,25 +362,97 @@ pub(crate) fn bake_at_style_site(
     let Some(node) = tree.nodes.get(node_id) else {
         return;
     };
-    let absolute = node.box_position() == PositionValue::Absolute;
+    let mut ancestor = false;
     let mut baked_against_ancestor = false;
     if let Some(kind) = out_of_flow_kind(tree, node_id) {
-        let known = ContainingBox::of(tree, kind).filter(|cb| {
-            !matches!(kind, OutOfFlowKind::AncestorAbsolute(_)) || cb.width > 0.0 || cb.height > 0.0
-        });
+        ancestor = matches!(kind, OutOfFlowKind::AncestorAbsolute(_));
+        let known = ContainingBox::of(tree, kind)
+            .filter(|cb| !ancestor || cb.width > 0.0 || cb.height > 0.0);
         if let Some(cb) = known {
             apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), taffy_style);
-            baked_against_ancestor = matches!(kind, OutOfFlowKind::AncestorAbsolute(_));
+            baked_against_ancestor = ancestor;
         }
     }
-    if absolute {
-        tree.absolute_registry.insert(node_id);
+    // The style handed in was built from the computed values, so a box that
+    // is not ancestor-resolved now carries no ancestor's size: it leaves both
+    // sets. Every other node — nearly all of them — pays two `is_empty`.
+    if ancestor {
+        tree.ancestor_absolutes.insert(node_id);
+    } else if !tree.ancestor_absolutes.is_empty() {
+        tree.ancestor_absolutes.remove(&node_id);
     }
     if baked_against_ancestor {
         tree.ancestor_baked.insert(node_id);
     } else if !tree.ancestor_baked.is_empty() {
         tree.ancestor_baked.remove(&node_id);
     }
+}
+
+/// The #280 inset fast path has just written new insets to `node_id`'s
+/// computed style and is about to write `taffy_style` — the node's current
+/// Taffy style with the new inset — without going through a style site. For a
+/// box resolved against a non-parent ancestor, a size baked from the **old**
+/// insets is in it (`left: 0; right: 0` gives the width), so bake it again
+/// from the new ones; the pass after the compute then finds nothing to
+/// rewrite and the write costs one compute, as it does for any other box.
+pub(crate) fn rebake_after_inset_write(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    taffy_style: &mut taffy::Style,
+) {
+    let Some(node) = tree.nodes.get(node_id) else {
+        return;
+    };
+    let Some(kind @ OutOfFlowKind::AncestorAbsolute(cb)) = out_of_flow_kind(tree, node_id) else {
+        return;
+    };
+    // Only a style that carries a bake: one that carries none has a
+    // containing block not yet laid out, which the pass after the compute
+    // bakes for.
+    if !tree.ancestor_baked.contains(&node_id) {
+        return;
+    }
+    let Some(cb) = ContainingBox::of_ancestor(tree, cb) else {
+        return;
+    };
+    unbake(&node.computed_style, false, taffy_style);
+    apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), taffy_style);
+}
+
+/// `read_layout_results` has classified the absolute box `node_id` as `kind`.
+/// Check that against what the style sites recorded: a box that is
+/// ancestor-resolved and not in [`NodeTree::ancestor_absolutes`] became so
+/// through a change to a box *between* it and its containing block that
+/// restyled neither (the parent stopped being `display: contents`). Put it in
+/// the set and ask `resolve_layout` to resolve again before it returns
+/// (`NodeTree::abs_resolve_owed`).
+///
+/// The other direction needs nothing here: a box that stopped being
+/// ancestor-resolved the same way is still in the set (every baked box is),
+/// so the pass after the compute has already put its style back.
+pub(crate) fn note_kind_at_read(
+    tree: &mut NodeTree,
+    node_id: RawNodeId,
+    kind: Option<OutOfFlowKind>,
+) {
+    if matches!(kind, Some(OutOfFlowKind::AncestorAbsolute(_)))
+        && tree.ancestor_absolutes.insert(node_id)
+    {
+        tree.abs_resolve_owed = true;
+    }
+}
+
+/// Forget what the last read-back recorded: the placed boxes and the chain
+/// flags. Called before `read_layout_results` walks the document.
+pub(crate) fn begin_read(tree: &mut NodeTree) {
+    tree.placed_absolutes.clear();
+    let mut marked = std::mem::take(&mut tree.abs_chain_marked);
+    for id in marked.drain(..) {
+        if let Some(node) = tree.nodes.get_mut(id) {
+            node.on_abs_chain = false;
+        }
+    }
+    tree.abs_chain_marked = marked;
 }
 
 /// Bake an out-of-flow box's Taffy **size** from its real containing block,
@@ -502,6 +593,25 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     edge(&mut taffy_style.margin.bottom, cs.margin_bottom);
 }
 
+/// Copy the fields [`apply_out_of_flow_size_overrides`] and [`unbake`] read
+/// and write — and no other — from `from` into `to`.
+fn copy_baked_fields(to: &mut taffy::Style, from: &taffy::Style) {
+    to.size = from.size;
+    to.min_size = from.min_size;
+    to.max_size = from.max_size;
+    to.padding = from.padding;
+    to.margin = from.margin;
+}
+
+/// Whether `a` and `b` agree on every field [`copy_baked_fields`] copies.
+fn same_baked_fields(a: &taffy::Style, b: &taffy::Style) -> bool {
+    a.size == b.size
+        && a.min_size == b.min_size
+        && a.max_size == b.max_size
+        && a.padding == b.padding
+        && a.margin == b.margin
+}
+
 /// Put back what [`apply_out_of_flow_size_overrides`] may have written, as
 /// `ComputedStyle::to_taffy_style` would have produced it: the `size`, and —
 /// with `all` — each percentage it turned into a length. A `Calc` field is
@@ -585,10 +695,15 @@ fn axis_start(
 /// `<body>`, where every coordinate walk in the codebase ends, and the body's
 /// own scroll is left out of the sum: it is the page's scroll, which carries
 /// an ICB box as an ancestor's own scroll carries its boxes.
+///
+/// With `mark`, every box whose scroll is in the sum is flagged
+/// (`Node::on_abs_chain`): a scroll of one of those, and of no other box,
+/// moves this one.
 fn chain_to_containing_block(
-    tree: &NodeTree,
+    tree: &mut NodeTree,
     node_id: RawNodeId,
     cb: Option<RawNodeId>,
+    mark: bool,
 ) -> Option<((f32, f32), (f32, f32))> {
     let (mut ox, mut oy) = (0.0_f32, 0.0_f32);
     let (mut sx, mut sy) = (0.0_f64, 0.0_f64);
@@ -617,6 +732,10 @@ fn chain_to_containing_block(
         }
         sx += node.scroll_offset.0;
         sy += node.scroll_offset.1;
+        if mark && !node.on_abs_chain {
+            tree.nodes[id].on_abs_chain = true;
+            tree.abs_chain_marked.push(id);
+        }
         current = RinchDocument::box_tree_parent(&tree.nodes, id);
     }
     Some(((ox, oy), (sx as f32, sy as f32)))
@@ -629,12 +748,16 @@ fn chain_to_containing_block(
 /// with no inset) and `size` its used border-box size. `None` for
 /// `position: fixed`, for an ancestor Taffy holds no layout for, and when the
 /// box tree does not lead to the ancestor: the box then keeps Taffy's answer.
+///
+/// `mark` flags the boxes between it and its containing block for
+/// [`replace_after_scroll`]; the read-back passes `true`.
 pub(crate) fn place_absolute(
-    tree: &NodeTree,
+    tree: &mut NodeTree,
     node_id: RawNodeId,
     kind: OutOfFlowKind,
     taffy_location: (f32, f32),
     size: (f32, f32),
+    mark: bool,
 ) -> Option<(f32, f32)> {
     let cb_id = match kind {
         OutOfFlowKind::Fixed => return None,
@@ -642,7 +765,7 @@ pub(crate) fn place_absolute(
         OutOfFlowKind::AncestorAbsolute(cb) => Some(cb),
     };
     let cb = ContainingBox::of(tree, kind)?;
-    let ((ox, oy), (sx, sy)) = chain_to_containing_block(tree, node_id, cb_id)?;
+    let ((ox, oy), (sx, sy)) = chain_to_containing_block(tree, node_id, cb_id, mark)?;
     let style = &tree.get(node_id)?.computed_style;
     // Percentage margins resolve against the containing block's *width* on
     // both axes, per CSS.
@@ -703,29 +826,23 @@ pub(crate) fn is_laid_out(tree: &NodeTree, node_id: RawNodeId, size: (f32, f32))
     false
 }
 
-/// [`place_absolute`] for a box whose compute has already been read back:
-/// the position it should have now, from Taffy's last answer and the chain as
-/// it stands. `None` when the box is not one this module places.
-fn current_placement(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f32)> {
-    let node = tree.get(node_id)?;
-    let kind = out_of_flow_kind(tree, node_id)?;
-    if !is_laid_out(tree, node_id, (node.layout.width, node.layout.height)) {
-        return None;
+/// Write `node_id`'s placement as `kind` if it is not where it should be:
+/// [`place_absolute`] for a box whose compute has already been read back,
+/// from Taffy's last answer and the chain as it stands. Returns whether it
+/// moved.
+fn replace(tree: &mut NodeTree, node_id: RawNodeId, kind: OutOfFlowKind) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    let size = (node.layout.width, node.layout.height);
+    if !is_laid_out(tree, node_id, size) {
+        return false;
     }
-    let taffy = tree.taffy.layout(node.taffy_id?).ok()?;
-    place_absolute(
-        tree,
-        node_id,
-        kind,
-        (taffy.location.x, taffy.location.y),
-        (node.layout.width, node.layout.height),
-    )
-}
-
-/// Write `node_id`'s placement if it is not where it should be. Returns
-/// whether it moved.
-fn replace(tree: &mut NodeTree, node_id: RawNodeId) -> bool {
-    let Some((x, y)) = current_placement(tree, node_id) else {
+    let Some(taffy) = node.taffy_id.and_then(|id| tree.taffy.layout(id).ok()) else {
+        return false;
+    };
+    let location = (taffy.location.x, taffy.location.y);
+    let Some((x, y)) = place_absolute(tree, node_id, kind, location, size, false) else {
         return false;
     };
     let node = &mut tree.nodes[node_id];
@@ -738,46 +855,62 @@ fn replace(tree: &mut NodeTree, node_id: RawNodeId) -> bool {
     true
 }
 
-/// Place every absolute box again, now that the boxes between each and its
-/// containing block are where they will be painted.
+/// Place again every absolute box the read-back placed, now that the boxes
+/// between each and its containing block are where they will be painted.
 ///
 /// `read_layout_results` places a box as it reads it, from its ancestors'
-/// layouts — but two things on its chain are written **later**: the position
-/// an inline formatting context gives an atomic inline (`inline-block`), and
-/// a scroll offset the post-layout clamp pulls in. A box whose chain holds
-/// neither is already right and is not written. Run once, after both.
+/// layouts — but some things on its chain are written **later**: an
+/// anonymous block box's own read-back, the position an inline formatting
+/// context gives an atomic inline (`inline-block`), and a scroll offset the
+/// post-layout clamp pulls in. A box whose chain holds none of them is
+/// already right and is not written. Run once, after all three, in the order
+/// the boxes were read — parents first, so a box inside another placed box
+/// sees it where it ends up.
 pub(crate) fn replace_all(tree: &mut NodeTree) {
-    if tree.absolute_registry.is_empty() {
+    if tree.placed_absolutes.is_empty() {
         return;
     }
-    let ids: Vec<RawNodeId> = tree.absolute_registry.iter().copied().collect();
-    for id in ids {
-        replace(tree, id);
+    let placed = std::mem::take(&mut tree.placed_absolutes);
+    tree.perf
+        .add(crate::perf::Counter::AbsBoxesVisited, placed.len() as u64);
+    for &(id, kind) in &placed {
+        replace(tree, id, kind);
     }
+    tree.placed_absolutes = placed;
 }
 
 /// `scrolled` has a new scroll offset, and no layout will run for it: place
 /// again every absolute box with `scrolled` strictly between it and its
 /// containing block, so the box stays where it was — it is not that
-/// scroller's content. Returns whether any box was moved (the caller's hit
-/// cache then holds a stale box).
-pub(crate) fn replace_after_scroll(tree: &mut NodeTree, scrolled: RawNodeId) -> bool {
-    if tree.absolute_registry.is_empty() {
-        return false;
+/// scroller's content.
+///
+/// One flag read when `scrolled` is between no placed box and its containing
+/// block, which is every scroll of a document whose absolute boxes are all
+/// children of their own positioned parent. Otherwise the placed boxes are
+/// asked one by one, each classified afresh: a change since the last layout
+/// may have moved a box's containing block, and the layout that change owes
+/// has not run.
+pub(crate) fn replace_after_scroll(tree: &mut NodeTree, scrolled: RawNodeId) {
+    if !tree.nodes.get(scrolled).is_some_and(|n| n.on_abs_chain) {
+        return;
     }
-    let ids: Vec<RawNodeId> = tree.absolute_registry.iter().copied().collect();
-    let mut moved = false;
-    for id in ids {
-        let between = match out_of_flow_kind(tree, id) {
-            Some(OutOfFlowKind::IcbAbsolute) => scrolled != tree.body_id,
-            Some(OutOfFlowKind::AncestorAbsolute(cb)) => scrolled != cb,
-            _ => false,
+    let placed = std::mem::take(&mut tree.placed_absolutes);
+    tree.perf
+        .add(crate::perf::Counter::AbsBoxesVisited, placed.len() as u64);
+    for &(id, _) in &placed {
+        let Some(kind) = out_of_flow_kind(tree, id) else {
+            continue;
+        };
+        let between = match kind {
+            OutOfFlowKind::IcbAbsolute => scrolled != tree.body_id,
+            OutOfFlowKind::AncestorAbsolute(cb) => scrolled != cb,
+            OutOfFlowKind::Fixed => false,
         };
         if between && is_box_ancestor(tree, scrolled, id) {
-            moved |= replace(tree, id);
+            replace(tree, id, kind);
         }
     }
-    moved
+    tree.placed_absolutes = placed;
 }
 
 /// Whether `ancestor` is on `node_id`'s box-tree parent chain.
@@ -799,19 +932,29 @@ impl RinchDocument {
     /// rewritten — the caller re-runs the compute until this answers `false`
     /// (see `resolve_layout` and the module doc).
     ///
-    /// Each box is compared, not assumed: its style is rebuilt from the
-    /// computed values and the ancestor's padding box and written only where
-    /// it differs, so a box a style site already baked correctly, and one
-    /// whose size does not depend on its containing block at all, cost a
-    /// compare and no compute. A box that **was** baked against an ancestor
-    /// and no longer has one — an intermediate box became `display: contents`,
-    /// or the hoisting changed — is put back the same way.
+    /// Each box is compared, not assumed: the fields a bake writes are
+    /// rebuilt from the computed values and the ancestor's padding box and
+    /// the style written only where one differs, so a box a style site
+    /// already baked correctly, and one whose size does not depend on its
+    /// containing block at all, cost a compare and no compute. A box that
+    /// **was** baked against an ancestor and no longer has one — an
+    /// intermediate box became `display: contents`, or the hoisting changed —
+    /// is put back the same way.
+    ///
+    /// Iterates [`NodeTree::ancestor_absolutes`] and nothing else: a document
+    /// whose absolute boxes are all Taffy's own answer pays one `is_empty`.
     pub(crate) fn resolve_ancestor_absolutes(&mut self) -> bool {
-        if self.tree.absolute_registry.is_empty() {
+        if self.tree.ancestor_absolutes.is_empty() {
             return false;
         }
-        let ids: Vec<RawNodeId> = self.tree.absolute_registry.iter().copied().collect();
+        let ids: Vec<RawNodeId> = self.tree.ancestor_absolutes.iter().copied().collect();
+        self.tree
+            .perf
+            .add(crate::perf::Counter::AbsBoxesVisited, ids.len() as u64);
         let mut changed = false;
+        // The fields a bake touches, rebuilt here per box; the rest of a
+        // style is only cloned for a box that is actually rewritten.
+        let mut next = taffy::Style::DEFAULT;
         for id in ids {
             let live = self
                 .tree
@@ -820,7 +963,7 @@ impl RinchDocument {
                 .is_some_and(|n| n.box_position() == PositionValue::Absolute);
             if !live {
                 // Freed, or no longer absolute: a superset entry to drop.
-                self.tree.absolute_registry.remove(&id);
+                self.tree.ancestor_absolutes.remove(&id);
                 self.tree.ancestor_baked.remove(&id);
                 continue;
             }
@@ -837,19 +980,18 @@ impl RinchDocument {
             let Ok(current) = self.tree.taffy.style(taffy_id) else {
                 continue;
             };
-            let (next, baked) = match kind {
+            copy_baked_fields(&mut next, current);
+            let baked = match kind {
                 Some(kind @ OutOfFlowKind::AncestorAbsolute(cb)) => {
                     let Some(cb) = ContainingBox::of_ancestor(&self.tree, cb) else {
                         continue;
                     };
-                    let mut next = current.clone();
                     unbake(&node.computed_style, false, &mut next);
                     apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), &mut next);
-                    (next, true)
+                    true
                 }
                 // Baked against an ancestor it no longer resolves against.
                 _ if was_baked => {
-                    let mut next = current.clone();
                     unbake(&node.computed_style, true, &mut next);
                     if let Some(kind) = kind {
                         let vp = self.tree.viewport;
@@ -860,18 +1002,26 @@ impl RinchDocument {
                             &mut next,
                         );
                     }
-                    (next, false)
+                    false
                 }
-                _ => continue,
+                // Neither ancestor-resolved nor carrying an ancestor's size:
+                // nothing here is this pass's business any more.
+                _ => {
+                    self.tree.ancestor_absolutes.remove(&id);
+                    continue;
+                }
             };
-            let differs = next != *current;
+            let differs = !same_baked_fields(&next, current);
             if baked {
                 self.tree.ancestor_baked.insert(id);
             } else {
                 self.tree.ancestor_baked.remove(&id);
+                self.tree.ancestor_absolutes.remove(&id);
             }
             if differs {
-                let _ = self.tree.taffy.set_style(taffy_id, next);
+                let mut full = current.clone();
+                copy_baked_fields(&mut full, &next);
+                let _ = self.tree.taffy.set_style(taffy_id, full);
                 // The root compute does not reach a box inside an atomic
                 // inline (#661).
                 self.mark_atomic_inline_dirty(id);

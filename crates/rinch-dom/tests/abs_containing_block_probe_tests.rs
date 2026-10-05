@@ -273,7 +273,10 @@ fn r13_contents_absolute_everywhere() {
 }
 
 /// R14: an inset write through `set_style` (the #280 fast path) on a box with
-/// PAIRED insets and an auto size — its size depends on the inset.
+/// PAIRED insets and an auto size — its size depends on the inset. The fast
+/// path bakes the size for the new insets itself, so the write costs one
+/// compute like any other inset write (it was two: the pass after the compute
+/// found the old bake and ran the compute again).
 #[test]
 fn r14_fast_path_paired_insets() {
     let mut doc = build(&format!(
@@ -283,26 +286,31 @@ fn r14_fast_path_paired_insets() {
     let a = one(&doc, "[data-a]");
     assert_eq!(size(&doc, "[data-a]").0, 400.0);
     use rinch_dom::perf::Counter;
-    let before = (
-        doc.tree.perf.get(Counter::TaffyRootComputes),
-        doc.tree.perf.get(Counter::AbsContainingBlockPasses),
-    );
+    let counters = |doc: &RinchDocument| {
+        (
+            doc.tree.perf.get(Counter::TaffyRootComputes),
+            doc.tree.perf.get(Counter::AbsContainingBlockPasses),
+        )
+    };
+    let before = counters(&doc);
     doc.set_style(NodeId(a), "right", "100px");
     doc.resolve_layout(800.0, 600.0);
-    eprintln!(
-        "r14: an inline `right` write on a left/right box cost {} root computes, {} abs passes",
-        doc.tree.perf.get(Counter::TaffyRootComputes) - before.0,
-        doc.tree.perf.get(Counter::AbsContainingBlockPasses) - before.1,
-    );
-    let before = doc.tree.perf.get(Counter::TaffyRootComputes);
-    doc.set_style(NodeId(a), "top", "7px");
-    doc.resolve_layout(800.0, 600.0);
-    eprintln!(
-        "r14: an inline `top` write (size does not depend on it) cost {} root computes",
-        doc.tree.perf.get(Counter::TaffyRootComputes) - before,
-    );
+    let after = counters(&doc);
     assert_eq!(size(&doc, "[data-a]").0, 300.0);
     assert_eq!(size(&doc, "[data-k]").0, 300.0);
+    assert_eq!(
+        (after.0 - before.0, after.1 - before.1),
+        (1, 0),
+        "a `right` write on a left/right box: root computes, abs passes"
+    );
+    doc.set_style(NodeId(a), "top", "7px");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        counters(&doc).0 - after.0,
+        1,
+        "a `top` write, which the size does not depend on"
+    );
+    assert_eq!(size(&doc, "[data-a]").0, 300.0);
 }
 
 /// R15: the containing block changes size through a TRANSITION-free inline

@@ -1041,6 +1041,13 @@ pub struct Node {
     /// `box_tree_children` down its unit-collecting path for exactly the
     /// containers and inlines that need it, and nothing else.
     pub hosts_hoisted_out_of_flow: bool,
+    /// Whether this box lies strictly between an absolute box and the
+    /// containing block that box was placed against at the last layout — a
+    /// non-parent ancestor or the initial containing block (#386) — so that
+    /// its scroll offset is part of that box's position
+    /// (`out_of_flow::place_absolute`). A scroll of a node without the flag
+    /// re-places nothing. Set by the layout read-back; cleared by the next.
+    pub(crate) on_abs_chain: bool,
     /// Whether this node is a CSS pseudo-element (::before or ::after).
     /// Pseudo-element nodes are synthetic children created during style resolution
     /// and are cleaned up before re-resolution to avoid duplicates.
@@ -1372,6 +1379,7 @@ impl Node {
             contributes_in_flow_block: false,
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
+            on_abs_chain: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1438,6 +1446,7 @@ impl Node {
             contributes_in_flow_block: false,
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
+            on_abs_chain: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1503,6 +1512,7 @@ impl Node {
             contributes_in_flow_block: false,
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
+            on_abs_chain: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1566,6 +1576,7 @@ impl Node {
             contributes_in_flow_block: false,
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
+            on_abs_chain: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -2465,16 +2476,34 @@ pub struct NodeTree {
     /// every compute and the whole-document inline-block pass iterate this
     /// rather than the slab.
     pub atomic_inline_registry: BTreeSet<RawNodeId>,
-    /// Every `position: absolute` node a style-application site has synced
-    /// (`out_of_flow::bake_at_style_site`). A superset, filtered at use — an
-    /// entry whose node was freed or is no longer absolute is dropped by
-    /// `RinchDocument::resolve_ancestor_absolutes`. It is what the passes
-    /// that resolve an absolute box against a containing block Taffy does not
-    /// know (`crate::out_of_flow`, #386) iterate instead of the slab: the one
-    /// after each compute, the placement after the inline positions are
-    /// written, and the one a scroll runs.
-    pub absolute_registry: BTreeSet<RawNodeId>,
-    /// The nodes of [`Self::absolute_registry`] whose Taffy style currently
+    /// The `position: absolute` nodes whose containing block is an ancestor
+    /// that is **not** the box Taffy lays them out in
+    /// (`OutOfFlowKind::AncestorAbsolute`, #386), as of the last
+    /// style-application site that synced each
+    /// (`out_of_flow::bake_at_style_site`) — plus any the layout read-back
+    /// found the sites had not recorded (`out_of_flow::note_kind_at_read`).
+    /// A superset, filtered at use: `RinchDocument::resolve_ancestor_absolutes`
+    /// iterates it after each compute and drops an entry that is freed, no
+    /// longer absolute, or no longer ancestor-resolved. An absolute box Taffy
+    /// already resolves correctly — a child of its own positioned parent — is
+    /// never in it, so a document of those pays one `is_empty` per compute.
+    pub ancestor_absolutes: BTreeSet<RawNodeId>,
+    /// Every absolute box the last layout read-back placed against a
+    /// containing block Taffy does not know — a non-parent ancestor or the
+    /// initial containing block — with the kind it was placed as, in read
+    /// order (parents first). What `out_of_flow::replace_all` and
+    /// `replace_after_scroll` iterate. Rebuilt by every layout
+    /// (`out_of_flow::begin_read`).
+    pub(crate) placed_absolutes: Vec<(RawNodeId, crate::out_of_flow::OutOfFlowKind)>,
+    /// The nodes carrying [`Node::on_abs_chain`], so the next read-back can
+    /// clear them without walking the slab.
+    pub(crate) abs_chain_marked: Vec<RawNodeId>,
+    /// The layout read-back found an absolute box whose kind is not the one
+    /// the style sites recorded (`out_of_flow::note_kind_at_read`);
+    /// `resolve_layout` resolves, computes and reads once more before it
+    /// returns.
+    pub(crate) abs_resolve_owed: bool,
+    /// The nodes of [`Self::ancestor_absolutes`] whose Taffy style currently
     /// carries a size baked from a **non-parent ancestor's** padding box
     /// (`OutOfFlowKind::AncestorAbsolute`) — so that one which stops
     /// resolving against an ancestor with no restyle of its own (a box
@@ -2944,7 +2973,10 @@ impl NodeTree {
             ifc_seeds: Vec::new(),
             ifc_root_registry: BTreeSet::new(),
             atomic_inline_registry: BTreeSet::new(),
-            absolute_registry: BTreeSet::new(),
+            ancestor_absolutes: BTreeSet::new(),
+            placed_absolutes: Vec::new(),
+            abs_chain_marked: Vec::new(),
+            abs_resolve_owed: false,
             ancestor_baked: BTreeSet::new(),
             taffy,
             taffy_map,
@@ -3123,10 +3155,13 @@ impl NodeTree {
             // An absolute box whose containing block is above this scroller
             // is not its content and must not ride it (#386): its `layout`
             // is parent-relative, so it is written again against the new
-            // offset. That moves a box, which a scroll otherwise does not.
-            if crate::out_of_flow::replace_after_scroll(self, id) {
-                self.hit_cache.invalidate();
-            }
+            // offset. That moves a box, which a scroll otherwise does not —
+            // and it needs no more of the hit cache than the scroll already
+            // dropped: an absolute box is positioned, so no ancestor's flow
+            // extent holds it, and the stacking sequences that hold its
+            // offset went with `invalidate_scroll` above. One flag read when
+            // this node is between no such box and its containing block.
+            crate::out_of_flow::replace_after_scroll(self, id);
         }
     }
 

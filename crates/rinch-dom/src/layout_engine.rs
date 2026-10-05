@@ -402,8 +402,9 @@ impl RinchDocument {
         // Each such box whose Taffy style was baked for another size is
         // rewritten and the compute re-run: once, plus once per level of a
         // containing block that is itself such a box. Costs one `is_empty`
-        // when the document holds no absolute box, and no compute when every
-        // one of them is already baked for the size its ancestor came out at.
+        // when the document holds no such box — an absolute child of its own
+        // positioned parent is not one — and no compute when every one of
+        // them is already baked for the size its ancestor came out at.
         //
         // #278: a mixed `calc(%, px)` value has no Taffy representation (see
         // `calc_layout.rs`), so its style carries a seed until the containing
@@ -426,53 +427,69 @@ impl RinchDocument {
         // containing block this pass baked it for. An absolute nested more
         // than 8 containing blocks deep in *non-parent* ones stops at the cap
         // the same way.
-        let mut fixpoint_passes = 0;
+        //
+        // The outer loop runs once. It runs a second time only when the
+        // read-back finds an absolute box whose containing block is not the
+        // one the style sites recorded for it (`out_of_flow::note_kind_at_read`
+        // — a box between the two started or stopped generating a box, with
+        // no restyle of the absolute one): the box is then resolved, computed
+        // and read again before anything is painted from it.
+        let mut reread = false;
         loop {
-            let absolutes = self.resolve_ancestor_absolutes();
-            let calcs = self.resolve_layout_calcs();
-            if !absolutes && !calcs {
-                break;
-            }
-            if absolutes {
-                self.tree.perf.bump(Counter::AbsContainingBlockPasses);
-                // A re-baked box inside an atomic inline is in that box's own
-                // detached compute, which the root compute does not reach.
-                self.remeasure_dirty_atomic_inlines();
-            }
-            if calcs {
-                self.tree.perf.bump(Counter::CalcFixpointPasses);
-            }
-            text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
-            // The re-measure above sized a percentage atomic inline with no
-            // containing block, as the pass before the first compute does.
-            if absolutes && self.resolve_percentage_inline_blocks() {
+            let mut fixpoint_passes = 0;
+            loop {
+                let absolutes = self.resolve_ancestor_absolutes();
+                let calcs = self.resolve_layout_calcs();
+                if !absolutes && !calcs {
+                    break;
+                }
+                if absolutes {
+                    self.tree.perf.bump(Counter::AbsContainingBlockPasses);
+                    // A re-baked box inside an atomic inline is in that box's own
+                    // detached compute, which the root compute does not reach.
+                    self.remeasure_dirty_atomic_inlines();
+                }
+                if calcs {
+                    self.tree.perf.bump(Counter::CalcFixpointPasses);
+                }
                 text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
-            }
-            fixpoint_passes += 1;
-            if fixpoint_passes >= 8 {
-                static CAP_WARNING: std::sync::Once = std::sync::Once::new();
-                CAP_WARNING.call_once(|| {
+                // The re-measure above sized a percentage atomic inline with no
+                // containing block, as the pass before the first compute does.
+                if absolutes && self.resolve_percentage_inline_blocks() {
+                    text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
+                }
+                fixpoint_passes += 1;
+                if fixpoint_passes >= 8 {
+                    static CAP_WARNING: std::sync::Once = std::sync::Once::new();
+                    CAP_WARNING.call_once(|| {
                     eprintln!(
                         "[rinch] layout fixpoint hit its iteration cap; a mixed calc() in                          this document is feeding back into its own basis (or absolute                          boxes are nested more than 8 non-parent containing blocks deep)                          and its layout is approximate (reported once per process)"
                     );
                 });
+                    break;
+                }
+            }
+
+            // Read layout results back into nodes
+            crate::out_of_flow::begin_read(&mut self.tree);
+            self.read_layout_results(self.tree.root_id);
+            // The walk above is over the **element** tree, and an anonymous block
+            // box is not in it (#566) — so nothing above visits one, and its
+            // `layout` would stay at the origin while its line is measured and
+            // painted from it. Read them back here rather than teaching the
+            // recursion a second child list: the recursion must keep visiting the
+            // run's *members* (their IFC-assigned position is preserved inside it),
+            // so a box tree walk that replaced them would lose that, and a walk
+            // that unioned them would cost every node a merge for the sake of a
+            // handful of boxes. This is O(boxes) and off the per-node path.
+            for anon_id in self.tree.anonymous_block_boxes.clone() {
+                self.read_layout_results_for_box(anon_id);
+            }
+            if reread || !std::mem::take(&mut self.tree.abs_resolve_owed) {
+                self.tree.abs_resolve_owed = false;
                 break;
             }
-        }
-
-        // Read layout results back into nodes
-        self.read_layout_results(self.tree.root_id);
-        // The walk above is over the **element** tree, and an anonymous block
-        // box is not in it (#566) — so nothing above visits one, and its
-        // `layout` would stay at the origin while its line is measured and
-        // painted from it. Read them back here rather than teaching the
-        // recursion a second child list: the recursion must keep visiting the
-        // run's *members* (their IFC-assigned position is preserved inside it),
-        // so a box tree walk that replaced them would lose that, and a walk
-        // that unioned them would cost every node a merge for the sake of a
-        // handful of boxes. This is O(boxes) and off the per-node path.
-        for anon_id in self.tree.anonymous_block_boxes.clone() {
-            self.read_layout_results_for_box(anon_id);
+            reread = true;
         }
 
         // Build inline layouts for IFC roots (rebuild with final widths and store)
@@ -1386,27 +1403,38 @@ impl RinchDocument {
             // A box in a `display: none` subtree is left alone
             // (`out_of_flow::is_laid_out`): Taffy gives it 0x0, and correcting
             // it would drag a hidden node onto its containing block.
+            //
+            // This is also where the passes that run later learn which boxes
+            // are theirs: the box is recorded as placed (for the re-placement
+            // after the late position writes, and for a scroll), the boxes
+            // between it and its containing block are flagged, and its kind
+            // is checked against what the style sites recorded.
+            if self.tree.nodes[node_id].computed_style.position
+                == crate::computed_style::PositionValue::Absolute
             {
-                let node = &self.tree.nodes[node_id];
                 // (`out_of_flow_kind` answers `None` for a `display: contents`
                 // element, which generates no box to place.)
-                if node.computed_style.position == crate::computed_style::PositionValue::Absolute
-                    && let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id)
+                let kind = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id);
+                crate::out_of_flow::note_kind_at_read(&mut self.tree, node_id, kind);
+                if let Some(kind) = kind
                     && crate::out_of_flow::is_laid_out(
                         &self.tree,
                         node_id,
                         (new_layout.width, new_layout.height),
                     )
-                    && let Some((x, y)) = crate::out_of_flow::place_absolute(
-                        &self.tree,
+                {
+                    self.tree.placed_absolutes.push((node_id, kind));
+                    if let Some((x, y)) = crate::out_of_flow::place_absolute(
+                        &mut self.tree,
                         node_id,
                         kind,
                         (new_layout.x, new_layout.y),
                         (new_layout.width, new_layout.height),
-                    )
-                {
-                    new_layout.x = x;
-                    new_layout.y = y;
+                        true,
+                    ) {
+                        new_layout.x = x;
+                        new_layout.y = y;
+                    }
                 }
             }
 
