@@ -23,9 +23,20 @@
 //!   name, unless a table cell (or, for an inline element, a block) is in
 //!   between; one that closes nothing is skipped.
 //! - `<textarea>` holds text, not markup.
-//! - At most [`MAX_DEPTH`] elements are open at once. Past that a start tag
-//!   opens nothing and its content goes where it stands, which is what Chrome
-//!   does at the same depth; everything that walks the tree may recurse.
+//! - The tree is at most [`MAX_DEPTH`] elements deep (one more for a block
+//!   read past it), because everything that walks it recurses. An element
+//!   opened deeper is still open, so its end tag is its own, but it is
+//!   flattened into the element at the limit: an inline one gives its
+//!   content and no element (its mark is lost), a block is a child of the
+//!   element at the limit, split around the blocks inside it, and what the
+//!   reader drops whole (an `<svg>`) is dropped. So no depth changes the text or
+//!   where a line ends; what is lost past the limit is nesting.
+//! - An open `<svg>` or `<math>` ends at the first HTML start tag the HTML
+//!   parser ends foreign content at (`<p>`, `<div>`, `<span>`, `<b>`, …),
+//!   unless a `<foreignObject>`, `<desc>` or `<annotation-xml>` is open
+//!   inside it; and a start tag inside one implies no end tag outside it.
+//! - A tag looks at no more than [`MAX_SCAN`] open elements for the one it
+//!   closes; an element further up stays open.
 //!
 //! Not followed: a self-closing `<x/>` is an empty element whatever `x` is
 //! (in HTML only a void element is), formatting elements are not reopened
@@ -34,11 +45,31 @@
 
 use super::html_entities::decode_entities;
 
-/// The most elements open at once (Chrome's `kMaximumHTMLParserDOMTreeDepth`).
-pub(super) const MAX_DEPTH: usize = 128;
+/// How deep the tree is built. A valid document is far shallower (a list
+/// costs three elements a level, a quote one), and Chrome's own limit
+/// (`kMaximumHTMLParserDOMTreeDepth`) is 512, past which it too keeps every
+/// element and stops nesting them. This one is lower because of what a level
+/// costs here: the reader, the fitter and everything else that walks a
+/// document recurse once or more per level, an unoptimized build spends
+/// about 6.4 KB of stack a level reading nested quotes or lists (1.1 KB
+/// optimized; measured on x86-64), so this depth reads in 1.25 MB where a
+/// spawned thread has 2 MB, and 512 would not. Pinned by
+/// `the_depth_limit_reads_on_a_small_stack`.
+pub(super) const MAX_DEPTH: usize = 192;
+
+/// The most open elements a tag looks through for the one it closes. A well
+/// nested document closes the innermost; this bounds what a tag costs when
+/// thousands of elements are open.
+pub(super) const MAX_SCAN: usize = MAX_DEPTH;
 
 thread_local! {
     static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// [`MAX_DEPTH`], for tests.
+#[doc(hidden)]
+pub fn html_reader_max_depth() -> usize {
+    MAX_DEPTH
 }
 
 /// The work the HTML reader has done on this thread: one for every tag,
@@ -72,7 +103,13 @@ pub(super) enum ParsedNode {
 struct Open {
     tag: String,
     attributes: Vec<(String, String)>,
+    /// For an element past [`MAX_DEPTH`] that is flattened as a block: the
+    /// part of it being read. Empty for one flattened as inline; for one
+    /// the reader drops, everything in it, which goes nowhere.
     children: Vec<ParsedNode>,
+    /// Past [`MAX_DEPTH`]: a part of this block has been handed over, or a
+    /// block inside it has, so an empty rest is nothing.
+    split: bool,
 }
 
 pub(super) struct HtmlFragmentParser<'a> {
@@ -83,9 +120,14 @@ pub(super) struct HtmlFragmentParser<'a> {
     pub(super) all_attributes: bool,
     root: Vec<ParsedNode>,
     stack: Vec<Open>,
-    /// Start tags that opened nothing because [`MAX_DEPTH`] elements were
-    /// open; as many end tags close nothing.
-    unopened: usize,
+    /// The open elements past [`MAX_DEPTH`] that are flattened as blocks,
+    /// by index in `stack`, outermost first.
+    flat_blocks: Vec<usize>,
+    /// The index of an open element past [`MAX_DEPTH`] that the reader drops
+    /// with its content: what is read inside it is not kept.
+    flat_dropped: Option<usize>,
+    /// How many `<svg>` and `<math>` elements are open.
+    foreign: usize,
     /// Inside a `<head>`.
     in_head: bool,
     /// An `<html>`, `<head>` or `<body>` tag was the last tag read: the
@@ -101,7 +143,9 @@ impl<'a> HtmlFragmentParser<'a> {
             all_attributes: false,
             root: Vec::new(),
             stack: Vec::new(),
-            unopened: 0,
+            flat_blocks: Vec::new(),
+            flat_dropped: None,
+            foreign: 0,
             in_head: false,
             after_document_tag: false,
         }
@@ -187,11 +231,117 @@ impl<'a> HtmlFragmentParser<'a> {
         }
     }
 
+    /// Where content read now goes: the innermost open element, or past
+    /// [`MAX_DEPTH`] the innermost one flattened as a block, or the element
+    /// at the limit.
     fn siblings(&mut self) -> &mut Vec<ParsedNode> {
-        match self.stack.last_mut() {
-            Some(open) => &mut open.children,
-            None => &mut self.root,
+        let len = self.stack.len();
+        if len == 0 {
+            return &mut self.root;
         }
+        let at = if len <= MAX_DEPTH {
+            len - 1
+        } else if let Some(dropped) = self.flat_dropped {
+            dropped
+        } else {
+            self.flat_blocks.last().copied().unwrap_or(MAX_DEPTH - 1)
+        };
+        &mut self.stack[at].children
+    }
+
+    /// Open an element.
+    fn open(&mut self, tag: String, attributes: Vec<(String, String)>) {
+        if matches!(tag.as_str(), "svg" | "math") {
+            self.foreign += 1;
+        }
+        let at = self.stack.len();
+        if at >= MAX_DEPTH && self.flat_dropped.is_none() {
+            if super::html::is_dropped(&tag) {
+                self.flat_dropped = Some(at);
+            } else if is_flat_block(&tag) {
+                self.end_flat_part();
+                self.flat_blocks.push(at);
+            }
+        }
+        self.stack.push(Open {
+            tag,
+            attributes,
+            children: Vec::new(),
+            split: false,
+        });
+    }
+
+    /// Add an element with no end tag to read.
+    fn push_closed(&mut self, tag: String, attributes: Vec<(String, String)>, text: String) {
+        let children = if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![ParsedNode::Text(text)]
+        };
+        if !self.flat_blocks.is_empty() && self.flat_dropped.is_none() && is_flat_block(&tag) {
+            // A block (`<hr>`) inside a flattened block: beside it.
+            self.end_flat_part();
+            self.stack[MAX_DEPTH - 1]
+                .children
+                .push(ParsedNode::Element {
+                    tag,
+                    attributes,
+                    children,
+                    holds_block: false,
+                });
+            return;
+        }
+        self.siblings().push(ParsedNode::Element {
+            tag,
+            attributes,
+            children,
+            holds_block: false,
+        });
+    }
+
+    /// A block starts inside the innermost flattened block: what that one
+    /// has read so far is a part of its own, in front of the new block.
+    fn end_flat_part(&mut self) {
+        let Some(&at) = self.flat_blocks.last() else {
+            return;
+        };
+        let open = &mut self.stack[at];
+        open.split = true;
+        let children = std::mem::take(&mut open.children);
+        let (tag, attributes) = (open.tag.clone(), open.attributes.clone());
+        self.push_flat(tag, attributes, children, true);
+    }
+
+    /// Hand a flattened block (or a part of one) to the element at the limit.
+    /// Nothing for an empty part; whitespace between two blocks stays that.
+    fn push_flat(
+        &mut self,
+        tag: String,
+        attributes: Vec<(String, String)>,
+        mut children: Vec<ParsedNode>,
+        part: bool,
+    ) {
+        let into = &mut self.stack[MAX_DEPTH - 1].children;
+        if part {
+            match children.as_mut_slice() {
+                [] => return,
+                [ParsedNode::Text(text)] if text.trim().is_empty() => {
+                    if let Some(ParsedNode::Text(last)) = into.last_mut() {
+                        last.push_str(text);
+                    } else {
+                        into.append(&mut children);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        into.push(ParsedNode::Element {
+            tag,
+            attributes,
+            children,
+            holds_block: false,
+        });
     }
 
     // ── Comments ─────────────────────────────────────────────────────────────
@@ -367,18 +517,8 @@ impl<'a> HtmlFragmentParser<'a> {
             }
             "textarea" => {
                 let text = decode_entities(self.raw_text(&tag));
-                let children = if text.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![ParsedNode::Text(text)]
-                };
                 let attributes = self.filter(attributes);
-                self.siblings().push(ParsedNode::Element {
-                    tag,
-                    attributes,
-                    children,
-                    holds_block: false,
-                });
+                self.push_closed(tag, attributes, text);
                 return;
             }
             "plaintext" => {
@@ -390,23 +530,31 @@ impl<'a> HtmlFragmentParser<'a> {
             }
             _ => {}
         }
+        if self.foreign > 0 && ends_foreign_content(&tag) {
+            self.end_foreign_content();
+        }
         self.imply_end_tags(&tag);
         let attributes = self.filter(attributes);
         if self_closing || is_void_tag(&tag) {
-            self.siblings().push(ParsedNode::Element {
-                tag,
-                attributes,
-                children: Vec::new(),
-                holds_block: false,
-            });
-        } else if self.stack.len() >= MAX_DEPTH {
-            self.unopened += 1;
+            self.push_closed(tag, attributes, String::new());
         } else {
-            self.stack.push(Open {
-                tag,
-                attributes,
-                children: Vec::new(),
-            });
+            self.open(tag, attributes);
+        }
+    }
+
+    /// An HTML start tag inside an `<svg>` or `<math>`: the element ends
+    /// there, unless the tag is inside a part of it that holds HTML.
+    fn end_foreign_content(&mut self) {
+        for i in (0..self.stack.len()).rev().take(MAX_SCAN) {
+            step();
+            match self.stack[i].tag.as_str() {
+                "svg" | "math" => {
+                    self.close_to(i);
+                    return;
+                }
+                open if is_foreign(open) => return,
+                _ => {}
+            }
         }
     }
 
@@ -463,24 +611,15 @@ impl<'a> HtmlFragmentParser<'a> {
             }
             // `</br>` is a `<br>`.
             "br" => {
-                self.siblings().push(ParsedNode::Element {
-                    tag,
-                    attributes: Vec::new(),
-                    children: Vec::new(),
-                    holds_block: false,
-                });
+                self.push_closed(tag, Vec::new(), String::new());
                 return;
             }
             _ => {}
         }
-        if self.unopened > 0 {
-            self.unopened -= 1;
-            return;
-        }
         let heading = is_heading(&tag);
         let table_part = is_table_part(&tag);
         let special = is_special(&tag);
-        for i in (0..self.stack.len()).rev() {
+        for i in (0..self.stack.len()).rev().take(MAX_SCAN) {
             step();
             let open = self.stack[i].tag.as_str();
             if open == tag || (heading && is_heading(open)) {
@@ -508,19 +647,34 @@ impl<'a> HtmlFragmentParser<'a> {
     fn close_to(&mut self, to: usize) {
         while self.stack.len() > to {
             let Some(open) = self.stack.pop() else { return };
-            self.siblings().push(ParsedNode::Element {
-                tag: open.tag,
-                attributes: open.attributes,
-                children: open.children,
-                holds_block: false,
-            });
+            if matches!(open.tag.as_str(), "svg" | "math") {
+                self.foreign -= 1;
+            }
+            let at = self.stack.len();
+            if at < MAX_DEPTH {
+                self.siblings().push(ParsedNode::Element {
+                    tag: open.tag,
+                    attributes: open.attributes,
+                    children: open.children,
+                    holds_block: false,
+                });
+                continue;
+            }
+            // Flattened: an inline element gave its content where it stood,
+            // and a dropped one kept its own to itself.
+            if self.flat_dropped == Some(at) {
+                self.flat_dropped = None;
+            } else if self.flat_blocks.last() == Some(&at) {
+                self.flat_blocks.pop();
+                self.push_flat(open.tag, open.attributes, open.children, open.split);
+            }
         }
     }
 
     /// Close the nearest open element `closes` accepts, looking no further
     /// than the first one `stops` accepts.
     fn close_nearest(&mut self, closes: impl Fn(&str) -> bool, stops: impl Fn(&str) -> bool) {
-        for i in (0..self.stack.len()).rev() {
+        for i in (0..self.stack.len()).rev().take(MAX_SCAN) {
             step();
             let open = self.stack[i].tag.as_str();
             if closes(open) {
@@ -537,7 +691,7 @@ impl<'a> HtmlFragmentParser<'a> {
     /// nearest open `<table>` (or inside none).
     fn close_in_table(&mut self, closes: impl Fn(&str) -> bool) {
         let mut outermost = None;
-        for i in (0..self.stack.len()).rev() {
+        for i in (0..self.stack.len()).rev().take(MAX_SCAN) {
             step();
             let open = self.stack[i].tag.as_str();
             if open == "table" {
@@ -558,18 +712,26 @@ impl<'a> HtmlFragmentParser<'a> {
             self.close_nearest(
                 |open| open == "p",
                 |open| {
-                    open == "button" || open == "object" || open == "table" || is_table_part(open)
+                    open == "button"
+                        || open == "object"
+                        || open == "table"
+                        || is_table_part(open)
+                        || is_foreign(open)
                 },
             );
         }
         match tag {
             "li" => self.close_nearest(
                 |open| open == "li",
-                |open| is_special(open) && !matches!(open, "address" | "div" | "p"),
+                |open| {
+                    is_foreign(open) || is_special(open) && !matches!(open, "address" | "div" | "p")
+                },
             ),
             "dd" | "dt" => self.close_nearest(
                 |open| matches!(open, "dd" | "dt"),
-                |open| is_special(open) && !matches!(open, "address" | "div" | "p"),
+                |open| {
+                    is_foreign(open) || is_special(open) && !matches!(open, "address" | "div" | "p")
+                },
             ),
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 if self.stack.last().is_some_and(|open| is_heading(&open.tag)) {
@@ -605,6 +767,69 @@ fn is_head_content(tag: &str) -> bool {
             | "bgsound"
             | "noscript"
             | "template"
+    )
+}
+
+/// Past [`MAX_DEPTH`]: an element kept as an element, beside the blocks
+/// inside it, because it is a line of its own.
+fn is_flat_block(tag: &str) -> bool {
+    closes_p(tag) || super::html::is_block_level(tag)
+}
+
+/// The HTML start tags that end an open `<svg>` or `<math>` (the HTML
+/// parser's list for foreign content).
+fn ends_foreign_content(tag: &str) -> bool {
+    matches!(
+        tag,
+        "b" | "big"
+            | "blockquote"
+            | "br"
+            | "center"
+            | "code"
+            | "dd"
+            | "div"
+            | "dl"
+            | "dt"
+            | "em"
+            | "embed"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "hr"
+            | "i"
+            | "img"
+            | "li"
+            | "listing"
+            | "menu"
+            | "nobr"
+            | "ol"
+            | "p"
+            | "pre"
+            | "ruby"
+            | "s"
+            | "small"
+            | "span"
+            | "strong"
+            | "strike"
+            | "sub"
+            | "sup"
+            | "table"
+            | "tt"
+            | "u"
+            | "ul"
+            | "var"
+    )
+}
+
+/// `<svg>`, `<math>` and the elements inside them that hold HTML: an HTML
+/// start tag inside one implies no end tag outside it.
+fn is_foreign(tag: &str) -> bool {
+    matches!(
+        tag,
+        "svg" | "math" | "foreignobject" | "desc" | "annotation-xml"
     )
 }
 

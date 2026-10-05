@@ -38,30 +38,138 @@ fn lines_of(src: &str) -> Vec<String> {
     out
 }
 
-// ── Defects ──────────────────────────────────────────────────────────────────
+// ── Defects (failed at c4c22a2c) ─────────────────────────────────────────────
 
-/// Past `MAX_DEPTH` a start tag opens nothing, so a block element stops being
-/// a line of its own and the words of neighbouring blocks run together:
-/// at the head this reads as `["onetwothreefourfive", "after"]`. Chrome 153
-/// (cap 512, not 128) keeps every one of these elements at any depth — measured
-/// with 100..2000 `<div>`s: innerText `INNER|PA|PB|LI|TA\tTB|AFTER`, 2 `<p>`,
-/// 1 `<li>`, 2 `<td>` each time. main read 200 levels as five lines.
-#[test]
-fn defect_blocks_past_the_depth_cap_stay_lines_of_their_own() {
-    let src = format!(
-        "{}<p>one</p><p>two</p><ul><li>three</li></ul><table><tr><td>four</td><td>five</td></tr></table>{}after",
-        "<div>".repeat(200),
-        "</div>".repeat(200)
-    );
-    assert_eq!(
-        lines_of(&src),
-        ["one", "two", "three", "four", "five", "after"]
-    );
+fn limit() -> usize {
+    rinch_editor_core::serialize::html_reader_max_depth()
 }
 
-/// The same loss for a document the editor itself wrote: `node_to_html` of a
-/// valid document nested deeper than the cap does not read back
-/// (`load_html(node_to_html(doc))`, copy and paste inside one editor).
+/// `depth` elements of `tag` around `inner`, then `after`.
+fn nested(tag: &str, depth: usize, inner: &str, after: &str) -> String {
+    format!(
+        "{}{inner}{}{after}",
+        format!("<{tag}>").repeat(depth),
+        format!("</{tag}>").repeat(depth)
+    )
+}
+
+/// The depths worth reading at: around the limit, and far past it.
+fn depths() -> Vec<usize> {
+    let l = limit();
+    vec![10, l - 2, l - 1, l, l + 1, l + 2, l + 50, 3 * l, 5000]
+}
+
+/// No depth changes the text or where a line ends. At c4c22a2c a start tag
+/// past the limit opened nothing, so this read as `["onetwothreefourfive",
+/// "after"]`. Chrome 153 keeps every one of these elements at any depth —
+/// measured with 100..2000 `<div>`s: innerText `INNER|PA|PB|LI|TA\tTB|AFTER`.
+#[test]
+fn defect_blocks_past_the_depth_cap_stay_lines_of_their_own() {
+    let inner = "<p>one</p><p>two</p><ul><li>three</li></ul>\
+                 <table><tr><td>four</td><td>five</td></tr></table>";
+    for tag in ["div", "blockquote", "span", "b", "section", "x-y"] {
+        for depth in depths() {
+            assert_eq!(
+                lines_of(&nested(tag, depth, inner, "after")),
+                ["one", "two", "three", "four", "five", "after"],
+                "{depth} <{tag}>"
+            );
+        }
+    }
+}
+
+/// Past the limit a block is split around the blocks inside it, and inline
+/// elements inside a block stay in its line (their marks are what is lost).
+#[test]
+fn text_between_blocks_past_the_depth_cap_keeps_its_lines_and_order() {
+    for depth in depths() {
+        assert_eq!(
+            lines_of(&nested(
+                "div",
+                depth,
+                "<div>x<p>y1 <b>y2</b> <a href=\"https://e.x/\">y3</a></p>z<hr>w</div>",
+                ""
+            )),
+            ["x", "y1 y2 y3", "z", "w"],
+            "{depth}"
+        );
+        // A quote of two paragraphs: no empty line for the quote itself.
+        assert_eq!(
+            lines_of(&nested(
+                "div",
+                depth,
+                "<blockquote>\n<p>a</p>\n<p>b</p>\n</blockquote>",
+                ""
+            )),
+            ["a", "b"],
+            "{depth}"
+        );
+        // Empty cells are still cells.
+        let doc = load(&nested(
+            "div",
+            depth,
+            "<table><tr><td>a</td><td></td><td>c</td></tr></table>",
+            "",
+        ));
+        let mut cells = 0;
+        fn count(n: &Node, cells: &mut usize) {
+            if n.type_name() == "table_cell" {
+                *cells += 1;
+            }
+            for c in n.content().children() {
+                count(c, cells);
+            }
+        }
+        count(&doc, &mut cells);
+        assert_eq!(cells, 3, "{depth}");
+    }
+}
+
+/// An end tag past the limit ends the element of its name, and one that
+/// names nothing open ends nothing (the first cut counted unopened start
+/// tags, so any end tag spent one).
+#[test]
+fn end_tags_past_the_depth_cap_are_matched_by_name() {
+    for depth in depths() {
+        // `</em>` and `</section>` close nothing; `</b>` closes the `<b>`.
+        let src = nested(
+            "div",
+            depth,
+            "<div><p>one</p></em><p>two</p></section>three<b>four</b>five</div>six",
+            "seven",
+        );
+        assert_eq!(
+            lines_of(&src),
+            ["one", "two", "threefourfive", "six", "seven"],
+            "{depth}"
+        );
+    }
+    // The elements at the limit keep their marks; the mark ends at its tag.
+    let l = limit();
+    let src = format!("{}<b>x</b>y<p>z</p>", "<div>".repeat(l - 1));
+    assert_eq!(html(&src), "<p><strong>x</strong>y</p><p>z</p>");
+}
+
+/// What the reader drops with its content is dropped past the limit too, and
+/// nothing inside it is split out of it.
+#[test]
+fn dropped_elements_past_the_depth_cap_stay_dropped() {
+    for depth in depths() {
+        let src = nested(
+            "div",
+            depth,
+            "<p>a<svg><g><text>label</text><desc><p>d</p></desc></g></svg>b</p>\
+             <select><option>o1</option><div>o2</div></select><p>c</p>\
+             <object><p>fallback</p></object>",
+            "",
+        );
+        assert_eq!(lines_of(&src), ["ab", "c"], "{depth}");
+    }
+}
+
+/// A valid document nested deeper than the first cut's limit (128) reads
+/// back the same: `load_html(node_to_html(doc))`, copy and paste inside one
+/// editor. At c4c22a2c this read as one paragraph `ab`.
 #[test]
 fn defect_a_document_nested_deeper_than_the_cap_reads_back_the_same() {
     let schema = Schema::starter_kit();
@@ -70,21 +178,120 @@ fn defect_a_document_nested_deeper_than_the_cap_reads_back_the_same() {
             .branch("paragraph", Fragment::from_node(schema.text(t).unwrap()))
             .unwrap()
     };
-    let mut inner = schema
-        .branch(
-            "blockquote",
-            Fragment::from_children(vec![para("a"), para("b")]),
-        )
-        .unwrap();
-    for _ in 0..140 {
-        inner = schema
-            .branch("blockquote", Fragment::from_node(inner))
+    let quotes = |n: usize| {
+        let mut inner = schema
+            .branch(
+                "blockquote",
+                Fragment::from_children(vec![para("a"), para("b")]),
+            )
             .unwrap();
-    }
-    let doc = schema.branch("doc", Fragment::from_node(inner)).unwrap();
-    let written = node_to_html(&doc);
+        for _ in 0..n {
+            inner = schema
+                .branch("blockquote", Fragment::from_node(inner))
+                .unwrap();
+        }
+        node_to_html(&schema.branch("doc", Fragment::from_node(inner)).unwrap())
+    };
+    let written = quotes(140);
     assert_eq!(lines_of(&written), ["a", "b"]);
     assert_eq!(html(&written), written);
+    // Up to the limit it is the same document; past it, the same lines.
+    let written = quotes(limit() - 2);
+    assert_eq!(html(&written), written);
+    for n in [limit() - 1, limit(), limit() + 1, 4 * limit()] {
+        assert_eq!(lines_of(&quotes(n)), ["a", "b"], "{n}");
+    }
+}
+
+/// The limit is what a small stack reads: every shape, nested without end,
+/// on 1.5 MB (an unoptimized build needs 1.25 MB at 192 levels).
+#[test]
+fn the_depth_limit_reads_on_a_small_stack() {
+    std::thread::Builder::new()
+        .stack_size(1536 * 1024)
+        .spawn(|| {
+            for tag in [
+                "div",
+                "blockquote",
+                "ul><li",
+                "ol><li><p",
+                "table><tr><td",
+                "b",
+            ] {
+                let close: String = tag.split('>').rev().map(|t| format!("</{t}>")).collect();
+                let src = format!(
+                    "{}deep{}<p>after</p>",
+                    format!("<{tag}>").repeat(5000),
+                    close.repeat(5000)
+                );
+                let doc = load(&src);
+                // (`<li><p><ol>` is an empty paragraph and a list.)
+                let text = |doc: &Node| {
+                    let mut out = Vec::new();
+                    lines(doc, &mut out);
+                    out.retain(|l| !l.is_empty());
+                    out
+                };
+                assert_eq!(text(&doc), ["deep", "after"], "{tag}");
+                let written = node_to_html(&doc);
+                assert_eq!(text(&load(&written)), ["deep", "after"], "{tag}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// An `<svg>` or `<math>` that is not closed ends at the first HTML element,
+/// as in a browser (Chrome 153 shows `UsB` and `UsC`; c4c22a2c and main
+/// dropped everything after the `<svg>`). Inside a `<foreignObject>` or a
+/// `<desc>` an HTML element is part of the drawing.
+#[test]
+fn an_unclosed_svg_ends_at_the_first_html_element() {
+    assert_eq!(
+        lines_of("<p>UsA</p><svg><path d=\"M0\"><p>UsB</p><p>UsC</p>"),
+        ["UsA", "UsB", "UsC"]
+    );
+    assert_eq!(
+        lines_of("<p>a<math><mi>x<span>b</span></p><p>c</p>"),
+        ["ab", "c"]
+    );
+    assert_eq!(
+        lines_of(
+            "<p>a<svg><foreignObject><div>fo</div></foreignObject>\
+             <desc><p>d</p></desc><text>t</text></svg>b</p>"
+        ),
+        ["ab"]
+    );
+}
+
+/// A tag looks through a bounded number of open elements: with thousands
+/// open, reading stays linear in the input.
+#[test]
+fn a_tag_among_thousands_of_open_elements_costs_a_bounded_scan() {
+    use rinch_editor_core::serialize::html_reader_steps;
+    let schema = Schema::starter_kit();
+    for shape in [
+        "<hr>",
+        "</b>",
+        "<li>x",
+        "<td>x",
+        "<p><button>",
+        "<div></div>",
+    ] {
+        let steps = |n: usize| {
+            let src = format!("<p><table><td>{}{}", "<span>".repeat(n), shape.repeat(n));
+            let before = html_reader_steps();
+            slice_from_html(&schema, &src).unwrap();
+            html_reader_steps() - before
+        };
+        let (small, large) = (steps(3000), steps(6000));
+        assert!(small >= 3000, "{shape}: {small}");
+        assert!(
+            large <= small * 2 + small / 4,
+            "{shape}: {small} steps for 3000, {large} for 6000"
+        );
+    }
 }
 
 /// `<img src>` / `<img src="">` makes an image whose `src` is empty; the writer

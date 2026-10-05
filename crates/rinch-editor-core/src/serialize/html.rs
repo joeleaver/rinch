@@ -1391,7 +1391,9 @@ impl<'a> HtmlParser<'a> {
         match nt.name() {
             "hard_break" => Ok(Some(self.make_node(nt, Attrs::new(), Fragment::empty())?)),
             "image" => {
-                let Some(src) = attr(attributes, "src") else {
+                // An empty `src` is no image: the writer writes no empty
+                // attribute, so an image with one would not read back.
+                let Some(src) = attr(attributes, "src").filter(|v| !v.is_empty()) else {
                     return Ok(None);
                 };
                 if !is_safe_url(src, true) {
@@ -1566,7 +1568,7 @@ fn textblock_attrs(nt: &NodeType, tag: &str, attributes: &[(String, String)]) ->
 
 /// HTML elements that are a line, or more, of their own, whatever the schema
 /// makes of them: where one starts or ends, a line ends.
-fn is_block_level(tag: &str) -> bool {
+pub(super) fn is_block_level(tag: &str) -> bool {
     is_table_part(tag)
         || matches!(
             tag,
@@ -1634,7 +1636,7 @@ fn is_task_item(attributes: &[(String, String)]) -> bool {
 /// which on a clipboard are icons and the hidden copy of a rendered
 /// formula). The tree builder never hands over the first few
 /// ([`super::html_tree`]); they are listed for a tree from anywhere else.
-fn is_dropped(tag: &str) -> bool {
+pub(super) fn is_dropped(tag: &str) -> bool {
     matches!(
         tag,
         "script"

@@ -1083,12 +1083,13 @@ fn end_tags_are_implied_and_matched_as_a_browser_does() {
         read("<div><table><tr><td>a</div>b</td></tr></table>c</div>"),
         "<table><tr><td><p>ab</p></td></tr></table><p>c</p>"
     );
-    // A start tag that opened nothing at the depth limit has an end tag that
-    // closes nothing: the `</b>` after `x` is the unopened one's.
+    // An element past the depth limit is still open, so its end tag is its
+    // own: the `</b>` after `x` ends the inner `<b>`, not the outer.
+    let limit = rinch_editor_core::serialize::html_reader_max_depth();
     let deep = format!(
         "{}<b><b>x</b>y</b>z{}",
-        "<span>".repeat(127),
-        "</span>".repeat(127)
+        "<span>".repeat(limit - 1),
+        "</span>".repeat(limit - 1)
     );
     assert_eq!(read(&deep), "<p><strong>xy</strong>z</p>");
     // A `<head>` ends at the first element that is not head content, and at
@@ -1141,9 +1142,9 @@ fn a_mark_around_blocks_leaves_hard_breaks_bare() {
     );
 }
 
-/// Elements nested without limit do not overflow the stack: past 128 open
-/// elements a start tag opens nothing and its content goes where it stands
-/// (Chrome does the same, at 512).
+/// Elements nested without limit do not overflow the stack: past the depth
+/// limit an element is flattened into the one at the limit (Chrome stops
+/// nesting too, at 512).
 #[test]
 fn deep_nesting_reads_without_overflowing_the_stack() {
     for tag in [
@@ -1286,7 +1287,7 @@ fn reading_is_linear_in_the_input() {
             "{name}: {small} steps for 1000, {large} for 2000"
         );
         // And never more than a fixed number of steps for each byte read:
-        // a tag looks at no more open elements than can be open (128).
+        // these shapes nest a few elements deep.
         assert!(
             large <= shape(2000).len() as u64 * 64,
             "{name}: {large} steps for {} bytes",
