@@ -1768,6 +1768,12 @@ impl RinchDocument {
         }
 
         if !resync_absolutes.is_empty() {
+            // Their containing block changed, so they move — whether or not
+            // the re-sync below changes a Taffy style. A box whose size does
+            // not depend on its containing block (`right: 5px; width: 40px`)
+            // has the same style under either, and is placed by the layout
+            // read-back alone (`out_of_flow::place_absolute`).
+            self.tree.layout_dirty = true;
             self.tree.style_dirty_nodes.extend(resync_absolutes);
             self.apply_stylo_styles_to_taffy();
         }

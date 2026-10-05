@@ -2146,4 +2146,19 @@ fn icb_boxes_inside_a_scroller_are_visited_once_per_layout_and_once_per_scroll()
             (AbsBoxesVisited, 40),
         ],
     );
+
+    // The scroller becomes positioned: it is every badge's containing block
+    // now, so its own scroll carries them and it lies between none of them
+    // and their containing block any more. Its flag from the layouts above
+    // must not outlive them.
+    doc.set_attribute(scroller, "style", "position: relative");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    doc.set_scroll_top(scroller, 40.0);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "icb badges, their scroller now the containing block",
+        &s,
+        &[],
+    );
 }
