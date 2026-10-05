@@ -428,3 +428,49 @@ fn a_covered_defining_ancestor_is_not_replaced() {
         "<blockquote><ul><li><p>A</p></li><li><p>B</p></li></ul></blockquote>"
     );
 }
+
+/// Review of #1411: code text that continues a textblock that is not code is
+/// a line of text for each line of code — the first continues the line, the
+/// text after the caret joins the last — never one paragraph holding line
+/// ends. (A multi-line VS Code paste after `ab` was
+/// `<p>abfn f() {\n    x;\n\n}</p>`.) Where the block lands whole, or the
+/// target is code, nothing changes.
+#[test]
+fn code_lines_that_continue_a_line_of_text_are_a_line_each() {
+    let code = "<pre>fn f() {\n    x;\n\n}</pre>";
+    let out = |target: &str, at: usize, html: &str| fit(target, at, at, html).unwrap().0;
+    assert_eq!(
+        out("<p>ab</p>", 3, code),
+        "<p>abfn f() {</p><p>    x;</p><p></p><p>}</p>"
+    );
+    assert_eq!(
+        out("<p>abcd</p>", 3, code),
+        "<p>abfn f() {</p><p>    x;</p><p></p><p>}cd</p>"
+    );
+    assert_eq!(
+        out("<ul><li><p>ab</p></li></ul>", 4, code),
+        "<ul><li><p>afn f() {</p><p>    x;</p><p></p><p>}b</p></li></ul>"
+    );
+    assert_eq!(
+        out("<h2>abcd</h2>", 3, code),
+        "<h2>abfn f() {</h2><p>    x;</p><p></p><p>}cd</p>"
+    );
+    // Code after other content: the block is whole, the lines before it join.
+    assert_eq!(
+        out("<p>ab</p>", 3, "<p>x</p><pre>1\n2</pre>"),
+        "<p>abx</p><pre>1\n2</pre>"
+    );
+    // On an empty line the block is the block; in code, text is text.
+    assert_eq!(out("<p></p>", 1, code), code);
+    assert_eq!(
+        out("<pre>ab</pre>", 3, code),
+        "<pre>abfn f() {\n    x;\n\n}</pre>"
+    );
+    // One line of code is its text.
+    assert_eq!(out("<p>ab</p>", 2, "<pre>x</pre>"), "<p>axb</p>");
+    // Code in a quote: the quote's first line continues, the rest stay quoted.
+    assert_eq!(
+        out("<p>ab</p>", 3, "<blockquote><pre>1\n2</pre></blockquote>"),
+        "<p>ab1</p><blockquote><p>2</p></blockquote>"
+    );
+}

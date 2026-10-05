@@ -157,4 +157,17 @@ fn a_paste_from_vs_code_keeps_its_lines() {
         paste("<p></p>", 1, lines),
         "<pre>fn main() {\n    body();\n\n}</pre>"
     );
+    // Several lines pasted in a line of text are a line each, as before the
+    // reader knew a code block here: the first continues the line, the text
+    // after the caret joins the last. Never one paragraph of line ends.
+    assert_eq!(
+        paste("<p>ab</p>", 2, lines),
+        "<p>afn main() {</p><p>    body();</p><p></p><p>}b</p>"
+    );
+    assert_eq!(
+        paste("<ul><li><p>ab</p></li></ul>", 5, lines),
+        "<ul><li><p>abfn main() {</p><p>    body();</p><p></p><p>}</p></li></ul>"
+    );
+    // Into a code block: the plain-text flavour, as any paste there.
+    assert_eq!(paste("<pre>ab</pre>", 2, lines), "<pre>aplainb</pre>");
 }
