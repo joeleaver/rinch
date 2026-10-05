@@ -38,6 +38,15 @@
 //! `text_align`); any other table is an HTML `<table>` block (`colspan`/`rowspan`,
 //! block content in cells), and both read back.
 //!
+//! A `task_list` is GFM's `- [ ] …` / `- [x] …` (`[X]` is read too); an item
+//! that starts with a block other than a paragraph has the marker alone on its
+//! line and the block on the next. In a table written as HTML it is
+//! `<ul data-type="taskList">` > `<li data-type="taskItem" data-checked="…">`.
+//! A bullet or task list right after another is written with the other bullet
+//! (`*` / `-`), so CommonMark does not join them. A marker on an item of an
+//! ordered list, or of a list where some items have none, has no place in the
+//! model.
+//!
 //! [`doc_from_markdown`] is lenient: what it cannot represent (other raw HTML,
 //! unsafe URLs) it drops. [`doc_from_markdown_strict`] parses the same way but
 //! fails with a [`MarkdownError`] naming the first construct it would drop and its
@@ -74,7 +83,8 @@ pub enum Construct {
     UnmatchedTag,
     /// A footnote reference or definition.
     Footnote,
-    /// A task-list item marker (`- [ ]`, `- [x]`).
+    /// A task-list item marker (`- [ ]`, `- [x]`) the document cannot keep:
+    /// on an item of an ordered list, or of a list where some items have none.
     TaskList,
     /// A link whose URL is not allowed (`javascript:`, `data:`, …), in Markdown
     /// or in an HTML table.
@@ -174,8 +184,8 @@ pub fn doc_from_markdown(schema: &Schema, md: &str) -> Result<Node, EditorError>
 
 /// Parse a markdown string into a `doc` node, failing on the first construct
 /// [`doc_from_markdown`] would drop or degrade (raw HTML other than the mark tags
-/// and tables, footnotes, task lists, unsafe URLs, unmatched mark tags), with its
-/// 1-based line. What it accepts it parses exactly as [`doc_from_markdown`] does.
+/// and tables, footnotes, a task-list marker in an ordered or mixed list, unsafe
+/// URLs, unmatched mark tags), with its 1-based line. What it accepts it parses exactly as [`doc_from_markdown`] does.
 pub fn doc_from_markdown_strict(schema: &Schema, md: &str) -> Result<Node, MarkdownError> {
     parse(schema, md, true)
 }
@@ -184,11 +194,11 @@ fn parse(schema: &Schema, md: &str, strict: bool) -> Result<Node, MarkdownError>
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
     if strict {
         // Recognised only so they can be refused; the lenient parse keeps their
         // text as text, as it always has.
         options.insert(Options::ENABLE_FOOTNOTES);
-        options.insert(Options::ENABLE_TASKLISTS);
     }
 
     let mut builder = MdBuilder::new(schema, md, strict);
@@ -204,6 +214,27 @@ struct Container {
     type_name: &'static str,
     attrs: Attrs,
     children: Vec<Node>,
+    /// Where it starts in the source.
+    start: usize,
+    /// A list item's task marker: found in the source when the item opens
+    /// ([`task_marker_at`]), and confirmed by the item's first event.
+    task: Option<TaskMarker>,
+    /// Whether a list item's first event has been seen.
+    task_settled: bool,
+    /// A list's items' task markers, one per child.
+    item_tasks: Vec<Option<TaskMarker>>,
+}
+
+/// A task-list marker (`[ ]`, `[x]`, `[X]`) at the start of a list item.
+#[derive(Clone)]
+struct TaskMarker {
+    checked: bool,
+    /// The marker's source range.
+    range: Range<usize>,
+    /// Nothing follows it on its line (`- [ ]`): pulldown-cmark reads that as
+    /// the text `[ ]`, and the reader takes it as an empty item's marker when
+    /// the item's first paragraph is exactly it.
+    bare: bool,
 }
 
 /// A textblock being assembled (paragraph, heading, code_block).
@@ -277,11 +308,7 @@ impl<'a> MdBuilder<'a> {
             strict,
             line_starts,
             range: 0..0,
-            containers: vec![Container {
-                type_name: "doc",
-                attrs: Attrs::new(),
-                children: Vec::new(),
-            }],
+            containers: vec![Container::new("doc", Attrs::new(), 0)],
             inline: None,
             marks: Vec::new(),
             html_marks: Vec::new(),
@@ -316,6 +343,7 @@ impl<'a> MdBuilder<'a> {
     }
 
     fn handle(&mut self, event: Event<'_>) -> Result<(), MarkdownError> {
+        self.settle_task_marker(&event);
         match event {
             Event::Start(tag) => self.start(tag)?,
             Event::End(tag_end) => self.end(tag_end)?,
@@ -330,7 +358,9 @@ impl<'a> MdBuilder<'a> {
                 None => self.refuse(Construct::HtmlBlock)?,
             },
             Event::FootnoteReference(_) => self.refuse(Construct::Footnote)?,
-            Event::TaskListMarker(_) => self.refuse(Construct::TaskList)?,
+            // An item's marker is found when the item opens (pulldown emits
+            // it inside whatever paragraph comes first, or not at all).
+            Event::TaskListMarker(checked) => self.claim_task_marker(checked),
             _ => self.refuse(Construct::Other)?, // math (not enabled)
         }
         Ok(())
@@ -374,6 +404,10 @@ impl<'a> MdBuilder<'a> {
             Tag::Item => {
                 self.flush_inline()?;
                 self.push_container("list_item", Attrs::new());
+                let start = self.range.start;
+                let task = task_marker_at(self.source, start);
+                let item = self.top_mut();
+                item.task = task;
             }
             Tag::Table(aligns) => {
                 self.flush_inline()?;
@@ -470,7 +504,11 @@ impl<'a> MdBuilder<'a> {
     fn end(&mut self, tag_end: TagEnd) -> Result<(), MarkdownError> {
         match tag_end {
             TagEnd::Heading(_) | TagEnd::Paragraph | TagEnd::CodeBlock => self.flush_inline()?,
-            TagEnd::BlockQuote(_) | TagEnd::List(_) | TagEnd::Item => {
+            TagEnd::List(_) => {
+                self.flush_inline()?;
+                self.pop_list()?;
+            }
+            TagEnd::BlockQuote(_) | TagEnd::Item => {
                 self.flush_inline()?;
                 self.pop_container()?;
             }
@@ -700,11 +738,8 @@ impl<'a> MdBuilder<'a> {
     }
 
     fn push_container(&mut self, type_name: &'static str, attrs: Attrs) {
-        self.containers.push(Container {
-            type_name,
-            attrs,
-            children: Vec::new(),
-        });
+        self.containers
+            .push(Container::new(type_name, attrs, self.range.start));
     }
 
     fn pop_container(&mut self) -> Result<(), MarkdownError> {
@@ -712,10 +747,175 @@ impl<'a> MdBuilder<'a> {
         if self.containers.len() <= 1 {
             return Ok(());
         }
-        let c = self.containers.pop().expect("non-root container");
+        let mut c = self.containers.pop().expect("non-root container");
+        let task = if c.type_name == "list_item" {
+            match c.task.clone() {
+                // `- [ ]` with nothing after it on its line: a marker when it
+                // is the whole first paragraph, which is then not content.
+                Some(t) if t.bare => {
+                    let text = self.source.get(t.range.clone());
+                    let is_marker = c.children.first().is_some_and(|b| {
+                        b.type_name() == "paragraph"
+                            && b.child_count() == 1
+                            && b.child(0).marks().is_empty()
+                            && b.child(0).text().is_some()
+                            && b.child(0).text() == text
+                    });
+                    if is_marker {
+                        c.children.remove(0);
+                        Some(t)
+                    } else {
+                        None
+                    }
+                }
+                task => task,
+            }
+        } else {
+            None
+        };
+        let is_item = c.type_name == "list_item";
         let node = self.build_container(c)?;
+        let parent = self.top_mut();
+        parent.children.push(node);
+        if is_item {
+            parent.item_tasks.push(task);
+        }
+        Ok(())
+    }
+
+    /// Close a list. A bullet list whose items all start with a task marker
+    /// is a `task_list`; a marker anywhere else is refused when strict, and
+    /// kept as the text it was when lenient.
+    fn pop_list(&mut self) -> Result<(), MarkdownError> {
+        let is_list = self
+            .containers
+            .last()
+            .is_some_and(|c| matches!(c.type_name, "bullet_list" | "ordered_list"));
+        if !is_list || self.containers.len() <= 1 {
+            return self.pop_container();
+        }
+        let mut c = self.containers.pop().expect("a list");
+        let tasks = std::mem::take(&mut c.item_tasks);
+        let all = c.type_name == "bullet_list"
+            && !c.children.is_empty()
+            && tasks.len() == c.children.len()
+            && tasks.iter().all(Option::is_some)
+            && self.schema.node_type("task_list").is_some()
+            && self.schema.node_type("task_item").is_some();
+        let node = if all {
+            let mut items = Vec::with_capacity(c.children.len());
+            for (item, task) in c.children.iter().zip(&tasks) {
+                let checked = task.as_ref().is_some_and(|t| t.checked);
+                let attrs = Attrs::from_iter([("checked", AttrValue::Bool(checked))]);
+                items.push(self.make_node("task_item", attrs, item.content().clone())?);
+            }
+            self.make_node("task_list", Attrs::new(), Fragment::from_children(items))?
+        } else {
+            for (item, task) in c.children.iter_mut().zip(&tasks) {
+                if let Some(task) = task {
+                    self.refuse_at(Construct::TaskList, task.range.clone())?;
+                    let text = self.source.get(task.range.clone()).unwrap_or("[ ]");
+                    *item = self.with_marker_text(item, text, task.bare)?;
+                }
+            }
+            self.build_container(c)?
+        };
         self.top_mut().children.push(node);
         Ok(())
+    }
+
+    /// `item` with a task marker's `text` put back at the start of its first
+    /// paragraph (a new paragraph, if it starts with another block), as the
+    /// parse without task lists read it.
+    fn with_marker_text(&self, item: &Node, text: &str, bare: bool) -> Result<Node, EditorError> {
+        let mut blocks: Vec<Node> = item.content().children().to_vec();
+        // A bare marker was a paragraph of its own.
+        let first_para = blocks
+            .first()
+            .filter(|b| b.type_name() == "paragraph" && !(bare && b.child_count() > 0));
+        let para = match first_para {
+            Some(para) => {
+                let mut inline: Vec<Node> = para.content().children().to_vec();
+                match inline.first() {
+                    Some(t) if t.is_text() && t.marks().is_empty() => {
+                        let joined = format!("{text} {}", t.text().unwrap_or(""));
+                        inline[0] = self.schema.text(&joined)?;
+                    }
+                    Some(_) => inline.insert(0, self.schema.text(&format!("{text} "))?),
+                    None => inline.push(self.schema.text(text)?),
+                }
+                let para = Node::new_branch(
+                    para.node_type().clone(),
+                    para.attrs().clone(),
+                    Fragment::from_children(inline),
+                );
+                blocks.remove(0);
+                para
+            }
+            None => self.make_node(
+                "paragraph",
+                Attrs::new(),
+                Fragment::from_node(self.schema.text(text)?),
+            )?,
+        };
+        blocks.insert(0, para);
+        Ok(Node::new_branch(
+            item.node_type().clone(),
+            item.attrs().clone(),
+            Fragment::from_children(blocks),
+        ))
+    }
+
+    /// The first event inside a list item decides whether the marker found
+    /// in the source when it opened is one: pulldown emits a
+    /// `TaskListMarker` for it, or (when another block follows it) consumes
+    /// it silently, so that the first event starts after it. Text starting
+    /// at the marker (`- [ ]` with nothing after it) means it is not one.
+    fn settle_task_marker(&mut self, event: &Event<'_>) {
+        let start = self.range.start;
+        let Some(item) = self.containers.last_mut() else {
+            return;
+        };
+        if item.type_name != "list_item" || item.task_settled {
+            return;
+        }
+        item.task_settled = true;
+        let Some(task) = &item.task else {
+            return;
+        };
+        let confirmed = match event {
+            // An item's first event can only be its own marker (pulldown
+            // reports it from the whitespace before `[`, when a tab is there).
+            Event::TaskListMarker(_) => true,
+            // Decided when the item closes, by its first paragraph.
+            _ if task.bare => true,
+            _ => start >= task.range.end,
+        };
+        if !confirmed {
+            item.task = None;
+        }
+    }
+
+    /// A `TaskListMarker` event belongs to the innermost open item it falls
+    /// in. That item has normally found it in its source already
+    /// ([`task_marker_at`]); a marker the scan does not know is taken from the
+    /// event, so the text pulldown consumed for it is never lost.
+    fn claim_task_marker(&mut self, checked: bool) {
+        let range = self.range.clone();
+        let owner = self
+            .containers
+            .iter_mut()
+            .rev()
+            .find(|c| c.type_name == "list_item" && c.start <= range.start);
+        if let Some(item) = owner
+            && item.task.as_ref().is_none_or(|t| t.bare)
+        {
+            item.task = Some(TaskMarker {
+                checked,
+                range,
+                bare: false,
+            });
+        }
     }
 
     /// Append an inline node, merging it into the previous text node when both
@@ -740,6 +940,12 @@ impl<'a> MdBuilder<'a> {
     }
 
     fn push_text(&mut self, t: &str) -> Result<(), MarkdownError> {
+        if self.html_block.is_some() {
+            // pulldown emits an empty-range space at the start of an HTML
+            // block that follows a task marker (`- [ ] <br>`); the block's
+            // own content arrives as `Html`.
+            return Ok(());
+        }
         if let Some((_, _, alt)) = &mut self.image {
             alt.push_str(t);
             return Ok(());
@@ -881,6 +1087,70 @@ impl<'a> MdBuilder<'a> {
         let children = self.ensure_block_plus(doc.children)?;
         Ok(self.make_node("doc", Attrs::new(), Fragment::from_children(children))?)
     }
+}
+
+impl Container {
+    fn new(type_name: &'static str, attrs: Attrs, start: usize) -> Self {
+        Self {
+            type_name,
+            attrs,
+            children: Vec::new(),
+            start,
+            task: None,
+            task_settled: false,
+            item_tasks: Vec::new(),
+        }
+    }
+}
+
+/// The task marker a list item starting at `start` opens with, if its source
+/// does: the bullet (`-`, `*`, `+`, or up to nine digits and `.` or `)`),
+/// spaces or tabs, then `[ ]`, `[x]` or `[X]` and a space, tab, VT or FF
+/// (pulldown-cmark's rule), or the end of the line (a `bare` marker, which
+/// pulldown reads as text).
+fn task_marker_at(source: &str, start: usize) -> Option<TaskMarker> {
+    let bytes = source.as_bytes();
+    let mut i = start;
+    let skip_ws = |mut i: usize| {
+        while matches!(bytes.get(i), Some(b' ' | b'\t')) {
+            i += 1;
+        }
+        i
+    };
+    i = skip_ws(i);
+    match bytes.get(i)? {
+        b'-' | b'*' | b'+' => i += 1,
+        b'0'..=b'9' => {
+            let digits = bytes[i..].iter().take_while(|b| b.is_ascii_digit()).count();
+            if digits > 9 || !matches!(bytes.get(i + digits), Some(b'.' | b')')) {
+                return None;
+            }
+            i += digits + 1;
+        }
+        _ => return None,
+    }
+    let after_bullet = skip_ws(i);
+    if after_bullet == i {
+        return None;
+    }
+    i = after_bullet;
+    let checked = match bytes.get(i..i + 3)? {
+        // pulldown takes a tab, VT or FF between the brackets too.
+        [b'[', b' ' | b'\t' | 0x0b | 0x0c, b']'] => false,
+        b"[x]" | b"[X]" => true,
+        _ => return None,
+    };
+    let range = i..i + 3;
+    let bare = match bytes.get(i + 3) {
+        Some(b' ' | b'\t' | 0x0b | 0x0c) => false,
+        None | Some(b'\n' | b'\r') => true,
+        Some(_) => return None,
+    };
+    Some(TaskMarker {
+        checked,
+        range,
+        bare,
+    })
 }
 
 fn heading_level(level: HeadingLevel) -> i64 {
@@ -1130,18 +1400,49 @@ fn collect_text(node: &Node, out: &mut String) {
 /// the inline HTML in the module docs.
 pub fn doc_to_markdown(doc: &Node) -> String {
     let md = blocks_to_md(doc.content().children());
-    md.trim_end().to_string()
+    trim_md_end(&md)
+}
+
+/// `md` without trailing whitespace, except the space after an empty task
+/// item's marker (`- [ ] `): without it the marker is the text `[ ]`. Text
+/// never ends a line in an unescaped `[ ]` or `[x]` (`[` and `]` are always
+/// escaped), so only a marker does.
+fn trim_md_end(md: &str) -> String {
+    let trimmed = md.trim_end();
+    let marker = ["- [ ]", "- [x]", "* [ ]", "* [x]"]
+        .iter()
+        .any(|m| trimmed.ends_with(m));
+    if marker && trimmed.len() < md.len() {
+        format!("{trimmed} ")
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn blocks_to_md(blocks: &[Node]) -> String {
     let mut out = String::new();
+    // CommonMark continues a list across blank lines when the next item has
+    // the same bullet: a bullet or task list right after another is written
+    // with the other bullet, so the two stay apart.
+    let mut prev_bullet: Option<char> = None;
     for b in blocks {
-        out.push_str(&block_to_md(b));
+        let bullet = if matches!(b.type_name(), "bullet_list" | "task_list") {
+            Some(if prev_bullet == Some('-') { '*' } else { '-' })
+        } else {
+            None
+        };
+        let md = block_to_md(b, bullet.unwrap_or('-'));
+        // A block that writes nothing (an empty paragraph) leaves the lists
+        // around it adjacent.
+        if !md.trim().is_empty() {
+            prev_bullet = bullet;
+        }
+        out.push_str(&md);
     }
     out
 }
 
-fn block_to_md(node: &Node) -> String {
+fn block_to_md(node: &Node, bullet: char) -> String {
     match node.type_name() {
         "heading" => {
             let level = node.attrs().get_int("level").unwrap_or(1).clamp(1, 6) as usize;
@@ -1159,10 +1460,14 @@ fn block_to_md(node: &Node) -> String {
         }
         "blockquote" => {
             let inner = blocks_to_md(node.content().children());
-            format!("{}\n\n", prefix_lines(inner.trim_end(), "> "))
+            format!("{}\n\n", prefix_lines(&trim_md_end(&inner), "> "))
         }
-        "bullet_list" => list_to_md(node, None),
-        "ordered_list" => list_to_md(node, Some(node.attrs().get_int("start").unwrap_or(1))),
+        "bullet_list" => list_to_md(node, ListKind::Bullet(bullet)),
+        "task_list" => list_to_md(node, ListKind::Task(bullet)),
+        "ordered_list" => list_to_md(
+            node,
+            ListKind::Ordered(node.attrs().get_int("start").unwrap_or(1)),
+        ),
         "horizontal_rule" => "---\n\n".to_string(),
         "table" => table_to_md(node),
         // paragraph and any other textblock-ish node.
@@ -1170,22 +1475,65 @@ fn block_to_md(node: &Node) -> String {
     }
 }
 
-fn list_to_md(list: &Node, start: Option<i64>) -> String {
+#[derive(Clone, Copy)]
+enum ListKind {
+    /// A bullet list, with its bullet character.
+    Bullet(char),
+    /// A task list (GFM's `- [ ]` / `- [x]`), with its bullet character.
+    Task(char),
+    /// An ordered list, with its start.
+    Ordered(i64),
+}
+
+fn list_to_md(list: &Node, kind: ListKind) -> String {
     let mut out = String::new();
     for (i, item) in list.content().children().iter().enumerate() {
         let item_md = blocks_to_md(item.content().children());
-        let marker = match start {
-            Some(s) => format!("{}. ", s + i as i64),
-            None => "- ".to_string(),
-        };
-        let indent = " ".repeat(marker.len());
         // An empty first paragraph writes nothing, and `- ` before a blank
         // line ends the item: its next block would fall out of the list.
-        out.push_str(&prefix_first_then_rest(
-            item_md.trim_start_matches('\n').trim_end(),
-            &marker,
-            &indent,
-        ));
+        let item_md = trim_md_end(item_md.trim_start_matches('\n'));
+        let marker = match kind {
+            ListKind::Ordered(s) => format!("{}. ", s + i as i64),
+            ListKind::Bullet(b) | ListKind::Task(b) => format!("{b} "),
+        };
+        let indent = " ".repeat(marker.len());
+        if let ListKind::Task(_) = kind {
+            let check = if item.attrs().get_bool("checked").unwrap_or(false) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            // GFM's marker starts the item's first paragraph. Before any other
+            // block it is alone on its line, the block on the next: written on
+            // the marker's line, pulldown-cmark reads a quote's or a nested
+            // list's continuation lines wrongly. The space after the marker is
+            // what makes `- [ ]` alone on a line a marker.
+            let first_is_para = item
+                .content()
+                .children()
+                .iter()
+                .find(|b| !writes_nothing(b))
+                .is_some_and(|b| b.type_name() == "paragraph");
+            let first = format!("{marker}{check} ");
+            if item_md.is_empty() {
+                out.push_str(&first);
+            } else if first_is_para {
+                out.push_str(&prefix_first_then_rest(&item_md, &first, &indent));
+            } else {
+                // `---` under the marker's line is a setext heading (`[ ]` as
+                // its text) to GitHub: a rule there is written `***`.
+                // (Nothing else the writer starts a block with begins `---`.)
+                let item_md = match item_md.strip_prefix("---") {
+                    Some(rest) => format!("***{rest}"),
+                    None => item_md,
+                };
+                out.push_str(&first);
+                out.push('\n');
+                out.push_str(&prefix_lines_nonblank(&item_md, &indent));
+            }
+        } else {
+            out.push_str(&prefix_first_then_rest(&item_md, &marker, &indent));
+        }
         out.push('\n');
     }
     out.push('\n');
@@ -1281,7 +1629,7 @@ fn pipe_row(cells: &[String]) -> String {
 /// An HTML table block. A blank line would end the block, so newlines in cell
 /// text (a code block) are written as `&#10;`; each row gets a line of its own.
 fn html_table(table: &Node) -> String {
-    let html = node_to_html(&without_task_lists(table))
+    let html = node_to_html(table)
         .replace('\n', "&#10;")
         .replace("</tr>", "</tr>\n");
     let html = match html.strip_prefix("<table>") {
@@ -1289,26 +1637,6 @@ fn html_table(table: &Node) -> String {
         None => html,
     };
     format!("{html}\n\n")
-}
-
-/// `node` without its task lists, which the writer drops in a table cell as it
-/// does everywhere else (#1365): HTML has no tag for them the reader takes.
-fn without_task_lists(node: &Node) -> Node {
-    if node.is_text() || node.is_leaf() {
-        return node.clone();
-    }
-    let children: Vec<Node> = node
-        .content()
-        .children()
-        .iter()
-        .filter(|c| c.type_name() != "task_list")
-        .map(without_task_lists)
-        .collect();
-    Node::new_branch(
-        node.node_type().clone(),
-        node.attrs().clone(),
-        Fragment::from_children(children),
-    )
 }
 
 // ── inline content ──
@@ -2107,6 +2435,30 @@ fn prefix_lines(text: &str, prefix: &str) -> String {
         .join("\n")
 }
 
+/// A paragraph that writes nothing: no content, or only whitespace.
+fn writes_nothing(block: &Node) -> bool {
+    block.type_name() == "paragraph"
+        && block
+            .content()
+            .children()
+            .iter()
+            .all(|n| n.text().is_some_and(|t| t.trim().is_empty()))
+}
+
+/// `text` with `prefix` before every line that is not empty.
+fn prefix_lines_nonblank(text: &str, prefix: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn prefix_first_then_rest(text: &str, first: &str, rest: &str) -> String {
     let mut out = String::new();
     for (i, line) in text.lines().enumerate() {
@@ -2901,7 +3253,7 @@ mod tests {
             (Construct::Footnote, 3)
         );
         assert_eq!(
-            refusal("intro\n\n- [ ] todo\n- [x] done"),
+            refusal("intro\n\n- [ ] todo\n- done"),
             (Construct::TaskList, 3)
         );
         assert_eq!(
@@ -2929,15 +3281,16 @@ mod tests {
             ),
             (Construct::HtmlBlock, 3)
         );
-        let e = doc_from_markdown_strict(&s(), "\n\n- [ ] todo").unwrap_err();
+        let e = doc_from_markdown_strict(&s(), "\n\n- [ ] todo\n- not").unwrap_err();
         assert_eq!(e.to_string(), "line 3: task list is not supported: [ ]");
     }
 
     #[test]
     fn lenient_keeps_what_strict_refuses_as_before() {
         let schema = s();
-        // Task markers and footnotes are text to the lenient parse.
-        let d = doc_from_markdown(&schema, "- [ ] todo").unwrap();
+        // Footnotes, and a task marker in a list some of whose items have
+        // none, are text to the lenient parse.
+        let d = doc_from_markdown(&schema, "- [ ] todo\n- not").unwrap();
         assert_eq!(
             d.child(0).child(0).child(0).child(0).text(),
             Some("[ ] todo")

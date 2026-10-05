@@ -745,8 +745,10 @@ fn one_cell_table(s: &Schema, cell_attrs: Attrs, blocks: Vec<Node>) -> Node {
         .unwrap()
 }
 
+/// A task list in a cell makes the table HTML, and the list is
+/// `<ul data-type="taskList">` there, which reads back (#1365).
 #[test]
-fn a_task_list_in_a_table_cell_is_dropped_as_everywhere_else() {
+fn a_task_list_in_a_table_cell_round_trips() {
     let s = Schema::starter_kit();
     let item = s
         .create_node(
@@ -766,17 +768,7 @@ fn a_task_list_in_a_table_cell_is_dropped_as_everywhere_else() {
             vec![p(&s, vec![t(&s, "a", &[])]), list],
         )],
     );
-    let md = doc_to_markdown(&d);
-    let back = doc_from_markdown_strict(&s, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
-    let want = doc(
-        &s,
-        vec![one_cell_table(
-            &s,
-            Attrs::new(),
-            vec![p(&s, vec![t(&s, "a", &[])])],
-        )],
-    );
-    assert_eq!(back, want, "{md:?}");
+    rt(&s, &d);
 }
 
 #[test]

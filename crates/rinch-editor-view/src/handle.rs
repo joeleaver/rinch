@@ -703,6 +703,24 @@ impl fmt::Debug for SelectionAnchor {
 /// renderable, editable state when a load would otherwise yield a block-less doc.
 /// `None` only if the schema lacks `paragraph`/`doc` (not the case for the starter
 /// kit), in which case the caller keeps the original doc.
+/// `slice` with each top-level task list replaced by its items' blocks, open
+/// at a textblock edge: what pastes at a caret that refuses the list.
+fn task_lists_unwrapped(slice: &Slice) -> Slice {
+    let mut blocks: Vec<Node> = Vec::new();
+    for node in slice.content.children() {
+        if node.type_name() == "task_list" {
+            for item in node.content().children() {
+                blocks.extend(item.content().children().iter().cloned());
+            }
+        } else {
+            blocks.push(node.clone());
+        }
+    }
+    let open_start = usize::from(blocks.first().is_some_and(Node::is_textblock));
+    let open_end = usize::from(blocks.last().is_some_and(Node::is_textblock));
+    Slice::new(Fragment::from_children(blocks), open_start, open_end)
+}
+
 fn empty_paragraph_doc(schema: &Schema) -> Option<Node> {
     let para = schema.branch("paragraph", Fragment::empty()).ok()?;
     schema.branch("doc", Fragment::from_node(para)).ok()
@@ -2356,9 +2374,52 @@ impl EditorHandle {
     pub fn replace_selection_with_html(&self, html: &str) -> bool {
         let schema = self.core().schema.clone();
         match slice_from_html(&schema, html) {
-            Ok(slice) if slice.content.child_count() > 0 => self.replace_selection_slice(slice),
+            Ok(slice) if slice.content.child_count() > 0 => {
+                let has_task_list = slice
+                    .content
+                    .children()
+                    .iter()
+                    .any(|n| n.type_name() == "task_list");
+                if !has_task_list {
+                    return self.replace_selection_slice(slice);
+                }
+                // A task list is a closed block, which a caret inside a
+                // textblock refuses. In an empty textblock it takes the
+                // block's place; anywhere else its items' blocks go in, so
+                // their text and marks are not lost to the plain-text
+                // fallback. (A bullet list is refused the same way and still
+                // falls back: that is older than task lists in HTML.)
+                self.replace_selection_slice(slice.clone())
+                    || self.replace_empty_textblock_with(slice.clone())
+                    || self.replace_selection_slice(task_lists_unwrapped(&slice))
+            }
             _ => false,
         }
+    }
+
+    /// With a caret in an empty textblock, replace that block with `slice`.
+    fn replace_empty_textblock_with(&self, slice: Slice) -> bool {
+        self.dispatch(
+            move |state| {
+                if !state.selection.is_empty() {
+                    return None;
+                }
+                let pos = state.doc.resolve(state.selection.from()).ok()?;
+                let block = pos.parent();
+                if !block.is_textblock() || block.content().size() != 0 {
+                    return None;
+                }
+                let depth = pos.depth();
+                let (before, after) = (pos.before(depth)?, pos.after(depth)?);
+                let mut tr = state.tr();
+                tr.replace(before, after, slice).ok()?;
+                let end = tr.mapping().map(after, 1);
+                let cursor = Selection::near(tr.doc(), Pos(end), -1);
+                tr.set_selection(cursor);
+                Some(tr)
+            },
+            true,
+        )
     }
 
     /// Insert an image node with `src` (e.g. a `data:` URL) and `alt`, replacing

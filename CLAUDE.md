@@ -1319,7 +1319,7 @@ Rinch's rich-text editor is a ProseMirror-style, **model-first** editor. The doc
 
 **Mutation flows one way:** every edit is a `Transaction` applied by `EditorState::apply` → the view diffs old/new doc + decorations and patches the DOM. Commands read **state**, never the DOM. A command that edits many places at once states them as `BatchEdit`s in the starting document's coordinates and applies them as **one** `BatchStep` (`Transaction::batch`, #1200): it builds the document the equivalent `ReplaceStep`s/`SetNodeAttrStep`s build one at a time (two changes of one attribute: the last wins) and its step map maps positions as theirs did, but it keeps one document, not one per edit; it checks content on the result only, a rebase (`Step::map`) maps each construction-merged range as one replace (deletions that met delete a concurrent insert between them) and folds two closed replaces it brings end to end into one (with an open slice the later edit's content is lost), and a selection the command leaves is mapped once (about 0.6% of table commands leave the selection where the per-row commands did not). See `docs/src/guide/editor.md`. Every table command does; as a step per row, `addColumnBefore` on 16,000 rows was 6.4 s and 2.1 GB, now 29 ms.
 
-**Persisting content:** `DocNode` (serde) is the durable wire shape — `Node::to_doc()` / `Schema::node_from_doc()`, plus total HTML/markdown serializers in `rinch-editor-core::serialize`. Enable `serde` on the `rinch` facade (→ `rinch-editor-core/serde`). **A load caps `colspan` at 1000** (Chrome's limit, #1214): `tables::cap_colspans`, called by `node_from_doc`, `EditorHandle::new` and `load_doc`, as the HTML import reads it; one `colspan = 3,000,000` cell made a 2^21-column grid and `addRowAfter` 2 M cells (15.6 s, 5 GB). Edits are not capped, and `rowspan` needs none (a grid is never taller than its rows).
+**Persisting content:** `DocNode` (serde) is the durable wire shape — `Node::to_doc()` / `Schema::node_from_doc()`, plus total HTML/markdown serializers in `rinch-editor-core::serialize`. Enable `serde` on the `rinch` facade (→ `rinch-editor-core/serde`). **Task lists go through Markdown and HTML** (#1365): `doc_to_markdown` / `doc_from_markdown{,_strict}` write and read `task_list` as GFM `- [ ]` / `- [x]` (a marker in an ordered or mixed list is refused by strict and kept as text by lenient; a bare `- [ ]` is an empty item), and HTML copy-out is TipTap's `<ul data-type="taskList">` > `<li data-type="taskItem" data-checked>`, which `slice_from_html` reads; a pasted task list replaces an empty textblock, pastes as its items' blocks inside text, and in a collaborating editor stalls outbound (A22). Guide: `docs/src/guide/editor.md`. **A load caps `colspan` at 1000** (Chrome's limit, #1214): `tables::cap_colspans`, called by `node_from_doc`, `EditorHandle::new` and `load_doc`, as the HTML import reads it; one `colspan = 3,000,000` cell made a 2^21-column grid and `addRowAfter` 2 M cells (15.6 s, 5 GB). Edits are not capped, and `rowspan` needs none (a grid is never taller than its rows).
 
 **Full guides:** `docs/src/guide/contenteditable.md` (using the editor) and `docs/src/guide/editor.md` (model/schema/steps/plugins/view). Design: `docs/design/editor-rearchitecture.md`.
 
@@ -2479,6 +2479,33 @@ mpv hands a real frame to the compositor (`VideoPlayer::has_frame`, reset by
 `set_source`) and returns to `"false"` on a `PlaybackState::Error`, which is issue #186.
 A node that carries the attribute must say exactly `"true"` to punch, so a mis-stamped
 value fails safe.
+
+**Which viewports have a frame, and which punch, is a paint input, so a change in it is
+damage** (#349). No DOM write carries it: a surface that unregisters while its
+`data-viewport` node stays in the document, or one that delivers its first frame, changes
+what that node draws with the node untouched. The shell hands every paint's sets to the app
+— `RinchApp::install_viewport_frames` (software: the inline frame map and the hole set) or
+`RinchApp::install_viewport_holes` (GPU: the hole set; `None` is "every viewport punches")
+— and `note_viewport_paint_inputs` compares them with the last paint's
+(`ViewportPaintInputs`) and marks paint-dirty the viewport nodes whose membership in either
+set changed (every viewport node on a change between `None` and a set), plus
+`request_repaint`: the viewport's painted, clipped box on software, a re-encoded scene on
+GPU, and nothing at all on a frame whose sets are the last one's. **That box is the frame,
+and the hole only where the hole lies inside it**: `find_viewport_rects` cuts a hole without
+the node's clip chain or transform, so under a clipping ancestor the viewport is partly
+scrolled out of, or under a transform, hole pixels outside the damage outlive the surface
+until something else repaints them (#1386). Before, the cached pixmap
+or scene kept the last frame and its hole until something unrelated repainted that area. A
+shell that calls `rinch_dom::paint::set_active_viewports` itself, around the app, gets none
+of this. `unregister_render_surface` also asks the window for a redraw when it removed a
+registered surface, since a surface can go with nothing else changing. The memory is by
+**name** and the `RenderSurface` map is not covered: two surfaces under one name whose
+shown one goes (#1388), and a `data-render-surface` id that leaves its map (#1387), still
+keep a stale frame. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs` and
+`viewport_inputs_349_more_tests.rs` (membership swaps at a constant count, among others);
+`perf_regression_tests::idle_viewports_repaint_nothing` is the exact-frame pin that an
+unchanged set costs nothing. The GPU shell's own call site
+(`paint` in `shell/rinch_runtime.rs`) has no fixture: it needs a window and a device.
 
 **Layout invalidation: three paths, two flags.** `resolve_layout` early-returns
 when `tree.layout_dirty` is false (styles resolve, dirty Parley layouts rebuild,
