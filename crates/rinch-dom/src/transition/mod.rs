@@ -490,6 +490,19 @@ pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
                     *prop,
                     &transition.to,
                 );
+                // A finished transition leaves the cascaded value, and a
+                // transform transition back to `none` leaves `none` — no
+                // stacking context, no containing block (Chrome 153 reports
+                // `none` once it has finished, #415). `to_style` writes every
+                // other transform value as not `none`, which is right for the
+                // frames of a run and for an animation's fill, so the end of a
+                // transition is the one place to say it.
+                if let AnimatableValue::Transform(t) = &transition.to
+                    && t.functions.is_empty()
+                {
+                    tree.nodes[node_id].computed_style.transform =
+                        crate::computed_style::TransformValue::default();
+                }
                 completed.push(*prop);
                 needs_paint = true;
                 if prop.affects_layout() {

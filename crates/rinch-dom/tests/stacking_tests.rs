@@ -1012,7 +1012,7 @@ mod painted_fixed {
     /// before #545 and is exactly as wrong after. What this pins is that it is
     /// wrong *consistently* — the alternative, letting paint follow the
     /// transform while hit testing does not, is the drift #324 stages A and B
-    /// exist to prevent. Containment is tracked separately, with #386 and #415.
+    /// exist to prevent. Containment is tracked separately, with #1372.
     #[test]
     fn a_fixed_box_under_a_transformed_context_is_painted_where_it_is_reported() {
         let mut doc = RinchDocument::new();
@@ -1077,7 +1077,7 @@ mod painted_fixed {
     /// body escaped every clip on the way. Paint and hit testing agree here, so
     /// this is a consistent deviation and not the drift #324 exists to end, and
     /// nothing in-tree has the shape. It is still a regression, and the fix is
-    /// architectural: tracked in #549 with #386 and #415.
+    /// architectural: tracked in #549 with #386 and #1372.
     ///
     /// If this test starts failing because the box is painted, that is #549
     /// being fixed — invert it, do not delete it.

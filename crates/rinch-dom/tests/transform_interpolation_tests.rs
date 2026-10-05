@@ -558,9 +558,10 @@ fn an_unchanged_function_list_starts_nothing() {
 }
 
 /// `none` against `rotate(0deg)` starts nothing in rinch. Chrome does start a
-/// transition there — invisibly — but in rinch a transitioning transform is a
-/// stacking context for its whole run while `rotate(0deg)` at rest is not
-/// (#415), so starting one would make the element's stacking flicker.
+/// transition there — invisibly — and rinch saves the frames: `rotate(0deg)`
+/// at rest is already the stacking context the run would be (#415), so the
+/// only difference is that `rotate(0deg)` → `none` stops being one at once
+/// (see `transition::transform::lists_equivalent`).
 #[test]
 fn none_against_a_zero_rotation_starts_nothing() {
     let (mut doc, div) = transition_doc("none", "rotate(0deg)");

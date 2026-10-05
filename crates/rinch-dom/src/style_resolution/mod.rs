@@ -1780,7 +1780,7 @@ impl RinchDocument {
     }
 
     /// Every `position: absolute` element under `node_id` (not the node).
-    fn collect_absolute_descendants(&self, node_id: usize, out: &mut Vec<usize>) {
+    pub(crate) fn collect_absolute_descendants(&self, node_id: usize, out: &mut Vec<usize>) {
         for &c in &self.tree.nodes[node_id].children {
             let child = &self.tree.nodes[c];
             if matches!(
