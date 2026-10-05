@@ -86,6 +86,13 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 /// box's in-flow child whose own ink (a spread shadow) reaches past a parent
 /// that reflow shifted.
 ///
+/// A box whose **place in the paint order** changed since it was painted is
+/// walked the same way, whatever its `position` (`reorders_subtree`, #1384):
+/// starting or ending a stacking context, becoming a positioned layer, or a
+/// new `z-index` reorders what its subtree paints against the boxes around
+/// it, wherever the subtree reaches. Those rects are not clipped by the box's
+/// own clip chain when the reach passes the box.
+///
 /// Once the region reaches [`FULL_REPAINT_FRACTION`] of the surface the answer
 /// is the whole surface, and nothing further is measured.
 ///
