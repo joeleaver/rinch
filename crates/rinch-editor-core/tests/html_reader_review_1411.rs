@@ -385,3 +385,43 @@ fn pin_only_a_line_end_before_the_body_end_tag_is_layout() {
     assert_eq!(lines_of("<body><b>a</b> b </body>"), ["a b "]);
     assert_eq!(lines_of("<body><b>a</b> b \n</body>"), ["a b"]);
 }
+
+/// Table parts with no `<table>` around them that do not make full rows are
+/// padded with empty cells, as a browser renders them: the table the reader
+/// makes up is a rectangle (one that is not stalls a collaborating editor's
+/// outbound, where main's plain-text fallback did not). A `<table>` is read
+/// as it is written.
+#[test]
+fn bare_table_parts_that_are_ragged_are_padded_to_a_rectangle() {
+    let cell = |t: &str| format!("<td><p>{t}</p></td>");
+    let row = |cells: &[&str]| {
+        format!(
+            "<tr>{}</tr>",
+            cells.iter().map(|t| cell(t)).collect::<String>()
+        )
+    };
+    assert_eq!(
+        html("<td>A</td><td>B</td><tr><td>C</td></tr><tr><td>D</td><td>E</td><td>F</td></tr>"),
+        format!(
+            "<table>{}{}{}</table>",
+            row(&["A", "B", ""]),
+            row(&["C", "", ""]),
+            row(&["D", "E", "F"])
+        )
+    );
+    // A cell that spans rows fills its slot in the rows under it.
+    assert_eq!(
+        html("<tr><td rowspan=2>A</td><td>B</td><td>C</td></tr><tr><td>D</td></tr>"),
+        "<table><tr><td rowspan=\"2\"><p>A</p></td><td><p>B</p></td><td><p>C</p></td></tr>\
+         <tr><td><p>D</p></td><td><p></p></td></tr></table>"
+    );
+    // Rows that are full are untouched, and so is a `<table>` as written.
+    assert_eq!(
+        html("<tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr>"),
+        format!("<table>{}{}</table>", row(&["A", "B"]), row(&["C", "D"]))
+    );
+    assert_eq!(
+        html("<table><tr><td>A</td><td>B</td></tr><tr><td>C</td></tr></table>"),
+        format!("<table>{}{}</table>", row(&["A", "B"]), row(&["C"]))
+    );
+}
