@@ -1056,6 +1056,75 @@ fn bare_table_parts_are_read_as_a_table() {
     );
 }
 
+/// End tags the source leaves out are implied where a browser implies them,
+/// and an end tag closes only what a browser lets it close.
+#[test]
+fn end_tags_are_implied_and_matched_as_a_browser_does() {
+    // An `<li>` ends the `<li>` before it, but not one around its own list.
+    assert_eq!(
+        read("<ul><li>a<li>b</ul>"),
+        "<ul><li><p>a</p></li><li><p>b</p></li></ul>"
+    );
+    assert_eq!(
+        read("<ol><li>a<ul><li>b</ul><li>c</ol>"),
+        "<ol><li><p>a</p><ul><li><p>b</p></li></ul></li><li><p>c</p></li></ol>"
+    );
+    // A caption or a row group ends the open row and cell.
+    assert_eq!(
+        read("<table><tr><td>a<caption>c</caption><tr><td>b</table>"),
+        "<p>c</p><table><tr><td><p>a</p></td></tr><tr><td><p>b</p></td></tr></table>"
+    );
+    assert_eq!(
+        read("<table><tr><td>a<tfoot>x</table>"),
+        "<p>x</p><table><tr><td><p>a</p></td></tr></table>"
+    );
+    // An end tag inside a cell does not close an element around the table.
+    assert_eq!(
+        read("<div><table><tr><td>a</div>b</td></tr></table>c</div>"),
+        "<table><tr><td><p>ab</p></td></tr></table><p>c</p>"
+    );
+    // A start tag that opened nothing at the depth limit has an end tag that
+    // closes nothing: the `</b>` after `x` is the unopened one's.
+    let deep = format!(
+        "{}<b><b>x</b>y</b>z{}",
+        "<span>".repeat(127),
+        "</span>".repeat(127)
+    );
+    assert_eq!(read(&deep), "<p><strong>xy</strong>z</p>");
+    // A `<head>` ends at the first element that is not head content, and at
+    // the first text.
+    assert_eq!(
+        read("<head><meta><pre><span> </span>x</pre>"),
+        "<pre> x</pre>"
+    );
+    assert_eq!(read("<head><title>t</title>x<p>a</p>"), "<p>x</p><p>a</p>");
+    // A `<textarea>` holds text: markup in it is shown as written.
+    assert_eq!(
+        read("<p>a <textarea><b>x</b></textarea></p>"),
+        "<p>a &lt;b&gt;x&lt;/b&gt;</p>"
+    );
+}
+
+/// A `<table>` with a caption and no row is the caption, not an empty table
+/// after it; table parts straight in a list are one table in one item.
+#[test]
+fn a_table_with_no_rows_and_table_parts_in_a_list() {
+    assert_eq!(read("<table><caption>c</caption></table>"), "<p>c</p>");
+    assert_eq!(
+        read("<table></table>"),
+        "<table><tr><td><p></p></td></tr></table>"
+    );
+    assert_eq!(
+        read("<ul><td>a</td><td>b</td></ul>"),
+        "<ul><li><table><tr><td><p>a</p></td><td><p>b</p></td></tr></table></li></ul>"
+    );
+    assert_eq!(
+        read("<ul><li>x</li><tr><td>a</td></tr> <tr><td>b</td></tr></ul>"),
+        "<ul><li><p>x</p></li><li><table><tr><td><p>a</p></td></tr>\
+         <tr><td><p>b</p></td></tr></table></li></ul>"
+    );
+}
+
 /// #1401: a mark element around blocks marks what the same element around
 /// inline content marks, so the document reads back the same.
 #[test]
