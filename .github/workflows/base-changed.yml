@@ -1,0 +1,79 @@
+name: Base changed
+
+# Runs the pull-request checks when a PR's BASE BRANCH is changed to `main`
+# (#448).
+#
+# `ci.yml`, `perf.yml` and `docs.yml` all trigger on `pull_request` with
+# `branches: [main]`. None of them lists `edited`, which is the only event a
+# base change fires, so a stacked PR retargeted to `main` got no run of any of
+# them: its head never changed (no `synchronize`), and while it targeted its
+# parent branch the `branches: [main]` filter had kept every earlier event out.
+# It showed "no checks", which reads the same as "not started yet", and could be
+# merged like that.
+#
+# Why a separate workflow and not `edited` in those three files:
+#
+#   * `edited` also fires for every title and body edit, and a trigger cannot
+#     filter on what was edited. Only an `if:` can, and `if:` is per job.
+#   * a job-level `if:` in `ci.yml` itself would make a body edit start a run
+#     whose jobs are all SKIPPED, under the same names as the real ones. A
+#     skipped job reports as passed, and `gh pr checks` (and the PR's merge
+#     box) show the newest check of each name, so editing the description of a
+#     PR whose `test` is red would replace that red with a skip. That is worse
+#     than the hole this closes.
+#
+# Here a title or body edit skips three jobs named `ci`, `perf` and `docs` in
+# THIS workflow, and those names belong to no real check. A base change runs
+# the three workflows as reusable workflows, and their checks are named
+# `ci / test`, `perf / instruction-counts`, `docs / build` and so on.
+#
+# `github.event.changes.base` is present only when the base changed. The event
+# carries the NEW base, so the `branches` filter below passes a retarget TO
+# main and drops one away from it.
+#
+# In a called workflow the `github` context is this run's: the event is
+# `pull_request`, the ref is `refs/pull/N/merge`, so each one checks out and
+# tests the merge with the new base exactly as it does on a push to the PR.
+# `paths-ignore` in `perf.yml` is a trigger filter and does not apply to a
+# call, so a docs-only PR gets one Perf run when it is retargeted.
+#
+# No workflow-level `concurrency:` here, on purpose: a run whose jobs are all
+# skipped (a body edit) would enter the group and cancel a retarget's run in
+# progress. `perf.yml`'s job-level group and `docs.yml`'s per-ref group still
+# apply inside the calls, and a skipped caller job never reaches them.
+#
+# Not covered, because no run can exist for them (#448's comments):
+#   * a PR that CONFLICTS with its new base has no merge commit, so GitHub
+#     starts no `pull_request` run of any workflow until it is rebased;
+#   * a base change made with the workflow's own `GITHUB_TOKEN` fires no
+#     workflow at all.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [edited]
+
+# Each call is given exactly what the called workflow's jobs ask for; a nested
+# job that asks for more than its caller has fails the whole run at startup.
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    if: github.event.action == 'edited' && github.event.changes.base != null
+    uses: ./.github/workflows/ci.yml
+
+  perf:
+    if: github.event.action == 'edited' && github.event.changes.base != null
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/perf.yml
+
+  docs:
+    if: github.event.action == 'edited' && github.event.changes.base != null
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml

@@ -4061,6 +4061,16 @@ fn app() -> NodeHandle {
 | `on_maximize` | `Option<Callback>` | Callback for maximize button |
 | `on_close` | `Option<Callback>` | Callback for close button |
 
+**With `WindowProps::menu_in_titlebar` (Linux in-app menu bar)** the menu row —
+`left_section`, the branded `title` and the top-level labels — is an absolutely
+positioned layer drawn over the titlebar, and an empty
+`.rinch-borderlesswindow__menu-spacer` in the titlebar's flex row holds that
+space open for the right section and the controls. The spacer is sized from the
+**row's measured box** (both `bounds_signal`s: the row's right edge minus the
+spacer's left edge), not from a count of the labels (#529): the shell's
+`MenuBarContext::spacer_width` is only the first frame's estimate, made before
+any document exists, and costs one extra layout to replace.
+
 ### Window Control Functions
 
 For custom window chrome (minimize/maximize/close buttons):
@@ -5450,6 +5460,42 @@ does. Inside the measured operation the bench binary bump-allocates
 one count 7% between identical runs, and with the bump allocator runs agree to
 about 0.03%. Counts are comparable only between runs on one machine.
 `docs/src/guide/performance.md#ci-regression-job`.
+
+## CI triggers: when a pull request is (not) checked
+
+`ci.yml`, `perf.yml` and `docs.yml` run on `pull_request` events whose base is
+`main`: a PR opened, pushed to (`synchronize`) or reopened. Three cases need
+knowing (#448):
+
+- **A base change to `main` runs them through `.github/workflows/base-changed.yml`.**
+  Retargeting a stacked PR fires only `edited`, which the three workflows do not
+  list, so it used to start nothing. `base-changed.yml` listens for `edited`
+  and calls the three as reusable workflows when `github.event.changes.base` is
+  present. Those checks are named `ci / test`, `perf / instruction-counts`,
+  `docs / build`, …; the same PR pushed to afterwards gets the plain names
+  (`test`, …) on its new commit. A title or body edit shows three skipped
+  checks named `ci`, `perf` and `docs` and runs nothing. Do not "simplify" this
+  into `edited` plus a job-level `if:` inside `ci.yml`: a body edit would then
+  start a run whose jobs are skipped under the real checks' names, and the
+  newest check of a name is the one `gh pr checks` and the merge box show, so a
+  red `test` would read as passed. A retarget made while the PR's own `Perf`
+  or `Documentation` run is in progress cancels that run (their concurrency
+  groups are per PR), and `gh pr checks` lists a cancelled check as `fail`
+  beside the new `perf / …` and `docs / …` ones.
+- **Retarget a stacked PR before its base branch is deleted.** Deleting the
+  parent's branch with `gh pr merge --delete-branch` or through the API
+  **closes** the child instead of retargeting it, and a PR whose base branch is
+  gone cannot be reopened (measured with gh 2.46, #448). Change the child's
+  base to `main` first (`gh api -X PATCH repos/OWNER/REPO/pulls/N -f base=main`),
+  which is the event `base-changed.yml` runs on.
+- **A PR that conflicts with its base gets no run of any workflow**, on a push
+  or a retarget: GitHub has no merge commit to run on. `gh pr checks` prints
+  `no checks reported`. Check `gh pr view N --json mergeable,mergeStateStatus`.
+- **Re-running a run does not move it to a newer `main`.** `gh run rerun`
+  re-runs the jobs on the merge commit the run was created with. Push to the
+  branch (an empty commit will do) to test against the current base.
+
+"No checks" is never a pass: confirm a run exists for the PR's head commit.
 
 ## Documentation Requirements
 

@@ -79,6 +79,10 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+  # Called by `base-changed.yml` when a PR's base branch becomes `main` (#448):
+  # a base change fires only `edited`, which is not listed above on purpose.
+  # `paths-ignore` does not apply to a call.
+  workflow_call:
   push:
     branches: [main]
     paths-ignore:

@@ -493,7 +493,10 @@ percent.
 A PR that makes a path more expensive on purpose can carry the
 **`perf-regression-accepted`** label. With the label, the regression is still
 reported, as a warning, and the job passes. Adding or removing the label runs
-the job again. Say in the PR which benchmark moved and why, in the pull request
+the job again. So does changing the PR's base branch to `main`: that run
+comes from `.github/workflows/base-changed.yml`, which calls `perf.yml`, and
+its check is named `perf / instruction-counts`. A docs-only PR, which the
+`Perf` workflow otherwise skips, gets one run there. Say in the PR which benchmark moved and why, in the pull request
 template's *Performance* section, the same way a counter-baseline update does
 (see [The baselines are the contract](#the-baselines-are-the-contract)). The
 two checks complement each other. The baselines are exact and say *which* work

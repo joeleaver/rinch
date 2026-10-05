@@ -111,6 +111,8 @@ mod hidpi_pointer_tests;
 pub(crate) mod hit_testing;
 #[cfg(test)]
 mod implicit_focus_tests;
+#[cfg(all(test, software_shell, feature = "desktop", target_os = "linux"))]
+mod inline_menu_spacer_529_tests;
 #[cfg(test)]
 mod input_commit_tests;
 #[cfg(test)]
