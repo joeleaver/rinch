@@ -68,8 +68,9 @@ impl Component for VideoViewport {
 /// the div declares `data-viewport-ready="false"`, which stops the GPU paint
 /// path cutting a hole, and paints its own black background as the placeholder.
 /// Without that, an errored video is see-through to the desktop on a
-/// transparent window (issue #186). The software backend cuts no hole for
-/// video at all, so an unready one there simply keeps this placeholder.
+/// transparent window (issue #186). Neither backend draws a frame for a
+/// not-ready viewport (issue #348), so an errored video shows this placeholder
+/// on both, not the last frame its surface still holds.
 #[cfg(not(target_arch = "wasm32"))]
 fn video_viewport_render(scope: &mut RenderScope, player: &VideoPlayer) -> NodeHandle {
     let __scope = scope;

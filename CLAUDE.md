@@ -2480,7 +2480,14 @@ punches unconditionally, unchanged. `VideoViewport` opts in — it stays `"false
 mpv hands a real frame to the compositor (`VideoPlayer::has_frame`, reset by
 `set_source`) and returns to `"false"` on a `PlaybackState::Error`, which is issue #186.
 A node that carries the attribute must say exactly `"true"` to punch, so a mis-stamped
-value fails safe.
+value fails safe. **A not-ready viewport shows no frame either** (#348), on both backends:
+the software inline arm reads the same rule (`rinch_dom::paint::viewport_ready`) and lets
+the node paint as a plain element even while its surface still holds a buffer — a video
+that errored mid-stream keeps its last one — and the GPU shell hands the compositor no
+layer for it (`RinchApp::viewport_ready(name)`, in `paint_gpu`). It used to be a frozen
+frame on software and the placeholder on GPU. The flip is the attribute write's own
+damage, the node's box. Pins: `crates/rinch/src/app/viewport_ready_348_tests.rs`
+(software pixels and `viewport_ready`); the two `paint_gpu` call sites have no fixture.
 
 **Which viewports have a frame, and which punch, is a paint input, so a change in it is
 damage** (#349). No DOM write carries it: a surface that unregisters while its

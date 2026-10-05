@@ -530,9 +530,16 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > exactly `"true"` to punch, so a mis-stamped value fails to the safe side — an
 > opaque placeholder, never a see-through window.
 >
-> Since [#358] this gate governs the **GPU** punch for video: software cuts no
-> hole for a video at all (see below), so an unready one there simply paints its
-> own `#000` placeholder as an ordinary element.
+> **Not ready also means no frame**, on both backends. A surface keeps the last
+> buffer it was given, so a video that errors mid-stream still has one; while
+> its node says `"false"` that frame is not drawn — the software backend paints
+> the node as an ordinary element, and the GPU backend hands the compositor no
+> layer for it — and the node's own `background` is what shows. Say `"true"`
+> again and the frame the surface holds is back, with no new frame needed.
+>
+> Since [#358] software cuts no hole for a video at all (see below), so there
+> the gate decides only whether the frame or the node's `#000` placeholder is
+> drawn.
 
 > **A hole bigger than what fills it: black bars (GPU).** The complementary
 > case ([#354]). The GPU compositor **aspect-fits** a frame inside its viewport,
