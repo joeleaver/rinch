@@ -49,7 +49,9 @@ use crate::computed_style::{
     BackgroundValue, DisplayValue, OverflowValue, PositionValue, VisibilityValue,
 };
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
-use crate::stacking::{ClipSpan, PaintKind, paints_at_stacking_root, stacking_paint_order};
+use crate::stacking::{
+    ClipSpan, PaintKind, PaintOrderKey, paints_at_stacking_root, stacking_paint_order,
+};
 
 /// The fraction of the surface at or above which a dirty region is not worth
 /// clipping to, and the software renderer repaints in full instead.
@@ -82,6 +84,16 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 /// made a frame cost O(rows × subtree). What that leaves out is a static
 /// box's in-flow child whose own ink (a spread shadow) reaches past a parent
 /// that reflow shifted.
+///
+/// A box whose **place in the paint order** changed since it was painted is
+/// walked the same way, whatever its `position` (`reorders_subtree`, #1384):
+/// starting or ending a stacking context, becoming a positioned layer, or a
+/// new `z-index` reorders what its subtree paints against the boxes around
+/// it, wherever the subtree reaches. Those rects are clipped as an absolute
+/// box at the node would be when something under it is absolute against a
+/// box above it (`subtree_has_escaping_absolute`), and the frame repaints in
+/// full when an absolute under it escapes a clipper at or below the node
+/// (`subtree_has_partially_escaping_absolute`), which the reach cannot hold.
 ///
 /// Once the region reaches [`FULL_REPAINT_FRACTION`] of the surface the answer
 /// is the whole surface, and nothing further is measured.
@@ -150,8 +162,6 @@ pub fn compute_damage(
         };
         region.add(r)
     };
-    let clip_now = |id: RawNodeId| clip_chain_bounds(tree, id, scale, false);
-    let clip_then = |id: RawNodeId| clip_chain_bounds(tree, id, scale, true);
 
     // Deduplicate — paint_dirty_nodes may have duplicates
     let mut seen = HashSet::new();
@@ -180,25 +190,64 @@ pub fn compute_damage(
         // `UNBOUNDED` and the frame repaints in full.
         let moved = node.painted.is_some()
             && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
-        if moved
-            && w > 0.0
-            && h > 0.0
+        let moved_layer = moved
             && matches!(
                 node.computed_style.position,
                 PositionValue::Absolute | PositionValue::Fixed | PositionValue::Relative
-            )
-        {
+            );
+        // A box whose place in the paint order changed — it started or
+        // stopped being a stacking context or a positioned layer, or its
+        // `z-index` moved — reorders what its subtree paints against the
+        // boxes around it, wherever the subtree reaches (#1384). One compare
+        // for a node whose order held.
+        let reordered = reorders_subtree(node);
+        // Whether the rects below are clipped as an absolute box at this
+        // node would be, instead of by the node's own chain: a reordered
+        // descendant that is absolute against a box above this one escapes
+        // the clippers in between (and stops escaping them when this box
+        // becomes a stacking context, whose entry's chain is pushed around
+        // everything under it — #549). Clippers above that containing block
+        // clip either way.
+        let mut escapes = false;
+        if (moved_layer || reordered) && w > 0.0 && h > 0.0 {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
-            ink = ink.max(Outsets {
+            let reach = Outsets {
                 left: ax - bounds.x0,
                 top: ay - bounds.y0,
                 right: bounds.x1 - (ax + w),
                 bottom: bounds.y1 - (ay + h),
-            });
+            };
+            if reordered {
+                let contains = node.establishes_abs_containing_block()
+                    && node.painted.as_ref().is_some_and(|p| p.contains_abs);
+                // An absolute that escapes a clipper at or below this box
+                // (#550): `opacity_layer_bounds` narrowed it at that clipper,
+                // so the reach above does not hold it. Repaint in full.
+                let clipped_here = !contains
+                    && (node.clips_overflow()
+                        || node
+                            .painted
+                            .as_ref()
+                            .is_some_and(|p| p.clips_x || p.clips_y));
+                if subtree_has_partially_escaping_absolute(tree, node_id, clipped_here) {
+                    return DamageRegion::full(viewport_w, viewport_h);
+                }
+                escapes = !contains && subtree_has_escaping_absolute(tree, node_id);
+            }
+            ink = ink.max(reach);
         }
+        let clip_of = |id: RawNodeId, painted: bool| {
+            if escapes {
+                clip_chain_walk(tree, id, scale, painted, true, &mut 0)
+            } else {
+                clip_chain_bounds(tree, id, scale, painted)
+            }
+        };
+        let clip_now = |id: RawNodeId| clip_of(id, false);
+        let clip_then = |id: RawNodeId| clip_of(id, true);
 
         if w > 0.0
             && h > 0.0
@@ -352,6 +401,102 @@ pub fn compute_damage(
     region
 }
 
+/// Whether `node`'s place in the paint order has changed since it was last
+/// painted (#1384) — so that the damage owes the subtree's whole reach, where
+/// it is and where it was painted, and not only the node's own rect.
+///
+/// Any difference in the [`PaintOrderKey`] counts. There is no cheaper answer
+/// for a box whose own entry stays put (a positioned `z-index: auto` box that
+/// becomes a `z` 0 context): see [`PaintOrderKey::context`].
+///
+/// `false` for a node never painted: nothing of its subtree is on screen
+/// under the old order.
+fn reorders_subtree(node: &Node) -> bool {
+    node.painted
+        .as_ref()
+        .is_some_and(|painted| painted.order != PaintOrderKey::of(node))
+}
+
+/// Whether something under `node_id` is an absolute box whose containing
+/// block is above `node_id` — one that escapes the clippers between the two,
+/// which `node_id`'s own clip chain therefore cannot speak for. `node_id`
+/// itself is not asked (the caller knows whether it is, or was, a containing
+/// block).
+///
+/// Linear in the subtree, and asked once, on a frame in which the node's
+/// paint order changed. **Not** bounded by [`opacity_layer_bounds`]' visit
+/// budget, though that walk has just answered for the same subtree: it does
+/// not enter an `opacity: 0` or collapsed child, and this one skips only
+/// `display: none`.
+fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    for &child_id in &node.children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+        if matches!(child.computed_style.display, DisplayValue::None) {
+            continue;
+        }
+        if matches!(
+            child.box_position(),
+            PositionValue::Absolute | PositionValue::Fixed
+        ) {
+            return true;
+        }
+        // Contained: absolutes below resolve against it and take its clips.
+        if child.establishes_abs_containing_block() {
+            continue;
+        }
+        if subtree_has_escaping_absolute(tree, child_id) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether something under `node_id` is an absolute box with a clipper
+/// between it and its containing block, that clipper being under `node_id`
+/// (or `node_id` itself, when `crossed`).
+///
+/// [`opacity_layer_bounds`] narrows such a box at that clipper although paint
+/// does not clip it there (#550), so the reach of a reordered `node_id` does
+/// not hold it; the caller repaints in full. With `crossed` set for a node
+/// that clips (now or as painted) and is not a containing block in both
+/// frames, this is also the box that starts or stops clipping its absolute
+/// descendants in (#1408). Linear in the subtree and unbudgeted, like
+/// [`subtree_has_escaping_absolute`].
+fn subtree_has_partially_escaping_absolute(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    crossed: bool,
+) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    for &child_id in &node.children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+        if matches!(child.computed_style.display, DisplayValue::None) {
+            continue;
+        }
+        if crossed && matches!(child.box_position(), PositionValue::Absolute) {
+            return true;
+        }
+        let below = if child.establishes_abs_containing_block() {
+            false
+        } else {
+            crossed || child.clips_overflow()
+        };
+        if subtree_has_partially_escaping_absolute(tree, child_id, below) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The screen rect every clipping ancestor of `node_id` confines its paint to
 /// — in the current frame, or as it was last painted — or `None` when nothing
 /// is known to clip it (#909).
@@ -405,6 +550,20 @@ pub(crate) fn clip_chain_bounds_counted(
     painted: bool,
     steps: &mut u64,
 ) -> Option<Rect> {
+    clip_chain_walk(tree, node_id, scale, painted, false, steps)
+}
+
+/// [`clip_chain_bounds`]; with `as_absolute`, the chain an absolute box at
+/// `node_id` would have: every clipper below the nearest containing block
+/// above `node_id` is skipped.
+fn clip_chain_walk(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    painted: bool,
+    as_absolute: bool,
+    steps: &mut u64,
+) -> Option<Rect> {
     let frame = if painted {
         Frame::Painted
     } else {
@@ -420,7 +579,7 @@ pub(crate) fn clip_chain_bounds_counted(
     let node = tree.get(node_id)?;
     let mut position = style(node)?.position;
     // Skipping clippers until the containing block of an absolute box.
-    let mut escaping = false;
+    let mut escaping = as_absolute;
     let mut clip: Option<Rect> = None;
     let mut current = crate::RinchDocument::box_tree_parent(&tree.nodes, node_id);
     loop {

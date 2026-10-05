@@ -1204,6 +1204,118 @@ fn full_repaint_region_too_large() {
     );
 }
 
+// ── A box that changes place in the paint order (#1384) ───────────────────
+
+const ORDER_CSS: &str = "
+    .holder { position: relative; width: 300px; height: 100px; }
+    .card { width: 100px; height: 100px; }
+    .card.dim { opacity: 0.5; }
+    .card.dimmer { opacity: 0.4; }
+    .badge { position: relative; left: 150px; z-index: 5; width: 100px; height: 100px;
+             background: rgb(200, 0, 0); }
+    .cover { position: absolute; left: 150px; top: 0; z-index: 1; width: 100px; height: 100px;
+             background: rgb(0, 0, 200); }
+";
+
+/// A card whose `z-index` badge overflows it and overlaps a sibling.
+fn order_page(card_class: &'static str) -> (RinchApp, NodeHandle) {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        style.append_child(&scope.create_text(ORDER_CSS));
+        root.append_child(&style);
+        let div = |scope: &mut RenderScope, parent: &NodeHandle, class: &str| {
+            let e = scope.create_element("div");
+            e.set_attribute("class", class);
+            parent.append_child(&e);
+            e
+        };
+        let holder = div(scope, &root, "holder");
+        let card = div(scope, &holder, card_class);
+        div(scope, &card, "badge");
+        div(scope, &holder, "cover");
+        *out2.borrow_mut() = Some(card);
+        root
+    });
+    let card = out.borrow().clone().unwrap();
+    (app, card)
+}
+
+/// The card becomes a stacking context (`opacity` leaves 1), which traps its
+/// badge under the sibling it used to cover. The frame repaints the card's
+/// subtree reach — 254 x 104, the card through the badge with the damage
+/// margin, cut at the window's corner — and not the window: one subtree walk in `compute_damage`, no
+/// counter of its own.
+#[test]
+fn a_box_that_becomes_a_stacking_context_repaints_its_subtrees_reach() {
+    let (mut app, card) = order_page("card");
+    let s = interaction(&mut app, |_| card.set_attribute("class", "card dim"));
+    expect_frame(
+        "card becomes a stacking context",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 26416),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 6),
+            (StackingOrderBuilds, 4),
+            (ClipMasks, 1),
+            (ClipMaskPx, 27136),
+            (PaintLayers, 1),
+            (LayerPx, 10608),
+            (PaintSurfaceAllocs, 2),
+        ],
+    );
+}
+
+/// The twin that reorders nothing: the same card, already a stacking context,
+/// changes only its opacity. Its own rect (104 x 104), as before #1384 — the order check
+/// is one compare and walks nothing.
+///
+/// A pinned **finding**: the card's badge overflows it and is redrawn at the
+/// new opacity by a full repaint, so 10816 px leaves it stale (#1395). A fix
+/// raises this number.
+#[test]
+fn a_stacking_context_that_only_changes_opacity_repaints_its_own_box() {
+    let (mut app, card) = order_page("card dim");
+    let s = interaction(&mut app, |_| card.set_attribute("class", "card dimmer"));
+    expect_frame(
+        "stacking context changes opacity only",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 10816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 6),
+            (StackingOrderBuilds, 2),
+            (ClipMasks, 1),
+            (ClipMaskPx, 11236),
+            (PaintLayers, 1),
+            (PaintSurfaceAllocs, 1),
+        ],
+    );
+}
+
 /// A `<style>` element was added: a whole-document restyle, which can change
 /// any node's paint without naming one.
 ///
@@ -1696,6 +1808,109 @@ fn a_second_wheel_notch_with_an_escaping_absolute_recomputes_no_extent() {
             (ClipMaskPx, 290300),
             (HitTests, 1),
             (HitTestNodesVisited, 4),
+        ],
+    );
+}
+
+const BIG_LIST_CSS: &str = "
+    .list { width: 200px; height: 200px; overflow: hidden; }
+    .list.dim { opacity: 0.5; }
+    .list.tint { background: rgb(9, 9, 9); }
+    .row { height: 20px; }
+    .dot { width: 50px; height: 10px; background: rgb(0, 160, 0); }
+";
+
+/// A 200 x 200 clipped list of 300 two-node rows (601 nodes).
+fn big_list_page() -> (RinchApp, NodeHandle) {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        style.append_child(&scope.create_text(BIG_LIST_CSS));
+        root.append_child(&style);
+        let list = scope.create_element("div");
+        list.set_attribute("class", "list");
+        root.append_child(&list);
+        for _ in 0..300 {
+            let row = scope.create_element("div");
+            row.set_attribute("class", "row");
+            let dot = scope.create_element("div");
+            dot.set_attribute("class", "dot");
+            row.append_child(&dot);
+            list.append_child(&row);
+        }
+        *out2.borrow_mut() = Some(list);
+        root
+    });
+    let list = out.borrow().clone().unwrap();
+    (app, list)
+}
+
+/// A pinned **cost**, accepted by PR #1399 (#1384): a box holding more than
+/// 512 nodes that becomes a stacking context repaints the whole window,
+/// because the walk that measures its subtree's reach gives up at its
+/// 512-node budget. Before #1384 this frame repainted the list's own rect,
+/// as the colour change below still does. A clipping box with no escaping
+/// absolute could keep its own rect when the budget trips; a fix lowers
+/// `RepaintedPx` to the twin's.
+#[test]
+fn a_large_list_that_becomes_a_stacking_context_repaints_in_full() {
+    let (mut app, list) = big_list_page();
+    let s = interaction(&mut app, |_| list.set_attribute("class", "list dim"));
+    expect_frame(
+        "large list becomes a stacking context",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 301),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintFull, 1),
+            (RepaintFullRegionTooLarge, 1),
+            (RepaintedPx, 480000),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 31),
+            (StackingOrderBuilds, 2),
+            (ClipMasks, 1),
+            (ClipMaskPx, 40804),
+            (PaintLayers, 1),
+            (LayerPx, 10504),
+            (PaintSurfaceAllocs, 1),
+        ],
+    );
+}
+
+/// The twin: the same list changes colour only, and repaints its own rect.
+#[test]
+fn a_large_list_that_only_changes_colour_repaints_its_own_box() {
+    let (mut app, list) = big_list_page();
+    let s = interaction(&mut app, |_| list.set_attribute("class", "list tint"));
+    expect_frame(
+        "large list changes colour only",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 301),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 41616),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 25),
+            (StackingOrderBuilds, 1),
+            (ClipMasks, 2),
+            (ClipMaskPx, 83240),
+            (PaintSurfaceAllocs, 1),
         ],
     );
 }

@@ -163,7 +163,18 @@ Some limits on what these numbers mean:
 - **A frame repaints what its damage names, and nothing else.** The damage is
   the paint-dirty nodes (where each is now and where it was last painted),
   the rects of removed nodes, and the drag ghost's and inspect highlight's
-  old and new rects. A change that reaches pixels without a `DomDocument`
+  old and new rects. A box whose place in the paint order changed — it
+  started or stopped being a stacking context (`opacity` crossing 1, a
+  transform or filter starting or ending, `position: fixed`/`sticky`) or a
+  positioned layer, or its `z-index` moved, by a restyle or by a transition
+  or animation frame — names everything its subtree paints, since a
+  `z-index` descendant that overflows it changes order against the boxes
+  beside it. Such a frame repaints the **whole window** when the subtree
+  cannot be measured: it holds more than 512 nodes, a `position: fixed` or
+  `sticky` box, or an absolute box that escapes an `overflow` box at or
+  under the one that flipped. A fade or a transform on a long list is
+  therefore two full repaints (its first and last frame), where the frames
+  between repaint the list's own rect. A change that reaches pixels without a `DomDocument`
   write must name its node (`NodeTree::mark_paint_dirty`) or call
   `RinchApp::mark_scene_dirty`, which is counted as `repaint_full_unattributed`.
 - **The GPU backend always repaints in full.** Every painted frame on that
