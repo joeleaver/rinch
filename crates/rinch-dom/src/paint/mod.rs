@@ -91,7 +91,9 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 /// new `z-index` reorders what its subtree paints against the boxes around
 /// it, wherever the subtree reaches. Those rects are clipped as an absolute
 /// box at the node would be when something under it is absolute against a
-/// box above it (`subtree_has_escaping_absolute`).
+/// box above it (`subtree_has_escaping_absolute`), and the frame repaints in
+/// full when an absolute under it escapes a clipper at or below the node
+/// (`subtree_has_partially_escaping_absolute`), which the reach cannot hold.
 ///
 /// Once the region reaches [`FULL_REPAINT_FRACTION`] of the surface the answer
 /// is the whole surface, and nothing further is measured.
@@ -221,6 +223,18 @@ pub fn compute_damage(
             if reordered {
                 let contains = node.establishes_abs_containing_block()
                     && node.painted.as_ref().is_some_and(|p| p.contains_abs);
+                // An absolute that escapes a clipper at or below this box
+                // (#550): `opacity_layer_bounds` narrowed it at that clipper,
+                // so the reach above does not hold it. Repaint in full.
+                let clipped_here = !contains
+                    && (node.clips_overflow()
+                        || node
+                            .painted
+                            .as_ref()
+                            .is_some_and(|p| p.clips_x || p.clips_y));
+                if subtree_has_partially_escaping_absolute(tree, node_id, clipped_here) {
+                    return DamageRegion::full(viewport_w, viewport_h);
+                }
                 escapes = !contains && subtree_has_escaping_absolute(tree, node_id);
             }
             ink = ink.max(reach);
@@ -410,9 +424,10 @@ fn reorders_subtree(node: &Node) -> bool {
 /// block).
 ///
 /// Linear in the subtree, and asked once, on a frame in which the node's
-/// paint order changed and [`opacity_layer_bounds`] has just bounded the same
-/// subtree (a subtree that walk gives up on repaints in full before this is
-/// reached).
+/// paint order changed. **Not** bounded by [`opacity_layer_bounds`]' visit
+/// budget, though that walk has just answered for the same subtree: it does
+/// not enter an `opacity: 0` or collapsed child, and this one skips only
+/// `display: none`.
 fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
     let Some(node) = tree.get(node_id) else {
         return false;
@@ -435,6 +450,47 @@ fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
             continue;
         }
         if subtree_has_escaping_absolute(tree, child_id) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether something under `node_id` is an absolute box with a clipper
+/// between it and its containing block, that clipper being under `node_id`
+/// (or `node_id` itself, when `crossed`).
+///
+/// [`opacity_layer_bounds`] narrows such a box at that clipper although paint
+/// does not clip it there (#550), so the reach of a reordered `node_id` does
+/// not hold it; the caller repaints in full. With `crossed` set for a node
+/// that clips (now or as painted) and is not a containing block in both
+/// frames, this is also the box that starts or stops clipping its absolute
+/// descendants in (#1408). Linear in the subtree and unbudgeted, like
+/// [`subtree_has_escaping_absolute`].
+fn subtree_has_partially_escaping_absolute(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    crossed: bool,
+) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    for &child_id in &node.children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+        if matches!(child.computed_style.display, DisplayValue::None) {
+            continue;
+        }
+        if crossed && matches!(child.box_position(), PositionValue::Absolute) {
+            return true;
+        }
+        let below = if child.establishes_abs_containing_block() {
+            false
+        } else {
+            crossed || child.clips_overflow()
+        };
+        if subtree_has_partially_escaping_absolute(tree, child_id, below) {
             return true;
         }
     }

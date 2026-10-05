@@ -420,8 +420,10 @@ fn an_animation_that_starts_and_one_that_fills_at_one_repaint_the_descendant() {
 // ── What must NOT grow ────────────────────────────────────────────────────
 
 /// A restyle that changes how the box paints and not where in the order — a
-/// colour, an opacity that stays below one, a `z-index` on a box it does not
-/// apply to — damages the box, not the overflowing descendant 150px away.
+/// colour, a `z-index` on a box it does not apply to, a `z-index` that moves
+/// over in-flow content — damages the box, not the overflowing descendant
+/// 150px away. (An opacity that stays below one is not in the list: it leaves
+/// overflowing content stale, #1395.)
 #[test]
 fn a_restyle_that_reorders_nothing_damages_only_the_box() {
     // The box at the window's corner and the 4px anti-aliasing margin.
