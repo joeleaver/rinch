@@ -486,6 +486,110 @@ pub fn op_inset_move(mut f: InsetFixture) -> InsetFixture {
     f
 }
 
+// ── rinch-dom: rows with an absolute badge ─────────────────────────────────
+
+/// A 400px-high scroller of `LIST_ROWS` 20px rows, each holding a 4px leaf
+/// and one absolutely positioned badge — the shape of a list of rows with an
+/// unread dot or a close button.
+pub struct BadgeFixture {
+    pub doc: RinchDocument,
+    pub scroller: NodeId,
+    /// The leaf of row 7, whose margin the relayout changes.
+    pub leaf: NodeId,
+}
+
+/// - `direct`: each row is `position: relative` and the badge is its child.
+///   Taffy resolves it correctly by itself, so none of the passes that
+///   resolve an absolute box against a containing block Taffy does not know
+///   (`rinch_dom`'s `out_of_flow`, #386) may look at it — on a layout or on a
+///   scroll. The review of PR #1409 measured +12% on this relayout when they
+///   did.
+/// - `ancestor`: the same row with a static wrapper around the badge, so the
+///   row is a containing block Taffy does not know.
+/// - `icb`: no row is positioned, so every badge resolves against the
+///   initial containing block from inside the scroller.
+fn build_badges(variant: &str) -> BadgeFixture {
+    let mut doc = new_document();
+    let row_position = if variant == "icb" {
+        ""
+    } else {
+        "position: relative;"
+    };
+    doc.load_css(&format!(
+        ".s {{ height: 400px; width: 500px; overflow: auto; }}
+         .row {{ {row_position} height: 20px; }}
+         .leaf {{ height: 4px; }}
+         .badge {{ position: absolute; right: 5px; top: 2px; width: 10px; height: 10px; }}"
+    ));
+    let body = doc.body();
+    let scroller = doc.create_element("div");
+    doc.set_attribute(scroller, "class", "s");
+    let mut leaf = None;
+    for i in 0..LIST_ROWS {
+        let row = doc.create_element("div");
+        doc.set_attribute(row, "class", "row");
+        let l = doc.create_element("div");
+        doc.set_attribute(l, "class", "leaf");
+        doc.append_child(row, l);
+        if i == 7 {
+            leaf = Some(l);
+        }
+        let holder = if variant == "ancestor" {
+            let w = doc.create_element("div");
+            doc.append_child(row, w);
+            w
+        } else {
+            row
+        };
+        let badge = doc.create_element("div");
+        doc.set_attribute(badge, "class", "badge");
+        doc.append_child(holder, badge);
+        doc.append_child(scroller, row);
+    }
+    doc.append_child(body, scroller);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = BadgeFixture {
+        doc,
+        scroller,
+        leaf: leaf.expect("row 7 exists"),
+    };
+    // Warm both operations once.
+    f.doc.set_style(f.leaf, "margin-left", "1px");
+    f.doc.resolve_layout(VP.0, VP.1);
+    f.doc.set_scroll_top(f.scroller, 7.0);
+    f
+}
+
+/// Badges that are children of their own positioned row.
+pub fn setup_badges_direct() -> BadgeFixture {
+    build_badges("direct")
+}
+
+/// Badges under a static wrapper in their positioned row.
+pub fn setup_badges_ancestor() -> BadgeFixture {
+    build_badges("ancestor")
+}
+
+/// Badges with no positioned ancestor, inside the scroller.
+pub fn setup_badges_icb() -> BadgeFixture {
+    build_badges("icb")
+}
+
+/// One leaf's margin changes, then layout: no containing block changes size
+/// and no badge moves.
+pub fn op_badge_relayout(mut f: BadgeFixture) -> BadgeFixture {
+    f.doc.set_style(f.leaf, "margin-left", "2px");
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
+/// The scroller scrolls by one notch's worth; no layout runs.
+pub fn op_badge_scroll(mut f: BadgeFixture) -> BadgeFixture {
+    f.doc.set_scroll_top(f.scroller, 60.0);
+    f
+}
+
 // ── rinch-dom: a full software paint ───────────────────────────────────────
 
 const LOREM: &str = "The quick brown fox jumps over the lazy dog while a sphinx of black \
