@@ -894,13 +894,13 @@ What the applications people paste from write, and how it reads:
 |---|---|
 | Word | Headings, paragraphs, tables, links, bold. A Word list is paragraphs that start with their bullet or number (`·`, `1.`): that is how Word writes it, and it is kept that way rather than rebuilt into a list. |
 | Excel, Google Sheets | A table (Sheets' `<google-sheets-html-origin>` wrapper and Excel's `<col>` are read through); one Sheets cell is a line of text. |
-| Google Docs | Headings, paragraphs, links, nested lists. Bold is not read: Docs says it with `font-weight:700` on a `<span>`. Coloured text keeps its colour. |
+| Google Docs | Headings, paragraphs, links, nested lists. Bold, italic and underline are not read: Docs says them with CSS on a `<span>` (#1407). Text keeps the colour Docs gives it. |
 | Notion, GitHub, Slack, Apple Notes and Mail, Gmail | Their headings, lists, quotes, code blocks, tables and links; a `<div>` per line is a paragraph per line. |
 | VS Code | A **code block**: VS Code copies a `<div style="white-space: pre">` holding one `<div>` per line, and a code block is what keeps the lines and their indentation. The token colours are not kept. Pasted inside a line of text, one copied line is its text. |
 
 Whitespace is kept as written, not collapsed as a browser collapses it, so a source
 that wraps its lines inside a paragraph (Word does) reads with those line ends in the
-text.
+text (#1406).
 
 The rules are `Transaction::replace_selection`'s; see
 [Fitting a slice](editor.md#fitting-a-slice-replace_range).

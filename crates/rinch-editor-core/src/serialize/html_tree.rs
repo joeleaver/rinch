@@ -14,8 +14,9 @@
 //!   `<title>`, `<iframe>`, `<noscript>`, `<noembed>`, `<noframes>` and
 //!   `<template>` with their content, nor `<meta>` and `<link>`.
 //! - `<html>` and `<body>` tags are skipped (their content stays) with the
-//!   whitespace after them, and a `<head>` ends at its end tag or at the
-//!   first thing that is not head content.
+//!   whitespace after them and the line end before their end tags, and a
+//!   `<head>` ends at its end tag or at the first thing that is not head
+//!   content.
 //! - End tags are implied as a browser implies them: a `<p>` ends at the next
 //!   block, an `<li>` at the next `<li>`, a cell at the next cell or row, a
 //!   row at the next row. An end tag closes the nearest open element of its
@@ -165,6 +166,24 @@ impl<'a> HtmlFragmentParser<'a> {
             last.push_str(text);
         } else {
             siblings.push(ParsedNode::Text(text.to_string()));
+        }
+    }
+
+    /// Before `</body>` or `</html>`: the line end the source puts in front
+    /// of the tag (with the whitespace around it) is its layout, not text.
+    fn trim_line_end(&mut self) {
+        let siblings = self.siblings();
+        let Some(ParsedNode::Text(last)) = siblings.last_mut() else {
+            return;
+        };
+        let kept = last
+            .trim_end_matches(|c: char| c.is_ascii_whitespace())
+            .len();
+        if last[kept..].contains('\n') {
+            last.truncate(kept);
+            if last.is_empty() {
+                siblings.pop();
+            }
         }
     }
 
@@ -434,7 +453,10 @@ impl<'a> HtmlFragmentParser<'a> {
         self.skip_past(b'>');
         self.after_document_tag = matches!(tag.as_str(), "html" | "head" | "body");
         match tag.as_str() {
-            "html" | "body" => return,
+            "html" | "body" => {
+                self.trim_line_end();
+                return;
+            }
             "head" => {
                 self.in_head = false;
                 return;

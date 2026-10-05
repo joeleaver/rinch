@@ -1268,3 +1268,121 @@ fn a_schema_with_only_paragraphs_still_gets_all_the_text() {
         "{doc:?}"
     );
 }
+
+/// A heading around blocks keeps them: its blocks stay blocks, in order, and
+/// the text between them is headings of its level.
+#[test]
+fn a_heading_around_blocks_keeps_the_blocks() {
+    assert_eq!(
+        read("<h2 style=\"text-align:center\">a<ul><li>b</li></ul>c</h2>"),
+        "<h2 style=\"text-align:center\">a</h2><ul><li><p>b</p></li></ul>\
+         <h2 style=\"text-align:center\">c</h2>"
+    );
+    assert_eq!(read("<h3><div>Title</div></h3>"), "<h3>Title</h3>");
+    assert_eq!(read("<h3><div></div></h3>"), "<h3></h3>");
+    // Content with no place in a table goes in front of it there too.
+    assert_eq!(
+        read("<h1>a<table><tr><td>x</td>stray</tr></table></h1>"),
+        "<h1>a</h1><p>stray</p><table><tr><td><p>x</p></td></tr></table>"
+    );
+}
+
+/// Details that decide whether a document reads back the same.
+#[test]
+fn what_is_read_reads_back_the_same() {
+    // Of two links one inside the other, the text has the inner one.
+    assert_eq!(
+        read("<p><a href=\"https://e.x/1\">x<a href=\"https://e.x/2\">y</a>z</a></p>"),
+        "<p><a href=\"https://e.x/1\">x</a><a href=\"https://e.x/2\">y</a><a href=\"https://e.x/1\">z</a></p>"
+    );
+    assert_eq!(
+        read("<p><span style=\"color:red\">a<span style=\"color:blue\">b</span></span></p>"),
+        "<p><span style=\"color:red\">a</span><span style=\"color:blue\">b</span></p>"
+    );
+    // An empty `alt` is none, as the writer writes it.
+    assert_eq!(
+        read("<p><img src=\"https://e.x/i.png\" alt=\"\" title=\"\"></p>"),
+        "<p><img src=\"https://e.x/i.png\"></p>"
+    );
+    // Text in pieces (around an empty element, a comment) is one text node.
+    let schema = Schema::starter_kit();
+    let doc = load(&schema, "<p>a<o:p></o:p>b<!-- c -->d<span>e</span></p>")
+        .unwrap()
+        .unwrap();
+    assert_eq!(doc.child(0).child_count(), 1, "{doc:?}");
+    // A task list with no item is one unchecked item, as it reads back.
+    read("<ul data-type=\"taskList\"></ul>");
+    // A transparent background is no highlight.
+    assert_eq!(
+        read("<p><span style=\"background-color:transparent\">a</span></p>"),
+        "<p>a</p>"
+    );
+}
+
+/// The whitespace around `<html>`, `<head>` and `<body>` tags is the
+/// source's layout, and whitespace between two inline elements is a space.
+#[test]
+fn whitespace_that_is_layout_and_whitespace_that_is_a_space() {
+    assert_eq!(
+        read(
+            "<html>\r\n<head>\r\n<title>t</title>\r\n</head>\r\n<body lang=EN-US>\r\n<!--StartFragment-->text<!--EndFragment-->\r\n</body>\r\n</html>\r\n"
+        ),
+        "<p>text</p>"
+    );
+    assert_eq!(
+        read("<div><b>Hello</b> <i>world</i>\n<u>again</u></div>"),
+        "<p><strong>Hello</strong> <em>world</em> <u>again</u></p>"
+    );
+    // Before a block it is nothing.
+    assert_eq!(
+        read("<b>a</b> <p>b</p>"),
+        "<p><strong>a</strong></p><p>b</p>"
+    );
+}
+
+/// A code block keeps the lines of what it is read from.
+#[test]
+fn a_code_block_keeps_its_lines() {
+    assert_eq!(read("<pre>a<br>b</pre>"), "<pre>a\nb</pre>");
+    assert_eq!(
+        read("<pre><div>a</div><div>b</div></pre>"),
+        "<pre>a\nb</pre>"
+    );
+    assert_eq!(
+        read("<div style=\"white-space: pre\"><div>a</div><br><div>  b</div></div>"),
+        "<pre>a\n\n  b</pre>"
+    );
+    // Not every styled <div>.
+    assert_eq!(
+        read("<div style=\"white-space: pre-wrap\"><div>a</div><div>b</div></div>"),
+        "<p>a</p><p>b</p>"
+    );
+}
+
+/// Markdown reads an HTML table block through this reader. What the table
+/// holds outside its cells is kept beside it by the lenient parse (it was
+/// dropped), and refused by the strict one, as before.
+#[cfg(feature = "markdown")]
+#[test]
+fn a_markdown_html_table_keeps_what_it_holds_outside_its_cells() {
+    use rinch_editor_core::serialize::{doc_from_markdown, doc_from_markdown_strict};
+    let schema = Schema::starter_kit();
+    let md = "<table><caption>cap</caption><tr><td>a</td></tr></table>";
+    let doc = doc_from_markdown(&schema, md).unwrap();
+    assert_eq!(
+        node_to_html(&doc),
+        "<p>cap</p><table><tr><td><p>a</p></td></tr></table>"
+    );
+    assert!(doc_from_markdown_strict(&schema, md).is_err());
+    // A character reference in a cell is the character, strict or not.
+    let md = "<table><tr><td>caf&eacute; &#233;</td></tr></table>";
+    for doc in [
+        doc_from_markdown(&schema, md).unwrap(),
+        doc_from_markdown_strict(&schema, md).unwrap(),
+    ] {
+        assert_eq!(
+            node_to_html(&doc),
+            "<table><tr><td><p>caf\u{e9} \u{e9}</p></td></tr></table>"
+        );
+    }
+}
