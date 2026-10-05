@@ -135,6 +135,38 @@ name and there is no string-tag fallthrough; deserialize consults the schema and
 derives tags from the schema's `parse_html_tags`, so copy-out and paste-in share one
 table — the same one `Editor`'s `content:` prop and `load_html` use.
 
+The HTML import is **total about text** (#1397): `slice_from_html` does not fail on
+markup, every character of text a browser would show for the markup is in the slice
+it returns, and the slice's content is valid. It is two passes. The tree builder
+(`serialize/html_tree.rs`) follows the HTML parsing rules as far as they decide what
+is text and what holds what: a tag name runs to the next whitespace, `/` or `>` (so
+`<o:p>` is an element — the old tokenizer stopped reading at the colon); comments,
+`<![if …]>`, `<style>`, `<script>`, `<title>` and `<head>` give nothing; a `<p>`,
+`<li>`, `<td>` or `<tr>` ends where a browser ends it; an end tag closes the nearest
+open element of its name unless a table cell (or, for an inline element, a block) is
+in between; at most 128 elements are open at once, and a start tag past that opens
+nothing, so the reader's recursion is bounded (10,000 nested `<div>`s overflowed
+the stack). The reader (`serialize/html.rs`) then maps the tree onto the schema:
+
+- An element with no node or mark is read through. It is inline unless it holds a
+  block or is a block-level HTML element (`div`, `section`, …).
+- A run of table parts with no `<table>` is a table; what has no place in a table
+  (text in a row, a `<caption>`) is read as blocks in front of it, as a browser's
+  foster parenting puts it.
+- A textblock element (a heading) that holds blocks is not flattened: its blocks stay
+  blocks and the inline content between them takes the element's type.
+- A `<div style="white-space: pre">` is a code block, one line per `<div>` or `<br>`
+  (what VS Code copies); so is `<pre>`, where a `<br>` is a line end too.
+- A mark element around blocks marks what the same element marks around inline
+  content: text and images, not hard breaks (#1401). Neighbouring text with the same
+  marks is one text node, and a mark of a type replaces an outer mark of that type.
+
+`tests/html_reader_total_1397.rs` is the property test: a tag-soup generator that
+knows what a browser shows, checked for text conservation, validity and reading back
+the same, plus a step-count pin that reading is linear;
+`tests/html_reader_clipboard_samples.rs` holds what Word, Excel, Sheets, Docs, Notion,
+GitHub, VS Code, Apple Notes and Mail, Slack and Gmail write.
+
 The HTML import reads its three integer attributes as Chrome 153 does (#1164):
 `<ol start>` by HTML's rules for parsing integers (`" 3"`, `"3abc"` and `"2.5"`
 are 3, 3 and 2; a value past `i32` is the default 1), and `colspan` / `rowspan`
@@ -422,8 +454,8 @@ What it does not do, where ProseMirror does:
   `CellSelection.replace` does with content that is not cells. `replace_range` itself
   takes positions and will fit whatever range it is given.
 - A slice holding an invalid node (the nodes open at its edges aside) is refused.
-  The HTML reader makes one from a `<td>` or `<tr>` with no table around it (#1392),
-  so that paste is still plain text.
+  The HTML reader never makes one: a `<td>` or `<tr>` with no table around it is read
+  as a table (#1392).
 
 The fitter keeps, per open node, how far its children have got through the content
 expression (`ContentMatch::start` / `advance` / `accepts_end`) and steps it once per

@@ -219,7 +219,7 @@ rsx! { Editor { editor: editor.clone() } }
 
 | Method | Purpose |
 |--------|---------|
-| `load_html(&str) -> bool` | Parse schema-whitelisted HTML and replace the document. Returns `false` if it doesn't parse into valid content. |
+| `load_html(&str) -> bool` | Parse schema-whitelisted HTML and replace the document. No markup is refused, however broken: its text is read, into valid content (see [What the HTML reader keeps](#what-the-html-reader-keeps)). Returns `false` only when the load itself is refused (a read-only collaborating editor). |
 | `doc() -> Node` | The current document (the save shape; serialize it under the `serde` feature). |
 | `insert_image(src, alt)` | Insert an image node (e.g. a `data:` URL), replacing the selection. |
 | `toggle_link(href) -> bool` | Add a `link` mark with `href` across the selection, or remove it if the selection is already linked. No-op (returns `false`) for a collapsed cursor. |
@@ -230,9 +230,11 @@ rsx! { Editor { editor: editor.clone() } }
 | `anchor_selection() -> SelectionAnchor` | Capture the selection for a later insertion, kept pointing at the same content as the user keeps editing. See [Pasting is asynchronous](#pasting-is-asynchronous). |
 
 HTML is **schema-whitelisted** on load: known block tags become nodes and known
-inline tags become marks; unknown tags and attributes (`<script>`, inline event
-handlers, …) are dropped at parse time. The document can only ever hold structure
-the schema allows.
+inline tags become marks; an element the schema has nothing for is read through for
+its content, and unknown attributes, `<script>`, inline event handlers and the like
+are dropped at parse time. The document can only ever hold structure the schema
+allows, and it holds all of the text: see
+[What the HTML reader keeps](#what-the-html-reader-keeps).
 
 ### Your own plugins and inline decorations
 
@@ -849,6 +851,56 @@ empty, and the paste fell back to its plain text.)
 
 A paste the document has no valid place for falls back to the plain text; if that has
 none either, nothing happens. One paste is one undo step.
+
+### What the HTML reader keeps
+
+`load_html`, `content:` and a paste read HTML the same way, and the reader is
+**total about text**: whatever the markup, every character of text a browser would
+show for it is in the document, the text a browser hides is not, and the result is
+always valid content. Structure it cannot keep is approximated; text is not dropped.
+
+- **An element the reader does not know** — Word's `<o:p>` and `<st1:place>`, a
+  custom element, `<button>`, `<label>` — is read through. It is inline unless it
+  holds a block, so `a <my-chip>b</my-chip> c` is one line and
+  `<my-card><h2>…</h2><p>…</p></my-card>` is its heading and paragraph. (Before
+  #1397 the reader stopped at the first `<o:p>`, and a paste from Word kept its first
+  paragraph only.)
+- **Hidden text is not read:** comments, conditional comments
+  (`<!--[if gte mso 9]>…<![endif]-->`), `<style>`, `<script>`, `<head>`, `<title>`,
+  `<template>`. Not read either, though a browser may show something for them: an
+  `<input>`'s value, the options of a `<select>`, the fallback content of
+  `<object>` / `<video>` / `<canvas>`, and `<svg>` and `<math>` (on a clipboard those
+  are icons and the hidden copy of a rendered formula).
+- **Broken markup is read as a browser reads it:** a `<p>` ends at the next block, an
+  `<li>` at the next `<li>`, a cell at the next cell; an end tag with nothing to close
+  is skipped; a `<` that starts no tag (`a < b`) is text. Character references are
+  decoded (`&eacute;`, `&#233;`, Word's `&#146;`); a name the reader does not know
+  stays as written.
+- **Table parts with no `<table>`** are a table: a run of `<td>` is one row, a run of
+  `<tr>` the rows of one table (#1392; they used to load as an invalid document and
+  paste as plain text). What has no place in a table — text between its rows, a
+  `<caption>` — becomes paragraphs in front of the table, where a browser shows it.
+- **A heading around blocks** (`<h2><div>…</div><ul>…</ul></h2>`) keeps the blocks;
+  the text between them is headings.
+- **A mark around blocks** marks their text and images, not their line breaks, as it
+  does around a line (#1401). Of two links or two colours, one inside the other, the
+  text has the inner one.
+- **Nesting** is kept 128 elements deep. Deeper elements are read where the 128th
+  stands, text and all; nothing overflows.
+
+What the applications people paste from write, and how it reads:
+
+| From | Reads as |
+|---|---|
+| Word | Headings, paragraphs, tables, links, bold. A Word list is paragraphs that start with their bullet or number (`·`, `1.`): that is how Word writes it, and it is kept that way rather than rebuilt into a list. |
+| Excel, Google Sheets | A table (Sheets' `<google-sheets-html-origin>` wrapper and Excel's `<col>` are read through); one Sheets cell is a line of text. |
+| Google Docs | Headings, paragraphs, links, nested lists. Bold is not read: Docs says it with `font-weight:700` on a `<span>`. Coloured text keeps its colour. |
+| Notion, GitHub, Slack, Apple Notes and Mail, Gmail | Their headings, lists, quotes, code blocks, tables and links; a `<div>` per line is a paragraph per line. |
+| VS Code | A **code block**: VS Code copies a `<div style="white-space: pre">` holding one `<div>` per line, and a code block is what keeps the lines and their indentation. The token colours are not kept. Pasted inside a line of text, one copied line is its text. |
+
+Whitespace is kept as written, not collapsed as a browser collapses it, so a source
+that wraps its lines inside a paragraph (Word does) reads with those line ends in the
+text.
 
 The rules are `Transaction::replace_selection`'s; see
 [Fitting a slice](editor.md#fitting-a-slice-replace_range).

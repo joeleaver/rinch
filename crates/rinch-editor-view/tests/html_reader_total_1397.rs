@@ -130,3 +130,31 @@ fn deeply_nested_markup_loads_and_pastes() {
         assert_eq!(node_to_html(&e.doc()), "<p>ab</p>", "{tag}");
     }
 }
+
+/// What VS Code copies is read as a code block. One line of it pasted in a
+/// line of text is that line's text; on an empty line it is the block.
+#[test]
+fn a_paste_from_vs_code_keeps_its_lines() {
+    let line = "<meta charset='utf-8'><div style=\"color: #cccccc;font-family: Consolas, monospace;\
+                white-space: pre;\"><div><span style=\"color: #9cdcfe;\">count</span><span> </span>\
+                <span>+=</span><span> </span><span>1</span></div></div>";
+    let lines = "<meta charset='utf-8'><div style=\"font-family: monospace;white-space: pre;\"><div>\
+                 <span>fn</span><span> main() {</span></div><div><span>    body();</span></div><br><div>\
+                 <span>}</span></div></div>";
+    let paste = |target: &str, at: usize, html: &str| {
+        let e = create_editor();
+        e.load_html(target);
+        e.set_selection(Selection::text(Pos(at), Pos(at)));
+        assert!(e.paste(&PasteContent {
+            html: Some(html.to_string()),
+            text: Some("plain".to_string()),
+        }));
+        node_to_html(&e.doc())
+    };
+    assert_eq!(paste("<p>ab</p>", 2, line), "<p>acount += 1b</p>");
+    assert_eq!(paste("<p></p>", 1, line), "<pre>count += 1</pre>");
+    assert_eq!(
+        paste("<p></p>", 1, lines),
+        "<pre>fn main() {\n    body();\n\n}</pre>"
+    );
+}
