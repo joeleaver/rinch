@@ -14,6 +14,7 @@ use crate::Slice;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, Node, NodeType};
 use crate::pos::Pos;
 use crate::schema::Schema;
+use crate::transform::fit;
 use crate::transform::node_range::NodeRange;
 use crate::transform::step::{Step, StepError};
 use crate::transform::step_map::Mapping;
@@ -119,6 +120,79 @@ impl<'a> Transform<'a> {
         slice: Slice,
     ) -> Result<&mut Self, StepError> {
         self.step(Box::new(ReplaceStep::new(from, to, slice)))
+    }
+
+    /// Replace `from..to` with `slice`, **fitted** to the range: the paste
+    /// primitive. Where [`replace`](Self::replace) refuses a slice whose open
+    /// depths or content do not line up with the range, this closes or splits
+    /// the nodes around the range as the content needs
+    /// (ProseMirror's `replaceRange`; the rules are in
+    /// [`transform::fit`](crate::transform)'s module doc):
+    ///
+    /// - content open at the slice's start continues the textblock the range
+    ///   starts in, and the inline content after the range joins the
+    ///   textblock the slice ends in;
+    /// - a block that is closed splits the textblock (leaving no empty block
+    ///   when the range is at the textblock's edge);
+    /// - over a whole textblock — a caret in an empty one included — a slice
+    ///   that starts in a [defining](crate::schema::NodeSpec::defining) node
+    ///   (a list item, a heading, a quote) replaces the textblock, keeping
+    ///   that node.
+    ///
+    /// One step is added. Returns the position right after the inserted
+    /// content, in the new document. Errors, adding nothing, when no fit is
+    /// valid, or when `slice` holds a node that is not valid content (the
+    /// nodes open at its edges aside).
+    ///
+    /// A range whose ends are in different
+    /// [isolating](crate::schema::NodeSpec::isolating) nodes (two table cells)
+    /// is not fitted: only the plain `replace` is tried.
+    pub fn replace_range(
+        &mut self,
+        from: usize,
+        to: usize,
+        slice: Slice,
+    ) -> Result<usize, StepError> {
+        if slice.size() == 0 {
+            self.delete(from, to)?;
+            return Ok(from);
+        }
+        if !fit::slice_is_sound(&slice) {
+            return Err(StepError::new("the slice holds an invalid node"));
+        }
+        let candidates = if self.same_isolating_scope(from, to) {
+            fit::range_candidates(&self.doc, from, to, &slice)
+        } else {
+            Vec::new()
+        };
+        for (a, b, candidate) in candidates {
+            if let Some(found) = fit::fit_step(&self.doc, a, b, &candidate)
+                && self.step(found.step).is_ok()
+            {
+                return Ok(found.end);
+            }
+        }
+        let end = from + slice.size();
+        self.step(Box::new(ReplaceStep::new(from, to, slice)))?;
+        Ok(end)
+    }
+
+    /// Whether `from` and `to` have the same innermost isolating ancestor
+    /// (or none).
+    fn same_isolating_scope(&self, from: usize, to: usize) -> bool {
+        let scope = |pos: usize| {
+            let r = self.doc.resolve(Pos(pos)).ok()?;
+            Some(
+                (1..=r.depth())
+                    .rev()
+                    .find(|&d| r.node(d).node_type().is_isolating())
+                    .map(|d| r.start(d)),
+            )
+        };
+        match (scope(from), scope(to)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
     }
 
     /// Replace `from..to` with the (flat) `content`.

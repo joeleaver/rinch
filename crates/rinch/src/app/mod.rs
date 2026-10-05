@@ -234,6 +234,8 @@ mod ua_block_defaults_components_tests;
 mod viewport_inputs_349_more_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod viewport_inputs_349_tests;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod viewport_ready_348_tests;
 #[cfg(all(test, software_shell))]
 mod visibility_hidden_overlay_paint_tests;
 
@@ -4747,6 +4749,31 @@ impl RinchApp {
             }
         }
         None
+    }
+
+    /// Whether the viewport named `name` says it is ready to show its content
+    /// (`rinch_dom::paint::viewport_ready`, issue #348): the first connected
+    /// `data-viewport` node of that name carries no `data-viewport-ready`, or
+    /// carries `"true"`. A name no connected node carries answers `true`:
+    /// there is no node to say otherwise, and nothing to draw at either.
+    pub fn viewport_ready(&self, name: &str) -> bool {
+        let Some(doc) = self.doc.as_ref() else {
+            return true;
+        };
+        let d = doc.borrow();
+        let tree = &d.tree;
+        tree.nodes
+            .iter()
+            .find(|(node_id, node)| {
+                node.attributes.get("data-viewport").map(String::as_str) == Some(name) && {
+                    let mut id = *node_id;
+                    while let Some(parent) = tree.get(id).and_then(|n| n.parent) {
+                        id = parent;
+                    }
+                    id == tree.root_id
+                }
+            })
+            .is_none_or(|(_, node)| rinch_dom::paint::viewport_ready(node))
     }
 
     /// Hand this paint the frames the software backend draws **inline** at

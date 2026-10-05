@@ -692,7 +692,7 @@ fn cells_overlap_rectangle(map: &TableMap, rect: Rect) -> bool {
 /// Delete/typing over a cell selection here so they blank the cells instead of
 /// splicing the coarse `from()..to()` range (which would collapse the table).
 /// `None` unless a cell selection is active.
-pub(crate) fn clear_cells(state: &EditorState) -> Option<Transaction> {
+pub fn clear_cells(state: &EditorState) -> Option<Transaction> {
     if !matches!(state.selection, Selection::Cell(_)) {
         return None;
     }

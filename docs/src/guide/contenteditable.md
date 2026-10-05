@@ -225,8 +225,8 @@ rsx! { Editor { editor: editor.clone() } }
 | `toggle_link(href) -> bool` | Add a `link` mark with `href` across the selection, or remove it if the selection is already linked. No-op (returns `false`) for a collapsed cursor. |
 | `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None` — except where it runs straight into a different link, where the caret is in the first. |
 | `paste(&PasteContent) -> bool` | Paste `text/plain` and/or `text/html` over the selection the way the user's paste does: your plugins first, then the default. See [Seeing and rewriting a paste](#seeing-and-rewriting-a-paste). |
-| `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the default rich paste; no plugin sees it). |
-| `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. |
+| `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the default rich paste; no plugin sees it), fitted to where it lands. See [What a paste does](#what-a-paste-does). |
+| `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. A selection inside a list is copied with its list, one across table cells with its table. |
 | `anchor_selection() -> SelectionAnchor` | Capture the selection for a later insertion, kept pointing at the same content as the user keeps editing. See [Pasting is asynchronous](#pasting-is-asynchronous). |
 
 HTML is **schema-whitelisted** on load: known block tags become nodes and known
@@ -801,6 +801,57 @@ paste and select all — are also on the built-in right-click menu of the editor
 browser's own menu covers the editor surface. Undo/redo is a single, exact history: each undo
 reverses one logical edit (typing is merged into a group), because every edit is an
 invertible step.
+
+### What a paste does
+
+A paste is the clipboard's `text/html` parsed against the schema (unknown tags and
+attributes dropped), else its `text/plain`, one paragraph per line. The content is
+then **fitted** to the caret, as ProseMirror and TipTap do it:
+
+- **Text and inline content** go in at the caret. Several paragraphs: the first
+  continues the line, the last takes the text after the caret.
+- **A list** pasted on an empty line is that list — bullet, ordered (with its
+  `start`) or task (with its checkboxes). Pasted inside a line of text, its first
+  item's text continues the line, the other items are a list below it, and the text
+  after the caret joins the last item. Pasted in a list item, its items become sibling
+  items of the list the caret is in; on an empty item they take its place. That is
+  between bullet and ordered lists, whose items are the same node (the target list
+  keeps its kind). A task list and a plain list do not mix: one pasted in an item of
+  the other is a list nested in that item.
+- **A heading, a quote or a code block** pasted on an empty line is that block;
+  inside text a heading is its text.
+- **A rule or a table** splits the line: the text before the caret, the block, the
+  text after. At the start or end of a line nothing is split and no empty line is
+  left.
+- **In a table cell** all of this happens inside the cell.
+- **Over selected table cells** the selected cells are emptied and the content goes
+  into the top-left one, as typing over them does. The table's rows and columns are
+  never changed by a paste.
+- **In a code block** the paste is the clipboard's plain text, exactly, line breaks
+  included.
+- **Over a selection** the selected content is removed first; a selection of a whole
+  line counts as an empty line.
+
+Copying from inside a list copies the list around the selected items, so the same
+kind of list arrives wherever it is pasted, in rinch or elsewhere. A selection inside
+one line copies as its text and marks only.
+
+Lists copied from a browser, GitHub or Google Docs paste as lists, nested ones
+included: Docs writes a nested list beside the item it belongs to
+(`<ul><li>a</li><ul><li>b</li></ul></ul>`), and it is read as that item's. Nothing
+in a list is dropped for not being an `<li>`. A link or other mark around whole
+blocks (a card that is one `<a>` around a heading and a paragraph) is kept on the
+text of those blocks. A `<b style="font-weight:normal">`, which Docs wraps its
+copies in, is not bold. All of this is the HTML reader, so `load_html` and
+`content:` read the same way. (Before #1382 HTML
+that began with a `<meta>` tag, as what Chrome and Firefox copy does, was read as
+empty, and the paste fell back to its plain text.)
+
+A paste the document has no valid place for falls back to the plain text; if that has
+none either, nothing happens. One paste is one undo step.
+
+The rules are `Transaction::replace_selection`'s; see
+[Fitting a slice](editor.md#fitting-a-slice-replace_range).
 
 ### Pasting is asynchronous
 

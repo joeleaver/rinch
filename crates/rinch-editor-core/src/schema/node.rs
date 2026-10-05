@@ -39,6 +39,18 @@ pub struct NodeSpec {
     /// Whether the node isolates cursor (can't escape via arrow keys)
     pub isolating: bool,
 
+    /// Whether the node *defines* its content (ProseMirror's `defining`): a
+    /// list item, a heading, a quote. When content whose outer node is
+    /// defining is pasted over a whole textblock (an empty line included), the
+    /// defining node is kept and takes the textblock's place, where a
+    /// non-defining wrapper is dropped and only its content goes in. See
+    /// [`Transform::replace_range`](crate::transform::Transform::replace_range).
+    pub defining: bool,
+
+    /// Whether the node holds code (ProseMirror's `code`): a paste into it is
+    /// plain text, line breaks kept.
+    pub code: bool,
+
     /// Node attributes with their defaults
     pub attrs: BTreeMap<String, AttrSpec>,
 
@@ -64,6 +76,8 @@ impl NodeSpec {
             selectable: true,
             draggable: false,
             isolating: false,
+            defining: false,
+            code: false,
             attrs: BTreeMap::new(),
             parse_html_tags: Vec::new(),
         }
@@ -81,6 +95,8 @@ impl NodeSpec {
             selectable: false,
             draggable: false,
             isolating: false,
+            defining: false,
+            code: false,
             attrs: BTreeMap::new(),
             parse_html_tags: Vec::new(),
         }
@@ -98,6 +114,8 @@ impl NodeSpec {
             selectable: true,
             draggable: false,
             isolating: false,
+            defining: false,
+            code: false,
             attrs: BTreeMap::new(),
             parse_html_tags: Vec::new(),
         }
@@ -187,6 +205,8 @@ impl NodeSpecBuilder {
                 selectable: true,
                 draggable: false,
                 isolating: false,
+                defining: false,
+                code: false,
                 attrs: BTreeMap::new(),
                 parse_html_tags: Vec::new(),
             },
@@ -244,6 +264,18 @@ impl NodeSpecBuilder {
     /// Set whether the node is isolating.
     pub fn isolating(mut self, isolating: bool) -> Self {
         self.spec.isolating = isolating;
+        self
+    }
+
+    /// Set whether the node is defining (see [`NodeSpec::defining`]).
+    pub fn defining(mut self, defining: bool) -> Self {
+        self.spec.defining = defining;
+        self
+    }
+
+    /// Set whether the node holds code (see [`NodeSpec::code`]).
+    pub fn code(mut self, code: bool) -> Self {
+        self.spec.code = code;
         self
     }
 
