@@ -201,6 +201,8 @@ mod select_widget;
 #[cfg(test)]
 mod shared_hit_tests;
 #[cfg(all(test, software_shell))]
+mod stacking_flip_damage_1384_review_tests;
+#[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_tests;
 #[cfg(test)]
 mod stepper_state_709_tests;

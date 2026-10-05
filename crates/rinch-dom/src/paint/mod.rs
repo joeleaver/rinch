@@ -50,8 +50,7 @@ use crate::computed_style::{
 };
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
 use crate::stacking::{
-    ClipSpan, PaintKind, PaintOrderKey, Reorder, has_z_ordered_descendant, paints_at_stacking_root,
-    stacking_paint_order,
+    ClipSpan, PaintKind, PaintOrderKey, paints_at_stacking_root, stacking_paint_order,
 };
 
 /// The fraction of the surface at or above which a dirty region is not worth
@@ -90,8 +89,9 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 /// walked the same way, whatever its `position` (`reorders_subtree`, #1384):
 /// starting or ending a stacking context, becoming a positioned layer, or a
 /// new `z-index` reorders what its subtree paints against the boxes around
-/// it, wherever the subtree reaches. Those rects are not clipped by the box's
-/// own clip chain when the reach passes the box.
+/// it, wherever the subtree reaches. Those rects are clipped as an absolute
+/// box at the node would be when something under it is absolute against a
+/// box above it (`subtree_has_escaping_absolute`).
 ///
 /// Once the region reaches [`FULL_REPAINT_FRACTION`] of the surface the answer
 /// is the whole surface, and nothing further is measured.
@@ -160,8 +160,6 @@ pub fn compute_damage(
         };
         region.add(r)
     };
-    let clip_now = |id: RawNodeId| clip_chain_bounds(tree, id, scale, false);
-    let clip_then = |id: RawNodeId| clip_chain_bounds(tree, id, scale, true);
 
     // Deduplicate — paint_dirty_nodes may have duplicates
     let mut seen = HashSet::new();
@@ -200,12 +198,15 @@ pub fn compute_damage(
         // `z-index` moved — reorders what its subtree paints against the
         // boxes around it, wherever the subtree reaches (#1384). One compare
         // for a node whose order held.
-        let reordered = reorders_subtree(tree, node_id, node);
-        // Whether the subtree reaches past the box's own ink, so that the
-        // node's own clip chain cannot speak for the rects below: a
-        // descendant may escape a clipper the node does not (an absolute one,
-        // #550), and a reordered one is repainted wherever it is.
-        let mut unclipped = false;
+        let reordered = reorders_subtree(node);
+        // Whether the rects below are clipped as an absolute box at this
+        // node would be, instead of by the node's own chain: a reordered
+        // descendant that is absolute against a box above this one escapes
+        // the clippers in between (and stops escaping them when this box
+        // becomes a stacking context, whose entry's chain is pushed around
+        // everything under it — #549). Clippers above that containing block
+        // clip either way.
+        let mut escapes = false;
         if (moved_layer || reordered) && w > 0.0 && h > 0.0 {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
             if bounds == UNBOUNDED {
@@ -217,11 +218,16 @@ pub fn compute_damage(
                 right: bounds.x1 - (ax + w),
                 bottom: bounds.y1 - (ay + h),
             };
-            unclipped = reordered && reach.exceeds(ink);
+            if reordered && reach.exceeds(ink) {
+                let contains = node.establishes_abs_containing_block()
+                    && node.painted.as_ref().is_some_and(|p| p.contains_abs);
+                escapes = !contains
+                    && subtree_has_escaping_absolute(tree, node_id, &mut { ESCAPE_WALK_BUDGET });
+            }
             ink = ink.max(reach);
         }
-        let clip_now = |id: RawNodeId| if unclipped { None } else { clip_now(id) };
-        let clip_then = |id: RawNodeId| if unclipped { None } else { clip_then(id) };
+        let clip_now = |id: RawNodeId| clip_chain_bounds_from(tree, id, scale, false, escapes);
+        let clip_then = |id: RawNodeId| clip_chain_bounds_from(tree, id, scale, true, escapes);
 
         if w > 0.0
             && h > 0.0
@@ -376,30 +382,61 @@ pub fn compute_damage(
 }
 
 /// Whether `node`'s place in the paint order has changed since it was last
-/// painted in a way that reorders what its subtree paints against the boxes
-/// outside it (#1384) — so that the damage owes the subtree's whole reach,
-/// where it is and where it was painted, and not only the node's own rect.
+/// painted (#1384) — so that the damage owes the subtree's whole reach, where
+/// it is and where it was painted, and not only the node's own rect.
 ///
-/// `false` for a node never painted (nothing of its subtree is on screen
-/// under the old order), and for a positioned `z-index: auto` box that became
-/// a stacking context at `z` 0 or the reverse with nothing under it to trap
-/// or release: such a box's entry stays where it was, and so does everything
-/// under it that sorts at `0`.
-fn reorders_subtree(tree: &NodeTree, node_id: RawNodeId, node: &Node) -> bool {
-    let Some(painted) = node.painted.as_ref() else {
+/// Any difference in the [`PaintOrderKey`] counts. There is no cheaper answer
+/// for a box whose own entry stays put (a positioned `z-index: auto` box that
+/// becomes a `z` 0 context): see [`PaintOrderKey::context`].
+///
+/// `false` for a node never painted: nothing of its subtree is on screen
+/// under the old order.
+fn reorders_subtree(node: &Node) -> bool {
+    node.painted
+        .as_ref()
+        .is_some_and(|painted| painted.order != PaintOrderKey::of(node))
+}
+
+/// Whether something under `node_id` is an absolute box whose containing
+/// block is above `node_id` — one that escapes the clippers between the two,
+/// which `node_id`'s own clip chain therefore cannot speak for. `node_id`
+/// itself is not asked (the caller knows whether it is, or was, a containing
+/// block). `true` when the walk gives up.
+fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId, budget: &mut u32) -> bool {
+    let Some(node) = tree.get(node_id) else {
         return false;
     };
-    match painted.order.reorder(PaintOrderKey::of(node)) {
-        Reorder::None => false,
-        Reorder::Subtree => true,
-        Reorder::Descendants => {
-            // A transform that starts or stops applying also moves every
-            // descendant, hoisted or not.
-            painted.transform.is_some() != node.has_applied_transform()
-                || has_z_ordered_descendant(tree, node_id, &mut 4096)
+    for &child_id in &node.children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+        if matches!(child.computed_style.display, DisplayValue::None) {
+            continue;
+        }
+        if *budget == 0 {
+            return true;
+        }
+        *budget -= 1;
+        if matches!(
+            child.box_position(),
+            PositionValue::Absolute | PositionValue::Fixed
+        ) {
+            return true;
+        }
+        // Contained: absolutes below resolve against it and take its clips.
+        if child.establishes_abs_containing_block() {
+            continue;
+        }
+        if subtree_has_escaping_absolute(tree, child_id, budget) {
+            return true;
         }
     }
+    false
 }
+
+/// How many nodes [`subtree_has_escaping_absolute`] looks at before it
+/// answers `true` unseen.
+const ESCAPE_WALK_BUDGET: u32 = 4096;
 
 /// The screen rect every clipping ancestor of `node_id` confines its paint to
 /// — in the current frame, or as it was last painted — or `None` when nothing
@@ -446,12 +483,36 @@ pub(crate) fn clip_chain_bounds(
     clip_chain_bounds_counted(tree, node_id, scale, painted, &mut 0)
 }
 
+/// [`clip_chain_bounds`]; with `as_absolute`, the chain an absolute box at
+/// `node_id` would have: every clipper below the nearest containing block
+/// above `node_id` is skipped.
+fn clip_chain_bounds_from(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    painted: bool,
+    as_absolute: bool,
+) -> Option<Rect> {
+    clip_chain_walk(tree, node_id, scale, painted, as_absolute, &mut 0)
+}
+
 /// [`clip_chain_bounds`], adding to `steps` one per ancestor it walks.
 pub(crate) fn clip_chain_bounds_counted(
     tree: &NodeTree,
     node_id: RawNodeId,
     scale: f64,
     painted: bool,
+    steps: &mut u64,
+) -> Option<Rect> {
+    clip_chain_walk(tree, node_id, scale, painted, false, steps)
+}
+
+fn clip_chain_walk(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    painted: bool,
+    as_absolute: bool,
     steps: &mut u64,
 ) -> Option<Rect> {
     let frame = if painted {
@@ -469,7 +530,7 @@ pub(crate) fn clip_chain_bounds_counted(
     let node = tree.get(node_id)?;
     let mut position = style(node)?.position;
     // Skipping clippers until the containing block of an absolute box.
-    let mut escaping = false;
+    let mut escaping = as_absolute;
     let mut clip: Option<Rect> = None;
     let mut current = crate::RinchDocument::box_tree_parent(&tree.nodes, node_id);
     loop {

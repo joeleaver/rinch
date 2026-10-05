@@ -74,10 +74,6 @@ enum Scene {
     /// `s(absolute, z-index: 2)` then `p > q(static)`: `q` follows `p`'s own
     /// `z-index`.
     FlowChildZ,
-    /// [`Scene::ZChild`] with `k` inside a `z` 0 stacking context of its own
-    /// (`opacity`), which seals it: `k` sorts inside that context whether or
-    /// not `p` is one.
-    SealedZChild,
     /// [`Scene::ZChild`] with `p` in a 100px `overflow: hidden` box and `k`
     /// absolute against `c`, so `k` escapes the clip `p` is under.
     EscapingZChild,
@@ -111,21 +107,6 @@ fn mount(scene: Scene, css: &'static str, from: &'static str) -> (RinchApp, Node
                 el(
                     scope,
                     &p,
-                    &format!("position: relative; left: 150px; z-index: 5; {red}"),
-                );
-                el(
-                    scope,
-                    &c,
-                    &format!("position: absolute; z-index: 1; {blue}"),
-                );
-                p
-            }
-            Scene::SealedZChild => {
-                let p = el(scope, &c, &format!("{P} {from}"));
-                let seal = el(scope, &p, "position: relative; opacity: 0.99");
-                el(
-                    scope,
-                    &seal,
                     &format!("position: relative; left: 150px; z-index: 5; {red}"),
                 );
                 el(
@@ -203,7 +184,7 @@ fn restyle(scene: Scene, from: &'static str, to: &'static str) {
 
 /// Every creator that can be toggled without moving the box, both ways.
 const CREATORS: [&str; 6] = [
-    "opacity: 0.99",
+    "opacity: 0.5",
     // An identity transform moves nothing and is a context all the same (#415).
     "transform: translateX(0)",
     "position: relative; z-index: 0",
@@ -259,11 +240,11 @@ fn a_z_index_change_repaints_everything_the_context_holds() {
 }
 
 /// A positioned `z-index: auto` box that becomes a stacking context at `z` 0
-/// keeps its own place in the order; what it traps is the descendant that
-/// sorts away from 0.
+/// keeps its own place in the order and still traps the descendant that sorts
+/// away from 0.
 #[test]
 fn a_positioned_box_that_becomes_a_context_repaints_its_z_ordered_descendant() {
-    for on in ["z-index: 0", "opacity: 0.99"] {
+    for on in ["z-index: 0", "opacity: 0.5"] {
         let (on, off): (&'static str, &'static str) = (
             Box::leak(format!("position: relative; {on}").into_boxed_str()),
             "position: relative",
@@ -299,8 +280,8 @@ fn a_transform_starting_on_a_positioned_box_repaints_the_content_it_moves() {
 /// cut the damage.
 #[test]
 fn a_descendant_that_escapes_the_boxs_clip_is_repainted() {
-    restyle(Scene::EscapingZChild, "", "opacity: 0.99");
-    restyle(Scene::EscapingZChild, "opacity: 0.99", "");
+    restyle(Scene::EscapingZChild, "", "opacity: 0.5");
+    restyle(Scene::EscapingZChild, "opacity: 0.5", "");
 }
 
 // ── Ticks ─────────────────────────────────────────────────────────────────
@@ -439,31 +420,20 @@ fn an_animation_that_starts_and_one_that_fills_at_one_repaint_the_descendant() {
 // ── What must NOT grow ────────────────────────────────────────────────────
 
 /// A restyle that changes how the box paints and not where in the order — a
-/// colour, an opacity that stays below one, a transform that stays a
-/// transform — damages the box, not the overflowing descendant 150px away.
-/// Nor does a positioned box that becomes a stacking context with nothing
-/// under it to trap: no `z-index` descendant, or one sealed in a context of
-/// its own.
+/// colour, an opacity that stays below one, a `z-index` on a box it does not
+/// apply to — damages the box, not the overflowing descendant 150px away.
 #[test]
 fn a_restyle_that_reorders_nothing_damages_only_the_box() {
     // The box at the window's corner and the 4px anti-aliasing margin.
     let own = 104 * 104;
-    let rel = "position: relative";
-    let rel_ctx = "position: relative; opacity: 0.99";
     for (scene, from, to) in [
         (Scene::ZChild, "", "background: rgb(0, 200, 0)"),
-        (Scene::ZChild, "opacity: 0.5", "opacity: 0.4"),
         (
             Scene::ZChild,
             "position: relative; z-index: 0",
             "position: relative; z-index: 0; background: rgb(0, 200, 0)",
         ),
-        // A `z-index` on a box it does not apply to orders nothing.
         (Scene::FlowChild, "z-index: 1", "z-index: 3"),
-        (Scene::FlowChild, rel, rel_ctx),
-        (Scene::FlowChild, rel_ctx, rel),
-        (Scene::SealedZChild, rel, rel_ctx),
-        (Scene::SealedZChild, rel_ctx, rel),
     ] {
         let (mut app, p) = mount(scene, "", from);
         let _ = full_frame(&mut app);

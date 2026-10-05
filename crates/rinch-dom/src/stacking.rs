@@ -334,7 +334,13 @@ pub struct PaintOrderKey {
     /// nothing).
     pub z: i32,
     /// [`Node::creates_stacking_context`]: whether its descendants' entries
-    /// are collected here rather than hoisted past it.
+    /// are collected here rather than hoisted past it. A change of this
+    /// alone — a positioned `z-index: auto` box that becomes a context at
+    /// `z` 0 — leaves the box's own entry where it was and still reaches its
+    /// whole subtree: descendants that sort away from 0 are trapped or
+    /// released, group opacity starts or stops compositing everything under
+    /// it, and the clip chain pushed around a context's entry starts or stops
+    /// applying to descendants that otherwise escape it (#549).
     pub context: bool,
 }
 
@@ -351,69 +357,6 @@ impl PaintOrderKey {
             context,
         }
     }
-}
-
-/// What a change from one [`PaintOrderKey`] to another reorders.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reorder {
-    /// Nothing: same place, same scope.
-    None,
-    /// The box's own entry moved — it became or stopped being a layer, or its
-    /// `z-index` changed — and everything painted with it moved along.
-    Subtree,
-    /// The entry stayed where it was (a positioned `z-index: auto` box that
-    /// became a stacking context at `z` 0, or the reverse); only descendants
-    /// that sort away from `0` are trapped or released
-    /// ([`has_z_ordered_descendant`]).
-    Descendants,
-}
-
-impl PaintOrderKey {
-    /// What changed between `self` (as painted) and `now`.
-    pub fn reorder(self, now: Self) -> Reorder {
-        if self.layered != now.layered || self.z != now.z {
-            Reorder::Subtree
-        } else if self.context != now.context {
-            Reorder::Descendants
-        } else {
-            Reorder::None
-        }
-    }
-}
-
-/// Whether anything under `node_id` would be hoisted past it to a `z-index`
-/// other than `0` if it were not a stacking context: a stacking-context
-/// descendant with such a `z-index`, not sealed inside another stacking
-/// context on the way. Those are the only boxes whose order against the
-/// outside changes when a positioned box starts or stops being a stacking
-/// context without its own entry moving: `z-index: auto` layers and `z` 0
-/// contexts sort in tree order right behind it either way.
-///
-/// `true` when the walk gives up (more than `budget` nodes).
-pub fn has_z_ordered_descendant(tree: &NodeTree, node_id: RawNodeId, budget: &mut u32) -> bool {
-    let Some(node) = tree.get(node_id) else {
-        return false;
-    };
-    for &child_id in &node.children {
-        let Some(child) = tree.get(child_id) else {
-            continue;
-        };
-        if *budget == 0 {
-            return true;
-        }
-        *budget -= 1;
-        if child.creates_stacking_context() {
-            if child.computed_style.z_index.unwrap_or(0) != 0 {
-                return true;
-            }
-            // Sealed: what is inside sorts inside.
-            continue;
-        }
-        if has_z_ordered_descendant(tree, child_id, budget) {
-            return true;
-        }
-    }
-    false
 }
 
 /// The children of the stacking-context root `node_id`, back to front.
