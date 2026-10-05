@@ -753,8 +753,8 @@ fn the_hit_test_follows_a_contents_flip_of_a_positioned_wrapper() {
 
 /// **An absolute box under a static scroller is drawn, hit and damaged in its
 /// containing block — and does not ride the scroller.** `outer` (positioned)
-/// > a static 200x100 `overflow: auto` scroller at (20, 20) holding 500px of
-/// content > the box at `left: 300px; top: 200px`. Its containing block is
+/// holds a static 200x100 `overflow: auto` scroller with 500px of content,
+/// which holds the box at `left: 300px; top: 200px`. Its containing block is
 /// `outer` (padded by 10px, which keeps the scroller's margin from collapsing
 /// through it and moves no absolute box), so it sits at (300, 200) on screen
 /// — not (330, 230), 300/200 from the scroller it is written in — outside the
