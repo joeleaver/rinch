@@ -93,6 +93,68 @@ fn a_captured_handle_comes_back_when_the_branch_is_shown_again() {
     );
 }
 
+/// A captured handle nested **inside** branch-built markup — `if open { div {
+/// {panel} } }` — must also come back on `rinch-web` (issue #732). Before the
+/// fix, discarding the wrapper was recursive and reached straight through to
+/// `panel`, releasing it from `rinch-web`'s node maps along with the wrapper:
+/// silent subtree loss, where on the mock/desktop the node merely went inert
+/// forever (#723). This is the browser twin of
+/// `rinch_core::reinsertion_tests::show_dom_can_re_show_a_captured_handle_nested_inside_fresh_markup`.
+#[wasm_bindgen_test]
+fn a_captured_handle_nested_inside_branch_built_markup_comes_back() {
+    let (doc, host) = doc();
+    let mut scope = scope_for(&doc);
+    let body = doc.borrow().body();
+    let body_handle = NodeHandle::new(body, Rc::downgrade(&doc) as _);
+
+    let panel = scope.create_element("section");
+    let text = scope.create_text("PANEL");
+    panel.append_child(&text);
+
+    let visible = Signal::new(true);
+    let captured = panel.clone();
+    show_dom(
+        &mut scope,
+        &body_handle,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            // The wrapper is the branch's own markup; `panel` is captured.
+            let wrap = s.create_element("div");
+            wrap.append_child(&captured);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    assert!(
+        host.text_content().unwrap_or_default().contains("PANEL"),
+        "precondition: the branch is shown on the first pass"
+    );
+
+    visible.set(false);
+    assert!(
+        !host.text_content().unwrap_or_default().contains("PANEL"),
+        "precondition: hiding the branch takes the wrapper (and the panel) out \
+         of the page"
+    );
+
+    visible.set(true);
+    assert!(
+        host.text_content().unwrap_or_default().contains("PANEL"),
+        "#732: re-showing must rebuild a fresh wrapper around the SAME \
+         captured panel, not a silently empty one; page text was {:?}",
+        host.text_content().unwrap_or_default()
+    );
+
+    // Twice, so the fixture is not sitting on a single toggle.
+    visible.set(false);
+    visible.set(true);
+    assert!(
+        host.text_content().unwrap_or_default().contains("PANEL"),
+        "#732: and on every later toggle"
+    );
+}
+
 /// The mechanism underneath, with no reactive helper in the way: `remove_node`
 /// then `append_child` of the same id.
 #[wasm_bindgen_test]

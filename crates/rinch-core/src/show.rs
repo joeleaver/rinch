@@ -101,6 +101,12 @@ where
 
     let parent_id = parent.node_id();
 
+    // Every content scope this call builds — now, or from the effect much
+    // later — names the scope `show_dom` was called from as its parent, so
+    // what it builds belongs to that render (issue #732). Captured once: by
+    // the time the effect re-runs, nothing of that render is on the stack.
+    let creator_scope_id = scope.id();
+
     // Store render functions as Rc for sharing with Effect
     let then_fn = Rc::new(then_fn);
     let else_fn = else_fn.map(Rc::new);
@@ -124,9 +130,10 @@ where
         render_fn: &dyn Fn(&mut RenderScope) -> NodeHandle,
         current_content: &Rc<RefCell<Vec<NodeHandle>>>,
         current_scope: &Rc<RefCell<Option<RenderScope>>>,
+        creator_scope_id: crate::dom::ScopeId,
     ) {
         if let Some(doc) = doc_weak.upgrade() {
-            let mut child_scope = RenderScope::new(doc, parent_id);
+            let mut child_scope = RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
             // Resources the branch creates belong to the branch's own scope, so
             // flipping the condition takes them with it (issue #141). Covers
             // both entry paths — initial render and the effect-driven swap.
@@ -151,6 +158,7 @@ where
                 then_fn.as_ref(),
                 &current_content,
                 &current_scope,
+                creator_scope_id,
             );
         } else if let Some(ref else_fn) = else_fn {
             insert_content_after_marker(
@@ -160,6 +168,7 @@ where
                 else_fn.as_ref(),
                 &current_content,
                 &current_scope,
+                creator_scope_id,
             );
         }
     }
@@ -204,7 +213,12 @@ where
             //
             // Read before the dispose below, not after: `dispose` runs user
             // code, and the ownership answer must be the one that was true when
-            // the branch rendered.
+            // the branch rendered. A content root the branch built may itself
+            // hold a *captured* handle nested further in (issue #732); that
+            // has to be found while `old_scope` is still alive too, since
+            // discarding is recursive and the capture must come out of the
+            // tree before the discard reaches it.
+            let mut captured: Vec<NodeHandle> = Vec::new();
             let doomed: Vec<(NodeHandle, bool)> = current_content_clone
                 .borrow_mut()
                 .drain(..)
@@ -212,6 +226,9 @@ where
                     let owned = old_scope
                         .as_ref()
                         .is_some_and(|s| s.created(node.node_id()));
+                    if owned && let Some(s) = old_scope.as_ref() {
+                        crate::dom::sweep_for_discard(&node, Some(s.id()), &mut captured);
+                    }
                     (node, owned)
                 })
                 .collect();
@@ -222,12 +239,18 @@ where
                 old_scope.dispose();
             }
 
+            // Detach every captured descendant before any discard below can
+            // reach it (issue #732).
+            for node in captured {
+                node.remove();
+            }
+
             // Removal of either kind cancels the subtree's transitions and
             // animations in the document implementation (#699); stamping inline
             // `transition: none` here disarmed it permanently (#704).
             for (node, owned) in doomed {
                 if owned {
-                    node.discard();
+                    node.discard_swept();
                 } else {
                     node.remove();
                 }
@@ -246,6 +269,7 @@ where
                         then_fn_clone.as_ref(),
                         &current_content_clone,
                         &current_scope_clone,
+                        creator_scope_id,
                     );
                 });
             } else if let Some(ref else_fn) = else_fn_clone {
@@ -257,6 +281,7 @@ where
                         else_fn.as_ref(),
                         &current_content_clone,
                         &current_scope_clone,
+                        creator_scope_id,
                     );
                 });
             }

@@ -876,6 +876,68 @@ pub fn op_memo_selection(f: ShellFixture<Signal<usize>>) -> ShellFixture<Signal<
     f
 }
 
+/// Rows in the branch [`setup_branch_hide`] builds.
+pub const BRANCH_ROWS: usize = 1_000;
+
+/// An `if` branch holding a keyed `for` of [`BRANCH_ROWS`] rows (each
+/// `div > text`) and a captured handle nested in the branch's own markup, shown
+/// and painted. The state is the branch's condition.
+pub fn setup_branch_hide() -> ShellFixture<Signal<bool>> {
+    let open: Rc<RefCell<Option<Signal<bool>>>> = Rc::new(RefCell::new(None));
+    let open2 = open.clone();
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = style_element(
+            scope,
+            "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; }",
+        );
+        root.append_child(&style);
+        let panel = scope.create_element("aside");
+        panel.append_child(&scope.create_text("captured"));
+        let visible = Signal::new(true);
+        *open2.borrow_mut() = Some(visible);
+        rinch_core::show_dom(
+            scope,
+            &root,
+            move || visible.get(),
+            move |s: &mut RenderScope| {
+                let wrap = s.create_element("section");
+                wrap.append_child(&panel);
+                let list = s.create_element("div");
+                wrap.append_child(&list);
+                rinch_core::for_each_dom_typed(
+                    s,
+                    &list,
+                    || (0..BRANCH_ROWS as u32).collect::<Vec<_>>(),
+                    |i: &u32| i.to_string(),
+                    |i: u32, rs: &mut RenderScope| {
+                        let row = rs.create_element("div");
+                        row.append_child(&rs.create_text(&format!("row {i}")));
+                        row
+                    },
+                );
+                wrap
+            },
+            None::<fn(&mut RenderScope) -> NodeHandle>,
+        );
+        root
+    });
+    let open = open.borrow().expect("mounted");
+    // Warm the hide and the show once, then paint the shown branch.
+    open.set(false);
+    open.set(true);
+    frame(&mut app);
+    ShellFixture { app, state: open }
+}
+
+/// Hide the branch: dispose its scopes, detach the captured handle, discard
+/// the rest (issue #732's walk), then lay out and repaint.
+pub fn op_branch_hide(mut f: ShellFixture<Signal<bool>>) -> ShellFixture<Signal<bool>> {
+    f.state.set(false);
+    frame(&mut f.app);
+    f
+}
+
 // ── rinch-editor-collab: a keystroke in a large collaborating document ─────
 
 /// Paragraphs in the collaborating document.

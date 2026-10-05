@@ -61,6 +61,10 @@ where
     let doc_weak = scope.doc_weak();
     let branches = Rc::new(branches);
 
+    // Every arm scope names the scope `match_dom` was called from as its
+    // parent (issue #732) — see the matching note in `show_dom`.
+    let creator_scope_id = scope.id();
+
     // Track current state
     let current_index: Rc<RefCell<usize>> = Rc::new(RefCell::new(usize::MAX)); // sentinel
     let current_content: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
@@ -76,9 +80,10 @@ where
         branch_fn: &dyn Fn(&mut RenderScope) -> NodeHandle,
         current_content: &Rc<RefCell<Vec<NodeHandle>>>,
         current_scope: &Rc<RefCell<Option<RenderScope>>>,
+        creator_scope_id: crate::dom::ScopeId,
     ) {
         if let Some(doc) = doc_weak.upgrade() {
-            let mut child_scope = RenderScope::new(doc, parent_id);
+            let mut child_scope = RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
             // Attribute the branch's resources to the branch's own scope
             // (issue #141). Covers the initial render and the arm swap alike.
             let content = {
@@ -102,6 +107,7 @@ where
             branches[initial_idx].as_ref(),
             &current_content,
             &current_scope,
+            creator_scope_id,
         );
     }
 
@@ -130,7 +136,10 @@ where
             // #719): an arm's own markup is `discard`ed so the backend can let
             // go of it, a *captured* `NodeHandle` the arm merely returned is
             // detached so switching back puts the same subtree in place. Read
-            // before the dispose — see the matching note in `show_dom`.
+            // before the dispose — see the matching note in `show_dom`. A
+            // *nested* captured handle (issue #732) must be found the same
+            // way, while `old_scope` can still answer `created`.
+            let mut captured: Vec<NodeHandle> = Vec::new();
             let doomed: Vec<(NodeHandle, bool)> = content_clone
                 .borrow_mut()
                 .drain(..)
@@ -138,6 +147,9 @@ where
                     let owned = old_scope
                         .as_ref()
                         .is_some_and(|s| s.created(node.node_id()));
+                    if owned && let Some(s) = old_scope.as_ref() {
+                        crate::dom::sweep_for_discard(&node, Some(s.id()), &mut captured);
+                    }
                     (node, owned)
                 })
                 .collect();
@@ -146,12 +158,18 @@ where
                 old_scope.dispose();
             }
 
+            // Detach every captured descendant before any discard below can
+            // reach it (issue #732).
+            for node in captured {
+                node.remove();
+            }
+
             // Removal of either kind cancels the subtree's transitions and
             // animations in the document implementation (#699); stamping inline
             // `transition: none` here disarmed it permanently (#704).
             for (node, owned) in doomed {
                 if owned {
-                    node.discard();
+                    node.discard_swept();
                 } else {
                     node.remove();
                 }
@@ -168,6 +186,7 @@ where
                         branches_clone[new_idx].as_ref(),
                         &content_clone,
                         &scope_clone,
+                        creator_scope_id,
                     );
                 });
             }
