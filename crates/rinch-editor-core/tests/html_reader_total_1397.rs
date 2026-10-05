@@ -96,7 +96,6 @@ const INLINE_TAGS: &[&str] = &[
     "w:sdt id=\"1\"",
     "my-widget data-x='a>b'",
     "google-sheets-html-origin",
-    "math",
     "time",
     "q",
 ];
