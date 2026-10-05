@@ -1389,3 +1389,111 @@ fn review_1143_a_striped_progress_in_a_closed_drawer_idles() {
         }
     }
 }
+
+// ── Viewports with a frame, idle (#349) ────────────────────────────────────
+
+/// Three `GameViewport`s, each with a frame on screen, and nothing happening:
+/// every turn hands paint the same frame and hole sets (`paint_software`
+/// installs them on every redraw), and comparing them with the last paint's
+/// marks nothing, schedules nothing and repaints nothing. This is the only
+/// scenario with a viewport in it, so it is what pins #349's comparison as
+/// free on an ordinary frame. Positive control: one fresh frame repaints
+/// exactly its own 200x100 box.
+#[cfg(feature = "desktop")]
+#[test]
+fn idle_viewports_repaint_nothing() {
+    use crate::render_surface::{
+        collect_viewport_frames_by_name, create_render_surface_with_name, unregister_render_surface,
+    };
+    const NAMES: [&str; 3] = ["perf-349-a", "perf-349-b", "perf-349-c"];
+    fn frame(app: &mut RinchApp) -> FrameStats {
+        app.install_viewport_frames(collect_viewport_frames_by_name());
+        let stats = paint(app);
+        RinchApp::clear_viewport_frames();
+        stats
+    }
+
+    let mut app = mount_settled(|scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        for name in NAMES {
+            let card = scope.create_element("div");
+            card.set_attribute(
+                "style",
+                "width: 200px; height: 100px; overflow: hidden; \
+                 background-color: rgb(255, 200, 0);",
+            );
+            let viewport = scope.create_element("div");
+            viewport.set_attribute("style", "width: 100%; height: 100%;");
+            viewport.set_attribute("data-viewport", name);
+            card.append_child(&viewport);
+            root.append_child(&card);
+        }
+        root
+    });
+    let surfaces: Vec<_> = NAMES
+        .iter()
+        .map(|n| create_render_surface_with_name(n))
+        .collect();
+    let solid = |rgb: [u8; 3]| [rgb[0], rgb[1], rgb[2], 255].repeat(40 * 20);
+    for s in &surfaces {
+        s.writer().submit_frame(&solid([255, 0, 255]), 40, 20);
+    }
+    frame(&mut app);
+    app.reset_perf();
+
+    let mut total = FrameStats::default();
+    for turn in 0..IDLE_TURNS {
+        assert!(!about_to_wait(&mut app), "turn {turn} asks for no frame");
+        let frames = collect_viewport_frames_by_name();
+        assert_eq!(frames.frames.len(), 3, "positive control: three frames");
+        assert_eq!(frames.holes.len(), 3, "and three holes");
+        app.install_viewport_frames(frames);
+        assert!(
+            !app.scene_dirty,
+            "turn {turn}: installing an unchanged set schedules no paint"
+        );
+        assert!(
+            app.doc
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .tree
+                .paint_dirty_nodes
+                .is_empty(),
+            "turn {turn}: and marks no node"
+        );
+        total.accumulate(&paint(&mut app));
+        RinchApp::clear_viewport_frames();
+    }
+    expect_frame(
+        "three viewports with frames, idle redraws",
+        &total,
+        &[(PaintCachedFrames, IDLE_TURNS as u64)],
+    );
+
+    surfaces[1]
+        .writer()
+        .submit_frame(&solid([0, 0, 255]), 40, 20);
+    let fresh = frame(&mut app);
+    assert_eq!(fresh.get(RepaintedPx), 200 * 100, "positive control");
+    expect_frame(
+        "one viewport's fresh frame",
+        &fresh,
+        &[
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 20000),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 4),
+            (StackingOrderBuilds, 1),
+            (ClipMasks, 1),
+            (ClipMaskPx, 21008),
+            (OpaqueImageCopies, 1),
+        ],
+    );
+
+    for s in surfaces {
+        unregister_render_surface(s.id());
+    }
+}
