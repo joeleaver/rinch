@@ -320,6 +320,45 @@ pub fn paints_at_stacking_root(node: &Node) -> bool {
     node.creates_stacking_context() || is_positioned_z_auto(node)
 }
 
+/// Where a box sits in the paint order, as far as its own style decides it —
+/// what [`crate::node::PaintedState`] remembers so that the damage can tell a
+/// restyle or a tick that **reorders** the box's subtree against the boxes
+/// around it from one that only changes how it looks (#1384).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaintOrderKey {
+    /// [`paints_at_stacking_root`]: an entry of an ancestor's sequence, not
+    /// part of its parent's tree-order run.
+    pub layered: bool,
+    /// The `z-index` that entry sorts by: the box's own when it is a
+    /// stacking context, `0` otherwise (a `z-index` on anything else does
+    /// nothing).
+    pub z: i32,
+    /// [`Node::creates_stacking_context`]: whether its descendants' entries
+    /// are collected here rather than hoisted past it. A change of this
+    /// alone — a positioned `z-index: auto` box that becomes a context at
+    /// `z` 0 — leaves the box's own entry where it was and still reaches its
+    /// whole subtree: descendants that sort away from 0 are trapped or
+    /// released, group opacity starts or stops compositing everything under
+    /// it, and the clip chain pushed around a context's entry starts or stops
+    /// applying to descendants that otherwise escape it (#549).
+    pub context: bool,
+}
+
+impl PaintOrderKey {
+    pub fn of(node: &Node) -> Self {
+        let context = node.creates_stacking_context();
+        Self {
+            layered: context || is_positioned_z_auto(node),
+            z: if context {
+                node.computed_style.z_index.unwrap_or(0)
+            } else {
+                0
+            },
+            context,
+        }
+    }
+}
+
 /// The children of the stacking-context root `node_id`, back to front.
 ///
 /// `offset_x`/`offset_y` is the root's own scroll-adjusted content origin — the
