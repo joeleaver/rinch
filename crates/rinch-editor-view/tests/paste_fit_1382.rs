@@ -399,13 +399,15 @@ fn a_paste_of_ragged_bare_table_parts_reaches_the_peer() {
         .unwrap();
     let guest = create_editor();
     guest.start_collaboration_guest(&snap, |_| {}).unwrap();
-    assert!(host.paste(&PasteContent {
-        html: Some(
-            "<td>A</td><td>B</td><tr><td>C</td></tr><tr><td>D</td><td>E</td><td>F</td></tr>"
-                .to_string()
-        ),
-        text: Some("plain".to_string()),
-    }));
+    assert!(
+        host.paste(&PasteContent {
+            html: Some(
+                "<td>A</td><td>B</td><tr><td>C</td></tr><tr><td>D</td><td>E</td><td>F</td></tr>"
+                    .to_string()
+            ),
+            text: Some("plain".to_string()),
+        })
+    );
     assert!(host.collab_outbound_stall().is_none());
     assert!(host.collab_take_error().is_none());
     for delta in to_guest.borrow_mut().drain(..) {
