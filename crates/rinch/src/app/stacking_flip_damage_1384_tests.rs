@@ -74,6 +74,13 @@ enum Scene {
     /// `s(absolute, z-index: 2)` then `p > q(static)`: `q` follows `p`'s own
     /// `z-index`.
     FlowChildZ,
+    /// [`Scene::ZChild`] with `k` inside a `z` 0 stacking context of its own
+    /// (`opacity`), which seals it: `k` sorts inside that context whether or
+    /// not `p` is one.
+    SealedZChild,
+    /// [`Scene::ZChild`] with `p` in a 100px `overflow: hidden` box and `k`
+    /// absolute against `c`, so `k` escapes the clip `p` is under.
+    EscapingZChild,
 }
 
 const P: &str = "width: 100px; height: 100px;";
@@ -105,6 +112,36 @@ fn mount(scene: Scene, css: &'static str, from: &'static str) -> (RinchApp, Node
                     scope,
                     &p,
                     &format!("position: relative; left: 150px; z-index: 5; {red}"),
+                );
+                el(
+                    scope,
+                    &c,
+                    &format!("position: absolute; z-index: 1; {blue}"),
+                );
+                p
+            }
+            Scene::SealedZChild => {
+                let p = el(scope, &c, &format!("{P} {from}"));
+                let seal = el(scope, &p, "position: relative; opacity: 0.99");
+                el(
+                    scope,
+                    &seal,
+                    &format!("position: relative; left: 150px; z-index: 5; {red}"),
+                );
+                el(
+                    scope,
+                    &c,
+                    &format!("position: absolute; z-index: 1; {blue}"),
+                );
+                p
+            }
+            Scene::EscapingZChild => {
+                let clipper = el(scope, &c, "width: 100px; height: 100px; overflow: hidden");
+                let p = el(scope, &clipper, &format!("{P} {from}"));
+                el(
+                    scope,
+                    &p,
+                    &format!("position: absolute; left: 150px; top: 0; z-index: 5; {red}"),
                 );
                 el(
                     scope,
@@ -217,6 +254,51 @@ fn a_z_index_change_repaints_everything_the_context_holds() {
         "position: relative; z-index: 3",
         "position: relative; z-index: 1",
     );
+}
+
+/// A positioned `z-index: auto` box that becomes a stacking context at `z` 0
+/// keeps its own place in the order; what it traps is the descendant that
+/// sorts away from 0.
+#[test]
+fn a_positioned_box_that_becomes_a_context_repaints_its_z_ordered_descendant() {
+    for on in ["z-index: 0", "opacity: 0.99"] {
+        let (on, off): (&'static str, &'static str) = (
+            Box::leak(format!("position: relative; {on}").into_boxed_str()),
+            "position: relative",
+        );
+        restyle(Scene::ZChild, off, on);
+        restyle(Scene::ZChild, on, off);
+    }
+}
+
+/// A transform that starts or stops applying on such a box also moves what
+/// is under it, hoisted or not.
+#[test]
+fn a_transform_starting_on_a_positioned_box_repaints_the_content_it_moves() {
+    let (off, on) = (
+        "position: relative",
+        "position: relative; transform: translateY(20px)",
+    );
+    for (from, to) in [(off, on), (on, off)] {
+        let (mut app, p) = mount(Scene::FlowChild, "", from);
+        let before = full_frame(&mut app);
+        p.set_attribute("style", &format!("{P} {to}"));
+        resolve(&mut app);
+        let (inc, stats) = incremental_frame(&mut app);
+        let full = full_frame(&mut app);
+        assert!(diff_in(&before, &full, (150, 0, 250, 120)) > 3000);
+        assert_eq!(stats.get(Counter::RepaintFull), 0, "{stats:?}");
+        assert_eq!(diff_in(&inc, &full, ALL), 0, "[{from:?} -> {to:?}] stale");
+    }
+}
+
+/// The descendant escapes a clip the flipping box is under (it is absolute
+/// against a box above the clipper), so the box's own clip chain must not
+/// cut the damage.
+#[test]
+fn a_descendant_that_escapes_the_boxs_clip_is_repainted() {
+    restyle(Scene::EscapingZChild, "", "opacity: 0.99");
+    restyle(Scene::EscapingZChild, "opacity: 0.99", "");
 }
 
 // ── Ticks ─────────────────────────────────────────────────────────────────
@@ -343,35 +425,39 @@ fn an_animation_that_starts_and_one_that_fills_at_one_repaint_the_descendant() {
 
 // ── What must NOT grow ────────────────────────────────────────────────────
 
-/// The damage of the frame `step` leads to, in px.
-fn damaged_px(app: &mut RinchApp, step: impl FnOnce(&mut RinchApp)) -> u64 {
-    let _ = full_frame(app);
-    step(app);
-    let (_, stats) = incremental_frame(app);
-    assert_eq!(stats.get(Counter::RepaintFull), 0, "{stats:?}");
-    stats.get(Counter::RepaintedPx)
-}
-
 /// A restyle that changes how the box paints and not where in the order — a
 /// colour, an opacity that stays below one, a transform that stays a
 /// transform — damages the box, not the overflowing descendant 150px away.
+/// Nor does a positioned box that becomes a stacking context with nothing
+/// under it to trap: no `z-index` descendant, or one sealed in a context of
+/// its own.
 #[test]
-fn a_restyle_that_keeps_the_paint_order_damages_only_the_box() {
+fn a_restyle_that_reorders_nothing_damages_only_the_box() {
     // The box at the window's corner and the 4px anti-aliasing margin.
     let own = 104 * 104;
-    for (from, to) in [
-        ("", "background: rgb(0, 200, 0)"),
-        ("opacity: 0.5", "opacity: 0.4"),
+    let rel = "position: relative";
+    let rel_ctx = "position: relative; opacity: 0.99";
+    for (scene, from, to) in [
+        (Scene::ZChild, "", "background: rgb(0, 200, 0)"),
+        (Scene::ZChild, "opacity: 0.5", "opacity: 0.4"),
         (
+            Scene::ZChild,
             "position: relative; z-index: 0",
             "position: relative; z-index: 0; background: rgb(0, 200, 0)",
         ),
+        (Scene::FlowChild, rel, rel_ctx),
+        (Scene::FlowChild, rel_ctx, rel),
+        (Scene::SealedZChild, rel, rel_ctx),
+        (Scene::SealedZChild, rel_ctx, rel),
     ] {
-        let (mut app, p) = mount(Scene::ZChild, "", from);
-        let px = damaged_px(&mut app, |app| {
-            p.set_attribute("style", &format!("{P} {to}"));
-            resolve(app);
-        });
-        assert_eq!(px, own, "[{from:?} -> {to:?}]");
+        let (mut app, p) = mount(scene, "", from);
+        let _ = full_frame(&mut app);
+        p.set_attribute("style", &format!("{P} {to}"));
+        resolve(&mut app);
+        let (inc, stats) = incremental_frame(&mut app);
+        let full = full_frame(&mut app);
+        assert_eq!(stats.get(Counter::RepaintFull), 0, "{stats:?}");
+        assert_eq!(stats.get(Counter::RepaintedPx), own, "[{from:?} -> {to:?}]");
+        assert_eq!(diff_in(&inc, &full, ALL), 0, "[{from:?} -> {to:?}] stale");
     }
 }

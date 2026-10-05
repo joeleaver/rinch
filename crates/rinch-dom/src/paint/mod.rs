@@ -279,10 +279,8 @@ pub fn compute_damage(
         // now and, when it has been painted before, the same subtree where it
         // was then: children that did not move relative to it are not dirty
         // themselves and would otherwise be left behind.
-        // A reordered box-less inline (`opacity` on a span) is in the same
-        // position: its positioned descendants are hoisted out of the line.
         if (w <= 0.0 || h <= 0.0)
-            && (node.ifc_root.is_none() || reordered)
+            && node.ifc_root.is_none()
             && !node.children.is_empty()
             && !matches!(node.computed_style.display, DisplayValue::None)
         {
