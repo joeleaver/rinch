@@ -39,6 +39,7 @@
 
 use crate::model::{Fragment, Mark, Node, NodeType, Slice};
 use crate::pos::{Pos, ResolvedPos};
+use crate::schema::content_match::MatchState;
 use crate::transform::step::Step;
 use crate::transform::steps::{ReplaceAroundStep, ReplaceStep};
 
@@ -50,36 +51,66 @@ pub(crate) struct Fit {
     pub end: usize,
 }
 
-/// One open node around the insertion point: its type, and the names of the
-/// children it has so far (which is what the content expression is asked).
+thread_local! {
+    /// Content-match steps taken by fits on this thread: the fitter's unit of
+    /// work, counted so that a test can hold its growth to the size of the
+    /// content without reading a clock.
+    static MATCH_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of content-match steps fits have taken on this thread. For
+/// tests: a fit's cost is linear in what it places, and this is what says so.
+#[doc(hidden)]
+pub fn match_steps() -> u64 {
+    MATCH_STEPS.with(std::cell::Cell::get)
+}
+
+/// One open node around the insertion point: its type, and how far the
+/// children it has so far have got through its content expression. The state
+/// is stepped once per child: asking the expression about the whole child
+/// list for every node placed made a paste of n blocks cost n².
 struct Frame {
     typ: NodeType,
-    names: Vec<Box<str>>,
+    state: MatchState,
 }
 
 impl Frame {
+    /// A frame of `typ` that already holds `children`.
+    fn holding(typ: &NodeType, children: &[Node]) -> Frame {
+        let mut frame = Frame {
+            typ: typ.clone(),
+            state: typ.content_match().start(),
+        };
+        for child in children {
+            frame.push(child.type_name());
+        }
+        frame
+    }
+
+    fn step(&self, state: &MatchState, name: &str) -> MatchState {
+        MATCH_STEPS.with(|c| c.set(c.get() + 1));
+        self.typ.content_match().advance(state, name)
+    }
+
     /// Whether a `name` child may come next.
     fn takes(&self, name: &str) -> bool {
-        let mut names: Vec<&str> = self.names.iter().map(|n| &**n).collect();
-        names.push(name);
-        self.typ.content_match().matches_prefix(&names)
+        !self.step(&self.state, name).is_dead()
+    }
+
+    /// Record a `name` child.
+    fn push(&mut self, name: &str) {
+        self.state = self.step(&self.state, name);
     }
 
     /// Whether the children so far, followed by `rest`, are a whole valid
     /// content.
     fn complete_with(&self, rest: &[Node]) -> bool {
-        let names: Vec<&str> = self
-            .names
-            .iter()
-            .map(|n| &**n)
-            .chain(rest.iter().map(Node::type_name))
-            .collect();
-        self.typ.content_match().matches(&names)
+        let mut state = self.state.clone();
+        for node in rest {
+            state = self.step(&state, node.type_name());
+        }
+        self.typ.content_match().accepts_end(&state)
     }
-}
-
-fn names_of(nodes: &[Node]) -> Vec<Box<str>> {
-    nodes.iter().map(|n| Box::from(n.type_name())).collect()
 }
 
 /// The marks of `marks` that `typ` allows on its content.
@@ -226,10 +257,10 @@ impl<'a> Fitter<'a> {
         for d in 0..=from.depth() {
             let node = from.node(d);
             let upto = from.index_after(d).min(node.child_count());
-            frontier.push(Frame {
-                typ: node.node_type().clone(),
-                names: names_of(&node.content().children()[..upto]),
-            });
+            frontier.push(Frame::holding(
+                node.node_type(),
+                &node.content().children()[..upto],
+            ));
             if d > 0 && node.node_type().is_isolating() {
                 floor = d;
             }
@@ -450,9 +481,7 @@ impl<'a> Fitter<'a> {
                 if taken == 1 && !start_closes(next, open_start) {
                     return None;
                 }
-                self.frontier[frontier_depth]
-                    .names
-                    .push(Box::from(next.type_name()));
+                self.frontier[frontier_depth].push(next.type_name());
                 let marks = allowed_marks(&typ, next.marks());
                 add.push(if marks.len() == next.marks().len() {
                     next.clone()
@@ -484,10 +513,8 @@ impl<'a> Fitter<'a> {
             let mut cur = fragment.clone();
             for _ in 0..open_end_count.max(0) {
                 let node = cur.child(cur.child_count() - 1).clone();
-                self.frontier.push(Frame {
-                    typ: node.node_type().clone(),
-                    names: names_of(node.content().children()),
-                });
+                self.frontier
+                    .push(Frame::holding(node.node_type(), node.content().children()));
                 cur = node.content().clone();
             }
         }
@@ -581,12 +608,9 @@ impl<'a> Fitter<'a> {
             let node = to.node(d);
             let empty = node.copy_with_content(Fragment::empty());
             let at = self.depth();
-            self.frontier[at].names.push(Box::from(node.type_name()));
+            self.frontier[at].push(node.type_name());
             self.placed = add_to_fragment(&self.placed, at, &Fragment::from_node(empty));
-            self.frontier.push(Frame {
-                typ: node.node_type().clone(),
-                names: Vec::new(),
-            });
+            self.frontier.push(Frame::holding(node.node_type(), &[]));
         }
         Some(to)
     }

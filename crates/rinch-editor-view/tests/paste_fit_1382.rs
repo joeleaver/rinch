@@ -381,3 +381,94 @@ fn a_fitted_paste_reaches_the_peer() {
         "a task list is outside the collaboration scope"
     );
 }
+
+/// Over a cell selection the selected cells are cleared and the content goes
+/// into the top-left one: the grid is never touched, and it is one undo step.
+#[test]
+fn a_paste_over_a_cell_selection_goes_into_its_top_left_cell() {
+    let table = |a: &str, b: &str, d: &str, e: &str| {
+        format!(
+            "<table><tr><td>{a}</td><td>{b}</td><td><p>c</p></td></tr>\
+             <tr><td>{d}</td><td>{e}</td><td><p>f</p></td></tr></table><p>z</p>"
+        )
+    };
+    let start = table("<p>a</p>", "<p>b</p>", "<p>d</p>", "<p>e</p>");
+    let over = |anchor: usize, head: usize, html: &str| {
+        let dst = create_editor();
+        dst.load_html(&start);
+        dst.set_selection(Selection::cell(Pos(anchor), Pos(head)));
+        assert!(dst.replace_selection_with_html(html));
+        let out = node_to_html(&dst.doc());
+        assert!(dst.command("undo"));
+        assert_eq!(node_to_html(&dst.doc()), start, "one undo");
+        assert!(!dst.command("undo"));
+        out
+    };
+    // Cells a and b (the positions before each).
+    assert_eq!(
+        over(2, 7, "<p>P</p>"),
+        table("<p>P</p>", "<p></p>", "<p>d</p>", "<p>e</p>")
+    );
+    assert_eq!(
+        over(7, 2, LIST),
+        table(LIST, "<p></p>", "<p>d</p>", "<p>e</p>")
+    );
+    assert_eq!(
+        over(2, 7, "<hr>"),
+        table("<hr>", "<p></p>", "<p>d</p>", "<p>e</p>")
+    );
+    // Corners a and e: all four cells.
+    assert_eq!(
+        over(2, 24, "<p>P</p>"),
+        table("<p>P</p>", "<p></p>", "<p></p>", "<p></p>")
+    );
+    // Cells that are already empty: nothing to clear, the content still lands.
+    let dst = create_editor();
+    dst.load_html("<table><tr><td><p></p></td><td><p></p></td></tr></table>");
+    dst.set_selection(Selection::cell(Pos(2), Pos(6)));
+    assert!(dst.replace_selection_with_text("T"));
+    assert_eq!(
+        node_to_html(&dst.doc()),
+        "<table><tr><td><p>T</p></td><td><p></p></td></tr></table>"
+    );
+}
+
+/// Lists of the same family join: a bullet or ordered list pasted in either
+/// becomes sibling items. A task list and a plain list do not (their items
+/// are different nodes), so one pasted in the other nests, as it does in
+/// ProseMirror.
+#[test]
+fn a_list_of_another_family_nests() {
+    assert_eq!(
+        paste(
+            "<ul><li><p></p></li></ul>",
+            3,
+            3,
+            "<ol><li>A</li><li>B</li></ol>"
+        ),
+        "<ul><li><p>A</p></li><li><p>B</p></li></ul>"
+    );
+    assert_eq!(
+        paste("<ul><li><p>xy</p></li></ul>", 4, 4, TASKS),
+        "<ul><li><p>xA</p><ul data-type=\"taskList\">\
+         <li data-type=\"taskItem\" data-checked=\"false\"><p>By</p></li></ul></li></ul>"
+    );
+    let want = TASKS.replace(">     <", "><");
+    assert_eq!(
+        paste("<ul><li><p></p></li></ul>", 3, 3, TASKS),
+        format!("<ul><li>{want}</li></ul>")
+    );
+}
+
+/// A Google Docs nested list, as Docs writes it, keeps its nested items.
+#[test]
+fn a_google_docs_nested_list_pastes_nested() {
+    let docs = "<meta charset='utf-8'><b style=\"font-weight:normal;\" id=\"docs-internal-guid-1\">\
+        <ul><li dir=\"ltr\"><p dir=\"ltr\"><span>one</span></p></li>\
+        <ul><li dir=\"ltr\"><p dir=\"ltr\"><span>nested</span></p></li></ul>\
+        <li dir=\"ltr\"><p dir=\"ltr\"><span>two</span></p></li></ul></b>";
+    assert_eq!(
+        paste("<p></p>", 1, 1, docs),
+        "<ul><li><p>one</p><ul><li><p>nested</p></li></ul></li><li><p>two</p></li></ul>"
+    );
+}

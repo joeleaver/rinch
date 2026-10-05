@@ -396,6 +396,7 @@ The rules, with `|` the caret and a pasted `<ul><li>A</li><li>B</li></ul>`:
 | an empty item | the pasted items, in its place | as the empty line |
 | `<p>a|bc</p>`, pasting `<hr>` or a table | `<p>a</p><hr><p>bc</p>` | A closed block closes the textblock and goes in beside it; at a textblock's edge no empty block is left |
 | a table cell | as above, inside the cell | A fit never leaves the isolating node the range starts in |
+| `<ul><li>x|y</li></ul>`, pasting a **task** list | `<ul><li>xA<ul data-type="taskList"><li>By</li></ul></li></ul>` | `task_item` and `list_item` are different nodes: nothing joins, so the rest of the list goes in the item. ProseMirror nests there too |
 
 `NodeSpec::defining` (ProseMirror's) marks the nodes that are kept on an empty line:
 `list_item`, `task_item`, `heading`, `blockquote` and `code_block` in the starter kit.
@@ -414,9 +415,20 @@ What it does not do, where ProseMirror does:
   its plain text.
 - A range whose two ends are in different isolating nodes (two table cells) is not
   fitted: only the plain `replace` is tried, as before.
+- A **cell selection** is not a range: its `from()..to()` are the positions before
+  its two corner cells. `Transaction::replace_selection` refuses one. The paste
+  (`EditorHandle`) clears the selected cells (`commands::table_ops::clear_cells`) and
+  fits the content in the top-left cell, in one transaction — what ProseMirror's
+  `CellSelection.replace` does with content that is not cells. `replace_range` itself
+  takes positions and will fit whatever range it is given.
 - A slice holding an invalid node (the nodes open at its edges aside) is refused.
   The HTML reader makes one from a `<td>` or `<tr>` with no table around it (#1392),
   so that paste is still plain text.
+
+The fitter keeps, per open node, how far its children have got through the content
+expression (`ContentMatch::start` / `advance` / `accepts_end`) and steps it once per
+node placed, so a paste costs in proportion to its size
+(`a_fit_is_linear_in_what_it_places` counts the steps at n and 2n).
 
 `tests/replace_range_fuzz.rs` pastes random slices over random ranges of random
 documents: no panic, no invalid document, every step undoes exactly, and the content

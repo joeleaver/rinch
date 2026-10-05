@@ -2462,10 +2462,21 @@ impl EditorHandle {
 
     /// Replace the selection with `slice` (the shared paste mechanism), fitted
     /// to the range, the caret left after the inserted content.
+    ///
+    /// Over a **cell selection** the selected cells are cleared and the
+    /// content goes into the top-left one, in the same transaction: what
+    /// typing over a cell selection does ([`insert_text`](Self::insert_text)),
+    /// and what ProseMirror's `CellSelection.replace` does with content that
+    /// is not table cells. (A cell selection's `from()..to()` is not a range
+    /// of content: replacing it took cells out of their rows.)
     fn replace_selection_slice(&self, slice: Slice) -> bool {
         self.dispatch(
             move |state| {
-                let mut tr = state.tr();
+                let mut tr = if matches!(state.selection, Selection::Cell(_)) {
+                    rinch_editor_core::commands::table_ops::clear_cells(state)?
+                } else {
+                    state.tr()
+                };
                 tr.replace_selection(slice).ok()?;
                 Some(tr)
             },

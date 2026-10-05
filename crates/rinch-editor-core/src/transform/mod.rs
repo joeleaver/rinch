@@ -17,6 +17,8 @@ pub mod step_map;
 pub mod steps;
 
 pub use build::Transform;
+#[doc(hidden)]
+pub use fit::match_steps;
 pub use node_range::{NodeRange, block_range, block_range_simple};
 pub use step::{Step, StepError};
 pub use step_map::{MapResult, Mapping, StepMap};

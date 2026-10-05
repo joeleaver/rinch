@@ -814,13 +814,19 @@ then **fitted** to the caret, as ProseMirror and TipTap do it:
   `start`) or task (with its checkboxes). Pasted inside a line of text, its first
   item's text continues the line, the other items are a list below it, and the text
   after the caret joins the last item. Pasted in a list item, its items become sibling
-  items of the list the caret is in; on an empty item they take its place.
+  items of the list the caret is in; on an empty item they take its place. That is
+  between bullet and ordered lists, whose items are the same node (the target list
+  keeps its kind). A task list and a plain list do not mix: one pasted in an item of
+  the other is a list nested in that item.
 - **A heading, a quote or a code block** pasted on an empty line is that block;
   inside text a heading is its text.
 - **A rule or a table** splits the line: the text before the caret, the block, the
   text after. At the start or end of a line nothing is split and no empty line is
   left.
 - **In a table cell** all of this happens inside the cell.
+- **Over selected table cells** the selected cells are emptied and the content goes
+  into the top-left one, as typing over them does. The table's rows and columns are
+  never changed by a paste.
 - **In a code block** the paste is the clipboard's plain text, exactly, line breaks
   included.
 - **Over a selection** the selected content is removed first; a selection of a whole
@@ -830,7 +836,14 @@ Copying from inside a list copies the list around the selected items, so the sam
 kind of list arrives wherever it is pasted, in rinch or elsewhere. A selection inside
 one line copies as its text and marks only.
 
-Lists copied from a browser, GitHub or Google Docs paste as lists. (Before #1382 HTML
+Lists copied from a browser, GitHub or Google Docs paste as lists, nested ones
+included: Docs writes a nested list beside the item it belongs to
+(`<ul><li>a</li><ul><li>b</li></ul></ul>`), and it is read as that item's. Nothing
+in a list is dropped for not being an `<li>`. A link or other mark around whole
+blocks (a card that is one `<a>` around a heading and a paragraph) is kept on the
+text of those blocks. A `<b style="font-weight:normal">`, which Docs wraps its
+copies in, is not bold. All of this is the HTML reader, so `load_html` and
+`content:` read the same way. (Before #1382 HTML
 that began with a `<meta>` tag, as what Chrome and Firefox copy does, was read as
 empty, and the paste fell back to its plain text.)
 

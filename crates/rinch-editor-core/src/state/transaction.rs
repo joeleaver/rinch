@@ -209,7 +209,17 @@ impl Transaction {
     /// Replace the selection with `slice`, fitted
     /// ([`Transform::replace_range`]), and put the caret after the inserted
     /// content: ProseMirror's `replaceSelection`, the default paste.
+    ///
+    /// A **cell selection** is refused: its `from()..to()` is a coarse bound
+    /// (the positions before its two corner cells), not a range of content,
+    /// and replacing it would take cells out of their rows. Clear the cells
+    /// and collapse into one first
+    /// ([`clear_cells`](crate::commands::table_ops::clear_cells)), as the
+    /// paste does.
     pub fn replace_selection(&mut self, slice: Slice) -> Result<&mut Self, StepError> {
+        if matches!(self.cur_selection, Selection::Cell(_)) {
+            return Err(StepError::new("a cell selection is not a range to replace"));
+        }
         let (from, to) = (self.cur_selection.from().0, self.cur_selection.to().0);
         // Whether the slice ends in inline content: the caret then stays in
         // it rather than moving on to what follows.

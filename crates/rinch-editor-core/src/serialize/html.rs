@@ -473,7 +473,11 @@ impl<'a> HtmlParser<'a> {
                         self.parse_inline(std::slice::from_ref(n), &[], &mut loose)?;
                     }
                 }
-                ParsedNode::Element { tag, children, .. } => {
+                ParsedNode::Element {
+                    tag,
+                    children,
+                    attributes,
+                } => {
                     if is_dropped(tag) {
                         continue;
                     }
@@ -482,6 +486,16 @@ impl<'a> HtmlParser<'a> {
                         blocks.push(self.build_block(nt, tag, n)?);
                     } else if self.is_inline_tag(tag) && !self.holds_block(children) {
                         self.parse_inline(std::slice::from_ref(n), &[], &mut loose)?;
+                    } else if self.marks.contains_key(tag.as_str())
+                        && let Some(mark) = self.mark_for(tag, attributes)?
+                    {
+                        // A mark around blocks (`<a href><h3>…</h3><p>…</p></a>`,
+                        // a card that is one link): the blocks stay blocks, and
+                        // the mark goes on the inline content inside them.
+                        self.flush_loose(&mut loose, &mut blocks)?;
+                        for block in self.parse_blocks(children)? {
+                            blocks.push(with_mark_inside(&block, &mark));
+                        }
                     } else {
                         // Unknown container (div, section, …): recurse as blocks.
                         // So is an inline element around block elements: the
@@ -570,8 +584,7 @@ impl<'a> HtmlParser<'a> {
                     ) =>
             {
                 let mut items = Vec::new();
-                for (li, checked) in list_items(children) {
-                    let inner = self.ensure_block_plus(self.parse_blocks(li)?)?;
+                for (inner, checked) in self.list_item_contents(children)? {
                     let attrs = Attrs::from_iter([("checked", AttrValue::Bool(checked))]);
                     items.push(self.make_node(item, attrs, Fragment::from_children(inner))?);
                 }
@@ -628,13 +641,57 @@ impl<'a> HtmlParser<'a> {
 
     fn parse_list_items(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
         let mut items = Vec::new();
-        for (li_children, _) in list_items(children) {
-            let inner = self.ensure_block_plus(self.parse_blocks(li_children)?)?;
+        for (inner, _) in self.list_item_contents(children)? {
             items.push(self.make_node(
                 self.list_item,
                 Attrs::new(),
                 Fragment::from_children(inner),
             )?);
+        }
+        Ok(items)
+    }
+
+    /// The content of each item of a list whose element children are
+    /// `children`, with whether the item says `data-checked="true"`.
+    ///
+    /// An `<li>` is an item. A list directly inside the list — which is how
+    /// Google Docs writes a nested list, `<ul><li>a</li><ul><li>b</li></ul></ul>`,
+    /// and what browsers build from it — goes under the item before it
+    /// (ProseMirror's list normalisation), or in an item of its own when it
+    /// comes first. Any other child with content gets an item of its own:
+    /// nothing in a list is dropped for not being an `<li>`.
+    fn list_item_contents(
+        &self,
+        children: &[ParsedNode],
+    ) -> Result<Vec<(Vec<Node>, bool)>, EditorError> {
+        let mut items: Vec<(Vec<Node>, bool)> = Vec::new();
+        for child in children {
+            match child {
+                ParsedNode::Element {
+                    tag,
+                    attributes,
+                    children,
+                } if tag == "li" => {
+                    let checked =
+                        attr(attributes, TASK_CHECKED).is_some_and(|v| v.trim() == "true");
+                    items.push((
+                        self.ensure_block_plus(self.parse_blocks(children)?)?,
+                        checked,
+                    ));
+                }
+                ParsedNode::Text(t) if t.trim().is_empty() => {}
+                stray => {
+                    let blocks = self.parse_blocks(std::slice::from_ref(stray))?;
+                    if blocks.is_empty() {
+                        continue;
+                    }
+                    let nested_list = matches!(stray, ParsedNode::Element { tag, .. } if tag == "ul" || tag == "ol");
+                    match items.last_mut() {
+                        Some((last, _)) if nested_list => last.extend(blocks),
+                        _ => items.push((blocks, false)),
+                    }
+                }
+            }
         }
         Ok(items)
     }
@@ -962,6 +1019,7 @@ impl<'a> HtmlParser<'a> {
                 let attrs = mt.compute_attrs(&Attrs::from_iter(pairs))?;
                 Ok(Some(Mark::new(mt.clone(), attrs)))
             }
+            "bold" if weight_is_normal(attributes) => Ok(None),
             _ => {
                 let attrs = mt.compute_attrs(&Attrs::new())?;
                 Ok(Some(Mark::new(mt.clone(), attrs)))
@@ -1089,6 +1147,44 @@ fn align_attrs(attributes: &[(String, String)]) -> Attrs {
 }
 
 /// Find an attribute value (case-insensitive name) in a parsed attribute list.
+/// `node` with `mark` added to every inline node inside it whose parent
+/// allows the mark and which carries no mark of that type already (an inner
+/// link keeps its own href).
+fn with_mark_inside(node: &Node, mark: &Mark) -> Node {
+    if node.is_leaf() || node.is_text() {
+        return node.clone();
+    }
+    let allowed = node.node_type().spec().marks.allows(mark.type_name());
+    let children: Vec<Node> = node
+        .content()
+        .children()
+        .iter()
+        .map(|child| {
+            if !child.is_inline() {
+                with_mark_inside(child, mark)
+            } else if allowed
+                && !child
+                    .marks()
+                    .iter()
+                    .any(|m| m.type_name() == mark.type_name())
+            {
+                child.with_marks(mark.add_to_set(child.marks()))
+            } else {
+                child.clone()
+            }
+        })
+        .collect();
+    node.copy_with_content(Fragment::from_children(children))
+}
+
+/// Whether a `<b>` / `<strong>` says in its own style that it is not bold:
+/// Google Docs wraps everything it copies in `<b style="font-weight:normal">`.
+fn weight_is_normal(attributes: &[(String, String)]) -> bool {
+    attr(attributes, "style")
+        .and_then(|style| parse_style(style, "font-weight"))
+        .is_some_and(|w| matches!(w.trim().to_ascii_lowercase().as_str(), "normal" | "400"))
+}
+
 /// `nodes` with each run of `<li>` elements that have no list around them put
 /// in a `<ul>` — a `<ul data-type="taskList">` for a run of
 /// `<li data-type="taskItem">`. A list's items alone are what some sources put
@@ -1145,22 +1241,6 @@ fn wrap_bare_list_items(nodes: &[ParsedNode]) -> Option<Vec<ParsedNode>> {
 /// A `<ul>` whose `data-type` is `taskList`.
 fn is_task_list(attributes: &[(String, String)]) -> bool {
     attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_LIST)
-}
-
-/// A list's `<li>` children, each with its content and whether it says
-/// `data-checked="true"`. Whitespace and stray tags are dropped.
-fn list_items(children: &[ParsedNode]) -> impl Iterator<Item = (&[ParsedNode], bool)> {
-    children.iter().filter_map(|child| match child {
-        ParsedNode::Element {
-            tag,
-            attributes,
-            children,
-        } if tag == "li" => {
-            let checked = attr(attributes, TASK_CHECKED).is_some_and(|v| v.trim() == "true");
-            Some((children.as_slice(), checked))
-        }
-        _ => None,
-    })
 }
 
 fn attr<'b>(attributes: &'b [(String, String)], name: &str) -> Option<&'b str> {

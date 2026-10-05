@@ -174,6 +174,30 @@ fn random_range(rng: &mut Rng, doc: &Node) -> (usize, usize) {
     (a.min(b), a.max(b))
 }
 
+/// The positions before two cells of one row of `doc` (possibly the same
+/// cell), when it has a table: the corners of a cell selection.
+fn two_cells(doc: &Node, rng: &mut Rng) -> Option<(usize, usize)> {
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    doc.nodes_between(0, doc.content_size(), &mut |node, pos, _| {
+        if node.type_name() == "table_row" {
+            let mut at = pos + 1;
+            let mut cells = Vec::new();
+            for cell in node.content().children() {
+                cells.push(at);
+                at += cell.node_size();
+            }
+            rows.push(cells);
+        }
+        true
+    });
+    rows.retain(|r| !r.is_empty());
+    if rows.is_empty() {
+        return None;
+    }
+    let row = &rows[rng.below(rows.len())];
+    Some((row[rng.below(row.len())], row[rng.below(row.len())]))
+}
+
 fn random_slice(schema: &Schema, rng: &mut Rng) -> Option<(usize, Slice)> {
     let source = random_doc(schema, rng);
     let kind = rng.below(4);
@@ -213,6 +237,7 @@ fn a_fitted_replace_never_leaves_an_invalid_document() {
     let schema = Rc::new(Schema::starter_kit());
     let (mut applied, mut refused, mut around) = (0usize, 0usize, 0usize);
     let mut by_kind = [(0usize, 0usize); 4];
+    let mut cell_selections = 0usize;
     for seed in 1..=seeds {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let doc = random_doc(&schema, &mut rng);
@@ -273,6 +298,20 @@ fn a_fitted_replace_never_leaves_an_invalid_document() {
             }
         }
 
+        // Over a cell selection, when the document has two cells in one
+        // row: the state layer refuses, whatever the slice.
+        if let Some((a, b)) = two_cells(&doc, &mut rng) {
+            cell_selections += 1;
+            let state = EditorState::create(schema.clone(), doc.clone(), Vec::new());
+            let mut tr = state.tr();
+            tr.set_selection(Selection::cell(Pos(a), Pos(b)));
+            assert!(
+                tr.replace_selection(slice.clone()).is_err(),
+                "{what}: a cell selection {a}..{b} was replaced"
+            );
+            assert_eq!(tr.doc(), &doc, "{what}: cell selection {a}..{b}");
+        }
+
         // The same through the state layer, with the caret it leaves.
         let state = EditorState::create(schema.clone(), doc.clone(), Vec::new());
         let mut tr = state.tr();
@@ -295,6 +334,10 @@ fn a_fitted_replace_never_leaves_an_invalid_document() {
         "{applied} applied, {refused} refused; by kind {by_kind:?}"
     );
     assert!(around > 0, "no paste moved the text after the range");
+    assert!(
+        cell_selections * 20 >= seeds as usize,
+        "{cell_selections} cell selections"
+    );
     eprintln!(
         "{applied} applied ({around} moved inline content), {refused} refused; by kind {by_kind:?}"
     );

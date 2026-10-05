@@ -363,3 +363,68 @@ fn a_node_cut_at_its_start_is_not_placed_whole_when_that_is_invalid() {
     assert!(result.is_err(), "{:?}", tf.doc);
     assert_eq!(tf.doc, before);
 }
+
+/// A fit's work grows with what it places, not with its square: the content
+/// expression is stepped once per node, not asked about the whole child list
+/// each time (16,000 pasted paragraphs took 2.8 s). Counted in content-match
+/// steps, so no clock is read.
+#[test]
+fn a_fit_is_linear_in_what_it_places() {
+    let schema = Schema::starter_kit();
+    let steps = |n: usize, list: bool| {
+        let html: String = if list {
+            let items: String = (0..n).map(|i| format!("<li>item {i}</li>")).collect();
+            format!("<ul>{items}</ul>")
+        } else {
+            (0..n).map(|i| format!("<p>para {i}</p>")).collect()
+        };
+        let slice = slice_from_html(&schema, &html).unwrap();
+        let mut tf = Transform::new(&schema, doc(&schema, "<p>abc</p><p>tail</p>"));
+        let before = rinch_editor_core::transform::match_steps();
+        tf.replace_range(2, 2, slice).unwrap();
+        assert!(tf.doc.child_count() >= 2);
+        rinch_editor_core::transform::match_steps() - before
+    };
+    for list in [false, true] {
+        let (small, large) = (steps(500, list), steps(1000, list));
+        assert!(small >= 500, "the counter counts: {small}");
+        assert!(
+            large <= small * 2 + 64,
+            "list={list}: {small} steps for 500 blocks, {large} for 1000"
+        );
+    }
+}
+
+/// A cell selection is not a range: `replace_selection` refuses it rather
+/// than take cells out of their rows.
+#[test]
+fn replace_selection_refuses_a_cell_selection() {
+    let schema = Rc::new(Schema::starter_kit());
+    let table = "<table><tr><td><p>a</p></td><td><p>b</p></td></tr></table>";
+    let state = EditorState::create(schema.clone(), doc(&schema, table), Vec::new());
+    let mut tr = state.tr();
+    tr.set_selection(Selection::cell(Pos(2), Pos(7)));
+    assert!(
+        tr.replace_selection(slice_from_html(&schema, "<p>P</p>").unwrap())
+            .is_err()
+    );
+    assert!(!tr.doc_changed());
+}
+
+/// The search for a node to replace stops at a defining ancestor: a list
+/// pasted on the only line of a quote goes in the quote, it does not replace
+/// the quote.
+#[test]
+fn a_covered_defining_ancestor_is_not_replaced() {
+    assert_eq!(
+        fit(
+            "<blockquote><p></p></blockquote>",
+            2,
+            2,
+            "<ul><li>A</li><li>B</li></ul>"
+        )
+        .unwrap()
+        .0,
+        "<blockquote><ul><li><p>A</p></li><li><p>B</p></li></ul></blockquote>"
+    );
+}
