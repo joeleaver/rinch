@@ -19,6 +19,7 @@
 use super::html_integer::{parse_html_clamped_non_negative_integer, parse_html_integer};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
+use crate::pos::Pos;
 use crate::schema::Schema;
 use crate::tables;
 use std::collections::HashMap;
@@ -42,15 +43,52 @@ pub fn node_to_html(node: &Node) -> String {
 /// Serialize a [`Slice`]'s content to an HTML fragment — the clipboard copy-out.
 ///
 /// The slice's open depths are **not** encoded in the markup; they are re-derived
-/// on paste by [`slice_from_html`]'s open-depth heuristic. So a within-block copy
+/// on paste by [`slice_from_html`]. So a within-block copy
 /// (whose `content` is the bare inline runs) round-trips back into a textblock, and
-/// a multi-block copy emits its `<p>`/`<h1>`/… children directly.
+/// a multi-block copy emits its `<p>`/`<h1>`/… children directly. Content that
+/// is nothing without the node it was in — list items, table rows — should be
+/// cut with [`clipboard_slice`], which keeps that node.
 pub fn slice_to_html(slice: &Slice) -> String {
     let mut out = String::new();
     for child in slice.content.children() {
         write_node(child, &mut out);
     }
     out
+}
+
+/// The content of `doc` between `from` and `to` as it goes on the clipboard:
+/// [`Node::slice`], and when that is content the document's top node does not
+/// take — the items of a list, the rows or cells of a table — the nodes it
+/// was in, as far out as it takes for the content to stand alone. A selection
+/// inside a list is then that kind of list (`<ol start="3">`, a task list
+/// with its checkboxes) wherever it is pasted.
+///
+/// Inline content (a selection inside one textblock) and blocks any container
+/// takes (two paragraphs of a quote) are returned as they are. ProseMirror
+/// keeps every ancestor and records them beside the markup; this keeps only
+/// the ones the markup cannot do without, so that what another application
+/// reads is not wrapped in structure the selection did not show.
+pub fn clipboard_slice(doc: &Node, from: usize, to: usize) -> Result<Slice, EditorError> {
+    let mut slice = doc.slice(from, to)?;
+    if from == to {
+        return Ok(slice);
+    }
+    let r_from = doc.resolve(Pos(from))?;
+    let mut depth = r_from.shared_depth(Pos(to));
+    while depth > 0
+        && let Some(first) = slice.content.children().first()
+        && !first.is_inline()
+        && !doc.node_type().content_match().accepts(first.type_name())
+    {
+        let parent = r_from.node(depth).copy_with_content(slice.content.clone());
+        slice = Slice::new(
+            Fragment::from_node(parent),
+            slice.open_start + 1,
+            slice.open_end + 1,
+        );
+        depth -= 1;
+    }
+    Ok(slice)
 }
 
 fn write_node(node: &Node, out: &mut String) {
@@ -294,11 +332,18 @@ fn escape_attr(s: &str) -> String {
 
 /// Parse an HTML fragment into a sanitized [`Slice`] against `schema`.
 ///
-/// The result is a structurally valid slice with an open-depth heuristic suitable
-/// for `replaceSelection` (M6): the first/last block is "open" when it is a
-/// textblock, so pasted leading/trailing paragraphs merge inline at the insertion
-/// point. Unknown tags/marks/attrs are dropped; dangerous elements never
+/// The result is structurally valid content, **open at each end down to the
+/// textblock there** ([`open_depth`]): `<p>a</p><p>b</p>` is open through its
+/// paragraphs, `<ul><li>a</li></ul>` through the list, its item and the
+/// item's paragraph. Markup carries no open depths, so this is the reading
+/// that suits a paste ([`Transaction::replace_selection`]): the first
+/// textblock's content continues the line it is pasted on and the last one
+/// takes the text after the caret, while everything between keeps its
+/// structure. An edge that reaches no textblock (a rule, a table) is closed.
+/// Unknown tags/marks/attrs are dropped; dangerous elements never
 /// materialize.
+///
+/// [`Transaction::replace_selection`]: crate::state::Transaction::replace_selection
 pub fn slice_from_html(schema: &Schema, html: &str) -> Result<Slice, EditorError> {
     let forest = parse_html_fragment(html);
     let parser = HtmlParser::new(schema)?;
@@ -306,13 +351,40 @@ pub fn slice_from_html(schema: &Schema, html: &str) -> Result<Slice, EditorError
     if blocks.is_empty() {
         return Ok(Slice::empty());
     }
-    let open_start = usize::from(blocks.first().is_some_and(Node::is_textblock));
-    let open_end = usize::from(blocks.last().is_some_and(Node::is_textblock));
+    let open_start = open_depth(blocks.first());
+    let open_end = open_depth_end(blocks.last());
     Ok(Slice::new(
         Fragment::from_children(blocks),
         open_start,
         open_end,
     ))
+}
+
+/// How many nodes are open at the start of content whose first node is
+/// `node`: every node down to and including the first textblock, when the
+/// way there crosses no leaf and no isolating node (a table cell); else none.
+fn open_depth(node: Option<&Node>) -> usize {
+    edge_depth(node, |n| n.content().children().first())
+}
+
+/// [`open_depth`] for the end of content whose last node is `node`.
+fn open_depth_end(node: Option<&Node>) -> usize {
+    edge_depth(node, |n| n.content().children().last())
+}
+
+fn edge_depth(mut node: Option<&Node>, next: impl Fn(&Node) -> Option<&Node>) -> usize {
+    let mut depth = 0;
+    while let Some(n) = node {
+        if n.is_textblock() {
+            return depth + 1;
+        }
+        if n.is_leaf() || n.node_type().is_isolating() {
+            return 0;
+        }
+        depth += 1;
+        node = next(n);
+    }
+    0
 }
 
 /// Holds the schema and the reverse tag→type lookup tables, built once per parse.
@@ -390,7 +462,7 @@ impl<'a> HtmlParser<'a> {
     fn parse_blocks(&self, nodes: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
         let mut blocks: Vec<Node> = Vec::new();
         let mut loose: Vec<Node> = Vec::new();
-        let wrapped = wrap_bare_task_items(nodes);
+        let wrapped = wrap_bare_list_items(nodes);
         let nodes = wrapped.as_deref().unwrap_or(nodes);
 
         for n in nodes {
@@ -401,17 +473,35 @@ impl<'a> HtmlParser<'a> {
                         self.parse_inline(std::slice::from_ref(n), &[], &mut loose)?;
                     }
                 }
-                ParsedNode::Element { tag, children, .. } => {
+                ParsedNode::Element {
+                    tag,
+                    children,
+                    attributes,
+                } => {
                     if is_dropped(tag) {
                         continue;
                     }
                     if let Some(nt) = self.block.get(tag.as_str()) {
                         self.flush_loose(&mut loose, &mut blocks)?;
                         blocks.push(self.build_block(nt, tag, n)?);
-                    } else if self.is_inline_tag(tag) {
+                    } else if self.is_inline_tag(tag) && !self.holds_block(children) {
                         self.parse_inline(std::slice::from_ref(n), &[], &mut loose)?;
+                    } else if self.marks.contains_key(tag.as_str())
+                        && let Some(mark) = self.mark_for(tag, attributes)?
+                    {
+                        // A mark around blocks (`<a href><h3>…</h3><p>…</p></a>`,
+                        // a card that is one link): the blocks stay blocks, and
+                        // the mark goes on the inline content inside them.
+                        self.flush_loose(&mut loose, &mut blocks)?;
+                        for block in self.parse_blocks(children)? {
+                            blocks.push(with_mark_inside(&block, &mark));
+                        }
                     } else {
                         // Unknown container (div, section, …): recurse as blocks.
+                        // So is an inline element around block elements: the
+                        // `<b style="font-weight:normal">` Google Docs wraps
+                        // everything it copies in would otherwise flatten its
+                        // lists and paragraphs into one bold line.
                         let inner = self.parse_blocks(children)?;
                         if inner.is_empty() {
                             self.parse_inline(children, &[], &mut loose)?;
@@ -425,6 +515,16 @@ impl<'a> HtmlParser<'a> {
         }
         self.flush_loose(&mut loose, &mut blocks)?;
         Ok(blocks)
+    }
+
+    /// Whether any element under `nodes` is a block of the schema.
+    fn holds_block(&self, nodes: &[ParsedNode]) -> bool {
+        nodes.iter().any(|n| match n {
+            ParsedNode::Element { tag, children, .. } => {
+                self.block.contains_key(tag.as_str()) || self.holds_block(children)
+            }
+            ParsedNode::Text(_) => false,
+        })
     }
 
     /// Flush accumulated inline content as a paragraph block.
@@ -484,8 +584,7 @@ impl<'a> HtmlParser<'a> {
                     ) =>
             {
                 let mut items = Vec::new();
-                for (li, checked) in list_items(children) {
-                    let inner = self.ensure_block_plus(self.parse_blocks(li)?)?;
+                for (inner, checked) in self.list_item_contents(children)? {
                     let attrs = Attrs::from_iter([("checked", AttrValue::Bool(checked))]);
                     items.push(self.make_node(item, attrs, Fragment::from_children(inner))?);
                 }
@@ -542,13 +641,57 @@ impl<'a> HtmlParser<'a> {
 
     fn parse_list_items(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
         let mut items = Vec::new();
-        for (li_children, _) in list_items(children) {
-            let inner = self.ensure_block_plus(self.parse_blocks(li_children)?)?;
+        for (inner, _) in self.list_item_contents(children)? {
             items.push(self.make_node(
                 self.list_item,
                 Attrs::new(),
                 Fragment::from_children(inner),
             )?);
+        }
+        Ok(items)
+    }
+
+    /// The content of each item of a list whose element children are
+    /// `children`, with whether the item says `data-checked="true"`.
+    ///
+    /// An `<li>` is an item. A list directly inside the list — which is how
+    /// Google Docs writes a nested list, `<ul><li>a</li><ul><li>b</li></ul></ul>`,
+    /// and what browsers build from it — goes under the item before it
+    /// (ProseMirror's list normalisation), or in an item of its own when it
+    /// comes first. Any other child with content gets an item of its own:
+    /// nothing in a list is dropped for not being an `<li>`.
+    fn list_item_contents(
+        &self,
+        children: &[ParsedNode],
+    ) -> Result<Vec<(Vec<Node>, bool)>, EditorError> {
+        let mut items: Vec<(Vec<Node>, bool)> = Vec::new();
+        for child in children {
+            match child {
+                ParsedNode::Element {
+                    tag,
+                    attributes,
+                    children,
+                } if tag == "li" => {
+                    let checked =
+                        attr(attributes, TASK_CHECKED).is_some_and(|v| v.trim() == "true");
+                    items.push((
+                        self.ensure_block_plus(self.parse_blocks(children)?)?,
+                        checked,
+                    ));
+                }
+                ParsedNode::Text(t) if t.trim().is_empty() => {}
+                stray => {
+                    let blocks = self.parse_blocks(std::slice::from_ref(stray))?;
+                    if blocks.is_empty() {
+                        continue;
+                    }
+                    let nested_list = matches!(stray, ParsedNode::Element { tag, .. } if tag == "ul" || tag == "ol");
+                    match items.last_mut() {
+                        Some((last, _)) if nested_list => last.extend(blocks),
+                        _ => items.push((blocks, false)),
+                    }
+                }
+            }
         }
         Ok(items)
     }
@@ -876,6 +1019,7 @@ impl<'a> HtmlParser<'a> {
                 let attrs = mt.compute_attrs(&Attrs::from_iter(pairs))?;
                 Ok(Some(Mark::new(mt.clone(), attrs)))
             }
+            "bold" if weight_is_normal(attributes) => Ok(None),
             _ => {
                 let attrs = mt.compute_attrs(&Attrs::new())?;
                 Ok(Some(Mark::new(mt.clone(), attrs)))
@@ -1003,62 +1147,100 @@ fn align_attrs(attributes: &[(String, String)]) -> Attrs {
 }
 
 /// Find an attribute value (case-insensitive name) in a parsed attribute list.
-/// `nodes` with each run of `<li data-type="taskItem">` elements that have no
-/// list around them put in a `<ul data-type="taskList">`: a copied selection
-/// that starts and ends inside one task list is its items alone. `None` when
-/// there is no such item.
-fn wrap_bare_task_items(nodes: &[ParsedNode]) -> Option<Vec<ParsedNode>> {
-    let is_item = |n: &ParsedNode| {
-        matches!(n, ParsedNode::Element { tag, attributes, .. }
-            if tag == "li" && attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_ITEM))
+/// `node` with `mark` added to every inline node inside it whose parent
+/// allows the mark and which carries no mark of that type already (an inner
+/// link keeps its own href).
+fn with_mark_inside(node: &Node, mark: &Mark) -> Node {
+    if node.is_leaf() || node.is_text() {
+        return node.clone();
+    }
+    let allowed = node.node_type().spec().marks.allows(mark.type_name());
+    let children: Vec<Node> = node
+        .content()
+        .children()
+        .iter()
+        .map(|child| {
+            if !child.is_inline() {
+                with_mark_inside(child, mark)
+            } else if allowed
+                && !child
+                    .marks()
+                    .iter()
+                    .any(|m| m.type_name() == mark.type_name())
+            {
+                child.with_marks(mark.add_to_set(child.marks()))
+            } else {
+                child.clone()
+            }
+        })
+        .collect();
+    node.copy_with_content(Fragment::from_children(children))
+}
+
+/// Whether a `<b>` / `<strong>` says in its own style that it is not bold:
+/// Google Docs wraps everything it copies in `<b style="font-weight:normal">`.
+fn weight_is_normal(attributes: &[(String, String)]) -> bool {
+    attr(attributes, "style")
+        .and_then(|style| parse_style(style, "font-weight"))
+        .is_some_and(|w| matches!(w.trim().to_ascii_lowercase().as_str(), "normal" | "400"))
+}
+
+/// `nodes` with each run of `<li>` elements that have no list around them put
+/// in a `<ul>` — a `<ul data-type="taskList">` for a run of
+/// `<li data-type="taskItem">`. A list's items alone are what some sources put
+/// on the clipboard for a selection inside one list. `None` when there is no
+/// such item.
+fn wrap_bare_list_items(nodes: &[ParsedNode]) -> Option<Vec<ParsedNode>> {
+    // `Some(true)` for a task item, `Some(false)` for any other `<li>`.
+    let item = |n: &ParsedNode| match n {
+        ParsedNode::Element {
+            tag, attributes, ..
+        } if tag == "li" => {
+            Some(attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_ITEM))
+        }
+        _ => None,
     };
-    if !nodes.iter().any(is_item) {
+    if !nodes.iter().any(|n| item(n).is_some()) {
         return None;
     }
     let mut out: Vec<ParsedNode> = Vec::new();
     let mut run: Vec<ParsedNode> = Vec::new();
-    let close = |run: &mut Vec<ParsedNode>, out: &mut Vec<ParsedNode>| {
+    let mut run_is_tasks = false;
+    let close = |run: &mut Vec<ParsedNode>, tasks: bool, out: &mut Vec<ParsedNode>| {
         if !run.is_empty() {
+            let attributes = if tasks {
+                vec![(TASK_TYPE.to_string(), TASK_LIST.to_string())]
+            } else {
+                Vec::new()
+            };
             out.push(ParsedNode::Element {
                 tag: "ul".to_string(),
-                attributes: vec![(TASK_TYPE.to_string(), TASK_LIST.to_string())],
+                attributes,
                 children: std::mem::take(run),
             });
         }
     };
     for n in nodes {
-        if is_item(n) {
+        if let Some(task) = item(n) {
+            if task != run_is_tasks {
+                close(&mut run, run_is_tasks, &mut out);
+                run_is_tasks = task;
+            }
             run.push(n.clone());
         } else if matches!(n, ParsedNode::Text(t) if t.trim().is_empty()) && !run.is_empty() {
             // Whitespace between two items.
         } else {
-            close(&mut run, &mut out);
+            close(&mut run, run_is_tasks, &mut out);
             out.push(n.clone());
         }
     }
-    close(&mut run, &mut out);
+    close(&mut run, run_is_tasks, &mut out);
     Some(out)
 }
 
 /// A `<ul>` whose `data-type` is `taskList`.
 fn is_task_list(attributes: &[(String, String)]) -> bool {
     attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_LIST)
-}
-
-/// A list's `<li>` children, each with its content and whether it says
-/// `data-checked="true"`. Whitespace and stray tags are dropped.
-fn list_items(children: &[ParsedNode]) -> impl Iterator<Item = (&[ParsedNode], bool)> {
-    children.iter().filter_map(|child| match child {
-        ParsedNode::Element {
-            tag,
-            attributes,
-            children,
-        } if tag == "li" => {
-            let checked = attr(attributes, TASK_CHECKED).is_some_and(|v| v.trim() == "true");
-            Some((children.as_slice(), checked))
-        }
-        _ => None,
-    })
 }
 
 fn attr<'b>(attributes: &'b [(String, String)], name: &str) -> Option<&'b str> {
@@ -1367,7 +1549,15 @@ impl<'a> HtmlFragmentParser<'a> {
             tag.as_str(),
             "script" | "style" | "meta" | "link" | "head" | "title"
         ) {
-            self.skip_until_close_tag(&tag);
+            if is_void_tag(&tag) {
+                // `<meta>` and `<link>` have no end tag: looking for one
+                // dropped everything after the `<meta charset>` a browser
+                // puts first in what it copies.
+                self.parse_attributes();
+                self.skip_to('>');
+            } else {
+                self.skip_until_close_tag(&tag);
+            }
             return None;
         }
         let attributes = self.parse_attributes();

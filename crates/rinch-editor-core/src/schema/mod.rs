@@ -94,6 +94,7 @@ impl Schema {
                 .content("inline*")
                 .group("block")
                 .attr("level", AttrSpec::optional(AttrValue::Int(1)))
+                .defining(true)
                 .attr("indent", AttrSpec::optional(AttrValue::Int(0)))
                 // Horizontal text alignment — see the paragraph node above.
                 .attr("text_align", AttrSpec::optional("left"))
@@ -114,6 +115,7 @@ impl Schema {
             NodeSpec::builder("blockquote")
                 .content("block+")
                 .group("block")
+                .defining(true)
                 .parse_html(vec!["blockquote".into()])
                 .build(),
         );
@@ -126,6 +128,8 @@ impl Schema {
                 .group("block")
                 .marks(MarkSet::None)
                 .attr("language", AttrSpec::optional(""))
+                .defining(true)
+                .code(true)
                 .parse_html(vec!["pre".into()])
                 .build(),
         );
@@ -156,6 +160,7 @@ impl Schema {
             "list_item",
             NodeSpec::builder("list_item")
                 .content("block+")
+                .defining(true)
                 .parse_html(vec!["li".into()])
                 .build(),
         );
@@ -174,6 +179,7 @@ impl Schema {
             "task_item",
             NodeSpec::builder("task_item")
                 .content("block+")
+                .defining(true)
                 .attr("checked", AttrSpec::optional(AttrValue::Bool(false)))
                 .build(),
         );

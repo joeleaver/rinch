@@ -50,7 +50,9 @@ diff in the view.
   replace primitives the transform engine needs.
 - **`Slice`** — `{ content: Fragment, open_start, open_end }`. The open depths let a
   copied or pasted range merge into the surrounding structure; it is the unit that
-  `replace` and paste operate on.
+  `replace` and paste operate on. `replace` wants the open depths to line up with
+  the range; `replace_range` fits a slice that does not (see
+  [Fitting a slice](#fitting-a-slice-replace_range)).
 
 ```rust
 use rinch::prelude::*;            // Node, Mark, Slice, Schema, Selection, Pos, …
@@ -269,10 +271,11 @@ item (`[ ] todo`; before another block, a paragraph of its own).
 HTML copy-out (`node_to_html`, `slice_to_html`) writes a task list with the same
 `data-type` / `data-checked` markup (TipTap's), and `slice_from_html` parses it, a run
 of bare `<li data-type="taskItem">` (a selection inside one list) included, as a
-`task_list`. A paste of one with the caret in an empty textblock replaces that block
-with the list. With the caret inside text the list does not fit, and its items' blocks
-are pasted instead, marks kept and checkboxes lost. In a collaborating editor a pasted
-task list stalls outbound like any other (A22).
+`task_list`. A pasted task list is fitted like any list
+([Fitting a slice](#fitting-a-slice-replace_range)): on an empty line or an empty item
+it keeps every checkbox; inside text its first item's text continues the line (that
+item's checkbox goes with the item) and the rest stays a task list. In a collaborating
+editor a pasted task list stalls outbound like any other (A22).
 
 **What round-trips.** A document of the starter kit's marks and nodes written with
 `doc_to_markdown` reads back with `doc_from_markdown_strict` as the same document, and
@@ -371,7 +374,66 @@ A few gesture → step mappings:
 | Toggle bold over a range | `AddMarkStep` / `RemoveMarkStep` over `from..to` |
 | Toggle bold at a cursor | **no step** — set `stored_marks` (applied to the next typed text) |
 | Wrap in blockquote | `wrap(range, [(blockquote, {})])` → `ReplaceAroundStep` |
-| Paste | parse to a `Slice`, then `ReplaceStep(from, to, slice)` |
+| Paste | parse to a `Slice`, then `replace_range(from, to, slice)`: one `ReplaceStep`, or a `ReplaceAroundStep` when the text after the caret moves into the pasted content |
+
+### Fitting a slice: `replace_range`
+
+`ReplaceStep` is strict: the slice's open depths must line up with the range, and
+every node it rebuilds must be valid. Content that comes from somewhere else rarely
+lines up — a list has no place inside the paragraph the caret is in — so paste goes
+through `Transform::replace_range(from, to, slice)` (`Transaction::replace_range`, and
+`Transaction::replace_selection(slice)`, which also places the caret). It is
+ProseMirror's `replaceRange` and `Fitter` (`transform/fit.rs`), and it adds **one**
+step or fails with nothing changed.
+
+The rules, with `|` the caret and a pasted `<ul><li>A</li><li>B</li></ul>`:
+
+| Where | Result | Why |
+|-------|--------|-----|
+| `<p>a|bc</p>` | `<p>aA</p><ul><li>Bbc</li></ul>` | Content open at the slice's start continues the textblock; the rest keeps its structure; the text after the caret joins the textblock the slice ends in |
+| `<p>|</p>` (an empty line) | the list | The range covers a whole textblock and the slice starts in a *defining* node (`list_item`), so that node is kept and replaces the textblock |
+| `<ul><li>x|y</li></ul>` | `<ul><li>xA</li><li>By</li></ul>` | Open nodes join the nodes of compatible content around the caret: items become sibling items, and the target list keeps its kind |
+| an empty item | the pasted items, in its place | as the empty line |
+| `<p>a|bc</p>`, pasting `<hr>` or a table | `<p>a</p><hr><p>bc</p>` | A closed block closes the textblock and goes in beside it; at a textblock's edge no empty block is left |
+| a table cell | as above, inside the cell | A fit never leaves the isolating node the range starts in |
+| `<ul><li>x|y</li></ul>`, pasting a **task** list | `<ul><li>xA<ul data-type="taskList"><li>By</li></ul></li></ul>` | `task_item` and `list_item` are different nodes: nothing joins, so the rest of the list goes in the item. ProseMirror nests there too |
+
+`NodeSpec::defining` (ProseMirror's) marks the nodes that are kept on an empty line:
+`list_item`, `task_item`, `heading`, `blockquote` and `code_block` in the starter kit.
+A pasted `<h2>` on an empty line is therefore a heading (it was a paragraph with the
+heading's text before #1382), and in the middle of a paragraph it is its text.
+
+`slice_from_html` decides the open depths, since markup has none: each edge is open
+down to the textblock there, and closed when it reaches none (a rule, a table). So a
+list is open through its first and last items, as a selection inside it is.
+
+What it does not do, where ProseMirror does:
+
+- It never **creates** a node to make content valid (`fillBefore`) and never **wraps**
+  content in a node it was not in (`findWrapping`): the content matcher cannot be
+  asked for either. A fit that would need one fails, and a paste then falls back to
+  its plain text.
+- A range whose two ends are in different isolating nodes (two table cells) is not
+  fitted: only the plain `replace` is tried, as before.
+- A **cell selection** is not a range: its `from()..to()` are the positions before
+  its two corner cells. `Transaction::replace_selection` refuses one. The paste
+  (`EditorHandle`) clears the selected cells (`commands::table_ops::clear_cells`) and
+  fits the content in the top-left cell, in one transaction — what ProseMirror's
+  `CellSelection.replace` does with content that is not cells. `replace_range` itself
+  takes positions and will fit whatever range it is given.
+- A slice holding an invalid node (the nodes open at its edges aside) is refused.
+  The HTML reader makes one from a `<td>` or `<tr>` with no table around it (#1392),
+  so that paste is still plain text.
+
+The fitter keeps, per open node, how far its children have got through the content
+expression (`ContentMatch::start` / `advance` / `accepts_end`) and steps it once per
+node placed, so a paste costs in proportion to its size
+(`a_fit_is_linear_in_what_it_places` counts the steps at n and 2n).
+
+`tests/replace_range_fuzz.rs` pastes random slices over random ranges of random
+documents: no panic, no invalid document, every step undoes exactly, and the content
+the HTML reader makes of the fuzz's markup (every starter-kit block, nested) always
+fits at a caret or a selection inside one textblock.
 
 `Step::apply` is where **schema enforcement** lives: a `ReplaceStep` whose slice
 would violate the parent's ContentMatch returns an error and the whole transaction is

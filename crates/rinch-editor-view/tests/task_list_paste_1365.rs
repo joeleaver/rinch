@@ -99,12 +99,16 @@ fn task_items_pasted_on_an_empty_line_are_a_task_list() {
     assert_eq!(paste_into("<p></p>", 1, &list), want);
 }
 
-/// Inside text the list has no place: its items' paragraphs go in, with
-/// their marks (the plain-text fallback lost them).
+/// Inside text the first item's text continues the line, the rest is still a
+/// task list, and the text after the caret joins its last item — what
+/// ProseMirror does with a list pasted in a paragraph. (#1374 pasted the
+/// items' paragraphs, checkboxes lost; #1382 fits the list itself. The first
+/// item's checkbox goes with its item, which the line took the place of.)
 #[test]
 fn task_items_pasted_inside_text_keep_their_marks() {
     assert_eq!(
         paste_into("<p>abc</p>", 2, ITEMS),
-        "<p>a<strong>TASKA</strong></p><p>TASKBbc</p>"
+        "<p>a<strong>TASKA</strong></p><ul data-type=\"taskList\">\
+         <li data-type=\"taskItem\" data-checked=\"false\"><p>TASKBbc</p></li></ul>"
     );
 }
