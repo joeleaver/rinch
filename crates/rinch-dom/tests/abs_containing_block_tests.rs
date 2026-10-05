@@ -1181,3 +1181,20 @@ fn a_percentage_margin_on_a_static_axis() {
     let c = Case::single("margin-left: 10%; margin-top: 5%; width: 50px; height: 30px");
     assert_rect(c.rect("abs"), [70.0, 40.0, 50.0, 30.0], "static + margins");
 }
+
+/// A `display: contents` element generates no box, so `position: absolute`
+/// on it places nothing: its `layout` stays zero (the layout-tree sweep's
+/// "ghost box" rule) and its children are laid out where it sits in flow.
+#[test]
+fn an_absolute_display_contents_element_is_not_placed() {
+    let c = Case::scaffold(
+        "",
+        "",
+        &format!(
+            r#"<div data-m="wrap" style="display: contents; {ABS} right: 10px; bottom: 20px"><div data-m="kid" style="width: 20px; height: 10px"></div></div>"#
+        ),
+    );
+    let l = c.doc.tree.get(c.id("wrap")).unwrap().layout;
+    assert_eq!((l.x, l.y, l.width, l.height), (0.0, 0.0, 0.0, 0.0));
+    assert_rect(c.rect("kid"), [30.0, 20.0, 20.0, 10.0], "in flow");
+}

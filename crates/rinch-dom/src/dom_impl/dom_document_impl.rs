@@ -1790,7 +1790,11 @@ impl RinchDocument {
             // An absolute with no positioned ancestor is excluded for exactly
             // the reason `fixed` is: its Taffy *size* is baked from its insets
             // against the initial containing block (#204), so an inset change
-            // is not inset-only for it either.
+            // is not inset-only for it either. One resolved against a
+            // non-parent ancestor (#386) is **not** excluded: its bake is
+            // re-derived from the computed insets after every compute
+            // (`resolve_ancestor_absolutes`), and its position from them as
+            // it is read back.
             || crate::out_of_flow::out_of_flow_kind(&self.tree, node_id)
                 == Some(crate::out_of_flow::OutOfFlowKind::IcbAbsolute)
         {

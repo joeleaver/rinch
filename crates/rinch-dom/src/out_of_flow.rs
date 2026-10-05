@@ -147,7 +147,10 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
     if matches!(node.computed_style.display, DisplayValue::None) {
         return None;
     }
-    match node.computed_style.position {
+    // `box_position`, not the computed `position`: a `display: contents`
+    // element generates no box for `position` to apply to (#1038), so it has
+    // no containing block to resolve against and nothing to place.
+    match node.box_position() {
         PositionValue::Fixed => Some(OutOfFlowKind::Fixed),
         PositionValue::Absolute => {
             let mut current = node.parent?;
@@ -339,7 +342,7 @@ pub(crate) fn bake_at_style_site(
     let Some(node) = tree.nodes.get(node_id) else {
         return;
     };
-    let absolute = node.computed_style.position == PositionValue::Absolute;
+    let absolute = node.box_position() == PositionValue::Absolute;
     let mut baked_against_ancestor = false;
     if let Some(kind) = out_of_flow_kind(tree, node_id) {
         let known = ContainingBox::of(tree, kind).filter(|cb| {
@@ -704,9 +707,6 @@ pub(crate) fn is_laid_out(tree: &NodeTree, node_id: RawNodeId, size: (f32, f32))
 /// it stands. `None` when the box is not one this module places.
 fn current_placement(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f32)> {
     let node = tree.get(node_id)?;
-    if node.computed_style.position != PositionValue::Absolute {
-        return None;
-    }
     let kind = out_of_flow_kind(tree, node_id)?;
     if !is_laid_out(tree, node_id, (node.layout.width, node.layout.height)) {
         return None;
@@ -816,7 +816,7 @@ impl RinchDocument {
                 .tree
                 .nodes
                 .get(id)
-                .is_some_and(|n| n.computed_style.position == PositionValue::Absolute);
+                .is_some_and(|n| n.box_position() == PositionValue::Absolute);
             if !live {
                 // Freed, or no longer absolute: a superset entry to drop.
                 self.tree.absolute_registry.remove(&id);

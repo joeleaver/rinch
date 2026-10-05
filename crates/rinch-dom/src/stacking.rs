@@ -87,9 +87,9 @@
 //! **Known gap.** The root's own bracket is applied unconditionally, so an
 //! absolute hoisted to a root that clips but establishes no containing block —
 //! `opacity: 0.9; overflow: hidden` on a static box, and nothing positioned
-//! between — is clipped by it where CSS would not. It is the same shape as
-//! #386's "the nearest positioned ancestor is not the direct parent" and needs
-//! the clip moved off the bracket to fix.
+//! between — is clipped by it where CSS would not. Layout places such a box
+//! against its real containing block (#386); this is the paint half of that
+//! shape, and needs the clip moved off the bracket to fix.
 //!
 //! # Transforms
 //!

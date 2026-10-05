@@ -1077,7 +1077,7 @@ mod painted_fixed {
     /// body escaped every clip on the way. Paint and hit testing agree here, so
     /// this is a consistent deviation and not the drift #324 exists to end, and
     /// nothing in-tree has the shape. It is still a regression, and the fix is
-    /// architectural: tracked in #549 with #386 and #1372.
+    /// architectural: tracked in #549 with #1372.
     ///
     /// If this test starts failing because the box is painted, that is #549
     /// being fixed — invert it, do not delete it.

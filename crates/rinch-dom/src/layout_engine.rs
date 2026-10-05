@@ -1388,7 +1388,7 @@ impl RinchDocument {
             // it would drag a hidden node onto its containing block.
             {
                 let node = &self.tree.nodes[node_id];
-                if node.computed_style.position == crate::computed_style::PositionValue::Absolute
+                if node.box_position() == crate::computed_style::PositionValue::Absolute
                     && let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id)
                     && crate::out_of_flow::is_laid_out(
                         &self.tree,

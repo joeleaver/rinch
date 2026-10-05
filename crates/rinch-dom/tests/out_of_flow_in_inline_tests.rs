@@ -666,9 +666,10 @@ fn an_absolute_in_a_multi_line_run_agrees_with_its_twin() {
 /// §10.1) and rinch does not model that: the insets resolve against the block
 /// container, so `top: 0; left: 0` lands at the container's `(0, 0)` where
 /// Chrome lands at the span's first fragment — `(34.7, 1)` with `lead ` before
-/// the span, `(0, 1)` without. Same class as #386 (the containing block is a
-/// positioned ancestor that is not the Taffy parent), one level worse because
-/// this ancestor has no box in Taffy at all. Filed as #631; this fixture pins that the
+/// the span, `(0, 1)` without. Same class as the case #386 corrected (the
+/// containing block is a positioned ancestor that is not the Taffy parent),
+/// one level worse because this ancestor has no box in Taffy at all, which is
+/// why `out_of_flow_kind` leaves it alone. Filed as #631; this fixture pins that the
 /// box is laid out, reachable, painted, and states the number it gets.
 #[test]
 fn an_absolute_in_a_relative_inline_is_laid_out_and_the_containing_block_is_stated() {
