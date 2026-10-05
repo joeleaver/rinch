@@ -231,7 +231,10 @@ impl Soup {
             8 => (format!("{t}&nosuchname; "), format!("{t}&nosuchname;")),
             9 => (format!("{t}<3 "), format!("{t}<3")),
             10 => (format!("{t} R&D "), format!("{t}R&D")),
-            11 => (format!("{t}\u{e9}\u{4e2d}\u{1f600} "), format!("{t}\u{e9}\u{4e2d}\u{1f600}")),
+            11 => (
+                format!("{t}\u{e9}\u{4e2d}\u{1f600} "),
+                format!("{t}\u{e9}\u{4e2d}\u{1f600}"),
+            ),
             _ => (t.clone(), t.clone()),
         };
         out.push_str(&src);
@@ -260,7 +263,9 @@ impl Soup {
             }
             3 => {
                 let t = self.hidden_token();
-                out.push_str(&format!("<script>var a = \"{t} < b\"; if (a<b) {{}}</script>"));
+                out.push_str(&format!(
+                    "<script>var a = \"{t} < b\"; if (a<b) {{}}</script>"
+                ));
             }
             4 => {
                 let (a, b) = (self.hidden_token(), self.hidden_token());
@@ -316,7 +321,11 @@ impl Soup {
     fn inline(&mut self, depth: usize, out: &mut String) -> String {
         let mut shown = String::new();
         for _ in 0..1 + self.rng.below(3) {
-            let pick = if depth >= 4 { self.rng.below(5) } else { self.rng.below(16) };
+            let pick = if depth >= 4 {
+                self.rng.below(5)
+            } else {
+                self.rng.below(16)
+            };
             match pick {
                 0..=3 => shown += &self.text(out),
                 4 => out.push_str(self.rng.pick(&[
@@ -354,7 +363,13 @@ impl Soup {
                 12 => {
                     self.risky();
                     out.push_str(self.rng.pick(&[
-                        "</span>", "</o:p>", "</b>", "</a>", "</font>", "</my-widget>", "</>",
+                        "</span>",
+                        "</o:p>",
+                        "</b>",
+                        "</a>",
+                        "</font>",
+                        "</my-widget>",
+                        "</>",
                         "</ >",
                     ]));
                 }
@@ -457,7 +472,10 @@ impl Soup {
     /// A row. Returns (text moved in front of the table, the cells' text).
     fn row(&mut self, depth: usize, out: &mut String) -> (String, String) {
         let (mut front, mut cells) = (String::new(), String::new());
-        out.push_str(self.rng.pick(&["<tr>", "<tr style='height:15.0pt'>", "<TR>"]));
+        out.push_str(
+            self.rng
+                .pick(&["<tr>", "<tr style='height:15.0pt'>", "<TR>"]),
+        );
         self.cell_open = false;
         for _ in 0..1 + self.rng.below(3) {
             if !self.cell_open && self.rng.chance(8) {
@@ -605,7 +623,11 @@ impl Soup {
 
     fn block(&mut self, depth: usize, out: &mut String) -> String {
         let mut shown = String::new();
-        let pick = if depth >= 4 { self.rng.below(6) } else { self.rng.below(24) };
+        let pick = if depth >= 4 {
+            self.rng.below(6)
+        } else {
+            self.rng.below(24)
+        };
         match pick {
             0..=5 => {
                 let open = self.rng.pick(BLOCK_TEXT_TAGS);
@@ -645,17 +667,34 @@ impl Soup {
             14 | 15 => shown += &self.table(depth, out),
             16 | 17 => shown += &self.bare_table_parts(depth, out),
             18 => {
-                out.push_str(self.rng.pick(&["<pre>", "<pre><code>", "<pre class=\"x\">\n"]));
+                out.push_str(
+                    self.rng
+                        .pick(&["<pre>", "<pre><code>", "<pre class=\"x\">\n"]),
+                );
                 shown += &self.inline(depth + 1, out);
                 out.push_str("</pre>");
             }
-            19 => out.push_str(self.rng.pick(&["<hr>", "<br>", "<hr/>", "<hr size=2 width=\"100%\">"])),
+            19 => out.push_str(self.rng.pick(&[
+                "<hr>",
+                "<br>",
+                "<hr/>",
+                "<hr size=2 width=\"100%\">",
+            ])),
             20 => shown += &self.hidden(out),
             21 => {
                 self.risky();
                 out.push_str(self.rng.pick(&[
-                    "</div>", "</p>", "</td>", "</tr>", "</table>", "</li>", "</ul>", "</o:p>",
-                    "</body>", "</html>", "</section>",
+                    "</div>",
+                    "</p>",
+                    "</td>",
+                    "</tr>",
+                    "</table>",
+                    "</li>",
+                    "</ul>",
+                    "</o:p>",
+                    "</body>",
+                    "</html>",
+                    "</section>",
                 ]));
             }
             _ => shown += &self.inline(depth + 1, out),
@@ -717,7 +756,12 @@ fn doc_text(node: &Node, out: &mut String) {
 /// Every node's content satisfies its type's expression and carries only the
 /// marks its parent allows.
 fn validity(node: &Node) -> Result<(), String> {
-    let names: Vec<&str> = node.content().children().iter().map(Node::type_name).collect();
+    let names: Vec<&str> = node
+        .content()
+        .children()
+        .iter()
+        .map(Node::type_name)
+        .collect();
     if !node.node_type().content_match().matches(&names) {
         return Err(format!("<{}> holds {names:?}", node.type_name()));
     }
@@ -786,7 +830,11 @@ fn check(
     if order_known && no_space(&text) != no_space(expected) {
         return Err((
             "text differs",
-            format!("\n   read {:?}\n wanted {:?}", no_space(&text), no_space(expected)),
+            format!(
+                "\n   read {:?}\n wanted {:?}",
+                no_space(&text),
+                no_space(expected)
+            ),
         ));
     }
     let written = node_to_html(&doc);
@@ -846,8 +894,14 @@ fn any_html_reads_to_a_valid_document_holding_all_of_its_text() {
         }
     }
     // The generator generates: most cases have text, and an order to check.
-    assert!(tokens as u64 > seeds * 4, "{tokens} tokens in {seeds} cases");
-    assert!(with_order as u64 * 2 > seeds, "{with_order} of {seeds} ordered");
+    assert!(
+        tokens as u64 > seeds * 4,
+        "{tokens} tokens in {seeds} cases"
+    );
+    assert!(
+        with_order as u64 * 2 > seeds,
+        "{with_order} of {seeds} ordered"
+    );
     if tally {
         for (kind, (count, first)) in &kinds {
             println!("{count:6} {kind}   first: {first}");
@@ -864,7 +918,11 @@ fn read(html: &str) -> String {
             let written = node_to_html(&doc);
             // `node_to_html` of a doc writes its children.
             let again = load(&schema, &written).unwrap();
-            assert_eq!(again.as_ref(), Some(&doc), "{html} is not a fixed point: {written}");
+            assert_eq!(
+                again.as_ref(),
+                Some(&doc),
+                "{html} is not a fixed point: {written}"
+            );
             written
         }
         None => String::new(),
@@ -914,7 +972,10 @@ fn an_unknown_element_is_inline_unless_it_holds_a_block() {
 #[test]
 fn text_a_browser_shows_is_never_dropped() {
     assert_eq!(read("<p>a <button>b</button> c</p>"), "<p>a b c</p>");
-    assert_eq!(read("<p>a <textarea>b &amp; c</textarea></p>"), "<p>a b &amp; c</p>");
+    assert_eq!(
+        read("<p>a <textarea>b &amp; c</textarea></p>"),
+        "<p>a b &amp; c</p>"
+    );
     assert_eq!(
         read("<table><caption>cap</caption><tr><td>x</td></tr></table>"),
         "<p>cap</p><table><tr><td><p>x</p></td></tr></table>"
@@ -923,7 +984,10 @@ fn text_a_browser_shows_is_never_dropped() {
         read("<table>loose<tr>in row<td>x</td></tr></table>"),
         "<p>loosein row</p><table><tr><td><p>x</p></td></tr></table>"
     );
-    assert_eq!(read("<form><p>a</p><label>b</label></form>"), "<p>a</p><p>b</p>");
+    assert_eq!(
+        read("<form><p>a</p><label>b</label></form>"),
+        "<p>a</p><p>b</p>"
+    );
     assert_eq!(read("a < b, c<3, R&D"), "<p>a &lt; b, c&lt;3, R&amp;D</p>");
 }
 
@@ -942,9 +1006,15 @@ fn hidden_text_is_not_read() {
         read("<p><![if !supportLists]><span>1.</span><![endif]>item</p>"),
         "<p>1.item</p>"
     );
-    assert_eq!(read("<?xml version=\"1.0\"?><!DOCTYPE html><p>a</p>"), "<p>a</p>");
+    assert_eq!(
+        read("<?xml version=\"1.0\"?><!DOCTYPE html><p>a</p>"),
+        "<p>a</p>"
+    );
     // An unclosed <head> ends where the body starts.
-    assert_eq!(read("<html><head><title>t</title><body><p>a</p>"), "<p>a</p>");
+    assert_eq!(
+        read("<html><head><title>t</title><body><p>a</p>"),
+        "<p>a</p>"
+    );
 }
 
 /// #1392: table parts with no `<table>` around them are read as a table.
@@ -1007,12 +1077,17 @@ fn a_mark_around_blocks_leaves_hard_breaks_bare() {
 /// (Chrome does the same, at 512).
 #[test]
 fn deep_nesting_reads_without_overflowing_the_stack() {
-    for tag in ["div", "blockquote", "span", "b", "ul><li", "table><tr><td", "o:p", "x-y"] {
-        let close: String = tag
-            .split('>')
-            .rev()
-            .map(|t| format!("</{t}>"))
-            .collect();
+    for tag in [
+        "div",
+        "blockquote",
+        "span",
+        "b",
+        "ul><li",
+        "table><tr><td",
+        "o:p",
+        "x-y",
+    ] {
+        let close: String = tag.split('>').rev().map(|t| format!("</{t}>")).collect();
         let html = format!(
             "{}deep{}<p>after</p>",
             format!("<{tag}>").repeat(10_000),
@@ -1044,34 +1119,88 @@ fn reading_is_linear_in_the_input() {
     let deep = |tag: &str, n: usize| format!("<{tag}>").repeat(n);
     type Shape = (&'static str, Box<dyn Fn(usize) -> String>);
     let shapes: Vec<Shape> = vec![
-        ("word paragraphs", Box::new(|n| "<p class=MsoNormal>text<o:p></o:p></p>\r\n".repeat(n))),
-        ("list items", Box::new(|n| format!("<ul>{}</ul>", "<li>item".repeat(n)))),
+        (
+            "word paragraphs",
+            Box::new(|n| "<p class=MsoNormal>text<o:p></o:p></p>\r\n".repeat(n)),
+        ),
+        (
+            "list items",
+            Box::new(|n| format!("<ul>{}</ul>", "<li>item".repeat(n))),
+        ),
         ("bare items", Box::new(|n| "<li>item</li>\n".repeat(n))),
-        ("table rows", Box::new(|n| format!("<table>{}</table>", "<tr><td>a<td>b".repeat(n)))),
-        ("bare rows", Box::new(|n| "<tr><td>a</td>stray<td>b</td></tr>".repeat(n))),
+        (
+            "table rows",
+            Box::new(|n| format!("<table>{}</table>", "<tr><td>a<td>b".repeat(n))),
+        ),
+        (
+            "bare rows",
+            Box::new(|n| "<tr><td>a</td>stray<td>b</td></tr>".repeat(n)),
+        ),
         ("unclosed inline", Box::new(|n| "<b><i><span>x".repeat(n))),
-        ("unclosed blocks", Box::new(|n| "<div><blockquote><p>x".repeat(n))),
-        ("stray end tags", Box::new(move |n| format!("{}{}", deep("div", 200), "x</p></span></o:p></td>".repeat(n)))),
+        (
+            "unclosed blocks",
+            Box::new(|n| "<div><blockquote><p>x".repeat(n)),
+        ),
+        (
+            "stray end tags",
+            Box::new(move |n| {
+                format!(
+                    "{}{}",
+                    deep("div", 200),
+                    "x</p></span></o:p></td>".repeat(n)
+                )
+            }),
+        ),
         (
             // Every <div> looks through 100 open spans for a <p> to end.
             "a far barrier",
-            Box::new(move |n| format!("<p><button>{}{}", deep("span", 100), "<div>x</div>".repeat(n))),
+            Box::new(move |n| {
+                format!(
+                    "<p><button>{}{}",
+                    deep("span", 100),
+                    "<div>x</div>".repeat(n)
+                )
+            }),
         ),
         (
             "deep chains of nothing",
-            Box::new(move |n| format!("{}{}", deep("div", 150), "</div>".repeat(150)).repeat(n / 50)),
+            Box::new(move |n| {
+                format!("{}{}", deep("div", 150), "</div>".repeat(150)).repeat(n / 50)
+            }),
         ),
         (
             "deep chains of text",
-            Box::new(move |n| format!("{}x{}", deep("div", 150), "</div>".repeat(150)).repeat(n / 50)),
+            Box::new(move |n| {
+                format!("{}x{}", deep("div", 150), "</div>".repeat(150)).repeat(n / 50)
+            }),
         ),
         (
             "marks around blocks",
-            Box::new(move |n| format!("{}{}", deep("strong><em><a href=x", 40), "<p>a<br>b</p>".repeat(n))),
+            Box::new(move |n| {
+                format!(
+                    "{}{}",
+                    deep("strong><em><a href=x", 40),
+                    "<p>a<br>b</p>".repeat(n)
+                )
+            }),
         ),
-        ("inline wrappers", Box::new(|n| "<span><o:p><font>a</font></o:p> </span><b>b</b> ".repeat(n))),
-        ("text and entities", Box::new(|n| "a &amp; b &#233; < c <!-- d --> ".repeat(n))),
-        ("code lines", Box::new(|n| format!("<div style=\"white-space:pre\">{}</div>", "<div><span>x</span></div>".repeat(n)))),
+        (
+            "inline wrappers",
+            Box::new(|n| "<span><o:p><font>a</font></o:p> </span><b>b</b> ".repeat(n)),
+        ),
+        (
+            "text and entities",
+            Box::new(|n| "a &amp; b &#233; < c <!-- d --> ".repeat(n)),
+        ),
+        (
+            "code lines",
+            Box::new(|n| {
+                format!(
+                    "<div style=\"white-space:pre\">{}</div>",
+                    "<div><span>x</span></div>".repeat(n)
+                )
+            }),
+        ),
     ];
     for (name, shape) in &shapes {
         let steps = |n: usize| {
@@ -1095,4 +1224,47 @@ fn reading_is_linear_in_the_input() {
             shape(2000).len()
         );
     }
+}
+
+/// A schema with no tables, lists, headings or code: their text is read as
+/// paragraphs, and nothing is refused.
+#[test]
+fn a_schema_with_only_paragraphs_still_gets_all_the_text() {
+    use rinch_editor_core::schema::NodeSpec;
+    let mut paragraph = NodeSpec::block("paragraph");
+    paragraph.parse_html_tags = vec!["p".into()];
+    let schema = Schema::builder()
+        .node("doc", NodeSpec::builder("doc").content("block+").build())
+        .node("paragraph", paragraph)
+        .node(
+            "text",
+            NodeSpec::builder("text").group("inline").inline().build(),
+        )
+        .node(
+            "list_item",
+            NodeSpec::builder("list_item").content("paragraph+").build(),
+        )
+        .top_node("doc")
+        .build();
+    let html = "<h1>t1q<br>t2q</h1><ul><li>t3q<li>t4q</ul><table><caption>t5q</caption>\
+                <tr><td>t6q<td>t7q</table><pre>t8q</pre><td>t9q</td><strong><p>t10q</p></strong>\
+                <div style=\"white-space:pre\"><div>t11q</div></div><o:p>t12q</o:p>";
+    let doc = load(&schema, html).unwrap().expect("content");
+    validity(&doc).unwrap();
+    let mut text = String::new();
+    doc_text(&doc, &mut text);
+    for n in 1..=12 {
+        assert_eq!(
+            text.matches(&format!("t{n}q")).count(),
+            1,
+            "t{n}q in {text:?}"
+        );
+    }
+    assert!(
+        doc.content()
+            .children()
+            .iter()
+            .all(|b| b.type_name() == "paragraph"),
+        "{doc:?}"
+    );
 }

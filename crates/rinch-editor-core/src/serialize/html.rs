@@ -9,12 +9,22 @@
 //! explicitly, mirroring ProseMirror's per-type `toDOM`/`parseDOM`.
 //!
 //! HTML is a **lossy clipboard interchange** — the durable, total format is
-//! [`super::doc_json`]. The parse direction is a **whitelist**: unknown tags,
-//! marks, and attributes are dropped; `<script>`/`<iframe>`/`<object>`/`<embed>`
-//! never materialize; `javascript:`/`vbscript:` URLs are stripped. This kills the
-//! audit's raw-DOM-paste hole.
+//! [`super::doc_json`]. The parse direction is a **whitelist** of what a
+//! document can hold: an element the schema has no node or mark for gives
+//! none, unknown attributes are dropped, `<script>`/`<iframe>`/`<object>`/`<embed>`
+//! never materialize, and `javascript:`/`vbscript:` URLs are stripped. This
+//! kills the audit's raw-DOM-paste hole.
 //!
-//! The zero-dependency tokenizer is salvaged from `rinch/src/app/html_parser.rs`.
+//! It is **total about text** (#1397): whatever the markup, every character
+//! of text a browser would show for it is in what [`slice_from_html`]
+//! returns, and what a browser hides (comments, `<style>`, `<head>`) is not.
+//! An element the reader has no node or mark for is read through, for its
+//! content. Not read: what is not text content (an `<input>`'s value, a
+//! `<select>`'s options, an image's `alt` when the image is refused), the
+//! fallback content of embedded content (`<object>`, `<video>`, `<canvas>`),
+//! and `<svg>` and `<math>`.
+//!
+//! The tree builder is [`super::html_tree`], zero-dependency.
 
 use super::html_integer::{parse_html_clamped_non_negative_integer, parse_html_integer};
 use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
@@ -341,8 +351,14 @@ fn escape_attr(s: &str) -> String {
 /// textblock's content continues the line it is pasted on and the last one
 /// takes the text after the caret, while everything between keeps its
 /// structure. An edge that reaches no textblock (a rule, a table) is closed.
-/// Unknown tags/marks/attrs are dropped; dangerous elements never
-/// materialize.
+///
+/// It does not fail on markup, and the content is always valid: what the
+/// reader has no node for is read through for its text (an element that holds
+/// a block is a container of blocks, any other is inline), table parts with
+/// no `<table>` around them are a table, and what has no place in a table
+/// goes in front of it. Unknown marks and attributes are dropped; dangerous
+/// elements never materialize. The only errors are a schema with no
+/// paragraph or list item type, and attributes the schema refuses.
 ///
 /// [`Transaction::replace_selection`]: crate::state::Transaction::replace_selection
 pub fn slice_from_html(schema: &Schema, html: &str) -> Result<Slice, EditorError> {
@@ -702,7 +718,8 @@ impl<'a> HtmlParser<'a> {
                 }
             }
             Some(nt) if *holds_block && nt.is_textblock() && Some(*nt) != self.code_block => {
-                return self.read_textblock_around_blocks(nt, tag, attributes, children, loose_as, b);
+                return self
+                    .read_textblock_around_blocks(nt, tag, attributes, children, loose_as, b);
             }
             Some(nt) if !is_table_part(tag) => {
                 self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
@@ -849,7 +866,11 @@ impl<'a> HtmlParser<'a> {
 
     /// A code block of the text under `children`, one line per block-level
     /// element and per `<br>`.
-    fn build_code_block(&self, nt: &NodeType, children: &[ParsedNode]) -> Result<Node, EditorError> {
+    fn build_code_block(
+        &self,
+        nt: &NodeType,
+        children: &[ParsedNode],
+    ) -> Result<Node, EditorError> {
         let mut text = String::new();
         let mut line_break = false;
         self.collect_text(children, &mut text, &mut line_break);
@@ -877,7 +898,9 @@ impl<'a> HtmlParser<'a> {
                     if is_dropped(tag) {
                         continue;
                     }
-                    if self.hard_break.is_some() && self.inline_leaf.get(tag.as_str()).copied() == self.hard_break {
+                    if self.hard_break.is_some()
+                        && self.inline_leaf.get(tag.as_str()).copied() == self.hard_break
+                    {
                         if std::mem::take(line_break) && !out.ends_with('\n') {
                             out.push('\n');
                         }

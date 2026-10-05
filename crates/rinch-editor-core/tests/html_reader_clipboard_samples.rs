@@ -11,7 +11,12 @@ use rinch_editor_core::serialize::{node_to_html, slice_from_html};
 use rinch_editor_core::{Node, Schema};
 
 fn valid(node: &Node) {
-    let names: Vec<&str> = node.content().children().iter().map(Node::type_name).collect();
+    let names: Vec<&str> = node
+        .content()
+        .children()
+        .iter()
+        .map(Node::type_name)
+        .collect();
     assert!(
         node.node_type().content_match().matches(&names),
         "<{}> holds {names:?}",
@@ -373,37 +378,112 @@ fn all_the_text_arrives() {
         (
             WORD,
             &[
-                "Quarterly", "Paris", "up", "12%", "First point", "Second point", "Region", "Total",
-                "North", "1,200", "the full report", "long.",
+                "Quarterly",
+                "Paris",
+                "up",
+                "12%",
+                "First point",
+                "Second point",
+                "Region",
+                "Total",
+                "North",
+                "1,200",
+                "the full report",
+                "long.",
             ],
-            &["Normal", "MsoNormal", "Calibri", "AllowPNG", "Table Normal", "Style Definitions"],
+            &[
+                "Normal",
+                "MsoNormal",
+                "Calibri",
+                "AllowPNG",
+                "Table Normal",
+                "Style Definitions",
+            ],
         ),
-        (EXCEL, &["Name", "Qty", "Apples & pears", "3"], &["mso-displayed", "xl65", "padding"]),
+        (
+            EXCEL,
+            &["Name", "Qty", "Apples & pears", "3"],
+            &["mso-displayed", "xl65", "padding"],
+        ),
         (EXCEL_ROWS, &["Name", "Qty", "Apples & pears", "3"], &[]),
-        (SHEETS, &["Name", "Qty", "Apples", "3"], &["border", "mso-data"]),
+        (
+            SHEETS,
+            &["Name", "Qty", "Apples", "3"],
+            &["border", "mso-data"],
+        ),
         (
             DOCS,
-            &["Trip plan", "Leave on", "Friday", "the map", "Tickets", "Train", "Hotel"],
+            &[
+                "Trip plan",
+                "Leave on",
+                "Friday",
+                "the map",
+                "Tickets",
+                "Train",
+                "Hotel",
+            ],
             &["docs-internal"],
         ),
         (
             NOTION,
-            &["Launch notes", "v2", "--fast", "Docs", "API page", "Blog post", "changelog", "More",
-              "Hidden detail", "Third", "Quote"],
+            &[
+                "Launch notes",
+                "v2",
+                "--fast",
+                "Docs",
+                "API page",
+                "Blog post",
+                "changelog",
+                "More",
+                "Hidden detail",
+                "Third",
+                "Quote",
+            ],
             &[],
         ),
         (
             GITHUB,
-            &["Install", "cargo add", "build", "cargo add rinch", "./run", "done", "to do", "Flag",
-              "Default", "--fast", "off"],
+            &[
+                "Install",
+                "cargo add",
+                "build",
+                "cargo add rinch",
+                "./run",
+                "done",
+                "to do",
+                "Flag",
+                "Default",
+                "--fast",
+                "off",
+            ],
             &["Permalink", "m7.775"],
         ),
-        (VS_CODE, &["fn", "main", "let", "x", "1", "2", "}"], &["Consolas"]),
-        (APPLE_MAIL, &["Hi Sam", "See you", "there", "On 3 May", "Are you coming?"], &[]),
+        (
+            VS_CODE,
+            &["fn", "main", "let", "x", "1", "2", "}"],
+            &["Consolas"],
+        ),
+        (
+            APPLE_MAIL,
+            &["Hi Sam", "See you", "there", "On 3 May", "Are you coming?"],
+            &[],
+        ),
         (
             SLACK,
-            &["Hello", "team", "the doc", "@sam", "second line", "x = 1", "one", "two", "let a",
-              "let b", "quoted", "words"],
+            &[
+                "Hello",
+                "team",
+                "the doc",
+                "@sam",
+                "second line",
+                "x = 1",
+                "one",
+                "two",
+                "let a",
+                "let b",
+                "quoted",
+                "words",
+            ],
             &[],
         ),
     ];
@@ -415,7 +495,10 @@ fn all_the_text_arrives() {
             if let Some(t) = node.text() {
                 out.push_str(t);
             }
-            node.content().children().iter().for_each(|c| gather(c, out));
+            node.content()
+                .children()
+                .iter()
+                .for_each(|c| gather(c, out));
             if node.is_block() {
                 out.push('\n');
             }

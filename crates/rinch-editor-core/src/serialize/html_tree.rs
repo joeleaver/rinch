@@ -535,7 +535,9 @@ impl<'a> HtmlFragmentParser<'a> {
         if closes_p(tag) {
             self.close_nearest(
                 |open| open == "p",
-                |open| open == "button" || open == "object" || open == "table" || is_table_part(open),
+                |open| {
+                    open == "button" || open == "object" || open == "table" || is_table_part(open)
+                },
             );
         }
         match tag {
@@ -558,7 +560,9 @@ impl<'a> HtmlFragmentParser<'a> {
             ),
             "tr" => self
                 .close_in_table(|open| matches!(open, "tr" | "td" | "th" | "caption" | "colgroup")),
-            "tbody" | "thead" | "tfoot" | "caption" | "colgroup" => self.close_in_table(is_table_part),
+            "tbody" | "thead" | "tfoot" | "caption" | "colgroup" => {
+                self.close_in_table(is_table_part)
+            }
             _ => {}
         }
     }

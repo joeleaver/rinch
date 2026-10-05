@@ -7,7 +7,12 @@ use rinch_editor_view::create_editor;
 
 /// Every node's content satisfies its type's expression.
 fn assert_valid(node: &Node) {
-    let names: Vec<&str> = node.content().children().iter().map(Node::type_name).collect();
+    let names: Vec<&str> = node
+        .content()
+        .children()
+        .iter()
+        .map(Node::type_name)
+        .collect();
     assert!(
         node.node_type().content_match().matches(&names),
         "<{}> holds {names:?}",
@@ -91,7 +96,14 @@ fn a_paste_from_word_keeps_every_paragraph() {
 /// elements at once, so neither it nor anything after it runs out of stack.
 #[test]
 fn deeply_nested_markup_loads_and_pastes() {
-    for tag in ["div", "blockquote", "span", "ul><li", "table><tr><td", "strong><div"] {
+    for tag in [
+        "div",
+        "blockquote",
+        "span",
+        "ul><li",
+        "table><tr><td",
+        "strong><div",
+    ] {
         let html = format!("{}deep<p>after</p>", format!("<{tag}>").repeat(10_000));
         let e = create_editor();
         assert!(e.load_html(&html), "{tag}");
