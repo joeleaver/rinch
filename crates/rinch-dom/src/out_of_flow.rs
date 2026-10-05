@@ -379,15 +379,11 @@ pub(crate) fn bake_at_style_site(
     }
     // The style handed in was built from the computed values, so a box that
     // is not ancestor-resolved now carries no ancestor's size. The set is
-    // touched only when the answer changed; every other node — nearly all of
-    // them — pays a flag compare.
-    let recorded = node.abs_ancestor_recorded;
-    if ancestor != recorded {
-        if ancestor {
-            tree.ancestor_absolutes.insert(node_id);
-        } else {
-            tree.ancestor_absolutes.remove(&node_id);
-        }
+    // touched only when a box becomes ancestor-resolved; one that stops
+    // being is dropped from it by the pass that iterates it. Every other
+    // node — nearly all of them — pays a flag read.
+    if ancestor && !node.abs_ancestor_recorded {
+        tree.ancestor_absolutes.insert(node_id);
     }
     let node = &mut tree.nodes[node_id];
     node.abs_ancestor_recorded = ancestor;

@@ -1300,3 +1300,29 @@ fn a_position_only_box_follows_a_change_of_containing_block() {
         "viewport again",
     );
 }
+
+/// An `inline-block` between the box and its containing block is given its
+/// line position by its inline formatting context **after** the layout
+/// read-back has placed the box, so a layout that moves the `inline-block`
+/// along its line has to place the box a second time
+/// (`out_of_flow::replace_all`, told by `NodeTree::abs_late_moves`). Nothing
+/// else in this layout is written late: the line is the containing block's
+/// only content, so no anonymous block box stands for it.
+#[test]
+fn an_inline_block_moved_along_its_line_does_not_carry_the_box() {
+    let mut c = Case::new(&format!(
+        r#"<div data-cb style="{CB}font-size: 16px; line-height: 20px;"><span data-m="sp" style="display: inline-block; width: 50px; height: 10px"></span><span data-m="ib" style="display: inline-block; width: 60px; height: 20px">{}</span></div>"#,
+        abs("abs", "left: 7px; top: 9px; width: 5px; height: 5px", "")
+    ));
+    assert_rect(c.rect("abs"), [7.0, 9.0, 5.0, 5.0], "first layout");
+    let ib_before = c.rect("ib")[0];
+    let sp = c.id("sp");
+    c.doc.set_attribute(
+        NodeId(sp),
+        "style",
+        "display: inline-block; width: 90px; height: 10px",
+    );
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(c.rect("ib")[0] - ib_before, 40.0, "the inline-block moved");
+    assert_rect(c.rect("abs"), [7.0, 9.0, 5.0, 5.0], "the box did not");
+}

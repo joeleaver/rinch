@@ -2015,7 +2015,12 @@ fn badge_rows(variant: &str) -> (RinchDocument, NodeId, NodeId) {
 /// block resizes, so no badge is re-sized or moves.
 fn badge_relayout(doc: &mut RinchDocument, leaf: NodeId) -> FrameStats {
     doc.tree.perf.reset();
-    doc.set_attribute(leaf, "style", "margin-left: 3px");
+    let next = if doc.get_attribute(leaf, "style").is_some() {
+        "margin-right: 3px"
+    } else {
+        "margin-left: 3px"
+    };
+    doc.set_attribute(leaf, "style", next);
     doc.resolve_layout(VP.0, VP.1);
     doc.tree.perf.end_frame()
 }
@@ -2144,6 +2149,25 @@ fn icb_boxes_inside_a_scroller_are_visited_once_per_layout_and_once_per_scroll()
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 2),
             (AbsBoxesVisited, 40),
+        ],
+    );
+
+    // The next layout clamps nothing, and is back to one look per box.
+    let s = badge_relayout(&mut doc, leaf);
+    expect(
+        "icb badges, the layout after the clamp",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 20),
         ],
     );
 
