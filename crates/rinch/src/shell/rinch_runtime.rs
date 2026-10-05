@@ -1118,10 +1118,20 @@ impl RinchRuntime {
         let mut compositor_viewport_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
+        // A viewport that says it is not ready (`data-viewport-ready`) gets no
+        // layer (#348): paint cuts it no hole and its node paints its own
+        // background, and a layer under a node whose background is transparent
+        // would show its last frame where the software backend shows none.
+        let mut skipped_unready = false;
+
         // Collect compositor-path surface frames (video, GameViewport — not RenderSurface)
         {
             let surface_frames = crate::render_surface::collect_surface_frames();
             for (viewport_name, pixels, surf_w, surf_h) in surface_frames {
+                if !self.app.viewport_ready(&viewport_name) {
+                    skipped_unready = true;
+                    continue;
+                }
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
                     compositor_viewport_names.insert(viewport_name.clone());
@@ -1207,6 +1217,13 @@ impl RinchRuntime {
                         .app
                         .viewport_clip_rect(&viewport_name)
                         .map(|cr| (cr.0 * s, cr.1 * s, cr.2 * s, cr.3 * s));
+                    if !self.app.viewport_ready(&viewport_name) {
+                        // Sized above, so the app goes on rendering at the
+                        // right size; only the layer is withheld.
+                        skipped_unready = true;
+                        compositor_viewport_names.remove(&viewport_name);
+                        continue;
+                    }
                     if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
                         gpu_layers.push(super::desktop::GpuTextureLayer {
                             view: ts.view.clone(),
@@ -1225,7 +1242,11 @@ impl RinchRuntime {
         // cycle, but a video is still loaded, so the renderer keeps compositing
         // last cycle's layers. Those layers still need their holes.
         let mut retaining_layers = false;
-        if !all_layers.is_empty() || !gpu_layers.is_empty() {
+        //
+        // A layer withheld for a not-ready viewport is not that case: the
+        // layers are replaced, by nothing if need be, so last cycle's frame of
+        // it is not what stays composited.
+        if !all_layers.is_empty() || !gpu_layers.is_empty() || skipped_unready {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
         } else if renderer.has_composite_layers() {

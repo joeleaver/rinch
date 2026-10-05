@@ -1101,7 +1101,8 @@ pub fn set_surface_pixels(pixels: Option<HashMap<usize, SurfacePixelData>>) {
 /// `GameViewport` (issue #361). A `data-viewport` node with an entry here paints
 /// its frame inline, during paint, at its own z-order — so anything drawn above
 /// it (a drawer, a modal, a dropdown, a game's HUD) covers it by ordinary paint
-/// order. A node with no entry falls through to normal element painting, which
+/// order. A node with no entry — or one that says it is not ready
+/// ([`viewport_ready`], issue #348) — falls through to normal element painting, which
 /// is what leaves the GPU compositor path untouched: that backend never sets
 /// this map, so every `data-viewport` node there still paints as a plain
 /// element and gets its hole punched.
@@ -2859,16 +2860,23 @@ fn paint_node(
         // the finished pixel buffer instead, clipped only by its
         // overflow-clipping ancestors, which destroyed every overlay above it.
         //
-        // The guard is the map, not the attribute: with no entry for this name
+        // The guard is the map first: with no entry for this name
         // the node falls through to normal element painting, which is what
         // leaves the whole GPU compositor path untouched — that backend never
         // sets `VIEWPORT_PIXELS` at all. A `GameViewport` takes this arm too
         // (issue #361); what sets it apart from video is its hole, below.
+        //
+        // And a node that says it is not ready (#348) falls through the same
+        // way, frame in the map or not: a video that errored mid-stream keeps
+        // its last buffer, and its node's placeholder is what it shows — which
+        // is what the GPU backend shows too, where the layer is not handed to
+        // the compositor.
         NodeKind::Element(_)
-            if node
-                .attributes
-                .get("data-viewport")
-                .is_some_and(|name| has_viewport_pixels(name)) =>
+            if viewport_ready(node)
+                && node
+                    .attributes
+                    .get("data-viewport")
+                    .is_some_and(|name| has_viewport_pixels(name)) =>
         {
             let rect = Rect::new(x, y, x + w, y + h);
             let opacity = node.computed_style.opacity;
