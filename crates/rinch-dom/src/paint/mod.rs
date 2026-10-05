@@ -49,7 +49,10 @@ use crate::computed_style::{
     BackgroundValue, DisplayValue, OverflowValue, PositionValue, VisibilityValue,
 };
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
-use crate::stacking::{ClipSpan, PaintKind, paints_at_stacking_root, stacking_paint_order};
+use crate::stacking::{
+    ClipSpan, PaintKind, PaintOrderKey, Reorder, has_z_ordered_descendant, paints_at_stacking_root,
+    stacking_paint_order,
+};
 
 /// The fraction of the surface at or above which a dirty region is not worth
 /// clipping to, and the software renderer repaints in full instead.
@@ -180,25 +183,38 @@ pub fn compute_damage(
         // `UNBOUNDED` and the frame repaints in full.
         let moved = node.painted.is_some()
             && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
-        if moved
-            && w > 0.0
-            && h > 0.0
+        let moved_layer = moved
             && matches!(
                 node.computed_style.position,
                 PositionValue::Absolute | PositionValue::Fixed | PositionValue::Relative
-            )
-        {
+            );
+        // A box whose place in the paint order changed — it started or
+        // stopped being a stacking context or a positioned layer, or its
+        // `z-index` moved — reorders what its subtree paints against the
+        // boxes around it, wherever the subtree reaches (#1384). One compare
+        // for a node whose order held.
+        let reordered = reorders_subtree(tree, node_id, node);
+        // Whether the subtree reaches past the box's own ink, so that the
+        // node's own clip chain cannot speak for the rects below: a
+        // descendant may escape a clipper the node does not (an absolute one,
+        // #550), and a reordered one is repainted wherever it is.
+        let mut unclipped = false;
+        if (moved_layer || reordered) && w > 0.0 && h > 0.0 {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
-            ink = ink.max(Outsets {
+            let reach = Outsets {
                 left: ax - bounds.x0,
                 top: ay - bounds.y0,
                 right: bounds.x1 - (ax + w),
                 bottom: bounds.y1 - (ay + h),
-            });
+            };
+            unclipped = reordered && reach.exceeds(ink);
+            ink = ink.max(reach);
         }
+        let clip_now = |id: RawNodeId| if unclipped { None } else { clip_now(id) };
+        let clip_then = |id: RawNodeId| if unclipped { None } else { clip_then(id) };
 
         if w > 0.0
             && h > 0.0
@@ -263,8 +279,10 @@ pub fn compute_damage(
         // now and, when it has been painted before, the same subtree where it
         // was then: children that did not move relative to it are not dirty
         // themselves and would otherwise be left behind.
+        // A reordered box-less inline (`opacity` on a span) is in the same
+        // position: its positioned descendants are hoisted out of the line.
         if (w <= 0.0 || h <= 0.0)
-            && node.ifc_root.is_none()
+            && (node.ifc_root.is_none() || reordered)
             && !node.children.is_empty()
             && !matches!(node.computed_style.display, DisplayValue::None)
         {
@@ -350,6 +368,32 @@ pub fn compute_damage(
 
     // Every rect was clamped to the surface as it was added.
     region
+}
+
+/// Whether `node`'s place in the paint order has changed since it was last
+/// painted in a way that reorders what its subtree paints against the boxes
+/// outside it (#1384) — so that the damage owes the subtree's whole reach,
+/// where it is and where it was painted, and not only the node's own rect.
+///
+/// `false` for a node never painted (nothing of its subtree is on screen
+/// under the old order), and for a positioned `z-index: auto` box that became
+/// a stacking context at `z` 0 or the reverse with nothing under it to trap
+/// or release: such a box's entry stays where it was, and so does everything
+/// under it that sorts at `0`.
+fn reorders_subtree(tree: &NodeTree, node_id: RawNodeId, node: &Node) -> bool {
+    let Some(painted) = node.painted.as_ref() else {
+        return false;
+    };
+    match painted.order.reorder(PaintOrderKey::of(node)) {
+        Reorder::None => false,
+        Reorder::Subtree => true,
+        Reorder::Descendants => {
+            // A transform that starts or stops applying also moves every
+            // descendant, hoisted or not.
+            painted.transform.is_some() != node.has_applied_transform()
+                || has_z_ordered_descendant(tree, node_id, &mut 4096)
+        }
+    }
 }
 
 /// The screen rect every clipping ancestor of `node_id` confines its paint to
@@ -765,6 +809,11 @@ impl Outsets {
             right: self.right.max(o.right).max(0.0),
             bottom: self.bottom.max(o.bottom).max(0.0),
         }
+    }
+
+    /// Whether `self` reaches past `o` on any side.
+    fn exceeds(self, o: Self) -> bool {
+        self.left > o.left || self.top > o.top || self.right > o.right || self.bottom > o.bottom
     }
 
     fn grow(self, r: Rect) -> Rect {

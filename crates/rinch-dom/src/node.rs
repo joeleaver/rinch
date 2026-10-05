@@ -3436,6 +3436,10 @@ pub struct PaintedState {
     /// Whether it was a containing block for absolute descendants
     /// ([`Node::establishes_abs_containing_block`]), which ends their escape.
     pub contains_abs: bool,
+    /// Where it sat in the paint order ([`crate::stacking::PaintOrderKey`]).
+    /// A node whose answer has changed since owes the damage everything its
+    /// subtree paints, not only its own rect (#1384).
+    pub order: crate::stacking::PaintOrderKey,
 }
 
 /// A painted transform: the value and its resolved origin, in CSS px.
@@ -3480,6 +3484,7 @@ impl PaintedState {
             clips_y,
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
+            order: crate::stacking::PaintOrderKey::of(node),
         }
     }
 }
