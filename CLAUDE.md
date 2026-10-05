@@ -2977,6 +2977,15 @@ boxes at all): direct-child badges 1.78M → 1.79M instructions, ICB badges
 instructions per ancestor-resolved box per layout, which is the size compare
 and the placement.
 
+**A change of containing block owes a layout whether or not a Taffy style
+changes.** A node that starts or stops establishing a containing block re-syncs
+its absolute descendants (below) *and* sets `layout_dirty`: a box whose size
+does not depend on its containing block (`right: 5px; width: 40px`) has the
+same Taffy style under either, and only the read-back places it. Without that
+it stayed where the old containing block put it until something else laid out
+(`abs_containing_block_tests::a_position_only_box_follows_a_change_of_containing_block`;
+the initial-containing-block half was already so before #386).
+
 **Every site that rebuilds a Taffy style from `computed_style` calls
 `bake_at_style_site`** — the cascade's sync and both tick re-syncs — which is
 also what stops `tick_transitions`/`tick_animations` from dropping a `fixed`

@@ -70,7 +70,9 @@
 //!   is added there and the layout resolved again in the same pass
 //!   ([`note_kind_at_read`]);
 //! - the re-placement after the late position writes iterates
-//!   `NodeTree::placed_absolutes`, the boxes the read-back placed this layout;
+//!   `NodeTree::placed_absolutes`, the boxes the read-back placed this
+//!   layout — and only in a layout where one of those writes moved something
+//!   (`NodeTree::abs_late_moves`, [`replace_all`]);
 //! - a scroll looks at one flag on the scrolled node (`Node::on_abs_chain`,
 //!   set on every box between a placed box and its containing block as the
 //!   read-back walks that chain) and iterates `placed_absolutes` only when it
