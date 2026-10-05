@@ -2480,6 +2480,23 @@ mpv hands a real frame to the compositor (`VideoPlayer::has_frame`, reset by
 A node that carries the attribute must say exactly `"true"` to punch, so a mis-stamped
 value fails safe.
 
+**Which viewports have a frame, and which punch, is a paint input, so a change in it is
+damage** (#349). No DOM write carries it: a surface that unregisters while its
+`data-viewport` node stays in the document, or one that delivers its first frame, changes
+what that node draws with the node untouched. The shell hands every paint's sets to the app
+— `RinchApp::install_viewport_frames` (software: the inline frame map and the hole set) or
+`RinchApp::install_viewport_holes` (GPU: the hole set; `None` is "every viewport punches")
+— and `note_viewport_paint_inputs` compares them with the last paint's
+(`ViewportPaintInputs`) and marks paint-dirty the viewport nodes whose membership in either
+set changed, plus `request_repaint`: the viewport's box on software, a re-encoded scene on
+GPU, and nothing at all on a frame whose sets are the last one's. Before, the cached pixmap
+or scene kept the last frame and its hole until something unrelated repainted that area. A
+shell that calls `rinch_dom::paint::set_active_viewports` itself, around the app, gets none
+of this. `unregister_render_surface` also asks the window for a redraw when it removed a
+registered surface, since a surface can go with nothing else changing. Pins:
+`crates/rinch/src/app/viewport_inputs_349_tests.rs`. The GPU shell's own call site
+(`paint` in `shell/rinch_runtime.rs`) has no fixture: it needs a window and a device.
+
 **Layout invalidation: three paths, two flags.** `resolve_layout` early-returns
 when `tree.layout_dirty` is false (styles resolve, dirty Parley layouts rebuild,
 **no Taffy compute**), and runs the inline-formatting-context setup passes only

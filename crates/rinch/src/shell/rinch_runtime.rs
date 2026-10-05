@@ -1257,11 +1257,18 @@ impl RinchRuntime {
         // on the empty set there would leave those layers hidden behind an
         // unpunched background — the video blinking out for a frame. Fall back
         // to the unfiltered behaviour for exactly that case.
-        if retaining_layers {
-            rinch_dom::paint::set_active_viewports(None);
+        //
+        // Through the app rather than straight into paint: the set is an input
+        // to the scene, so a set that differs from the last paint's has to
+        // repaint the viewports it differs in (issue #349). `build_scene`
+        // otherwise returns the cached scene, with last paint's holes in it —
+        // a hole left behind by a surface that unregistered, or none yet for
+        // one that has just delivered its first frame.
+        self.app.install_viewport_holes(if retaining_layers {
+            None
         } else {
-            rinch_dom::paint::set_active_viewports(Some(compositor_viewport_names));
-        }
+            Some(compositor_viewport_names)
+        });
 
         // Build scene from document — CPU surfaces paint inline via draw_image()
         let scene = self.app.build_scene(scale, size);

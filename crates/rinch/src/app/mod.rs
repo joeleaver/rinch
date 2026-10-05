@@ -226,6 +226,8 @@ mod textarea_vertical_arrow_tests;
 mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod viewport_inputs_349_tests;
 #[cfg(all(test, software_shell))]
 mod visibility_hidden_overlay_paint_tests;
 
@@ -297,6 +299,27 @@ use {
     rinch_debug::{CommandReceiver, DebugCommandKind, DebugResult},
     serde_json::json,
 };
+
+/// Which `data-viewport` nodes the last paint was handed a frame for, and
+/// which of them it let punch a hole (issue #349).
+///
+/// Both sets are inputs to paint that no DOM write carries: a surface that
+/// unregisters, or delivers its first frame, changes what its viewport node
+/// draws while the node itself is untouched. So the shell hands every paint's
+/// sets to [`RinchApp::install_viewport_frames`] /
+/// [`RinchApp::install_viewport_holes`], which compare them with these and
+/// mark the viewports that differ paint-dirty.
+#[cfg(feature = "desktop")]
+#[derive(Default)]
+pub(crate) struct ViewportPaintInputs {
+    /// Names with a frame painted inline (software only; the GPU compositor
+    /// draws its layers outside the scene).
+    frames: std::collections::HashSet<String>,
+    /// `rinch_dom::paint::set_active_viewports`' argument: the names that
+    /// punch, or `None` for "every viewport punches" — which is also what a
+    /// paint nobody installed anything for uses, hence the default.
+    holes: Option<std::collections::HashSet<String>>,
+}
 
 // ── Drag-and-drop state ──────────────────────────────────────────────────────
 
@@ -616,6 +639,10 @@ pub struct RinchApp {
     /// site names its damage (a paint-dirty node, or an overlay rect) and
     /// goes through [`Self::request_repaint`] instead.
     pub(crate) repaint_unattributed: bool,
+    /// The viewport inputs the last paint was handed — see
+    /// [`ViewportPaintInputs`] (issue #349).
+    #[cfg(feature = "desktop")]
+    pub(crate) viewport_inputs: ViewportPaintInputs,
     /// The data-oninput handler ID for the currently focused text input.
     pub(crate) focused_input_handler_id: Option<usize>,
     /// Current accumulated text value for the focused text input.
@@ -841,6 +868,8 @@ impl RinchApp {
             #[cfg(software_shell)]
             last_inspect_rect: None,
             repaint_unattributed: false,
+            #[cfg(feature = "desktop")]
+            viewport_inputs: ViewportPaintInputs::default(),
             focused_input_handler_id: None,
             focused_input_value: String::new(),
             focused_input_baseline: String::new(),
@@ -4738,6 +4767,7 @@ impl RinchApp {
             holes,
             fresh,
         } = frames;
+        self.note_viewport_paint_inputs(frames.keys(), Some(&holes));
         rinch_dom::paint::set_active_viewports(Some(holes));
         if frames.is_empty() {
             return;
@@ -4748,6 +4778,69 @@ impl RinchApp {
             self.mark_viewport_nodes_paint_dirty(&names);
         }
         rinch_dom::paint::set_viewport_pixels(Some(frames));
+    }
+
+    /// Hand this paint the set of viewports that punch a hole — the GPU
+    /// compositor's half of [`Self::install_viewport_frames`], whose frames are
+    /// layers under the scene rather than part of it. `None` is "every viewport
+    /// punches". Call `rinch_dom::paint::set_active_viewports(None)` after
+    /// [`Self::build_scene`].
+    ///
+    /// A set that differs from the last paint's damages the viewports it
+    /// differs in (issue #349): `build_scene` hands back the cached scene
+    /// unless something asked for a repaint, and that scene has last paint's
+    /// holes cut into it.
+    #[cfg(feature = "desktop")]
+    pub fn install_viewport_holes(&mut self, holes: Option<std::collections::HashSet<String>>) {
+        self.note_viewport_paint_inputs(std::iter::empty(), holes.as_ref());
+        rinch_dom::paint::set_active_viewports(holes);
+    }
+
+    /// Compare the viewport inputs this paint is about to use with the last
+    /// paint's, and mark every viewport node whose inputs differ paint-dirty
+    /// (issue #349).
+    ///
+    /// A viewport that gained or lost its frame, or started or stopped
+    /// punching, draws something else in its box — and in its ancestors'
+    /// backgrounds, which the hole is cut from — although no DOM write and no
+    /// new frame says so: a surface that unregisters while its node stays in
+    /// the document is the plain case. The damage is those nodes, so the frame
+    /// stays a partial one. An unchanged set (every ordinary frame) allocates
+    /// and marks nothing.
+    #[cfg(feature = "desktop")]
+    fn note_viewport_paint_inputs<'a>(
+        &mut self,
+        frames: impl ExactSizeIterator<Item = &'a String> + Clone,
+        holes: Option<&std::collections::HashSet<String>>,
+    ) {
+        let prev = &self.viewport_inputs;
+        let same_frames =
+            frames.len() == prev.frames.len() && frames.clone().all(|n| prev.frames.contains(n));
+        if same_frames && prev.holes.as_ref() == holes {
+            return;
+        }
+
+        let prev = std::mem::take(&mut self.viewport_inputs);
+        let now_frames: std::collections::HashSet<String> = frames.cloned().collect();
+        // `None` is every viewport, so a change to or from it can move any.
+        let every = prev.holes.is_some() != holes.is_some();
+        let mut changed: Vec<&str> = now_frames
+            .symmetric_difference(&prev.frames)
+            .map(String::as_str)
+            .collect();
+        if let (Some(before), Some(now)) = (&prev.holes, holes) {
+            changed.extend(now.symmetric_difference(before).map(String::as_str));
+        }
+        if every {
+            self.mark_attribute_nodes_paint_dirty("data-viewport", |_| true);
+        } else {
+            self.mark_attribute_nodes_paint_dirty("data-viewport", |v| changed.contains(&v));
+        }
+        self.request_repaint();
+        self.viewport_inputs = ViewportPaintInputs {
+            frames: now_frames,
+            holes: holes.cloned(),
+        };
     }
 
     /// Undo [`Self::install_viewport_frames`] once the frame is painted.

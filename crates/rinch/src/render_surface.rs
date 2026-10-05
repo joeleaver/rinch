@@ -813,10 +813,24 @@ pub fn mount_render_surface(handle: &RenderSurfaceHandle) {
 /// Removes the surface from the mounted registry so the compositor
 /// stops collecting its frames and invoking its render callback.
 /// Also clears focus if this surface was focused.
+///
+/// A surface that was registered asks the window for a redraw on its way out
+/// (desktop): the next paint is handed a viewport set without it, which is
+/// what takes its last frame and its hole off the screen (issue #349) — and a
+/// surface can go with nothing else changing, so nothing else would ask.
 pub fn unregister_render_surface(id: usize) {
-    SURFACE_REGISTRY.with(|reg| {
-        reg.borrow_mut().retain(|s| s.id != id);
+    let removed = SURFACE_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        let before = reg.len();
+        reg.retain(|s| s.id != id);
+        reg.len() != before
     });
+    #[cfg(feature = "desktop")]
+    if removed {
+        request_repaint();
+    }
+    #[cfg(not(feature = "desktop"))]
+    let _ = removed;
     // Clear focus if this surface was focused
     FOCUSED_SURFACE.with(|f| {
         let mut f = f.borrow_mut();
@@ -2162,6 +2176,35 @@ mod compositor_routing_tests {
         assert!(collect_surface_frames().is_empty());
 
         unregister_render_surface(surface.id());
+    }
+
+    /// #349: a registered surface that unregisters asks for a redraw — the
+    /// paint that takes its frame off the screen — and an id that names no
+    /// registered surface asks for none.
+    ///
+    /// The callback is process-global and other tests' surfaces reach it from
+    /// their own threads, so it records *who* called.
+    #[test]
+    fn unregistering_a_registered_surface_asks_for_a_redraw() {
+        use std::sync::{Arc, Mutex};
+        use std::thread::ThreadId;
+        let callers: Arc<Mutex<Vec<ThreadId>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = callers.clone();
+        set_redraw_callback(Arc::new(move || {
+            sink.lock().unwrap().push(std::thread::current().id());
+        }));
+        let me = std::thread::current().id();
+        let mine = || callers.lock().unwrap().iter().filter(|t| **t == me).count();
+
+        // No frame submitted: the only thing that can ask is the unregister.
+        let game = create_render_surface_with_name("game-349-redraw");
+        assert_eq!(mine(), 0, "positive control: registering asks for nothing");
+        unregister_render_surface(game.id());
+        assert_eq!(mine(), 1, "the surface that went asked once");
+        unregister_render_surface(game.id());
+        assert_eq!(mine(), 1, "an id that is not registered asks for nothing");
+
+        clear_redraw_callback();
     }
 }
 
