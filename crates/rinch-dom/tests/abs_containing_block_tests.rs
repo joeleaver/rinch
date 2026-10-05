@@ -1172,3 +1172,12 @@ fn a_relative_inline_span_is_not_yet_a_containing_block() {
         "half the block, not half the span"
     );
 }
+
+/// A percentage margin on a **static-position** axis — where Taffy, not the
+/// placement, adds the margin — is still of the containing block's width
+/// (40 and 20), not the parent's (30 and 15).
+#[test]
+fn a_percentage_margin_on_a_static_axis() {
+    let c = Case::single("margin-left: 10%; margin-top: 5%; width: 50px; height: 30px");
+    assert_rect(c.rect("abs"), [70.0, 40.0, 50.0, 30.0], "static + margins");
+}
