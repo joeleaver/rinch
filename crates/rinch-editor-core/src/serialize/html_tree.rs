@@ -34,7 +34,7 @@
 use super::html_entities::decode_entities;
 
 /// The most elements open at once (Chrome's `kMaximumHTMLParserDOMTreeDepth`).
-pub(super) const MAX_DEPTH: usize = 512;
+pub(super) const MAX_DEPTH: usize = 128;
 
 thread_local! {
     static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
