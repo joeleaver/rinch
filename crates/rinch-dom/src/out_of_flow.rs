@@ -185,10 +185,6 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
                     return Some(OutOfFlowKind::IcbAbsolute);
                 }
                 let ancestor = tree.get(current)?;
-                let has_box = generates_layout_box(ancestor);
-                if layout_parent.is_none() && has_box {
-                    layout_parent = Some(current);
-                }
                 if ancestor.establishes_abs_containing_block() {
                     // The layout parent establishing it is Taffy's own answer,
                     // so there is nothing to correct. So is — for now — a
@@ -196,8 +192,16 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
                     // relative` inline span: Taffy resolves against the span's
                     // block container (#631). Anything else is an ancestor
                     // Taffy does not know about (#386).
-                    return (has_box && layout_parent != Some(current))
+                    //
+                    // With no box-generating ancestor below it, this one is
+                    // the layout parent or has no box: `None` either way,
+                    // and the ordinary badge — a child of its positioned
+                    // parent — is answered without asking which.
+                    return (layout_parent.is_some() && generates_layout_box(ancestor))
                         .then_some(OutOfFlowKind::AncestorAbsolute(current));
+                }
+                if layout_parent.is_none() && generates_layout_box(ancestor) {
+                    layout_parent = Some(current);
                 }
                 current = ancestor.parent?;
             }
