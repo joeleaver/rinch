@@ -245,19 +245,34 @@ quote) and hold that one declaration.
 **Task lists** (#1365). An item's marker starts its first paragraph, and the item's
 other blocks are indented under it like any list item's. An item that starts with
 another block (a heading, a quote, a list, …) is written with the marker alone on its
-line, `- [ ] ` with its trailing space, and the block on the next line: written after
-the marker, pulldown-cmark misreads a quote's or a nested list's later lines. A bullet
-or task list that directly follows another is written with `*` instead of `-` (and
-back), because CommonMark continues a list across blank lines when the bullet is the
-same, which would turn a bullet list and the task list after it into one list. On
-reading, a bullet list whose items all start with a marker is a `task_list`; the reader
-also finds a marker that pulldown-cmark consumes without reporting it
-(`- [ ] # Heading`). A marker on an item of an **ordered** list, or of a list where some items
-have none, has no place in the model: the strict reader refuses it
-(`Construct::TaskList`) and the lenient one keeps it as the text it was (`[ ] todo`).
+line, `- [ ] ` with a trailing space, and the block on the next line: written after the
+marker, pulldown-cmark misreads a quote's or a nested list's later lines. A rule in that
+position is written `***`, because `---` under the marker's line is a setext heading to
+GitHub. An empty item is the marker and its trailing space; GFM itself has no empty task
+item, and GitHub shows one as the text `[ ]`. A bullet or task list that directly
+follows another is written with `*` instead of `-` (and back), because CommonMark
+continues a list across blank lines when the bullet is the same, which would turn a
+bullet list and the task list after it into one list.
+
+On reading, a bullet list whose items all start with a marker is a `task_list`. The
+reader finds a marker in the item's source rather than trusting pulldown-cmark's event
+for it, which arrives inside whatever paragraph comes first or, before a heading (`- [ ]
+# Heading`), not at all. A marker with nothing after it on its line (`- [ ]`, the
+writer's empty item once an editor or an LLM strips trailing whitespace) is text to
+pulldown-cmark; both readers take it as an empty item's marker when it is the item's
+whole first paragraph. A bullet item whose text is `[ ]` is written `- \[ \]`, so it
+stays a bullet. A marker on an item of an **ordered** list, or of a list where some
+items have none, has no place in the model: the strict reader refuses it
+(`Construct::TaskList`) and the lenient one gives it back as text at the start of the
+item (`[ ] todo`; before another block, a paragraph of its own).
+
 HTML copy-out (`node_to_html`, `slice_to_html`) writes a task list with the same
-`data-type` / `data-checked` markup (TipTap's), and paste-in (`slice_from_html`) reads
-it back as one.
+`data-type` / `data-checked` markup (TipTap's), and `slice_from_html` parses it, a run
+of bare `<li data-type="taskItem">` (a selection inside one list) included, as a
+`task_list`. A paste of one with the caret in an empty textblock replaces that block
+with the list. With the caret inside text the list does not fit, and its items' blocks
+are pasted instead, marks kept and checkboxes lost. In a collaborating editor a pasted
+task list stalls outbound like any other (A22).
 
 **What round-trips.** A document of the starter kit's marks and nodes written with
 `doc_to_markdown` reads back with `doc_from_markdown_strict` as the same document, and

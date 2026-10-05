@@ -66,3 +66,45 @@ fn copying_task_items_and_pasting_them_keeps_marks() {
         "clipboard {html:?} pasted as {out}"
     );
 }
+
+const ITEMS: &str = "<li data-type=\"taskItem\" data-checked=\"true\"><p><strong>TASKA</strong></p></li>\
+     <li data-type=\"taskItem\" data-checked=\"false\"><p>TASKB</p></li>";
+
+fn paste_into(target: &str, caret: usize, html: &str) -> String {
+    let dst = create_editor();
+    dst.load_html(target);
+    dst.set_selection(Selection::cursor(Pos(caret)));
+    assert!(dst.paste(&PasteContent {
+        text: Some("TASKA\nTASKB".into()),
+        html: Some(html.into()),
+    }));
+    node_to_html(&dst.doc())
+}
+
+/// Copied task items (bare `<li data-type="taskItem">`) pasted on an empty
+/// line are a task list, checked states and marks kept.
+#[test]
+fn task_items_pasted_on_an_empty_line_are_a_task_list() {
+    let want = format!(
+        "<ul data-type=\"taskList\">{}</ul>",
+        ITEMS.replace(">     <", "><")
+    );
+    assert_eq!(paste_into("<p></p>", 1, ITEMS), want);
+    assert_eq!(
+        paste_into("<p>x</p><p></p>", 4, ITEMS),
+        format!("<p>x</p>{want}")
+    );
+    // The whole list, as TipTap or a selection across the list copies it.
+    let list = format!("<ul data-type=\"taskList\">{ITEMS}</ul>");
+    assert_eq!(paste_into("<p></p>", 1, &list), want);
+}
+
+/// Inside text the list has no place: its items' paragraphs go in, with
+/// their marks (the plain-text fallback lost them).
+#[test]
+fn task_items_pasted_inside_text_keep_their_marks() {
+    assert_eq!(
+        paste_into("<p>abc</p>", 2, ITEMS),
+        "<p>a<strong>TASKA</strong></p><p>TASKBbc</p>"
+    );
+}

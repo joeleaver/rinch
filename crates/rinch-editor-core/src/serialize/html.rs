@@ -390,6 +390,8 @@ impl<'a> HtmlParser<'a> {
     fn parse_blocks(&self, nodes: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
         let mut blocks: Vec<Node> = Vec::new();
         let mut loose: Vec<Node> = Vec::new();
+        let wrapped = wrap_bare_task_items(nodes);
+        let nodes = wrapped.as_deref().unwrap_or(nodes);
 
         for n in nodes {
             match n {
@@ -1001,6 +1003,43 @@ fn align_attrs(attributes: &[(String, String)]) -> Attrs {
 }
 
 /// Find an attribute value (case-insensitive name) in a parsed attribute list.
+/// `nodes` with each run of `<li data-type="taskItem">` elements that have no
+/// list around them put in a `<ul data-type="taskList">`: a copied selection
+/// that starts and ends inside one task list is its items alone. `None` when
+/// there is no such item.
+fn wrap_bare_task_items(nodes: &[ParsedNode]) -> Option<Vec<ParsedNode>> {
+    let is_item = |n: &ParsedNode| {
+        matches!(n, ParsedNode::Element { tag, attributes, .. }
+            if tag == "li" && attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_ITEM))
+    };
+    if !nodes.iter().any(is_item) {
+        return None;
+    }
+    let mut out: Vec<ParsedNode> = Vec::new();
+    let mut run: Vec<ParsedNode> = Vec::new();
+    let close = |run: &mut Vec<ParsedNode>, out: &mut Vec<ParsedNode>| {
+        if !run.is_empty() {
+            out.push(ParsedNode::Element {
+                tag: "ul".to_string(),
+                attributes: vec![(TASK_TYPE.to_string(), TASK_LIST.to_string())],
+                children: std::mem::take(run),
+            });
+        }
+    };
+    for n in nodes {
+        if is_item(n) {
+            run.push(n.clone());
+        } else if matches!(n, ParsedNode::Text(t) if t.trim().is_empty()) && !run.is_empty() {
+            // Whitespace between two items.
+        } else {
+            close(&mut run, &mut out);
+            out.push(n.clone());
+        }
+    }
+    close(&mut run, &mut out);
+    Some(out)
+}
+
 /// A `<ul>` whose `data-type` is `taskList`.
 fn is_task_list(attributes: &[(String, String)]) -> bool {
     attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_LIST)
