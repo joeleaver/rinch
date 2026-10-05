@@ -15,9 +15,10 @@
 //! never materialize, and `javascript:`/`vbscript:` URLs are stripped. This
 //! kills the audit's raw-DOM-paste hole.
 //!
-//! It is **total about text** (#1397): whatever the markup, every character
-//! of text a browser would show for it is in what [`slice_from_html`]
-//! returns, and what a browser hides (comments, `<style>`, `<head>`) is not.
+//! It is **total about text** (#1397): no markup is refused, the text of
+//! every element it reads is in what [`slice_from_html`] returns, and
+//! comments, `<style>`, `<script>` and `<head>` give none. (It reads no CSS,
+//! so text a stylesheet hides is read.)
 //! An element the reader has no node or mark for is read through, for its
 //! content. Not read: what is not text content (an `<input>`'s value, a
 //! `<select>`'s options, an image's `alt` when the image is refused), the

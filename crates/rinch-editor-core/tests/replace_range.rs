@@ -468,6 +468,13 @@ fn code_lines_that_continue_a_line_of_text_are_a_line_each() {
     );
     // One line of code is its text.
     assert_eq!(out("<p>ab</p>", 2, "<pre>x</pre>"), "<p>axb</p>");
+    // A code block that is closed (a whole copied block) splits the line and
+    // lands whole.
+    let schema = Schema::starter_kit();
+    let mut tf = Transform::new(&schema, doc(&schema, "<p>abcd</p>"));
+    let closed = Slice::new(slice_from_html(&schema, code).unwrap().content, 0, 0);
+    tf.replace_range(3, 3, closed).unwrap();
+    assert_eq!(node_to_html(&tf.doc), format!("<p>ab</p>{code}<p>cd</p>"));
     // Code in a quote lands where the same lines as quoted paragraphs do.
     let quoted = out("<p>ab</p>", 3, "<blockquote><pre>1\n2</pre></blockquote>");
     assert_eq!(quoted, "<p>ab1</p><p>2</p>");

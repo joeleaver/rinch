@@ -136,17 +136,25 @@ derives tags from the schema's `parse_html_tags`, so copy-out and paste-in share
 table — the same one `Editor`'s `content:` prop and `load_html` use.
 
 The HTML import is **total about text** (#1397): `slice_from_html` does not fail on
-markup, every character of text a browser would show for the markup is in the slice
-it returns, and the slice's content is valid. It is two passes. The tree builder
+markup, the text of every element it reads is in the slice it returns (it reads no
+CSS, and drops a fixed set of elements whole: scripts, styles, embedded content,
+`<select>`, `<svg>`, `<math>`), and the slice's content is valid. It is two passes. The tree builder
 (`serialize/html_tree.rs`) follows the HTML parsing rules as far as they decide what
 is text and what holds what: a tag name runs to the next whitespace, `/` or `>` (so
 `<o:p>` is an element — the old tokenizer stopped reading at the colon); comments,
 `<![if …]>`, `<style>`, `<script>`, `<title>` and `<head>` give nothing; a `<p>`,
 `<li>`, `<td>` or `<tr>` ends where a browser ends it; an end tag closes the nearest
 open element of its name unless a table cell (or, for an inline element, a block) is
-in between; at most 128 elements are open at once, and a start tag past that opens
-nothing, so the reader's recursion is bounded (10,000 nested `<div>`s overflowed
-the stack). The reader (`serialize/html.rs`) then maps the tree onto the schema:
+in between; an unclosed `<svg>` or `<math>` ends at the first HTML element. The tree
+is at most 192 elements deep (`html_tree::MAX_DEPTH`), so the reader's recursion is
+bounded (10,000 nested `<div>`s overflowed the stack): an element opened deeper is
+still open, so its end tag is its own, but it is flattened into the element at the
+limit — a block as a child of it, split around the blocks inside it, an inline
+element as its content alone — so depth changes neither the text nor where a line
+ends. Chrome's limit is 512 and it too keeps every element; 192 is what an
+unoptimized build reads on a 2 MB stack (about 6.4 KB a level). A tag looks at no
+more than 192 open elements for the one it closes, which keeps reading linear when
+thousands are open. The reader (`serialize/html.rs`) then maps the tree onto the schema:
 
 - An element with no node or mark is read through. It is inline unless it holds a
   block or is a block-level HTML element (`div`, `section`, …).

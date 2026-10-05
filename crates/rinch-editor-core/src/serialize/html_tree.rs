@@ -23,8 +23,8 @@
 //!   name, unless a table cell (or, for an inline element, a block) is in
 //!   between; one that closes nothing is skipped.
 //! - `<textarea>` holds text, not markup.
-//! - The tree is at most [`MAX_DEPTH`] elements deep (one more for a block
-//!   read past it), because everything that walks it recurses. An element
+//! - The tree is at most [`MAX_DEPTH`] elements deep (two more for a block
+//!   read past it and an element with no content in that), because everything that walks it recurses. An element
 //!   opened deeper is still open, so its end tag is its own, but it is
 //!   flattened into the element at the limit: an inline one gives its
 //!   content and no element (its mark is lost), a block is a child of the
@@ -278,19 +278,6 @@ impl<'a> HtmlFragmentParser<'a> {
         } else {
             vec![ParsedNode::Text(text)]
         };
-        if !self.flat_blocks.is_empty() && self.flat_dropped.is_none() && is_flat_block(&tag) {
-            // A block (`<hr>`) inside a flattened block: beside it.
-            self.end_flat_part();
-            self.stack[MAX_DEPTH - 1]
-                .children
-                .push(ParsedNode::Element {
-                    tag,
-                    attributes,
-                    children,
-                    holds_block: false,
-                });
-            return;
-        }
         self.siblings().push(ParsedNode::Element {
             tag,
             attributes,

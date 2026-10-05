@@ -821,7 +821,8 @@ then **fitted** to the caret, as ProseMirror and TipTap do it:
   keeps its kind). A task list and a plain list do not mix: one pasted in an item of
   the other is a list nested in that item.
 - **A heading, a quote or a code block** pasted on an empty line is that block;
-  inside text a heading is its text.
+  inside text a heading is its text, and a code block is a paragraph for each of its
+  lines (the first continues the line), never one paragraph holding line ends.
 - **A rule or a table** splits the line: the text before the caret, the block, the
   text after. At the start or end of a line nothing is split and no empty line is
   left.
@@ -855,9 +856,11 @@ none either, nothing happens. One paste is one undo step.
 ### What the HTML reader keeps
 
 `load_html`, `content:` and a paste read HTML the same way, and the reader is
-**total about text**: whatever the markup, every character of text a browser would
-show for it is in the document, the text a browser hides is not, and the result is
+**total about text**: no markup is refused, the text of every element is in the
+document — the elements listed under "Hidden text" below aside — and the result is
 always valid content. Structure it cannot keep is approximated; text is not dropped.
+It is not a browser: it reads no CSS, so text hidden by `display: none`, `hidden`
+or a closed `<details>` is read, and whitespace is kept as written.
 
 - **An element the reader does not know** — Word's `<o:p>` and `<st1:place>`, a
   custom element, `<button>`, `<label>` — is read through. It is inline unless it
@@ -870,23 +873,34 @@ always valid content. Structure it cannot keep is approximated; text is not drop
   `<template>`. Not read either, though a browser may show something for them: an
   `<input>`'s value, the options of a `<select>`, the fallback content of
   `<object>` / `<video>` / `<canvas>`, and `<svg>` and `<math>` (on a clipboard those
-  are icons and the hidden copy of a rendered formula).
+  are icons and the hidden copy of a rendered formula). An `<svg>` or `<math>` that
+  is never closed ends at the first HTML element after it (`<p>`, `<div>`,
+  `<span>`, …), as in a browser, so it does not take the rest of the paste with it;
+  an unclosed `<select>`, `<object>` or `<video>` does, where Chrome shows what
+  follows. An `<img>` with an empty `src` is no image.
 - **Broken markup is read as a browser reads it:** a `<p>` ends at the next block, an
   `<li>` at the next `<li>`, a cell at the next cell; an end tag with nothing to close
   is skipped; a `<` that starts no tag (`a < b`) is text. Character references are
-  decoded (`&eacute;`, `&#233;`, Word's `&#146;`); a name the reader does not know
-  stays as written.
+  decoded (`&eacute;`, `&#233;`, Word's `&#146;`). The names known are HTML 4's and
+  need their `;`: a name outside them (`&plus;`, `&check;`) or without it (`&copy `)
+  stays as written, where a browser decodes it (#1415).
 - **Table parts with no `<table>`** are a table: a run of `<td>` is one row, a run of
   `<tr>` the rows of one table (#1392; they used to load as an invalid document and
   paste as plain text). What has no place in a table — text between its rows, a
   `<caption>` — becomes paragraphs in front of the table, where a browser shows it.
+  Parts that do not make full rows (`<td>A</td><td>B</td><tr><td>C</td></tr>`) are
+  padded with empty cells to a rectangle, as a browser renders them. A `<table>` is
+  read as it is written, short rows included.
 - **A heading around blocks** (`<h2><div>…</div><ul>…</ul></h2>`) keeps the blocks;
   the text between them is headings.
 - **A mark around blocks** marks their text and images, not their line breaks, as it
   does around a line (#1401). Of two links or two colours, one inside the other, the
   text has the inner one.
-- **Nesting** is kept 128 elements deep. Deeper elements are read where the 128th
-  stands, text and all; nothing overflows.
+- **Nesting** is kept 192 elements deep (a list level costs two or three, a quote
+  one). Deeper elements are flattened into the 192nd: every line stays a line of its
+  own with its text, in order; what is lost is the nesting, and the marks of inline
+  elements that deep. Nothing overflows. A document nested deeper than that does
+  not read back as itself from its own HTML — the same lines, less nesting.
 
 What the applications people paste from write, and how it reads:
 
@@ -896,7 +910,7 @@ What the applications people paste from write, and how it reads:
 | Excel, Google Sheets | A table (Sheets' `<google-sheets-html-origin>` wrapper and Excel's `<col>` are read through); one Sheets cell is a line of text. |
 | Google Docs | Headings, paragraphs, links, nested lists. Bold, italic and underline are not read: Docs says them with CSS on a `<span>` (#1407). Text keeps the colour Docs gives it. |
 | Notion, GitHub, Slack, Apple Notes and Mail, Gmail | Their headings, lists, quotes, code blocks, tables and links; a `<div>` per line is a paragraph per line. |
-| VS Code | A **code block**: VS Code copies a `<div style="white-space: pre">` holding one `<div>` per line, and a code block is what keeps the lines and their indentation. The token colours are not kept. Pasted inside a line of text, one copied line is its text. |
+| VS Code | A **code block**: VS Code copies a `<div style="white-space: pre">` holding one `<div>` per line, and a code block is what keeps the lines and their indentation. The token colours are not kept. Pasted inside a line of text, one copied line is its text, and several lines are a line of text each: the first continues the line, the text after the caret joins the last. |
 
 Whitespace is kept as written, not collapsed as a browser collapses it, so a source
 that wraps its lines inside a paragraph (Word does) reads with those line ends in the

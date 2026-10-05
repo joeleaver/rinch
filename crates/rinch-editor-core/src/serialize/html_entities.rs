@@ -3,8 +3,10 @@
 //! Numeric references (`&#233;`, `&#xE9;`) by HTML's rules, the Windows-1252
 //! remapping of `&#128;`..`&#159;` included (Word writes `&#146;` for an
 //! apostrophe), and the 252 named references of HTML 4 plus `&apos;`. A named
-//! reference needs its `;`, so `?a=1&copy=2` in a URL is left alone; a name
-//! not in the table stays as written, which is what a browser shows for it.
+//! reference needs its `;`, so `?a=1&copy=2` in a URL is left alone, and a
+//! name not in the table stays as written. A browser knows more: the 2231
+//! names of the HTML standard (`&plus;`, `&check;`, `&AMP;`) and, in text,
+//! the legacy ones with no `;` (`&copy `), which it decodes (#1415).
 
 /// Named references, sorted by name (byte order) for a binary search.
 static NAMED: [(&str, char); 253] = [
