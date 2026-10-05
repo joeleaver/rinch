@@ -2465,6 +2465,21 @@ pub struct NodeTree {
     /// every compute and the whole-document inline-block pass iterate this
     /// rather than the slab.
     pub atomic_inline_registry: BTreeSet<RawNodeId>,
+    /// Every `position: absolute` node a style-application site has synced
+    /// (`out_of_flow::bake_at_style_site`). A superset, filtered at use — an
+    /// entry whose node was freed or is no longer absolute is dropped by
+    /// `RinchDocument::resolve_ancestor_absolutes`. It is what the passes
+    /// that resolve an absolute box against a containing block Taffy does not
+    /// know (`crate::out_of_flow`, #386) iterate instead of the slab: the one
+    /// after each compute, the placement after the inline positions are
+    /// written, and the one a scroll runs.
+    pub absolute_registry: BTreeSet<RawNodeId>,
+    /// The nodes of [`Self::absolute_registry`] whose Taffy style currently
+    /// carries a size baked from a **non-parent ancestor's** padding box
+    /// (`OutOfFlowKind::AncestorAbsolute`) — so that one which stops
+    /// resolving against an ancestor with no restyle of its own (a box
+    /// between them became `display: contents`) can be put back.
+    pub ancestor_baked: BTreeSet<RawNodeId>,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
@@ -2929,6 +2944,8 @@ impl NodeTree {
             ifc_seeds: Vec::new(),
             ifc_root_registry: BTreeSet::new(),
             atomic_inline_registry: BTreeSet::new(),
+            absolute_registry: BTreeSet::new(),
+            ancestor_baked: BTreeSet::new(),
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),
@@ -3103,6 +3120,13 @@ impl NodeTree {
             self.hit_cache.invalidate_scroll(extent_reads_scroll);
             self.dirty_nodes.insert(id);
             self.paint_dirty_nodes.push(id);
+            // An absolute box whose containing block is above this scroller
+            // is not its content and must not ride it (#386): its `layout`
+            // is parent-relative, so it is written again against the new
+            // offset. That moves a box, which a scroll otherwise does not.
+            if crate::out_of_flow::replace_after_scroll(self, id) {
+                self.hit_cache.invalidate();
+            }
         }
     }
 

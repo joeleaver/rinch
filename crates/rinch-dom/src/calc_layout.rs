@@ -43,13 +43,17 @@
 //! absolute child (`flexbox.rs:2166`, `block.rs:580`), as CSS says.
 //!
 //! Deliberate parity with the plain-percentage rules elsewhere:
-//! - An ICB-absolute box's own `width`/`height` `Calc` is baked from the
-//!   viewport by `out_of_flow::apply_out_of_flow_size_overrides` exactly like
-//!   a plain `Percent` there (#204), so this pass leaves those two fields
-//!   alone for such nodes.
-//! - Everything `out_of_flow` leaves parent-resolved for plain percentages
-//!   (#386 — min/max sizes, padding/margin on the box) stays parent-resolved
-//!   for `Calc` too.
+//! - An absolute box whose containing block is not its Taffy parent — the
+//!   initial containing block (#204) or a positioned ancestor further up
+//!   (#386) — has its own `width`/`height` `Calc` baked from that box by
+//!   `out_of_flow::apply_out_of_flow_size_overrides` exactly like a plain
+//!   `Percent` there, so this pass leaves those two fields alone for such
+//!   nodes.
+//! - Its other `Calc` values (min/max sizes, padding, margin, insets) resolve
+//!   here against that same containing block, as `out_of_flow` resolves the
+//!   plain percentages, and the basis is always definite: a containing
+//!   block's used size never depends on a box resolved against it.
+//!   `position: fixed` keeps the Taffy parent as its basis for these.
 //! - The out-of-flow *position* patch goes through
 //!   `LengthPercentageAutoValue::resolve`, which resolves a `Calc` against
 //!   the real containing block exactly.
@@ -303,15 +307,27 @@ impl RinchDocument {
                 self.tree.nodes[id].computed_style.position,
                 PositionValue::Absolute | PositionValue::Fixed
             );
+            // An absolute box whose containing block is not its Taffy parent
+            // — the initial one (#204) or an ancestor further up (#386) —
+            // resolves against that box, whose size is always definite to it.
+            let abs_cb = is_abs
+                .then(|| crate::out_of_flow::out_of_flow_kind(&self.tree, id))
+                .flatten()
+                .filter(|kind| kind.is_absolute())
+                .and_then(|kind| crate::out_of_flow::ContainingBox::of(&self.tree, kind));
             // An absolute child resolves against the parent's padding box;
             // an in-flow one against its content box.
-            let (pw, ph) = basis_box(&self.tree.taffy, parent, !is_abs);
+            let (pw, ph) = match abs_cb {
+                Some(cb) => (cb.width, cb.height),
+                None => basis_box(&self.tree.taffy, parent, !is_abs),
+            };
             let (ow, oh) = basis_box(&self.tree.taffy, Some(taffy_id), true);
 
             // Definiteness per basis axis: an axis that is content-sized
             // resolves the percentage part as zero/auto instead (module doc).
             let parent_rinch = self.taffy_parent_rinch(id);
             let (pw_def, ph_def) = match parent_rinch {
+                _ if abs_cb.is_some() => (true, true),
                 Some(p) => (
                     self.calc_axis_definite(p, Axis::X, 0),
                     self.calc_axis_definite(p, Axis::Y, 0),
@@ -335,10 +351,9 @@ impl RinchDocument {
                 _ => pw,
             };
 
-            // An ICB-absolute's own width/height Calc was baked from the
-            // viewport at style-apply time (out_of_flow, #204) — leave them.
-            let skip_own_size = crate::out_of_flow::out_of_flow_kind(&self.tree, id)
-                == Some(crate::out_of_flow::OutOfFlowKind::IcbAbsolute);
+            // Such a box's own width/height Calc is baked from its containing
+            // block by `out_of_flow` — leave them.
+            let skip_own_size = abs_cb.is_some();
 
             let before = match self.tree.taffy.style(taffy_id) {
                 Ok(s) => s.clone(),

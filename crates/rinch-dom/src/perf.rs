@@ -252,6 +252,10 @@ define_counters! {
     InlineBlockComputes = "inline_block_computes",
     /// Extra root computes the `calc(%, px)` fixpoint ran.
     CalcFixpointPasses = "calc_fixpoint_passes",
+    /// Extra root computes run because an absolute box's containing block —
+    /// an ancestor that is not its layout parent — came out of the compute
+    /// at a size the box's Taffy style was not baked for (#386).
+    AbsContainingBlockPasses = "abs_containing_block_passes",
 
     // ── Paint ──────────────────────────────────────────────────────────
     /// Frames actually painted (a scene or pixel buffer rebuilt).

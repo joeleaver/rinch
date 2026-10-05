@@ -228,7 +228,11 @@ fn an_inline_block_parent_changes_nothing() {
         &format!(
             "{}{}",
             abs("abs", "inset: 0", ""),
-            abs("rb", "right: 5px; bottom: 6px; width: 20px; height: 10px", "")
+            abs(
+                "rb",
+                "right: 5px; bottom: 6px; width: 20px; height: 10px",
+                ""
+            )
         ),
     );
     assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "inset: 0");
@@ -254,11 +258,7 @@ fn a_contents_wrapper_under_the_static_parent_changes_nothing() {
 /// here by an identity transform (#415) — keeps the box. Taffy's answer.
 #[test]
 fn a_parent_that_establishes_one_keeps_the_box() {
-    let c = Case::scaffold(
-        "",
-        "transform: rotate(0deg);",
-        &abs("abs", "inset: 0", ""),
-    );
+    let c = Case::scaffold("", "transform: rotate(0deg);", &abs("abs", "inset: 0", ""));
     assert_rect(c.rect("abs"), [30.0, 20.0, 300.0, 200.0], "inset: 0");
 }
 
@@ -329,12 +329,20 @@ fn a_scroller_between_does_not_carry_the_box() {
     c.doc.set_scroll_top(NodeId(mid), 40.0);
     // No layout has run since the scroll.
     assert_rect(c.rect("abs"), [5.0, 6.0, 20.0, 20.0], "scrolled, no layout");
-    assert_rect(c.rect("rb"), [375.0, 274.0, 20.0, 20.0], "scrolled, no layout");
+    assert_rect(
+        c.rect("rb"),
+        [375.0, 274.0, 20.0, 20.0],
+        "scrolled, no layout",
+    );
 
     c.relayout();
     assert_eq!(c.doc.tree.get(mid).unwrap().scroll_offset.1, 40.0);
     assert_rect(c.rect("abs"), [5.0, 6.0, 20.0, 20.0], "scrolled, laid out");
-    assert_rect(c.rect("rb"), [375.0, 274.0, 20.0, 20.0], "scrolled, laid out");
+    assert_rect(
+        c.rect("rb"),
+        [375.0, 274.0, 20.0, 20.0],
+        "scrolled, laid out",
+    );
 }
 
 /// The containing block's **own** scroll does carry it: the box is part of
@@ -347,9 +355,17 @@ fn the_containing_blocks_own_scroll_carries_the_box() {
     ));
     assert_rect(c.rect("abs"), [5.0, 6.0, 20.0, 20.0], "unscrolled");
     c.doc.set_scroll_top(NodeId(c.cb), 30.0);
-    assert_rect(c.rect("abs"), [5.0, -24.0, 20.0, 20.0], "scrolled, no layout");
+    assert_rect(
+        c.rect("abs"),
+        [5.0, -24.0, 20.0, 20.0],
+        "scrolled, no layout",
+    );
     c.relayout();
-    assert_rect(c.rect("abs"), [5.0, -24.0, 20.0, 20.0], "scrolled, laid out");
+    assert_rect(
+        c.rect("abs"),
+        [5.0, -24.0, 20.0, 20.0],
+        "scrolled, laid out",
+    );
 }
 
 // ── The box's own content: why the size is known BEFORE its subtree lays out ─
@@ -390,10 +406,18 @@ fn a_nested_absolute_resolves_against_the_corrected_outer_one() {
         abs("b", "inset: 0", ""),
         abs("b2", "right: 0; bottom: 0; width: 50%; height: 10%", ""),
     );
-    let c = Case::single_with_m("a", "left: 10px; top: 10px; width: 50%; height: 50%", &inner);
+    let c = Case::single_with_m(
+        "a",
+        "left: 10px; top: 10px; width: 50%; height: 50%",
+        &inner,
+    );
     assert_rect(c.rect("a"), [10.0, 10.0, 200.0, 150.0], "outer");
     assert_rect(c.rect("b"), [10.0, 10.0, 200.0, 150.0], "inner, inset: 0");
-    assert_rect(c.rect("b2"), [110.0, 145.0, 100.0, 15.0], "inner, right/bottom");
+    assert_rect(
+        c.rect("b2"),
+        [110.0, 145.0, 100.0, 15.0],
+        "inner, right/bottom",
+    );
 }
 
 impl Case {
@@ -431,10 +455,13 @@ fn auto_margins_take_the_free_space_of_the_containing_block() {
     let c = Case::single("inset: 0; width: 100px; height: 50px; margin: auto");
     assert_rect(c.rect("abs"), [150.0, 125.0, 100.0, 50.0], "centred");
 
-    let c = Case::single(
-        "inset: 0; width: 100px; height: 50px; margin-left: auto; margin-top: auto",
+    let c =
+        Case::single("inset: 0; width: 100px; height: 50px; margin-left: auto; margin-top: auto");
+    assert_rect(
+        c.rect("abs"),
+        [300.0, 250.0, 100.0, 50.0],
+        "pushed to the end",
     );
-    assert_rect(c.rect("abs"), [300.0, 250.0, 100.0, 50.0], "pushed to the end");
 }
 
 /// Percentage padding is of the containing block's width (parent-resolved:
@@ -454,7 +481,11 @@ fn percentage_min_and_max_sizes_are_of_the_containing_block() {
     let c = Case::single(
         "left: 0; top: 0; width: 500px; max-width: 50%; height: 10px; min-height: 50%",
     );
-    assert_rect(c.rect("abs"), [0.0, 0.0, 200.0, 150.0], "max-width / min-height");
+    assert_rect(
+        c.rect("abs"),
+        [0.0, 0.0, 200.0, 150.0],
+        "max-width / min-height",
+    );
 }
 
 /// A content-sized box anchored by `right` alone.
@@ -483,7 +514,11 @@ fn a_box_inside_a_static_inline_block() {
     let c = Case::new(&format!(
         r#"<div data-cb style="{CB}">{SP}<div style="display: inline-block; width: 100px; height: 50px; margin: 0 0 0 30px">{}{}</div></div>"#,
         abs("abs", "inset: 0", ""),
-        abs("rb", "right: 5px; bottom: 6px; width: 20px; height: 10px", ""),
+        abs(
+            "rb",
+            "right: 5px; bottom: 6px; width: 20px; height: 10px",
+            ""
+        ),
     ));
     assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "inset: 0");
     assert_rect(c.rect("rb"), [375.0, 284.0, 20.0, 10.0], "right/bottom");
@@ -500,8 +535,11 @@ fn the_box_follows_a_resized_containing_block() {
         r#"<div data-m="kid" style="width: 50%; height: 50%"></div>"#,
     );
     assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "before");
-    c.doc
-        .set_attribute(NodeId(c.cb), "style", &format!("{CB}width: 500px; height: 260px"));
+    c.doc.set_attribute(
+        NodeId(c.cb),
+        "style",
+        &format!("{CB}width: 500px; height: 260px"),
+    );
     c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
     assert_rect(c.rect("abs"), [0.0, 0.0, 500.0, 260.0], "after");
     assert_rect(c.rect("kid"), [0.0, 0.0, 250.0, 130.0], "its child");
@@ -516,11 +554,19 @@ fn the_box_follows_a_change_of_containing_block() {
     c.doc
         .set_attribute(NodeId(mid), "style", &format!("{MID}position: relative"));
     c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
-    assert_rect(c.rect("abs"), [30.0, 20.0, 300.0, 200.0], "parent positioned");
+    assert_rect(
+        c.rect("abs"),
+        [30.0, 20.0, 300.0, 200.0],
+        "parent positioned",
+    );
 
     c.doc.set_attribute(NodeId(mid), "style", MID);
     c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
-    assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "parent static again");
+    assert_rect(
+        c.rect("abs"),
+        [0.0, 0.0, 400.0, 300.0],
+        "parent static again",
+    );
 }
 
 /// A restyle of the box itself (which rebuilds its Taffy style from the
@@ -580,7 +626,11 @@ fn the_initial_containing_block_gets_the_same_rules() {
         "left: 0; right: 0; top: 0; width: 100px; height: 50px; margin: 0 auto",
         "",
     );
-    assert_rect(c.page_rect("abs"), [350.0, 0.0, 100.0, 50.0], "auto margins");
+    assert_rect(
+        c.page_rect("abs"),
+        [350.0, 0.0, 100.0, 50.0],
+        "auto margins",
+    );
 
     let c = icb(
         "left: 0; top: 0; padding: 10%",
@@ -588,6 +638,9 @@ fn the_initial_containing_block_gets_the_same_rules() {
     );
     assert_rect(c.page_rect("abs"), [0.0, 0.0, 170.0, 170.0], "10% padding");
 
-    let c = icb("left: 0; top: 0; width: 900px; max-width: 50%; height: 10px", "");
+    let c = icb(
+        "left: 0; top: 0; width: 900px; max-width: 50%; height: 10px",
+        "",
+    );
     assert_rect(c.page_rect("abs"), [0.0, 0.0, 400.0, 10.0], "max-width");
 }

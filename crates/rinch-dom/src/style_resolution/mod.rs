@@ -1636,18 +1636,12 @@ impl RinchDocument {
             }
 
             // An out-of-flow box whose containing block is not the Taffy parent
-            // — `position: fixed` (the viewport), or a `position: absolute`
-            // with no positioned ancestor (the initial containing block, #204)
-            // — is sized here, before layout, so its own children lay out
-            // inside the right box.
-            if let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id) {
-                crate::out_of_flow::apply_out_of_flow_size_overrides(
-                    &self.tree.nodes[node_id],
-                    kind,
-                    self.tree.viewport,
-                    &mut taffy_style,
-                );
-            }
+            // — `position: fixed` (the viewport), a `position: absolute` with
+            // no positioned ancestor (the initial containing block, #204) or
+            // one whose positioned ancestor is further up (#386, from that
+            // ancestor's last laid-out size) — is sized here, before layout,
+            // so its own children lay out inside the right box.
+            crate::out_of_flow::bake_at_style_site(&mut self.tree, node_id, &mut taffy_style);
 
             // Collapsed block (virtualized contenteditable): override height
             // to the estimated value so Taffy doesn't need a measure callback.
