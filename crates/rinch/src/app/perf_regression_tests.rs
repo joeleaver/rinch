@@ -1201,6 +1201,114 @@ fn full_repaint_region_too_large() {
     );
 }
 
+// ── A box that changes place in the paint order (#1384) ───────────────────
+
+const ORDER_CSS: &str = "
+    .holder { position: relative; width: 300px; height: 100px; }
+    .card { width: 100px; height: 100px; }
+    .card.dim { opacity: 0.5; }
+    .card.dimmer { opacity: 0.4; }
+    .badge { position: relative; left: 150px; z-index: 5; width: 100px; height: 100px;
+             background: rgb(200, 0, 0); }
+    .cover { position: absolute; left: 150px; top: 0; z-index: 1; width: 100px; height: 100px;
+             background: rgb(0, 0, 200); }
+";
+
+/// A card whose `z-index` badge overflows it and overlaps a sibling.
+fn order_page(card_class: &'static str) -> (RinchApp, NodeHandle) {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        style.append_child(&scope.create_text(ORDER_CSS));
+        root.append_child(&style);
+        let div = |scope: &mut RenderScope, parent: &NodeHandle, class: &str| {
+            let e = scope.create_element("div");
+            e.set_attribute("class", class);
+            parent.append_child(&e);
+            e
+        };
+        let holder = div(scope, &root, "holder");
+        let card = div(scope, &holder, card_class);
+        div(scope, &card, "badge");
+        div(scope, &holder, "cover");
+        *out2.borrow_mut() = Some(card);
+        root
+    });
+    let card = out.borrow().clone().unwrap();
+    (app, card)
+}
+
+/// The card becomes a stacking context (`opacity` leaves 1), which traps its
+/// badge under the sibling it used to cover. The frame repaints the card's
+/// subtree reach — 254 x 104, the card through the badge with the damage
+/// margin, cut at the window's corner — and not the window: one subtree walk in `compute_damage`, no
+/// counter of its own.
+#[test]
+fn a_box_that_becomes_a_stacking_context_repaints_its_subtrees_reach() {
+    let (mut app, card) = order_page("card");
+    let s = interaction(&mut app, |_| card.set_attribute("class", "card dim"));
+    expect_frame(
+        "card becomes a stacking context",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 26416),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 6),
+            (StackingOrderBuilds, 4),
+            (ClipMasks, 1),
+            (ClipMaskPx, 27136),
+            (PaintLayers, 1),
+            (LayerPx, 10608),
+            (PaintSurfaceAllocs, 2),
+        ],
+    );
+}
+
+/// The twin that reorders nothing: the same card, already a stacking context,
+/// changes only its opacity. Its own rect (104 x 104), as before #1384 — the order check
+/// is one compare and walks nothing.
+#[test]
+fn a_stacking_context_that_only_changes_opacity_repaints_its_own_box() {
+    let (mut app, card) = order_page("card dim");
+    let s = interaction(&mut app, |_| card.set_attribute("class", "card dimmer"));
+    expect_frame(
+        "stacking context changes opacity only",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 10816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 6),
+            (StackingOrderBuilds, 2),
+            (ClipMasks, 1),
+            (ClipMaskPx, 11236),
+            (PaintLayers, 1),
+            (PaintSurfaceAllocs, 1),
+        ],
+    );
+}
+
 /// A `<style>` element was added: a whole-document restyle, which can change
 /// any node's paint without naming one.
 ///

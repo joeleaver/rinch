@@ -445,6 +445,8 @@ fn a_restyle_that_reorders_nothing_damages_only_the_box() {
             "position: relative; z-index: 0",
             "position: relative; z-index: 0; background: rgb(0, 200, 0)",
         ),
+        // A `z-index` on a box it does not apply to orders nothing.
+        (Scene::FlowChild, "z-index: 1", "z-index: 3"),
         (Scene::FlowChild, rel, rel_ctx),
         (Scene::FlowChild, rel_ctx, rel),
         (Scene::SealedZChild, rel, rel_ctx),
