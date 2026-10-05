@@ -369,7 +369,7 @@ fn r17_icb_static_axis_under_two_scrollers() {
 /// K1 (kills M10): a `calc()` min-height on a box whose Taffy PARENT is
 /// content-sized (indefinite) but whose containing block is definite.
 #[test]
-#[ignore = "fails at the PR head AND on main: calc() is never resolved inside an atomic inline (issue draft review-1409-1)"]
+#[ignore = "fails at the PR head AND on main: calc() is never resolved inside an atomic inline (#1412)"]
 fn k1_calc_under_an_indefinite_parent() {
     let doc = build(&format!(
         r#"<div data-cb style="{CB}"><div style="height: 20px"></div>
@@ -411,7 +411,7 @@ fn k1d_plain_percentages_under_an_inline_block() {
 
 /// K1e: control — is `calc()` resolved at all inside an atomic inline?
 #[test]
-#[ignore = "fails at the PR head AND on main: calc() is never resolved inside an atomic inline (issue draft review-1409-1)"]
+#[ignore = "fails at the PR head AND on main: calc() is never resolved inside an atomic inline (#1412)"]
 fn k1e_calc_inside_an_inline_block_control() {
     let doc = build(
         r#"<div style="width: 400px"><div style="display: inline-block; width: 200px; position: relative"><div data-f style="width: calc(50% + 10px); height: 5px"></div><div data-a style="position: absolute; left: 0; top: 0; height: 5px; min-width: calc(25% + 3px)"></div></div></div>"#,

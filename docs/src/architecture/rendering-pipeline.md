@@ -156,6 +156,14 @@ offsets, because a scroller between a box and its containing block does not
 carry the box. A scroll runs no layout, so `NodeTree::mark_scrolled` writes
 those positions again.
 
+None of this touches a box Taffy already resolves — an absolute child of its
+own positioned parent, the usual badge or close button. The size check iterates
+only the boxes under a non-parent ancestor, a scroll re-places only when the
+scrolled box lies between a corrected box and its containing block, and the
+`abs_boxes_visited` counter reads 0 for a page of ordinary badges. A box under
+a non-parent ancestor costs about 0.8k instructions per layout (the size
+compare and the placement).
+
 ## Key Technologies
 
 ### rinch-dom

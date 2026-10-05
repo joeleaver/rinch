@@ -53,6 +53,9 @@
 //!   here against that same containing block, as `out_of_flow` resolves the
 //!   plain percentages, and the basis is always definite: a containing
 //!   block's used size never depends on a box resolved against it.
+//!   (Not for a box inside an atomic inline: this pass does not reach a
+//!   detached compute, so no `Calc` in one is resolved, in flow or out —
+//!   #1412.)
 //!   `position: fixed` keeps the Taffy parent as its basis for these.
 //! - The out-of-flow *position* patch goes through
 //!   `LengthPercentageAutoValue::resolve`, which resolves a `Calc` against

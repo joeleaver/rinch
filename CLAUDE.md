@@ -2946,16 +2946,36 @@ compares every such box after each root compute and rewrites the ones whose
 ancestor came out at another size, and the compute re-runs while it rewrote any
 (`abs_containing_block_passes`). An out-of-flow box sizes nothing above it, so
 this converges in **one** extra compute — plus one per level when a containing
-block is itself an absolute resolved against a non-parent. What it costs,
-pinned in `perf_regression_scenarios`: a document with no `position: absolute`
-node pays one `is_empty`; a box whose size does not depend on its containing
-block (`right: 5px; bottom: 5px; width: 40px`) is placed and never re-sized, so
-it never pays a compute; a size-dependent one (`inset: 0`, `width: 50%`) pays
-one extra compute on the document's first layout and one per resize of its
-containing block — not on a later pass, a restyle of the box, or its insertion
-under a block that already has a size. `NodeTree::absolute_registry` (every
-`position: absolute` node a style site has synced, filtered at use) is what
-those passes iterate instead of the slab.
+block is itself an absolute resolved against a non-parent. What it costs in
+**computes**, pinned in `perf_regression_scenarios`: a box whose size does not
+depend on its containing block (`right: 5px; bottom: 5px; width: 40px`) is
+placed and never re-sized, so it never pays one; a size-dependent one
+(`inset: 0`, `width: 50%`) pays one extra compute on the document's first
+layout and one per resize of its containing block — not on a later pass, a
+restyle of the box, its insertion under a block that already has a size, or an
+inline inset write (the #280 fast path bakes the size for the new insets
+itself, `out_of_flow::rebake_after_inset_write`).
+
+**The passes look only at the boxes that need them** (review of #1409; they
+iterated every `position: absolute` node at first, which cost a list of
+ordinary badges +12% per relayout). An absolute child of its own positioned
+parent — Taffy's own answer — is in no index and no pass, on a layout or a
+scroll. `NodeTree::ancestor_absolutes` holds the ancestor-resolved boxes (kept
+by the style sites; `read_layout_results` classifies every absolute box anyway,
+and one it finds the sites missed — a box *between* it and its containing block
+stopped being `display: contents` with no restyle of the absolute one — is
+added and the layout resolved again in the same pass,
+`out_of_flow::note_kind_at_read`); the size check after each compute iterates
+that. `NodeTree::placed_absolutes` holds what the read-back placed this layout
+(ancestor and ICB boxes); the second placement and a scroll iterate that. The
+counter is `abs_boxes_visited`, one per box per pass: 0 for a document of
+direct-child badges, 2 per layout per ancestor-resolved box (size check,
+placement), 1 per ICB box. Measured (Callgrind, 500 rows with one badge each,
+one leaf restyled and laid out, against `main`, which did not resolve these
+boxes at all): direct-child badges 1.78M → 1.79M instructions, ICB badges
+2.01M → 2.02M, ancestor-resolved badges 2.31M → 2.69–2.75M — about 0.8k
+instructions per ancestor-resolved box per layout, which is the size compare
+and the placement.
 
 **Every site that rebuilds a Taffy style from `computed_style` calls
 `bake_at_style_site`** — the cascade's sync and both tick re-syncs — which is
@@ -2972,8 +2992,11 @@ come out of the space between two insets; `margin: auto` between two insets
 centres a sized box (one `auto` takes all the free space; a box larger than the
 space still centres on the block axis and starts at the inset on the inline
 one); a mixed `calc()` in any of those resolves against the same box
-(`calc_layout`). A real 0x0 box is placed; one in a `display: none` subtree is
-not (`out_of_flow::is_laid_out`).
+(`calc_layout`) — except for a box inside an atomic inline, where no `calc()`
+is resolved at all, in flow or out of it (#1412, older than #386: a `width: calc(50%
++ 10px)` child of a 200px `inline-block` is 10px wide; the plain-percentage
+rules above do hold there). A real 0x0 box is placed; one in a `display: none`
+subtree is not (`out_of_flow::is_laid_out`).
 
 **Scrolling.** A scroller *between* a box and its containing block does not
 carry the box — it is the containing block's content, not the scroller's — on
@@ -2983,15 +3006,29 @@ scroll does carry it, and for the initial containing block the `<body>`'s
 scroll is that scroll (rinch's page scroll). Since `layout` is parent-relative,
 the position carries the scroll offsets of the boxes between
 (`+ Σ chain.scroll`), and a scroll runs no layout — so `NodeTree::mark_scrolled`
-calls `out_of_flow::replace_after_scroll`, which writes those boxes again and
-drops the hit cache in full when one moved. **A new scroll-offset writer that
+calls `out_of_flow::replace_after_scroll`, which writes those boxes again.
+It costs one flag read unless the scrolled box lies between a placed box and
+its containing block (`Node::on_abs_chain`, set as the read-back walks each
+chain): a scroller of rows whose badges resolve against their own row, direct
+child or not, re-places nothing, and a scroller holding 500 ICB boxes re-places
+all 500 (about 0.6k instructions each, 0.3M a notch — each really has to be
+written again to stay still). It drops no hit-test extent: an absolute box is
+positioned, so it is in no `flow_extent`, and the stacking sequences that hold
+its offset are the ones a scroll drops anyway
+(`perf_regression_tests::a_second_wheel_notch_with_an_escaping_absolute_recomputes_no_extent`).
+The re-placed box is pushed paint-dirty, so a notch's damage includes a box
+that did not move on screen. **A new scroll-offset writer that
 bypasses `mark_scrolled` lets such a box ride the scroller until the next
 layout.** Before #386 an ICB box rode every scroller it was written in, and
 jumped back to the viewport on the next layout while the page was scrolled.
-`resolve_layout` also places every registry box again after the inline
-positions are written and after the scroll clamp (`out_of_flow::replace_all`):
-`read_layout_results` runs before an `inline-block` on the chain has its line
-position.
+`resolve_layout` also places every placed box a second time
+(`out_of_flow::replace_all`) when something on the way to a containing block
+was written after the read-back: an anonymous block box's own read-back, the
+line position an inline formatting context gives an `inline-block`, a scroll
+offset the clamp pulled in. Each of those three writers sets
+`NodeTree::abs_late_moves` when it actually moved something, and a layout in
+which none did skips the second placement; **a new writer of a box's position
+or scroll offset that runs after `read_layout_results` must set it too.**
 
 **Not covered:** a containing block that generates no box — a `position:
 relative` **inline** span — is left to Taffy, which resolves against the

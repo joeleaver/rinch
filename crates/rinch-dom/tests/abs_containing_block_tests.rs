@@ -776,8 +776,11 @@ fn margins_between_insets() {
     );
 }
 
-/// A mixed `calc()` resolves against the containing block wherever a plain
-/// percentage does: insets, size, padding, `max-width`.
+/// A mixed `calc()` resolves against the containing block where a plain
+/// percentage does — insets, size, padding, `max-width` — for a box the root
+/// compute lays out. Not for one inside an atomic inline, where `calc()` is
+/// not resolved for any box, in flow or out of it (#1412, pre-existing; the ignored
+/// `k1_`/`k1e_` probes in `abs_containing_block_probe_tests`).
 #[test]
 fn calc_resolves_against_the_containing_block() {
     let c = Case::scaffold(
