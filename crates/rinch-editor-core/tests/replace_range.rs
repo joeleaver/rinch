@@ -468,9 +468,11 @@ fn code_lines_that_continue_a_line_of_text_are_a_line_each() {
     );
     // One line of code is its text.
     assert_eq!(out("<p>ab</p>", 2, "<pre>x</pre>"), "<p>axb</p>");
-    // Code in a quote: the quote's first line continues, the rest stay quoted.
+    // Code in a quote lands where the same lines as quoted paragraphs do.
+    let quoted = out("<p>ab</p>", 3, "<blockquote><pre>1\n2</pre></blockquote>");
+    assert_eq!(quoted, "<p>ab1</p><p>2</p>");
     assert_eq!(
-        out("<p>ab</p>", 3, "<blockquote><pre>1\n2</pre></blockquote>"),
-        "<p>ab1</p><blockquote><p>2</p></blockquote>"
+        quoted,
+        out("<p>ab</p>", 3, "<blockquote><p>1</p><p>2</p></blockquote>")
     );
 }

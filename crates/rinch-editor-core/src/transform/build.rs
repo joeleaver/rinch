@@ -132,6 +132,8 @@ impl<'a> Transform<'a> {
     /// - content open at the slice's start continues the textblock the range
     ///   starts in, and the inline content after the range joins the
     ///   textblock the slice ends in;
+    /// - code that continues a textblock that is not code is a textblock for
+    ///   each of its lines, not one holding line ends;
     /// - a block that is closed splits the textblock (leaving no empty block
     ///   when the range is at the textblock's edge);
     /// - over a whole textblock — a caret in an empty one included — a slice
@@ -166,6 +168,8 @@ impl<'a> Transform<'a> {
             Vec::new()
         };
         for (a, b, candidate) in candidates {
+            let candidate = fit::code_lines_as_blocks(self.schema, &self.doc, a, &candidate)
+                .unwrap_or(candidate);
             if let Some(found) = fit::fit_step(&self.doc, a, b, &candidate)
                 && self.step(found.step).is_ok()
             {

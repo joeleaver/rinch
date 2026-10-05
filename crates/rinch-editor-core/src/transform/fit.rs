@@ -623,6 +623,83 @@ impl<'a> Fitter<'a> {
     }
 }
 
+/// `slice` with the code block open at its start turned into a line of text
+/// for each of its lines, when the slice is about to continue a textblock at
+/// `from` that is not code and the block holds a line end. `None` when it is
+/// not, or when the lines are not valid where the block was.
+///
+/// Code text keeps its line ends in the text; a paragraph that took that text
+/// as it is would hold them too, as one line that only looks like several.
+/// So the first line continues the textblock at `from`, each further line is
+/// a textblock of its own (a `paragraph`, or the type of the one at `from`
+/// in a schema with no paragraph), and what follows the range joins the
+/// last. A candidate that keeps the code block closed (it lands whole) and a
+/// target that is code are left alone.
+pub(crate) fn code_lines_as_blocks(
+    schema: &crate::schema::Schema,
+    doc: &Node,
+    from: usize,
+    slice: &Slice,
+) -> Option<Slice> {
+    if slice.open_start == 0 {
+        return None;
+    }
+    let r = doc.resolve(Pos(from)).ok()?;
+    let target = r.parent();
+    if !target.is_textblock() || target.node_type().spec().code {
+        return None;
+    }
+    let line = schema
+        .node_type("paragraph")
+        .filter(|t| t.is_textblock() && !t.spec().code)
+        .map_or(target.type_name(), NodeType::name);
+    let content = unfold_first(schema, &slice.content, slice.open_start, line)?;
+    Some(Slice::new(content, slice.open_start, slice.open_end))
+}
+
+/// [`code_lines_as_blocks`] for the node `levels` deep along the first
+/// children of `content`.
+fn unfold_first(
+    schema: &crate::schema::Schema,
+    content: &Fragment,
+    levels: usize,
+    line: &str,
+) -> Option<Fragment> {
+    let (first, rest) = content.children().split_first()?;
+    let mut nodes = Vec::new();
+    if levels > 1 {
+        let inner = unfold_first(schema, first.content(), levels - 1, line)?;
+        let node = first.copy_with_content(inner);
+        if !content_valid(&node) {
+            return None;
+        }
+        nodes.push(node);
+    } else {
+        if !first.is_textblock() || !first.node_type().spec().code {
+            return None;
+        }
+        let mut text = String::new();
+        for child in first.content().children() {
+            // A code block holds text; anything else is not unfolded.
+            text.push_str(child.text()?);
+        }
+        if !text.contains('\n') {
+            return None;
+        }
+        for l in text.split('\n') {
+            let l = l.strip_suffix('\r').unwrap_or(l);
+            let inline = if l.is_empty() {
+                Fragment::empty()
+            } else {
+                Fragment::from_node(schema.text(l).ok()?)
+            };
+            nodes.push(schema.branch(line, inline).ok()?);
+        }
+    }
+    nodes.extend(rest.iter().cloned());
+    Some(Fragment::from_children(nodes))
+}
+
 /// The step that fits `slice` into `from..to` of `doc`, when there is one.
 /// Port of ProseMirror's `replaceStep`.
 pub(crate) fn fit_step(doc: &Node, from: usize, to: usize, slice: &Slice) -> Option<Fit> {
