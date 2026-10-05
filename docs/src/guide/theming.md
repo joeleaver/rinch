@@ -566,7 +566,8 @@ Where desktop still differs from a browser:
   `overflow: auto` box gets no scrollbar, where a browser gives 40px of travel.
   A `relative` child with no offset is measured like any other.
 - **An absolute whose containing block is further up than its parent** is
-  counted by no scroll container at all; a browser counts it in that ancestor.
+  laid out in that containing block (#386) but counted by no scroll container
+  at all; a browser counts it in that ancestor (#770).
   The exception is a parent that is a non-positioned inline element such as a
   plain `<span>` (at any depth of them) sitting directly in the containing
   block: the box then counts there, as a browser counts it. Under a

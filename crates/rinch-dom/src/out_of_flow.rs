@@ -744,7 +744,7 @@ fn replace(tree: &mut NodeTree, node_id: RawNodeId) -> bool {
 /// layouts — but two things on its chain are written **later**: the position
 /// an inline formatting context gives an atomic inline (`inline-block`), and
 /// a scroll offset the post-layout clamp pulls in. A box whose chain holds
-/// neither is already right and is not written.
+/// neither is already right and is not written. Run once, after both.
 pub(crate) fn replace_all(tree: &mut NodeTree) {
     if tree.absolute_registry.is_empty() {
         return;

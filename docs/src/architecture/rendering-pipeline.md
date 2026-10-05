@@ -128,6 +128,34 @@ that declares `display: inline-flex` —
 `Badge`, `Button` and the rest of the list in CLAUDE.md — is one of these
 whenever it sits beside text rather than inside a `Stack`.
 
+### Why an absolute box can need a second compute
+
+Taffy lays an out-of-flow box out against its **direct parent**. CSS lays a
+`position: absolute` box out against its *containing block*: the padding box of
+the nearest positioned or transformed ancestor, or the viewport when there is
+none. `crates/rinch-dom/src/out_of_flow.rs` closes the gap in two halves.
+
+The **size** is baked into the box's Taffy style before the compute, so the
+box's own children — a percentage child, wrapping content — are laid out inside
+the right box. For the viewport that is known up front. For an ancestor it is
+not: the ancestor's used size is what the compute produces. So a style site
+bakes from the ancestor's last laid-out size, and after each root compute
+`resolve_ancestor_absolutes` compares every absolute box whose containing block
+is a non-parent ancestor with the size that ancestor now has, rewrites the ones
+that differ and asks for another compute. An out-of-flow box sizes nothing
+above it, so one extra compute settles it (one more per level of nesting, with
+`calc()`'s fixpoint and its cap of 8). A box whose size does not depend on its
+containing block is never rewritten. The counter is
+`abs_containing_block_passes`.
+
+The **position** is written as a parent-relative value, so `LayoutResult` means
+the same thing for every node and paint, stacking, hit testing and the debug
+protocol need no special case: the containing block's border, plus the inset
+and margin, minus the offsets of the boxes between — plus those boxes' scroll
+offsets, because a scroller between a box and its containing block does not
+carry the box. A scroll runs no layout, so `NodeTree::mark_scrolled` writes
+those positions again.
+
 ## Key Technologies
 
 ### rinch-dom

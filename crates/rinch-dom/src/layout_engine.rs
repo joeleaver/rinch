@@ -484,12 +484,6 @@ impl RinchDocument {
         self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
         self.tree.dirty_ifc_text_roots.clear();
 
-        // An absolute box was placed from its ancestors' layouts as it was
-        // read back, and `build_ifc_layouts` has only now written where each
-        // atomic inline sits on its line: place again the ones with such a
-        // box between them and their containing block (#386).
-        crate::out_of_flow::replace_all(&mut self.tree);
-
         // Copy cached text layouts to nodes (use the exact layouts from
         // measurement) — the root compute's text leaves and, since #904, the
         // ones the detached atomic-inline computes measured this pass (an
@@ -507,9 +501,13 @@ impl RinchDocument {
         // before them that is last pass's lines or none (review of #1045 — a
         // bottom-pinned text scroller snapped to 0 when text was appended).
         self.clamp_scroll_offsets();
-        // ... and once more against the scroll offsets as clamped: a box is
-        // placed from the offsets of the scrollers between it and its
-        // containing block.
+        // An absolute box was placed from its ancestors' layouts as it was
+        // read back (#386), and two things on the way to its containing block
+        // have only now been written: where `build_ifc_layouts` put an atomic
+        // inline on its line, and the scroll offsets as clamped. Place again
+        // the ones that moves. (No box placed here is in any scroll range —
+        // `contributes_to_scrollable_overflow` — so the clamp above did not
+        // need this first.)
         crate::out_of_flow::replace_all(&mut self.tree);
 
         // Arm transitions now that the first layout has completed, so nothing

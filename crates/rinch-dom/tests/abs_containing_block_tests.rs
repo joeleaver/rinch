@@ -3,11 +3,13 @@
 //! direct parent Taffy resolves an out-of-flow box against (issue #386, the
 //! other half of #204's initial-containing-block correction).
 //!
-//! Every number here is Chrome 153's (`--headless=new`, standards mode,
-//! `* { box-sizing: border-box }`, 800x600 window), measured with
-//! `getBoundingClientRect` and reported **relative to the containing block's
-//! border box** (`CB` below), from the page these fixtures were transcribed
-//! from. The scaffold is:
+//! Every rect asserted against the first layout of a fixture is Chrome 153's
+//! (`--headless=new`, standards mode, `* { box-sizing: border-box }`, 800x600
+//! window), measured with `getBoundingClientRect` and reported **relative to
+//! the containing block's border box** (`CB` below), from the pages these
+//! fixtures were transcribed from. A rect asserted after a later change (a
+//! resize, a restyle, a move) is the same rule applied to the changed
+//! document. The scaffold is:
 //!
 //! ```html
 //! <div CB = "position: relative; width: 400px; height: 300px; margin: 13px 0 0 17px">
@@ -34,6 +36,7 @@ const ABS: &str = "position: absolute;";
 struct Case {
     doc: RinchDocument,
     cb: usize,
+    relayouts: u32,
 }
 
 impl Case {
@@ -47,7 +50,11 @@ impl Case {
         doc.append_child(body, wrap);
         doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
         let cb = one(&doc, "[data-cb]");
-        Case { doc, cb }
+        Case {
+            doc,
+            cb,
+            relayouts: 0,
+        }
     }
 
     /// The scaffold in the module doc: `cb_extra` and `mid_extra` are appended
@@ -85,11 +92,13 @@ impl Case {
         [x as f32, y as f32, l.width, l.height]
     }
 
-    /// Lay out again at a different viewport height, so the pass is not
-    /// skipped (`resolve_layout` returns early when nothing is dirty) while
-    /// no width in the fixture moves.
+    /// Lay out again at a viewport height no earlier pass used, so the pass
+    /// is not skipped (`resolve_layout` returns early when nothing is dirty)
+    /// while no width in the fixture moves.
     fn relayout(&mut self) {
-        self.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
+        self.relayouts += 1;
+        self.doc
+            .resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0 * self.relayouts as f32);
     }
 }
 
@@ -1054,4 +1063,112 @@ fn a_box_in_a_hidden_subtree_is_not_placed() {
         abs("abs", "right: 10px; bottom: 20px; width: 0; height: 0", ""),
     ));
     zero(&c);
+}
+
+/// An end inset is measured to the box's **margin** edge.
+#[test]
+fn an_end_inset_is_measured_to_the_margin_edge() {
+    let c = Case::single(
+        "right: 10px; bottom: 20px; margin-right: 5px; margin-bottom: 7px; width: 50px; \
+         height: 30px",
+    );
+    assert_rect(
+        c.rect("abs"),
+        [335.0, 243.0, 50.0, 30.0],
+        "right/bottom + margins",
+    );
+}
+
+/// The box's parent is an `inline-block` on the line of a **padded** block: an
+/// atomic inline's position is relative to that block's content box, which a
+/// plain sum of layout offsets is one padding short of. The static-position
+/// box says where the inline-block is (`(13, 31)`: 13 and 20 + 11); the inset
+/// ones must not move with the padding.
+#[test]
+fn a_box_inside_an_inline_block_on_a_padded_line() {
+    let c = Case::new(&format!(
+        r#"<div data-cb style="{CB}">{SP}<div style="padding: 11px 13px; font-size: 0; line-height: 0"><div style="display: inline-block; width: 100px; height: 50px">{}{}{}</div></div></div>"#,
+        abs("abs", "inset: 0", ""),
+        abs(
+            "rb",
+            "right: 5px; bottom: 6px; width: 20px; height: 10px",
+            ""
+        ),
+        abs("st", "width: 20px; height: 10px", ""),
+    ));
+    assert_rect(c.rect("st"), [13.0, 31.0, 20.0, 10.0], "static position");
+    assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "inset: 0");
+    assert_rect(c.rect("rb"), [375.0, 284.0, 20.0, 10.0], "right/bottom");
+}
+
+/// The box stops resolving against a non-parent ancestor **with no restyle of
+/// its own**: its parent is a `display: contents` wrapper, and the static box
+/// above that becomes `display: contents` too, which makes the containing
+/// block its layout parent. The lengths baked while it was a grandparent —
+/// size, `min-height`, padding — must be given back to Taffy as the
+/// percentages they are, or they stop following the containing block.
+#[test]
+fn a_bake_is_undone_when_the_box_between_stops_generating_a_box() {
+    let style = "left: 0; top: 0; width: 50%; min-height: 50%; padding: 5%";
+    let mut c = Case::scaffold(
+        "",
+        "",
+        &format!(
+            r#"<div style="display: contents">{}</div>"#,
+            abs("abs", style, "")
+        ),
+    );
+    assert_rect(c.rect("abs"), [0.0, 0.0, 200.0, 150.0], "a grandparent");
+    let mid = NodeId(one(&c.doc, "[data-mid]"));
+    c.doc.set_attribute(mid, "style", "display: contents");
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("abs"), [0.0, 0.0, 200.0, 150.0], "the layout parent");
+
+    c.doc.set_attribute(
+        NodeId(c.cb),
+        "style",
+        &format!("{CB}width: 300px; height: 200px"),
+    );
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    let id = c.id("abs");
+    assert_rect(c.rect("abs"), [0.0, 0.0, 150.0, 100.0], "and it follows it");
+    let ts = c
+        .doc
+        .tree
+        .taffy
+        .style(c.doc.tree.get(id).unwrap().taffy_id.unwrap())
+        .unwrap();
+    assert_eq!(
+        (ts.size.width, ts.min_size.height, ts.padding.left),
+        (
+            taffy::Dimension::percent(0.5),
+            taffy::LengthPercentageAuto::percent(0.5),
+            taffy::LengthPercentage::percent(0.05)
+        ),
+        "the Taffy style is the computed style's own again"
+    );
+}
+
+/// A `position: relative` **inline** span is the box's containing block in
+/// CSS and is not honoured (#631): the box resolves against the block that
+/// holds the span's line, as it did before #386. Chrome 153 gives a box half
+/// the span's 46.25px fragment (23.125) at the span's corner; rinch gives half
+/// the 300px block. Pinned as a stated divergence — and so that the span is
+/// not mistaken for an ancestor with a box, which sizes the box to nothing.
+#[test]
+fn a_relative_inline_span_is_not_yet_a_containing_block() {
+    let c = Case::scaffold(
+        "",
+        "font-size: 16px; line-height: 20px;",
+        &format!(
+            r#"lead <span style="position: relative">text{}</span>"#,
+            abs("abs", "left: 0; top: 0; width: 50%; height: 30px", "")
+        ),
+    );
+    let r = c.rect("abs");
+    assert_eq!(
+        (r[2], r[3]),
+        (150.0, 30.0),
+        "half the block, not half the span"
+    );
 }
