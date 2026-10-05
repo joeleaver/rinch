@@ -5451,7 +5451,16 @@ knowing (#448):
   into `edited` plus a job-level `if:` inside `ci.yml`: a body edit would then
   start a run whose jobs are skipped under the real checks' names, and the
   newest check of a name is the one `gh pr checks` and the merge box show, so a
-  red `test` would read as passed.
+  red `test` would read as passed. A retarget made while the PR's own `Perf`
+  or `Documentation` run is in progress cancels that run (their concurrency
+  groups are per PR), and `gh pr checks` lists a cancelled check as `fail`
+  beside the new `perf / …` and `docs / …` ones.
+- **Retarget a stacked PR before its base branch is deleted.** Deleting the
+  parent's branch with `gh pr merge --delete-branch` or through the API
+  **closes** the child instead of retargeting it, and a PR whose base branch is
+  gone cannot be reopened (measured with gh 2.46, #448). Change the child's
+  base to `main` first (`gh api -X PATCH repos/OWNER/REPO/pulls/N -f base=main`),
+  which is the event `base-changed.yml` runs on.
 - **A PR that conflicts with its base gets no run of any workflow**, on a push
   or a retarget: GitHub has no merge commit to run on. `gh pr checks` prints
   `no checks reported`. Check `gh pr view N --json mergeable,mergeStateStatus`.
