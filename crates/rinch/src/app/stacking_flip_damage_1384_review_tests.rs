@@ -476,7 +476,7 @@ fn gen_case(seed: u64) -> (Spec, Vec<String>, usize, String) {
 }
 
 #[test]
-#[ignore = "a search tool: its remaining hits are the pre-existing `g_` class above"]
+#[ignore = "a search tool (REVIEW_SEEDS / REVIEW_SEED_START): slow, and expected clean"]
 fn seeded_differential_of_order_flips() {
     let seeds: u64 = std::env::var("REVIEW_SEEDS")
         .ok()
@@ -659,10 +659,10 @@ fn a_transform_stopping_on_a_positioned_box() {
 }
 
 /// G: the flipping box is itself a clipper and starts/stops being the abs
-/// containing block (#550/#961 class): its absolute child is clipped in, or
-/// escapes.
+/// containing block (#1408, the #550/#961 composition): its absolute child is
+/// clipped in, or escapes. The subtree's reach is narrowed at the box's own
+/// clip, so the frame repaints in full.
 #[test]
-#[ignore = "pre-existing, not #1384: the #550/#961 composition (issue draft of the #1399 review)"]
 fn g_a_clipper_that_stops_being_the_containing_block() {
     for (from, to) in [("position: relative;", ""), ("", "position: relative;")] {
         let p = "width: 100px; height: 100px; overflow: hidden;";
@@ -873,4 +873,134 @@ fn a_box_that_starts_containing_an_escaping_absolute_clears_where_it_was() {
         assert_eq!(o.full, 0);
         assert_eq!(o.stale, 0);
     }
+}
+
+// ── Round 2 of the #1399 review ────────────────────────────────────────────
+
+/// `holder(relative) > p > clipper(static, overflow hidden) > k(absolute, z 5)`
+/// with a blue `z-index: 1` sibling over `k`. `k`'s containing block is `p`
+/// (when `p` is positioned) or the holder; either way it escapes `clipper`,
+/// which is BELOW the flipping box. `opacity_layer_bounds` narrows at every
+/// clipper (#550), so the reach of `p` may miss `k`.
+fn partial_escape(p_style: &str) -> (Spec, usize) {
+    let spec = vec![
+        s(None, "position: relative; width: 400px; height: 100px"),
+        s(Some(0), p_style),
+        s(Some(1), "width: 100px; height: 100px; overflow: hidden"),
+        s(
+            Some(2),
+            &format!("position: absolute; left: 150px; top: 0; z-index: 5; {RED}"),
+        ),
+        s(
+            Some(0),
+            &format!("position: absolute; left: 150px; top: 0; z-index: 1; {BLUE}"),
+        ),
+    ];
+    (spec, 1)
+}
+
+/// A: the flipping box is and stays the containing block (`contains`), the
+/// absolute escapes a clipper below it.
+#[test]
+fn a_contained_absolute_escaping_a_clipper_below_the_flipping_box_is_repainted() {
+    let p = "width: 100px; height: 100px; position: relative;";
+    let mut worst = 0;
+    for (from, to) in [
+        ("", "z-index: 0;"),
+        ("z-index: 0;", ""),
+        ("", "opacity: 0.5;"),
+    ] {
+        let (spec, t) = partial_escape(&format!("{p} {from}"));
+        let o = probe(&spec, t, &format!("{p} {to}"));
+        report(
+            &format!("R2-A contained partial escape {from:?}->{to:?}"),
+            &o,
+        );
+        worst = worst.max(o.stale);
+    }
+    assert_eq!(worst, 0);
+}
+
+/// B: the flipping box is static (not a containing block); the absolute
+/// escapes both the clipper below it and the box.
+#[test]
+fn an_escaping_absolute_under_a_clipper_below_a_static_flipping_box_is_repainted() {
+    let p = "width: 100px; height: 100px;";
+    let mut worst = 0;
+    for (from, to) in [("", "opacity: 0.5;"), ("opacity: 0.5;", "")] {
+        let (spec, t) = partial_escape(&format!("{p} {from}"));
+        let o = probe(&spec, t, &format!("{p} {to}"));
+        report(&format!("R2-B static partial escape {from:?}->{to:?}"), &o);
+        worst = worst.max(o.stale);
+    }
+    assert_eq!(worst, 0);
+}
+
+/// D: the wider chain does not depend on the reach passing the box's ink.
+/// A row scrolled out of a clipper whose absolute child sits
+/// INSIDE the row's own box (so the reach does not pass it) and escapes the
+/// clipper: the child is visible and must be repainted.
+#[test]
+fn an_escaping_absolute_inside_the_flipping_boxs_own_rect_is_repainted() {
+    let p = "width: 100px; height: 100px;";
+    for (from, to) in [("", "opacity: 0.5;"), ("opacity: 0.5;", "")] {
+        let spec = vec![
+            s(None, "position: relative; width: 300px; height: 300px"),
+            s(Some(0), "width: 300px; height: 100px; overflow: hidden"),
+            s(Some(1), "height: 150px"),
+            s(Some(1), &format!("{p} {from}")),
+            s(Some(3), &format!("position: absolute; {RED}")),
+        ];
+        let o = probe(&spec, 3, &format!("{p} {to}"));
+        report(
+            &format!("R2-D escaping abs inside own rect {from:?}->{to:?}"),
+            &o,
+        );
+        assert!(o.changed > 5000, "positive control {}", o.changed);
+        assert_eq!(o.stale, 0);
+    }
+}
+
+/// E: the now-rect and the painted rect of a flip differ (a transform that
+/// moves the box starts/stops), and the absolute child escapes the clipper
+/// only on one side of the flip (a transformed box contains it). Each
+/// direction needs the absolute chain in a different frame.
+#[test]
+fn an_escaping_absolute_under_a_box_whose_transform_moves_it_is_repainted() {
+    let p = "width: 100px; height: 100px;";
+    let k = format!("position: absolute; left: 150px; top: 0; z-index: 5; {RED}");
+    for (from, to) in [
+        ("", "transform: translateY(150px);"),
+        ("transform: translateY(150px);", ""),
+    ] {
+        let spec = vec![
+            s(None, "position: relative; width: 400px; height: 300px"),
+            s(Some(0), "width: 100px; height: 100px; overflow: hidden"),
+            s(Some(1), &format!("{p} {from}")),
+            s(Some(2), &k),
+        ];
+        let o = probe(&spec, 2, &format!("{p} {to}"));
+        report(&format!("R2-E moving flip {from:?}->{to:?}"), &o);
+        assert!(o.changed > 9000, "positive control {}", o.changed);
+        assert_eq!(o.full, 0);
+        assert_eq!(o.stale, 0, "{from:?} -> {to:?}");
+    }
+}
+
+/// F: a box that is and stays the containing block of its absolute child
+/// keeps the damage inside the clipper above it (the `contains` skip).
+#[test]
+fn a_box_that_stays_the_containing_block_keeps_the_damage_inside_the_clipper() {
+    let p = "width: 100px; height: 100px; position: relative;";
+    let k = format!("position: absolute; left: 150px; top: 0; z-index: 5; {RED}");
+    let spec = vec![
+        s(None, "position: relative; width: 300px; height: 100px"),
+        s(Some(0), "width: 100px; height: 100px; overflow: hidden"),
+        s(Some(1), p),
+        s(Some(2), &k),
+    ];
+    let o = probe(&spec, 2, &format!("{p} z-index: 0;"));
+    report("R2-F containing box", &o);
+    assert_eq!(o.stale, 0);
+    assert_eq!(o.repainted, 100 * 100);
 }
