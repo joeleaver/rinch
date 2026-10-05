@@ -87,7 +87,8 @@
 //!   block container (issue #631).
 //! - The shrink-to-fit *available* width of an auto-width absolute is still
 //!   the Taffy parent's (Chrome: a box of four 130px inline-blocks under a
-//!   200px parent in a 400px containing block is 400 wide; rinch: 260).
+//!   200px parent in a 400px containing block is 400x40; rinch: 130x80 —
+//!   issue #1404).
 //! - `position: fixed` takes none of the margin, padding or min/max rules
 //!   below, and a transformed ancestor does not contain it (#1372).
 

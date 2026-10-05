@@ -2995,8 +2995,8 @@ position.
 relative` **inline** span — is left to Taffy, which resolves against the
 span's block container (**#631**); the shrink-to-fit *available* width of an
 auto-width absolute is still the Taffy parent's (Chrome: four 130px
-inline-blocks under a 200px parent in a 400px containing block make a 400px
-box; rinch 260px); a box whose containing block is a non-parent **scroll
+inline-blocks under a 200px parent in a 400px containing block make a 400x40
+box; rinch 130x80 — **#1404**); a box whose containing block is a non-parent **scroll
 container** is placed in it but still counted in no scroll range (**#770**);
 `position: fixed` takes none of the margin, padding or min/max rules above,
 keeps the Taffy parent as its `calc()` basis, and is not contained by a
