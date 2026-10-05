@@ -150,11 +150,14 @@ is at most 192 elements deep (`html_tree::MAX_DEPTH`), so the reader's recursion
 bounded (10,000 nested `<div>`s overflowed the stack): an element opened deeper is
 still open, so its end tag is its own, but it is flattened into the element at the
 limit — a block as a child of it, split around the blocks inside it, an inline
-element as its content alone — so depth changes neither the text nor where a line
-ends. Chrome's limit is 512 and it too keeps every element; 192 is what an
-unoptimized build reads on a 2 MB stack (about 6.4 KB a level). A tag looks at no
-more than 192 open elements for the one it closes, which keeps reading linear when
-thousands are open. The reader (`serialize/html.rs`) then maps the tree onto the schema:
+element as its content alone — so past the limit no text is lost and every block
+is still a line of its own (an inline element that holds a block joins its line
+there, as in Chrome, where under the limit it is a line of its own). Chrome's limit is 512 and it too keeps every element; 192 is what an
+unoptimized build reads on a 2 MB stack (about 6.4 KB a level). A tag scans the
+innermost 192 open elements for the one it closes and past those asks an index of
+where each name is open (`open_at`), so it closes what an unbounded scan would at a
+fixed cost: reading stays linear with thousands of elements open, and a block's end
+tag ends it however many unclosed elements are inside. The reader (`serialize/html.rs`) then maps the tree onto the schema:
 
 - An element with no node or mark is read through. It is inline unless it holds a
   block or is a block-level HTML element (`div`, `section`, …).

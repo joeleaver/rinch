@@ -822,7 +822,9 @@ then **fitted** to the caret, as ProseMirror and TipTap do it:
   the other is a list nested in that item.
 - **A heading, a quote or a code block** pasted on an empty line is that block;
   inside text a heading is its text, and a code block is a paragraph for each of its
-  lines (the first continues the line), never one paragraph holding line ends.
+  lines (the first continues the line), never one paragraph holding line ends —
+  wherever the caret is in a line that has content, its start included. A line
+  selected whole counts as empty: the code block takes its place.
 - **A rule or a table** splits the line: the text before the caret, the block, the
   text after. At the start or end of a line nothing is split and no empty line is
   left.
@@ -887,19 +889,26 @@ or a closed `<details>` is read, and whitespace is kept as written.
 - **Table parts with no `<table>`** are a table: a run of `<td>` is one row, a run of
   `<tr>` the rows of one table (#1392; they used to load as an invalid document and
   paste as plain text). What has no place in a table — text between its rows, a
-  `<caption>` — becomes paragraphs in front of the table, where a browser shows it.
+  `<caption>` — becomes paragraphs in front of the table. That is where a browser
+  shows it for a written `<table>`; for parts with no `<table>` a browser has no
+  table to put it in front of, and the order can differ from both the source and the
+  browser (`<td>w1<tbody>w2` reads `w2`, then `w1`). No text is lost.
   Parts that do not make full rows (`<td>A</td><td>B</td><tr><td>C</td></tr>`) are
-  padded with empty cells to a rectangle, as a browser renders them. A `<table>` is
-  read as it is written, short rows included.
+  padded with empty cells to a rectangle, as a browser renders them — up to eight
+  empty cells for each cell written (sixteen at least). Parts whose spans ask for
+  more (`<td colspan=1000>` over a few short rows) are left as written, short rows
+  and all. A `<table>` is always read as it is written, short rows included.
 - **A heading around blocks** (`<h2><div>…</div><ul>…</ul></h2>`) keeps the blocks;
   the text between them is headings.
 - **A mark around blocks** marks their text and images, not their line breaks, as it
   does around a line (#1401). Of two links or two colours, one inside the other, the
   text has the inner one.
 - **Nesting** is kept 192 elements deep (a list level costs two or three, a quote
-  one). Deeper elements are flattened into the 192nd: every line stays a line of its
-  own with its text, in order; what is lost is the nesting, and the marks of inline
-  elements that deep. Nothing overflows. A document nested deeper than that does
+  one). Deeper elements are flattened into the 192nd: every block stays a line of
+  its own with its text, in order; what is lost is the nesting, the marks of inline
+  elements that deep, and the attributes of a block's later parts when it is split
+  around the blocks inside it (the first part keeps them). Nothing overflows, and
+  reading stays linear in the size of the input. A document nested deeper than that does
   not read back as itself from its own HTML — the same lines, less nesting.
 
 What the applications people paste from write, and how it reads:
