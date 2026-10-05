@@ -26,6 +26,7 @@
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::Callback;
+use rinch_core::reactive::Effect;
 use std::rc::Rc;
 
 /// Titlebar height in px. Must match `height`/`min-height` on
@@ -218,6 +219,7 @@ impl Component for BorderlessWindow {
 
         // Left section — only render in titlebar when NOT inline
         // (inline layout moves it to the menu layer)
+        let mut menu_spacer: Option<NodeHandle> = None;
         if !is_inline {
             let left = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__left" } };
             if let Some(ref render_left) = self.left_section {
@@ -228,12 +230,16 @@ impl Component for BorderlessWindow {
         } else {
             // Inline mode: add a spacer to reserve titlebar space for the
             // absolutely-positioned menu items that overlay the titlebar.
+            // `spacer_width` is the shell's estimate, made before any
+            // document existed; it holds only until the row has been laid out,
+            // after which the spacer follows the row's measured box (below).
             let spacer =
                 rinch_macros::rsx! { div { class: "rinch-borderlesswindow__menu-spacer" } };
             if let Some(ref ctx) = menu_ctx {
-                spacer.set_attribute("style", &format!("width: {}px;", ctx.spacer_width));
+                spacer.set_style("width", &format!("{}px", ctx.spacer_width));
             }
             titlebar.append_child(&spacer);
+            menu_spacer = Some(spacer);
         }
 
         // Title — hidden in inline mode (title is rendered in the inline menu row instead)
@@ -436,6 +442,37 @@ impl Component for BorderlessWindow {
                 items_row.append_child(&items);
             }
             menu_layer.append_child(&items_row);
+
+            // Size the spacer from the row as laid out (issue #529): every
+            // label, the branded title and the left section, in whatever
+            // script and font they shaped in. The shell can only estimate
+            // that before the document exists, and no per-character count is
+            // a text advance — UTF-8 bytes over-reserved Cyrillic 2x, a
+            // narrow/wide table could not see a combining mark or a
+            // proportional font, and neither counted the title.
+            //
+            // The spacer ends where the row ends: the row's right edge minus
+            // the spacer's own left edge, in the painted frame both
+            // `bounds_signal`s report. Neither box depends on the spacer's
+            // width (the row is out of flow in its own layer; the spacer's
+            // left edge is the titlebar's padding), so this settles in one
+            // extra layout and re-runs only when the row or the titlebar
+            // actually moves. Until the row has a box the estimate stands.
+            if let Some(spacer) = menu_spacer {
+                let row_bounds = items_row.bounds_signal();
+                let spacer_bounds = spacer.bounds_signal();
+                let estimate = menu_ctx.spacer_width;
+                Effect::new(move || {
+                    let row = row_bounds.get();
+                    let at = spacer_bounds.get();
+                    let width = if row.width > 0.0 {
+                        (row.x + row.width - at.x).max(0.0)
+                    } else {
+                        estimate as f32
+                    };
+                    spacer.set_style("width", &format!("{width}px"));
+                });
+            }
 
             container.append_child(&menu_layer);
         } else if let Some(ctx) = menu_ctx {
