@@ -322,6 +322,43 @@ fn the_abs_child_follows_a_transition_that_finishes_at_none() {
     assert_eq!(size(&doc, abs), VIEWPORT, "finished at none");
 }
 
+/// The shell's frame: it drains `dirty_nodes` at every resolve
+/// (`take_dirty_nodes`), so on the frame a transition finishes the abs is in
+/// no dirty set and **only the tick's own re-sync** reaches it — the abs a
+/// direct child, and one level down. (The fixture above leaves the set
+/// undrained, where the tick's dirty-node Taffy loop happens to re-bake the
+/// abs; this one fails with the re-sync removed.)
+#[test]
+fn the_tick_re_syncs_the_abs_after_the_shell_drained_the_dirty_set() {
+    for deep in [false, true] {
+        let (mut doc, div) = transition_doc("translateX(20px)", "none");
+        let mut abs = NodeId(doc.tree.nodes[div.0].children[0]);
+        if deep {
+            let mid = el(&mut doc, "div", div, "width: 50px; height: 30px");
+            abs = el(
+                &mut doc,
+                "div",
+                mid,
+                "position: absolute; left: 0; top: 0; width: 100%; height: 100%",
+            );
+        }
+        transition_start(&mut doc, div);
+        let _ = doc.take_dirty_nodes();
+        for t in doc
+            .tree
+            .active_transitions
+            .get_mut(&div.0)
+            .unwrap()
+            .values_mut()
+        {
+            t.start_time_ms -= 10_000.0;
+        }
+        doc.tick_transitions();
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        assert_eq!(size(&doc, abs), VIEWPORT, "finished at none (deep: {deep})");
+    }
+}
+
 /// The twin: a transition that finishes at `translateX(0)` stays a context.
 #[test]
 fn a_transition_that_finishes_at_an_identity_stays_a_context() {

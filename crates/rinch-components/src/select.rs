@@ -349,7 +349,9 @@ impl Component for Select {
             if opened.get() {
                 chevron_c.set_style("transform", "rotate(180deg)");
             } else {
-                chevron_c.set_style("transform", "rotate(0deg)");
+                // `none`, not `rotate(0deg)`: an identity transform is still a
+                // stacking context (#415); `none` ↔ `rotate(180deg)` turns the same.
+                chevron_c.set_style("transform", "none");
             }
         });
         trigger.append_child(&chevron);

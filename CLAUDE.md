@@ -2894,7 +2894,10 @@ static position, which is what CSS asks for.
 
 **Not covered (#386):** an absolute whose nearest positioned ancestor is not its
 direct parent is still parent-resolved (its used size isn't known until a first
-compute pass); percentage `padding`/`margin` and percentage `min-`/`max-` sizes on the
+compute pass) — and so is one whose containing block is a non-parent
+*transformed* ancestor, identity transforms included since #415
+(`div(translateX(0); 200x80) > div(50x30) > abs(inset: 0)`: 50x30, Chrome
+200x80; it was the 800x600 ICB before #415); percentage `padding`/`margin` and percentage `min-`/`max-` sizes on the
 box; the shrink-to-fit available width of an auto-sized absolute. `position:
 fixed` is unchanged and now shares the same helper — which is what stops
 `tick_transitions`/`tick_animations` from dropping its viewport size on a
@@ -3129,9 +3132,27 @@ transform creates the context without paying a transform at paint. A
 transition or animation frame is never `none` (`AnimatableTransform::to_style`),
 so an element is a stacking context for the whole run; a transition that
 *finishes* at `none` writes `none` and stops being one, and the document's tick
-re-syncs the absolute descendants it stopped containing (Chrome 153 on every
-case; `tests/identity_transform_tests.rs`). The `HitStyleKey` keys
+re-syncs the absolute descendants it stopped containing
+(`tests/identity_transform_tests.rs`, each fixture against Chrome 153). Two
+ends are **not** Chrome's: `rotate(0deg)` → `none` under a declared transition
+starts no run in rinch (`lists_equivalent`), so the context goes at once where
+Chrome holds it for the run; and an animation with no fill that finishes keeps
+its last sample, and so stays a context (#783). The `HitStyleKey` keys
 `is_none`, not identity.
+
+**An identity transform costs what any stacking context costs**, the same as
+`opacity: 0.99`: it is hoisted, so the off-screen paint cull and hit testing's
+flow-extent prune do not skip it. Pinned by
+`perf_regression_tests::identity_transform_rows_cost_what_any_stacking_context_costs`
+against its `transform: none` twin — 300 rows in a 400px scroller:
+`PaintNodesVisited` 24 → 303 and `StackingOrderBuilds` 2 → 313 on a wheel
+notch, `HitTestNodesVisited` 4 → 285 on a warm pointer move. So a component's
+resting state says `transform: none`, not `scale(1)` / `translateY(0)` /
+`rotate(0deg)`: `Checkbox`'s icon, `Radio`'s dot, `Slider`'s label and
+`Select`'s chevron were changed for it (`none` interpolates with the other
+state's function as the identity does, in rinch and in Chrome 153, so the
+transition is the same; 300 checked checkboxes went back from 603 to 303 nodes
+per warm move). `none` ↔ `rotate(0deg)` is the one pair that starts nothing.
 
 Stage B slightly **widened** that exposure rather than leaving it untouched: a
 box declaring **both** a filter (or a static flex/grid item's `z-index`) and a

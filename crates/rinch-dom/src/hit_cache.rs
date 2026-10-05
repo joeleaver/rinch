@@ -56,7 +56,7 @@ use crate::stacking::PaintOrder;
 ///
 /// The readers, which is how the list was drawn up:
 /// - `stacking::paints_at_stacking_root` / `Node::creates_stacking_context`:
-///   `position`, `z_index`, `opacity < 1`, whether `transform` is the identity;
+///   `position`, `z_index`, `opacity < 1`, whether `transform` is `none` (#415);
 /// - `Node::establishes_abs_containing_block` (the clip chain's truncation
 ///   point): `position`, whether `transform` is `none` (#415);
 /// - `Node::clips_overflow` and `paint::clip_shape`: `overflow_x`/`_y`
