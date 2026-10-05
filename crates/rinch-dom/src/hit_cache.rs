@@ -56,9 +56,9 @@ use crate::stacking::PaintOrder;
 ///
 /// The readers, which is how the list was drawn up:
 /// - `stacking::paints_at_stacking_root` / `Node::creates_stacking_context`:
-///   `position`, `z_index`, `opacity < 1`, whether `transform` is the identity;
+///   `position`, `z_index`, `opacity < 1`, whether `transform` is `none` (#415);
 /// - `Node::establishes_abs_containing_block` (the clip chain's truncation
-///   point): `position`, whether `transform` is the identity;
+///   point): `position`, whether `transform` is `none` (#415);
 /// - `Node::clips_overflow` and `paint::clip_shape`: `overflow_x`/`_y`
 ///   (the radii only shape paint; hit testing tests the rect);
 /// - `hit_testing::descend` / `local_point`: `position` (the fixed hoist),
@@ -69,9 +69,11 @@ use crate::stacking::PaintOrder;
 /// - `hit_test_node`: `visibility`, `pointer_events`;
 /// - `RinchDocument::box_tree_children`: `display`.
 ///
-/// **Only transform identity is keyed, not the value**, so a `Drawer` or
-/// `Popover` slide keeps pointer moves warm: nothing the cache holds depends
-/// on the value. A transformed box creates a stacking context, so it is never
+/// **Only whether `transform` is `none` is keyed, not the value**, so a
+/// `Drawer` or `Popover` slide keeps pointer moves warm: nothing the cache
+/// holds depends on the value — nor on whether it composes to the identity,
+/// since an identity transform is a stacking context too (#415). A
+/// transformed box creates a stacking context, so it is never
 /// inside any flow extent (`flow_extent` skips it and `flow_subtree_may_contain`
 /// never prunes it); a stacking sequence's offsets are accumulated through
 /// untransformed boxes only (the collector never crosses a stacking context);
@@ -114,7 +116,7 @@ impl HitStyleKey {
             overflow_y: cs.overflow_y,
             translucent: cs.opacity < 1.0,
             visibility: cs.visibility,
-            transformed: !cs.transform.is_identity,
+            transformed: !cs.transform.is_none,
             z_index: cs.z_index,
             pointer_events: cs.pointer_events,
             padding_left: cs.padding_left,

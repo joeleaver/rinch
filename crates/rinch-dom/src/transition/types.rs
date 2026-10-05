@@ -477,10 +477,21 @@ impl AnimatableTransform {
 
     /// Write an interpolated transform back into a computed style.
     ///
-    /// `is_identity` is `false` unconditionally: an element mid-transition has
-    /// a transform even on the frame where it happens to compose to the
-    /// identity, and the flag also decides whether the element establishes a
-    /// stacking context — which must not flicker across the animation.
+    /// The value is never `none` (`is_none: false`), even for an empty list,
+    /// so the element is a stacking context and an absolute containing block
+    /// for as long as a transition or animation writes it, the frames that
+    /// happen to compose to the identity included (#415). Chrome 153 agrees
+    /// where the two can be compared: an `@keyframes` animation filled
+    /// `forwards` at a `transform: none` keyframe reports
+    /// `matrix(1, 0, 0, 1, 0, 0)` — the padded identity list, not `none` — and
+    /// is still its absolute child's containing block. The one write that is
+    /// `none` is a transition *finishing* at `none`, which leaves the cascaded
+    /// value; `tick_transitions` writes that itself.
+    ///
+    /// `is_identity` is `false` for the same reason it always was: an
+    /// interpolated frame is drawn through its transform rather than tested
+    /// for being a no-op. Since #415 it decides only that, not the stacking
+    /// context.
     ///
     /// `origin_z` is the element's `transform-origin` z in CSS px, which the
     /// composed matrix has to be taken about (see
@@ -490,6 +501,7 @@ impl AnimatableTransform {
         TransformValue {
             matrix: c.matrix,
             is_identity: false,
+            is_none: false,
             pct_translate_w: c.pct_w,
             pct_translate_h: c.pct_h,
             functions: self.functions.clone(),

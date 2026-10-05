@@ -975,7 +975,37 @@ impl RinchDocument {
             .map(|(id, _)| *id)
             .collect();
 
+        // Whether each node with a `transform` transition is a containing block
+        // for its absolute descendants, read before the tick. Every frame of a
+        // transform transition is one (`AnimatableTransform::to_style`), but
+        // the frame that finishes it at `none` is not (#415), and those
+        // descendants have the box they resolve against baked into their Taffy
+        // style — the cascade re-syncs them when a restyle flips the answer,
+        // and a tick writes `computed_style` with no cascade.
+        let transform_nodes: Vec<(usize, bool)> = self
+            .tree
+            .active_transitions
+            .iter()
+            .filter(|(_, props)| {
+                props.contains_key(&crate::transition::TransitionProperty::Transform)
+            })
+            .map(|(id, _)| (*id, self.tree.nodes[*id].establishes_abs_containing_block()))
+            .collect();
+
         let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
+
+        let mut resync_absolutes = Vec::new();
+        for (node_id, was) in transform_nodes {
+            if self.tree.contains(node_id)
+                && self.tree.nodes[node_id].establishes_abs_containing_block() != was
+            {
+                self.collect_absolute_descendants(node_id, &mut resync_absolutes);
+            }
+        }
+        if !resync_absolutes.is_empty() {
+            self.tree.style_dirty_nodes.extend(resync_absolutes);
+            self.apply_stylo_styles_to_taffy();
+        }
 
         for node_id in text_measure_nodes {
             self.invalidate_text_measure_for_node(node_id);

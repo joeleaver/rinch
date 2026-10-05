@@ -821,10 +821,11 @@ pub fn interpolate_lists(a: &[TransformOp], b: &[TransformOp], t: f64) -> Vec<Tr
 /// transform, since their interpolation is a decomposition of exactly that.
 ///
 /// The one place this departs from Chrome is that last pair: Chrome starts a
-/// transition from `none` to `rotate(0deg)`. It moves nothing, and in rinch a
-/// transitioning transform is a stacking context for the length of the run
-/// while `rotate(0deg)` at rest is not (#415), so starting one would make the
-/// element's stacking flicker for no visible change.
+/// transition from `none` to `rotate(0deg)`. It moves nothing, so rinch runs
+/// no frames for it. Since #415 `rotate(0deg)` at rest is a stacking context
+/// just as a running transition is, so `none` → `rotate(0deg)` ends where
+/// Chrome's does at once; the reverse, `rotate(0deg)` → `none`, stops being a
+/// stacking context at once where Chrome's stays one until its run ends.
 pub fn lists_equivalent(a: &[TransformOp], b: &[TransformOp]) -> bool {
     let close = |x: &f64, y: &f64| (x - y).abs() <= 0.001;
     let len = a.len().max(b.len());

@@ -1670,7 +1670,7 @@ mod tests {
     /// and the *body's* transform, whichever stacking context now owns it
     /// (#545). So they render at their viewport box with no ancestor transform.
     /// Hit testing mirrors paint — consistency beats spec here, and diverging is
-    /// the bug we are fixing. Containment is tracked with #386 and #415.
+    /// the bug we are fixing. Containment is tracked with #1372.
     #[test]
     fn fixed_in_transformed_ancestor_is_hit_where_paint_puts_it() {
         let mut doc = RinchDocument::new();

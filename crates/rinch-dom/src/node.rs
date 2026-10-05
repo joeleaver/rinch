@@ -1627,9 +1627,10 @@ impl Node {
     /// - `opacity < 1.0`
     /// - a non-`none` `filter`, as far as `ComputedStyle` can tell
     ///   ([`Self::has_non_identity_filter`]; CSS Filter Effects §2.1, #542)
-    /// - `transform` is non-identity **and applies** — not on a non-atomic
-    ///   `display: inline` element, which is not transformable (#1080; see
-    ///   [`Self::transform_applies`])
+    /// - `transform` is not `none` **and applies** ([`Self::has_transform`]) —
+    ///   an identity such as `translateX(0)` counts (#415), a non-atomic
+    ///   `display: inline` element does not, since it is not transformable
+    ///   (#1080; see [`Self::transform_applies`])
     ///
     /// **Not the whole CSS list, and the shortfall is not only an
     /// expressibility one.** `clip-path`, `mask`, `isolation`,
@@ -1647,11 +1648,6 @@ impl Node {
     /// the other gap: only the four scalars survive `from_stylo`, so a
     /// `blur()`-only filter answers `false` too. Both need the real "is there a
     /// filter" plumbing #542 explicitly left alone.
-    ///
-    /// Related, and probably to be fixed together: **#415**, this same function
-    /// answering `false` for a `transform` that composes to the identity, where
-    /// CSS keys on `not none`. Same class of gap — a creator this predicate can
-    /// see and does not count.
     ///
     /// One honest consequence of stage B, closed by #542: a box declaring
     /// **both** a filter (or a static flex/grid item's `z-index`) and a
@@ -1715,7 +1711,7 @@ impl Node {
         if self.has_non_identity_filter() {
             return true;
         }
-        if self.has_applied_transform() {
+        if self.has_transform() {
             return true;
         }
         false
@@ -1785,11 +1781,33 @@ impl Node {
         !(self.is_element() && self.display_mode == DisplayMode::Inline)
     }
 
+    /// Whether this node carries a `transform` other than `none` that
+    /// [applies](Self::transform_applies) — the question a transform's **side
+    /// effects** ask: [`Self::creates_stacking_context`] and
+    /// [`Self::establishes_abs_containing_block`] (#415).
+    ///
+    /// CSS keys both on the computed value not being `none`, not on the matrix
+    /// it composes to, so `transform: translateX(0)`, `rotate(0deg)` and
+    /// `scale(1)` count. Measured in Chrome 153: an `inset: 0` absolute under
+    /// a `rotate(0deg)` div fills the div, and a `z-index: 5` box inside a
+    /// `translateX(0)` parent paints below a `z-index: 1` sibling of that
+    /// parent. rinch used to ask [`Self::has_applied_transform`] here, so a
+    /// no-op transform did neither.
+    ///
+    /// Implied by [`Self::has_applied_transform`], never the other way round:
+    /// an identity transform creates the context but has nothing to paint.
+    pub fn has_transform(&self) -> bool {
+        !self.computed_style.transform.is_none && self.transform_applies()
+    }
+
     /// Whether this node carries a non-identity `transform` that
     /// [applies](Self::transform_applies) — the question every consumer of the
-    /// transform's effect asks: stacking, the containing block, paint's
-    /// composition ([`crate::paint::compose_node_transform`]), the painted
-    /// state the damage walk replays, and hit testing's inverse.
+    /// transform's **geometry** asks: paint's composition
+    /// ([`crate::paint::compose_node_transform`]), the painted state the
+    /// damage walk replays, and hit testing's inverse. An identity transform
+    /// answers `false`, so those skip a matrix that moves nothing; whether the
+    /// box is a stacking context or a containing block is
+    /// [`Self::has_transform`]'s question (#415).
     pub fn has_applied_transform(&self) -> bool {
         !self.computed_style.transform.is_identity && self.transform_applies()
     }
@@ -1958,8 +1976,10 @@ impl Node {
     ///
     /// Per CSS that is any *positioned* element — `position` other than
     /// `static` — plus, since a transform makes an element the containing block
-    /// for all its descendants, any element with a non-identity `transform`
-    /// that **applies** ([`Self::has_applied_transform`]): a plain
+    /// for all its descendants, any element with a `transform` other than
+    /// `none` that **applies** ([`Self::has_transform`]) — an identity such as
+    /// `rotate(0deg)` included (#415, Chrome 153: an `inset: 0` absolute under
+    /// it fills it, `offsetParent` is the transformed div). A plain
     /// `display: inline` span is not transformable, so `span { transform: … }`
     /// contains nothing while `span { position: relative }` does (issue #1080,
     /// measured in Chrome 153 — the absolute's `offsetParent` is `BODY` in the
@@ -2007,7 +2027,7 @@ impl Node {
         !matches!(
             self.computed_style.position,
             crate::computed_style::PositionValue::Static
-        ) || self.has_applied_transform()
+        ) || self.has_transform()
     }
 
     /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.

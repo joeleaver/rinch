@@ -414,9 +414,9 @@ gives the right angle with a uniform scale of `cos(Δθ/2)`: a 90° turn shrank 
 interpolated value is itself a function list, so a reversal or a retarget goes
 on pairing by function; and "did the transform change" compares the lists, so
 `rotate(0deg)` → `rotate(360deg)` is a change and spins, while `none` →
-`rotate(0deg)` is not (Chrome starts an invisible transition there, and in
-rinch a running transform transition is a stacking context that `rotate(0deg)`
-at rest is not — #415). `@keyframes` stops go through the same code.
+`rotate(0deg)` is not (Chrome starts an invisible transition there; rinch runs
+no frames for it, since `rotate(0deg)` at rest is already the stacking context
+a running transition would be — #415). `@keyframes` stops go through the same code.
 `tests/transform_interpolation_tests.rs` pins it against Chrome 153's
 `getComputedStyle` numbers.
 
@@ -459,7 +459,7 @@ lands where Chrome's does. `backface-visibility: hidden` hides a box whose
 **own** transform turns its back to the viewer (the `(3, 3)` entry of the
 inverse 4×4 is negative, Chrome's test): it composes to the zero matrix, so it
 and its whole subtree are neither drawn nor hit — except a `position: fixed`
-descendant, which rinch does not contain in a transformed ancestor (#386, #415),
+descendant, which rinch does not contain in a transformed ancestor (#1372),
 so it keeps the body's transform and is still drawn. A mirror (`scaleX(-1)`) is not
 a turn, and a child under a turned parent is judged by its own transform alone,
 as in Chrome without `transform-style: preserve-3d` (#997).

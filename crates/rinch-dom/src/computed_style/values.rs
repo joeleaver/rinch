@@ -1100,8 +1100,18 @@ pub struct TransformValue {
     /// Pre-computed 2D affine matrix [a, b, c, d, e, f], with the percentage
     /// part of every `translate` excluded (see the type doc).
     pub matrix: [f64; 6],
-    /// Whether this is the identity transform (no-op).
+    /// Whether this is the identity transform (no-op): what paint and hit
+    /// testing ask, through [`crate::Node::has_applied_transform`], to skip a
+    /// transform that moves nothing. `true` for `none`, and also for a list
+    /// that composes to the identity (`translateX(0)`, `rotate(0deg)`).
     pub is_identity: bool,
+    /// Whether the computed value is `none` — an empty function list. This,
+    /// not [`Self::is_identity`], decides a transform's side effects
+    /// (#415): CSS makes any transform other than `none` a stacking context
+    /// and the containing block of its absolute descendants, whatever matrix
+    /// it composes to ([`crate::Node::has_transform`]). `!is_identity`
+    /// implies `!is_none`.
+    pub is_none: bool,
     /// The `(e, f)` contribution per unit of the element's **width**, summed
     /// over every percentage `translateX` in the list, each in its own frame.
     pub pct_translate_w: [f64; 2],
@@ -1128,6 +1138,7 @@ impl Default for TransformValue {
         Self {
             matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             is_identity: true,
+            is_none: true,
             pct_translate_w: [0.0, 0.0],
             pct_translate_h: [0.0, 0.0],
             functions: Vec::new(),

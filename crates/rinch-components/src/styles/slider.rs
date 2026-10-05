@@ -101,7 +101,10 @@ pub fn styles() -> String {
 .rinch-slider:hover .rinch-slider__label,
 .rinch-slider--label-always-on .rinch-slider__label {
     opacity: 1;
-    transform: translateY(0);
+    /* `none`, not `translateY(0)`: an identity transform is still a stacking
+       context (#415), and `none` interpolates with the hidden state's
+       function exactly as the identity does. */
+    transform: none;
 }
 
 /* Slider sizes */
