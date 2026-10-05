@@ -1375,10 +1375,12 @@ impl<'a> HtmlParser<'a> {
                     return Ok(None);
                 }
                 let mut pairs: Vec<(&str, AttrValue)> = vec![("src", AttrValue::from(src))];
-                if let Some(alt) = attr(attributes, "alt") {
+                // An empty `alt` or `title` is none: the writer writes
+                // neither, so this reads back the same.
+                if let Some(alt) = attr(attributes, "alt").filter(|v| !v.is_empty()) {
                     pairs.push(("alt", AttrValue::from(alt)));
                 }
-                if let Some(title) = attr(attributes, "title") {
+                if let Some(title) = attr(attributes, "title").filter(|v| !v.is_empty()) {
                     pairs.push(("title", AttrValue::from(title)));
                 }
                 let img = self.make_node(nt, Attrs::from_iter(pairs), Fragment::empty())?;
