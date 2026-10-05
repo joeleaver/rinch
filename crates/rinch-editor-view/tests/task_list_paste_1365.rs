@@ -33,8 +33,8 @@ fn copying_task_items_and_pasting_them_keeps_marks() {
             "task_list",
             rinch_editor_core::Attrs::new(),
             rinch_editor_core::Fragment::from_children(vec![
-                item(true, &d.child(1)),
-                item(false, &d.child(2)),
+                item(true, d.child(1)),
+                item(false, d.child(2)),
             ]),
         )
         .unwrap();
