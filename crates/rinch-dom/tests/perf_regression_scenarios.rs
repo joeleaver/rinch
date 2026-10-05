@@ -36,6 +36,7 @@
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
+//! | `abs_containing_block_passes` | `layout_engine.rs` `resolve_layout`'s fixpoint (#386) | [`an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize`] (1 per resize of the block), [`a_position_only_absolute_box_under_a_grandparent_pays_no_compute`] (0) |
 //! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
@@ -1814,6 +1815,151 @@ fn a_spans_changed_font_family_resolves_once_per_rebuild() {
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── abs_containing_block_passes ────────────────────────────────────────────
+
+/// `.cb` (positioned, 200x100) > `.mid` (static, 100x50) > `.abs`, whose
+/// containing block is therefore an ancestor Taffy does not lay it out in
+/// (#386). Returns the document and `.cb`.
+fn absolute_under_a_grandparent(abs_css: &str) -> (RinchDocument, NodeId) {
+    let mut doc = doc_with(&format!(
+        ".cb {{ position: relative; width: 200px; height: 100px; }}
+         .mid {{ width: 100px; height: 50px; margin-left: 20px; }}
+         .abs {{ position: absolute; {abs_css} }}
+         .kid {{ width: 50%; height: 50%; }}"
+    ));
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let cb = el(&mut doc, body, "div", "cb");
+    let mid = el(&mut doc, cb, "div", "mid");
+    let abs = el(&mut doc, mid, "div", "abs");
+    el(&mut doc, abs, "div", "kid");
+    (doc, cb)
+}
+
+/// The only site of `abs_containing_block_passes`: `resolve_layout`'s
+/// fixpoint, when `resolve_ancestor_absolutes` rewrote a Taffy style.
+///
+/// A box sized by its containing block (`inset: 0`) pays **one** extra root
+/// compute when that block comes out of a compute at a size the box was not
+/// baked for: the document's first layout (the block had no size yet), and a
+/// resize of the block. A pass in which the block keeps its size — here a
+/// viewport-height change, which re-syncs every absolute box's Taffy style —
+/// pays none: the style site bakes the size the block already has.
+#[test]
+fn an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize() {
+    let (mut doc, cb) = absolute_under_a_grandparent("inset: 0;");
+    let s = cold_frame(&mut doc);
+    expect(
+        "abs under a grandparent, cold",
+        &s,
+        &[
+            (StyleResolves, 5),
+            (ElementsCascaded, 6),
+            (StyleNodesVisited, 24),
+            (FullStyleWalks, 5),
+            (TaffyStyleSyncs, 7),
+            (TaffyStyleChanges, 6),
+            (IfcMeasureInvalidations, 4),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 2),
+            (AbsContainingBlockPasses, 1),
+            (PaintNodesVisited, 5),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1 + 20.0);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "abs under a grandparent, a pass that leaves the block alone",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+        ],
+    );
+
+    doc.set_attribute(cb, "style", "width: 240px");
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1 + 20.0);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "abs under a grandparent, the block resized",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 1),
+            (AbsContainingBlockPasses, 1),
+        ],
+    );
+}
+
+/// The same document with a box whose **size** does not depend on its
+/// containing block: it is placed against the block and never re-sized, so
+/// neither the first layout nor a resize of the block runs a second compute.
+#[test]
+fn a_position_only_absolute_box_under_a_grandparent_pays_no_compute() {
+    let (mut doc, cb) =
+        absolute_under_a_grandparent("right: 5px; bottom: 5px; width: 40px; height: 20px;");
+    let s = cold_frame(&mut doc);
+    expect(
+        "position-only abs under a grandparent, cold",
+        &s,
+        &[
+            (StyleResolves, 5),
+            (ElementsCascaded, 6),
+            (StyleNodesVisited, 24),
+            (FullStyleWalks, 5),
+            (TaffyStyleSyncs, 7),
+            (TaffyStyleChanges, 5),
+            (IfcMeasureInvalidations, 4),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 5),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+
+    doc.set_attribute(cb, "style", "width: 240px");
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "position-only abs under a grandparent, the block resized",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
         ],
     );
 }
