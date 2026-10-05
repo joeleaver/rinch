@@ -1878,11 +1878,20 @@ fn viewport_punches(node: &Node, viewport_name: &str) -> bool {
     // its hole from the first frame and stamps nothing. A node that does
     // carry it must say `"true"` to punch, so a mis-stamped value fails to
     // the safe side (an opaque placeholder, never a see-through window).
-    let ready = node
-        .attributes
+    active && viewport_ready(node)
+}
+
+/// Whether a `data-viewport` node says its content is there to show: it
+/// carries no `data-viewport-ready`, or carries exactly `"true"`.
+///
+/// One rule for both things a viewport draws. A node that is not ready cuts no
+/// hole (#186) and shows no frame (#348), so it paints as the plain element it
+/// is, its own `background` included. The shell asks the same question before
+/// it hands the GPU compositor a layer.
+pub fn viewport_ready(node: &Node) -> bool {
+    node.attributes
         .get("data-viewport-ready")
-        .is_none_or(|v| v == "true");
-    active && ready
+        .is_none_or(|v| v == "true")
 }
 
 /// Build a BezPath for the background shape with viewport holes cut out.
