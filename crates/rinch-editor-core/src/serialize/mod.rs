@@ -22,7 +22,9 @@ pub mod text;
 
 #[cfg(feature = "serde")]
 pub use doc_json::{DocMark, DocNode, JsonAttr};
-pub use html::{mark_dom_tag, node_dom_tag, node_to_html, slice_from_html, slice_to_html};
+pub use html::{
+    clipboard_slice, mark_dom_tag, node_dom_tag, node_to_html, slice_from_html, slice_to_html,
+};
 #[cfg(feature = "markdown")]
 pub use markdown::{
     Construct, MarkdownError, doc_from_markdown, doc_from_markdown_strict, doc_to_markdown,

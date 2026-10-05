@@ -128,9 +128,25 @@ impl ContentMatch {
     /// expressions and overlapping quantifiers that the old greedy matcher got
     /// wrong.
     pub fn matches(&self, children: &[&str]) -> bool {
+        self.run(children).0
+    }
+
+    /// Whether `children` can be the **start** of a valid child sequence:
+    /// some part of the expression has taken them all, whatever the parts
+    /// after it still require. `matches` implies it.
+    pub fn matches_prefix(&self, children: &[&str]) -> bool {
+        self.run(children).1
+    }
+
+    /// `(complete, prefix)`: whether `children` is a whole valid sequence, and
+    /// whether it is the start of one.
+    fn run(&self, children: &[&str]) -> (bool, bool) {
         let n = children.len();
+        // reachable[i] = "the first i children can be consumed by the parts
+        // processed so far".
         let mut reachable = vec![false; n + 1];
         reachable[0] = true;
+        let mut prefix = n == 0;
         for part in &self.parts {
             let mut next = vec![false; n + 1];
             for i in 0..=n {
@@ -158,7 +174,6 @@ impl ContentMatch {
                         }
                     }
                     Quant::OneOrMore => {
-                        // requires >= 1: only mark positions strictly past i
                         let mut j = i;
                         while j < n && part.accepts(children[j]) {
                             j += 1;
@@ -168,8 +183,9 @@ impl ContentMatch {
                 }
             }
             reachable = next;
+            prefix |= reachable[n];
         }
-        reachable[n]
+        (reachable[n], prefix)
     }
 }
 
@@ -216,6 +232,24 @@ mod tests {
 
     fn cm(expr: &str) -> ContentMatch {
         ContentMatch::compile(Some(expr), &groups())
+    }
+
+    #[test]
+    fn a_prefix_is_the_start_of_a_valid_sequence() {
+        let m = cm("paragraph block*");
+        assert!(m.matches_prefix(&[]));
+        assert!(m.matches_prefix(&["paragraph"]));
+        assert!(m.matches_prefix(&["paragraph", "heading"]));
+        assert!(!m.matches_prefix(&["heading"]));
+        // `block+` with nothing yet is a prefix, not a match.
+        assert!(cm("block+").matches_prefix(&[]));
+        assert!(!cm("block+").matches(&[]));
+        // A sequence that stops before a required part is a prefix only.
+        let two = cm("heading paragraph");
+        assert!(two.matches_prefix(&["heading"]) && !two.matches(&["heading"]));
+        assert!(!two.matches_prefix(&["heading", "heading"]));
+        assert!(!cm("inline*").matches_prefix(&["text", "paragraph"]));
+        assert!(!ContentMatch::empty().matches_prefix(&["text"]));
     }
 
     #[test]

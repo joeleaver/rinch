@@ -23,7 +23,7 @@ use rinch_core::reactive::{Owner, current_owner, unowned, untracked_handler};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
-    slice_from_html, slice_from_text, slice_to_html, slice_to_text,
+    clipboard_slice, slice_from_html, slice_from_text, slice_to_html, slice_to_text,
 };
 use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{
@@ -703,24 +703,6 @@ impl fmt::Debug for SelectionAnchor {
 /// renderable, editable state when a load would otherwise yield a block-less doc.
 /// `None` only if the schema lacks `paragraph`/`doc` (not the case for the starter
 /// kit), in which case the caller keeps the original doc.
-/// `slice` with each top-level task list replaced by its items' blocks, open
-/// at a textblock edge: what pastes at a caret that refuses the list.
-fn task_lists_unwrapped(slice: &Slice) -> Slice {
-    let mut blocks: Vec<Node> = Vec::new();
-    for node in slice.content.children() {
-        if node.type_name() == "task_list" {
-            for item in node.content().children() {
-                blocks.extend(item.content().children().iter().cloned());
-            }
-        } else {
-            blocks.push(node.clone());
-        }
-    }
-    let open_start = usize::from(blocks.first().is_some_and(Node::is_textblock));
-    let open_end = usize::from(blocks.last().is_some_and(Node::is_textblock));
-    Slice::new(Fragment::from_children(blocks), open_start, open_end)
-}
-
 fn empty_paragraph_doc(schema: &Schema) -> Option<Node> {
     let para = schema.branch("paragraph", Fragment::empty()).ok()?;
     schema.branch("doc", Fragment::from_node(para)).ok()
@@ -2307,13 +2289,18 @@ impl EditorHandle {
     /// or `None` when the selection is empty (nothing to copy). The HTML is the
     /// rich payload (round-trips back via [`Self::replace_selection_with_html`]);
     /// the plain text is the `text/plain` alternative.
+    ///
+    /// A selection inside a list is copied with the list around its items
+    /// (`<ol start="3">`, a task list with its checkboxes), and one across
+    /// table cells with its table: content that is nothing without the node
+    /// it was in keeps it ([`clipboard_slice`]).
     pub fn selection_clipboard(&self) -> Option<(String, String)> {
         let core = self.core();
         let sel = &core.state.selection;
         if sel.is_empty() {
             return None;
         }
-        let slice = core.state.doc.slice(sel.from().0, sel.to().0).ok()?;
+        let slice = clipboard_slice(&core.state.doc, sel.from().0, sel.to().0).ok()?;
         Some((slice_to_html(&slice), slice_to_text(&slice)))
     }
 
@@ -2327,9 +2314,11 @@ impl EditorHandle {
     /// plugin order): the first to return a transaction claims it, and that
     /// transaction is applied as the paste. No claim leaves the default:
     /// `text/html` parsed into structure ([`Self::replace_selection_with_html`]),
-    /// else, when the html is absent or parses to nothing, `text/plain` one
-    /// paragraph per line ([`Self::replace_selection_with_text`]). An empty
-    /// `paste` does nothing and asks no plugin.
+    /// else, when the html is absent, parses to nothing or has no valid place,
+    /// `text/plain` one paragraph per line
+    /// ([`Self::replace_selection_with_text`]). In a code block the
+    /// `text/plain` flavour is used whenever there is one, and goes in as it
+    /// is. An empty `paste` does nothing and asks no plugin.
     ///
     /// Either way the paste is one transaction, so one undo step; it is the
     /// user's input, so it scrolls the caret into view, a collaborating editor
@@ -2356,6 +2345,12 @@ impl EditorHandle {
         if claimed {
             return applied;
         }
+        // In a code block a paste is its text, as ProseMirror's is.
+        if let Some(text) = &paste.text
+            && self.selection_in_code()
+        {
+            return self.replace_selection_with_text(text);
+        }
         if let Some(html) = &paste.html
             && self.replace_selection_with_html(html)
         {
@@ -2371,55 +2366,27 @@ impl EditorHandle {
     /// payload. The rich half of the default paste: a user's paste goes through
     /// [`Self::paste`], which offers it to the plugins first. Returns whether
     /// anything was inserted.
+    ///
+    /// The content is **fitted** to where it lands
+    /// ([`Transaction::replace_selection`](rinch_editor_core::Transaction::replace_selection),
+    /// ProseMirror's `replaceSelection`): a list, a table or a rule has no
+    /// place inside the textblock the caret is in, so the textblock is closed
+    /// or split around it rather than the paste being refused.
     pub fn replace_selection_with_html(&self, html: &str) -> bool {
         let schema = self.core().schema.clone();
         match slice_from_html(&schema, html) {
-            Ok(slice) if slice.content.child_count() > 0 => {
-                let has_task_list = slice
-                    .content
-                    .children()
-                    .iter()
-                    .any(|n| n.type_name() == "task_list");
-                if !has_task_list {
-                    return self.replace_selection_slice(slice);
-                }
-                // A task list is a closed block, which a caret inside a
-                // textblock refuses. In an empty textblock it takes the
-                // block's place; anywhere else its items' blocks go in, so
-                // their text and marks are not lost to the plain-text
-                // fallback. (A bullet list is refused the same way and still
-                // falls back: that is older than task lists in HTML.)
-                self.replace_selection_slice(slice.clone())
-                    || self.replace_empty_textblock_with(slice.clone())
-                    || self.replace_selection_slice(task_lists_unwrapped(&slice))
-            }
+            Ok(slice) if slice.content.child_count() > 0 => self.replace_selection_slice(slice),
             _ => false,
         }
     }
 
-    /// With a caret in an empty textblock, replace that block with `slice`.
-    fn replace_empty_textblock_with(&self, slice: Slice) -> bool {
-        self.dispatch(
-            move |state| {
-                if !state.selection.is_empty() {
-                    return None;
-                }
-                let pos = state.doc.resolve(state.selection.from()).ok()?;
-                let block = pos.parent();
-                if !block.is_textblock() || block.content().size() != 0 {
-                    return None;
-                }
-                let depth = pos.depth();
-                let (before, after) = (pos.before(depth)?, pos.after(depth)?);
-                let mut tr = state.tr();
-                tr.replace(before, after, slice).ok()?;
-                let end = tr.mapping().map(after, 1);
-                let cursor = Selection::near(tr.doc(), Pos(end), -1);
-                tr.set_selection(cursor);
-                Some(tr)
-            },
-            true,
-        )
+    /// Whether the selection starts in a node that holds code.
+    fn selection_in_code(&self) -> bool {
+        let core = self.core();
+        core.state
+            .doc
+            .resolve(core.state.selection.from())
+            .is_ok_and(|pos| pos.parent().node_type().spec().code)
     }
 
     /// Insert an image node with `src` (e.g. a `data:` URL) and `alt`, replacing
@@ -2473,32 +2440,33 @@ impl EditorHandle {
     /// The plain half of the default paste: a user's paste goes through
     /// [`Self::paste`], which offers it to the plugins first. Returns whether
     /// anything was inserted.
+    ///
+    /// In a code block the text goes in as it is, line breaks included, and
+    /// stays in the block.
     pub fn replace_selection_with_text(&self, text: &str) -> bool {
         let schema = self.core().schema.clone();
+        if self.selection_in_code() {
+            let text = text.replace("\r\n", "\n").replace('\r', "\n");
+            return match schema.text(&text) {
+                Ok(node) if !text.is_empty() => {
+                    self.replace_selection_slice(Slice::from_fragment(Fragment::from_node(node)))
+                }
+                _ => false,
+            };
+        }
         match slice_from_text(&schema, text) {
             Ok(slice) if slice.content.child_count() > 0 => self.replace_selection_slice(slice),
             _ => false,
         }
     }
 
-    /// Replace the selection range with `slice` (the shared paste mechanism). The
-    /// open slice merges into the surrounding block via the transform's `replace`;
-    /// the cursor lands after the inserted content via the transaction's selection
-    /// mapping.
+    /// Replace the selection with `slice` (the shared paste mechanism), fitted
+    /// to the range, the caret left after the inserted content.
     fn replace_selection_slice(&self, slice: Slice) -> bool {
         self.dispatch(
             move |state| {
-                let (from, to) = (state.selection.from().0, state.selection.to().0);
                 let mut tr = state.tr();
-                tr.replace(from, to, slice).ok()?;
-                // Collapse the cursor just after the inserted content (PM
-                // `replaceSelection` semantics). Without this, the default per-endpoint
-                // selection mapping leaves a range selection spanning the paste. Map the
-                // range's right edge with assoc +1 so a pure-insert cursor lands *after*
-                // the inserted content (assoc -1 would keep it before).
-                let end = tr.mapping().map(to, 1);
-                let cursor = Selection::near(tr.doc(), Pos(end), -1);
-                tr.set_selection(cursor);
+                tr.replace_selection(slice).ok()?;
                 Some(tr)
             },
             true,

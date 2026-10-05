@@ -66,13 +66,17 @@ fn a_copy_from_inside_a_list_keeps_the_kind_of_list() {
         src.selection_clipboard().unwrap().0
     };
     assert_eq!(
-        copy("<ol start=\"3\"><li><p>ab</p></li><li><p>cd</p></li></ol>", 4, 9),
+        copy(
+            "<ol start=\"3\"><li><p>ab</p></li><li><p>cd</p></li></ol>",
+            4,
+            10
+        ),
         "<ol start=\"3\"><li><p>b</p></li><li><p>c</p></li></ol>"
     );
     let tasks = "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"true\"><p>ab</p></li>\
                  <li data-type=\"taskItem\" data-checked=\"false\"><p>cd</p></li></ul>";
     assert_eq!(
-        copy(tasks, 4, 9),
+        copy(tasks, 4, 10),
         "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"true\"><p>b</p></li>\
          <li data-type=\"taskItem\" data-checked=\"false\"><p>c</p></li></ul>"
     );
@@ -137,25 +141,22 @@ fn a_list_pasted_inside_text() {
 /// leaves no empty block at a textblock's edge.
 #[test]
 fn a_closed_block_splits_the_textblock() {
-    assert_eq!(
-        paste("<p>abc</p>", 2, 2, "<hr>"),
-        "<p>a</p><hr><p>bc</p>"
-    );
+    assert_eq!(paste("<p>abc</p>", 2, 2, "<hr>"), "<p>a</p><hr><p>bc</p>");
     assert_eq!(paste("<p>abc</p>", 1, 1, "<hr>"), "<hr><p>abc</p>");
     assert_eq!(paste("<p>abc</p>", 4, 4, "<hr>"), "<p>abc</p><hr>");
     assert_eq!(paste("<p>x</p><p></p>", 4, 4, "<hr>"), "<p>x</p><hr>");
     // Over a selection: the selected text goes, the rest is split.
-    assert_eq!(
-        paste("<p>abc</p>", 2, 3, "<hr>"),
-        "<p>a</p><hr><p>c</p>"
-    );
+    assert_eq!(paste("<p>abc</p>", 2, 3, "<hr>"), "<p>a</p><hr><p>c</p>");
     let table = "<table><tbody><tr><td><p>1</p></td><td><p>2</p></td></tr></tbody></table>";
     let out = paste("<h2>abc</h2>", 2, 2, table);
     assert!(
         out.starts_with("<h2>a</h2><table>") && out.ends_with("</table><h2>bc</h2>"),
         "{out}"
     );
-    assert!(out.contains("<p>1</p>") && out.contains("<p>2</p>"), "{out}");
+    assert!(
+        out.contains("<p>1</p>") && out.contains("<p>2</p>"),
+        "{out}"
+    );
 }
 
 /// In a list item, pasted items are sibling items, never a list in a
@@ -217,10 +218,7 @@ fn a_paragraph_then_a_task_list_on_an_empty_line() {
 #[test]
 fn defining_blocks_replace_an_empty_line() {
     assert_eq!(paste("<p></p>", 1, 1, "<h2>Title</h2>"), "<h2>Title</h2>");
-    assert_eq!(
-        paste("<p>ab</p>", 2, 2, "<h2>Title</h2>"),
-        "<p>aTitleb</p>"
-    );
+    assert_eq!(paste("<p>ab</p>", 2, 2, "<h2>Title</h2>"), "<p>aTitleb</p>");
     assert_eq!(
         paste("<p></p>", 1, 1, "<blockquote><p>q</p><p>r</p></blockquote>"),
         "<blockquote><p>q</p><p>r</p></blockquote>"
@@ -239,9 +237,7 @@ fn defining_blocks_replace_an_empty_line() {
 /// A table cell keeps what is pasted in it.
 #[test]
 fn a_paste_in_a_table_cell_stays_in_the_cell() {
-    let table = |cell: &str| {
-        format!("<table><tbody><tr><td>{cell}</td><td><p>z</p></td></tr></tbody></table>")
-    };
+    let table = |cell: &str| format!("<table><tr><td>{cell}</td><td><p>z</p></td></tr></table>");
     // table(0) row(1) cell(2) paragraph(3): the caret is at 4.
     assert_eq!(paste(&table("<p></p>"), 4, 4, LIST), table(LIST));
     assert_eq!(
@@ -274,7 +270,10 @@ fn a_list_pasted_over_a_selection_across_blocks() {
         "<p>a<strong>A</strong></p><ul><li><p>Bf</p></li></ul>"
     );
     // The whole of a paragraph's text selected: the list takes its place.
-    assert_eq!(paste("<p>x</p><p>abc</p>", 4, 7, LIST), format!("<p>x</p>{LIST}"));
+    assert_eq!(
+        paste("<p>x</p><p>abc</p>", 4, 7, LIST),
+        format!("<p>x</p>{LIST}")
+    );
 }
 
 /// One paste is one undo step and one `on_change`; a read-only editor
@@ -305,4 +304,80 @@ fn a_fitted_paste_is_one_edit() {
         html: Some(LIST.into()),
     }));
     assert_eq!(node_to_html(&locked.doc()), "<p>abc</p>");
+}
+
+/// Markup around the content a browser copied changes nothing: the `<meta>`
+/// a browser puts first has no end tag (looking for one dropped the whole
+/// paste), and Google Docs' `<b>` wrapper is not bold.
+#[test]
+fn a_browsers_wrappers_do_not_eat_the_paste() {
+    assert_eq!(
+        paste("<p>ab</p>", 2, 2, "<meta charset='utf-8'><span>X</span>"),
+        "<p>aXb</p>"
+    );
+    assert_eq!(
+        paste(
+            "<p></p>",
+            1,
+            1,
+            "<meta http-equiv=\"content-type\" content=\"text/html; charset=utf-8\"><link rel=\"x\" href=\"y>z\"><p>one</p><p>two</p>"
+        ),
+        "<p>one</p><p>two</p>"
+    );
+    // A real `<b>` around inline content is still bold.
+    assert_eq!(
+        paste("<p></p>", 1, 1, "<b>bold</b>"),
+        "<p><strong>bold</strong></p>"
+    );
+}
+
+/// A selection across table cells is copied as a table.
+#[test]
+fn a_selection_across_cells_is_copied_as_a_table() {
+    let src = editor(
+        "<table><tr><td><p>ab</p></td><td><p>cd</p></td></tr></table>",
+        5,
+        11,
+    );
+    let (html, _) = src.selection_clipboard().unwrap();
+    assert_eq!(
+        html,
+        "<table><tr><td><p>b</p></td><td><p>c</p></td></tr></table>"
+    );
+    assert_eq!(
+        paste("<p>xy</p>", 2, 2, &html),
+        format!("<p>x</p>{html}<p>y</p>")
+    );
+}
+
+/// A collaborating editor records a fitted paste like any edit: the peer
+/// gets the list. A task list is outside what collaboration carries, and
+/// stalls outbound as it did.
+#[cfg(feature = "collaboration")]
+#[test]
+fn a_fitted_paste_reaches_the_peer() {
+    use std::cell::RefCell;
+    type Q = Rc<RefCell<Vec<Vec<u8>>>>;
+    let host = editor("<p>abc</p>", 2, 2);
+    let to_guest: Q = Rc::default();
+    let sink = to_guest.clone();
+    let snap = host
+        .start_collaboration_host(move |d| sink.borrow_mut().push(d))
+        .unwrap();
+    let guest = create_editor();
+    guest.start_collaboration_guest(&snap, |_| {}).unwrap();
+    assert!(host.replace_selection_with_html(LIST));
+    assert!(host.collab_outbound_stall().is_none());
+    for delta in to_guest.borrow_mut().drain(..) {
+        assert!(guest.collab_receive(&delta));
+    }
+    let want = "<p>a<strong>A</strong></p><ul><li><p>Bbc</p></li></ul>";
+    assert_eq!(node_to_html(&host.doc()), want);
+    assert_eq!(node_to_html(&guest.doc()), want);
+
+    assert!(host.replace_selection_with_html(TASKS));
+    assert!(
+        host.collab_outbound_stall().is_some(),
+        "a task list is outside the collaboration scope"
+    );
 }

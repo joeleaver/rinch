@@ -9,6 +9,7 @@
 //! written). This is a faithful port of ProseMirror's `prosemirror-transform`.
 
 pub mod build;
+pub(crate) mod fit;
 pub mod node_range;
 pub mod replace;
 pub mod step;

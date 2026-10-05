@@ -194,6 +194,43 @@ impl Transaction {
         Ok(self)
     }
 
+    /// Replace `from..to` with `slice`, fitted to the range
+    /// ([`Transform::replace_range`]). Returns the position right after the
+    /// inserted content.
+    pub fn replace_range(
+        &mut self,
+        from: usize,
+        to: usize,
+        slice: Slice,
+    ) -> Result<usize, StepError> {
+        self.with_transform(|tf| tf.replace_range(from, to, slice))
+    }
+
+    /// Replace the selection with `slice`, fitted
+    /// ([`Transform::replace_range`]), and put the caret after the inserted
+    /// content: ProseMirror's `replaceSelection`, the default paste.
+    pub fn replace_selection(&mut self, slice: Slice) -> Result<&mut Self, StepError> {
+        let (from, to) = (self.cur_selection.from().0, self.cur_selection.to().0);
+        // Whether the slice ends in inline content: the caret then stays in
+        // it rather than moving on to what follows.
+        let mut last = slice.content.children().last().cloned();
+        let mut last_parent: Option<Node> = None;
+        for _ in 0..slice.open_end {
+            let Some(node) = last else { break };
+            last = node.content().children().last().cloned();
+            last_parent = Some(node);
+        }
+        let inline_end = match (&last, &last_parent) {
+            (Some(node), _) => node.is_inline(),
+            (None, Some(parent)) => parent.is_textblock(),
+            (None, None) => false,
+        };
+        let end = self.replace_range(from, to, slice)?;
+        let near = Selection::near(&self.doc, Pos(end), if inline_end { -1 } else { 1 });
+        self.set_selection(near);
+        Ok(self)
+    }
+
     /// Replace `from..to` with `content`.
     pub fn replace_with(
         &mut self,
