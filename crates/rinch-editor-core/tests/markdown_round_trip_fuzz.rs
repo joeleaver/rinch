@@ -7,11 +7,11 @@
 //! here is a new loss, not a known one:
 //! - whitespace at a textblock's edge (CommonMark strips it), and at the edge
 //!   of a bold, italic, strike or link run (written outside the run, by design);
-//! - two adjacent lists or blockquotes of one type (they merge, #1366);
+//! - two adjacent ordered lists or blockquotes (they merge, #1366; bullet and
+//!   task lists are written with alternating bullets and stay apart);
 //! - empty paragraphs (dropped, #1366);
 //! - a code block's language in a table cell written as HTML (#1366);
-//! - a line break inside code (a code span is literal);
-//! - task lists (#1365).
+//! - a line break inside code (a code span is literal).
 //!
 //! `strict_reads_everything_the_writer_writes` generates those too, and asks
 //! only that the strict reader accept what the writer wrote.
@@ -19,7 +19,7 @@
 //! `RINCH_MD_FUZZ_SEEDS` raises the seed count (default 1000 per mode).
 #![cfg(feature = "markdown")]
 
-use rinch_editor_core::serialize::{doc_from_markdown_strict, doc_to_markdown};
+use rinch_editor_core::serialize::{doc_from_markdown, doc_from_markdown_strict, doc_to_markdown};
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, Schema};
 
 struct Rng(u64);
@@ -58,7 +58,7 @@ struct Gen<'s> {
     mode: Mode,
     pool: Vec<Mark>,
     /// Generate the losses too (edge whitespace, empty paragraphs, adjacent
-    /// lists, task lists, languages in cells, oversized spans): for the
+    /// lists, languages in cells, oversized spans): for the
     /// property that strict reads whatever the writer writes.
     unruly: bool,
 }
@@ -272,7 +272,7 @@ impl Gen<'_> {
             if let Some(prev) = out.last()
                 && !self.unruly
                 && prev.type_name() == b.type_name()
-                && matches!(b.type_name(), "bullet_list" | "ordered_list" | "blockquote")
+                && matches!(b.type_name(), "ordered_list" | "blockquote")
             {
                 let sep = self.schema.text("sep").unwrap();
                 out.push(self.node("paragraph", Attrs::new(), vec![sep]));
@@ -344,11 +344,29 @@ impl Gen<'_> {
                     self.node("bullet_list", Attrs::new(), items)
                 }
             }
-            80..=84 if self.unruly => {
+            80..=89 => {
+                // Task lists (#1365): an item starts with a paragraph or,
+                // sometimes, any other block, and may hold more blocks.
                 let mut items = Vec::new();
-                for _ in 0..1 + self.rng.below(2) {
+                for _ in 0..1 + self.rng.below(3) {
                     let checked = AttrValue::Bool(self.rng.chance(50));
-                    let kids = vec![self.para(Attrs::new())];
+                    let first = if self.rng.chance(75) {
+                        self.para(Attrs::new())
+                    } else {
+                        self.block(depth + 1, in_cell)
+                    };
+                    let mut kids = vec![first];
+                    if self.rng.chance(30) {
+                        let next = self.block(depth + 1, in_cell);
+                        if !self.unruly
+                            && next.type_name() == kids[0].type_name()
+                            && matches!(next.type_name(), "ordered_list" | "blockquote")
+                        {
+                            let sep = self.schema.text("sep").unwrap();
+                            kids.push(self.node("paragraph", Attrs::new(), vec![sep]));
+                        }
+                        kids.push(next);
+                    }
                     items.push(self.node(
                         "task_item",
                         Attrs::from_iter([("checked", checked)]),
@@ -502,6 +520,73 @@ fn strict_reads_everything_the_writer_writes() {
             .collect::<Vec<_>>()
             .join("\n\n")
     );
+}
+
+/// Random Markdown built from list, task-marker and block fragments (the
+/// review of #1374): neither reader panics, strict reads what it accepts
+/// exactly as lenient does, and a document that came out of it writes and
+/// reads back with its task lists.
+#[test]
+fn random_markdown_reads_without_panic_and_strict_agrees_with_lenient() {
+    const PIECES: &[&str] = &[
+        "- ", "* ", "+ ", " ", "  ", "\t", "[ ] ", "[x] ", "[X] ", "[ ]", "[x]", "[", "]", "x",
+        "\n", "\n", "\n\n", "> ", "# ", "1. ", "a", "b", "`", "\\", "\x0b", "\x0c", "---", "***",
+        "```\n", "[\t] ", "[\x0b]", "<br>", "| a |\n", "===\n", "\r\n", "- [ ]\n", "- \t[x] ",
+    ];
+    let schema = Schema::starter_kit();
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut failures = Vec::new();
+    for _ in 0..seeds() * 20 {
+        let len = 2 + rng.below(10);
+        let md: String = (0..len).map(|_| *rng.pick(PIECES)).collect();
+        let lenient = doc_from_markdown(&schema, &md).unwrap_or_else(|e| panic!("{md:?}: {e}"));
+        let Ok(strict) = doc_from_markdown_strict(&schema, &md) else {
+            continue;
+        };
+        if strict != lenient {
+            failures.push(format!("{md:?}: strict {strict:?}\nlenient {lenient:?}"));
+            continue;
+        }
+        // What the writer makes of it, strict accepts; and a task list in it
+        // is still there (other content has the known losses).
+        let written = doc_to_markdown(&strict);
+        match doc_from_markdown_strict(&schema, &written) {
+            Err(e) => failures.push(format!("{md:?} wrote {written:?}, refused: {e}")),
+            Ok(back) => {
+                if task_shape(&back) != task_shape(&strict) {
+                    failures.push(format!(
+                        "{md:?} wrote {written:?}: had {strict:?}\nread {back:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} strings; the first:\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .take(show())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+}
+
+/// Every task item of `node` in document order, as its checked state.
+fn task_shape(node: &Node) -> Vec<bool> {
+    let mut out = Vec::new();
+    fn walk(n: &Node, out: &mut Vec<bool>) {
+        if n.type_name() == "task_item" {
+            out.push(n.attrs().get_bool("checked").unwrap_or(false));
+        }
+        for c in n.content().children() {
+            walk(c, out);
+        }
+    }
+    walk(node, &mut out);
+    out
 }
 
 /// How many failures to print (`RINCH_MD_FUZZ_SHOW`, default 3).
