@@ -310,8 +310,18 @@ fn a_task_item_whose_first_paragraph_is_blank_keeps_the_next_block() {
 fn an_empty_task_item_round_trips_wherever_it_is() {
     let s = s();
     let empty = || task(&s, false, vec![p(&s, "")]);
-    // Last in the document.
-    rt(&s, &doc(&s, vec![p(&s, "x"), tasks(&s, vec![empty()])]));
+    // Last in the document: the marker keeps its space, which is what makes
+    // it one to a reader that does not take a bare `- [ ]`.
+    let md = rt(&s, &doc(&s, vec![p(&s, "x"), tasks(&s, vec![empty()])]));
+    assert_eq!(md, "x\n\n- [ ] ");
+    let after_bullets = doc(
+        &s,
+        vec![
+            bullets(&s, vec![vec![p(&s, "b")]]),
+            tasks(&s, vec![empty()]),
+        ],
+    );
+    assert_eq!(rt(&s, &after_bullets), "- b\n\n* [ ] ");
     // Between two others.
     rt(
         &s,
@@ -477,6 +487,9 @@ fn a_marker_before_another_block_is_still_the_items() {
             n(&s, "blockquote", Attrs::new(), vec![p(&s, "q")]),
         ),
         ("- [ ] - a", bullets(&s, vec![vec![p(&s, "a")]])),
+        // No paragraph anywhere in the item: pulldown reports no marker.
+        ("- [ ] - # h", bullets(&s, vec![vec![h(&s, 1, "h")]])),
+        ("- [\t] # h", h(&s, 1, "h")),
     ] {
         let want = doc(&s, vec![tasks(&s, vec![task(&s, false, vec![first])])]);
         assert_eq!(doc_from_markdown_strict(&s, md).unwrap(), want, "{md:?}");

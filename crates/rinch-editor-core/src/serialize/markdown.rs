@@ -749,9 +749,7 @@ impl<'a> MdBuilder<'a> {
         }
         let mut c = self.containers.pop().expect("non-root container");
         let task = if c.type_name == "list_item" {
-            // An item with no event at all (`-` alone) has no marker.
-            let task = c.task.clone().filter(|_| c.task_settled);
-            match task {
+            match c.task.clone() {
                 // `- [ ]` with nothing after it on its line: a marker when it
                 // is the whole first paragraph, which is then not content.
                 Some(t) if t.bare => {
@@ -889,9 +887,8 @@ impl<'a> MdBuilder<'a> {
             // An item's first event can only be its own marker (pulldown
             // reports it from the whitespace before `[`, when a tab is there).
             Event::TaskListMarker(_) => true,
-            // Text, or the paragraph it opens: checked against the item's
-            // first paragraph when the item closes.
-            _ if task.bare => start == task.range.start,
+            // Decided when the item closes, by its first paragraph.
+            _ if task.bare => true,
             _ => start >= task.range.end,
         };
         if !confirmed {
@@ -1525,11 +1522,10 @@ fn list_to_md(list: &Node, kind: ListKind) -> String {
             } else {
                 // `---` under the marker's line is a setext heading (`[ ]` as
                 // its text) to GitHub: a rule there is written `***`.
+                // (Nothing else the writer starts a block with begins `---`.)
                 let item_md = match item_md.strip_prefix("---") {
-                    Some(rest) if rest.is_empty() || rest.starts_with('\n') => {
-                        format!("***{rest}")
-                    }
-                    _ => item_md,
+                    Some(rest) => format!("***{rest}"),
+                    None => item_md,
                 };
                 out.push_str(&first);
                 out.push('\n');
