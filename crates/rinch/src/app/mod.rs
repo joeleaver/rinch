@@ -229,6 +229,8 @@ mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
+mod viewport_inputs_349_more_tests;
+#[cfg(all(test, software_shell, feature = "desktop"))]
 mod viewport_inputs_349_tests;
 #[cfg(all(test, software_shell))]
 mod visibility_hidden_overlay_paint_tests;
@@ -4751,13 +4753,15 @@ impl RinchApp {
     /// [`Self::build_pixels`].
     ///
     /// The damage is the viewport nodes that delivered a **new** frame
-    /// ([`Self::request_repaint`] plus [`Self::mark_viewport_nodes_paint_dirty`]),
-    /// not a full repaint: a frame painted in paint order is repainted with
+    /// ([`Self::request_repaint`] plus [`Self::mark_viewport_nodes_paint_dirty`])
+    /// and the ones that entered or left the frame map or the hole set since
+    /// the last paint (`note_viewport_paint_inputs`, #349) — not a full
+    /// repaint: a frame painted in paint order is repainted with
     /// whatever sits over it, so a HUD above a game needs no special case to
-    /// stay drawn. A viewport whose frame did not change is not damaged — a
-    /// hover elsewhere over a paused game does not repaint the game — but its
-    /// frame is still installed, so a region that crosses it for some other
-    /// reason redraws what was there.
+    /// stay drawn. A viewport in both sets as before, with no new frame, is
+    /// not damaged — a hover elsewhere over a paused game does not repaint the
+    /// game — but its frame is still installed, so a region that crosses it
+    /// for some other reason redraws what was there.
     ///
     /// Installs the hole set too, and always — even an empty one — because
     /// `None` means "every viewport punches", which is the GPU compositor's
@@ -4803,12 +4807,20 @@ impl RinchApp {
     /// (issue #349).
     ///
     /// A viewport that gained or lost its frame, or started or stopped
-    /// punching, draws something else in its box — and in its ancestors'
-    /// backgrounds, which the hole is cut from — although no DOM write and no
-    /// new frame says so: a surface that unregisters while its node stays in
-    /// the document is the plain case. The damage is those nodes, so the frame
-    /// stays a partial one. An unchanged set (every ordinary frame) allocates
-    /// and marks nothing.
+    /// punching, draws something else although no DOM write and no new frame
+    /// says so: a surface that unregisters while its node stays in the
+    /// document is the plain case. What is marked is those nodes, so the
+    /// frame stays a partial one, and the damage is each node's painted box,
+    /// clipped as any node's is. That covers the frame, and the hole where the
+    /// hole lies inside that box. It does not where the hole reaches further:
+    /// `find_viewport_rects` cuts it without the node's clip chain or
+    /// transform, so under a clipping ancestor the viewport is partly scrolled
+    /// out of, or under a transform, hole pixels outside the damage outlive
+    /// the surface until something else repaints them (#1386).
+    ///
+    /// A change between `None` and a set marks every viewport node, whether or
+    /// not its own hole changed. An unchanged set (every ordinary frame)
+    /// allocates and marks nothing.
     #[cfg(feature = "desktop")]
     fn note_viewport_paint_inputs<'a>(
         &mut self,
