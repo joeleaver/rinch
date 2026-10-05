@@ -413,13 +413,14 @@ struct HtmlParser<'a> {
     hard_break: Option<&'a NodeType>,
 }
 
+/// The textblock that inline content between blocks becomes: a paragraph
+/// (`None`), or the heading (say) whose element holds the blocks.
+type LooseAs<'w> = Option<(&'w NodeType, &'w Attrs)>;
+
 /// Inline content being gathered.
 #[derive(Default)]
 struct Inline {
     nodes: Vec<Node>,
-    /// A block-level element ended, or starts, since the last node: what
-    /// comes next starts a new line.
-    line_break: bool,
     /// Whitespace met between two inline elements at block level; it is
     /// content only if more inline content follows it.
     space: Option<String>,
@@ -520,13 +521,17 @@ impl<'a> HtmlParser<'a> {
 
     fn parse_blocks(&self, nodes: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
         let refs: Vec<&ParsedNode> = nodes.iter().collect();
-        Ok(self.parse_block_refs(&refs)?.blocks)
+        Ok(self.parse_block_refs(&refs, None)?.blocks)
     }
 
     /// Read sibling nodes as blocks. Inline content between blocks is a
     /// paragraph; a run of `<li>` with no list around it is a list, and a run
     /// of table parts with no `<table>` around it a table.
-    fn parse_block_refs(&self, nodes: &[&ParsedNode]) -> Result<Parsed, EditorError> {
+    fn parse_block_refs(
+        &self,
+        nodes: &[&ParsedNode],
+        loose_as: LooseAs<'_>,
+    ) -> Result<Parsed, EditorError> {
         let mut blocks: Vec<Node> = Vec::new();
         let mut loose = Inline::default();
         let mut blank: Vec<Node> = Vec::new();
@@ -576,7 +581,7 @@ impl<'a> HtmlParser<'a> {
                 }) {
                     i += 1;
                 }
-                self.flush_loose(&mut loose, &mut blocks)?;
+                self.flush_loose(&mut loose, &mut blocks, loose_as)?;
                 match self.block.get("ul") {
                     Some(list) => {
                         blocks.push(self.build_list(list, &[], tasks, &nodes[start..i])?)
@@ -602,21 +607,36 @@ impl<'a> HtmlParser<'a> {
                 }) {
                     i += 1;
                 }
-                self.flush_loose(&mut loose, &mut blocks)?;
+                self.flush_loose(&mut loose, &mut blocks, loose_as)?;
                 blocks.extend(self.build_table(tables, &nodes[start..i], false)?);
                 continue;
             }
             match self.block.get(tag) {
                 Some(nt) if nt.name() == "table" => {
                     if let Some(tables) = &self.tables {
-                        self.flush_loose(&mut loose, &mut blocks)?;
+                        self.flush_loose(&mut loose, &mut blocks, loose_as)?;
                         let parts: Vec<&ParsedNode> = children.iter().collect();
                         blocks.extend(self.build_table(tables, &parts, true)?);
                         continue;
                     }
                 }
+                Some(nt) if holds_block && nt.is_textblock() && Some(*nt) != self.code_block => {
+                    // A heading (say) around blocks. Its blocks stay blocks,
+                    // in the order they are written, and the inline content
+                    // between them is headings.
+                    self.flush_loose(&mut loose, &mut blocks, loose_as)?;
+                    let attrs = textblock_attrs(nt, tag, attributes);
+                    let refs: Vec<&ParsedNode> = children.iter().collect();
+                    let inner = self.parse_block_refs(&refs, Some((*nt, &attrs)))?;
+                    if inner.blocks.is_empty() {
+                        blocks.push(self.make_node(nt, attrs, inline_fragment(inner.blank))?);
+                    } else {
+                        blocks.extend(inner.blocks);
+                    }
+                    continue;
+                }
                 Some(nt) if !is_table_part(tag) => {
-                    self.flush_loose(&mut loose, &mut blocks)?;
+                    self.flush_loose(&mut loose, &mut blocks, loose_as)?;
                     blocks.push(self.build_block(nt, tag, attributes, children)?);
                     continue;
                 }
@@ -628,7 +648,7 @@ impl<'a> HtmlParser<'a> {
                 // What VS Code copies: a `<div style="white-space: pre">` of
                 // one `<div>` per line. A code block keeps its lines and
                 // their indentation, which paragraphs would not.
-                self.flush_loose(&mut loose, &mut blocks)?;
+                self.flush_loose(&mut loose, &mut blocks, loose_as)?;
                 blocks.push(self.build_code_block(code, children)?);
             } else if !holds_block && !is_block_level(tag) {
                 // Inline as far as anyone can tell: a known inline element,
@@ -642,8 +662,9 @@ impl<'a> HtmlParser<'a> {
                 // A mark around blocks (`<a href><h3>…</h3><p>…</p></a>`,
                 // a card that is one link): the blocks stay blocks, and
                 // the mark goes on the inline content inside them.
-                self.flush_loose(&mut loose, &mut blocks)?;
-                for block in self.parse_blocks(children)? {
+                self.flush_loose(&mut loose, &mut blocks, loose_as)?;
+                let refs: Vec<&ParsedNode> = children.iter().collect();
+                for block in self.parse_block_refs(&refs, loose_as)?.blocks {
                     blocks.push(with_mark_inside(&block, &mark));
                 }
             } else {
@@ -652,32 +673,42 @@ impl<'a> HtmlParser<'a> {
                 // Google Docs wraps everything it copies in, Word's
                 // `<w:sdt>`, Sheets' `<google-sheets-html-origin>`.
                 let refs: Vec<&ParsedNode> = children.iter().collect();
-                let inner = self.parse_block_refs(&refs)?;
+                let inner = self.parse_block_refs(&refs, loose_as)?;
                 if inner.blocks.is_empty() {
                     for node in inner.blank {
                         self.push_inline(&mut loose, node)?;
                     }
                 } else {
-                    self.flush_loose(&mut loose, &mut blocks)?;
+                    self.flush_loose(&mut loose, &mut blocks, loose_as)?;
                     blocks.extend(inner.blocks);
                 }
             }
         }
-        self.flush_loose(&mut loose, &mut blocks)?;
+        self.flush_loose(&mut loose, &mut blocks, loose_as)?;
         if !blocks.is_empty() {
             blank.clear();
         }
         Ok(Parsed { blocks, blank })
     }
 
-    /// Flush accumulated inline content as a paragraph block.
-    fn flush_loose(&self, loose: &mut Inline, blocks: &mut Vec<Node>) -> Result<(), EditorError> {
+    /// Flush accumulated inline content as a block: a paragraph, or what
+    /// `loose_as` says.
+    fn flush_loose(
+        &self,
+        loose: &mut Inline,
+        blocks: &mut Vec<Node>,
+        loose_as: LooseAs<'_>,
+    ) -> Result<(), EditorError> {
         let loose = std::mem::take(loose);
         if loose.nodes.is_empty() {
             return Ok(());
         }
         let content = inline_fragment(loose.nodes);
-        blocks.push(self.make_node(self.paragraph, Attrs::new(), content)?);
+        let (nt, attrs) = match loose_as {
+            Some((nt, attrs)) => (nt, attrs.clone()),
+            None => (self.paragraph, Attrs::new()),
+        };
+        blocks.push(self.make_node(nt, attrs, content)?);
         Ok(())
     }
 
@@ -689,12 +720,6 @@ impl<'a> HtmlParser<'a> {
         children: &[ParsedNode],
     ) -> Result<Node, EditorError> {
         match nt.name() {
-            "heading" => {
-                let level = heading_level(tag);
-                let content = self.parse_inline_children(children)?;
-                let attrs = align_attrs(attributes).with("level", AttrValue::Int(level));
-                self.make_node(nt, attrs, content)
-            }
             "code_block" => self.build_code_block(nt, children),
             "bullet_list" | "ordered_list" => {
                 let items: Vec<&ParsedNode> = children.iter().collect();
@@ -703,14 +728,7 @@ impl<'a> HtmlParser<'a> {
             "horizontal_rule" => self.make_node(nt, Attrs::new(), Fragment::empty()),
             _ if nt.is_textblock() => {
                 let content = self.parse_inline_children(children)?;
-                // `text_align` is declared on paragraph (and heading, handled above);
-                // don't attach it to block types whose schema has no such attr.
-                let attrs = if nt.name() == "paragraph" {
-                    align_attrs(attributes)
-                } else {
-                    Attrs::new()
-                };
-                self.make_node(nt, attrs, content)
+                self.make_node(nt, textblock_attrs(nt, tag, attributes), content)
             }
             // A blockquote, a list item, any other block of blocks.
             _ => {
@@ -792,8 +810,11 @@ impl<'a> HtmlParser<'a> {
                 items.push(self.make_node(item, attrs, Fragment::from_children(inner))?);
             }
             if items.is_empty() {
+                // Unchecked, said as an item that is read says it, so that
+                // the list reads back equal to itself.
                 let para = self.make_node(self.paragraph, Attrs::new(), Fragment::empty())?;
-                items.push(self.make_node(item, Attrs::new(), Fragment::from_node(para))?);
+                let attrs = Attrs::from_iter([("checked", AttrValue::Bool(false))]);
+                items.push(self.make_node(item, attrs, Fragment::from_node(para))?);
             }
             return self.make_node(list, Attrs::new(), Fragment::from_children(items));
         }
@@ -834,8 +855,11 @@ impl<'a> HtmlParser<'a> {
         children: &[&ParsedNode],
     ) -> Result<Vec<(Vec<Node>, bool)>, EditorError> {
         let mut items: Vec<(Vec<Node>, bool)> = Vec::new();
-        for child in children {
+        let mut i = 0;
+        while i < children.len() {
             step();
+            let child = children[i];
+            i += 1;
             match child {
                 ParsedNode::Element {
                     tag,
@@ -852,7 +876,17 @@ impl<'a> HtmlParser<'a> {
                 }
                 ParsedNode::Text(t) if t.trim().is_empty() => {}
                 stray => {
-                    let blocks = self.parse_block_refs(std::slice::from_ref(stray))?.blocks;
+                    // Table parts side by side are one table, as anywhere.
+                    let start = i - 1;
+                    if matches!(stray, ParsedNode::Element { tag, .. } if is_table_part(tag)) {
+                        while children.get(i).is_some_and(|next| match next {
+                            ParsedNode::Text(t) => t.trim().is_empty(),
+                            ParsedNode::Element { tag, .. } => is_table_part(tag),
+                        }) {
+                            i += 1;
+                        }
+                    }
+                    let blocks = self.parse_block_refs(&children[start..i], None)?.blocks;
                     if blocks.is_empty() {
                         continue;
                     }
@@ -903,7 +937,7 @@ impl<'a> HtmlParser<'a> {
         let mut outside: Vec<&ParsedNode> = Vec::new();
         let mut captions: Vec<&ParsedNode> = Vec::new();
         let mut rows = self.parse_table_rows(types, parts, &mut outside, &mut captions)?;
-        let mut blocks = self.parse_block_refs(&outside)?.blocks;
+        let mut blocks = self.parse_block_refs(&outside, None)?.blocks;
         for caption in captions {
             if let ParsedNode::Element { children, .. } = caption {
                 blocks.extend(self.parse_blocks(children)?);
@@ -1134,19 +1168,12 @@ impl<'a> HtmlParser<'a> {
         Ok(inline_fragment(out.nodes))
     }
 
-    /// Add `node` to `out`, after the space or the line break owed before it.
+    /// Add `node` to `out`, after the space owed before it.
     fn push_inline(&self, out: &mut Inline, node: Node) -> Result<(), EditorError> {
         if let Some(space) = out.space.take()
             && !out.nodes.is_empty()
         {
             out.nodes.push(self.schema.text(&space)?);
-        }
-        if std::mem::take(&mut out.line_break)
-            && let Some(br) = self.hard_break
-            && out.nodes.last().is_some_and(|last| last.node_type() != br)
-        {
-            out.nodes
-                .push(self.make_node(br, Attrs::new(), Fragment::empty())?);
         }
         out.nodes.push(node);
         Ok(())
@@ -1154,9 +1181,7 @@ impl<'a> HtmlParser<'a> {
 
     /// Read `nodes` as inline content. Every element is read through: one
     /// that is a mark, a leaf or a styled `<span>` as that, any other for
-    /// its content alone. A block-level element met here (in a heading, say)
-    /// cannot be a block, so it is a line: a hard break parts it from what is
-    /// before and after it.
+    /// its content alone.
     fn parse_inline(
         &self,
         nodes: &[ParsedNode],
@@ -1190,7 +1215,7 @@ impl<'a> HtmlParser<'a> {
                     // Mark-bearing tags (strong, em, a, mark, …).
                     if self.marks.contains_key(tag.as_str()) {
                         if let Some(mark) = self.mark_for(tag, attributes)? {
-                            let next = mark.add_to_set(active);
+                            let next = with_mark(active, mark);
                             self.parse_inline(children, &next, out)?;
                         } else {
                             // e.g. <a> with no/unsafe href → transparent, keep text.
@@ -1205,14 +1230,7 @@ impl<'a> HtmlParser<'a> {
                         continue;
                     }
                     // Any other element → transparent.
-                    let block = self.is_block_tag(tag);
-                    if block {
-                        out.line_break = !out.nodes.is_empty();
-                    }
                     self.parse_inline(children, active, out)?;
-                    if block {
-                        out.line_break = !out.nodes.is_empty();
-                    }
                 }
             }
         }
@@ -1319,14 +1337,14 @@ impl<'a> HtmlParser<'a> {
             self.schema.mark_type("text_color"),
         ) {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(color))]))?;
-            next = Mark::new(mt.clone(), attrs).add_to_set(&next);
+            next = with_mark(&next, Mark::new(mt.clone(), attrs));
         }
         if let (Some(bg), Some(mt)) = (
             parse_style(style, "background-color").filter(|c| is_safe_css_color(c)),
             self.schema.mark_type("highlight"),
         ) {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(bg))]))?;
-            next = Mark::new(mt.clone(), attrs).add_to_set(&next);
+            next = with_mark(&next, Mark::new(mt.clone(), attrs));
         }
         Ok(next)
     }
@@ -1339,6 +1357,21 @@ impl<'a> HtmlParser<'a> {
     ) -> Result<Node, EditorError> {
         let attrs = nt.compute_attrs(&attrs)?;
         Ok(Node::new_branch(nt.clone(), attrs, content))
+    }
+}
+
+/// `active` with `mark` in place of any mark of its type: of two links, or
+/// two colours, one inside the other, the inner one is what the text has.
+fn with_mark(active: &[Mark], mark: Mark) -> Vec<Mark> {
+    if active.iter().any(|m| m.type_name() == mark.type_name()) {
+        let others: Vec<Mark> = active
+            .iter()
+            .filter(|m| m.type_name() != mark.type_name())
+            .cloned()
+            .collect();
+        mark.add_to_set(&others)
+    } else {
+        mark.add_to_set(active)
     }
 }
 
@@ -1368,6 +1401,17 @@ fn inline_fragment(nodes: Vec<Node>) -> Fragment {
     }
     settle(&mut out, &mut joined);
     Fragment::from_children(out)
+}
+
+/// The attrs of a textblock of type `nt` read from a `tag` element: a
+/// heading's level, and the alignment of a heading or a paragraph (the two
+/// types whose schema declares `text_align`).
+fn textblock_attrs(nt: &NodeType, tag: &str, attributes: &[(String, String)]) -> Attrs {
+    match nt.name() {
+        "heading" => align_attrs(attributes).with("level", AttrValue::Int(heading_level(tag))),
+        "paragraph" => align_attrs(attributes),
+        _ => Attrs::new(),
+    }
 }
 
 /// HTML elements that are a line, or more, of their own, whatever the schema

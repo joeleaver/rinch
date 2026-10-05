@@ -537,6 +537,10 @@ impl Soup {
 
     /// Table parts with no `<table>` around them: read as a table.
     fn bare_table_parts(&mut self, depth: usize, out: &mut String) -> String {
+        if self.in_table > 0 {
+            // A cell or a row written in a cell ends that cell.
+            self.order_known = false;
+        }
         self.in_table += 1;
         self.cell_open = false;
         let omitted = self.omitted;
@@ -791,7 +795,7 @@ fn check(
     if again.as_ref() != Some(&doc) {
         return Err((
             "not a fixed point",
-            format!("\n  wrote {written}\n reread {rewritten}"),
+            format!("\n  wrote {written}\n reread {rewritten}\n   read {doc:?}\n  again {again:?}"),
         ));
     }
     Ok(())
@@ -826,7 +830,9 @@ fn any_html_reads_to_a_valid_document_holding_all_of_its_text() {
         );
         if let Err((kind, detail)) = result {
             assert!(tally, "seed {seed}: {kind}: {detail}\n html {html}");
-            let entry = kinds.entry(kind).or_insert((0, format!("seed {seed}: {html}")));
+            let entry = kinds
+                .entry(kind)
+                .or_insert((0, format!("seed {seed}: {detail}\n html {html}")));
             entry.0 += 1;
         }
     }
