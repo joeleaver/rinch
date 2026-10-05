@@ -342,6 +342,11 @@ fn unclosed_elements_change_no_line_however_many() {
         "<h1>{S}a<h2>b</h2>c",
         "<table><caption>{S}cap<tr><td>a<tbody><tr><td>b</table>c",
         "<div>{S}a<svg><g>{S}<p>b</p>c",
+        // Any heading's end tag ends the open heading.
+        "<h1>{S}a</h3>b",
+        // A row in an inner table closes nothing of the outer one.
+        "<table><tr><td>o<table><tr><td>{S}a<tr><td>b</table>c</td><td>e</td></tr></table>d",
+        "<ul><li>{S}a<p>b<li>c</ul>d",
     ];
     let limit = html_reader_max_depth();
     for shape in shapes {
