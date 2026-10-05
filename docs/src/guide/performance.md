@@ -125,6 +125,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `taffy_measure_calls` | Calls to the measure function during root computes |
 | | `inline_block_computes` | Standalone Taffy computes that size an atomic inline |
 | | `calc_fixpoint_passes` | Extra computes run by the `calc(%, px)` fixpoint |
+| | `abs_containing_block_passes` | Extra computes run because an absolutely positioned box's containing block — a positioned ancestor that is not its layout parent — came out of a compute at a size the box was not sized for: the document's first layout, and a resize of that block. Only a box whose *size* depends on the block (`inset: 0`, `width: 50%`) can cause one |
 | Paint | `paint_frames` / `paint_cached_frames` | Frames actually painted, and redraws that reused the cached frame |
 | | `repaint_partial`, `repaint_full` | Software frames limited to their damage, and full repaints |
 | | `repaint_none` | Software frames whose scene was marked dirty but whose damage named nothing on screen, so the pixels on screen were kept and nothing was painted (an alt-tab, a focus move onto a box no rule styles) |
