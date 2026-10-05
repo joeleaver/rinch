@@ -960,3 +960,98 @@ fn the_second_compute_is_paid_only_when_the_containing_block_resizes() {
     );
     assert_rect(c.rect("abs"), [0.0, 0.0, 420.0, 300.0], "followed");
 }
+
+/// A wrapper that generates no box — `display: contents`, or an inline span
+/// the box is hoisted out of — between the box and a containing block that is
+/// then its **layout parent**: Taffy's own answer, with nothing to bake and no
+/// second compute. (Classing these as a non-parent ancestor gives the same
+/// boxes one compute later.)
+#[test]
+fn a_boxless_wrapper_under_the_containing_block_costs_nothing() {
+    for wrapper in [r#"<div style="display: contents">"#, r#"<span>"#] {
+        let close = if wrapper.starts_with("<span") {
+            "</span>"
+        } else {
+            "</div>"
+        };
+        let c = Case::new(&format!(
+            r#"<div data-cb style="{CB}">{wrapper}{}{close}</div>"#,
+            abs("abs", "left: 10%; top: 10%; width: 50%; height: 50%", ""),
+        ));
+        assert_rect(c.rect("abs"), [40.0, 30.0, 200.0, 150.0], wrapper);
+        assert_eq!(c.doc.tree.taffy_computes, 1, "{wrapper}");
+    }
+}
+
+/// The scroller between the box and its containing block is scrolled to its
+/// end and then loses content, so **layout's own clamp** pulls its offset in
+/// (400 to 100) after the box was read back: the box is placed again against
+/// the clamped offset and stays put.
+#[test]
+fn a_scroll_offset_clamped_by_layout_does_not_move_the_box() {
+    let mut c = Case::scaffold(
+        "",
+        "overflow: auto; height: 100px;",
+        &format!(
+            r#"<div data-tall style="height: 500px"></div>{}"#,
+            abs("abs", "left: 5px; top: 6px; width: 20px; height: 20px", ""),
+        ),
+    );
+    let mid = one(&c.doc, "[data-mid]");
+    c.doc.set_scroll_top(NodeId(mid), 400.0);
+    c.relayout();
+    assert_eq!(c.doc.tree.get(mid).unwrap().scroll_offset.1, 400.0);
+    assert_rect(c.rect("abs"), [5.0, 6.0, 20.0, 20.0], "scrolled to the end");
+
+    let tall = NodeId(one(&c.doc, "[data-tall]"));
+    c.doc.set_attribute(tall, "style", "height: 200px");
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(
+        c.doc.tree.get(mid).unwrap().scroll_offset.1,
+        100.0,
+        "positive control: the clamp ran"
+    );
+    assert_rect(c.rect("abs"), [5.0, 6.0, 20.0, 20.0], "clamped");
+}
+
+/// The box's parent is a static `inline-block` with a **percentage** width,
+/// which is measured detached with no containing block and then again once
+/// the line has one (#120). Re-baking the box must leave that second measure
+/// standing: the inline-block is half its 400px line, and the box fills the
+/// containing block.
+#[test]
+fn a_box_inside_a_percentage_inline_block() {
+    let c = Case::new(&format!(
+        r#"<div data-cb style="{CB}">{SP}<div data-m="ib" style="display: inline-block; width: 50%; height: 50px">{}</div></div>"#,
+        abs(
+            "abs",
+            "inset: 0",
+            r#"<div data-m="kid" style="width: 25%; height: 10px"></div>"#
+        ),
+    ));
+    assert_rect(c.rect("ib"), [0.0, 20.0, 200.0, 50.0], "the inline-block");
+    assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "the box");
+    assert_rect(c.rect("kid"), [0.0, 0.0, 100.0, 10.0], "its child");
+}
+
+/// A box inside a `display: none` subtree generates no box: it stays 0x0 at
+/// the origin and is not dragged onto its containing block, whether that is
+/// an ancestor or the initial one.
+#[test]
+fn a_box_in_a_hidden_subtree_is_not_placed() {
+    let zero = |c: &Case| {
+        let l = c.doc.tree.get(c.id("abs")).unwrap().layout;
+        assert_eq!((l.x, l.y, l.width, l.height), (0.0, 0.0, 0.0, 0.0));
+    };
+    let c = Case::scaffold(
+        "",
+        "display: none;",
+        &abs("abs", "right: 10px; bottom: 20px; width: 0; height: 0", ""),
+    );
+    zero(&c);
+    let c = Case::new(&format!(
+        r#"<div data-cb style="{MID}display: none">{}</div>"#,
+        abs("abs", "right: 10px; bottom: 20px; width: 0; height: 0", ""),
+    ));
+    zero(&c);
+}
