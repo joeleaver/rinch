@@ -191,6 +191,8 @@ pub(super) fn transform_from_stylo(
     TransformValue {
         matrix: m,
         is_identity,
+        // The empty list returned `TransformValue::default()` above.
+        is_none: false,
         pct_translate_w: pct_w,
         pct_translate_h: pct_h,
         functions,

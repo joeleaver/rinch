@@ -70,7 +70,10 @@ pub fn styles() -> String {
 
 .rinch-checkbox--checked .rinch-checkbox__icon {
     opacity: 1;
-    transform: scale(1);
+    /* `none`, not `scale(1)`: an identity transform is still a stacking
+       context (#415), and `none` interpolates with the hidden state's
+       function exactly as the identity does. */
+    transform: none;
 }
 
 /* Checkbox label */
@@ -126,7 +129,7 @@ pub fn styles() -> String {
 
 .rinch-checkbox--indeterminate .rinch-checkbox__icon {
     opacity: 1;
-    transform: scale(1);
+    transform: none;
 }
 "#
     .to_string()

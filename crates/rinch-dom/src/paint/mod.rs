@@ -1433,7 +1433,7 @@ pub fn compose_node_transform(
 /// matrix, the path `scale(0)` and a plane behind the viewer already take: the
 /// element and its subtree are neither drawn nor hit — except a `position:
 /// fixed` descendant, which paints under the body's transform and so never
-/// meets this one (no containment, #386/#415).
+/// meets this one (no containment, #1372).
 #[allow(clippy::too_many_arguments)]
 fn compose_transform_parts(
     tf: &crate::computed_style::TransformValue,

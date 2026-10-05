@@ -883,7 +883,7 @@ fn a_hidden_backface_is_neither_drawn_nor_hit() {
 /// child with a hidden backface under a turned parent, with no transform of its
 /// own, is drawn. Chrome 153: the first child is not hit, the second is.
 /// (A `position: fixed` descendant is the exception, still drawn for want of
-/// containment — #386, #415; `repaint_old_rect_tests` pins it.)
+/// containment — #1372; `repaint_old_rect_tests` pins it.)
 #[test]
 fn a_hidden_backface_hides_the_subtree_and_reads_only_the_own_transform() {
     let mut s = scene(

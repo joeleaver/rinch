@@ -63,7 +63,10 @@ pub fn styles() -> String {
 
 .rinch-radio--checked .rinch-radio__dot {
     opacity: 1;
-    transform: scale(1);
+    /* `none`, not `scale(1)`: an identity transform is still a stacking
+       context (#415), and `none` interpolates with the hidden state's
+       function exactly as the identity does. */
+    transform: none;
 }
 
 /* Radio body */

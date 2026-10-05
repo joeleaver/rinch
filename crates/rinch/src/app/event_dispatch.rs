@@ -2686,7 +2686,7 @@ impl RinchApp {
     /// The generation is what the hit cache itself trusts, and one input is known
     /// to move without it: a transition or animation tick writes a `transform` into
     /// `computed_style` without bumping it (the hit cache keys its *contents* by
-    /// `HitStyleKey`, which holds whether a transform is the identity, not its
+    /// `HitStyleKey`, which holds whether a transform is `none`, not its
     /// value). So the memo never outlives the event it was filled in:
     /// `handle_event` drops it on entry. The ticks run inside
     /// `handle_event(AboutToWait)` and nothing in that arm hit-tests, so no answer

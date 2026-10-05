@@ -1390,6 +1390,129 @@ fn review_1143_a_striped_progress_in_a_closed_drawer_idles() {
     }
 }
 
+// ── Identity transforms (#415) ─────────────────────────────────────────────
+
+const IDENTITY_ROWS: usize = 300;
+
+/// A 300x400 scroller of 300 empty 20px rows, each carrying `transform`.
+fn mount_transform_rows(transform: &'static str) -> (RinchApp, NodeHandle) {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let scroller = scope.create_element("div");
+        scroller.set_attribute("style", "width: 300px; height: 400px; overflow-y: auto");
+        for _ in 0..IDENTITY_ROWS {
+            let row = scope.create_element("div");
+            row.set_attribute("style", &format!("height: 20px; transform: {transform}"));
+            scroller.append_child(&row);
+        }
+        root.append_child(&scroller);
+        *out2.borrow_mut() = Some(scroller.clone());
+        root
+    });
+    let scroller = out.borrow().clone().unwrap();
+    (app, scroller)
+}
+
+fn pointer_move(app: &mut RinchApp, x: f32, y: f32) {
+    app.handle_event(PlatformEvent::MouseMove { x, y }, SIZE, 1.0);
+}
+
+/// The frames of `mount_transform_rows`: the second wheel notch (the first
+/// fills the hit cache) and a warm pointer move after it.
+fn transform_row_frames(transform: &'static str) -> (FrameStats, FrameStats) {
+    let (mut app, scroller) = mount_transform_rows(transform);
+    interaction(&mut app, wheel_notch);
+    let first = scroller.scroll_top();
+    let notch = interaction(&mut app, wheel_notch);
+    assert!(
+        scroller.scroll_top() > first && first > 0.0,
+        "positive control: both notches scrolled"
+    );
+    interaction(&mut app, |app| pointer_move(app, 50.0, 100.0));
+    let warm = interaction(&mut app, |app| pointer_move(app, 51.0, 130.0));
+    (notch, warm)
+}
+
+/// What an identity transform costs (#415): `transform: translateX(0)` makes
+/// each row a stacking context, exactly as `translateX(1px)` or `opacity:
+/// 0.99` always has. A stacking context is hoisted into its ancestor's paint
+/// sequence and is never pruned by the off-screen cull or by hit testing's
+/// flow extents, so every one of the 300 rows is visited by paint and by a
+/// pointer move, where the `none` twin below visits the ~20 on screen:
+/// `PaintNodesVisited` 24 → 303, `StackingOrderBuilds` 2 → 313 and
+/// `HitTestNodesVisited` 4 → 291 on a wheel notch, and 4 → 285 nodes on a warm
+/// pointer move. The price is the pre-existing one for any stacking context;
+/// #415 is what makes a no-op transform pay it, as CSS says it must be one.
+/// A fix to the cull or the prune must *lower* these.
+#[test]
+fn identity_transform_rows_cost_what_any_stacking_context_costs() {
+    let (notch, warm) = transform_row_frames("translateX(0)");
+    expect_frame(
+        "second wheel notch, 300 translateX(0) rows",
+        &notch,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 122816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 303),
+            (StackingOrderBuilds, 313),
+            (ClipMasks, 3),
+            (ClipMaskPx, 367044),
+            (HitTests, 1),
+            (HitTestNodesVisited, 291),
+        ],
+    );
+    expect_frame(
+        "warm pointer move, 300 translateX(0) rows",
+        &warm,
+        &[
+            (PaintCachedFrames, 1),
+            (HitTests, 1),
+            (HitTestNodesVisited, 285),
+        ],
+    );
+}
+
+/// The twin: the same rows with `transform: none` are culled and pruned.
+#[test]
+fn transform_none_rows_are_culled_and_pruned() {
+    let (notch, warm) = transform_row_frames("none");
+    expect_frame(
+        "second wheel notch, 300 transform: none rows",
+        &notch,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 122816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 24),
+            (StackingOrderBuilds, 2),
+            (ClipMasks, 2),
+            (ClipMaskPx, 245640),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
+        ],
+    );
+    expect_frame(
+        "warm pointer move, 300 transform: none rows",
+        &warm,
+        &[
+            (PaintCachedFrames, 1),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
+        ],
+    );
+}
+
 // ── Viewports with a frame, idle (#349) ────────────────────────────────────
 
 /// Three `GameViewport`s, each with a frame on screen, and nothing happening:
