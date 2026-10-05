@@ -673,17 +673,44 @@ pub(crate) fn place_absolute(
     ))
 }
 
+/// Whether a box of this `size` is one layout produced, rather than the 0x0
+/// a box inside a `display: none` subtree carries (CSS 2.1 §9.2.4) — which
+/// must not be dragged onto its containing block. A box with any size is; a
+/// real 0x0 box — an anchor with overflowing content — is told from a hidden
+/// one by its ancestors, a walk only such a box pays.
+pub(crate) fn is_laid_out(tree: &NodeTree, node_id: RawNodeId, size: (f32, f32)) -> bool {
+    if size.0 > 0.0 || size.1 > 0.0 {
+        return true;
+    }
+    let mut current = tree.get(node_id).and_then(|n| n.parent);
+    while let Some(id) = current {
+        let Some(node) = tree.get(id) else {
+            return false;
+        };
+        if node.computed_style.display == DisplayValue::None {
+            return false;
+        }
+        if id == tree.root_id {
+            return true;
+        }
+        current = node.parent;
+    }
+    // Not connected to the document.
+    false
+}
+
 /// [`place_absolute`] for a box whose compute has already been read back:
 /// the position it should have now, from Taffy's last answer and the chain as
 /// it stands. `None` when the box is not one this module places.
 fn current_placement(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f32)> {
     let node = tree.get(node_id)?;
-    if node.computed_style.position != PositionValue::Absolute
-        || !(node.layout.width > 0.0 || node.layout.height > 0.0)
-    {
+    if node.computed_style.position != PositionValue::Absolute {
         return None;
     }
     let kind = out_of_flow_kind(tree, node_id)?;
+    if !is_laid_out(tree, node_id, (node.layout.width, node.layout.height)) {
+        return None;
+    }
     let taffy = tree.taffy.layout(node.taffy_id?).ok()?;
     place_absolute(
         tree,

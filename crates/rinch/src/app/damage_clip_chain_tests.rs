@@ -170,10 +170,10 @@ fn an_absolute_box_escaping_the_clip_is_damaged_outside_it() {
         "position: absolute; left: 300px; top: 200px",
     );
     let before = full_frame(&mut app);
-    // At (320, 220): rinch resolves an absolute box against its direct
-    // parent when its containing block is further up (#386) — and paints it
-    // unclipped all the same, since the clip chain is truncated at the block.
-    let old = (320, 220, 360, 260);
+    // At (300, 200) in `outer`, its containing block — not at (320, 220),
+    // 300/200 from the clipper it is written in (#386) — and painted
+    // unclipped, since the clip chain is truncated at the block.
+    let old = (300, 200, 340, 240);
     assert!(ink_in(&before, old) > 1000, "positive control");
 
     b.set_style("left", "400px");
@@ -182,9 +182,10 @@ fn an_absolute_box_escaping_the_clip_is_damaged_outside_it() {
     assert_incremental(&stats);
     let full = full_frame(&mut app);
     assert!(
-        ink_in(&full, (420, 220, 460, 260)) > 1000,
+        ink_in(&full, (400, 200, 440, 240)) > 1000,
         "positive control"
     );
+    assert_eq!(ink_in(&inc, (300, 200, 400, 240)), 0, "the old box ghosts");
     assert_eq!(
         diff_in(&inc, &full, WHOLE),
         0,
@@ -413,7 +414,7 @@ fn a_removed_box_that_escaped_the_clip_is_cleared() {
         "position: absolute; left: 300px; top: 200px",
     );
     let before = full_frame(&mut app);
-    let old = (320, 220, 360, 260);
+    let old = (300, 200, 340, 240);
     assert!(ink_in(&before, old) > 1000, "positive control");
 
     b.remove();

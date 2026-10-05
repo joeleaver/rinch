@@ -644,3 +644,319 @@ fn the_initial_containing_block_gets_the_same_rules() {
     );
     assert_rect(c.page_rect("abs"), [0.0, 0.0, 400.0, 10.0], "max-width");
 }
+
+// ── More of the scroll rule ─────────────────────────────────────────────────
+
+/// A **static-position** box under a scroller that is not its containing
+/// block does not ride the scroller either. Chrome: 70px of content above it
+/// in a scroller at `(30, 20)`, `scrollTop = 40` — the box is at `(30, 90)`,
+/// not `(30, 50)`.
+#[test]
+fn a_static_position_box_does_not_ride_a_scroller_between() {
+    let mut c = Case::scaffold(
+        "",
+        "overflow: auto; height: 100px;",
+        &format!(
+            r#"<div style="height: 70px"></div>{}<div style="height: 500px"></div>"#,
+            abs("abs", "width: 20px; height: 20px", ""),
+        ),
+    );
+    assert_rect(c.rect("abs"), [30.0, 90.0, 20.0, 20.0], "unscrolled");
+    let mid = one(&c.doc, "[data-mid]");
+    c.doc.set_scroll_top(NodeId(mid), 40.0);
+    assert_rect(
+        c.rect("abs"),
+        [30.0, 90.0, 20.0, 20.0],
+        "scrolled, no layout",
+    );
+    c.relayout();
+    assert_rect(
+        c.rect("abs"),
+        [30.0, 90.0, 20.0, 20.0],
+        "scrolled, laid out",
+    );
+}
+
+/// The initial containing block scrolls with the **page**, which in rinch is
+/// the `<body>`'s scroll: Chrome moves a `top: 6px` box from 6 to -94 at
+/// `scrollY = 100`. A scroller between the box and the page does not carry it.
+#[test]
+fn an_icb_box_rides_the_page_and_no_scroller_between() {
+    let mut c = Case::new(&format!(
+        r#"{SP}<div data-cb style="{MID}overflow: auto; height: 100px">{}{}<div style="height: 500px"></div></div><div style="height: 2000px"></div>"#,
+        abs("top", "left: 7px; top: 6px; width: 20px; height: 20px", ""),
+        abs("static", "width: 20px; height: 20px", ""),
+    ));
+    assert_rect(c.page_rect("top"), [7.0, 6.0, 20.0, 20.0], "unscrolled");
+    assert_rect(
+        c.page_rect("static"),
+        [30.0, 20.0, 20.0, 20.0],
+        "unscrolled",
+    );
+
+    c.doc.set_scroll_top(NodeId(c.cb), 40.0);
+    assert_rect(
+        c.page_rect("top"),
+        [7.0, 6.0, 20.0, 20.0],
+        "scroller, no layout",
+    );
+    assert_rect(
+        c.page_rect("static"),
+        [30.0, 20.0, 20.0, 20.0],
+        "scroller, no layout",
+    );
+    c.relayout();
+    assert_rect(
+        c.page_rect("top"),
+        [7.0, 6.0, 20.0, 20.0],
+        "scroller, laid out",
+    );
+    assert_rect(
+        c.page_rect("static"),
+        [30.0, 20.0, 20.0, 20.0],
+        "scroller, laid out",
+    );
+
+    let body = c.doc.body();
+    c.doc.set_scroll_top(body, 100.0);
+    assert_rect(
+        c.page_rect("top"),
+        [7.0, -94.0, 20.0, 20.0],
+        "page, no layout",
+    );
+    c.relayout();
+    assert_rect(
+        c.page_rect("top"),
+        [7.0, -94.0, 20.0, 20.0],
+        "page, laid out",
+    );
+    assert_rect(
+        c.page_rect("static"),
+        [30.0, -80.0, 20.0, 20.0],
+        "page, laid out",
+    );
+}
+
+// ── More of the margin rule, and calc() ─────────────────────────────────────
+
+/// `stretch` leaves room for the margins; one `auto` margin beside a length
+/// takes what is left; a box larger than the space is centred on the block
+/// axis and starts at the inset on the inline axis. All Chrome 153.
+#[test]
+fn margins_between_insets() {
+    let c = Case::single(
+        "left: 10px; top: 5px; width: stretch; height: stretch; margin: 3px 4px 5px 6px",
+    );
+    assert_rect(c.rect("abs"), [16.0, 8.0, 380.0, 287.0], "stretch");
+
+    let c = Case::single(
+        "inset: 0; width: 100px; height: 50px; margin-left: auto; margin-right: 30px; \
+         margin-top: 20px; margin-bottom: auto",
+    );
+    assert_rect(
+        c.rect("abs"),
+        [270.0, 20.0, 100.0, 50.0],
+        "one auto, one length",
+    );
+
+    let c = Case::single("inset: 0; width: 500px; height: 350px; margin: auto");
+    assert_rect(
+        c.rect("abs"),
+        [0.0, -25.0, 500.0, 350.0],
+        "larger than the space",
+    );
+}
+
+/// A mixed `calc()` resolves against the containing block wherever a plain
+/// percentage does: insets, size, padding, `max-width`.
+#[test]
+fn calc_resolves_against_the_containing_block() {
+    let c = Case::scaffold(
+        "",
+        "",
+        &format!(
+            "{}{}",
+            abs(
+                "abs",
+                "left: calc(10% + 5px); top: calc(10% + 5px); width: calc(50% - 20px); \
+                 height: calc(50% - 20px)",
+                ""
+            ),
+            abs(
+                "pad",
+                "right: 0; top: 0; padding: calc(5% + 2px); max-width: calc(25% + 10px); \
+                 width: 300px",
+                r#"<div style="height: 10px"></div>"#
+            ),
+        ),
+    );
+    assert_rect(c.rect("abs"), [45.0, 35.0, 180.0, 130.0], "insets and size");
+    assert_rect(
+        c.rect("pad"),
+        [290.0, 0.0, 110.0, 54.0],
+        "padding and max-width",
+    );
+}
+
+/// A box with no size of its own still has a place: `right: 10px; bottom:
+/// 20px` on a 0x0 box is the containing block's corner less the insets.
+#[test]
+fn a_zero_size_box_is_still_placed() {
+    let c = Case::single("right: 10px; bottom: 20px; width: 0; height: 0");
+    assert_rect(c.rect("abs"), [390.0, 280.0, 0.0, 0.0], "0x0");
+}
+
+// ── Other ways the answer changes with no restyle of the box ────────────────
+
+/// An inline `left`/`top` write takes the inset fast path (#280), which
+/// re-cascades nothing: the box moves against its containing block, and a
+/// size that depends on the insets follows.
+#[test]
+fn an_inline_inset_write_moves_the_box_in_its_containing_block() {
+    let mut c = Case::single("left: 10px; top: 10px; right: 10px; height: 30px");
+    assert_rect(c.rect("abs"), [10.0, 10.0, 380.0, 30.0], "before");
+    let id = NodeId(c.id("abs"));
+    c.doc.set_style(id, "left", "50px");
+    c.doc.set_style(id, "top", "25%");
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("abs"), [50.0, 75.0, 340.0, 30.0], "after");
+}
+
+/// The static parent stops generating a box (`display: contents`): the
+/// containing block is now the box's layout parent and Taffy's answer is the
+/// right one again — and must keep following the containing block's size,
+/// which a length baked while it was a grandparent would not.
+#[test]
+fn the_parent_becoming_display_contents_hands_the_box_back_to_taffy() {
+    let mut c = Case::single("left: 0; top: 0; width: 50%; height: 50%");
+    assert_rect(c.rect("abs"), [0.0, 0.0, 200.0, 150.0], "grandparent");
+    let mid = NodeId(one(&c.doc, "[data-mid]"));
+    c.doc.set_attribute(mid, "style", "display: contents");
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("abs"), [0.0, 0.0, 200.0, 150.0], "now the parent");
+
+    c.doc.set_attribute(
+        NodeId(c.cb),
+        "style",
+        &format!("{CB}width: 300px; height: 100px"),
+    );
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("abs"), [0.0, 0.0, 150.0, 50.0], "and it follows it");
+
+    c.doc.set_attribute(mid, "style", MID);
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(
+        c.rect("abs"),
+        [0.0, 0.0, 150.0, 50.0],
+        "a grandparent again",
+    );
+}
+
+/// The box is moved under another containing block.
+#[test]
+fn a_box_moved_to_another_containing_block() {
+    let mut c = Case::new(&format!(
+        r#"<div data-cb style="{CB}">{SP}<div data-mid style="{MID}">{}</div></div><div data-other style="position: relative; width: 120px; height: 80px"><div data-inner style="width: 50px; height: 10px; margin-left: 9px"></div></div>"#,
+        abs("abs", "right: 0; bottom: 0; width: 50%; height: 50%", ""),
+    ));
+    assert_rect(c.rect("abs"), [200.0, 150.0, 200.0, 150.0], "first");
+    let inner = NodeId(one(&c.doc, "[data-inner]"));
+    let other = one(&c.doc, "[data-other]");
+    let id = NodeId(c.id("abs"));
+    c.doc.append_child(inner, id);
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    c.cb = other;
+    assert_rect(c.rect("abs"), [60.0, 40.0, 60.0, 40.0], "second");
+}
+
+// ── What it costs ───────────────────────────────────────────────────────────
+
+/// Root computes a layout pass ran.
+fn computes(doc: &mut RinchDocument, f: impl FnOnce(&mut RinchDocument)) -> u64 {
+    let before = doc.tree.taffy_computes;
+    f(doc);
+    doc.tree.taffy_computes - before
+}
+
+/// The extra compute is paid only when a containing block comes out of the
+/// compute at a size the box was not baked for:
+///
+/// * a box whose size does not depend on its containing block never pays;
+/// * a size-dependent one pays once on its first layout, when the containing
+///   block has no size yet;
+/// * neither a later pass, nor a restyle of the box, nor a resize of something
+///   else pays again;
+/// * a resize of the containing block pays once.
+#[test]
+fn the_second_compute_is_paid_only_when_the_containing_block_resizes() {
+    // Position only: one compute, ever.
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let wrap = doc.create_element("div");
+    doc.set_inner_html(
+        wrap,
+        &format!(
+            r#"<div data-cb style="{CB}">{SP}<div style="{MID}">{}</div></div>"#,
+            abs(
+                "abs",
+                "right: 10px; bottom: 20px; width: 50px; height: 30px",
+                ""
+            )
+        ),
+    );
+    doc.append_child(body, wrap);
+    assert_eq!(
+        computes(&mut doc, |d| d.resolve_layout(800.0, 600.0)),
+        1,
+        "a position-only box is placed, not re-sized"
+    );
+
+    // Size-dependent: two on the first layout, one after.
+    let mut c = Case::scaffold("", "", "");
+    let mid = NodeId(one(&c.doc, "[data-mid]"));
+    let wrap = c.doc.create_element("div");
+    c.doc.set_inner_html(
+        wrap,
+        &abs(
+            "abs",
+            "inset: 0",
+            r#"<div style="width: 50%; height: 50%"></div>"#,
+        ),
+    );
+    c.doc.set_attribute(wrap, "style", "display: contents");
+    c.doc.append_child(mid, wrap);
+    assert_eq!(
+        computes(&mut c.doc, |d| d.resolve_layout(800.0, 600.0)),
+        1,
+        "added under a containing block that has a size: baked at the style site"
+    );
+    assert_rect(c.rect("abs"), [0.0, 0.0, 400.0, 300.0], "and right");
+
+    let fresh = Case::single("inset: 0");
+    assert_eq!(
+        fresh.doc.tree.taffy_computes, 2,
+        "first layout of the whole document: the containing block had no size to bake"
+    );
+
+    assert_eq!(
+        computes(&mut c.doc, |d| d.resolve_layout(800.0, 640.0)),
+        1,
+        "a later pass"
+    );
+    let id = NodeId(c.id("abs"));
+    c.doc
+        .set_attribute(id, "style", &format!("{ABS}inset: 0; padding: 3px"));
+    assert_eq!(
+        computes(&mut c.doc, |d| d.resolve_layout(800.0, 640.0)),
+        1,
+        "a restyle of the box"
+    );
+    c.doc
+        .set_attribute(NodeId(c.cb), "style", &format!("{CB}width: 420px"));
+    assert_eq!(
+        computes(&mut c.doc, |d| d.resolve_layout(800.0, 640.0)),
+        2,
+        "a resize of the containing block"
+    );
+    assert_rect(c.rect("abs"), [0.0, 0.0, 420.0, 300.0], "followed");
+}

@@ -1385,14 +1385,18 @@ impl RinchDocument {
             // the MCP `absolute` contract — keeps working untouched.
             // `out_of_flow::place_absolute` has the sum.
             //
-            // A 0x0 result is left alone: that is what Taffy gives a box in a
-            // `display: none` subtree, and correcting it would drag a hidden
-            // node onto its containing block.
+            // A box in a `display: none` subtree is left alone
+            // (`out_of_flow::is_laid_out`): Taffy gives it 0x0, and correcting
+            // it would drag a hidden node onto its containing block.
             {
                 let node = &self.tree.nodes[node_id];
                 if node.computed_style.position == crate::computed_style::PositionValue::Absolute
-                    && (new_layout.width > 0.0 || new_layout.height > 0.0)
                     && let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id)
+                    && crate::out_of_flow::is_laid_out(
+                        &self.tree,
+                        node_id,
+                        (new_layout.width, new_layout.height),
+                    )
                     && let Some((x, y)) = crate::out_of_flow::place_absolute(
                         &self.tree,
                         node_id,
