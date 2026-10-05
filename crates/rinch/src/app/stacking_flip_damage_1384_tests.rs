@@ -202,8 +202,10 @@ fn restyle(scene: Scene, from: &'static str, to: &'static str) {
 }
 
 /// Every creator that can be toggled without moving the box, both ways.
-const CREATORS: [&str; 5] = [
+const CREATORS: [&str; 6] = [
     "opacity: 0.99",
+    // An identity transform moves nothing and is a context all the same (#415).
+    "transform: translateX(0)",
     "position: relative; z-index: 0",
     "transform: translateX(1px)",
     "filter: brightness(0.99)",
@@ -389,6 +391,17 @@ fn an_opacity_transition_arriving_at_one_repaints_the_released_descendant() {
 fn a_transform_transition_leaving_none_repaints_the_trapped_descendant() {
     transition_in(
         ".p { transition: transform 1000ms linear; } .p.on { transform: translateX(2px); }",
+        TransitionProperty::Transform,
+    );
+}
+
+/// A run that finishes at `none` stops being a context on its last tick
+/// (#415: any transform but `none` is one, the identity included).
+#[test]
+fn a_transform_transition_arriving_at_none_repaints_the_released_descendant() {
+    transition_out(
+        ".p { transition: transform 1000ms linear; transform: translateX(2px); } \
+         .p.on { transform: none; }",
         TransitionProperty::Transform,
     );
 }
