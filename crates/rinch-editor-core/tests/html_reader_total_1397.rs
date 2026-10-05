@@ -16,7 +16,7 @@
 //!
 //! `RINCH_HTML_TOTAL_SEEDS` raises the seed count (default 3000).
 //! `RINCH_HTML_TOTAL_TALLY=1` counts the failures of each kind instead of
-//! stopping at the first.
+//! stopping at the first. `RINCH_HTML_TOTAL_DUMP=<file>` writes the inputs.
 
 use rinch_editor_core::serialize::{node_to_html, slice_from_html};
 use rinch_editor_core::{Node, Schema};
@@ -812,12 +812,21 @@ fn any_html_reads_to_a_valid_document_holding_all_of_its_text() {
     if tally {
         std::panic::set_hook(Box::new(|_| {}));
     }
+    // The generated inputs, one JSON string a line: a corpus to read with
+    // two builds of the reader and compare.
+    let mut dump = std::env::var("RINCH_HTML_TOTAL_DUMP")
+        .ok()
+        .map(|path| std::fs::File::create(path).expect("dump file"));
     let mut kinds: BTreeMap<&'static str, (usize, String)> = BTreeMap::new();
     let (mut with_order, mut tokens) = (0usize, 0usize);
     for seed in 1..=seeds {
         let mut soup = Soup::new(seed);
         let mut html = String::new();
         let expected = soup.document(&mut html);
+        if let Some(file) = dump.as_mut() {
+            use std::io::Write;
+            writeln!(file, "{}", serde_json::to_string(&html).unwrap()).unwrap();
+        }
         with_order += usize::from(soup.order_known);
         tokens += soup.shown.len();
         let result = check(
@@ -993,9 +1002,9 @@ fn a_mark_around_blocks_leaves_hard_breaks_bare() {
     );
 }
 
-/// Elements nested without limit do not overflow the stack: past 512 open
-/// elements (Chrome's limit too) a start tag opens nothing and its content
-/// goes where it stands.
+/// Elements nested without limit do not overflow the stack: past 128 open
+/// elements a start tag opens nothing and its content goes where it stands
+/// (Chrome does the same, at 512).
 #[test]
 fn deep_nesting_reads_without_overflowing_the_stack() {
     for tag in ["div", "blockquote", "span", "b", "ul><li", "table><tr><td", "o:p", "x-y"] {
