@@ -430,10 +430,12 @@ where
 }
 
 /// A crude per-character "narrow units" estimate for the inline titlebar
-/// spacer (issue #529). Not a real text-advance measurement — no font
-/// context exists yet at the point this runs, before the window or its
-/// document are created — so this stays an estimate, but a
-/// bounded one: each `char` counts as 1 narrow unit or 2 for the common
+/// spacer's **first frame** (issue #529). Not a real text-advance measurement
+/// — no font context exists yet at the point this runs, before the window or
+/// its document are created. It is only the first frame's answer:
+/// `BorderlessWindow` replaces it with the menu row's measured box as soon as
+/// the row has been laid out, so what it gets wrong lasts one frame. It is a
+/// bounded estimate: each `char` counts as 1 narrow unit or 2 for the common
 /// double-width East Asian ranges (CJK ideographs, kana, hangul, fullwidth
 /// forms, most emoji), rather than `str::len()`'s UTF-8 **byte** count, which
 /// over-reserves any non-ASCII label by up to 4x (a 4-byte emoji) and already
@@ -467,7 +469,7 @@ fn char_width_units(c: char) -> u32 {
 /// `10px` padding-left + hamburger(`~36px`) + `2px` gap per item + each
 /// label (`~8px` per narrow-unit + `16px` padding) + `10px` padding-right.
 #[cfg(all(feature = "desktop", target_os = "linux"))]
-fn inline_spacer_width(labels: &[&str]) -> u32 {
+pub(crate) fn inline_spacer_width(labels: &[&str]) -> u32 {
     let labels_width: u32 = labels
         .iter()
         .map(|l| {
@@ -556,8 +558,9 @@ fn run_desktop_linux<F>(
                 })
             };
 
-            // Estimate inline row width for titlebar spacer (see
-            // `inline_spacer_width`'s doc for the per-label formula).
+            // First-frame estimate of the inline row's width, for the
+            // titlebar spacer; `BorderlessWindow` replaces it with the row's
+            // measured box after the first layout (see `inline_spacer_width`).
             let labels: Vec<&str> = menu_data_rc.iter().map(|(l, _)| l.as_str()).collect();
             let spacer_w = inline_spacer_width(&labels);
 

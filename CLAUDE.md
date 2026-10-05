@@ -4044,6 +4044,16 @@ fn app() -> NodeHandle {
 | `on_maximize` | `Option<Callback>` | Callback for maximize button |
 | `on_close` | `Option<Callback>` | Callback for close button |
 
+**With `WindowProps::menu_in_titlebar` (Linux in-app menu bar)** the menu row —
+`left_section`, the branded `title` and the top-level labels — is an absolutely
+positioned layer drawn over the titlebar, and an empty
+`.rinch-borderlesswindow__menu-spacer` in the titlebar's flex row holds that
+space open for the right section and the controls. The spacer is sized from the
+**row's measured box** (both `bounds_signal`s: the row's right edge minus the
+spacer's left edge), not from a count of the labels (#529): the shell's
+`MenuBarContext::spacer_width` is only the first frame's estimate, made before
+any document exists, and costs one extra layout to replace.
+
 ### Window Control Functions
 
 For custom window chrome (minimize/maximize/close buttons):
