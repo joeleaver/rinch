@@ -1990,6 +1990,9 @@ impl RinchDocument {
                             child.layout.y = positioned_box.y;
                             if moved {
                                 self.tree.paint_dirty_nodes.push(child_id);
+                                // An absolute box placed past this one is
+                                // owed a second look (`out_of_flow`).
+                                self.tree.abs_late_moves = true;
                             }
                         }
                     }

@@ -1872,6 +1872,7 @@ fn an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resi
             (TaffyRootComputes, 2),
             (TaffyMeasureCalls, 2),
             (AbsContainingBlockPasses, 1),
+            (AbsBoxesVisited, 3),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 1),
         ],
@@ -1888,6 +1889,7 @@ fn an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resi
             (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
+            (AbsBoxesVisited, 2),
         ],
     );
 
@@ -1909,6 +1911,7 @@ fn an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resi
             (TaffyRootComputes, 2),
             (TaffyMeasureCalls, 1),
             (AbsContainingBlockPasses, 1),
+            (AbsBoxesVisited, 3),
         ],
     );
 }
@@ -1939,6 +1942,7 @@ fn a_position_only_absolute_box_under_a_grandparent_pays_no_compute() {
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 2),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 1),
         ],
@@ -1960,6 +1964,186 @@ fn a_position_only_absolute_box_under_a_grandparent_pays_no_compute() {
             (TaffyStyleChanges, 1),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
+            (AbsBoxesVisited, 2),
+        ],
+    );
+}
+
+// ── abs_boxes_visited ──────────────────────────────────────────────────────
+
+/// A 100px-high scroller of twenty 20px rows, each holding a 4px leaf and one
+/// absolute badge. Returns the document, the scroller and the first leaf.
+///
+/// - `direct`: each row is `position: relative` and the badge is its child —
+///   Taffy's own answer, the ordinary badge;
+/// - `ancestor`: the same row with a static wrapper around the badge, so the
+///   row is a containing block Taffy does not know (#386);
+/// - `icb`: nothing is positioned, so every badge resolves against the
+///   initial containing block from inside the scroller (#204).
+fn badge_rows(variant: &str) -> (RinchDocument, NodeId, NodeId) {
+    let row_position = if variant == "icb" {
+        ""
+    } else {
+        "position: relative;"
+    };
+    let mut doc = doc_with(&format!(
+        ".s {{ height: 100px; width: 300px; overflow: auto; }}
+         .row {{ {row_position} height: 20px; }}
+         .leaf {{ height: 4px; }}
+         .badge {{ position: absolute; right: 5px; top: 2px; width: 10px; height: 10px; }}"
+    ));
+    let body = doc.body();
+    let s = el(&mut doc, body, "div", "s");
+    let mut first_leaf = None;
+    for _ in 0..20 {
+        let row = el(&mut doc, s, "div", "row");
+        let leaf = el(&mut doc, row, "div", "leaf");
+        first_leaf.get_or_insert(leaf);
+        let holder = if variant == "ancestor" {
+            el(&mut doc, row, "div", "")
+        } else {
+            row
+        };
+        el(&mut doc, holder, "div", "badge");
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    (doc, s, first_leaf.unwrap())
+}
+
+/// One leaf's margin changes and the document is laid out: no containing
+/// block resizes, so no badge is re-sized or moves.
+fn badge_relayout(doc: &mut RinchDocument, leaf: NodeId) -> FrameStats {
+    doc.tree.perf.reset();
+    doc.set_attribute(leaf, "style", "margin-left: 3px");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.end_frame()
+}
+
+/// The scroller scrolls by 7px; no layout runs.
+fn badge_scroll(doc: &mut RinchDocument, scroller: NodeId) -> FrameStats {
+    doc.tree.perf.reset();
+    doc.set_scroll_top(scroller, 7.0);
+    doc.tree.perf.end_frame()
+}
+
+/// The contract the review of #1409 asked for: the passes that resolve an
+/// absolute box against a containing block Taffy does not know cost
+/// **nothing** where there is no such box. Twenty badges that are children of
+/// their own positioned row are looked at by none of them — not by a layout,
+/// not by a scroll (`abs_boxes_visited` is absent from both frames). When
+/// every absolute node was in one registry, each was classified twice per
+/// layout and once per scroll.
+#[test]
+fn absolute_children_of_their_positioned_parent_are_in_no_out_of_flow_pass() {
+    let (mut doc, scroller, leaf) = badge_rows("direct");
+    let s = badge_relayout(&mut doc, leaf);
+    expect(
+        "direct badges, a leaf restyled",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+        ],
+    );
+    let s = badge_scroll(&mut doc, scroller);
+    expect("direct badges, the scroller scrolled", &s, &[]);
+}
+
+/// Twenty badges each resolved against a non-parent ancestor (its row). A
+/// layout looks at each twice — the size check after the compute and the
+/// placement as it is read back — and re-sizes none; nothing on the way to a
+/// row moved late, so there is no second placement. A scroll of the scroller
+/// looks at none: it holds the rows, and lies between no badge and its
+/// containing block.
+#[test]
+fn ancestor_resolved_boxes_are_visited_twice_per_layout_and_not_by_an_outer_scroll() {
+    let (mut doc, scroller, leaf) = badge_rows("ancestor");
+    let s = badge_relayout(&mut doc, leaf);
+    expect(
+        "ancestor badges, a leaf restyled",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 40),
+        ],
+    );
+    let s = badge_scroll(&mut doc, scroller);
+    expect("ancestor badges, the scroller scrolled", &s, &[]);
+}
+
+/// Twenty badges with no positioned ancestor, written inside a scroller: the
+/// initial containing block is theirs, and the scroller is between each and
+/// it. A layout looks at each once (the placement as it is read back; there
+/// is no size check, the viewport's size is known before the compute), and a
+/// scroll of the scroller at each once — every one of them has to be written
+/// again to stay where it is. A layout that clamps the scroller's offset
+/// looks at each twice: the read-back placed them against the old offset.
+#[test]
+fn icb_boxes_inside_a_scroller_are_visited_once_per_layout_and_once_per_scroll() {
+    let (mut doc, scroller, leaf) = badge_rows("icb");
+    let s = badge_relayout(&mut doc, leaf);
+    expect(
+        "icb badges, a leaf restyled",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 20),
+        ],
+    );
+    let s = badge_scroll(&mut doc, scroller);
+    expect(
+        "icb badges, the scroller scrolled",
+        &s,
+        &[(AbsBoxesVisited, 20)],
+    );
+
+    // Scrolled to the end, then the content shrinks: the clamp pulls the
+    // offset in after the boxes were placed.
+    doc.set_scroll_top(scroller, 300.0);
+    doc.tree.perf.reset();
+    let row = NodeId(doc.tree.get(leaf.0).unwrap().parent.unwrap());
+    doc.set_attribute(row, "style", "height: 5px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(doc.tree.get(scroller.0).unwrap().scroll_offset.1, 285.0);
+    expect(
+        "icb badges, a layout that clamps the scroll",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 3),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+            (AbsBoxesVisited, 40),
         ],
     );
 }

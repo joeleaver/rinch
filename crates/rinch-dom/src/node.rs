@@ -1048,6 +1048,17 @@ pub struct Node {
     /// (`out_of_flow::place_absolute`). A scroll of a node without the flag
     /// re-places nothing. Set by the layout read-back; cleared by the next.
     pub(crate) on_abs_chain: bool,
+    /// Whether this node is in [`NodeTree::ancestor_absolutes`]: the set's
+    /// membership test without the lookup, for the two places that ask it of
+    /// every absolute box (a style site, the layout read-back).
+    pub(crate) abs_ancestor_recorded: bool,
+    /// Whether this node's Taffy style currently carries a size baked from a
+    /// **non-parent ancestor's** padding box
+    /// (`OutOfFlowKind::AncestorAbsolute`) — so that a box which stops
+    /// resolving against an ancestor with no restyle of its own (a box
+    /// between them became `display: contents`) can be put back. Only ever
+    /// set on a node in [`NodeTree::ancestor_absolutes`].
+    pub(crate) abs_ancestor_baked: bool,
     /// Whether this node is a CSS pseudo-element (::before or ::after).
     /// Pseudo-element nodes are synthetic children created during style resolution
     /// and are cleaned up before re-resolution to avoid duplicates.
@@ -1380,6 +1391,8 @@ impl Node {
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
             on_abs_chain: false,
+            abs_ancestor_recorded: false,
+            abs_ancestor_baked: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1447,6 +1460,8 @@ impl Node {
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
             on_abs_chain: false,
+            abs_ancestor_recorded: false,
+            abs_ancestor_baked: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1513,6 +1528,8 @@ impl Node {
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
             on_abs_chain: false,
+            abs_ancestor_recorded: false,
+            abs_ancestor_baked: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1577,6 +1594,8 @@ impl Node {
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
             on_abs_chain: false,
+            abs_ancestor_recorded: false,
+            abs_ancestor_baked: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -2503,12 +2522,12 @@ pub struct NodeTree {
     /// `resolve_layout` resolves, computes and reads once more before it
     /// returns.
     pub(crate) abs_resolve_owed: bool,
-    /// The nodes of [`Self::ancestor_absolutes`] whose Taffy style currently
-    /// carries a size baked from a **non-parent ancestor's** padding box
-    /// (`OutOfFlowKind::AncestorAbsolute`) — so that one which stops
-    /// resolving against an ancestor with no restyle of its own (a box
-    /// between them became `display: contents`) can be put back.
-    pub ancestor_baked: BTreeSet<RawNodeId>,
+    /// Whether, since the last layout read-back began, a box's position or
+    /// a scroll offset was written **after** that read-back placed the
+    /// absolute boxes: an anonymous block box read back, an atomic inline
+    /// moved by its inline formatting context, a scroll offset clamped.
+    /// `out_of_flow::replace_all` has nothing to do when none was.
+    pub(crate) abs_late_moves: bool,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
@@ -2977,7 +2996,7 @@ impl NodeTree {
             placed_absolutes: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
-            ancestor_baked: BTreeSet::new(),
+            abs_late_moves: false,
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),

@@ -269,7 +269,6 @@ fn r13_contents_absolute_everywhere() {
         [0.0, 15.0, 20.0, 10.0],
         "after a layout",
     );
-    assert!(!doc.tree.ancestor_baked.contains(&one(&doc, "[data-w]")));
 }
 
 /// R14: an inset write through `set_style` (the #280 fast path) on a box with

@@ -341,8 +341,8 @@ impl ContainingBox {
 }
 
 /// Bake `node_id`'s out-of-flow size into a Taffy style a site has just
-/// rebuilt from `computed_style`, and keep [`NodeTree::ancestor_absolutes`] and
-/// [`NodeTree::ancestor_baked`] telling the truth about it.
+/// rebuilt from `computed_style`, and keep [`NodeTree::ancestor_absolutes`]
+/// and the node's `abs_ancestor_baked` flag telling the truth about it.
 ///
 /// Call this from **every** site that rebuilds a Taffy style out of
 /// `ComputedStyle` — `apply_stylo_styles_to_taffy`, `tick_transitions`,
@@ -374,18 +374,20 @@ pub(crate) fn bake_at_style_site(
         }
     }
     // The style handed in was built from the computed values, so a box that
-    // is not ancestor-resolved now carries no ancestor's size: it leaves both
-    // sets. Every other node — nearly all of them — pays two `is_empty`.
-    if ancestor {
-        tree.ancestor_absolutes.insert(node_id);
-    } else if !tree.ancestor_absolutes.is_empty() {
-        tree.ancestor_absolutes.remove(&node_id);
+    // is not ancestor-resolved now carries no ancestor's size. The set is
+    // touched only when the answer changed; every other node — nearly all of
+    // them — pays a flag compare.
+    let recorded = node.abs_ancestor_recorded;
+    if ancestor != recorded {
+        if ancestor {
+            tree.ancestor_absolutes.insert(node_id);
+        } else {
+            tree.ancestor_absolutes.remove(&node_id);
+        }
     }
-    if baked_against_ancestor {
-        tree.ancestor_baked.insert(node_id);
-    } else if !tree.ancestor_baked.is_empty() {
-        tree.ancestor_baked.remove(&node_id);
-    }
+    let node = &mut tree.nodes[node_id];
+    node.abs_ancestor_recorded = ancestor;
+    node.abs_ancestor_baked = baked_against_ancestor;
 }
 
 /// The #280 inset fast path has just written new insets to `node_id`'s
@@ -409,7 +411,7 @@ pub(crate) fn rebake_after_inset_write(
     // Only a style that carries a bake: one that carries none has a
     // containing block not yet laid out, which the pass after the compute
     // bakes for.
-    if !tree.ancestor_baked.contains(&node_id) {
+    if !node.abs_ancestor_baked {
         return;
     }
     let Some(cb) = ContainingBox::of_ancestor(tree, cb) else {
@@ -436,8 +438,10 @@ pub(crate) fn note_kind_at_read(
     kind: Option<OutOfFlowKind>,
 ) {
     if matches!(kind, Some(OutOfFlowKind::AncestorAbsolute(_)))
-        && tree.ancestor_absolutes.insert(node_id)
+        && !tree.nodes[node_id].abs_ancestor_recorded
     {
+        tree.nodes[node_id].abs_ancestor_recorded = true;
+        tree.ancestor_absolutes.insert(node_id);
         tree.abs_resolve_owed = true;
     }
 }
@@ -446,6 +450,7 @@ pub(crate) fn note_kind_at_read(
 /// flags. Called before `read_layout_results` walks the document.
 pub(crate) fn begin_read(tree: &mut NodeTree) {
     tree.placed_absolutes.clear();
+    tree.abs_late_moves = false;
     let mut marked = std::mem::take(&mut tree.abs_chain_marked);
     for id in marked.drain(..) {
         if let Some(node) = tree.nodes.get_mut(id) {
@@ -862,12 +867,15 @@ fn replace(tree: &mut NodeTree, node_id: RawNodeId, kind: OutOfFlowKind) -> bool
 /// layouts — but some things on its chain are written **later**: an
 /// anonymous block box's own read-back, the position an inline formatting
 /// context gives an atomic inline (`inline-block`), and a scroll offset the
-/// post-layout clamp pulls in. A box whose chain holds none of them is
-/// already right and is not written. Run once, after all three, in the order
-/// the boxes were read — parents first, so a box inside another placed box
-/// sees it where it ends up.
+/// post-layout clamp pulls in. Each of those three writers says when it
+/// actually moved something (`NodeTree::abs_late_moves`); a layout in which
+/// none did — nearly every relayout — has every box where the read-back put
+/// it and looks at none here. Otherwise every placed box is compared, and one
+/// whose chain did not move is not written. Run once, after all three, in
+/// the order the boxes were read — parents first, so a box inside another
+/// placed box sees it where it ends up.
 pub(crate) fn replace_all(tree: &mut NodeTree) {
-    if tree.placed_absolutes.is_empty() {
+    if tree.placed_absolutes.is_empty() || !tree.abs_late_moves {
         return;
     }
     let placed = std::mem::take(&mut tree.placed_absolutes);
@@ -964,7 +972,10 @@ impl RinchDocument {
             if !live {
                 // Freed, or no longer absolute: a superset entry to drop.
                 self.tree.ancestor_absolutes.remove(&id);
-                self.tree.ancestor_baked.remove(&id);
+                if let Some(node) = self.tree.nodes.get_mut(id) {
+                    node.abs_ancestor_recorded = false;
+                    node.abs_ancestor_baked = false;
+                }
                 continue;
             }
             let node = &self.tree.nodes[id];
@@ -976,7 +987,7 @@ impl RinchDocument {
                 continue;
             }
             let kind = out_of_flow_kind(&self.tree, id);
-            let was_baked = self.tree.ancestor_baked.contains(&id);
+            let was_baked = node.abs_ancestor_baked;
             let Ok(current) = self.tree.taffy.style(taffy_id) else {
                 continue;
             };
@@ -1008,19 +1019,22 @@ impl RinchDocument {
                 // nothing here is this pass's business any more.
                 _ => {
                     self.tree.ancestor_absolutes.remove(&id);
+                    self.tree.nodes[id].abs_ancestor_recorded = false;
                     continue;
                 }
             };
-            let differs = !same_baked_fields(&next, current);
-            if baked {
-                self.tree.ancestor_baked.insert(id);
-            } else {
-                self.tree.ancestor_baked.remove(&id);
-                self.tree.ancestor_absolutes.remove(&id);
-            }
-            if differs {
+            let rewritten = (!same_baked_fields(&next, current)).then(|| {
                 let mut full = current.clone();
                 copy_baked_fields(&mut full, &next);
+                full
+            });
+            let node = &mut self.tree.nodes[id];
+            node.abs_ancestor_baked = baked;
+            if !baked {
+                node.abs_ancestor_recorded = false;
+                self.tree.ancestor_absolutes.remove(&id);
+            }
+            if let Some(full) = rewritten {
                 let _ = self.tree.taffy.set_style(taffy_id, full);
                 // The root compute does not reach a box inside an atomic
                 // inline (#661).

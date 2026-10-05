@@ -1089,6 +1089,9 @@ impl RinchDocument {
         }
         for (node_id, max_scroll) in clamps {
             self.tree.nodes[node_id].scroll_offset.1 = max_scroll;
+            // An absolute box placed past this scroller summed the old
+            // offset (`out_of_flow::replace_all`).
+            self.tree.abs_late_moves = true;
             // Queue a deferred scroll notification so the clamp isn't a silent
             // mutation (#144). Coalesce per node (last value wins): layout can
             // resolve more than once per frame, and a consumer must see one
@@ -1130,6 +1133,9 @@ impl RinchDocument {
         if node.layout != new_layout {
             node.layout = new_layout;
             self.tree.paint_dirty_nodes.push(anon_id);
+            // Read back after the element walk placed the absolute boxes
+            // (`out_of_flow::replace_all`).
+            self.tree.abs_late_moves = true;
         }
     }
 
@@ -1424,6 +1430,7 @@ impl RinchDocument {
                     )
                 {
                     self.tree.placed_absolutes.push((node_id, kind));
+                    self.tree.perf.bump(crate::perf::Counter::AbsBoxesVisited);
                     if let Some((x, y)) = crate::out_of_flow::place_absolute(
                         &mut self.tree,
                         node_id,
