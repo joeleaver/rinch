@@ -78,6 +78,9 @@ web-sys = { version = "0.3", features = [
     # (`images.rs`): an `<img>` whose `src` scheme the app registered is shown
     # from one.
     "BlobPropertyBag", "Url",
+    # Files dragged onto an editor from outside the page, offered to the app's
+    # `EditorHandle::on_image_input` (`on_drop` in editor_input.rs).
+    "DragEvent",
 ] }
 
 # Browser-driven tests for `<style>` injection (#155): they need a real
@@ -101,9 +104,11 @@ wasm-bindgen-futures = "0.4"
 # The freeze fixture (rv6_frozen_keys) forges a peer's oversized-table update through
 # the collab adapter's test seam rather than linking yrs here.
 rinch-editor-collab = { workspace = true, features = ["test-util"] }
-# `HTMLImageElement.decode()` / `naturalWidth` in tests/image_sources.rs: that
-# the browser really decodes what an app's image loader answered with.
-web-sys = { version = "0.3", features = ["HtmlImageElement"] }
+# `HTMLImageElement.decode()` / `naturalWidth` in tests/image_sources.rs (the
+# browser really decodes what an app's image loader answered with); a synthetic
+# `drop` carrying a `File`, and a `File` to put on a `paste`
+# (tests/editor_image_input.rs).
+web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "HtmlImageElement"] }
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which
