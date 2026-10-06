@@ -502,3 +502,27 @@ fn an_inline_element_around_a_block_joins_its_line_past_the_limit() {
     assert_eq!(read(2), ["a", "d", "e", "f", "g"]);
     assert_eq!(read(html_reader_max_depth() + 5), ["ad", "e", "fg"]);
 }
+
+/// The same for structure, where what follows the unclosed elements closes
+/// back under the depth limit: the document is the one read with three open.
+/// (Lines alone do not see an `<li>` left open around the next `<li>`, or a
+/// row closed in the wrong table.)
+#[test]
+fn unclosed_elements_change_no_structure_however_many() {
+    let shapes = [
+        "<ul><li>{S}a<li>b<li>c</ul>d",
+        "<table><tr><td>{S}a<td>b<tr><td>c</table>d",
+        "<p>o<table><tr><td>{S}x<div>y</div>z</td></tr></table>w",
+        "<table><tr><td>o<table><tr><td>{S}a<tr><td>b</table>c</td><td>e</td></tr></table>d",
+        "<dl><dt>{S}a<dd>b<dt>c</dl>d",
+        "<table><tr><td>{S}a<tbody><tr><td>b</table>c",
+        "<ul><li>k<ol><li>{S}a<li>b</ol><li>c</ul>d",
+    ];
+    for shape in shapes {
+        let read = |n: usize| node_to_html(&load(&shape.replace("{S}", &"<span>".repeat(n))));
+        let want = read(3);
+        for n in [html_reader_max_depth() + 60, 1000] {
+            assert_eq!(read(n), want, "{shape} with {n} <span>");
+        }
+    }
+}
