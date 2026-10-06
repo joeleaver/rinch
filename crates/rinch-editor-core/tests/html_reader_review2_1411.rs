@@ -517,6 +517,10 @@ fn unclosed_elements_change_no_structure_however_many() {
         "<dl><dt>{S}a<dd>b<dt>c</dl>d",
         "<table><tr><td>{S}a<tbody><tr><td>b</table>c",
         "<ul><li>k<ol><li>{S}a<li>b</ol><li>c</ul>d",
+        // An `<li>` in a cell does not end the item the table is in, and a
+        // `<div>` in a `<button>` does not end the `<p>` around it.
+        "<ul><li>k<table><tr><td>{S}a<li>b</td></tr></table>m<li>c</ul>d",
+        "<p>o<button>{S}x<div>y</div>z</button>w<p>v",
     ];
     for shape in shapes {
         let read = |n: usize| node_to_html(&load(&shape.replace("{S}", &"<span>".repeat(n))));
