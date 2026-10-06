@@ -3687,7 +3687,9 @@ HTML's rules for parsing dimension values
 100px, `"50%"` a percentage, `".5"`, `"+1"` and `"50*"` errors — Chrome 153's
 answers), as a declaration block on `Node::presentational_hints` that
 `synthesize_presentational_hints_for_legacy_attributes` hands Stylo at
-`CascadeLevel::PresHints`, below every author rule. A write or removal of
+`CascadeLevel::PresHints`: below every author rule (a `*` rule, a layered
+one, `width: auto`) and above the UA sheet's normal rules; `revert` drops the
+hint and `revert-layer` keeps it. A write or removal of
 either attribute on one of the three rebuilds the block
 (`RinchDocument::sync_presentational_hints`) and restyles that element alone
 (`note_attribute_change`); any other attribute on them, and `width`/`height`
@@ -3701,7 +3703,15 @@ an image with no natural size (not loaded, or failed) —
 `<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
 before the image arrives — and a loaded image's own ratio replaces it. A
 `<canvas>`'s two attributes stay its bitmap size, read as integers (#1173).
-Not Chrome's: an iframe's hinted size is its border box, since every rinch
+Not Chrome's: the mapped ratio cannot be switched off — an author
+`aspect-ratio` is not read (#1286), so `aspect-ratio: auto; width: 200px;
+height: auto` on an unloaded hinted image is 200x100 where Chrome gives
+200x0; an unloaded or failed image with a non-empty `alt` reserves its
+attributes' 100x50 where Chrome lays out the alt text (48x18, both attributes
+ignored), and a failed one with one attribute and no `alt` is 100x0 where
+Chrome draws its 16x16 broken-image box; an out-of-flow image with an `auto`
+dimension fills its containing block (#1432, older than the hints); an
+iframe's hinted size is its border box, since every rinch
 box is (#1278), so it is 4px smaller than Chrome's; a percentage `height`
 attribute does nothing on an inline-level image, as a CSS one does not
 (#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300

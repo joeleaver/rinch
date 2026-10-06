@@ -99,6 +99,10 @@ mod tests {
         assert_eq!(parse_html_dimension("7.%"), Some(Percentage(7.0)));
         assert_eq!(parse_html_dimension("7 %"), Some(Length(7.0)));
         assert_eq!(parse_html_dimension("\u{a0}5"), None);
+        // Chrome 153: U+000B is not ASCII whitespace here (0 wide).
+        assert_eq!(parse_html_dimension("\x0B50"), None);
+        assert_eq!(parse_html_dimension("50% "), Some(Percentage(50.0)));
+        assert_eq!(parse_html_dimension("50%%"), Some(Percentage(50.0)));
         assert_eq!(parse_html_dimension(&"9".repeat(400)), None);
     }
 }

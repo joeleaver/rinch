@@ -46,11 +46,17 @@ img { src: "photo.jpg", width: "640", height: "480" }
 ```
 
 Each is a length in CSS pixels (`"640"`) or a percentage (`"50%"`), and is a
-*presentational hint*: it has less weight than any CSS declaration, so a
-stylesheet rule or an inline `style` for `width`/`height` wins. Together they
+*presentational hint*: it has less weight than any declaration in your own
+CSS, so a stylesheet rule or an inline `style` for `width`/`height` wins (it
+still outranks the built-in browser-default sheet). Together they
 also give the image an aspect ratio until it loads, so the common responsive
 reset `img { width: 100%; height: auto }` keeps the right height from the
-first frame; once the image has loaded its own ratio is used. `<video>` reads
+first frame; once the image has loaded its own ratio is used. That ratio
+cannot be switched off: desktop reads no `aspect-ratio` property (#1286), so
+`aspect-ratio: auto` on such an image changes nothing, where a browser would
+drop the mapped ratio. And an image that has not loaded or failed reserves
+its attributes' box even with `alt` text, where a browser lays the alt text
+out instead. `<video>` reads
 the same two attributes with the same ratio, and `<iframe>` reads them with
 no ratio. The other legacy attributes (`hspace`, `vspace`, `border`, `align`,
 `<hr width>`, a table's `width`/`bgcolor`/…) still do nothing on desktop

@@ -3,7 +3,8 @@
 //!
 //! HTML maps both attributes to the `width` and `height` properties (the
 //! *dimension attributes*), read by the rules for parsing dimension values,
-//! at the lowest author-level precedence: any CSS declaration wins. On an
+//! below every author declaration, which therefore wins (and above the UA
+//! sheet's normal rules). On an
 //! `<img>` and a `<video>` the pair also maps to `aspect-ratio: auto w / h`,
 //! which gives an image that has not loaded (or failed to) a ratio, and which
 //! a loaded image's own ratio replaces. Before the fix rinch read neither:
@@ -135,7 +136,7 @@ fn the_attribute_is_read_by_the_dimension_rules() {
 fn any_author_declaration_wins() {
     // Inline style.
     check("img", BOTH, "width: 200px", (200.0, 50.0));
-    // A stylesheet rule of the lowest specificity there is.
+    // A type-selector rule in a stylesheet.
     let mut doc = RinchDocument::new();
     doc.load_css("img { width: 60px }");
     let body = doc.body();

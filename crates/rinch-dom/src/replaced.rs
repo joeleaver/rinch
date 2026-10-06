@@ -51,7 +51,11 @@
 //! before its image arrives. A loaded image's own ratio replaces it. rinch
 //! has no `aspect-ratio` property; the ratio goes from the attributes to the
 //! measure context, and an author `aspect-ratio` declaration still does
-//! nothing.
+//! nothing (#1286) — so it cannot switch the mapped ratio off either, where
+//! Chrome 153 gives `aspect-ratio: auto; width: 200px; height: auto` on an
+//! unloaded hinted image 200x0. The hints sit below every author rule and
+//! above the UA sheet's normal rules. An unloaded or failed image with `alt`
+//! text still reserves its attributes' box (Chrome lays out the alt text).
 //!
 //! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
 //! `<textarea>` (#1195): it is not sized here (its measure stays

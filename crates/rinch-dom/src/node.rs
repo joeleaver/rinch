@@ -1105,7 +1105,8 @@ pub struct Node {
     pub style_attribute_cache: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
     /// The declarations this element's presentational attributes map to
     /// (#684): `width` / `height` on an `<img>`, `<video>` or `<iframe>`.
-    /// Stylo cascades them below every author rule
+    /// Stylo cascades them below every author rule and above the UA sheet's
+    /// normal rules
     /// (`synthesize_presentational_hints_for_legacy_attributes`). Rebuilt by
     /// `RinchDocument::sync_presentational_hints` on each write or removal of
     /// a mapped attribute; `None` when no attribute maps to anything.
