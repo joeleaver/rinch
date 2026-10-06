@@ -2269,9 +2269,24 @@ a WM grab, a native menu or modal taking the keyboard, an embed host or the MCP
 channel that sends no releases at all) stranded it, killing that key on that
 node **for the rest of the session**, silently. A `WindowFocus(false)` clear
 (landed with #147, pinned by nothing until #463) bounds it, and on Android it was
-the *only* clear, since that backend translates no `KeyAction::Up` at all
-(#479 — whose activation-latch half this closes, leaving it about release
-*visibility*). But a second event can be swallowed too; a fact carried **by the
+the *only* clear until #479, since that backend translated no `KeyAction::Up`.
+It does now: `shell/android_key.rs` (`KeyTranslator`, host-compiled and
+unit-tested, since no host test compiles `android_runtime`) turns `ACTION_UP`
+into a `KeyUp` whose `logical_key` is the string **its press was reported
+with** — remembered per `(device, key code)`, so Shift+A with Shift released
+first comes up as `"A"` and a dead-key `"é"` comes up as `"é"`, where desktop
+and the web spell a release from the modifiers held at the release; a release
+whose press was never seen is spelled from the key character map. A release
+never reads or clears the pending dead-key accent, which waits for the next
+*press*. Text the soft keyboard commits goes through `InputConnection`
+(`android_ime`) and has no key events; a raw key event an IME sends
+(`sendKeyEvent`, typically Backspace and Enter, which
+`RinchInputConnection.java` forwards to the activity's input queue) comes
+through the same translation as a hardware key, release included — so its
+release is now a `KeyUp` too, unmeasured on a device. An auto-repeat is spelled
+from what it types, so after a dead key (`"é"` down, `"e"` repeats, `"é"` up)
+or a Shift released mid-hold a repeat is a down no release names (#1418):
+track held keys by `k.code`. But a second event can be swallowed too; a fact carried **by the
 press being judged** cannot. `RinchApp::press_is_fresh` is the one place that
 decides, and `Fresh` is authoritative *over* the latch — that is the repair, not
 a tie-break.
