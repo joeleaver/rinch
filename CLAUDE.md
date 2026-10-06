@@ -460,13 +460,19 @@ The pieces that follow from it:
   is the steps it moved: one for an append, none for a removal from the end,
   every step behind it otherwise (three writes each when only renumbered).
   Counted on `MockDomDocument`, appending to a 40-step stepper went from 1005
-  attribute reads and 126 attribute writes to 141 and 5, and growing one from 0
-  to 40 steps from 2650 writes to 278. Growing or shrinking one step at a time
+  attribute reads and 126 attribute writes to 142 and 4, and growing one from 0
+  to 40 steps from 2650 writes to 238. Growing or shrinking one step at a time
   is still quadratic in the three reads, and a `for` row edited in place still
   renumbers the steps behind it twice (an insertion, then a removal).
-  `crates/rinch-components/tests/stepper_cost_748.rs` pins the counts, and
-  `stepper::differential_tests` compares the pass with one that derives every
-  step, tree for tree, over random insert/remove/move/replace histories.
+  `crates/rinch-components/tests/stepper_cost_748.rs` pins the per-step
+  figures as differences between a 10-step and a 40-step stepper (three reads
+  per settled step, three writes per renumbered one, writes that do not grow
+  with the size) and the append and growth totals quoted here; the other
+  absolute counts are not pinned. `stepper::differential_tests` and
+  `stepper::extended_differential_tests` compare the pass with one that derives
+  every step, tree for tree, over random histories (insert, remove, move,
+  replace; nested steppers, stash and re-insert, moved wrappers and completed
+  blocks, re-render with new props).
 
 `RadioGroup::size` and the `Stepper` props are the same shape.
 

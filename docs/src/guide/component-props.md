@@ -756,6 +756,12 @@ the node it displaces) and by the implicit detach an insertion verb performs whe
 handed a node that already has a parent, which is what tells the container a
 child **moved away**.
 
+Because of that, a step's `state`, `step` and `disabled` are read when the step
+arrives or moves, not on every change to the list: change them through the
+`StepperStep` props (which re-renders the step), not by writing `data-state`,
+`data-step` or `disabled` on a mounted step by hand or through a reactive root
+attribute.
+
 The removal half is handed the node the subtree *left* — its former parent —
 rather than the node that went, because a removed node is detached and after a
 `discard` may have been retired by the backend. A reorder inside one parent

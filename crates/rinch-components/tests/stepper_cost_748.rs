@@ -155,9 +155,28 @@ fn appending_a_step_writes_nothing_to_the_steps_it_does_not_move() {
         costs[0],
         costs[1]
     );
-    assert!(
-        costs[0].writes() > 0,
-        "positive control: the new step itself is written"
+    // The absolute figures, as CLAUDE.md quotes them. The one new step is
+    // written four attributes (position, index, its marker as numbered here,
+    // who settled it) and its number.
+    assert_eq!(
+        (
+            costs[0].attribute_reads,
+            costs[0].attribute_writes,
+            costs[0].text_writes
+        ),
+        (52, 4, 1),
+        "appending to {SMALL} steps: {:?}",
+        costs[0]
+    );
+    assert_eq!(
+        (
+            costs[1].attribute_reads,
+            costs[1].attribute_writes,
+            costs[1].text_writes
+        ),
+        (142, 4, 1),
+        "appending to {LARGE} steps: {:?}",
+        costs[1]
     );
     assert_eq!(
         costs[1].reads() - costs[0].reads(),
@@ -357,4 +376,5 @@ fn growing_a_stepper_one_step_at_a_time_writes_in_proportion_to_its_size() {
         "#748: twenty more steps cost twice what ten more do — {a}, {b}, {c} \
          writes for 10, 20 and 40 steps"
     );
+    assert_eq!((a, b, c), (88, 138, 238), "the totals CLAUDE.md quotes");
 }
