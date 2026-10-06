@@ -290,10 +290,10 @@ fn an_end_tag_chrome_ignores_is_still_ignored() {
         "<p><strong>a</strong></p><table><tr><td><p><strong>bc</strong></p></td></tr></table>\
          <p><strong>d</strong></p>"
     );
-    // Well nested: nothing to do.
+    // Well nested: nothing to do. (Chrome: `a`, `b`, `cd`.)
     assert_eq!(
         html("<b>a<div>b</div>c</b>d"),
-        "<p><strong>a</strong></p><p><strong>b</strong></p><p><strong>c</strong></p><p>d</p>"
+        "<p><strong>a</strong></p><p><strong>b</strong></p><p><strong>c</strong>d</p>"
     );
 }
 
