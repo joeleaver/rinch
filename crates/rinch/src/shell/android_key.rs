@@ -148,8 +148,27 @@ impl KeyTranslator {
                     repeat,
                 })
             }
-            // HEAD's behaviour, extracted unchanged: a release is not translated.
-            KeyPhase::Up => None,
+            KeyPhase::Up => {
+                // Nothing here reads or writes `combining_accent`: the accent
+                // waits for the next *press*.
+                let logical_key = match self.held.remove(&raw.id) {
+                    Some(pressed_as) => pressed_as,
+                    None => match raw.ch {
+                        MapChar::Unicode(ch) => Some(ch.to_string()),
+                        MapChar::CombiningAccent(_) | MapChar::None => None,
+                    },
+                };
+                let key = match (raw.key, &logical_key) {
+                    (Some(key), _) => key,
+                    (None, Some(_)) => KeyCode::Other,
+                    (None, None) => return None,
+                };
+                Some(PlatformEvent::KeyUp {
+                    key,
+                    logical_key,
+                    modifiers: raw.modifiers,
+                })
+            }
         }
     }
 }
