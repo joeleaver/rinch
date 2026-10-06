@@ -2221,3 +2221,126 @@ fn set_inner_html_over_scope_built_children_purges_their_minting_entries() {
         "set_inner_html left the replaced children's minting entries behind"
     );
 }
+
+// ── PROBE-733 (temporary) ───────────────────────────────────────────────────
+mod probe_733 {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// The issue's shape: lazy build through the row scope, then cache.
+    #[test]
+    fn probe_lazy_memo_row_is_lost() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let cache: Rc<RefCell<HashMap<u32, NodeHandle>>> = Rc::default();
+        let rows = Signal::new(vec![1u32]);
+        let c = cache.clone();
+        for_each_dom_typed(
+            &mut sc,
+            &body,
+            move || rows.get(),
+            |n: &u32| n.to_string(),
+            move |n: u32, s: &mut RenderScope| {
+                let hit = c.borrow().get(&n).cloned();
+                hit.unwrap_or_else(|| {
+                    let row = s.create_element("article");
+                    c.borrow_mut().insert(n, row.clone());
+                    row
+                })
+            },
+        );
+        assert_eq!(body_tags(&doc), ["article"]);
+        rows.set(vec![]);
+        rows.set(vec![1]);
+        eprintln!("PROBE lazy: body after re-add = {:?}", body_tags(&doc));
+        assert_eq!(body_tags(&doc), ["article"]);
+    }
+
+    /// Same shape but the row carries an effect: what survives where the node
+    /// survives (workaround through a parentless scope kept in the cache).
+    #[test]
+    fn probe_parentless_scope_workaround() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let cache: Rc<RefCell<HashMap<u32, (NodeHandle, RenderScope)>>> = Rc::default();
+        let rows = Signal::new(vec![1u32]);
+        let label = Signal::new(String::from("a"));
+        let c = cache.clone();
+        for_each_dom_typed(
+            &mut sc,
+            &body,
+            move || rows.get(),
+            |n: &u32| n.to_string(),
+            move |n: u32, s: &mut RenderScope| {
+                if let Some((row, _)) = c.borrow().get(&n) {
+                    return row.clone();
+                }
+                let d = s.doc_weak().upgrade().unwrap();
+                let mut keep = RenderScope::new(d, s.parent().node_id());
+                let row = {
+                    let _o = keep.push_owner();
+                    let row = keep.create_element("article");
+                    let r2 = row.clone();
+                    keep.create_effect(move || r2.set_attribute("data-l", &label.get()));
+                    row
+                };
+                c.borrow_mut().insert(n, (row.clone(), keep));
+                row
+            },
+        );
+        let id = cache.borrow()[&1].0.node_id();
+        rows.set(vec![]);
+        label.set("b".into());
+        rows.set(vec![1]);
+        eprintln!(
+            "PROBE keep: body={:?} attr={:?}",
+            body_tags(&doc),
+            doc.borrow().get_attribute(id, "data-l")
+        );
+        label.set("c".into());
+        eprintln!("PROBE keep: attr after={:?}", doc.borrow().get_attribute(id, "data-l"));
+        let d = growth(&doc, |i| rows.set(if i % 2 == 0 { vec![] } else { vec![1] }), 200);
+        eprintln!("PROBE keep: growth={d}");
+    }
+
+    /// The row-scope build with an effect: is the effect alive after the row left?
+    #[test]
+    fn probe_row_scope_effect_dies_with_the_row() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let cache: Rc<RefCell<HashMap<u32, NodeHandle>>> = Rc::default();
+        let rows = Signal::new(vec![1u32]);
+        let label = Signal::new(0u32);
+        let runs = Rc::new(std::cell::Cell::new(0u32));
+        let c = cache.clone();
+        let r = runs.clone();
+        for_each_dom_typed(
+            &mut sc,
+            &body,
+            move || rows.get(),
+            |n: &u32| n.to_string(),
+            move |n: u32, s: &mut RenderScope| {
+                let hit = c.borrow().get(&n).cloned();
+                let r = r.clone();
+                hit.unwrap_or_else(|| {
+                    let row = s.create_element("article");
+                    s.create_effect(move || {
+                        let _ = label.get();
+                        r.set(r.get() + 1);
+                    });
+                    c.borrow_mut().insert(n, row.clone());
+                    row
+                })
+            },
+        );
+        label.set(1);
+        eprintln!("PROBE fx: runs while mounted = {}", runs.get());
+        rows.set(vec![]);
+        rows.set(vec![1]);
+        label.set(2);
+        eprintln!("PROBE fx: runs after leave+return+write = {}", runs.get());
+    }
+}
