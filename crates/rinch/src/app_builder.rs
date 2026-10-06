@@ -176,6 +176,48 @@ where
         self
     }
 
+    /// Answer for an image URL scheme the app alone can resolve.
+    ///
+    /// Every `<img src>` and `background-image: url(…)` whose source starts
+    /// with `scheme:` is loaded by `loader`; every other source (a path, and
+    /// `http(s)` with the `image-network` feature) still goes to rinch's
+    /// default loader, so there is nothing to forward. Call it once per
+    /// scheme; a second call for the same scheme replaces the first.
+    ///
+    /// The loader returns the picture's **encoded** bytes (a PNG, JPEG, GIF or
+    /// WebP file's contents; rinch decodes them) and is called on a background
+    /// thread spawned for that load, never the UI thread, so it may block on
+    /// I/O. A failure is cached for that source: when the bytes can arrive
+    /// later, answer [`ImageLoadResult::Failed`](crate::image::ImageLoadResult::Failed)
+    /// now and call [`rinch::image::reload_image`](crate::image::reload_image)
+    /// with the same source once they are there. See
+    /// [`ImageLoader`](crate::image::ImageLoader).
+    ///
+    /// ```ignore
+    /// use rinch::image::ImageLoadResult;
+    /// use rinch::prelude::*;
+    ///
+    /// App::new(app)
+    ///     .image_scheme("myapp-blob", |src: &str| match blobs::read(src) {
+    ///         Some(bytes) => ImageLoadResult::Loaded(bytes),
+    ///         None => ImageLoadResult::Failed(format!("{src} is not here yet")),
+    ///     })
+    ///     .run();
+    /// ```
+    ///
+    /// The registration is process-wide and takes effect at this call
+    /// ([`register_image_scheme`](crate::image::register_image_scheme) is the
+    /// same thing without a builder, for an embedded or Android-only host), so
+    /// it covers every window the app opens.
+    ///
+    /// # Panics
+    ///
+    /// If `scheme` is not a URL scheme of two or more characters.
+    pub fn image_scheme(self, scheme: &str, loader: impl crate::image::ImageLoader) -> Self {
+        crate::image::register_image_scheme(scheme, loader);
+        self
+    }
+
     /// Set the full window configuration.
     ///
     /// [`title`](App::title) and [`size`](App::size) are applied *over* this,

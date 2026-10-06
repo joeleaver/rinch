@@ -239,6 +239,9 @@ impl RinchDocument {
             style_bloom_filled: Vec::new(),
         };
 
+        // `reload_image` reaches every live document by its key.
+        crate::image_cache::register_document(doc.doc_key);
+
         // Set up default file-based image loader
         doc.tree.image_loader = Some(std::sync::Arc::new(crate::image_cache::FileImageLoader));
 
@@ -1347,6 +1350,21 @@ impl RinchDocument {
         crate::image_cache::request_image_load(self.doc_key, src.to_string(), loader);
     }
 
+    /// Load `src` again in this document: what
+    /// [`reload_image`](crate::image_cache::reload_image) does to each live
+    /// document at its next layout, available directly to a host that holds
+    /// the document. See [`ImageCache::begin_reload`](crate::image_cache::ImageCache::begin_reload)
+    /// for what happens to a failed, decoded, loading or unknown source.
+    /// Nothing happens while the document has no loader.
+    pub fn reload_image(&mut self, src: &str) {
+        let Some(loader) = self.tree.image_loader.clone() else {
+            return;
+        };
+        if self.tree.image_cache.begin_reload(src) {
+            crate::image_cache::request_image_load(self.doc_key, src.to_string(), loader);
+        }
+    }
+
     /// Scan for background-image URLs that need loading and trigger async loads.
     pub fn request_background_image_loads(&mut self) {
         let Some(loader) = self.tree.image_loader.clone() else {
@@ -1381,7 +1399,19 @@ impl RinchDocument {
     /// let the software renderer's dirty-region path repaint some other node's
     /// rect and skip the freshly decoded background entirely.
     pub fn drain_pending_images(&mut self) -> bool {
+        // Sources `reload_image` named since the last drain are started first.
+        for src in crate::image_cache::take_pending_reloads(self.doc_key) {
+            self.reload_image(&src);
+        }
         let newly_decoded = self.tree.image_cache.drain_pending(self.doc_key);
+        // An answer that was in flight when its source was reloaded has been
+        // dropped by the drain; ask for the source again.
+        let retries = self.tree.image_cache.take_retries();
+        if let Some(loader) = self.tree.image_loader.clone() {
+            for src in retries {
+                crate::image_cache::request_image_load(self.doc_key, src, loader.clone());
+            }
+        }
         if newly_decoded.is_empty() {
             return false;
         }
