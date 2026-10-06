@@ -774,7 +774,7 @@ impl<'a> HtmlFragmentParser<'a> {
             self.last_open(&tag)
         };
         if let Some(found) = found
-            && self.nearest_scope(&barrier).is_none_or(|b| b <= found)
+            && self.nearest_scope(barrier).is_none_or(|b| b <= found)
         {
             self.close_to(found);
         }
