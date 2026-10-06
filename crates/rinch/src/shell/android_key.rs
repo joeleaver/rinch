@@ -28,8 +28,12 @@
 //! key's own release arrives between the two, and so can the release of any
 //! key held from before; neither is the character the accent is waiting for.
 //!
-//! The soft keyboard does not come through here at all: it speaks
-//! `InputConnection`, which is `android_ime`'s.
+//! Text the soft keyboard commits goes through `InputConnection`
+//! (`android_ime`) and has no key events. A raw key event an IME sends
+//! (`sendKeyEvent`, typically Backspace and Enter — `RinchInputConnection`
+//! forwards it to the activity's input queue) comes through the same
+//! translation as a hardware key, release included. That path has not been
+//! measured on a device.
 
 use std::collections::HashMap;
 
@@ -80,8 +84,10 @@ pub(crate) struct KeyTranslator {
     /// The `logical_key` each held key's press was reported with, by
     /// [`RawKey::id`]. An entry is written by a press that produced an event
     /// and taken by that key's release. One left behind by a release that
-    /// never arrived is replaced by the key's next press, so it is bounded by
-    /// the number of keys and cannot misspell a later keystroke.
+    /// never arrived is replaced by the key's next fresh press; until then it
+    /// stays, so a key next seen only as auto-repeats is still released under
+    /// the stranded spelling. Nothing else clears it (not a window blur), so
+    /// its size is bounded by the keys whose release was lost, per device id.
     held: HashMap<(i32, u32), Option<String>>,
 }
 

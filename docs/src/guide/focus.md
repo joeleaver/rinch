@@ -481,8 +481,13 @@ whatever happened in between: `"W"` down with Shift held comes up as `"W"` even
 if Shift went up first, and a letter that combined with a dead key (`"é"`)
 comes up as that same string. A release whose press the app never saw (a key
 already held when the app came to the front) is spelled from the layout with
-the modifiers held at the release. The soft keyboard commits text and sends no
-releases.
+the modifiers held at the release. An auto-repeat is still spelled from what it
+types: after a dead key the press is `"é"`, the repeats are `"e"` and the
+release is `"é"`, so track held keys by `k.code` there too
+([#1418](https://github.com/joeleaver/rinch/issues/1418)). Text the
+soft keyboard commits goes through `InputConnection` and has no key events; a
+raw key event an IME sends (`sendKeyEvent`, typically Backspace and Enter)
+comes through the same translation as a hardware key, release included.
 
 Two things to know:
 
