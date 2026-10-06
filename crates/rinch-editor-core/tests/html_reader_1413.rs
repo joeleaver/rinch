@@ -297,6 +297,149 @@ fn an_end_tag_chrome_ignores_is_still_ignored() {
     );
 }
 
+/// A formatting end tag does not reach out of the part of an `<svg>` that
+/// holds HTML (Chrome: `a` and `z`, both bold), however many elements are
+/// open in between; an HTML element that is only named like one is no such
+/// thing (Chrome: `y` is not bold).
+#[test]
+fn a_formatting_end_tag_stays_inside_a_drawing() {
+    for depth in [1, 7, 8, 9, html_reader_max_depth() + 40] {
+        let src = format!(
+            "<b>a<svg><desc>{}x</b>y{}</desc></svg>z",
+            "<span>".repeat(depth),
+            "</span>".repeat(depth)
+        );
+        assert_eq!(html(&src), "<p><strong>az</strong></p>", "{depth}");
+    }
+    assert_eq!(html("<b>a<desc>x</b>y"), "<p><strong>ax</strong>y</p>");
+    assert_eq!(
+        html("<b>a<desc><div>x</b>y</div></desc>z"),
+        "<p><strong>a</strong></p><p><strong>x</strong>y</p><p>z</p>"
+    );
+}
+
+/// An inline element that is not a formatting element, open inside the
+/// block when the end tag comes, ends with it (Chrome: `c` is neither bold
+/// nor red). A formatting element there goes on.
+#[test]
+fn an_inline_element_open_in_the_block_ends_with_the_formatting_element() {
+    let src = "<span style=\"color: rgb(255, 0, 0)\">";
+    let red = "<span style=\"color:rgb(255, 0, 0)\">";
+    assert_eq!(
+        html(&format!("<b>a<div>{src}b</b>c</span>d</div>e")),
+        format!("<p><strong>a</strong></p><p>{red}<strong>b</strong></span>cd</p><p>e</p>")
+    );
+    assert_eq!(
+        html(&format!("<b>a<div>{src}<i>b</b>c</i>d</span>e</div>f")),
+        format!(
+            "<p><strong>a</strong></p>\
+             <p>{red}<em><strong>b</strong></em></span><em>c</em>de</p><p>f</p>"
+        )
+    );
+    assert_eq!(
+        html(&format!("<b>a<div><i>{src}b</b>c</span>d</i>e</div>f")),
+        format!(
+            "<p><strong>a</strong></p>\
+             <p>{red}<em><strong>b</strong></em></span><em>cd</em>e</p><p>f</p>"
+        )
+    );
+}
+
+/// The element that was ended leaves nothing behind in the tree: text read
+/// before and after the block it was open across is one run, and a heading
+/// right after it is that block's sibling.
+#[test]
+fn an_ended_formatting_element_leaves_the_tree_as_it_would_be_without_it() {
+    assert_eq!(
+        html("<div>x<b><div>y</b>z</div>w v</div>"),
+        "<p>x</p><p><strong>y</strong>z</p><p>w v</p>"
+    );
+    // The `<h2>` ends the `<h1>` it follows (it would nest in it otherwise).
+    assert_eq!(
+        html("<h1>t<b>a<div>b</b>c</div><h2>u</h2>"),
+        "<h1>t<strong>a</strong></h1><h1><strong>b</strong>c</h1><h2>u</h2>"
+    );
+    assert_eq!(
+        html("<i>x<b>a<div>b</b>c</div>d</i>e"),
+        "<p><em>x</em><em><strong>a</strong></em></p><p><em><strong>b</strong></em><em>c</em></p>\
+         <p><em>d</em>e</p>"
+    );
+}
+
+/// An inline element that holds a block ends no line itself: what it holds
+/// beside the block is on the line of what is beside the element. Chrome:
+/// `xy`, `z`, `vw`. (Each was a line of its own before #1413, which an
+/// empty block or a stray `</p>` inside an inline element would have made
+/// of every such element.)
+#[test]
+fn an_inline_element_around_a_block_ends_no_line() {
+    assert_eq!(
+        html("x<b>y<div>z</div>v</b>w"),
+        "<p>x<strong>y</strong></p><p><strong>z</strong></p><p><strong>v</strong>w</p>"
+    );
+    assert_eq!(
+        html("x<span>y<div>z</div>v</span>w"),
+        "<p>xy</p><p>z</p><p>vw</p>"
+    );
+    assert_eq!(
+        html("x<a href=\"https://e.x/\">y<div>z</div>v</a>w"),
+        "<p>x<a href=\"https://e.x/\">y</a></p><p><a href=\"https://e.x/\">z</a></p>\
+         <p><a href=\"https://e.x/\">v</a>w</p>"
+    );
+    assert_eq!(
+        html("x<o:p>y<div>z</div>v</o:p>w"),
+        "<p>xy</p><p>z</p><p>vw</p>"
+    );
+    // Chrome: `ab`, `cd`.
+    assert_eq!(
+        html("a<b>b<div></div>c</b>d"),
+        "<p>a<strong>b</strong></p><p><strong>c</strong>d</p>"
+    );
+    assert_eq!(
+        html("<div>a<b>b</p>c</b>d</div>"),
+        "<p>a<strong>b</strong></p><p><strong>c</strong>d</p>"
+    );
+    // Marks one inside the other, and a block of blocks.
+    assert_eq!(
+        html("x<b>y<i>z<blockquote><p>q</p><ul><li>r</li></ul></blockquote>v</i></b>w"),
+        "<p>x<strong>y</strong><em><strong>z</strong></em></p>\
+         <blockquote><p><em><strong>q</strong></em></p>\
+         <ul><li><p><em><strong>r</strong></em></p></li></ul></blockquote>\
+         <p><em><strong>v</strong></em>w</p>"
+    );
+    // The inner link is the text's.
+    assert_eq!(
+        html("<a href=\"https://e.x/1\">y<div>z<a href=\"https://e.x/2\">q</a></div></a>"),
+        "<p><a href=\"https://e.x/1\">y</a></p>\
+         <p><a href=\"https://e.x/1\">z</a><a href=\"https://e.x/2\">q</a></p>"
+    );
+}
+
+/// Inline children of a list side by side are one item, as they are one
+/// line in a browser (`AaBb`, then `Cc`): a misnested `</b>` there must not
+/// make two items of one line.
+#[test]
+fn inline_children_of_a_list_side_by_side_are_one_item() {
+    assert_eq!(
+        html("<ul><b>Aa</b>Bb<li>Cc</li></ul>"),
+        "<ul><li><p><strong>Aa</strong>Bb</p></li><li><p>Cc</p></li></ul>"
+    );
+    assert_eq!(
+        html("<b>x<ul>Aa</b>Bb<li>Cc</li></ul>"),
+        "<p><strong>x</strong></p>\
+         <ul><li><p><strong>Aa</strong>Bb</p></li><li><p>Cc</p></li></ul>"
+    );
+    assert_eq!(
+        html("<ul>Aa<span>Bb</span> Cc<li>Dd</li><i>Ee</i>Ff</ul>"),
+        "<ul><li><p>AaBb Cc</p></li><li><p>Dd</p></li><li><p><em>Ee</em>Ff</p></li></ul>"
+    );
+    // Blocks keep an item each.
+    assert_eq!(
+        html("<ul><div>Aa</div><div>Bb</div></ul>"),
+        "<ul><li><p>Aa</p></li><li><p>Bb</p></li></ul>"
+    );
+}
+
 /// A `</p>` with no `<p>` open is an empty `<p>` in a browser: the line
 /// ends there. It is no line of its own here (an empty paragraph would be a
 /// blank line, which a browser does not show for it).

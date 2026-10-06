@@ -766,6 +766,7 @@ impl<'a> HtmlFragmentParser<'a> {
         let table_part = is_table_part(&tag);
         let special = is_special(&tag);
         let formatting = is_formatting(&tag);
+        let in_foreign = self.foreign > 0;
         // What an end tag does not reach across.
         let barrier = |open: &str| match open {
             "table" => tag != "table",
@@ -776,10 +777,10 @@ impl<'a> HtmlFragmentParser<'a> {
             }
             // A formatting element's end tag reaches across a block
             // (`end_under`), and not out of what HTML calls a scope.
-            _ if formatting => matches!(
-                open,
-                "applet" | "marquee" | "object" | "foreignobject" | "desc" | "annotation-xml"
-            ),
+            _ if formatting => {
+                matches!(open, "applet" | "marquee" | "object")
+                    || in_foreign && matches!(open, "foreignobject" | "desc" | "annotation-xml")
+            }
             "ul" | "ol" => tag == "li" || !special,
             _ => !special && is_special(open),
         };
