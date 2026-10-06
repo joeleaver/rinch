@@ -14,7 +14,9 @@
 #[cfg(feature = "serde")]
 pub mod doc_json;
 pub mod html;
+mod html_entities;
 mod html_integer;
+mod html_tree;
 #[cfg(feature = "markdown")]
 pub mod markdown;
 mod style_scan;
@@ -25,6 +27,8 @@ pub use doc_json::{DocMark, DocNode, JsonAttr};
 pub use html::{
     clipboard_slice, mark_dom_tag, node_dom_tag, node_to_html, slice_from_html, slice_to_html,
 };
+#[doc(hidden)]
+pub use html_tree::{html_reader_max_depth, html_reader_steps};
 #[cfg(feature = "markdown")]
 pub use markdown::{
     Construct, MarkdownError, doc_from_markdown, doc_from_markdown_strict, doc_to_markdown,

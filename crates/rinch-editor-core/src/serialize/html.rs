@@ -9,14 +9,26 @@
 //! explicitly, mirroring ProseMirror's per-type `toDOM`/`parseDOM`.
 //!
 //! HTML is a **lossy clipboard interchange** — the durable, total format is
-//! [`super::doc_json`]. The parse direction is a **whitelist**: unknown tags,
-//! marks, and attributes are dropped; `<script>`/`<iframe>`/`<object>`/`<embed>`
-//! never materialize; `javascript:`/`vbscript:` URLs are stripped. This kills the
-//! audit's raw-DOM-paste hole.
+//! [`super::doc_json`]. The parse direction is a **whitelist** of what a
+//! document can hold: an element the schema has no node or mark for gives
+//! none, unknown attributes are dropped, `<script>`/`<iframe>`/`<object>`/`<embed>`
+//! never materialize, and `javascript:`/`vbscript:` URLs are stripped. This
+//! kills the audit's raw-DOM-paste hole.
 //!
-//! The zero-dependency tokenizer is salvaged from `rinch/src/app/html_parser.rs`.
+//! It is **total about text** (#1397): no markup is refused, the text of
+//! every element it reads is in what [`slice_from_html`] returns, and
+//! comments, `<style>`, `<script>` and `<head>` give none. (It reads no CSS,
+//! so text a stylesheet hides is read.)
+//! An element the reader has no node or mark for is read through, for its
+//! content. Not read: what is not text content (an `<input>`'s value, a
+//! `<select>`'s options, an image's `alt` when the image is refused), the
+//! fallback content of embedded content (`<object>`, `<video>`, `<canvas>`),
+//! and `<svg>` and `<math>`.
+//!
+//! The tree builder is [`super::html_tree`], zero-dependency.
 
 use super::html_integer::{parse_html_clamped_non_negative_integer, parse_html_integer};
+use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::pos::Pos;
@@ -176,11 +188,11 @@ fn block_tags(node: &Node) -> (String, String) {
 
 /// The attribute naming a task list (`<ul>`) or a task item (`<li>`), and
 /// its values: TipTap's markup, which copy-out writes and paste-in reads.
-const TASK_TYPE: &str = "data-type";
+pub(super) const TASK_TYPE: &str = "data-type";
 const TASK_LIST: &str = "taskList";
 const TASK_ITEM: &str = "taskItem";
 /// A task item's `checked` attribute: `"true"` or `"false"`.
-const TASK_CHECKED: &str = "data-checked";
+pub(super) const TASK_CHECKED: &str = "data-checked";
 
 /// The ` style="text-align:…"` fragment for a textblock's `text_align` attribute,
 /// or an empty string for the default (`left`) or an unrecognized value. Whitelisted
@@ -340,13 +352,20 @@ fn escape_attr(s: &str) -> String {
 /// textblock's content continues the line it is pasted on and the last one
 /// takes the text after the caret, while everything between keeps its
 /// structure. An edge that reaches no textblock (a rule, a table) is closed.
-/// Unknown tags/marks/attrs are dropped; dangerous elements never
-/// materialize.
+///
+/// It does not fail on markup, and the content is always valid: what the
+/// reader has no node for is read through for its text (an element that holds
+/// a block is a container of blocks, any other is inline), table parts with
+/// no `<table>` around them are a table, and what has no place in a table
+/// goes in front of it. Unknown marks and attributes are dropped; dangerous
+/// elements never materialize. The only errors are a schema with no
+/// paragraph or list item type, and attributes the schema refuses.
 ///
 /// [`Transaction::replace_selection`]: crate::state::Transaction::replace_selection
 pub fn slice_from_html(schema: &Schema, html: &str) -> Result<Slice, EditorError> {
-    let forest = parse_html_fragment(html);
+    let mut forest = HtmlFragmentParser::new(html).parse();
     let parser = HtmlParser::new(schema)?;
+    parser.mark_blocks(&mut forest);
     let blocks = parser.parse_blocks(&forest)?;
     if blocks.is_empty() {
         return Ok(Slice::empty());
@@ -387,6 +406,14 @@ fn edge_depth(mut node: Option<&Node>, next: impl Fn(&Node) -> Option<&Node>) ->
     0
 }
 
+/// The schema's table node types, when it has all four.
+struct TableTypes<'a> {
+    table: &'a NodeType,
+    row: &'a NodeType,
+    cell: &'a NodeType,
+    header: &'a NodeType,
+}
+
 /// Holds the schema and the reverse tag→type lookup tables, built once per parse.
 struct HtmlParser<'a> {
     schema: &'a Schema,
@@ -398,6 +425,40 @@ struct HtmlParser<'a> {
     marks: HashMap<&'a str, &'a MarkType>,
     paragraph: &'a NodeType,
     list_item: &'a NodeType,
+    tables: Option<TableTypes<'a>>,
+    code_block: Option<&'a NodeType>,
+    hard_break: Option<&'a NodeType>,
+}
+
+/// The textblock that inline content between blocks becomes: a paragraph
+/// (`None`), or the heading (say) whose element holds the blocks.
+type LooseAs<'w> = Option<(&'w NodeType, &'w Attrs)>;
+
+/// Inline content being gathered.
+#[derive(Default)]
+struct Inline {
+    nodes: Vec<Node>,
+    /// Whitespace met between two inline elements at block level; it is
+    /// content only if more inline content follows it.
+    space: Option<String>,
+}
+
+/// The blocks [`HtmlParser::parse_block_refs`] is making of some nodes.
+#[derive(Default)]
+struct Building {
+    blocks: Vec<Node>,
+    /// Inline content since the last block.
+    loose: Inline,
+    /// See [`Parsed::blank`].
+    blank: Vec<Node>,
+}
+
+/// What [`HtmlParser::parse_block_refs`] made of some nodes.
+struct Parsed {
+    blocks: Vec<Node>,
+    /// When there are no blocks: the whitespace the nodes hold directly,
+    /// which is the content of the line they are (`<div>&nbsp;</div>`).
+    blank: Vec<Node>,
 }
 
 impl<'a> HtmlParser<'a> {
@@ -427,6 +488,23 @@ impl<'a> HtmlParser<'a> {
         let list_item = schema
             .node_type("list_item")
             .ok_or_else(|| EditorError::HtmlParse("schema has no 'list_item' type".into()))?;
+        let tables = match (
+            schema.node_type("table"),
+            schema.node_type("table_row"),
+            schema.node_type("table_cell"),
+            schema.node_type("table_header_cell"),
+        ) {
+            (Some(table), Some(row), Some(cell), Some(header)) => Some(TableTypes {
+                table,
+                row,
+                cell,
+                header,
+            }),
+            _ => None,
+        };
+        let hard_break = schema
+            .node_type("hard_break")
+            .filter(|nt| nt.is_inline() && nt.is_leaf());
         Ok(Self {
             schema,
             block,
@@ -434,110 +512,330 @@ impl<'a> HtmlParser<'a> {
             marks,
             paragraph,
             list_item,
+            tables,
+            code_block: schema.node_type("code_block"),
+            hard_break,
         })
     }
 
-    /// True if `tag` should be parsed as inline content at block level.
-    fn is_inline_tag(&self, tag: &str) -> bool {
-        self.inline_leaf.contains_key(tag)
-            || self.marks.contains_key(tag)
-            || matches!(
+    /// Whether `tag` is a block: one of the schema's, or an HTML element that
+    /// is a line (or more) of its own.
+    fn is_block_tag(&self, tag: &str) -> bool {
+        self.block.contains_key(tag) || is_block_level(tag)
+    }
+
+    /// Set every element's `holds_block` under `nodes`. Returns whether any
+    /// of `nodes` is, or holds, a block.
+    fn mark_blocks(&self, nodes: &mut [ParsedNode]) -> bool {
+        let mut any = false;
+        for n in nodes {
+            if let ParsedNode::Element {
                 tag,
-                "span"
-                    | "font"
-                    | "abbr"
-                    | "cite"
-                    | "q"
-                    | "small"
-                    | "big"
-                    | "var"
-                    | "kbd"
-                    | "samp"
-                    | "time"
-                    | "bdi"
-                    | "bdo"
-            )
+                children,
+                holds_block,
+                ..
+            } = n
+            {
+                if is_dropped(tag) {
+                    continue;
+                }
+                *holds_block = self.mark_blocks(children);
+                any |= *holds_block || self.is_block_tag(tag);
+            }
+        }
+        any
     }
 
     fn parse_blocks(&self, nodes: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
-        let mut blocks: Vec<Node> = Vec::new();
-        let mut loose: Vec<Node> = Vec::new();
-        let wrapped = wrap_bare_list_items(nodes);
-        let nodes = wrapped.as_deref().unwrap_or(nodes);
-
-        for n in nodes {
-            match n {
-                ParsedNode::Text(t) => {
-                    // Inter-block whitespace is dropped; meaningful text accumulates.
-                    if !t.trim().is_empty() {
-                        self.parse_inline(std::slice::from_ref(n), &[], &mut loose)?;
-                    }
-                }
-                ParsedNode::Element {
-                    tag,
-                    children,
-                    attributes,
-                } => {
-                    if is_dropped(tag) {
-                        continue;
-                    }
-                    if let Some(nt) = self.block.get(tag.as_str()) {
-                        self.flush_loose(&mut loose, &mut blocks)?;
-                        blocks.push(self.build_block(nt, tag, n)?);
-                    } else if self.is_inline_tag(tag) && !self.holds_block(children) {
-                        self.parse_inline(std::slice::from_ref(n), &[], &mut loose)?;
-                    } else if self.marks.contains_key(tag.as_str())
-                        && let Some(mark) = self.mark_for(tag, attributes)?
-                    {
-                        // A mark around blocks (`<a href><h3>…</h3><p>…</p></a>`,
-                        // a card that is one link): the blocks stay blocks, and
-                        // the mark goes on the inline content inside them.
-                        self.flush_loose(&mut loose, &mut blocks)?;
-                        for block in self.parse_blocks(children)? {
-                            blocks.push(with_mark_inside(&block, &mark));
-                        }
-                    } else {
-                        // Unknown container (div, section, …): recurse as blocks.
-                        // So is an inline element around block elements: the
-                        // `<b style="font-weight:normal">` Google Docs wraps
-                        // everything it copies in would otherwise flatten its
-                        // lists and paragraphs into one bold line.
-                        let inner = self.parse_blocks(children)?;
-                        if inner.is_empty() {
-                            self.parse_inline(children, &[], &mut loose)?;
-                        } else {
-                            self.flush_loose(&mut loose, &mut blocks)?;
-                            blocks.extend(inner);
-                        }
-                    }
-                }
-            }
-        }
-        self.flush_loose(&mut loose, &mut blocks)?;
-        Ok(blocks)
+        let refs: Vec<&ParsedNode> = nodes.iter().collect();
+        Ok(self.parse_block_refs(&refs, None)?.blocks)
     }
 
-    /// Whether any element under `nodes` is a block of the schema.
-    fn holds_block(&self, nodes: &[ParsedNode]) -> bool {
-        nodes.iter().any(|n| match n {
-            ParsedNode::Element { tag, children, .. } => {
-                self.block.contains_key(tag.as_str()) || self.holds_block(children)
-            }
-            ParsedNode::Text(_) => false,
+    /// Read sibling nodes as blocks. Inline content between blocks is a
+    /// paragraph; a run of `<li>` with no list around it is a list, and a run
+    /// of table parts with no `<table>` around it a table.
+    ///
+    /// This and the functions it calls back through are kept small on
+    /// purpose: they recurse once per level of nesting, and an unoptimized
+    /// build gives every temporary of a function its own stack slot.
+    fn parse_block_refs(
+        &self,
+        nodes: &[&ParsedNode],
+        loose_as: LooseAs<'_>,
+    ) -> Result<Parsed, EditorError> {
+        let mut b = Building::default();
+        let mut i = 0;
+        while i < nodes.len() {
+            step();
+            i = self.read_block(nodes, i, loose_as, &mut b)?;
+        }
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        if !b.blocks.is_empty() {
+            b.blank.clear();
+        }
+        Ok(Parsed {
+            blocks: b.blocks,
+            blank: b.blank,
         })
     }
 
-    /// Flush accumulated inline content as a paragraph block.
+    /// Read `nodes[i]`, and the run of items or table parts it starts.
+    /// Returns the index of the node after what was read.
+    fn read_block(
+        &self,
+        nodes: &[&ParsedNode],
+        i: usize,
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<usize, EditorError> {
+        let n = nodes[i];
+        match n {
+            ParsedNode::Text(t) => self.read_loose_text(n, t, b)?,
+            ParsedNode::Element {
+                tag, attributes, ..
+            } => {
+                if is_dropped(tag) {
+                    return Ok(i + 1);
+                }
+                if tag == "li" {
+                    return self.read_bare_items(nodes, i, is_task_item(attributes), loose_as, b);
+                }
+                if self.tables.is_some() && is_table_part(tag) {
+                    return self.read_bare_table_parts(nodes, i, loose_as, b);
+                }
+                self.read_element(n, loose_as, b)?;
+            }
+        }
+        Ok(i + 1)
+    }
+
+    /// Text between blocks.
+    fn read_loose_text(
+        &self,
+        n: &ParsedNode,
+        t: &str,
+        b: &mut Building,
+    ) -> Result<(), EditorError> {
+        if !t.trim().is_empty() {
+            self.parse_inline(std::slice::from_ref(n), &[], &mut b.loose)?;
+        } else if !b.loose.nodes.is_empty() {
+            // Between two inline elements a browser shows this as one
+            // space; before a block, as nothing.
+            b.loose.space = Some(if t.contains('\u{a0}') {
+                t.to_string()
+            } else {
+                " ".to_string()
+            });
+        } else if b.blocks.is_empty() && !t.is_empty() {
+            b.blank.push(self.schema.text(t)?);
+        }
+        Ok(())
+    }
+
+    /// A list's items alone are what some sources put on the clipboard for a
+    /// selection inside one list: a run of them is a bullet list, or a task
+    /// list for task items.
+    fn read_bare_items(
+        &self,
+        nodes: &[&ParsedNode],
+        start: usize,
+        tasks: bool,
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<usize, EditorError> {
+        let mut end = start + 1;
+        while nodes.get(end).is_some_and(|next| match next {
+            ParsedNode::Text(t) => t.trim().is_empty(),
+            ParsedNode::Element {
+                tag, attributes, ..
+            } => tag == "li" && is_task_item(attributes) == tasks,
+        }) {
+            end += 1;
+        }
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        match self.block.get("ul") {
+            Some(list) => {
+                let list = self.build_list(list, &[], tasks, &nodes[start..end])?;
+                b.blocks.push(list);
+            }
+            // A schema with no bullet list: the items' content.
+            None => {
+                for item in &nodes[start..end] {
+                    if let ParsedNode::Element { children, .. } = item {
+                        b.blocks.extend(self.parse_blocks(children)?);
+                    }
+                }
+            }
+        }
+        Ok(end)
+    }
+
+    /// A run of table parts with no `<table>` around them.
+    fn read_bare_table_parts(
+        &self,
+        nodes: &[&ParsedNode],
+        start: usize,
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<usize, EditorError> {
+        let mut end = start + 1;
+        while nodes.get(end).is_some_and(|next| match next {
+            ParsedNode::Text(t) => t.trim().is_empty(),
+            ParsedNode::Element { tag, .. } => is_table_part(tag) || is_dropped(tag),
+        }) {
+            end += 1;
+        }
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        if let Some(tables) = &self.tables {
+            b.blocks
+                .extend(self.build_table(tables, &nodes[start..end], false)?);
+        }
+        Ok(end)
+    }
+
+    /// Read one element that is neither dropped, an `<li>` nor a table part.
+    fn read_element(
+        &self,
+        n: &ParsedNode,
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<(), EditorError> {
+        let ParsedNode::Element {
+            tag,
+            attributes,
+            children,
+            holds_block,
+        } = n
+        else {
+            return Ok(());
+        };
+        match self.block.get(tag.as_str()) {
+            Some(nt) if nt.name() == "table" => {
+                if let Some(tables) = &self.tables {
+                    self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+                    let parts: Vec<&ParsedNode> = children.iter().collect();
+                    b.blocks.extend(self.build_table(tables, &parts, true)?);
+                    return Ok(());
+                }
+            }
+            Some(nt) if *holds_block && nt.is_textblock() && Some(*nt) != self.code_block => {
+                return self
+                    .read_textblock_around_blocks(nt, tag, attributes, children, loose_as, b);
+            }
+            Some(nt) if !is_table_part(tag) => {
+                self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+                b.blocks
+                    .push(self.build_block(nt, tag, attributes, children)?);
+                return Ok(());
+            }
+            _ => {}
+        }
+        if let Some(code) = self.code_block
+            && is_preformatted(tag, attributes)
+        {
+            // What VS Code copies: a `<div style="white-space: pre">` of
+            // one `<div>` per line. A code block keeps its lines and
+            // their indentation, which paragraphs would not.
+            self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+            b.blocks.push(self.build_code_block(code, children)?);
+            Ok(())
+        } else if !holds_block && !is_block_level(tag) {
+            // Inline as far as anyone can tell: a known inline element,
+            // or one the reader does not know (`<o:p>`, `<st1:place>`,
+            // a custom element) that holds no block.
+            self.parse_inline(std::slice::from_ref(n), &[], &mut b.loose)
+        } else if *holds_block
+            && self.marks.contains_key(tag.as_str())
+            && let Some(mark) = self.mark_for(tag, attributes)?
+        {
+            self.read_marked_blocks(&mark, children, loose_as, b)
+        } else {
+            self.read_container(children, loose_as, b)
+        }
+    }
+
+    /// A heading (say) around blocks. Its blocks stay blocks, in the order
+    /// they are written, and the inline content between them is headings.
+    fn read_textblock_around_blocks(
+        &self,
+        nt: &NodeType,
+        tag: &str,
+        attributes: &[(String, String)],
+        children: &[ParsedNode],
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<(), EditorError> {
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        let attrs = textblock_attrs(nt, tag, attributes);
+        let refs: Vec<&ParsedNode> = children.iter().collect();
+        let inner = self.parse_block_refs(&refs, Some((nt, &attrs)))?;
+        if inner.blocks.is_empty() {
+            b.blocks
+                .push(self.make_node(nt, attrs, inline_fragment(inner.blank))?);
+        } else {
+            b.blocks.extend(inner.blocks);
+        }
+        Ok(())
+    }
+
+    /// A mark around blocks (`<a href><h3>…</h3><p>…</p></a>`, a card that
+    /// is one link): the blocks stay blocks, and the mark goes on the inline
+    /// content inside them.
+    fn read_marked_blocks(
+        &self,
+        mark: &Mark,
+        children: &[ParsedNode],
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<(), EditorError> {
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        let refs: Vec<&ParsedNode> = children.iter().collect();
+        for block in self.parse_block_refs(&refs, loose_as)?.blocks {
+            b.blocks.push(with_mark_inside(&block, mark));
+        }
+        Ok(())
+    }
+
+    /// A container (div, section, …), or any other element around blocks:
+    /// the `<b style="font-weight:normal">` Google Docs wraps everything it
+    /// copies in, Word's `<w:sdt>`, Sheets' `<google-sheets-html-origin>`.
+    fn read_container(
+        &self,
+        children: &[ParsedNode],
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<(), EditorError> {
+        let refs: Vec<&ParsedNode> = children.iter().collect();
+        let inner = self.parse_block_refs(&refs, loose_as)?;
+        if inner.blocks.is_empty() {
+            for node in inner.blank {
+                self.push_inline(&mut b.loose, node)?;
+            }
+        } else {
+            self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+            b.blocks.extend(inner.blocks);
+        }
+        Ok(())
+    }
+
+    /// Flush accumulated inline content as a block: a paragraph, or what
+    /// `loose_as` says.
     fn flush_loose(
         &self,
-        loose: &mut Vec<Node>,
+        loose: &mut Inline,
         blocks: &mut Vec<Node>,
+        loose_as: LooseAs<'_>,
     ) -> Result<(), EditorError> {
-        if loose.is_empty() {
+        let loose = std::mem::take(loose);
+        if loose.nodes.is_empty() {
             return Ok(());
         }
-        let content = Fragment::from_children(std::mem::take(loose));
-        blocks.push(self.make_node(self.paragraph, Attrs::new(), content)?);
+        let content = inline_fragment(loose.nodes);
+        let (nt, attrs) = match loose_as {
+            Some((nt, attrs)) => (nt, attrs.clone()),
+            None => (self.paragraph, Attrs::new()),
+        };
+        blocks.push(self.make_node(nt, attrs, content)?);
         Ok(())
     }
 
@@ -545,101 +843,114 @@ impl<'a> HtmlParser<'a> {
         &self,
         nt: &NodeType,
         tag: &str,
-        element: &ParsedNode,
+        attributes: &[(String, String)],
+        children: &[ParsedNode],
     ) -> Result<Node, EditorError> {
-        let (attributes, children) = match element {
-            ParsedNode::Element {
-                attributes,
-                children,
-                ..
-            } => (attributes.as_slice(), children.as_slice()),
-            ParsedNode::Text(_) => (&[][..], &[][..]),
-        };
         match nt.name() {
-            "heading" => {
-                let level = heading_level(tag);
-                let content = self.parse_inline_children(children)?;
-                let attrs = align_attrs(attributes).with("level", AttrValue::Int(level));
-                self.make_node(nt, attrs, content)
-            }
-            "code_block" => {
-                let mut text = String::new();
-                collect_text(children, &mut text);
-                let content = if text.is_empty() {
-                    Fragment::empty()
-                } else {
-                    Fragment::from_node(self.schema.text(&text)?)
-                };
-                self.make_node(nt, Attrs::new(), content)
-            }
-            "blockquote" => {
-                let inner = self.ensure_block_plus(self.parse_blocks(children)?)?;
-                self.make_node(nt, Attrs::new(), Fragment::from_children(inner))
-            }
-            "bullet_list"
-                if is_task_list(attributes)
-                    && let (Some(list), Some(item)) = (
-                        self.schema.node_type("task_list"),
-                        self.schema.node_type("task_item"),
-                    ) =>
-            {
-                let mut items = Vec::new();
-                for (inner, checked) in self.list_item_contents(children)? {
-                    let attrs = Attrs::from_iter([("checked", AttrValue::Bool(checked))]);
-                    items.push(self.make_node(item, attrs, Fragment::from_children(inner))?);
-                }
-                if items.is_empty() {
-                    let para = self.make_node(self.paragraph, Attrs::new(), Fragment::empty())?;
-                    items.push(self.make_node(item, Attrs::new(), Fragment::from_node(para))?);
-                }
-                self.make_node(list, Attrs::new(), Fragment::from_children(items))
-            }
+            "code_block" => self.build_code_block(nt, children),
             "bullet_list" | "ordered_list" => {
-                let mut items = self.parse_list_items(children)?;
-                if items.is_empty() {
-                    items.push(self.empty_list_item()?);
-                }
-                let attrs = if nt.name() == "ordered_list" {
-                    // HTML's integer rules, as `ol.start` reads it (#1164).
-                    let start = attr(attributes, "start")
-                        .and_then(parse_html_integer)
-                        .map_or(1, i64::from);
-                    Attrs::from_iter([("start", AttrValue::Int(start))])
-                } else {
-                    Attrs::new()
-                };
-                self.make_node(nt, attrs, Fragment::from_children(items))
-            }
-            "list_item" => {
-                let inner = self.ensure_block_plus(self.parse_blocks(children)?)?;
-                self.make_node(nt, Attrs::new(), Fragment::from_children(inner))
+                let items: Vec<&ParsedNode> = children.iter().collect();
+                self.build_list(nt, attributes, is_task_list(attributes), &items)
             }
             "horizontal_rule" => self.make_node(nt, Attrs::new(), Fragment::empty()),
-            "table" => {
-                let mut rows = self.parse_table_rows(children)?;
-                // `table > table_row+` must be non-empty: a table with no valid rows
-                // gets one empty single-cell row rather than an invalid node.
-                if rows.is_empty() {
-                    rows.push(self.empty_table_row()?);
-                }
-                self.make_node(nt, Attrs::new(), Fragment::from_children(rows))
-            }
-            _ => {
-                // Any other textblock-ish block: treat content as inline.
+            _ if nt.is_textblock() => {
                 let content = self.parse_inline_children(children)?;
-                // `text_align` is declared on paragraph (and heading, handled above);
-                // don't attach it to block types whose schema has no such attr.
-                let attrs = if nt.name() == "paragraph" {
-                    align_attrs(attributes)
-                } else {
-                    Attrs::new()
-                };
-                self.make_node(nt, attrs, content)
+                self.make_node(nt, textblock_attrs(nt, tag, attributes), content)
+            }
+            // A blockquote, a list item, any other block of blocks.
+            _ => {
+                let inner = self.ensure_block_plus(self.parse_blocks(children)?)?;
+                self.make_node(nt, Attrs::new(), Fragment::from_children(inner))
             }
         }
     }
 
-    fn parse_list_items(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
+    /// A code block of the text under `children`, one line per block-level
+    /// element and per `<br>`.
+    fn build_code_block(
+        &self,
+        nt: &NodeType,
+        children: &[ParsedNode],
+    ) -> Result<Node, EditorError> {
+        let mut text = String::new();
+        let mut line_break = false;
+        self.collect_text(children, &mut text, &mut line_break);
+        let content = if text.is_empty() {
+            Fragment::empty()
+        } else {
+            Fragment::from_node(self.schema.text(&text)?)
+        };
+        self.make_node(nt, Attrs::new(), content)
+    }
+
+    /// Gather the text under `nodes`, tags aside, for a code block.
+    /// `line_break`: a line ended since the last text.
+    fn collect_text(&self, nodes: &[ParsedNode], out: &mut String, line_break: &mut bool) {
+        for n in nodes {
+            step();
+            match n {
+                ParsedNode::Text(t) => {
+                    if std::mem::take(line_break) && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(t);
+                }
+                ParsedNode::Element { tag, children, .. } => {
+                    if is_dropped(tag) {
+                        continue;
+                    }
+                    if self.hard_break.is_some()
+                        && self.inline_leaf.get(tag.as_str()).copied() == self.hard_break
+                    {
+                        if std::mem::take(line_break) && !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                        out.push('\n');
+                        continue;
+                    }
+                    let block = self.is_block_tag(tag);
+                    if block {
+                        *line_break = !out.is_empty();
+                    }
+                    self.collect_text(children, out, line_break);
+                    if block {
+                        *line_break = !out.is_empty();
+                    }
+                }
+            }
+        }
+    }
+
+    /// A list of type `nt` (a task list when `tasks` and the schema has one)
+    /// from the children of a `<ul>` / `<ol>`, or from a run of bare `<li>`.
+    fn build_list(
+        &self,
+        nt: &NodeType,
+        attributes: &[(String, String)],
+        tasks: bool,
+        children: &[&ParsedNode],
+    ) -> Result<Node, EditorError> {
+        if tasks
+            && nt.name() == "bullet_list"
+            && let (Some(list), Some(item)) = (
+                self.schema.node_type("task_list"),
+                self.schema.node_type("task_item"),
+            )
+        {
+            let mut items = Vec::new();
+            for (inner, checked) in self.list_item_contents(children)? {
+                let attrs = Attrs::from_iter([("checked", AttrValue::Bool(checked))]);
+                items.push(self.make_node(item, attrs, Fragment::from_children(inner))?);
+            }
+            if items.is_empty() {
+                // Unchecked, said as an item that is read says it, so that
+                // the list reads back equal to itself.
+                let para = self.make_node(self.paragraph, Attrs::new(), Fragment::empty())?;
+                let attrs = Attrs::from_iter([("checked", AttrValue::Bool(false))]);
+                items.push(self.make_node(item, attrs, Fragment::from_node(para))?);
+            }
+            return self.make_node(list, Attrs::new(), Fragment::from_children(items));
+        }
         let mut items = Vec::new();
         for (inner, _) in self.list_item_contents(children)? {
             items.push(self.make_node(
@@ -648,7 +959,19 @@ impl<'a> HtmlParser<'a> {
                 Fragment::from_children(inner),
             )?);
         }
-        Ok(items)
+        if items.is_empty() {
+            items.push(self.empty_list_item()?);
+        }
+        let attrs = if nt.name() == "ordered_list" {
+            // HTML's integer rules, as `ol.start` reads it (#1164).
+            let start = attr(attributes, "start")
+                .and_then(parse_html_integer)
+                .map_or(1, i64::from);
+            Attrs::from_iter([("start", AttrValue::Int(start))])
+        } else {
+            Attrs::new()
+        };
+        self.make_node(nt, attrs, Fragment::from_children(items))
     }
 
     /// The content of each item of a list whose element children are
@@ -662,15 +985,20 @@ impl<'a> HtmlParser<'a> {
     /// nothing in a list is dropped for not being an `<li>`.
     fn list_item_contents(
         &self,
-        children: &[ParsedNode],
+        children: &[&ParsedNode],
     ) -> Result<Vec<(Vec<Node>, bool)>, EditorError> {
         let mut items: Vec<(Vec<Node>, bool)> = Vec::new();
-        for child in children {
+        let mut i = 0;
+        while i < children.len() {
+            step();
+            let child = children[i];
+            i += 1;
             match child {
                 ParsedNode::Element {
                     tag,
                     attributes,
                     children,
+                    ..
                 } if tag == "li" => {
                     let checked =
                         attr(attributes, TASK_CHECKED).is_some_and(|v| v.trim() == "true");
@@ -681,7 +1009,17 @@ impl<'a> HtmlParser<'a> {
                 }
                 ParsedNode::Text(t) if t.trim().is_empty() => {}
                 stray => {
-                    let blocks = self.parse_blocks(std::slice::from_ref(stray))?;
+                    // Table parts side by side are one table, as anywhere.
+                    let start = i - 1;
+                    if matches!(stray, ParsedNode::Element { tag, .. } if is_table_part(tag)) {
+                        while children.get(i).is_some_and(|next| match next {
+                            ParsedNode::Text(t) => t.trim().is_empty(),
+                            ParsedNode::Element { tag, .. } => is_table_part(tag),
+                        }) {
+                            i += 1;
+                        }
+                    }
+                    let blocks = self.parse_block_refs(&children[start..i], None)?.blocks;
                     if blocks.is_empty() {
                         continue;
                     }
@@ -711,53 +1049,175 @@ impl<'a> HtmlParser<'a> {
 
     // ── Tables ───────────────────────────────────────────────────────────────
 
-    /// A table node type by name, erroring if the schema lacks tables (only
-    /// reachable when `<table>` was a known block, so this is a schema-consistency
-    /// guard rather than an expected path).
-    fn table_node_type(&self, name: &str) -> Result<&'a NodeType, EditorError> {
-        self.schema
-            .node_type(name)
-            .ok_or_else(|| EditorError::HtmlParse(format!("schema has no '{name}' type")))
+    /// A table from `parts`: the children of a `<table>` (`whole`), or a run
+    /// of table parts with no `<table>` around them — cells are one row, rows
+    /// the rows of one table — which is how a browser reads them where a
+    /// table's content is expected, and what another editor puts on the
+    /// clipboard for part of a table.
+    ///
+    /// The table comes last. Before it come the blocks of everything in
+    /// `parts` that has no place in a table (text and elements directly in
+    /// the table, a row group or a row), which a browser moves in front of
+    /// the table too, and then its captions. With no row at all there is no
+    /// table, unless it is a `<table>` with nothing in it, which reads as one
+    /// empty cell.
+    fn build_table(
+        &self,
+        types: &TableTypes<'a>,
+        parts: &[&ParsedNode],
+        whole: bool,
+    ) -> Result<Vec<Node>, EditorError> {
+        let mut outside: Vec<&ParsedNode> = Vec::new();
+        let mut captions: Vec<&ParsedNode> = Vec::new();
+        let mut rows = self.parse_table_rows(types, parts, &mut outside, &mut captions)?;
+        let mut blocks = self.parse_block_refs(&outside, None)?.blocks;
+        for caption in captions {
+            if let ParsedNode::Element { children, .. } = caption {
+                blocks.extend(self.parse_blocks(children)?);
+            }
+        }
+        if rows.is_empty() {
+            if !whole || !blocks.is_empty() {
+                return Ok(blocks);
+            }
+            // `table > table_row+` must be non-empty.
+            rows.push(self.empty_table_row(types)?);
+        }
+        let mut table = self.make_node(types.table, Attrs::new(), Fragment::from_children(rows))?;
+        if !whole {
+            table = self.pad_rows(types, table)?;
+        }
+        blocks.push(table);
+        Ok(blocks)
     }
 
-    /// Parse a table's `<tr>` children into `table_row` nodes, transparently
-    /// descending through `<thead>`/`<tbody>`/`<tfoot>` wrappers. Rows with no
-    /// recognized cells are dropped.
+    /// A table made of parts that had no `<table>` around them: fill the
+    /// slots no cell covers with empty cells, as a browser renders them, so
+    /// that the table made up for them is a rectangle.
+    ///
+    /// Only when that takes no more than [`PAD_CELLS_PER_CELL`] empty cells
+    /// for each cell the markup wrote (or [`PAD_CELLS_FLOOR`]): a span claims
+    /// slots without writing them, so a few bytes can ask for a grid of any
+    /// size, and what a paste costs must stay in proportion to the paste.
+    /// Past that the rows are left as written. The grid is not laid out at
+    /// all when the spans cannot cover enough of it.
+    fn pad_rows(&self, types: &TableTypes<'a>, table: Node) -> Result<Node, EditorError> {
+        let rows = table.content().children();
+        let (mut cells, mut covered) = (0usize, 0usize);
+        for row in rows {
+            for cell in row.content().children() {
+                let span = |name: &str| {
+                    usize::try_from(cell.attrs().get_int(name).unwrap_or(1).max(1))
+                        .unwrap_or(usize::MAX)
+                };
+                cells += 1;
+                covered = covered.saturating_add(
+                    span("colspan").saturating_mul(span("rowspan").min(rows.len())),
+                );
+            }
+        }
+        let allowed = (cells * PAD_CELLS_PER_CELL).max(PAD_CELLS_FLOOR);
+        let slots = crate::tables::column_count(&table).saturating_mul(rows.len());
+        if slots.saturating_sub(covered) > allowed {
+            return Ok(table);
+        }
+        let holes = crate::tables::row_holes(&table);
+        let total: usize = holes.iter().sum();
+        if total == 0 || total > allowed {
+            return Ok(table);
+        }
+        let filler = self
+            .empty_table_row(types)?
+            .content()
+            .children()
+            .first()
+            .cloned();
+        let Some(filler) = filler else {
+            return Ok(table);
+        };
+        let mut rows = Vec::with_capacity(holes.len());
+        for (row, short) in table.content().children().iter().zip(holes) {
+            if short == 0 {
+                rows.push(row.clone());
+                continue;
+            }
+            let mut cells = row.content().children().to_vec();
+            cells.extend(std::iter::repeat_n(filler.clone(), short));
+            rows.push(row.copy_with_content(Fragment::from_children(cells)));
+        }
+        Ok(table.copy_with_content(Fragment::from_children(rows)))
+    }
+
+    /// Parse table parts into `table_row` nodes, transparently descending
+    /// through `<thead>`/`<tbody>`/`<tfoot>` wrappers. A run of cells with no
+    /// `<tr>` is a row. Rows with no cells are dropped. What is neither a
+    /// part nor in a cell goes to `outside`, and `<caption>`s to `captions`.
     ///
     /// Each wrapper, and each run of bare `<tr>`s (which the HTML parser wraps
     /// in an implicit `<tbody>`), is a **row group**: a `rowspan="0"` spans to
     /// the end of its group, so a group's rows are collected before any is
     /// built (#1164).
-    fn parse_table_rows(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
+    fn parse_table_rows<'n>(
+        &self,
+        types: &TableTypes<'a>,
+        parts: &[&'n ParsedNode],
+        outside: &mut Vec<&'n ParsedNode>,
+        captions: &mut Vec<&'n ParsedNode>,
+    ) -> Result<Vec<Node>, EditorError> {
         let mut rows = Vec::new();
         let mut group: Vec<Vec<PendingCell<'a>>> = Vec::new();
-        for child in children {
-            let ParsedNode::Element {
-                tag,
-                children: tr_children,
-                ..
-            } = child
-            else {
+        // Cells directly in the table: a row with no `<tr>`.
+        let mut loose_cells: Vec<&'n ParsedNode> = Vec::new();
+        for (index, part) in parts.iter().copied().enumerate() {
+            step();
+            let ParsedNode::Element { tag, children, .. } = part else {
+                if matches!(part, ParsedNode::Text(t) if !t.trim().is_empty()) {
+                    outside.push(part);
+                }
                 continue;
             };
             if is_dropped(tag) {
                 continue;
             }
-            if matches!(tag.as_str(), "thead" | "tbody" | "tfoot") {
-                rows.extend(self.build_row_group(std::mem::take(&mut group))?);
-                rows.extend(self.parse_table_rows(tr_children)?);
-                continue;
+            match tag.as_str() {
+                "td" | "th" => loose_cells.push(part),
+                "caption" => captions.push(part),
+                "col" => {}
+                "colgroup" => outside.extend(children.iter().filter(|c| {
+                    !matches!(c, ParsedNode::Element { tag, .. } if tag == "col")
+                        && !matches!(c, ParsedNode::Text(t) if t.trim().is_empty())
+                })),
+                "tr" => {
+                    let cell_parts: Vec<&ParsedNode> = children.iter().collect();
+                    let cells = self.parse_table_cells(types, &cell_parts, outside)?;
+                    if !cells.is_empty() {
+                        group.push(cells);
+                    }
+                }
+                "thead" | "tbody" | "tfoot" => {
+                    rows.extend(self.build_row_group(types, std::mem::take(&mut group))?);
+                    let group_parts: Vec<&ParsedNode> = children.iter().collect();
+                    rows.extend(self.parse_table_rows(types, &group_parts, outside, captions)?);
+                }
+                _ => outside.push(part),
             }
-            if tag != "tr" {
-                continue;
+            // A run of bare cells ends at whatever is not a cell.
+            let run_goes_on = matches!(tag.as_str(), "td" | "th")
+                && parts[index + 1..]
+                    .iter()
+                    .find(|next| !matches!(next, ParsedNode::Text(t) if t.trim().is_empty()))
+                    .is_some_and(
+                        |next| matches!(next, ParsedNode::Element { tag, .. } if tag == "td" || tag == "th"),
+                    );
+            if !loose_cells.is_empty() && !run_goes_on {
+                let cells = self.parse_table_cells(types, &loose_cells, outside)?;
+                loose_cells.clear();
+                if !cells.is_empty() {
+                    group.push(cells);
+                }
             }
-            let cells = self.parse_table_cells(tr_children)?;
-            if cells.is_empty() {
-                continue;
-            }
-            group.push(cells);
         }
-        rows.extend(self.build_row_group(group)?);
+        rows.extend(self.build_row_group(types, group)?);
         Ok(rows)
     }
 
@@ -776,8 +1236,11 @@ impl<'a> HtmlParser<'a> {
     ///   at most 1000 columns plus one per cell that found it full. That limit
     ///   is rinch's, not Chrome's: a row's width used to grow with every
     ///   rowspan above it, and a 57 KB paste made a 1,000,000-column table.
-    fn build_row_group(&self, group: Vec<Vec<PendingCell<'a>>>) -> Result<Vec<Node>, EditorError> {
-        let row_type = self.table_node_type("table_row")?;
+    fn build_row_group(
+        &self,
+        types: &TableTypes<'a>,
+        group: Vec<Vec<PendingCell<'a>>>,
+    ) -> Result<Vec<Node>, EditorError> {
         let len = group.len();
         let mut rows = Vec::with_capacity(len);
         // `ends[r]`: the columns that stop being carried down at row `r`.
@@ -817,33 +1280,44 @@ impl<'a> HtmlParser<'a> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             carried += starts;
-            rows.push(self.make_node(row_type, Attrs::new(), Fragment::from_children(cells))?);
+            rows.push(self.make_node(types.row, Attrs::new(), Fragment::from_children(cells))?);
         }
         Ok(rows)
     }
 
     /// Parse a row's `<td>`/`<th>` children into pending cells (block content,
-    /// with `colspan`/`rowspan` carried through). Non-cell children are dropped.
-    fn parse_table_cells(
+    /// with `colspan`/`rowspan` carried through). Anything else with content
+    /// goes to `outside`.
+    fn parse_table_cells<'n>(
         &self,
-        children: &[ParsedNode],
+        types: &TableTypes<'a>,
+        children: &[&'n ParsedNode],
+        outside: &mut Vec<&'n ParsedNode>,
     ) -> Result<Vec<PendingCell<'a>>, EditorError> {
-        let cell_type = self.table_node_type("table_cell")?;
-        let header_type = self.table_node_type("table_header_cell")?;
         let mut cells = Vec::new();
-        for child in children {
+        for child in children.iter().copied() {
+            step();
             let ParsedNode::Element {
                 tag,
                 children: cell_children,
                 attributes,
+                ..
             } = child
             else {
+                if matches!(child, ParsedNode::Text(t) if !t.trim().is_empty()) {
+                    outside.push(child);
+                }
                 continue;
             };
             let nt = match tag.as_str() {
-                "td" => cell_type,
-                "th" => header_type,
-                _ => continue,
+                "td" => types.cell,
+                "th" => types.header,
+                _ => {
+                    if !is_dropped(tag) {
+                        outside.push(child);
+                    }
+                    continue;
+                }
             };
             let inner = self.ensure_block_plus(self.parse_blocks(cell_children)?)?;
             // `colspan`/`rowspan` — the only table attributes that survive
@@ -866,81 +1340,108 @@ impl<'a> HtmlParser<'a> {
     }
 
     /// A `table_row` holding one empty (single-paragraph) `table_cell` — the
-    /// fallback for a `<table>` that parsed no usable rows.
-    fn empty_table_row(&self) -> Result<Node, EditorError> {
+    /// fallback for a `<table>` with nothing in it.
+    fn empty_table_row(&self, types: &TableTypes<'a>) -> Result<Node, EditorError> {
         let para = self.make_node(self.paragraph, Attrs::new(), Fragment::empty())?;
         let cell = self.make_node(
-            self.table_node_type("table_cell")?,
+            types.cell,
             Attrs::from_iter([
                 ("colspan", AttrValue::Int(1)),
                 ("rowspan", AttrValue::Int(1)),
             ]),
             Fragment::from_node(para),
         )?;
-        self.make_node(
-            self.table_node_type("table_row")?,
-            Attrs::new(),
-            Fragment::from_node(cell),
-        )
+        self.make_node(types.row, Attrs::new(), Fragment::from_node(cell))
     }
+
+    // ── Inline content ───────────────────────────────────────────────────────
 
     fn parse_inline_children(&self, children: &[ParsedNode]) -> Result<Fragment, EditorError> {
-        let mut out = Vec::new();
+        let mut out = Inline::default();
         self.parse_inline(children, &[], &mut out)?;
-        Ok(Fragment::from_children(out))
+        Ok(inline_fragment(out.nodes))
     }
 
+    /// Add `node` to `out`, after the space owed before it.
+    fn push_inline(&self, out: &mut Inline, node: Node) -> Result<(), EditorError> {
+        if let Some(space) = out.space.take()
+            && !out.nodes.is_empty()
+        {
+            out.nodes.push(self.schema.text(&space)?);
+        }
+        out.nodes.push(node);
+        Ok(())
+    }
+
+    /// Read `nodes` as inline content. Every element is read through: one
+    /// that is a mark, a leaf or a styled `<span>` as that, any other for
+    /// its content alone.
     fn parse_inline(
         &self,
         nodes: &[ParsedNode],
         active: &[Mark],
-        out: &mut Vec<Node>,
+        out: &mut Inline,
     ) -> Result<(), EditorError> {
         for n in nodes {
+            step();
             match n {
-                ParsedNode::Text(t) => {
-                    if !t.is_empty() {
-                        out.push(self.schema.text_with_marks(t, active.to_vec())?);
-                    }
-                }
+                ParsedNode::Text(t) => self.push_text(t, active, out)?,
                 ParsedNode::Element {
                     tag,
                     attributes,
                     children,
+                    ..
                 } => {
                     if is_dropped(tag) {
                         continue;
                     }
-                    // Inline leaves (br, img).
-                    if let Some(nt) = self.inline_leaf.get(tag.as_str()) {
-                        if let Some(leaf) = self.build_inline_leaf(nt, attributes, active)? {
-                            out.push(leaf);
-                        }
-                        continue;
+                    match self.inline_marks(tag, attributes, active, out)? {
+                        Some(next) => self.parse_inline(children, &next, out)?,
+                        None => self.parse_inline(children, active, out)?,
                     }
-                    // Mark-bearing tags (strong, em, a, mark, …).
-                    if self.marks.contains_key(tag.as_str()) {
-                        if let Some(mark) = self.mark_for(tag, attributes)? {
-                            let next = mark.add_to_set(active);
-                            self.parse_inline(children, &next, out)?;
-                        } else {
-                            // e.g. <a> with no/unsafe href → transparent, keep text.
-                            self.parse_inline(children, active, out)?;
-                        }
-                        continue;
-                    }
-                    // <span style>: style-derived marks (color → text_color, bg → highlight).
-                    if tag == "span" {
-                        let next = self.span_marks(attributes, active)?;
-                        self.parse_inline(children, &next, out)?;
-                        continue;
-                    }
-                    // Any other inline element (font, etc.) → transparent.
-                    self.parse_inline(children, active, out)?;
                 }
             }
         }
         Ok(())
+    }
+
+    fn push_text(&self, t: &str, active: &[Mark], out: &mut Inline) -> Result<(), EditorError> {
+        if t.is_empty() {
+            return Ok(());
+        }
+        self.push_inline(out, self.schema.text_with_marks(t, active.to_vec())?)
+    }
+
+    /// The marks on the content of an inline `tag` element, when they are
+    /// not `active`. A leaf (br, img) is added to `out` here: it has no
+    /// content.
+    fn inline_marks(
+        &self,
+        tag: &str,
+        attributes: &[(String, String)],
+        active: &[Mark],
+        out: &mut Inline,
+    ) -> Result<Option<Vec<Mark>>, EditorError> {
+        // Inline leaves (br, img).
+        if let Some(nt) = self.inline_leaf.get(tag) {
+            if let Some(leaf) = self.build_inline_leaf(nt, attributes, active)? {
+                self.push_inline(out, leaf)?;
+            }
+            return Ok(None);
+        }
+        // Mark-bearing tags (strong, em, a, mark, …). One that makes no mark
+        // (an <a> with no or an unsafe href) is transparent: its text is kept.
+        if self.marks.contains_key(tag) {
+            return Ok(self
+                .mark_for(tag, attributes)?
+                .map(|mark| with_mark(active, mark)));
+        }
+        // <span style>: style-derived marks (color → text_color, bg → highlight).
+        if tag == "span" {
+            return self.span_marks(attributes, active);
+        }
+        // Any other element → transparent.
+        Ok(None)
     }
 
     fn build_inline_leaf(
@@ -952,17 +1453,21 @@ impl<'a> HtmlParser<'a> {
         match nt.name() {
             "hard_break" => Ok(Some(self.make_node(nt, Attrs::new(), Fragment::empty())?)),
             "image" => {
-                let Some(src) = attr(attributes, "src") else {
+                // An empty `src` is no image: the writer writes no empty
+                // attribute, so an image with one would not read back.
+                let Some(src) = attr(attributes, "src").filter(|v| !v.is_empty()) else {
                     return Ok(None);
                 };
                 if !is_safe_url(src, true) {
                     return Ok(None);
                 }
                 let mut pairs: Vec<(&str, AttrValue)> = vec![("src", AttrValue::from(src))];
-                if let Some(alt) = attr(attributes, "alt") {
+                // An empty `alt` or `title` is none: the writer writes
+                // neither, so this reads back the same.
+                if let Some(alt) = attr(attributes, "alt").filter(|v| !v.is_empty()) {
                     pairs.push(("alt", AttrValue::from(alt)));
                 }
-                if let Some(title) = attr(attributes, "title") {
+                if let Some(title) = attr(attributes, "title").filter(|v| !v.is_empty()) {
                     pairs.push(("title", AttrValue::from(title)));
                 }
                 let img = self.make_node(nt, Attrs::from_iter(pairs), Fragment::empty())?;
@@ -1028,31 +1533,34 @@ impl<'a> HtmlParser<'a> {
     }
 
     /// Marks contributed by a `<span style>`: `color` → `text_color`,
-    /// `background-color` → `highlight`. Returns the new active mark set.
+    /// `background-color` → `highlight`. Returns the new active mark set, or
+    /// `None` for a span with no style.
     fn span_marks(
         &self,
         attributes: &[(String, String)],
         active: &[Mark],
-    ) -> Result<Vec<Mark>, EditorError> {
-        let mut next = active.to_vec();
+    ) -> Result<Option<Vec<Mark>>, EditorError> {
         let Some(style) = attr(attributes, "style") else {
-            return Ok(next);
+            return Ok(None);
         };
+        let mut next = active.to_vec();
         if let (Some(color), Some(mt)) = (
             parse_style(style, "color").filter(|c| is_safe_css_color(c)),
             self.schema.mark_type("text_color"),
         ) {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(color))]))?;
-            next = Mark::new(mt.clone(), attrs).add_to_set(&next);
+            next = with_mark(&next, Mark::new(mt.clone(), attrs));
         }
+        // `transparent` is no highlight: Google Docs says it on every span.
         if let (Some(bg), Some(mt)) = (
-            parse_style(style, "background-color").filter(|c| is_safe_css_color(c)),
+            parse_style(style, "background-color")
+                .filter(|c| is_safe_css_color(c) && !c.trim().eq_ignore_ascii_case("transparent")),
             self.schema.mark_type("highlight"),
         ) {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(bg))]))?;
-            next = Mark::new(mt.clone(), attrs).add_to_set(&next);
+            next = with_mark(&next, Mark::new(mt.clone(), attrs));
         }
-        Ok(next)
+        Ok(Some(next))
     }
 
     fn make_node(
@@ -1066,8 +1574,131 @@ impl<'a> HtmlParser<'a> {
     }
 }
 
-/// Tags whose entire subtree is dropped on paste (never materialize).
-fn is_dropped(tag: &str) -> bool {
+/// `active` with `mark` in place of any mark of its type: of two links, or
+/// two colours, one inside the other, the inner one is what the text has.
+fn with_mark(active: &[Mark], mark: Mark) -> Vec<Mark> {
+    if active.iter().any(|m| m.type_name() == mark.type_name()) {
+        let others: Vec<Mark> = active
+            .iter()
+            .filter(|m| m.type_name() != mark.type_name())
+            .cloned()
+            .collect();
+        mark.add_to_set(&others)
+    } else {
+        mark.add_to_set(active)
+    }
+}
+
+/// `nodes` as inline content: neighbouring text with the same marks is one
+/// text node, as it is everywhere else in a document.
+fn inline_fragment(nodes: Vec<Node>) -> Fragment {
+    let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
+    // The text gathered onto the last node of `out`, when more than its own.
+    let mut joined: Option<String> = None;
+    fn settle(out: &mut [Node], joined: &mut Option<String>) {
+        if let (Some(text), Some(last)) = (joined.take(), out.last_mut()) {
+            *last = last.with_text(text.into());
+        }
+    }
+    for node in nodes {
+        match (out.last(), node.text()) {
+            (Some(last), Some(text)) if last.is_text() && last.same_markup(&node) => {
+                joined
+                    .get_or_insert_with(|| last.text().unwrap_or_default().to_string())
+                    .push_str(text);
+            }
+            _ => {
+                settle(&mut out, &mut joined);
+                out.push(node);
+            }
+        }
+    }
+    settle(&mut out, &mut joined);
+    Fragment::from_children(out)
+}
+
+/// The attrs of a textblock of type `nt` read from a `tag` element: a
+/// heading's level, and the alignment of a heading or a paragraph (the two
+/// types whose schema declares `text_align`).
+fn textblock_attrs(nt: &NodeType, tag: &str, attributes: &[(String, String)]) -> Attrs {
+    match nt.name() {
+        "heading" => align_attrs(attributes).with("level", AttrValue::Int(heading_level(tag))),
+        "paragraph" => align_attrs(attributes),
+        _ => Attrs::new(),
+    }
+}
+
+/// HTML elements that are a line, or more, of their own, whatever the schema
+/// makes of them: where one starts or ends, a line ends.
+pub(super) fn is_block_level(tag: &str) -> bool {
+    is_table_part(tag)
+        || matches!(
+            tag,
+            "address"
+                | "article"
+                | "aside"
+                | "blockquote"
+                | "center"
+                | "dd"
+                | "details"
+                | "dialog"
+                | "dir"
+                | "div"
+                | "dl"
+                | "dt"
+                | "fieldset"
+                | "figcaption"
+                | "figure"
+                | "footer"
+                | "form"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "header"
+                | "hgroup"
+                | "hr"
+                | "legend"
+                | "li"
+                | "listing"
+                | "main"
+                | "menu"
+                | "nav"
+                | "ol"
+                | "p"
+                | "pre"
+                | "search"
+                | "section"
+                | "summary"
+                | "table"
+                | "ul"
+                | "xmp"
+        )
+}
+
+/// A `<div>` (or other container) whose own style says `white-space: pre`:
+/// preformatted text.
+fn is_preformatted(tag: &str, attributes: &[(String, String)]) -> bool {
+    tag == "div"
+        && attr(attributes, "style")
+            .and_then(|style| parse_style(style, "white-space"))
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("pre"))
+}
+
+/// An `<li>` whose `data-type` is `taskItem`.
+fn is_task_item(attributes: &[(String, String)]) -> bool {
+    attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_ITEM)
+}
+
+/// Elements dropped with everything in them: what a browser shows no text
+/// for (scripts, styles, embedded content and its fallback, the options of
+/// a `<select>`), and what the reader will not read (`<svg>` and `<math>`,
+/// which on a clipboard are icons and the hidden copy of a rendered
+/// formula). The tree builder never hands over the first few
+/// ([`super::html_tree`]); they are listed for a tree from anywhere else.
+pub(super) fn is_dropped(tag: &str) -> bool {
     matches!(
         tag,
         "script"
@@ -1076,23 +1707,34 @@ fn is_dropped(tag: &str) -> bool {
             | "link"
             | "head"
             | "title"
+            | "template"
             | "iframe"
+            | "noscript"
+            | "noembed"
+            | "noframes"
+            | "base"
             | "object"
             | "embed"
-            | "noscript"
-            | "base"
-            | "form"
+            | "applet"
+            | "audio"
+            | "video"
+            | "canvas"
             | "input"
-            | "button"
             | "select"
-            | "textarea"
+            | "datalist"
             | "svg"
             | "math"
-            | "applet"
             | "frame"
             | "frameset"
     )
 }
+
+/// How many empty cells may be added for each cell written, to make bare
+/// table parts a rectangle ([`HtmlParser::pad_rows`]).
+const PAD_CELLS_PER_CELL: usize = 8;
+
+/// The empty cells that may be added whatever the number written.
+const PAD_CELLS_FLOOR: usize = 16;
 
 /// A table cell parsed but not yet built: its `rowspan` can be `0`, "to the end
 /// of the row group", which only the whole group resolves
@@ -1111,20 +1753,6 @@ fn heading_level(tag: &str) -> i64 {
         .and_then(|d| d.parse::<i64>().ok())
         .filter(|l| (1..=6).contains(l))
         .unwrap_or(1)
-}
-
-/// Recursively gather text content (ignoring tags) — used for code blocks.
-fn collect_text(nodes: &[ParsedNode], out: &mut String) {
-    for n in nodes {
-        match n {
-            ParsedNode::Text(t) => out.push_str(t),
-            ParsedNode::Element { tag, children, .. } => {
-                if !is_dropped(tag) {
-                    collect_text(children, out);
-                }
-            }
-        }
-    }
 }
 
 /// The `text_align` attrs implied by an element's inline `style="text-align:…"`,
@@ -1146,10 +1774,13 @@ fn align_attrs(attributes: &[(String, String)]) -> Attrs {
     }
 }
 
-/// Find an attribute value (case-insensitive name) in a parsed attribute list.
-/// `node` with `mark` added to every inline node inside it whose parent
-/// allows the mark and which carries no mark of that type already (an inner
-/// link keeps its own href).
+/// `node` with `mark` added to every inline node inside it that the inline
+/// reader would have put it on, had the mark's element been inside the
+/// block: text and images, where the parent allows the mark and the node
+/// carries no mark of that type already (an inner link keeps its own href).
+/// A hard break carries no mark, there as here (#1401), so
+/// `<strong><p>a<br>b</p></strong>` and `<p><strong>a<br>b</strong></p>` are
+/// one document.
 fn with_mark_inside(node: &Node, mark: &Mark) -> Node {
     if node.is_leaf() || node.is_text() {
         return node.clone();
@@ -1163,6 +1794,7 @@ fn with_mark_inside(node: &Node, mark: &Mark) -> Node {
             if !child.is_inline() {
                 with_mark_inside(child, mark)
             } else if allowed
+                && child.type_name() != "hard_break"
                 && !child
                     .marks()
                     .iter()
@@ -1174,7 +1806,12 @@ fn with_mark_inside(node: &Node, mark: &Mark) -> Node {
             }
         })
         .collect();
-    node.copy_with_content(Fragment::from_children(children))
+    if node.is_textblock() {
+        // Text that differed only by this mark is one node now.
+        node.copy_with_content(inline_fragment(children))
+    } else {
+        node.copy_with_content(Fragment::from_children(children))
+    }
 }
 
 /// Whether a `<b>` / `<strong>` says in its own style that it is not bold:
@@ -1185,64 +1822,12 @@ fn weight_is_normal(attributes: &[(String, String)]) -> bool {
         .is_some_and(|w| matches!(w.trim().to_ascii_lowercase().as_str(), "normal" | "400"))
 }
 
-/// `nodes` with each run of `<li>` elements that have no list around them put
-/// in a `<ul>` — a `<ul data-type="taskList">` for a run of
-/// `<li data-type="taskItem">`. A list's items alone are what some sources put
-/// on the clipboard for a selection inside one list. `None` when there is no
-/// such item.
-fn wrap_bare_list_items(nodes: &[ParsedNode]) -> Option<Vec<ParsedNode>> {
-    // `Some(true)` for a task item, `Some(false)` for any other `<li>`.
-    let item = |n: &ParsedNode| match n {
-        ParsedNode::Element {
-            tag, attributes, ..
-        } if tag == "li" => {
-            Some(attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_ITEM))
-        }
-        _ => None,
-    };
-    if !nodes.iter().any(|n| item(n).is_some()) {
-        return None;
-    }
-    let mut out: Vec<ParsedNode> = Vec::new();
-    let mut run: Vec<ParsedNode> = Vec::new();
-    let mut run_is_tasks = false;
-    let close = |run: &mut Vec<ParsedNode>, tasks: bool, out: &mut Vec<ParsedNode>| {
-        if !run.is_empty() {
-            let attributes = if tasks {
-                vec![(TASK_TYPE.to_string(), TASK_LIST.to_string())]
-            } else {
-                Vec::new()
-            };
-            out.push(ParsedNode::Element {
-                tag: "ul".to_string(),
-                attributes,
-                children: std::mem::take(run),
-            });
-        }
-    };
-    for n in nodes {
-        if let Some(task) = item(n) {
-            if task != run_is_tasks {
-                close(&mut run, run_is_tasks, &mut out);
-                run_is_tasks = task;
-            }
-            run.push(n.clone());
-        } else if matches!(n, ParsedNode::Text(t) if t.trim().is_empty()) && !run.is_empty() {
-            // Whitespace between two items.
-        } else {
-            close(&mut run, run_is_tasks, &mut out);
-            out.push(n.clone());
-        }
-    }
-    close(&mut run, run_is_tasks, &mut out);
-    Some(out)
-}
-
 /// A `<ul>` whose `data-type` is `taskList`.
 fn is_task_list(attributes: &[(String, String)]) -> bool {
     attr(attributes, TASK_TYPE).is_some_and(|v| v.trim() == TASK_LIST)
 }
 
+/// Find an attribute value (case-insensitive name) in a parsed attribute list.
 fn attr<'b>(attributes: &'b [(String, String)], name: &str) -> Option<&'b str> {
     attributes
         .iter()
@@ -1410,6 +1995,7 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
                 tag,
                 attributes,
                 children,
+                ..
             } => {
                 let tag = tag.to_ascii_lowercase();
                 let task_list = tag == "ul" && is_task_list(attributes);
@@ -1420,393 +2006,6 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
     let mut parser = HtmlFragmentParser::new(html);
     parser.all_attributes = true;
     walk(&parser.parse(), false)
-}
-
-// ─── Salvaged zero-dependency HTML tokenizer ─────────────────────────────────
-//
-// Ported from `rinch/src/app/html_parser.rs`. Produces a tree of `ParsedNode`s
-// from a (possibly messy, clipboard-sourced) HTML fragment. Strips
-// `<html>/<head>/<body>` wrappers and `<script>/<style>/<meta>/<link>/<title>`
-// subtrees; attribute whitelisting drops `on*` handlers and anything not needed
-// by the schema mapper.
-
-/// A parsed HTML node.
-#[derive(Debug, Clone)]
-enum ParsedNode {
-    Text(String),
-    Element {
-        tag: String,
-        attributes: Vec<(String, String)>,
-        children: Vec<ParsedNode>,
-    },
-}
-
-fn parse_html_fragment(html: &str) -> Vec<ParsedNode> {
-    let mut parser = HtmlFragmentParser::new(html);
-    let nodes = parser.parse();
-    unwrap_body(nodes)
-}
-
-fn unwrap_body(nodes: Vec<ParsedNode>) -> Vec<ParsedNode> {
-    if nodes.len() == 1
-        && let ParsedNode::Element {
-            ref tag,
-            ref children,
-            ..
-        } = nodes[0]
-        && (tag == "html" || tag == "body")
-    {
-        return unwrap_body(children.clone());
-    }
-    let mut result = Vec::new();
-    let mut found_wrapper = false;
-    for node in &nodes {
-        if let ParsedNode::Element { tag, children, .. } = node {
-            if tag == "html" || tag == "body" {
-                result.extend(unwrap_body(children.clone()));
-                found_wrapper = true;
-            } else if tag == "head" || tag == "meta" || tag == "style" || tag == "script" {
-                found_wrapper = true;
-            } else {
-                result.push(node.clone());
-            }
-        } else {
-            result.push(node.clone());
-        }
-    }
-    if found_wrapper && !result.is_empty() {
-        return result;
-    }
-    nodes
-}
-
-struct HtmlFragmentParser<'a> {
-    input: &'a str,
-    pos: usize,
-    /// Keep every attribute rather than [`filter_attributes`]' set: for
-    /// [`dropped_table_attr`], which reports what the filter would drop.
-    all_attributes: bool,
-}
-
-impl<'a> HtmlFragmentParser<'a> {
-    fn new(input: &'a str) -> Self {
-        Self {
-            input,
-            pos: 0,
-            all_attributes: false,
-        }
-    }
-
-    fn filter(&self, attributes: Vec<(String, String)>) -> Vec<(String, String)> {
-        if self.all_attributes {
-            attributes
-        } else {
-            filter_attributes(attributes)
-        }
-    }
-
-    fn parse(&mut self) -> Vec<ParsedNode> {
-        self.parse_nodes(None)
-    }
-
-    fn parse_nodes(&mut self, end_tag: Option<&str>) -> Vec<ParsedNode> {
-        let mut nodes = Vec::new();
-        while self.pos < self.input.len() {
-            if let Some(end) = end_tag
-                && self.looking_at_close_tag(end)
-            {
-                self.consume_close_tag();
-                break;
-            }
-            if self.peek() == Some('<') {
-                if self.input[self.pos..].starts_with("<!--") {
-                    self.skip_comment();
-                    continue;
-                }
-                if self.input[self.pos..].starts_with("</") {
-                    if end_tag.is_none() {
-                        self.skip_to('>');
-                    }
-                    break;
-                }
-                if let Some(element) = self.parse_element() {
-                    nodes.push(element);
-                }
-            } else {
-                let text = self.parse_text();
-                if !text.is_empty() {
-                    nodes.push(ParsedNode::Text(text));
-                }
-            }
-        }
-        nodes
-    }
-
-    fn parse_element(&mut self) -> Option<ParsedNode> {
-        self.advance(); // consume '<'
-        let tag = self.parse_tag_name()?.to_ascii_lowercase();
-        if matches!(
-            tag.as_str(),
-            "script" | "style" | "meta" | "link" | "head" | "title"
-        ) {
-            if is_void_tag(&tag) {
-                // `<meta>` and `<link>` have no end tag: looking for one
-                // dropped everything after the `<meta charset>` a browser
-                // puts first in what it copies.
-                self.parse_attributes();
-                self.skip_to('>');
-            } else {
-                self.skip_until_close_tag(&tag);
-            }
-            return None;
-        }
-        let attributes = self.parse_attributes();
-        self.skip_whitespace();
-        let self_closing = self.peek() == Some('/');
-        if self_closing {
-            self.advance();
-        }
-        if self.peek() == Some('>') {
-            self.advance();
-        }
-        let is_void = is_void_tag(&tag);
-        if self_closing || is_void {
-            return Some(ParsedNode::Element {
-                tag,
-                attributes: self.filter(attributes),
-                children: Vec::new(),
-            });
-        }
-        let children = self.parse_nodes(Some(&tag));
-        Some(ParsedNode::Element {
-            tag,
-            attributes: self.filter(attributes),
-            children,
-        })
-    }
-
-    fn parse_tag_name(&mut self) -> Option<String> {
-        let start = self.pos;
-        while self.pos < self.input.len() {
-            let ch = self.input.as_bytes()[self.pos];
-            if ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_' {
-                self.pos += 1;
-            } else {
-                break;
-            }
-        }
-        if self.pos > start {
-            Some(self.input[start..self.pos].to_string())
-        } else {
-            self.skip_to('>');
-            None
-        }
-    }
-
-    fn parse_attributes(&mut self) -> Vec<(String, String)> {
-        let mut attrs = Vec::new();
-        loop {
-            self.skip_whitespace();
-            let ch = self.peek();
-            if ch == Some('>') || ch == Some('/') || ch.is_none() {
-                break;
-            }
-            let name_start = self.pos;
-            while self.pos < self.input.len() {
-                let ch = self.input.as_bytes()[self.pos];
-                if ch == b'=' || ch == b'>' || ch == b'/' || ch.is_ascii_whitespace() {
-                    break;
-                }
-                self.pos += 1;
-            }
-            let name = self.input[name_start..self.pos].to_ascii_lowercase();
-            if name.is_empty() {
-                self.advance();
-                continue;
-            }
-            self.skip_whitespace();
-            if self.peek() == Some('=') {
-                self.advance();
-                self.skip_whitespace();
-                let value = if self.peek() == Some('"') {
-                    self.advance();
-                    let v = self.consume_until('"');
-                    self.advance();
-                    decode_entities(&v)
-                } else if self.peek() == Some('\'') {
-                    self.advance();
-                    let v = self.consume_until('\'');
-                    self.advance();
-                    decode_entities(&v)
-                } else {
-                    let v_start = self.pos;
-                    while self.pos < self.input.len() {
-                        let ch = self.input.as_bytes()[self.pos];
-                        if ch.is_ascii_whitespace() || ch == b'>' || ch == b'/' {
-                            break;
-                        }
-                        self.pos += 1;
-                    }
-                    decode_entities(&self.input[v_start..self.pos])
-                };
-                attrs.push((name, value));
-            } else {
-                attrs.push((name, String::new()));
-            }
-        }
-        attrs
-    }
-
-    fn parse_text(&mut self) -> String {
-        let start = self.pos;
-        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != b'<' {
-            self.pos += 1;
-        }
-        decode_entities(&self.input[start..self.pos])
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.input[self.pos..].chars().next()
-    }
-
-    fn advance(&mut self) {
-        if self.pos < self.input.len() {
-            self.pos += self.input[self.pos..]
-                .chars()
-                .next()
-                .map_or(1, |c| c.len_utf8());
-        }
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.pos < self.input.len() && self.input.as_bytes()[self.pos].is_ascii_whitespace() {
-            self.pos += 1;
-        }
-    }
-
-    fn skip_to(&mut self, ch: char) {
-        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != ch as u8 {
-            self.pos += 1;
-        }
-        if self.pos < self.input.len() {
-            self.pos += 1;
-        }
-    }
-
-    fn consume_until(&mut self, ch: char) -> String {
-        let start = self.pos;
-        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != ch as u8 {
-            self.pos += 1;
-        }
-        self.input[start..self.pos].to_string()
-    }
-
-    fn looking_at_close_tag(&self, tag: &str) -> bool {
-        // Compare on bytes: `self.pos` is a char boundary here (parse_nodes only
-        // reaches this with `pos` at a `<`), but `tag.len()` may land mid-char if
-        // the close tag's name is multibyte, so never str-slice by `tag.len()`.
-        let remaining = &self.input.as_bytes()[self.pos..];
-        if !remaining.starts_with(b"</") {
-            return false;
-        }
-        let after = &remaining[2..];
-        if after.len() < tag.len() {
-            return false;
-        }
-        after[..tag.len()].eq_ignore_ascii_case(tag.as_bytes())
-            && after
-                .get(tag.len())
-                .is_none_or(|&b| b == b'>' || b.is_ascii_whitespace())
-    }
-
-    fn consume_close_tag(&mut self) {
-        self.skip_to('>');
-    }
-
-    fn skip_comment(&mut self) {
-        self.pos += 4; // skip "<!--"
-        // Scan on bytes: `pos` is advanced one byte at a time, so it may land
-        // inside a multibyte char — comparing `&str` slices there would panic.
-        let bytes = self.input.as_bytes();
-        while self.pos < bytes.len() {
-            if bytes[self.pos..].starts_with(b"-->") {
-                self.pos += 3;
-                return;
-            }
-            self.pos += 1;
-        }
-        self.pos = self.input.len();
-    }
-
-    fn skip_until_close_tag(&mut self, tag: &str) {
-        let close = format!("</{tag}");
-        let close_bytes = close.as_bytes();
-        // Byte-level, case-insensitive scan — `pos` advances byte-by-byte and may
-        // sit mid-char in non-ASCII element bodies (e.g. `<style>café</style>`).
-        let bytes = self.input.as_bytes();
-        while self.pos < bytes.len() {
-            if bytes[self.pos..].len() >= close_bytes.len()
-                && bytes[self.pos..self.pos + close_bytes.len()].eq_ignore_ascii_case(close_bytes)
-            {
-                self.skip_to('>');
-                return;
-            }
-            self.pos += 1;
-        }
-    }
-}
-
-fn is_void_tag(tag: &str) -> bool {
-    matches!(
-        tag,
-        "br" | "hr"
-            | "img"
-            | "input"
-            | "meta"
-            | "link"
-            | "wbr"
-            | "area"
-            | "base"
-            | "col"
-            | "embed"
-            | "source"
-            | "track"
-    )
-}
-
-/// Keep only the safe, schema-relevant attributes — drops `on*` event handlers
-/// and everything else.
-fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
-    attrs
-        .into_iter()
-        .filter(|(name, _)| {
-            matches!(
-                name.as_str(),
-                "href"
-                    | "src"
-                    | "alt"
-                    | "title"
-                    | "target"
-                    | "start"
-                    | "style"
-                    | "class"
-                    | "colspan"
-                    | "rowspan"
-                    | TASK_TYPE
-                    | TASK_CHECKED
-            )
-        })
-        .collect()
-}
-
-fn decode_entities(s: &str) -> String {
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", "\u{00A0}")
-        .replace("&amp;", "&")
 }
 
 #[cfg(test)]

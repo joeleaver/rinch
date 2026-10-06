@@ -523,6 +523,20 @@ fn find_width(table: &Node) -> u64 {
     width.max(1)
 }
 
+/// How many grid slots of each row of `table` no cell covers: what a ragged
+/// row is short by. Appending that many cells to each row fills the grid
+/// (a row's own cells go in its uncovered slots, left to right).
+pub fn row_holes(table: &Node) -> Vec<usize> {
+    let map = TableMap::compute(table, 0);
+    if map.width == 0 {
+        return vec![0; map.height];
+    }
+    map.map
+        .chunks(map.width)
+        .map(|row| row.iter().filter(|slot| **slot == UNSET).count())
+        .collect()
+}
+
 /// The grid rectangle of every cell of `table`, row by row and cell by cell in
 /// document order: [`TableMap::cell_rect`] at the cell's first slot, or `None`
 /// for a cell the bounded grid has no slot for (one past a capped width, or in
