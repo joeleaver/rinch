@@ -222,6 +222,7 @@ rsx! { Editor { editor: editor.clone() } }
 | `load_html(&str) -> bool` | Parse schema-whitelisted HTML and replace the document. No markup is refused, however broken: its text is read, into valid content (see [What the HTML reader keeps](#what-the-html-reader-keeps)). Returns `false` only when the load itself is refused (a read-only collaborating editor). |
 | `doc() -> Node` | The current document (the save shape; serialize it under the `serde` feature). |
 | `insert_image(src, alt)` | Insert an image node (e.g. a `data:` URL), replacing the selection. |
+| `on_image_input(cb)` / `insert_image_at(&anchor, src, alt)` | Be offered pasted and dropped pictures and answer with the `src` to insert, at once or later. See [Pasted and dropped pictures](#pasted-and-dropped-pictures). |
 | `toggle_link(href) -> bool` | Add a `link` mark with `href` across the selection, or remove it if the selection is already linked. No-op (returns `false`) for a collapsed cursor. |
 | `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None` — except where it runs straight into a different link, where the caret is in the first. |
 | `paste(&PasteContent) -> bool` | Paste `text/plain` and/or `text/html` over the selection the way the user's paste does: your plugins first, then the default. See [Seeing and rewriting a paste](#seeing-and-rewriting-a-paste). |
@@ -367,6 +368,60 @@ editor.add_plugin(Rc::new(LinkOnPaste));
 `EditorHandle::paste(&PasteContent)` is the same entry point for an app of its
 own: a "Paste link" menu item that read the clipboard itself goes through the
 plugins exactly as Ctrl+V does.
+
+### Pasted and dropped pictures
+
+By default a bitmap pasted into a desktop editor becomes an image whose `src` is
+a PNG `data:` URL, and image files dropped on an editor go to the app's own
+`onfiledrop` handler. An app that keeps pictures somewhere of its own (a blob
+store, an upload) asks to be offered them instead:
+
+```rust
+let editor = handle.clone();
+handle.on_image_input(move |input: ImageInput| {
+    // input.bytes: the encoded file (a pasted bitmap arrives as PNG)
+    // input.mime:  "image/png", "image/jpeg", "image/gif" or "image/webp"
+    // input.name:  the dropped file's name; None for a paste
+    let src = store_blob(&input.bytes)?;        // answer at once...
+    Some((src, String::new()))                  // ...with (src, alt)
+});
+```
+
+The editor inserts an image with that `src` where the picture was aimed: the
+selection at the paste, or the caret at the drop point. When storing takes a
+round trip, keep the input, return `None`, and finish later:
+
+```rust
+handle.on_image_input(move |input| {
+    let editor = editor.clone();
+    store_blob_async(input.bytes, move |src| {
+        editor.insert_image_at(&input.anchor, &src, "");
+    });
+    None
+});
+```
+
+`input.anchor` is the place the picture was aimed at, kept pointed at the same
+content while the person types on; `insert_image_at` answers `false` if that
+document has been replaced meanwhile. Returning `None` and never inserting is a
+refusal: nothing is inserted, and no `data:` URL is made.
+
+With the callback registered:
+
+- A paste whose clipboard holds a bitmap is offered. That includes a browser's
+  "Copy image", which also puts an `<img>` on the clipboard as html: when the
+  html is pictures and nothing else, the bitmap is what the app gets.
+- Image files dropped on the editor are offered one by one, in order, and the
+  app's `onfiledrop` handler does not see that drop. A file counts as an image
+  by its extension (`png`, `jpg`, `jpeg`, `gif`, `webp`) and is offered only if
+  its first bytes agree. The other files of a mixed drop are ignored. A drop
+  with no image file, or on a read-only editor, is the app's handler's as
+  before.
+- An html paste that holds text as well as pictures is an ordinary paste: its
+  `<img>` elements keep the `src` they came with. `Plugin::handle_paste` is
+  where an app rewrites or strips those.
+
+This is desktop only for now; the browser build does not offer pictures yet.
 
 ### Dark mode
 
