@@ -788,10 +788,39 @@ impl<'a> HtmlParser<'a> {
         loose_as: LooseAs<'_>,
         b: &mut Building,
     ) -> Result<(), EditorError> {
-        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
         let refs: Vec<&ParsedNode> = children.iter().collect();
-        for block in self.parse_block_refs(&refs, loose_as)?.blocks {
+        let inner = self.parse_block_refs(&refs, loose_as)?;
+        if inner.blocks.is_empty() {
+            return self.end_line(inner.blank, loose_as, b);
+        }
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        for block in inner.blocks {
             b.blocks.push(with_mark_inside(&block, mark));
+        }
+        Ok(())
+    }
+
+    /// An element that is a line of its own and holds no block: the line
+    /// before it ends there (`a<div></div>b` is two lines in a browser).
+    /// It is a line itself only when it holds something a browser gives a
+    /// line box, a non-breaking space; one that is empty, or holds
+    /// whitespace that collapses, is none.
+    fn end_line(
+        &self,
+        blank: Vec<Node>,
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<(), EditorError> {
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        let shown = blank.iter().any(|node| {
+            node.text()
+                .is_some_and(|t| t.chars().any(|c| !c.is_ascii_whitespace()))
+        });
+        if shown {
+            for node in blank {
+                self.push_inline(&mut b.loose, node)?;
+            }
+            self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
         }
         Ok(())
     }
@@ -808,13 +837,10 @@ impl<'a> HtmlParser<'a> {
         let refs: Vec<&ParsedNode> = children.iter().collect();
         let inner = self.parse_block_refs(&refs, loose_as)?;
         if inner.blocks.is_empty() {
-            for node in inner.blank {
-                self.push_inline(&mut b.loose, node)?;
-            }
-        } else {
-            self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
-            b.blocks.extend(inner.blocks);
+            return self.end_line(inner.blank, loose_as, b);
         }
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        b.blocks.extend(inner.blocks);
         Ok(())
     }
 
@@ -981,8 +1007,10 @@ impl<'a> HtmlParser<'a> {
     /// Google Docs writes a nested list, `<ul><li>a</li><ul><li>b</li></ul></ul>`,
     /// and what browsers build from it — goes under the item before it
     /// (ProseMirror's list normalisation), or in an item of its own when it
-    /// comes first. Any other child with content gets an item of its own:
-    /// nothing in a list is dropped for not being an `<li>`.
+    /// comes first. Any other child with content gets an item of its own,
+    /// inline children side by side one item between them (they are one
+    /// line in a browser): nothing in a list is dropped for not being an
+    /// `<li>`.
     fn list_item_contents(
         &self,
         children: &[&ParsedNode],
@@ -1009,8 +1037,19 @@ impl<'a> HtmlParser<'a> {
                 }
                 ParsedNode::Text(t) if t.trim().is_empty() => {}
                 stray => {
-                    // Table parts side by side are one table, as anywhere.
                     let start = i - 1;
+                    let inline = |n: &ParsedNode| match n {
+                        ParsedNode::Text(_) => true,
+                        ParsedNode::Element {
+                            tag, holds_block, ..
+                        } => !holds_block && !self.is_block_tag(tag),
+                    };
+                    if inline(stray) {
+                        while children.get(i).is_some_and(|next| inline(next)) {
+                            i += 1;
+                        }
+                    }
+                    // Table parts side by side are one table, as anywhere.
                     if matches!(stray, ParsedNode::Element { tag, .. } if is_table_part(tag)) {
                         while children.get(i).is_some_and(|next| match next {
                             ParsedNode::Text(t) => t.trim().is_empty(),

@@ -22,6 +22,14 @@
 //!   row at the next row. An end tag closes the nearest open element of its
 //!   name, unless a table cell (or, for an inline element, a block) is in
 //!   between; one that closes nothing is skipped.
+//! - The end tag of a formatting element (`<b>`, `<i>`, `<a>`, …: the HTML
+//!   parser's list) that has a block open between it and its start tag ends
+//!   the element there, as a browser's adoption agency algorithm does: what
+//!   the open elements in between hold so far keeps the formatting, what is
+//!   read after it does not. With more than [`MAX_ADOPT`] elements open in
+//!   between, the end tag is skipped.
+//! - A `</p>` with no `<p>` to close ends the line (in a browser it is an
+//!   empty `<p>`).
 //! - `<textarea>` holds text, not markup.
 //! - The tree is at most [`MAX_DEPTH`] elements deep (two more for a block
 //!   read past it and an element with no content in that), because everything that walks it recurses. An element
@@ -40,11 +48,13 @@
 //!   where each name is open, so no tag costs more than a fixed amount.
 //!
 //! Not followed: a self-closing `<x/>` is an empty element whatever `x` is
-//! (in HTML only a void element is), formatting elements are not reopened
-//! across a block (the adoption agency algorithm), and content that has no
-//! place in a table stays where it is written for the reader to move.
+//! (in HTML only a void element is), a formatting element that a block's end
+//! closes is not opened again for what follows (a browser reconstructs its
+//! active formatting elements: `<p><b>a</p>b` is two bold lines there), and
+//! content that has no place in a table stays where it is written for the
+//! reader to move.
 
-use super::html_entities::decode_entities;
+use super::html_entities::{decode_attribute, decode_entities};
 
 /// How deep the tree is built. A valid document is far shallower (a list
 /// costs three elements a level, a quote one), and Chrome's own limit
@@ -64,6 +74,16 @@ pub(super) const MAX_DEPTH: usize = 192;
 /// thousands of open elements make a tag no dearer and change nothing it
 /// closes.
 pub(super) const MAX_SCAN: usize = MAX_DEPTH;
+
+/// The most elements that may be open above a formatting element for its
+/// misnested end tag to end it ([`HtmlFragmentParser::end_under`]): each of
+/// them is visited, and each that holds content gets a copy of the element
+/// around it, so this bounds what one end tag costs and how many copies of
+/// one element's attributes are made. Chrome walks at most 8 blocks
+/// (`kOuterIterationLimit`) and past them keeps the formatting on; here the
+/// count is of every open element, and past it the end tag is skipped, which
+/// keeps the formatting on too.
+const MAX_ADOPT: usize = 8;
 
 /// Every name [`is_special`] or [`is_foreign`] accepts: the only elements
 /// that an implied end tag closes, that stop one, or that an end tag does
@@ -186,6 +206,9 @@ pub(super) enum ParsedNode {
 
 /// An element whose end tag has not been read.
 struct Open {
+    /// Empty for an element that was ended while elements above it were
+    /// open ([`HtmlFragmentParser::end_under`]): what closes under it from
+    /// then on is its parent's content.
     tag: String,
     attributes: Vec<(String, String)>,
     /// For an element past [`MAX_DEPTH`] that is flattened as a block: the
@@ -594,7 +617,7 @@ impl<'a> HtmlFragmentParser<'a> {
                     &self.input[start..self.pos]
                 }
             };
-            attrs.push((name, decode_entities(value)));
+            attrs.push((name, decode_attribute(value)));
         }
     }
 
@@ -742,6 +765,7 @@ impl<'a> HtmlFragmentParser<'a> {
         let heading = is_heading(&tag);
         let table_part = is_table_part(&tag);
         let special = is_special(&tag);
+        let formatting = is_formatting(&tag);
         // What an end tag does not reach across.
         let barrier = |open: &str| match open {
             "table" => tag != "table",
@@ -750,64 +774,183 @@ impl<'a> HtmlFragmentParser<'a> {
             "td" | "th" | "caption" | "tr" | "tbody" | "thead" | "tfoot" => {
                 tag != "table" && !table_part
             }
+            // A formatting element's end tag reaches across a block
+            // (`end_under`), and not out of what HTML calls a scope.
+            _ if formatting => matches!(
+                open,
+                "applet" | "marquee" | "object" | "foreignobject" | "desc" | "annotation-xml"
+            ),
             "ul" | "ol" => tag == "li" || !special,
             _ => !special && is_special(open),
         };
+        // The element the tag ends, and whether a block is open above it.
+        let mut found = None;
+        let mut across_block = false;
+        let mut scanned = false;
         for i in (0..self.stack.len()).rev().take(MAX_SCAN) {
             step();
             let open = self.stack[i].tag.as_str();
             if open == tag || (heading && is_heading(open)) {
-                self.close_to(i);
-                return;
+                found = Some(i);
+                scanned = true;
+                break;
             }
             if barrier(open) {
-                return;
+                scanned = true;
+                break;
+            }
+            across_block |= is_special(open);
+        }
+        if !scanned && self.stack.len() > MAX_SCAN {
+            // Further up than the scan looks: the same rule, from the index.
+            let nearest = if heading {
+                self.nearest_scope(is_heading)
+            } else {
+                self.last_open(&tag)
+            };
+            if let Some(nearest) = nearest
+                && self.nearest_scope(barrier).is_none_or(|b| b <= nearest)
+            {
+                found = Some(nearest);
+                across_block = self.nearest_scope(is_special).is_some_and(|b| b > nearest);
             }
         }
-        if self.stack.len() <= MAX_SCAN {
+        match found {
+            Some(found) if formatting && across_block => self.end_under(found),
+            Some(found) => self.close_to(found),
+            // In a browser a `</p>` with no `<p>` to close is an empty
+            // `<p>`: the line ends there. An empty block that is no
+            // paragraph says that and no more (an empty paragraph would be
+            // a blank line of its own).
+            None if tag == "p" => self.push_closed("div".to_string(), Vec::new(), String::new()),
+            None => {}
+        }
+    }
+
+    /// The end tag of the formatting element at `at`, read while a block is
+    /// open above it (`<b>a<div>b</b>c</div>d`). As in a browser, the
+    /// element ends there and what it held stays formatted: every element
+    /// open above it gets a copy of it around what that element holds so
+    /// far, and what is read from here on is outside it. An element open
+    /// above the innermost block that is no formatting element ends too.
+    ///
+    /// The tree gets no deeper: the element leaves every path it was on,
+    /// and a copy joins each such path once.
+    fn end_under(&mut self, at: usize) {
+        if self.stack.len() - 1 - at > MAX_ADOPT {
             return;
         }
-        // Further up than the scan looks: the same rule, from the index.
-        let found = if heading {
-            self.nearest_scope(is_heading)
-        } else {
-            self.last_open(&tag)
-        };
-        if let Some(found) = found
-            && self.nearest_scope(barrier).is_none_or(|b| b <= found)
-        {
-            self.close_to(found);
+        // Above the innermost block: a browser pops these, and opens the
+        // formatting elements among them again for what follows.
+        let mut i = self.stack.len() - 1;
+        while i > at {
+            step();
+            let open = self.stack[i].tag.as_str();
+            if is_special(open)
+                || is_foreign(open)
+                || is_flat_block(open)
+                || super::html::is_dropped(open)
+            {
+                break;
+            }
+            if !open.is_empty() && !is_formatting(open) {
+                self.end_one_under(i);
+            }
+            // Closing the innermost element takes the ended ones under it
+            // along; the one at `at` is not ended yet.
+            i = (i - 1).min(self.stack.len() - 1);
+        }
+        self.end_one_under(at);
+    }
+
+    /// End the element at `at` and leave what is open above it open.
+    fn end_one_under(&mut self, at: usize) {
+        if at + 1 == self.stack.len() {
+            self.close_to(at);
+            return;
+        }
+        let tag = std::mem::take(&mut self.stack[at].tag);
+        let attributes = std::mem::take(&mut self.stack[at].attributes);
+        // It is the innermost open element of its name.
+        let unlisted = self.open_at.get_mut(&tag).and_then(Vec::pop);
+        debug_assert_eq!(unlisted, Some(at));
+        // Past the depth limit an inline element is no element: it has
+        // nothing to keep.
+        if at >= MAX_DEPTH {
+            return;
+        }
+        let bytes: usize = attributes.iter().map(|(k, v)| k.len() + v.len()).sum();
+        for open in &mut self.stack[at..] {
+            step();
+            if open.children.is_empty() {
+                continue;
+            }
+            steps((bytes / 64) as u64);
+            open.children = vec![ParsedNode::Element {
+                tag: tag.clone(),
+                attributes: attributes.clone(),
+                children: std::mem::take(&mut open.children),
+                holds_block: false,
+            }];
         }
     }
 
     /// Close every open element from index `to` up.
     fn close_to(&mut self, to: usize) {
         while self.stack.len() > to {
-            let Some(open) = self.stack.pop() else { return };
-            if matches!(open.tag.as_str(), "svg" | "math") {
-                self.foreign -= 1;
+            self.pop_open();
+        }
+        // An element ended under the ones just closed (`end_under`) has
+        // nothing open above it now: it is no longer in the way.
+        while self.stack.last().is_some_and(|open| open.tag.is_empty()) {
+            self.pop_open();
+        }
+    }
+
+    /// Close the innermost open element.
+    fn pop_open(&mut self) {
+        let Some(mut open) = self.stack.pop() else {
+            return;
+        };
+        if matches!(open.tag.as_str(), "svg" | "math") {
+            self.foreign -= 1;
+        }
+        if let Some(indices) = self.open_at.get_mut(&open.tag) {
+            indices.pop();
+        }
+        let at = self.stack.len();
+        if open.tag.is_empty() {
+            // Ended earlier: what it holds is its parent's.
+            if at < MAX_DEPTH && !open.children.is_empty() {
+                steps((open.children.len() / 8) as u64);
+                let siblings = self.siblings();
+                let mut children = open.children.drain(..).peekable();
+                if let (Some(ParsedNode::Text(last)), Some(ParsedNode::Text(first))) =
+                    (siblings.last_mut(), children.peek())
+                {
+                    last.push_str(first);
+                    children.next();
+                }
+                siblings.extend(children);
             }
-            if let Some(indices) = self.open_at.get_mut(&open.tag) {
-                indices.pop();
-            }
-            let at = self.stack.len();
-            if at < MAX_DEPTH {
-                self.siblings().push(ParsedNode::Element {
-                    tag: open.tag,
-                    attributes: open.attributes,
-                    children: open.children,
-                    holds_block: false,
-                });
-                continue;
-            }
-            // Flattened: an inline element gave its content where it stood,
-            // and a dropped one kept its own to itself.
-            if self.flat_dropped == Some(at) {
-                self.flat_dropped = None;
-            } else if self.flat_blocks.last() == Some(&at) {
-                self.flat_blocks.pop();
-                self.push_flat(open.tag, open.attributes, open.children, open.split);
-            }
+            return;
+        }
+        if at < MAX_DEPTH {
+            self.siblings().push(ParsedNode::Element {
+                tag: open.tag,
+                attributes: open.attributes,
+                children: open.children,
+                holds_block: false,
+            });
+            return;
+        }
+        // Flattened: an inline element gave its content where it stood,
+        // and a dropped one kept its own to itself.
+        if self.flat_dropped == Some(at) {
+            self.flat_dropped = None;
+        } else if self.flat_blocks.last() == Some(&at) {
+            self.flat_blocks.pop();
+            self.push_flat(open.tag, open.attributes, open.children, open.split);
         }
     }
 
@@ -994,6 +1137,27 @@ fn is_foreign(tag: &str) -> bool {
     matches!(
         tag,
         "svg" | "math" | "foreignobject" | "desc" | "annotation-xml"
+    )
+}
+
+/// HTML's formatting elements: the ones whose end tag a browser lets end
+/// the element across an open block (the adoption agency algorithm).
+fn is_formatting(tag: &str) -> bool {
+    matches!(
+        tag,
+        "a" | "b"
+            | "big"
+            | "code"
+            | "em"
+            | "font"
+            | "i"
+            | "nobr"
+            | "s"
+            | "small"
+            | "strike"
+            | "strong"
+            | "tt"
+            | "u"
     )
 }
 
