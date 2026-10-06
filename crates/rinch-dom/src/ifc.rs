@@ -89,8 +89,7 @@ pub(crate) fn wavy_underline_color(cs: &crate::computed_style::ComputedStyle) ->
 /// fully transparent. The one test [`inline_background_span`] makes, asked
 /// on its own by the transition and animation ticks (#679).
 pub(crate) fn has_inline_background(cs: &crate::computed_style::ComputedStyle) -> bool {
-    cs.background_color()
-        .is_some_and(|c| c.components[3] > 0.0)
+    cs.background_color().is_some_and(|c| c.components[3] > 0.0)
 }
 
 /// The background span inline element `owner` draws over `start..end`, from

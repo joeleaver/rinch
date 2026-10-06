@@ -944,10 +944,7 @@ impl RinchDocument {
     /// Those of `nodes` that are `display: inline` elements with no
     /// background to draw — the ones a tick could give one
     /// ([`Self::settle_ticked_text`]).
-    fn inlines_without_background<'a>(
-        &self,
-        nodes: impl Iterator<Item = &'a usize>,
-    ) -> Vec<usize> {
+    fn inlines_without_background<'a>(&self, nodes: impl Iterator<Item = &'a usize>) -> Vec<usize> {
         nodes
             .copied()
             .filter(|&id| {

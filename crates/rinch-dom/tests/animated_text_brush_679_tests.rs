@@ -310,13 +310,20 @@ fn a_running_colour_transition_on_an_inline_span_recolours_only_the_span() {
     let (mut doc, s) = SPAN_COLOUR.started();
     // The paragraph's own text, before anything moves.
     let green_before = exact(&paint(&mut doc), GREEN);
-    assert!(green_before > 500, "positive control: {green_before} green px");
+    assert!(
+        green_before > 500,
+        "positive control: {green_before} green px"
+    );
     age_transitions(&mut doc, s, MID);
     let (px, stats) = frame(&mut doc);
     let now = colour_of(&doc, s);
     assert!(now != RED && now != BLUE, "between the ends, got {now:?}");
     assert!(exact(&px, now) > 200, "the span: {} px", exact(&px, now));
-    assert_eq!(exact(&px, RED), 0, "the span keeps none of its start colour");
+    assert_eq!(
+        exact(&px, RED),
+        0,
+        "the span keeps none of its start colour"
+    );
     assert_eq!(
         exact(&px, GREEN),
         green_before,
@@ -382,7 +389,10 @@ const UNDERLINE: Case = Case {
 fn a_currentcolor_underline_follows_a_running_colour_transition() {
     let (mut doc, p) = UNDERLINE.started();
     let red_line = exact_rows(&paint(&mut doc), RED, UNDER.0, UNDER.1);
-    assert!(red_line > 100, "positive control: the underline, {red_line} px");
+    assert!(
+        red_line > 100,
+        "positive control: the underline, {red_line} px"
+    );
     age_transitions(&mut doc, p, MID);
     let (px, _) = frame(&mut doc);
     let now = colour_of(&doc, p);
@@ -721,7 +731,11 @@ fn the_frame_that_ends_a_colour_transition_reshapes_the_text_once() {
     age_transitions(&mut doc, p, MID);
     let (_, running) = frame(&mut doc);
     assert_eq!(shapes(&running), 0);
-    assert_eq!(shaped_colour(&doc, p), RED, "still the layout it started with");
+    assert_eq!(
+        shaped_colour(&doc, p),
+        RED,
+        "still the layout it started with"
+    );
 
     age_transitions(&mut doc, p, LONG * 2.0);
     let (_, last) = frame(&mut doc);
@@ -840,7 +854,11 @@ fn a_running_colour_animation_on_block_text_is_drawn_in_the_frames_colour() {
     // And its fill, which is written by one tick and by no cascade.
     age_animations(&mut doc, p, LONG * 2.0);
     let (px, _) = frame(&mut doc);
-    assert!(exact(&px, BLUE) > 500, "{} px of the fill", exact(&px, BLUE));
+    assert!(
+        exact(&px, BLUE) > 500,
+        "{} px of the fill",
+        exact(&px, BLUE)
+    );
 }
 
 #[test]
@@ -890,7 +908,10 @@ fn font_size_transition_on_a_span(wrapper: &str) {
     settle(&mut doc);
     paint(&mut doc);
     let small = height_of(&doc, p);
-    assert!(want > small + 20.0, "off the fixed point: {small} -> {want}");
+    assert!(
+        want > small + 20.0,
+        "off the fixed point: {small} -> {want}"
+    );
 
     doc.set_attribute(s, "class", "t b");
     doc.resolve_layout(VW, VH);
@@ -905,7 +926,11 @@ fn font_size_transition_on_a_span(wrapper: &str) {
 
     age_transitions(&mut doc, s, LONG * 2.0);
     let (px, _) = frame(&mut doc);
-    assert_eq!(height_of(&doc, p), want, "the finished height (was {small})");
+    assert_eq!(
+        height_of(&doc, p),
+        want,
+        "the finished height (was {small})"
+    );
     assert!(px == want_px, "and the finished frame is the twin's");
 }
 

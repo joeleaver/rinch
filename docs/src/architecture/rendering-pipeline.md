@@ -113,6 +113,16 @@ the cascade, so a `transition: font-size` frame reaches none of that gating on
 its own; both ticks invalidate the text measure of the nodes they are
 interpolating.
 
+A `color` frame needs no new layout at all, and gets none (issue #679). The
+colour of each run is a brush inside the shaped layout, so paint asks every text
+range what colour its element computes now and draws the ranges that answer
+differently from the build in the new colour (`paint::text::LiveColours`); an
+underline follows where it was `currentcolor`, and a wavy underline and an
+inline element's background are read from their element's style on every paint.
+The layout is rebuilt once, with no Taffy compute, on the frame the colour stops
+moving, so a finished fade costs what a colour-only hover costs and later frames
+compare nothing.
+
 ### Why an atomic inline needs its own pass
 
 An `inline-block`, `inline-flex` or `inline-grid` box is **detached from its

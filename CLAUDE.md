@@ -2675,10 +2675,32 @@ box:
   frame. **Their Taffy re-sync marks atomic inlines separately**, because that
   pre-pass fires only for `font-size` while a `transition: width` on a box
   *inside* an `inline-block` is #661's own symptom reached without the cascade
-  (found by the review of #694). A `color` tick reaches a text **leaf** with no
-  invalidation at all, because paint colours a leaf from the live style (#904);
-  an IFC's `text_layout` carries the brush and is **not** dropped by a tick:
-  that is #679.
+  (found by the review of #694). **A `color` tick re-shapes nothing, for a leaf or an IFC.**
+  Paint colours a text leaf from the live style (#904). An IFC's `text_layout`
+  carries each run's colour as a brush, so paint asks every text range for its
+  colour again (#679): `ifc::text_color` — the `color` of the text node's DOM
+  parent — recorded at the build as `IfcTextRange::color` (the root's own as
+  `InlineLayout::root_color`, which is what a `text-overflow: ellipsis`
+  rebuild's text follows), and `paint::text::LiveColours` draws the ranges that
+  answer differently in the new colour, glyph by glyph where two ranges share a
+  Parley run. An underline or line-through follows only where it was
+  `currentcolor` (no `text-decoration-color` from the range's element up to the
+  IFC root); a wavy underline and an inline element's background rectangle
+  (colour, padding, radius) are read from their owner's style on every paint
+  (`ifc::wavy_underline_color`, `ifc::inline_background_span`). Two things a
+  tick still rebuilds a paint layout for, with no Taffy compute
+  (`settle_ticked_text`): the frame an inline element's background **appears**
+  on (the layout holds a span only for an element that had one), and the frame
+  a colour **stops** moving — a finished transition, an ended or fill-settled
+  animation — so later paints are back on the layout's own brushes rather than
+  comparing stretch by stretch for good
+  (`perf_regression_scenarios::a_colour_transition_frame_on_ifc_text_shapes_nothing`,
+  `the_frame_that_ends_a_colour_transition_rebuilds_one_layout`). A paused
+  colour animation is drawn recoloured for as long as it is paused. Pins:
+  `crates/rinch-dom/tests/animated_text_brush_679_tests.rs`. Not covered: a
+  `padding` frame on an inline element still runs a Taffy compute and a shape
+  (#ISSUE_PADDING), and a `color` transition still stops at its own node (text
+  in a child that inherits takes the end colour at once).
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
   not the cascade's.** That pass stores it as `Display::None`
   (`node::display_contents_taffy_style`), while `to_taffy_style` maps `contents`
