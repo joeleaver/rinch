@@ -2699,7 +2699,7 @@ box:
   colour animation is drawn recoloured for as long as it is paused. Pins:
   `crates/rinch-dom/tests/animated_text_brush_679_tests.rs`. Not covered: a
   `padding` frame on an inline element still runs a Taffy compute and a shape
-  (#ISSUE_PADDING), and a `color` transition still stops at its own node (text
+  (#1437), and a `color` transition still stops at its own node (text
   in a child that inherits takes the end colour at once).
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
   not the cascade's.** That pass stores it as `Display::None`
