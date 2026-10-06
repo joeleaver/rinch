@@ -128,7 +128,9 @@ pub enum PlatformEvent {
     /// *layout* letter, the pairing would silently never match — on AZERTY a
     /// press of `"a"` would release as `"q"`, and the key would look held for
     /// ever. winit's `KeyEvent` is one struct for both states and populates
-    /// `logical_key` on each; only `text` is press-gated.
+    /// `logical_key` on each; only `text` is press-gated. Android's hardware
+    /// keys report the string the key's press was reported with
+    /// (`rinch::shell::android_key`, issue #479).
     KeyUp {
         /// The **physical** key (layout-independent position).
         key: KeyCode,

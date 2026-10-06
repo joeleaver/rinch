@@ -39,6 +39,12 @@ pub(crate) mod android_frame;
 #[cfg(any(all(feature = "android", target_os = "android"), test))]
 pub(crate) mod android_ime;
 
+// The Android hardware-key translator. What a key event becomes — a press, a
+// release, how each is spelled, what a dead key leaves pending — is decided
+// over plain data, so it is compiled for the host test build too (issue #479).
+#[cfg(any(all(feature = "android", target_os = "android"), test))]
+pub(crate) mod android_key;
+
 // The Android touch recogniser. `android_runtime` compiles only for
 // `target_os = "android"`, but the translation from finger to pointer events is
 // pure and is the part that has to be pinned down by tests, so it is compiled
