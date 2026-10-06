@@ -1007,6 +1007,7 @@ impl WebDocument {
     /// Creates a `<div id="rinch-root">` as root and `<div id="rinch-body">`
     /// as body, appending root to `document.body()`.
     pub fn new(browser_doc: web_sys::Document) -> Self {
+        crate::images::install_reloader();
         let mut doc = Self {
             doc_key: rinch_core::dom::next_doc_key(),
             browser_doc,
@@ -1052,6 +1053,7 @@ impl WebDocument {
     /// component tree is appended directly inside it. No fixed ids are set, so
     /// any number of islands can coexist on one page without id collisions.
     pub fn new_into(browser_doc: web_sys::Document, host: web_sys::Element) -> Self {
+        crate::images::install_reloader();
         let mut doc = Self {
             doc_key: rinch_core::dom::next_doc_key(),
             browser_doc,
@@ -1464,6 +1466,14 @@ impl DomDocument for WebDocument {
                         write_value_attribute(&el, value);
                         return;
                     }
+                    // An `<img>` source the app answers for (`images.rs`) is
+                    // shown from the URL the app resolves it to; the source
+                    // itself is kept beside it and is what `get_attribute`
+                    // answers.
+                    "src" if el.tag_name().eq_ignore_ascii_case("img") => {
+                        crate::images::set_img_src(&el, name, value);
+                        return;
+                    }
                     _ => {
                         el.set_attribute(name, value).ok();
                     }
@@ -1502,6 +1512,9 @@ impl DomDocument for WebDocument {
                     remove_value_attribute(&el);
                     return;
                 }
+                if matched == "src" {
+                    el.remove_attribute(crate::images::LOGICAL_SRC_ATTR).ok();
+                }
                 el.remove_attribute(name).ok();
             }
             // Keep the reflected property in sync when the attribute is removed,
@@ -1522,6 +1535,13 @@ impl DomDocument for WebDocument {
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
         let n = self.nodes.get(&node.0)?;
         let el: web_sys::Element = n.clone().dyn_into().ok()?;
+        // An app-resolved `<img>` answers the source it was given, not the
+        // object URL the browser is loading for it.
+        if name.eq_ignore_ascii_case("src")
+            && let Some(logical) = crate::images::logical_src(&el)
+        {
+            return Some(logical);
+        }
         el.get_attribute(name)
     }
 

@@ -384,7 +384,10 @@ pub fn has_pending(doc_key: u64) -> bool {
 }
 
 /// Ask every document to load `src` again: the way a picture that failed to
-/// load, or whose bytes have changed, gets another go without a restart.
+/// load, or whose bytes have changed, gets another go without a restart. The
+/// desktop half of [`rinch_core::image::reload_image`], which is what an app
+/// calls (as `rinch::image::reload_image`) so that the same line works in a
+/// browser build.
 ///
 /// A load's answer is cached by source string, **failures included**: once a
 /// loader has answered [`ImageLoadResult::Failed`] for a source, no element
@@ -434,6 +437,10 @@ pub(crate) fn take_pending_reloads(doc_key: u64) -> Vec<String> {
 /// Note a document as live, so [`reload_image`] reaches it. Undone by
 /// [`purge_pending`] when the document drops.
 pub(crate) fn register_document(doc_key: u64) {
+    // The first document also makes this backend answer the cross-target
+    // `rinch_core::image::reload_image`.
+    static REGISTER_RELOADER: std::sync::Once = std::sync::Once::new();
+    REGISTER_RELOADER.call_once(|| rinch_core::image::add_image_reloader(reload_image));
     LIVE_DOCUMENTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
