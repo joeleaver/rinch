@@ -145,6 +145,42 @@ cargo fmt                      # Format
 RINCH_TREE_CHECK=1 cargo test --workspace
 ```
 
+### Rust toolchain
+
+`rust-toolchain.toml` pins **one exact Rust version** (`channel = "1.99.0"`), and
+it is the compiler everywhere (#736). `cargo` in the repository uses it with no
+`+toolchain`; rustup downloads it (with `rustfmt`, `clippy` and the
+`wasm32-unknown-unknown` target) the first time. Every workflow installs the
+version that file names through `.github/actions/rust-toolchain`, the only place
+a workflow gets a toolchain from: it reads the file, fails on anything that is
+not `X.Y.Z`, and checks `rustc --version` afterwards. So `cargo clippy
+--workspace --all-targets -- -D warnings` run locally is the lint set CI runs.
+
+It used to say `channel = "stable"` beside `dtolnay/rust-toolchain@stable`: the
+newest stable in CI and whatever `rustup update` last fetched locally, under one
+name. A new stable brings new clippy lints, so a clean local clippy failed after
+the push (#729). Do not write `cargo +stable` or `cargo +<version>` in this
+repository to "match CI" any more; a `+toolchain` overrides the pin.
+
+- **Bumping it** is its own pull request: change the `channel` line, run the CI
+  clippy invocations (`ci.yml`'s `clippy`, `clippy-wasm`, `clippy-android` and
+  `check-android` jobs), fix what the new lints report in the same PR, and
+  update the version written in this section and in `rust-toolchain.toml`'s
+  comment. Nothing bumps it automatically, so new lints arrive only in that PR.
+- **Targets.** rustup adds the file's targets to the pinned toolchain only. The
+  Android targets are not in the file (CI's Android jobs ask the action for
+  them); add them with `rustup target add aarch64-linux-android
+  x86_64-linux-android` from inside the repository, which applies to the pinned
+  toolchain. `E0463: can't find crate for core` means a missing target, not a
+  broken build.
+- **After pulling a bump**, `cargo clean`: cargo keeps the old compiler's
+  artifacts beside the new ones, and a gated `target/` is 20 GB or more.
+- **CI caches** in `ci.yml` carry the version in their key, so a bump starts
+  each job from a cold `target/` once, not from the old compiler's.
+- **`perf.yml` compiles base and head with the head's pin** (it exports
+  `RUSTUP_TOOLCHAIN`), so a bump PR's table shows no codegen difference and the
+  job does not measure what a new compiler costs.
+
 ## Architecture
 
 ```
