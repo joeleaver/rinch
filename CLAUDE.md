@@ -415,8 +415,16 @@ The pieces that follow from it:
 - **A child moved between containers re-resolves**, because a container marks
   what it supplied (`data-list-icon`) and never touches what the child asked for
   itself.
-- **`Stepper` re-runs its whole pass, not just the newcomer**: an insertion
-  renumbers the steps after it and can restate them. That pass is idempotent by
+- **`Stepper` re-runs its pass over the whole list, not just the newcomer**: an
+  insertion renumbers the steps after it and can restate them. The pass walks
+  every step and **derives only the ones the change moved** (#748): a step
+  carrying this render's `data-stepper-settled` (a per-render id,
+  `Derivation::settler`) and still standing at its `data-step-position` is
+  passed over, since everything the pass gives a step follows from the
+  stepper's props, the step's position and what the step asked for when it
+  rendered. So a step's own asks (`disabled`, `data-state`, `data-step`) are
+  read when it is derived, and a hand edit of one on a settled step is not seen
+  until the step moves. That pass is idempotent by
   construction — `data-step-derived` says who wrote an index, `data-icon-has`
   records the step's icon *props* rather than what it drew, `data-icon-live`
   names the content key showing — and a glyph the step's props supplied is
@@ -424,7 +432,7 @@ The pieces that follow from it:
   later insertion — or a keyed `for` **reorder**, which repositions a live node
   with `insert_before` and can move it *backwards* — can want it back. Every
   alternate is kept while the stepper owns the step's state; one that named its
-  own `state` keeps none. A **removal** runs the same whole pass for the same
+  own `state` keeps none. A **removal** runs the same pass for the same
   reason, through `on_child_removed` (issue #745): a step that goes moves every
   step behind it backwards, which renumbers it and can restate it.
 - **A `StepperCompleted` is not a position, and neither is anything inside it**
@@ -447,8 +455,24 @@ The pieces that follow from it:
   `MockDomDocument` detach) and adds **+0.02 µs to every insertion** on the
   thread, for the parent read an insertion verb makes to find out whether it is
   moving a node out of somewhere. `Stepper` is the one container whose own patch
-  is O(n) per change, so growing *or shrinking* one step at a time is quadratic:
-  10.6 ms for 100 steps, against 0.11 ms for the ten a real stepper has (#748).
+  walks every item per change. A step already settled where it stands costs
+  three attribute reads and no write (#748), so what a change costs beyond that
+  is the steps it moved: one for an append, none for a removal from the end,
+  every step behind it otherwise (three writes each when only renumbered).
+  Counted on `MockDomDocument`, appending to a 40-step stepper went from 1005
+  attribute reads and 126 attribute writes to 142 and 4, and growing one from 0
+  to 40 steps from 2650 writes to 238. Growing or shrinking one step at a time
+  is still quadratic in the three reads, and a `for` row edited in place still
+  renumbers the steps behind it twice (an insertion, then a removal).
+  `crates/rinch-components/tests/stepper_cost_748.rs` pins the per-step
+  figures as differences between a 10-step and a 40-step stepper (three reads
+  per settled step, three writes per renumbered one, writes that do not grow
+  with the size) and the append and growth totals quoted here; the other
+  absolute counts are not pinned. `stepper::differential_tests` and
+  `stepper::extended_differential_tests` compare the pass with one that derives
+  every step, tree for tree, over random histories (insert, remove, move,
+  replace; nested steppers, stash and re-insert, moved wrappers and completed
+  blocks, re-render with new props).
 
 `RadioGroup::size` and the `Stepper` props are the same shape.
 
