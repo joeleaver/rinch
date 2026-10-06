@@ -108,8 +108,8 @@ pub use web_document::{__reset_scroll_lock, __scroll_lock_depth};
 // browser input glue (keyboard/pointer/IME/clipboard → the handle) lives in
 // `editor_input`, installed once alongside event delegation.
 pub use rinch_editor_view::{
-    CaretAffinity, Editor, EditorHandle, EditorKey, LinkClick, LinkHover, LinkSpan, ScrollAlign,
-    create_editor,
+    CaretAffinity, Editor, EditorHandle, EditorKey, ImageInput, ImageInputSource, LinkClick,
+    LinkHover, LinkSpan, ScrollAlign, SelectionAnchor, create_editor,
 };
 
 // Collaborative editing (M9), behind the `collaboration` feature. The collab methods

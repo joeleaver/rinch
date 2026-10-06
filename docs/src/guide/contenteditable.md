@@ -371,8 +371,8 @@ plugins exactly as Ctrl+V does.
 
 ### Pasted and dropped pictures
 
-By default a bitmap pasted into a desktop editor becomes an image whose `src` is
-a PNG `data:` URL, and image files dropped on an editor go to the app's own
+By default a bitmap pasted into an editor becomes an image whose `src` is a
+`data:` URL, and image files dropped on a desktop editor go to the app's own
 `onfiledrop` handler. An app that keeps pictures somewhere of its own (a blob
 store, an upload) asks to be offered them instead:
 
@@ -421,7 +421,12 @@ With the callback registered:
   `<img>` elements keep the `src` they came with. `Plugin::handle_paste` is
   where an app rewrites or strips those.
 
-This is desktop only for now; the browser build does not offer pictures yet.
+The browser build does the same. There a picture is a `File`: a pasted image
+file is offered as its own bytes with the browser's name for it, and image
+files dragged onto the editor from outside the page are offered at the drop
+point, the editor taking the drop (and the keyboard) so the browser does not
+open the file in place of the page. With no callback a pasted image is a
+`data:` URL, as before, and a file drop is the browser's.
 
 ### Dark mode
 
