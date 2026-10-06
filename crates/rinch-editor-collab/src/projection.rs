@@ -88,6 +88,16 @@
 //! a split moves content, and a concurrent mark or atom-attr change on moved content is
 //! lost whatever it applies to (#861, pre-existing).
 //!
+//! **Known limitation: an atom's attrs merge as one value.** The `@atom` map is the
+//! atom's *whole* attribute set, and yrs keeps one of two concurrent writes of one
+//! formatting attribute over one char. So two peers changing **different** attrs of one
+//! image at once (one its `alt`, the other its `title` or its `src`) converge on the
+//! image exactly as *one* of them left it, and the other's change is lost: last writer
+//! wins on the atom, not on the attribute (the higher client id's write is kept). Each
+//! attr still round-trips, and a change to the attrs beside a peer's *typing* is kept.
+//! Merging per attribute would take one formatting attribute per attr, a change of the
+//! wire shape; the pins are in `tests/image_attrs.rs`.
+//!
 //! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move, which also means
 //! it needs a **coordinated upgrade**, as the leaf block atoms above do. An older reader
 //! meets the attribute as an unknown *mark name* and fails loud in [`marks_at`]
