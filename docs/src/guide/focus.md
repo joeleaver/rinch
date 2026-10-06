@@ -476,6 +476,14 @@ consumer code works against `rinch-web`. Case is identity, so a Shift pressed
 exactly as in a browser; track held keys by the physical `k.code`, or fold
 case at the comparison, if that matters to you.
 
+On **Android** a hardware key's release is spelled as its press was reported,
+whatever happened in between: `"W"` down with Shift held comes up as `"W"` even
+if Shift went up first, and a letter that combined with a dead key (`"é"`)
+comes up as that same string. A release whose press the app never saw (a key
+already held when the app came to the front) is spelled from the layout with
+the modifiers held at the release. The soft keyboard commits text and sends no
+releases.
+
 Two things to know:
 
 - A release is delivered to whoever holds the claim **at release time**. A

@@ -195,8 +195,8 @@ fn an_unknown_backend_still_latches_and_still_releases() {
 
 /// The `WindowFocus(false)` heal, which has been in the runtime since #147 and
 /// was pinned by nothing. It is what bounds the damage on a backend that
-/// answers `Unknown` — and on Android, which translates no `KeyAction::Up` at
-/// all (issue #479), it used to be the *only* thing that ever cleared the
+/// answers `Unknown` — and on Android, which translated no `KeyAction::Up`
+/// until issue #479, it used to be the *only* thing that ever cleared the
 /// latch.
 ///
 /// Kills deleting the `self.node_activation_held = None` in the

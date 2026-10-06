@@ -303,9 +303,25 @@ mod tests {
             ),
             dead,
         );
-        let (_, _, modifiers) =
-            released(t.translate(up(A, Some(KeyCode::KeyA), MapChar::Unicode('a')), dead));
-        assert_eq!(modifiers, Modifiers::default());
+        // Shift went up and Ctrl came down before the key was let go: neither
+        // the press's modifiers nor the default.
+        let ctrl = Modifiers {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            meta: false,
+        };
+        let (_, _, modifiers) = released(t.translate(
+            raw(
+                A,
+                KeyPhase::Up,
+                Some(KeyCode::KeyA),
+                MapChar::Unicode('a'),
+                ctrl,
+            ),
+            dead,
+        ));
+        assert_eq!(modifiers, ctrl);
     }
 
     /// Shift+A with Shift let go first: the map now says `a` for the key, but
