@@ -3597,7 +3597,7 @@ Images render on **both** desktop backends — GPU (Vello, `scene.draw_image`) a
 
 **Architecture:**
 ```
-rinch-core:  ImageLoader trait + ImageLoadResult enum (no deps)
+rinch-core:  ImageLoader trait + ImageLoadResult enum + app scheme registry (no deps)
 rinch-dom:   ImageCache + FileImageLoader + decode pipeline (image crate)
 rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 ```
@@ -3657,6 +3657,24 @@ parent is now as tall as its ratio says, where it kept the natural height. A
 flex container still stretches an `<img>` (Chrome does too); a grid container
 still stretches it, where Chrome does not (#1280). Presentational
 `width`/`height` attributes are still not read (#684).
+
+**App-installed schemes and retry:** `App::image_scheme("myapp-blob", loader)` (or
+`rinch::image::register_image_scheme`, the same registry without a builder) makes
+`loader` the answer for every source with that URL scheme, process-wide; everything
+else still goes to the document's own loader (`request_image_load` asks
+`rinch_core::image::image_scheme_loader(src)` first, on the load thread). A loader
+returns **encoded** bytes (`ImageLoadResult::Loaded`) and runs on a thread spawned for
+that load, so it may block; a closure `Fn(&str) -> ImageLoadResult + Send + Sync` is
+one. **A failed load is cached by source** (`ImageState::Failed`) and never retried on
+its own: `rinch::image::reload_image(src)` (any thread; `RinchDocument::reload_image`
+for a host holding the document) queues the source for every live document, counted by
+`image_cache::has_pending` so idle hosts wake, and `drain_pending_images` restarts it.
+A failed source goes back to loading, a decoded one keeps its pixels until the new
+answer lands (and if that fails), and one whose load is in flight has that answer
+dropped and is asked for once more (`ImageCache::begin_reload` / `take_retries`), so a
+"not yet" already on its way cannot beat the reload.
+`crates/rinch-dom/tests/image_scheme_reload_tests.rs` is the pin. None of this exists
+on the web, where the browser loads `<img>` itself.
 
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 
