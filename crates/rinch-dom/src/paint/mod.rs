@@ -3631,6 +3631,7 @@ fn paint_node(
                     layout_cx,
                     ifc_text_shadows,
                     node_transform,
+                    node,
                     // The root's own visibility answers only for text no range
                     // maps to; each text run follows its own element (#829).
                     !visible,

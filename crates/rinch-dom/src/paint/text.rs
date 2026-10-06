@@ -27,12 +27,17 @@ pub(super) fn paint_inline_layout(
     layout_cx: &mut parley::LayoutContext<Brush>,
     text_shadows: &[TextShadowValue],
     transform: Affine,
+    root: &Node,
     root_hidden: bool,
 ) {
     // Which of the laid-out text is `visibility: hidden` (#829). `None` — the
     // common case — means all of it is shown and nothing below changes.
     let mask = TextMask::for_ifc(tree, inline_layout, root_hidden);
     let mask = mask.as_ref();
+    // Which of it is no longer the colour it was shaped in (#679). `None` —
+    // the common case — means the layout's own brushes are current.
+    let live = LiveColours::for_ifc(tree, inline_layout, root);
+    let live = live.as_ref();
 
     // Paint inline element backgrounds BEFORE text so text renders on top
     if !inline_layout.background_spans.is_empty() {
@@ -42,7 +47,7 @@ pub(super) fn paint_inline_layout(
     // Each text run casts the `text-shadow` its own element computed (#1048);
     // `None` — the common case — means every run casts the root's list.
     match ShadowGroup::for_ifc(tree, inline_layout, text_shadows, root_hidden) {
-        None => render_text_with_shadow(
+        None => render_text_shadows(
             painter,
             &inline_layout.layout,
             parent_x,
@@ -51,7 +56,6 @@ pub(super) fn paint_inline_layout(
             transform,
             scale,
             mask,
-            None,
             Some(inline_layout),
         ),
         Some(groups) => {
@@ -70,19 +74,19 @@ pub(super) fn paint_inline_layout(
                     Some(inline_layout),
                 );
             }
-            render_text(
-                painter,
-                &inline_layout.layout,
-                parent_x,
-                parent_y,
-                transform,
-                scale,
-                mask,
-                None,
-                Some(inline_layout),
-            );
         }
     }
+    draw_text(
+        painter,
+        &inline_layout.layout,
+        transform * Affine::translate((parent_x, parent_y)),
+        scale,
+        mask,
+        None,
+        None,
+        Some(inline_layout),
+        live,
+    );
 
     // Wavy underlines (`text-decoration-style: wavy` — the spellcheck squiggle)
     // paint AFTER the text, so the wave reads over the glyph descenders rather
@@ -96,7 +100,7 @@ pub(super) fn paint_inline_layout(
             transform,
             scale,
             mask,
-            None,
+            WavyBrush::Live(tree),
         );
     }
 
@@ -140,6 +144,23 @@ fn paint_inline_backgrounds(
         if tree.get(bg_span.owner).is_some_and(is_hidden) {
             continue;
         }
+        // The rectangle is the element's as it is styled **now**: a
+        // transition or animation frame writes its colour, padding and radius
+        // with no re-shape (#679). A background faded out to nothing draws
+        // nothing; only an owner that is gone falls back to what was recorded.
+        let live;
+        let bg_span = match tree.get(bg_span.owner) {
+            Some(owner) => {
+                match crate::ifc::inline_background_span(owner, bg_span.start, bg_span.end) {
+                    Some(span) => {
+                        live = span;
+                        &live
+                    }
+                    None => continue,
+                }
+            }
+            None => bg_span,
+        };
         let brush = Brush::Solid(bg_span.color);
 
         // Iterate lines to find those overlapping this background span
@@ -229,8 +250,9 @@ fn paint_inline_backgrounds(
 /// `mask` cuts the wave under hidden text cluster by cluster, as
 /// [`render_text`] cuts the straight underline under hidden glyphs (#829).
 ///
-/// `brush` overrides every span's own colour: a `text-shadow` pass draws the
-/// wave in the shadow's colour (#981).
+/// `brush` says whose colour the wave takes: each span's own element's, read
+/// from the tree as it is now (#679), or one brush for all of them — a
+/// `text-shadow` pass draws the wave in the shadow's colour (#981).
 ///
 /// [`InlineDecorationSpan`]: crate::node::InlineDecorationSpan
 #[allow(clippy::too_many_arguments)]
@@ -242,7 +264,7 @@ fn paint_wavy_decorations(
     css_transform: Affine,
     scale: f64,
     mask: Option<&TextMask>,
-    brush: Option<&Brush>,
+    brush: WavyBrush<'_>,
 ) {
     use peniko::kurbo::BezPath;
 
@@ -255,7 +277,14 @@ fn paint_wavy_decorations(
     const THICKNESS: f64 = 1.0;
 
     for span in &inline_layout.decoration_spans {
-        let brush = brush.cloned().unwrap_or(Brush::Solid(span.color));
+        let brush = match brush {
+            WavyBrush::All(brush) => brush.clone(),
+            WavyBrush::Live(tree) => Brush::Solid(
+                tree.get(span.owner)
+                    .map(|o| crate::ifc::wavy_underline_color(&o.computed_style))
+                    .unwrap_or(span.color),
+            ),
+        };
         for line in layout.lines() {
             let line_range = line.text_range();
             if line_range.end <= span.start
@@ -307,6 +336,15 @@ fn paint_wavy_decorations(
             );
         }
     }
+}
+
+/// The colour [`paint_wavy_decorations`] draws in.
+#[derive(Clone, Copy)]
+enum WavyBrush<'a> {
+    /// Each span in its own element's current colour.
+    Live(&'a NodeTree),
+    /// Every span in this brush.
+    All(&'a Brush),
 }
 
 /// Whether `node` is `visibility: hidden` or `collapse` — nothing of its own is
@@ -658,6 +696,184 @@ impl ValignCursor {
     }
 }
 
+/// What a stretch of text is drawn in instead of the brush it was shaped
+/// with (#679).
+#[derive(Clone, Copy, PartialEq)]
+struct Recolour {
+    /// The colour its element computes now; `None` keeps the layout's brush.
+    color: Option<AlphaColor<Srgb>>,
+    /// Whether its underline is in the text's colour (`currentcolor`) and so
+    /// takes `color` too, rather than a declared `text-decoration-color`.
+    underline: bool,
+    /// The same for its line-through.
+    strikethrough: bool,
+}
+
+impl Recolour {
+    const KEEP: Self = Self {
+        color: None,
+        underline: false,
+        strikethrough: false,
+    };
+}
+
+/// Which of an IFC's laid-out text is no longer the colour it was shaped in,
+/// and what colour it is now (#679).
+///
+/// A Parley layout carries each run's colour as a brush, fixed when the text
+/// was shaped. The cascade drops the layout when a colour changes, but a
+/// transition or animation frame writes `computed_style` with no cascade, and
+/// re-shaping a paragraph for every frame of a fade would be the wrong price
+/// for a change that moves no glyph. So paint asks each text range for its
+/// colour again ([`crate::ifc::text_color`], the function the build recorded
+/// [`crate::node::IfcTextRange::color`] with) and draws the ranges that
+/// answer differently in the new one — the #904 rule for a text leaf, per
+/// range. Like visibility ([`TextMask`]) that is per element and not per
+/// Parley run.
+///
+/// Bytes no range covers — a `text-overflow: ellipsis` rebuild records none —
+/// were shaped in the root's own colour and follow that.
+pub(super) struct LiveColours {
+    /// `(start, end, recolour)` per text range, in layout byte offsets.
+    ranges: Vec<(usize, usize, Recolour)>,
+    /// The answer for bytes no range covers.
+    default: Recolour,
+}
+
+impl LiveColours {
+    /// `None` when every range still computes the colour it was shaped in,
+    /// which is the fast path: the painter then draws the layout's brushes.
+    pub(super) fn for_ifc(
+        tree: &NodeTree,
+        inline_layout: &crate::node::InlineLayout,
+        root: &Node,
+    ) -> Option<Self> {
+        let root_now = crate::ifc::root_text_color(&root.computed_style);
+        let now = |r: &crate::node::IfcTextRange| crate::ifc::text_color(&tree.nodes, r.node_id);
+        if root_now == inline_layout.root_color
+            && inline_layout
+                .text_ranges
+                .iter()
+                .all(|r| r.is_br || now(r) == r.color)
+        {
+            return None;
+        }
+        // The last element a run's decoration colour can come from: the
+        // root, or for an anonymous box the container its text belongs to.
+        let stop = if root.is_anonymous_block_box {
+            root.parent.unwrap_or(root.id)
+        } else {
+            root.id
+        };
+        let recolour = |from: usize, color: AlphaColor<Srgb>| {
+            let (underline, strikethrough) = decorations_follow_color(tree, from, stop);
+            Recolour {
+                color: Some(color),
+                underline,
+                strikethrough,
+            }
+        };
+        let mut ranges: Vec<(usize, usize, Recolour)> = inline_layout
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .map(|r| {
+                let color = now(r);
+                let recolour = match tree.get(r.node_id).and_then(|t| t.parent) {
+                    Some(element) if color != r.color => recolour(element, color),
+                    _ => Recolour::KEEP,
+                };
+                (r.flat_start, r.flat_end, recolour)
+            })
+            .collect();
+        ranges.sort_by_key(|&(s, _, _)| s);
+        let default = if root_now == inline_layout.root_color {
+            Recolour::KEEP
+        } else {
+            recolour(root.id, root_now)
+        };
+        Some(Self { ranges, default })
+    }
+
+    /// The recolour of the cluster starting at layout byte `byte`.
+    fn at(&self, byte: usize) -> Recolour {
+        let i = self.ranges.partition_point(|&(_, e, _)| e <= byte);
+        match self.ranges.get(i) {
+            Some(&(s, _, r)) if s <= byte => r,
+            _ => self.default,
+        }
+    }
+}
+
+/// Whether the underline and the line-through of text in element `from` are
+/// drawn in the text's own colour: `(underline, line-through)`.
+///
+/// The build pushes a decoration brush only for an element that declares a
+/// `text-decoration-color` (`inline_style_props`; a wavy element's is its
+/// squiggle's and not an underline's), a span inherits the one around it, and
+/// Parley falls back to the text brush where none was pushed. So a decoration
+/// is `currentcolor` exactly when no element from `from` up to `stop` — the
+/// last one whose style the layout was built from — declares one.
+fn decorations_follow_color(tree: &NodeTree, from: usize, stop: usize) -> (bool, bool) {
+    let (mut underline, mut strikethrough) = (true, true);
+    let mut cur = Some(from);
+    while let Some(node) = cur.and_then(|id| tree.get(id)) {
+        let decoration = &node.computed_style.text_decoration;
+        if decoration.color.is_some() {
+            strikethrough = false;
+            if !decoration.is_wavy_underline() {
+                underline = false;
+            }
+        }
+        if node.id == stop || !(underline || strikethrough) {
+            break;
+        }
+        cur = node.parent;
+    }
+    (underline, strikethrough)
+}
+
+/// [`GlyphCursor`]'s shape, for [`LiveColours`]: a [`Recolour`] per glyph.
+#[derive(Default)]
+struct ColourCursor {
+    key: Option<(usize, usize)>,
+    next: usize,
+    /// `(style_index, recolour)` per glyph of the current run, visual order.
+    glyphs: Vec<(usize, Recolour)>,
+}
+
+impl ColourCursor {
+    /// This glyph run's recolours, or `None` when none of its glyphs is
+    /// recoloured; advances past it either way.
+    fn take(
+        &mut self,
+        glyph_run: &parley::layout::GlyphRun<'_, Brush>,
+        live: &LiveColours,
+    ) -> Option<Vec<Recolour>> {
+        let run = glyph_run.run();
+        let key = (run.index(), run.cluster_range().start);
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.next = 0;
+            self.glyphs.clear();
+            for cluster in run.visual_clusters() {
+                let recolour = live.at(cluster.text_range().start);
+                self.glyphs
+                    .extend(cluster.glyphs().map(|g| (g.style_index(), recolour)));
+            }
+        }
+        let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
+        let style = rest.first()?.0;
+        let count = rest.iter().take_while(|&&(si, _)| si == style).count();
+        let slice = &rest[..count];
+        self.next += count;
+        slice
+            .iter()
+            .any(|&(_, r)| r != Recolour::KEEP)
+            .then(|| slice.iter().map(|&(_, r)| r).collect())
+    }
+}
+
 /// [`run_flags`]'s shape for [`ValignCursor`].
 ///
 /// Short-circuits on an empty `vertical_align_spans` **before** touching the
@@ -731,6 +947,7 @@ pub(super) fn render_text(
         color_brush.as_ref(),
         None,
         valign,
+        None,
     );
 }
 
@@ -745,6 +962,11 @@ pub(super) fn render_text(
 /// (#981), segment for segment — a hidden stretch that draws no underline
 /// casts no underline shadow either (#829), and a shifted stretch casts its
 /// shadow at the shifted position.
+///
+/// `live` recolours the text whose element no longer computes the colour it
+/// was shaped in (#679), where `glyph_brush` does not override every glyph
+/// anyway. A glyph run is then drawn as one stretch per colour: text that
+/// differs only in a colour written since the build shares a run.
 #[allow(clippy::too_many_arguments)]
 fn draw_text(
     painter: &mut dyn Painter,
@@ -755,18 +977,24 @@ fn draw_text(
     glyph_brush: Option<&Brush>,
     decoration_brush: Option<&Brush>,
     valign: Option<&crate::node::InlineLayout>,
+    live: Option<&LiveColours>,
 ) {
     let sf = scale as f32;
+    let live = live.filter(|_| glyph_brush.is_none());
     for line in layout.lines() {
         if mask.is_some_and(|m| !m.may_show(line.text_range())) {
             continue;
         }
         let mut cursor = GlyphCursor::default();
         let mut vcursor = ValignCursor::default();
+        let mut ccursor = ColourCursor::default();
         for item in line.items() {
             let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
             };
+            // Before the hidden test's `continue`: the cursor hands out a
+            // run's glyph runs in order and has to see each of them.
+            let recolours = live.and_then(|l| ccursor.take(&glyph_run, l));
             let flags = run_flags(&mut cursor, &glyph_run, mask);
             if flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
                 continue;
@@ -795,40 +1023,6 @@ fn draw_text(
                 .unwrap_or(0.0)
                 * sf;
 
-            // The x extents of the shown stretches of this run, for the
-            // decorations: the whole run when nothing in it is hidden.
-            let mut segments: Vec<(f32, f32)> = Vec::new();
-            let mut glyphs: Vec<PaintGlyph> = Vec::new();
-            for (i, glyph) in glyph_run.glyphs().enumerate() {
-                let start_x = gx;
-                let shift = shifts.as_ref().map(|s| s[i]).unwrap_or(0.0) * sf;
-                let px = gx + glyph.x * sf;
-                let py = gy + glyph.y * sf + shift;
-                gx += glyph.advance * sf;
-                if flags.as_ref().is_some_and(|f| f[i]) {
-                    continue;
-                }
-                match segments.last_mut() {
-                    Some(seg) if seg.1 == start_x => seg.1 = gx,
-                    _ => segments.push((start_x, gx)),
-                }
-                glyphs.push(PaintGlyph {
-                    id: glyph.id,
-                    x: px,
-                    y: py,
-                });
-            }
-            painter.draw_glyphs(
-                font,
-                font_size,
-                transform,
-                glyph_xform,
-                brush,
-                true,
-                run.normalized_coords(),
-                &glyphs,
-            );
-
             let run_metrics = run.metrics();
             // Underline, then line-through: `(offset, size, brush)` each.
             let decorations = [
@@ -847,15 +1041,77 @@ fn draw_text(
                     )
                 }),
             ];
-            for (offset, size, own_brush) in decorations.into_iter().flatten() {
-                let dec_brush = decoration_brush.unwrap_or(own_brush);
-                let line_y = (gy + decoration_shift - offset * sf) as f64;
-                let stroke = Stroke::new((size * sf).max(1.0) as f64);
-                for &(x0, x1) in &segments {
-                    let line = peniko::kurbo::Line::new((x0 as f64, line_y), (x1 as f64, line_y));
-                    painter.stroke(&stroke, transform, dec_brush, &line.into());
+            // Draw one stretch of the run: its glyphs, then its share of the
+            // decorations. `recolour` is the stretch's; a decoration takes
+            // the new colour only where its own was the text's (the
+            // underline, then the line-through).
+            let mut draw = |glyphs: &[PaintGlyph], segments: &[(f32, f32)], recolour: Recolour| {
+                let recoloured = recolour.color.map(Brush::Solid);
+                painter.draw_glyphs(
+                    font,
+                    font_size,
+                    transform,
+                    glyph_xform,
+                    recoloured.as_ref().unwrap_or(brush),
+                    true,
+                    run.normalized_coords(),
+                    glyphs,
+                );
+                let follows = [recolour.underline, recolour.strikethrough];
+                for ((offset, size, own_brush), follows) in decorations
+                    .iter()
+                    .zip(follows)
+                    .filter_map(|(d, f)| d.map(|d| (d, f)))
+                {
+                    let dec_brush = decoration_brush.unwrap_or(match &recoloured {
+                        Some(now) if follows => now,
+                        _ => own_brush,
+                    });
+                    let line_y = (gy + decoration_shift - offset * sf) as f64;
+                    let stroke = Stroke::new((size * sf).max(1.0) as f64);
+                    for &(x0, x1) in segments {
+                        let line =
+                            peniko::kurbo::Line::new((x0 as f64, line_y), (x1 as f64, line_y));
+                        painter.stroke(&stroke, transform, dec_brush, &line.into());
+                    }
                 }
+            };
+
+            // The x extents of the shown stretches of this run, for the
+            // decorations: the whole run when nothing in it is hidden.
+            let mut segments: Vec<(f32, f32)> = Vec::new();
+            let mut glyphs: Vec<PaintGlyph> = Vec::new();
+            let mut stretch = Recolour::KEEP;
+            for (i, glyph) in glyph_run.glyphs().enumerate() {
+                let start_x = gx;
+                let shift = shifts.as_ref().map(|s| s[i]).unwrap_or(0.0) * sf;
+                let px = gx + glyph.x * sf;
+                let py = gy + glyph.y * sf + shift;
+                gx += glyph.advance * sf;
+                if flags.as_ref().is_some_and(|f| f[i]) {
+                    continue;
+                }
+                if let Some(recolours) = &recolours
+                    && recolours[i] != stretch
+                {
+                    if !glyphs.is_empty() {
+                        draw(&glyphs, &segments, stretch);
+                        glyphs.clear();
+                        segments.clear();
+                    }
+                    stretch = recolours[i];
+                }
+                match segments.last_mut() {
+                    Some(seg) if seg.1 == start_x => seg.1 = gx,
+                    _ => segments.push((start_x, gx)),
+                }
+                glyphs.push(PaintGlyph {
+                    id: glyph.id,
+                    x: px,
+                    y: py,
+                });
             }
+            draw(&glyphs, &segments, stretch);
         }
     }
 }
@@ -883,6 +1139,7 @@ pub(super) fn draw_shadow_copy(
         Some(brush),
         Some(brush),
         wavy,
+        None,
     );
     if let Some(inline_layout) = wavy
         && !inline_layout.decoration_spans.is_empty()
@@ -895,7 +1152,7 @@ pub(super) fn draw_shadow_copy(
             css_transform,
             scale,
             mask,
-            Some(brush),
+            WavyBrush::All(brush),
         );
     }
 }
