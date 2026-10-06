@@ -822,9 +822,11 @@ then **fitted** to the caret, as ProseMirror and TipTap do it:
   the other is a list nested in that item.
 - **A heading, a quote or a code block** pasted on an empty line is that block;
   inside text a heading is its text, and a code block is a paragraph for each of its
-  lines (the first continues the line), never one paragraph holding line ends —
-  wherever the caret is in a line that has content, its start included. A line
-  selected whole counts as empty: the code block takes its place.
+  lines (the first continues the line; one copied line of code is just text in the
+  line), never one paragraph holding line ends — wherever the caret is in a line
+  that has content, its start included. A line selected whole counts as empty: the
+  code block takes its place. A selection that runs into another line does not: the
+  code is a line each, and what is left of the last selected line joins the last.
 - **A rule or a table** splits the line: the text before the caret, the block, the
   text after. At the start or end of a line nothing is split and no empty line is
   left.
