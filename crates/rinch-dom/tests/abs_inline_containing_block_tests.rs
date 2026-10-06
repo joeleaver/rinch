@@ -135,12 +135,20 @@ fn abs(style: &str, inner: &str) -> String {
     format!(r#"<div data-m="abs" style="position: absolute; {style}">{inner}</div>"#)
 }
 
-/// Horizontal numbers come from text advances, which rinch and Chrome agree
-/// on to a few hundredths of a pixel in this face; everything else is exact.
+/// `want` is Chrome's layout rect, which is fractional wherever text decides
+/// it (`lead ` is 36.641px). rinch lays every box out on the pixel grid — a
+/// box hung from a fragment is snapped like the boxes Taffy places, to the
+/// pixel Chrome *paints* its edge on — so the position asserted is Chrome's
+/// to the nearest pixel, and the size Chrome's to within the half pixel
+/// Taffy's own rounding moves it.
 #[track_caller]
 fn assert_rect(got: [f32; 4], want: [f32; 4], what: &str) {
-    let close = got.iter().zip(want).all(|(g, w)| (g - w).abs() < 0.05);
-    assert!(close, "{what}: got {got:?}, Chrome 153 gives {want:?}");
+    let on_grid = got.iter().all(|g| g.fract() == 0.0);
+    let close = got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 0.55);
+    assert!(
+        on_grid && close,
+        "{what}: got {got:?}, Chrome 153 gives {want:?}"
+    );
 }
 
 // ── The issue's table ───────────────────────────────────────────────────────
@@ -206,7 +214,11 @@ fn percentage_insets_padding_and_margins_are_of_the_fragment() {
         r#"lead <span style="{REL}">texttexttext{}tail</span>"#,
         abs(&format!("{BOX} left: 10%; top: 50%"), "")
     ));
-    assert_rect(c.rect("abs"), [58.344, 17.0, 40.0, 30.0], "percentage insets");
+    assert_rect(
+        c.rect("abs"),
+        [58.344, 17.0, 40.0, 30.0],
+        "percentage insets",
+    );
     let c = Case::new(&format!(
         r#"lead <span style="{REL}">texttexttext{}tail</span>"#,
         abs(
@@ -246,7 +258,11 @@ fn the_span_need_not_be_the_boxs_parent() {
         r#"lead <span style="{REL}">te<span>xt{}</span>tail</span> more"#,
         abs("inset: 0", "")
     ));
-    assert_rect(c.rect("abs"), [47.641, 7.0, 50.375, 20.0], "static span between");
+    assert_rect(
+        c.rect("abs"),
+        [47.641, 7.0, 50.375, 20.0],
+        "static span between",
+    );
 }
 
 /// An inline-level absolute (`<span style="position: absolute">`) is
@@ -301,15 +317,17 @@ fn an_empty_span_is_a_zero_width_fragment_in_the_line() {
 
 /// A span holding only an atomic inline is as wide as that box, and its
 /// fragment is still the font's line, not the box: lead 30px, box 50x10.
-/// Every horizontal number here is a declaration.
+/// Every horizontal number here is a declaration. (The `x` after the span
+/// gives the line a font: rinch's line has no strut, so a line of nothing
+/// but atomic inlines is as tall as they are — 10px here, where Chrome's is
+/// 20 — and the fragment with it.)
 #[test]
 fn a_span_of_one_inline_block_is_that_wide() {
     let c = Case::new(&format!(
-        r#"<span style="display: inline-block; width: 30px; height: 10px"></span><span style="{REL}"><span style="display: inline-block; width: 50px; height: 10px"></span>{}</span>"#,
+        r#"<span style="display: inline-block; width: 30px; height: 10px"></span><span style="{REL}"><span style="display: inline-block; width: 50px; height: 10px"></span>{}</span> x"#,
         abs("inset: 0", "")
     ));
-    let r = c.rect("abs");
-    assert_eq!([r[0], r[1], r[2], r[3]], [41.0, 7.0, 50.0, 20.0]);
+    assert_eq!(c.rect("abs"), [41.0, 7.0, 50.0, 20.0]);
 }
 
 /// A span over three lines: the block is from the first fragment's top-left
@@ -363,16 +381,19 @@ fn the_fragment_is_the_spans_own_font_box() {
     );
 }
 
-/// The line follows `text-align`, and the box with it.
+/// The line follows `text-align`, and the box with it. (The aligned block
+/// declares the 389px it would fill anyway: rinch aligns the lines of an
+/// auto-width block in a box one pixel wider than it, which puts a
+/// right-aligned line a pixel right of Chrome's whatever is in it.)
 #[test]
 fn the_box_follows_an_aligned_line() {
     let c = Case::new(&format!(
-        r#"<div style="text-align: center">lead <span style="{REL}">text{}tail</span></div>"#,
+        r#"<div style="text-align: center; width: 389px">lead <span style="{REL}">text{}tail</span></div>"#,
         abs(&format!("{BOX} left: 0; top: 0"), "")
     ));
     assert_rect(c.rect("abs"), [198.625, 7.0, 40.0, 30.0], "centred");
     let c = Case::new(&format!(
-        r#"<div style="text-align: right">lead <span style="{REL}">text{}tail</span></div>"#,
+        r#"<div style="text-align: right; width: 389px">lead <span style="{REL}">text{}tail</span></div>"#,
         abs(&format!("{BOX} right: 0; top: 0"), "")
     ));
     assert_rect(c.rect("abs"), [360.0, 7.0, 40.0, 30.0], "right");
@@ -403,24 +424,26 @@ fn a_span_in_an_anonymous_block_box() {
 // ── A box between the absolute one and the span ─────────────────────────────
 
 /// The absolute box's layout parent is an `inline-block` inside the span:
-/// the span is still the containing block (110.375 wide with the 60px box in
-/// it; the line is 8px taller for the 24px box on the baseline).
+/// the span is still the containing block, 110.375 wide with the 60px box in
+/// it. (The box is 10px tall so that it sits inside the line's ascent and
+/// the line stays 20px; the box-resolved answer would be 60x10 at the
+/// inline-block.)
 #[test]
 fn a_box_inside_an_inline_block_inside_the_span() {
     let j = |style: &str| {
         Case::new(&format!(
-            r#"lead <span style="{REL}">text<span style="display: inline-block; width: 60px; height: 24px">{}</span>tail</span>"#,
+            r#"lead <span style="{REL}">text<span style="display: inline-block; width: 60px; height: 10px">{}</span>tail</span>"#,
             abs(style, "")
         ))
     };
     assert_rect(
         j("inset: 0").rect("abs"),
-        [47.641, 15.0, 110.375, 20.0],
+        [47.641, 7.0, 110.375, 20.0],
         "inset: 0",
     );
     assert_rect(
         j(&format!("{BOX} right: 0; bottom: 0")).rect("abs"),
-        [118.016, 5.0, 40.0, 30.0],
+        [118.016, -3.0, 40.0, 30.0],
         "right/bottom",
     );
 }
@@ -431,15 +454,28 @@ fn a_box_inside_an_inline_block_inside_the_span() {
 #[test]
 fn a_scroller_between_the_box_and_the_span_does_not_carry_it() {
     let mut c = Case::new(&format!(
-        r#"lead <span style="{REL}">text<span data-m="sc" style="display: inline-block; width: 60px; height: 24px; overflow: auto">{}<div style="height: 100px"></div></span>tail</span>"#,
+        r#"lead <span style="{REL}">text<span data-m="sc" style="display: inline-block; width: 60px; height: 14px; overflow: auto">{}<div style="height: 100px"></div></span>tail</span>"#,
         abs(&format!("{BOX} left: 0; top: 0"), "")
     ));
-    assert_rect(c.rect("abs"), [47.641, 15.0, 40.0, 30.0], "unscrolled");
+    assert_rect(c.rect("abs"), [47.641, 7.0, 40.0, 30.0], "unscrolled");
     let sc = c.id("sc");
     c.doc.set_scroll_top(rinch_core::dom::NodeId(sc), 10.0);
-    assert_rect(c.rect("abs"), [47.641, 15.0, 40.0, 30.0], "scrolled, no layout");
+    assert_eq!(
+        c.doc.tree.get(sc).unwrap().scroll_offset.1,
+        10.0,
+        "the scroller did scroll"
+    );
+    assert_rect(
+        c.rect("abs"),
+        [47.641, 7.0, 40.0, 30.0],
+        "scrolled, no layout",
+    );
     c.relayout();
-    assert_rect(c.rect("abs"), [47.641, 15.0, 40.0, 30.0], "scrolled, laid out");
+    assert_rect(
+        c.rect("abs"),
+        [47.641, 7.0, 40.0, 30.0],
+        "scrolled, laid out",
+    );
 }
 
 /// The container's own scroll does carry it, with the line.
@@ -535,6 +571,26 @@ fn the_box_follows_the_span_through_a_relayout() {
     assert_rect(c.rect("abs"), [47.641, 7.0, 40.0, 30.0], "same place");
 }
 
+/// A span that becomes a **split** inline (a block-level child arrives) can
+/// no longer be measured, and the box goes back to the block container —
+/// size and place, not the fragment-sized box it was baked as.
+#[test]
+fn a_span_that_becomes_split_hands_the_box_back() {
+    let mut c = Case::new(&format!(
+        r#"lead <span data-m="span" style="{REL}">text{}tail</span>"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(c.rect("abs"), [47.641, 7.0, 50.375, 20.0], "unsplit");
+    let span = rinch_core::dom::NodeId(c.id("span"));
+    let block = c.doc.create_element("div");
+    c.doc.set_attribute(block, "style", "height: 25px");
+    let first = c.doc.tree.get(span.0).unwrap().children[1];
+    c.doc
+        .insert_before(span, block, rinch_core::dom::NodeId(first));
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(c.rect("abs"), [0.0, 0.0, 400.0, 72.0], "split");
+}
+
 // ── Cost ────────────────────────────────────────────────────────────────────
 
 /// A position-only box costs one compute per layout, like any other; a box
@@ -549,11 +605,215 @@ fn a_fragment_sized_box_costs_a_second_compute_only_when_the_fragment_changes() 
 
     let mut c = Case::lead("inset: 0");
     assert_eq!(
-        c.doc.tree.perf.total().get(Counter::AbsContainingBlockPasses),
+        c.doc
+            .tree
+            .perf
+            .total()
+            .get(Counter::AbsContainingBlockPasses),
         1,
         "the first layout learns the fragment's size after its lines are built"
     );
     let f = c.frame();
-    assert_eq!(f.get(Counter::TaffyRootComputes), 1, "sized, fragment unchanged");
+    assert_eq!(
+        f.get(Counter::TaffyRootComputes),
+        1,
+        "sized, fragment unchanged"
+    );
     assert_eq!(f.get(Counter::AbsContainingBlockPasses), 0);
+}
+
+// ── More shapes, each from the same Chrome 153 run ──────────────────────────
+
+/// Two positioned spans: the nearest one contains the box (`xt`, 14.281
+/// wide, 14.047 into the outer span).
+#[test]
+fn the_nearest_positioned_span_wins() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}">te<span style="{REL}">xt{}</span>tail</span>"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(c.rect("abs"), [61.688, 7.0, 14.281, 20.0], "inner span");
+}
+
+/// A `display: contents` wrapper between the box and the span changes
+/// nothing.
+#[test]
+fn a_contents_wrapper_between_the_box_and_the_span() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}">text<div style="display: contents">{}</div>tail</span>"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(
+        c.rect("abs"),
+        [47.641, 7.0, 50.375, 20.0],
+        "contents wrapper",
+    );
+}
+
+/// Vertical padding grows the fragment's padding box (3px above, 4 below);
+/// it takes no room in the line.
+#[test]
+fn vertical_padding_is_part_of_the_containing_block() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}; padding: 3px 0 4px 0">text{}tail</span>"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(c.rect("abs"), [47.641, 4.0, 50.375, 27.0], "padded span");
+}
+
+/// A span broken by a `<br>`: first fragment on line one, last on line two,
+/// whose right edge (22.047 into the content box) is left of the first's
+/// left edge — zero wide, two lines tall.
+#[test]
+fn a_span_holding_a_forced_break() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}">text<br>ta{}il</span>"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(c.rect("abs"), [47.641, 7.0, 0.0, 40.0], "br");
+}
+
+/// An empty span right after an atomic inline, and one that opens the line.
+#[test]
+fn an_empty_span_after_an_inline_block_and_at_the_line_start() {
+    let c = Case::new(&format!(
+        r#"<span style="display: inline-block; width: 30px; height: 10px"></span><span style="{REL}">{}</span>tail"#,
+        abs(&format!("{BOX} left: 0; top: 0"), "")
+    ));
+    assert_eq!(c.rect("abs"), [41.0, 7.0, 40.0, 30.0], "after a box");
+    let c = Case::new(&format!(
+        r#"<span style="{REL}">{}</span>tail"#,
+        abs(&format!("{BOX} left: 0; top: 0"), "")
+    ));
+    assert_eq!(c.rect("abs"), [11.0, 7.0, 40.0, 30.0], "first in the line");
+    // Text, then the box, then the span: the span sits after the box
+    // (18.781 + 30 into the content box), not where the text ends.
+    let c = Case::new(&format!(
+        r#"ab<span style="display: inline-block; width: 30px; height: 10px"></span><span style="{REL}">{}</span>tail"#,
+        abs(&format!("{BOX} left: 0; top: 0"), "")
+    ));
+    assert_rect(
+        c.rect("abs"),
+        [59.781, 7.0, 40.0, 30.0],
+        "after text and a box",
+    );
+}
+
+/// A span whose only text is a collapsed space is empty too.
+#[test]
+fn a_span_of_collapsed_white_space_is_empty() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}"> {}</span>tail"#,
+        abs(&format!("{BOX} left: 0; top: 0"), "")
+    ));
+    assert_rect(c.rect("abs"), [47.641, 7.0, 40.0, 30.0], "white space");
+}
+
+/// A fragment-sized box that itself holds a positioned span with a box in
+/// it: the outer box is placed 10px right of and 25px below the outer
+/// span's corner, and the inner one fills `side` (31.453 wide, after `in `).
+/// Each level's size is learnt from lines built after the level above was
+/// sized.
+#[test]
+fn a_box_in_a_span_in_a_box_in_a_span() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}">text<div data-m="outer" style="position: absolute; left: 10px; top: 25px; width: 200px">in <span style="{REL}">side{}</span></div>tail</span>"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(c.rect("outer"), [57.641, 32.0, 200.0, 20.0], "outer");
+    assert_rect(c.rect("abs"), [75.469, 32.0, 31.453, 20.0], "inner");
+}
+
+/// A span that is a flex item is blockified: it has a box, and is Taffy's
+/// own containing block. A control (this is `main`'s answer).
+#[test]
+fn a_blockified_span_is_an_ordinary_containing_block() {
+    let c = Case::new(&format!(
+        r#"<div style="display: flex"><span style="{REL}">text{}tail</span></div>"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(c.rect("abs"), [11.0, 7.0, 50.375, 20.0], "flex item");
+}
+
+/// The check that follows the lines looks only at boxes hung from a span. One
+/// box resolved against a boxed grandparent (#386) beside one hung from a
+/// span: a layout looks at the first three times (size check, read-back,
+/// second placement) and at the second four times (the same, and the check
+/// after the lines) — seven, not eight.
+#[test]
+fn the_check_after_the_lines_skips_boxes_with_a_boxed_containing_block() {
+    let mut c = Case::new(&format!(
+        r#"<div><div style="position: absolute; right: 3px; top: 3px; width: 5px; height: 5px"></div></div>lead <span style="{REL}">text{}tail</span>"#,
+        abs(&format!("{BOX} left: 0; top: 0"), "")
+    ));
+    let f = c.frame();
+    assert_eq!(f.get(Counter::AbsBoxesVisited), 7);
+}
+
+// ── Stated divergences (none introduced here) ───────────────────────────────
+
+/// A **split** inline — one holding a block-level child (#513) — has its
+/// fragments in several anonymous boxes, and is not measured: the box keeps
+/// the answer it had before #631, the positioned block container. Chrome
+/// 153: `top: 0; left: 0` at the first fragment's corner `(47.641, 7)`, and
+/// `inset: 0` a zero-wide box 65px tall there. Tracked in #1424.
+#[test]
+fn a_split_inline_is_not_yet_a_containing_block() {
+    let split = |style: &str| {
+        Case::new(&format!(
+            r#"lead <span style="{REL}">text<div style="height: 25px">block</div>{}tail</span>"#,
+            abs(style, "")
+        ))
+    };
+    assert_eq!(
+        split(&format!("{BOX} left: 0; top: 0")).rect("abs"),
+        [0.0, 0.0, 40.0, 30.0],
+        "the container's corner"
+    );
+    assert_eq!(
+        split("inset: 0").rect("abs"),
+        [0.0, 0.0, 400.0, 72.0],
+        "the container"
+    );
+}
+
+/// rinch does not move a flowed inline by its `left`/`top` (the text of a
+/// `position: relative; left: 5px; top: 3px` span is drawn where it flows),
+/// so the box is hung from the unmoved fragment — where rinch draws the
+/// span. Chrome 153 moves both: `(52.641, 10)`. Tracked in #1425.
+#[test]
+fn a_relative_spans_own_offset_moves_nothing() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}; left: 5px; top: 3px">text{}tail</span>"#,
+        abs(&format!("{BOX} left: 0; top: 0"), "")
+    ));
+    assert_eq!(c.rect("abs"), [48.0, 7.0, 40.0, 30.0]);
+}
+
+/// rinch gives an inline element's horizontal padding no room on its line:
+/// it paints the background 6px left of and 5px right of the glyphs, over
+/// the neighbours. The containing block is that painted padding box, so it
+/// is as wide as Chrome's (61.375) and starts 6px further left than
+/// Chrome's `(47.641, 4)`.
+#[test]
+fn horizontal_padding_takes_no_room_in_the_line() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}; padding: 3px 5px 4px 6px">text{}tail</span>"#,
+        abs("inset: 0", "")
+    ));
+    assert_eq!(c.rect("abs"), [42.0, 4.0, 61.0, 27.0]);
+}
+
+/// A span that **ends** in a forced break has, in Chrome 153, an empty last
+/// fragment at the start of the next line, which makes the block zero wide
+/// and two lines tall (`47.641, 7, 0 x 40`). rinch gives the span no
+/// fragment on a line it has no content on: the block is `text`, 28.328
+/// wide, with no width for the break itself.
+#[test]
+fn a_span_ending_in_a_forced_break_has_no_empty_last_fragment() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}">text<br>{}</span>tail"#,
+        abs("inset: 0", "")
+    ));
+    assert_eq!(c.rect("abs"), [48.0, 7.0, 28.0, 20.0]);
 }

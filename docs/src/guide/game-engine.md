@@ -630,9 +630,10 @@ if let Some(rect) = ctx.viewport_rect("main") {
 >
 > Two things to know. An overlay meant to cover one panel needs that panel to
 > be `position: relative`, or it covers the next positioned ancestor up. And a
-> `position: relative` **inline** element (a `<span>`) is not honoured as a
-> containing block yet ([#631]): the overlay resolves against the block that
-> holds the span's line.
+> `position: relative` **inline** element (a `<span>`) is a containing block
+> too ([#631]): an overlay inside one covers the span's text — from its first
+> line box to its last — not the block that holds the line. Make the wrapper
+> `display: inline-block` (or a block) when the overlay should cover a box.
 
 [#204]: https://github.com/joeleaver/rinch/issues/204
 [#386]: https://github.com/joeleaver/rinch/issues/386

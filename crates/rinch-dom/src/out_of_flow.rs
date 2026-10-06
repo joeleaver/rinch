@@ -32,6 +32,9 @@
 //!   block is an ancestor that is **not** the box Taffy lays it out in (issue
 //!   #386): a `position: relative` grandparent, a transformed great-
 //!   grandparent. Its containing block is that ancestor's **padding box**.
+//!   The ancestor may have no box at all: a positioned **inline** span
+//!   (issue #631), whose containing block is the box its fragments span on
+//!   their lines — see *An inline span* below.
 //!
 //! ## An ancestor's size is not known before layout
 //!
@@ -55,6 +58,36 @@
 //! A box whose size does not depend on its containing block (`left: 5px; top:
 //! 5px; width: 10px`) is never rewritten and costs no compute: only its
 //! position is patched.
+//!
+//! ## An inline span
+//!
+//! A `position: relative` (or `sticky`) non-atomic inline element owns no
+//! box: Parley lays its text out as part of a line. CSS 2.1 §10.1 makes it a
+//! containing block all the same — from the top-left of its first fragment's
+//! padding box to the bottom-right of its last's — and
+//! [`inline_fragments_box`] reads that out of the lines of the inline
+//! formatting context that flows it. Two things follow from where those
+//! lines come from:
+//!
+//! - **they are built after the read-back** (`build_ifc_layouts`), so at the
+//!   size check of step 2 and at the placement of the read-back the span's
+//!   box is the one the *last* layout's lines gave it, or none. Both are
+//!   therefore done once more after the lines: `resolve_layout` calls
+//!   [`RinchDocument::resolve_ancestor_absolutes`] again for these boxes
+//!   alone, and goes round — compute, read-back, lines — when that rewrote a
+//!   style; and the late re-placement ([`replace_all`]) always runs. Neither
+//!   happens in a document whose last read-back met no such box
+//!   (`NodeTree::abs_inline_cb_seen`), and a box whose size does not depend
+//!   on the span costs no compute, only the second placement;
+//! - **the chain ends at the block container holding the line**
+//!   ([`inline_host`]), not at the span, which no coordinate walk can stop
+//!   at. The span's box is measured from that element's border box, so its
+//!   own scroll carries the absolute box with the line, and a scroller
+//!   between the box and the span does not.
+//!
+//! A fragment starts wherever its text does, between pixels, so a position
+//! hung from one is snapped to the pixel grid in the host's frame — the grid
+//! every box Taffy places is already on.
 //!
 //! ## What each pass iterates
 //!
@@ -103,9 +136,13 @@
 //!
 //! ## What is not corrected
 //!
-//! - A containing block that generates no box — a `position: relative`
-//!   **inline** span — is left to Taffy, which resolves against the span's
-//!   block container (issue #631).
+//! - A **split** inline span — one holding a block-level child (#513), whose
+//!   fragments lie in several anonymous boxes — is not measured: a box inside
+//!   it keeps Taffy's answer, the block container (issue #1424).
+//! - A relative span's own `left`/`top` moves neither its text nor a box
+//!   resolved against it (issue #1425), and its horizontal padding
+//!   takes no room on the line (issue #1426): the containing block is the
+//!   span as rinch draws it.
 //! - The shrink-to-fit *available* width of an auto-width absolute is still
 //!   the Taffy parent's (Chrome: a box of four 130px inline-blocks under a
 //!   200px parent in a 400px containing block is 400x40; rinch: 130x80 —
@@ -189,17 +226,13 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
                 let ancestor = tree.get(current)?;
                 if ancestor.establishes_abs_containing_block() {
                     // The layout parent establishing it is Taffy's own answer,
-                    // so there is nothing to correct. So is — for now — a
-                    // containing block with no box of its own, a `position:
-                    // relative` inline span: Taffy resolves against the span's
-                    // block container (#631). Anything else is an ancestor
-                    // Taffy does not know about (#386).
-                    //
-                    // With no box-generating ancestor below it, this one is
-                    // the layout parent or has no box: `None` either way,
-                    // and the ordinary badge — a child of its positioned
-                    // parent — is answered without asking which.
-                    return (layout_parent.is_some() && generates_layout_box(ancestor))
+                    // so there is nothing to correct. Anything else is an
+                    // ancestor Taffy does not know about: a box further up
+                    // (#386), or one with no box of its own at all — a
+                    // positioned inline span, whose fragments are the
+                    // containing block (#631) while Taffy lays the box out
+                    // in the block that holds the span's line.
+                    return (layout_parent.is_some() || !generates_layout_box(ancestor))
                         .then_some(OutOfFlowKind::AncestorAbsolute(current));
                 }
                 if layout_parent.is_none() && generates_layout_box(ancestor) {
@@ -325,9 +358,15 @@ impl ContainingBox {
 
     /// `cb`'s padding box as the **last compute** left it. An atomic inline's
     /// is the one its own detached compute produced, which is the size the
-    /// line was built around.
+    /// line was built around. An inline span's is its fragments' box in the
+    /// lines **last built** for it ([`inline_fragments_box`]), measured from
+    /// the border box of the block that holds those lines.
     fn of_ancestor(tree: &NodeTree, cb: RawNodeId) -> Option<Self> {
-        let layout = tree.taffy.layout(tree.get(cb)?.taffy_id?).ok()?;
+        let node = tree.get(cb)?;
+        if !generates_layout_box(node) {
+            return inline_fragments_box(tree, cb);
+        }
+        let layout = tree.taffy.layout(node.taffy_id?).ok()?;
         Some(Self {
             width: (layout.size.width - layout.border.left - layout.border.right).max(0.0),
             height: (layout.size.height - layout.border.top - layout.border.bottom).max(0.0),
@@ -344,6 +383,273 @@ impl ContainingBox {
             OutOfFlowKind::AncestorAbsolute(cb) => Self::of_ancestor(tree, cb),
         }
     }
+}
+
+/// Whether `kind`'s containing block is an element with no box of its own —
+/// a positioned inline span (#631). Its geometry comes from the lines of the
+/// inline formatting context that flows it, which are built **after** the
+/// compute, so the passes that follow those lines run only when a box of
+/// this kind was read back (`NodeTree::abs_inline_cb_seen`).
+pub(crate) fn has_inline_containing_block(tree: &NodeTree, kind: Option<OutOfFlowKind>) -> bool {
+    matches!(kind, Some(OutOfFlowKind::AncestorAbsolute(cb))
+        if tree.get(cb).is_some_and(|n| !generates_layout_box(n)))
+}
+
+/// Where the chain of boxes from an absolute box to its containing block
+/// `cb` ends: at `cb` itself, or — for an inline span, which has no box —
+/// at the block container whose lines hold the span ([`inline_host`]). The
+/// span's fragments are that block's content, so its own scroll carries the
+/// box and every box below it must not.
+fn chain_end(tree: &NodeTree, cb: RawNodeId) -> Option<RawNodeId> {
+    let node = tree.get(cb)?;
+    if generates_layout_box(node) {
+        Some(cb)
+    } else {
+        Some(inline_host(tree, node.ifc_root?)?.0)
+    }
+}
+
+/// The block container **element** holding the lines of the inline
+/// formatting context rooted at `root_id`, and where that context's content
+/// box starts inside the element's border box.
+///
+/// The root is the element itself, or — for text beside a block-level
+/// sibling — an anonymous block box inside it (#566). An out-of-flow box
+/// hoisted out of the line is held by the element either way
+/// (`Node::hoisted_out_of_flow_to`), so the element is the one box every
+/// chain from such a box passes; an anonymous box has no padding, border or
+/// scroll of its own, only a place in the element.
+fn inline_host(tree: &NodeTree, root_id: RawNodeId) -> Option<(RawNodeId, (f32, f32))> {
+    let root = tree.get(root_id)?;
+    if root.is_anonymous_block_box {
+        Some((root.parent?, (root.layout.x, root.layout.y)))
+    } else {
+        Some((root_id, crate::paint::ifc_root_content_origin(root)))
+    }
+}
+
+/// The top and bottom of an inline fragment set in `run`'s font: the font's
+/// rounded ascent and descent around the baseline, which is the box Chrome
+/// gives an inline element (its `getClientRects` are 20px tall for Inter at
+/// 16px, ascent 15.5 and descent 3.9, on any line height).
+fn run_extent(run: &parley::layout::GlyphRun<'_, peniko::Brush>) -> (f32, f32) {
+    let m = run.run().metrics();
+    (
+        run.baseline() - m.ascent.round(),
+        run.baseline() + m.descent.round(),
+    )
+}
+
+/// The same for a fragment with no run of its own on `line`: the line's
+/// first run stands in for its font, and a line with no text at all (only
+/// atomic inlines) gives its own box.
+fn line_extent(line: &parley::layout::Line<'_, peniko::Brush>) -> (f32, f32) {
+    line.items()
+        .find_map(|item| match item {
+            parley::layout::PositionedLayoutItem::GlyphRun(run) => Some(run_extent(&run)),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            let m = line.metrics();
+            (m.block_min_coord, m.block_max_coord)
+        })
+}
+
+/// The containing block a positioned **inline** element forms (CSS 2.1
+/// §10.1): from the top-left of its first fragment's padding box to the
+/// bottom-right of its last fragment's, in the lines last built for the
+/// inline formatting context that flows it. `border_left`/`border_top` are
+/// measured from the **border box** of the block container holding those
+/// lines ([`inline_host`]), which is where the chain of an absolute box
+/// inside the span ends ([`chain_end`]).
+///
+/// Measured in Chrome 153:
+///
+/// - a fragment is the element's **own font's** rounded ascent and descent
+///   around the line's baseline, whatever the line box's height — a 32px span
+///   in a 16px/20px line is 39px tall and starts above the line;
+/// - a span over several lines runs from its first fragment's left edge to
+///   its last fragment's right edge, and when that is left of the first the
+///   width is zero (`right: 0` then hangs the box from the first fragment's
+///   left edge);
+/// - an empty span is a zero-width fragment where it sits in the line;
+/// - a span holding only an atomic inline is as wide as that box and as tall
+///   as its font, not as the box.
+///
+/// `None` when the span has no lines to be measured in: its context has no
+/// inline layout yet (the first layout, before its lines are built; a
+/// collapsed or `display: none` subtree), or it is a **split** inline (one
+/// holding a block-level child, #513), whose fragments lie in several
+/// anonymous boxes — that one keeps Taffy's answer, the block holding the
+/// absolute box's own line.
+///
+/// rinch gives an inline element's padding no room on its line and draws no
+/// inline border, so the padding box here is the glyph box grown by the
+/// padding, as the element's background is painted.
+fn inline_fragments_box(tree: &NodeTree, span_id: RawNodeId) -> Option<ContainingBox> {
+    use parley::layout::PositionedLayoutItem;
+
+    let span = tree.get(span_id)?;
+    if span.is_split_inline() {
+        return None;
+    }
+    let root_id = span.ifc_root?;
+    let root = tree.get(root_id)?;
+    let inline = root.text_layout.as_ref()?;
+    let layout = &inline.layout;
+
+    // The span's content in this context: the entries that follow its own
+    // in the walk's order, for as long as they are its descendants.
+    let at = inline
+        .child_positions
+        .iter()
+        .position(|(id, _)| *id == span_id)?;
+    let inside = |mut id: RawNodeId| {
+        while let Some(parent) = tree.get(id).and_then(|n| n.parent) {
+            if parent == span_id {
+                return true;
+            }
+            id = parent;
+        }
+        false
+    };
+    let members: Vec<RawNodeId> = inline.child_positions[at + 1..]
+        .iter()
+        .map(|(id, _)| *id)
+        .take_while(|id| inside(*id))
+        .collect();
+    // Its text, as one range of the flat text (the members are contiguous).
+    let mut text: Option<(usize, usize)> = None;
+    for range in &inline.text_ranges {
+        if members.contains(&range.node_id) {
+            let (a, b) = text.unwrap_or((range.flat_start, range.flat_end));
+            text = Some((a.min(range.flat_start), b.max(range.flat_end)));
+        }
+    }
+    let is_member_box = |id: u64| {
+        members.contains(&(id as usize))
+            && tree
+                .get(id as usize)
+                .is_some_and(|n| n.display_mode.is_atomic_inline())
+    };
+
+    // (left, top) of the first fragment, (right, bottom) of the last.
+    let mut first: Option<(f32, f32)> = None;
+    let mut last: Option<(f32, f32)> = None;
+    for line in layout.lines() {
+        let range = line.text_range();
+        let (mut left, mut right) = (f32::INFINITY, f32::NEG_INFINITY);
+        if let Some((a, b)) = text {
+            let (start, end) = (a.max(range.start), b.min(range.end));
+            if start < end {
+                (left, right) = crate::text_query::line_range_x(layout, &line, start, end, false);
+            }
+        }
+        // The span's own runs on this line: the first one's ascent and the
+        // last one's descent are the fragment's.
+        let mut above: Option<f32> = None;
+        let mut below: Option<f32> = None;
+        for item in line.items() {
+            match item {
+                PositionedLayoutItem::GlyphRun(run) => {
+                    let Some((a, b)) = text else { continue };
+                    let r = run.run().text_range();
+                    if r.start < b && a < r.end {
+                        let (top, bottom) = run_extent(&run);
+                        above.get_or_insert(top);
+                        below = Some(bottom);
+                    }
+                }
+                PositionedLayoutItem::InlineBox(b) if is_member_box(b.id) => {
+                    left = left.min(b.x);
+                    right = right.max(b.x + b.width);
+                }
+                PositionedLayoutItem::InlineBox(_) => {}
+            }
+        }
+        if left > right {
+            continue;
+        }
+        // A span with no text of its own on the line (it holds only an
+        // atomic inline there) stands in the line's font.
+        let (top, bottom) = line_extent(&line);
+        if first.is_none() {
+            first = Some((left, above.unwrap_or(top)));
+        }
+        last = Some((right, below.unwrap_or(bottom)));
+    }
+
+    let (mut left, mut top, mut right, mut bottom) = match (first, last) {
+        (Some((l, t)), Some((r, b))) => (l, t, r, b),
+        // Nothing of the span is on any line: an empty span. It sits where
+        // the content before it ends.
+        _ => {
+            let mut x = None;
+            let mut byte = text.map(|(a, _)| a);
+            if byte.is_none() {
+                for &(id, _) in inline.child_positions[..at].iter().rev() {
+                    if let Some(end) = inline
+                        .text_ranges
+                        .iter()
+                        .filter(|r| r.node_id == id)
+                        .map(|r| r.flat_end)
+                        .max()
+                    {
+                        byte = Some(end);
+                        break;
+                    }
+                    let atomic = tree.get(id).is_some_and(|n| n.is_element())
+                        && tree
+                            .get(id)
+                            .is_some_and(|n| n.display_mode.is_atomic_inline());
+                    if atomic {
+                        x = layout.lines().find_map(|line| {
+                            line.items().find_map(|item| match item {
+                                PositionedLayoutItem::InlineBox(b) if b.id as usize == id => {
+                                    Some((b.x + b.width, line_extent(&line)))
+                                }
+                                _ => None,
+                            })
+                        });
+                        break;
+                    }
+                }
+            }
+            let (x, (top, bottom)) = match x {
+                Some(found) => found,
+                None => {
+                    let caret = parley::Cursor::from_byte_index(
+                        layout,
+                        byte.unwrap_or(0),
+                        parley::layout::Affinity::Downstream,
+                    )
+                    .geometry(layout, 0.0);
+                    let mid = ((caret.y0 + caret.y1) / 2.0) as f32;
+                    let line = layout
+                        .lines()
+                        .find(|l| {
+                            let m = l.metrics();
+                            (m.block_min_coord..m.block_max_coord).contains(&mid)
+                        })
+                        .or_else(|| layout.lines().next())?;
+                    (caret.x0 as f32, line_extent(&line))
+                }
+            };
+            (x, top, x, bottom)
+        }
+    };
+    let cs = &span.computed_style;
+    left -= cs.padding_left.to_px();
+    top -= cs.padding_top.to_px();
+    right += cs.padding_right.to_px();
+    bottom += cs.padding_bottom.to_px();
+    let (_, (ox, oy)) = inline_host(tree, root_id)?;
+    Some(ContainingBox {
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
+        border_left: ox + left,
+        border_top: oy + top,
+    })
 }
 
 /// Bake `node_id`'s out-of-flow size into a Taffy style a site has just
@@ -453,6 +759,7 @@ pub(crate) fn note_kind_at_read(
 pub(crate) fn begin_read(tree: &mut NodeTree) {
     tree.placed_absolutes.clear();
     tree.abs_late_moves = false;
+    tree.abs_inline_cb_seen = false;
     let mut marked = std::mem::take(&mut tree.abs_chain_marked);
     for id in marked.drain(..) {
         if let Some(node) = tree.nodes.get_mut(id) {
@@ -766,13 +1073,22 @@ pub(crate) fn place_absolute(
     size: (f32, f32),
     mark: bool,
 ) -> Option<(f32, f32)> {
-    let cb_id = match kind {
+    // Where the chain ends, and whether the containing block is an inline
+    // span — whose chain ends at another node, the block holding its line.
+    let (end, on_text) = match kind {
         OutOfFlowKind::Fixed => return None,
-        OutOfFlowKind::IcbAbsolute => None,
-        OutOfFlowKind::AncestorAbsolute(cb) => Some(cb),
+        OutOfFlowKind::IcbAbsolute => (None, false),
+        OutOfFlowKind::AncestorAbsolute(cb) => {
+            let end = chain_end(tree, cb)?;
+            (Some(end), end != cb)
+        }
     };
+    // The chain first: it is flagged for a scroll even in a layout where the
+    // containing block cannot be measured yet (an inline span's lines are
+    // built after the read-back; the re-placement that follows them does not
+    // flag).
+    let ((ox, oy), (sx, sy)) = chain_to_containing_block(tree, node_id, end, mark)?;
     let cb = ContainingBox::of(tree, kind)?;
-    let ((ox, oy), (sx, sy)) = chain_to_containing_block(tree, node_id, cb_id, mark)?;
     let style = &tree.get(node_id)?.computed_style;
     // Percentage margins resolve against the containing block's *width* on
     // both axes, per CSS.
@@ -799,12 +1115,30 @@ pub(crate) fn place_absolute(
         size.1,
         true,
     );
+    // A span's fragment starts wherever its text does, between pixels; a
+    // box hung from it goes on the pixel grid, where every box Taffy places
+    // already is (and where a browser paints it: Chrome 153 lays the box out
+    // at 47.64 and draws its edge at 48). Snapped in the frame of the block
+    // holding the line — a box Taffy placed — not in the layout parent's,
+    // which may itself be an atomic inline standing between pixels.
+    let snap = |v: f32| if on_text { snap_to_pixel(v) } else { v };
     // With both insets `auto` the box keeps Taffy's static position — which
     // CSS *does* take from the flow position in the parent.
     Some((
-        x.map_or(taffy_location.0, |x| cb.border_left + x - ox) + sx,
-        y.map_or(taffy_location.1, |y| cb.border_top + y - oy) + sy,
+        x.map_or(taffy_location.0, |x| snap(cb.border_left + x) - ox) + sx,
+        y.map_or(taffy_location.1, |y| snap(cb.border_top + y) - oy) + sy,
     ))
+}
+
+/// `v` on the pixel grid. Out of line on purpose: `f32::round` is a library
+/// call on the baseline x86-64 target, and inlined into [`place_absolute`]
+/// the compiler computed it for every box and selected afterwards — about
+/// 80 instructions per placed box that is hung from no span at all
+/// (`rinch-bench`'s `abs_badge_relayout.icb_500`: 2,236,846 instructions
+/// inlined, 2,195,839 like this).
+#[inline(never)]
+fn snap_to_pixel(v: f32) -> f32 {
+    v.round()
 }
 
 /// Whether a box of this `size` is one layout produced, rather than the 0x0
@@ -919,7 +1253,7 @@ pub(crate) fn replace_after_scroll(tree: &mut NodeTree, scrolled: RawNodeId) {
         };
         let between = match kind {
             OutOfFlowKind::IcbAbsolute => scrolled != tree.body_id,
-            OutOfFlowKind::AncestorAbsolute(cb) => scrolled != cb,
+            OutOfFlowKind::AncestorAbsolute(cb) => chain_end(tree, cb) != Some(scrolled),
             OutOfFlowKind::Fixed => false,
         };
         if between && is_box_ancestor(tree, scrolled, id) {
@@ -959,11 +1293,23 @@ impl RinchDocument {
     ///
     /// Iterates [`NodeTree::ancestor_absolutes`] and nothing else: a document
     /// whose absolute boxes are all Taffy's own answer pays one `is_empty`.
-    pub(crate) fn resolve_ancestor_absolutes(&mut self) -> bool {
+    ///
+    /// With `inline_only`, only the boxes whose containing block is an
+    /// inline span (#631) are looked at: the call `resolve_layout` makes
+    /// after the lines are built, which is when such a block has the size
+    /// this layout gives it. For those boxes, and only in that call, a block
+    /// that cannot be measured (the span became a split inline) takes a bake
+    /// back, so the box is Taffy's again.
+    pub(crate) fn resolve_ancestor_absolutes(&mut self, inline_only: bool) -> bool {
         if self.tree.ancestor_absolutes.is_empty() {
             return false;
         }
-        let ids: Vec<RawNodeId> = self.tree.ancestor_absolutes.iter().copied().collect();
+        let mut ids: Vec<RawNodeId> = self.tree.ancestor_absolutes.iter().copied().collect();
+        if inline_only {
+            ids.retain(|&id| {
+                has_inline_containing_block(&self.tree, out_of_flow_kind(&self.tree, id))
+            });
+        }
         self.tree
             .perf
             .add(crate::perf::Counter::AbsBoxesVisited, ids.len() as u64);
@@ -1000,14 +1346,30 @@ impl RinchDocument {
                 continue;
             };
             copy_baked_fields(&mut next, current);
+            // Whether the box stays in the set although it carries no bake.
+            let mut keep = false;
             let baked = match kind {
                 Some(kind @ OutOfFlowKind::AncestorAbsolute(cb)) => {
-                    let Some(cb) = ContainingBox::of_ancestor(&self.tree, cb) else {
-                        continue;
-                    };
-                    unbake(&node.computed_style, false, &mut next);
-                    apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), &mut next);
-                    true
+                    match ContainingBox::of_ancestor(&self.tree, cb) {
+                        Some(cb) => {
+                            unbake(&node.computed_style, false, &mut next);
+                            apply_out_of_flow_size_overrides(
+                                node,
+                                kind,
+                                (cb.width, cb.height),
+                                &mut next,
+                            );
+                            true
+                        }
+                        // The lines are built and the span has no box in
+                        // them: a size baked from the box it had is stale.
+                        None if inline_only && was_baked => {
+                            unbake(&node.computed_style, true, &mut next);
+                            keep = true;
+                            false
+                        }
+                        None => continue,
+                    }
                 }
                 // Baked against an ancestor it no longer resolves against.
                 _ if was_baked => {
@@ -1038,7 +1400,7 @@ impl RinchDocument {
             });
             let node = &mut self.tree.nodes[id];
             node.abs_ancestor_baked = baked;
-            if !baked {
+            if !baked && !keep {
                 node.abs_ancestor_recorded = false;
                 self.tree.ancestor_absolutes.remove(&id);
             }

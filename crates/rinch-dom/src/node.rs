@@ -2530,6 +2530,13 @@ pub struct NodeTree {
     /// clamped. `out_of_flow::replace_all` has nothing to do when none was,
     /// and clears it.
     pub(crate) abs_late_moves: bool,
+    /// Whether the last read-back met an absolute box whose containing block
+    /// is an inline span (#631, `out_of_flow::has_inline_containing_block`).
+    /// Such a block is measured in the lines `build_ifc_layouts` builds
+    /// after the read-back, so `resolve_layout` checks those boxes' sizes
+    /// and places them again once the lines exist — and does neither when
+    /// this is `false`, which is every document without such a box.
+    pub(crate) abs_inline_cb_seen: bool,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
@@ -2999,6 +3006,7 @@ impl NodeTree {
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
             abs_late_moves: false,
+            abs_inline_cb_seen: false,
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),

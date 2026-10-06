@@ -572,8 +572,8 @@ Where desktop still differs from a browser:
   plain `<span>` (at any depth of them) sitting directly in the containing
   block: the box then counts there, as a browser counts it. Under a
   `position: relative` span — which is then the box's containing block — it
-  is counted only when the scroll container is itself positioned, and at the
-  wrong offset (#1049).
+  counts in the scroll container around the span, placed against the span's
+  text (#1049, #631).
 - **A child's `transform` and its end margins** do not extend the scroll range;
   a browser's scroll range includes both.
 

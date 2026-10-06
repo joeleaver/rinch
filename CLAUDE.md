@@ -2384,11 +2384,10 @@ box is measured by its rect and by its own lines, so a `nowrap` line wider than
 the container counts. The same list holds an out-of-flow box hoisted out of a
 flowed inline element into its host (#591), which the element walk never
 reached (it saw the inline's `0x0` box); the containing-block rule is asked of
-it as of any child — of the **host**, which is where that rule and
-`out_of_flow_kind` do drift apart today: under a `position: relative` span the
-span is the containing block, so Chrome counts the box in the scroller around
-the span (at the span's offset), while rinch counts it only if the host is
-itself positioned, and then placed against the host (**#1049**).
+it as of any child, walking its DOM ancestors up to the host: under a
+`position: relative` span the span is the containing block and the host's
+content, so the box counts in the scroller around the span (#1049), at the
+span's fragment (#631).
 `DomDocument::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
 `content_extents`, and so is layout's own clamp of a scrolled container
@@ -2406,7 +2405,7 @@ stops at the first **box**, so an absolute whose containing block is a **non-par
 ancestor contributes to no box's range at all — unless everything between it
 and a block container above is non-positioned flowed inline elements and
 `display: contents` wrappers, which hoist it into that block container's box
-list (#591, reached since #995; a positioned span is **#1049**) — Chrome gives it to that
+list (#591, reached since #995; under a positioned span it counts there too, #1049) — Chrome gives it to that
 ancestor (measured: a 700x1500 absolute under a static `overflow: auto` div
 lands on `documentElement.scrollHeight`), and rinch used to give it to the
 wrong box, which is what grew the phantom bar (**#770**). **#769 is fixed**:
@@ -3047,9 +3046,40 @@ its `build_ifc_layouts`; `replace_all` consumes the flag
 (`review2_1409_tests::c1_*`, `c3_*`); **a new writer of a box's position
 or scroll offset that runs after `read_layout_results` must set it too.**
 
-**Not covered:** a containing block that generates no box — a `position:
-relative` **inline** span — is left to Taffy, which resolves against the
-span's block container (**#631**); the shrink-to-fit *available* width of an
+**A positioned inline span is a containing block too** (#631, CSS 2.1 §10.1):
+`out_of_flow_kind` answers `AncestorAbsolute(span)` for a `position: relative`
+or `sticky` non-atomic inline, which has no box at all, and
+`out_of_flow::inline_fragments_box` measures the block in the lines of the
+inline formatting context that flows the span (`Node::text_layout`): from the
+top-left of its first fragment to the bottom-right of its last, zero wide when
+that is left of the first (a wrapped span), each fragment the span's **own
+font's** rounded ascent and descent around the baseline (Chrome 153, pinned
+with the bundled Inter in `tests/abs_inline_containing_block_tests.rs`); an
+empty span is a zero-width fragment where it sits. The chain of such a box
+ends at the block container **element** holding the line
+(`out_of_flow::inline_host` — an anonymous block box is stepped through), so
+that element's scroll carries the box and a scroller between the two does not.
+The position is snapped to the pixel grid in that element's frame: a fragment
+starts between pixels, and every other box is on the grid. **Lines are built
+after the read-back**, so both halves run late, and only when the read-back met
+such a box (`NodeTree::abs_inline_cb_seen`): `replace_all` places it once
+`build_ifc_layouts` has run (on the text-only path too, where a `text-align`
+change moves the span), and `resolve_ancestor_absolutes(true)` compares its
+bake with the fragment the new lines give — a rewrite sends `resolve_layout`
+round again (compute, read-back, lines), so a box **sized** from a fragment
+whose size changed costs one more compute in that layout (the first one, a text
+edit inside the span) and a position-only one costs none
+(`a_fragment_sized_box_costs_a_second_compute_only_when_the_fragment_changes`).
+Not Chrome's, each pinned there: a **split** inline (one holding a block-level
+child, #513) is not measured and keeps the block container (**#1424**); a
+relative span's own `left`/`top` moves neither its text nor the box
+(**#1425**); an inline's horizontal padding takes no room on its line, so
+the padding box starts that much further left (**#1426**); a span that
+ends in a `<br>` has no empty last fragment on the next line; and a line of
+nothing but atomic inlines has no strut (#624, #1258), so a span holding only
+an `inline-block` on such a line is as tall as the box.
+
+**Not covered:** the shrink-to-fit *available* width of an
 auto-width absolute is still the Taffy parent's (Chrome: four 130px
 inline-blocks under a 200px parent in a 400px containing block make a 400x40
 box; rinch 130x80 — **#1404**); a box whose containing block is a non-parent **scroll
