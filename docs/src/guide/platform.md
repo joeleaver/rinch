@@ -161,8 +161,31 @@ it again and takes its size. The same call refreshes a picture whose bytes
 changed under an unchanged source: the old picture stays on screen until the new
 one has decoded.
 
-None of this applies to the browser build, where the browser loads `<img>`
-itself.
+#### In the browser
+
+The same two calls work in a `rinch-web` build. The browser loads an `<img>`
+itself, so there the loader's bytes are wrapped in an object URL (`blob:…`) and
+that is what the element shows; the loader is called on the browser's one
+thread, when an `<img>` is given such a `src`, so it must answer from what it
+already holds (`Failed` for "not yet", then `reload_image`).
+
+An app that already has a URL to show (it made the object URL itself), or whose
+state lives in `Rc`s a `Send + Sync` loader cannot capture, uses the
+browser-only form instead:
+
+```rust
+rinch_web::register_image_url_scheme("asset", move |src| {
+    store.borrow().object_url(src)   // Some(url), or None for "not yet"
+});
+// later:
+rinch::image::reload_image("asset:photo-42");
+```
+
+Either way the element keeps the source it was given: it is in
+`data-rinch-src`, `NodeHandle::get_attribute("src")` answers it, and an editor
+document's `image` node never holds the resolved URL. While the answer is "not
+yet" the element has no `src` at all. Only `<img src>` is resolved in the
+browser; a `background-image: url(…)` there is the browser's own.
 
 ---
 

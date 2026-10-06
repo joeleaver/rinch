@@ -3673,8 +3673,27 @@ A failed source goes back to loading, a decoded one keeps its pixels until the n
 answer lands (and if that fails), and one whose load is in flight has that answer
 dropped and is asked for once more (`ImageCache::begin_reload` / `take_retries`), so a
 "not yet" already on its way cannot beat the reload.
-`crates/rinch-dom/tests/image_scheme_reload_tests.rs` is the pin. None of this exists
-on the web, where the browser loads `<img>` itself.
+`crates/rinch-dom/tests/image_scheme_reload_tests.rs` is the pin.
+
+**The same two calls on the web** (`crates/rinch-web/src/images.rs`). The browser loads
+`<img>` itself, so `WebDocument::set_attribute` routes an `<img>`'s `src` through
+`images::set_img_src`: a source whose scheme the app answers for is kept in
+`data-rinch-src` (`LOGICAL_SRC_ATTR`; `get_attribute("src")` answers it) and the
+browser's `src` gets what it resolved to, or is **removed** while the answer is "not
+yet". Two ways to answer: `rinch::image::register_image_scheme` unchanged (the loader is
+called synchronously on the one thread; its bytes become an object URL rinch owns and
+revokes when a reload replaces it), or `rinch_web::register_image_url_scheme(scheme,
+Fn(&str) -> Option<String>)` (browser only, may capture `Rc`s, answers a URL the app
+owns; wins over a loader for the same scheme). Successes are remembered by source;
+"not yet" is asked again by the next element and by a reload.
+`rinch::image::reload_image` is `rinch_core::image::reload_image`, which calls each
+backend's reloader (`add_image_reloader`: rinch-dom's on its first document, rinch-web's
+on its first `WebDocument`); on the web it asks the app again and re-points every
+`<img>` on the page naming the source (including one rendered before the scheme was
+registered), leaving a picture on screen alone when the answer is still "not yet". The
+editor's model is never read back from the DOM, so an `image` node's `src` stays the
+app's URL. `background-image` is not resolved on the web.
+`crates/rinch-web/tests/image_sources.rs` is the pin.
 
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 

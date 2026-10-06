@@ -142,6 +142,48 @@ pub fn image_scheme_loader(src: &str) -> Option<Arc<dyn ImageLoader>> {
         .map(|(_, loader)| loader.clone())
 }
 
+/// What each rendering backend does when [`reload_image`] is called: the
+/// desktop document queues the source for its image cache, the browser backend
+/// asks the app's resolver again and re-points its `<img>` elements.
+static RELOADERS: RwLock<Vec<fn(&str)>> = RwLock::new(Vec::new());
+
+/// Ask for `src` to be loaded again, wherever it is shown: the way a picture
+/// that was not there when it was first asked for (the loader answered
+/// [`ImageLoadResult::Failed`]), or whose bytes have changed, gets another go
+/// without a restart.
+///
+/// A load's answer is remembered by source string, **a failure included**, so
+/// an app whose loader can answer late (a file still downloading, a blob that
+/// has not been synced yet) calls this when the bytes exist. Every element
+/// naming `src`, in every window or mounted root, then asks again and shows the
+/// picture. A picture already on screen stays there until the new answer
+/// replaces it. `data:` sources never change and are ignored.
+///
+/// Callable from any thread on desktop (it queues the request and wakes the UI
+/// thread); in the browser there is one thread and it acts at once. The
+/// backend's own notes say what "ask again" means there:
+/// `rinch_dom::image_cache::reload_image` and
+/// `rinch_web::register_image_url_scheme`.
+pub fn reload_image(src: &str) {
+    if src.is_empty() || src.starts_with("data:") {
+        return;
+    }
+    let reloaders: Vec<fn(&str)> = RELOADERS.read().unwrap_or_else(|e| e.into_inner()).clone();
+    for reload in reloaders {
+        reload(src);
+    }
+}
+
+/// Install a backend's half of [`reload_image`]. For rendering backends
+/// (`rinch-dom`, `rinch-web`), which call it once; not for apps.
+#[doc(hidden)]
+pub fn add_image_reloader(reload: fn(&str)) {
+    RELOADERS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(reload);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
