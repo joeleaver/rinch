@@ -16,8 +16,10 @@
 //! the wrong source is a different number.
 
 use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter;
+use std::sync::Arc;
 
 /// A 40x30 PNG.
 const FORTY_BY_THIRTY: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAYAAABe3VzdAAAAPUlEQVR4nO3OIQEAIBAAMTJ9/wC0ggjIQ0zMb+2Z87NVBwQF64CgYB0QFKwDgoJ1QFCwDggK1gFBwTrwcgFD1ConI1jnigAAAABJRU5ErkJggg==";
@@ -72,15 +74,22 @@ fn an_image_with_no_source_is_the_size_its_attributes_say() {
 
 #[test]
 fn attribute_names_are_case_insensitive() {
-    check("img", &[("WIDTH", "100"), ("Height", "50")], "", (100.0, 50.0));
+    check(
+        "img",
+        &[("WIDTH", "100"), ("Height", "50")],
+        "",
+        (100.0, 50.0),
+    );
 }
 
 #[test]
 fn a_percentage_attribute_is_a_percentage_of_the_containing_block() {
+    // (Block-level: rinch resolves no percentage height on an atomic inline,
+    // from an attribute or from CSS — #1420.)
     check(
         "img",
         &[("width", "50%"), ("height", "50%")],
-        "",
+        "display: block",
         (200.0, 150.0),
     );
     check(
@@ -100,7 +109,8 @@ fn the_attribute_is_read_by_the_dimension_rules() {
         ("100px", 100.0),
         (" \t100", 100.0),
         ("100abc", 100.0),
-        ("100.5", 100.5),
+        // 100.9px, on a layout rounded to whole pixels: not truncated.
+        ("100.9", 101.0),
         ("1e2", 1.0),
         ("0", 0.0),
         (".5", 0.0),
@@ -238,17 +248,38 @@ fn a_loaded_image_uses_its_own_ratio() {
     loaded(BOTH, "height: auto", (100.0, 75.0));
     loaded(BOTH, "width: 200px; height: auto", (200.0, 150.0));
     loaded(BOTH, "max-width: 50px", (50.0, 50.0));
-    loaded(BOTH, "max-width: 50px; height: auto", (50.0, 37.5));
+    loaded(BOTH, "max-width: 60px; height: auto", (60.0, 45.0));
 }
 
-/// The source set after the attributes, as `rsx!` may order them.
+/// Every load fails, so the image never has a natural size.
+struct FailingLoader;
+impl ImageLoader for FailingLoader {
+    fn load(&self, _src: &str) -> ImageLoadResult {
+        ImageLoadResult::Failed("nope".into())
+    }
+}
+
+/// A `src` written after the first layout starts a load, which rewrites the
+/// image's measure context: the mapped ratio survives it, with no cascade in
+/// between to put it back.
 #[test]
-fn the_source_may_arrive_after_the_attributes() {
-    let (mut doc, img) = build("img", BOTH, "height: auto");
-    assert_eq!(size(&doc, img), (100.0, 50.0), "before the image");
+fn an_image_that_starts_loading_keeps_its_mapped_ratio() {
+    let (mut doc, img) = build("img", BOTH, "display: block; width: 50%; height: auto");
+    assert_eq!(size(&doc, img), (200.0, 100.0), "no source");
+    doc.tree.image_loader = Some(Arc::new(FailingLoader));
+    doc.set_attribute(img, "src", "presentational-hints-missing.png");
+    // A new viewport: a `src` write alone asks for no layout (#1421).
+    doc.resolve_layout(810.0, 600.0);
+    assert_eq!(size(&doc, img), (200.0, 100.0), "loading, then failed");
+}
+
+/// The image arriving after the attributes takes over with its own ratio.
+#[test]
+fn a_source_written_after_the_attributes_brings_its_own_ratio() {
+    let (mut doc, img) = build("img", BOTH, "display: block; width: 50%; height: auto");
     doc.set_attribute(img, "src", FORTY_BY_THIRTY);
-    doc.resolve_layout(800.0, 600.0);
-    assert_eq!(size(&doc, img), (100.0, 75.0), "after it");
+    doc.resolve_layout(810.0, 600.0);
+    assert_eq!(size(&doc, img), (200.0, 150.0));
 }
 
 #[test]
@@ -260,7 +291,7 @@ fn a_video_takes_the_hints_and_the_ratio() {
     check(
         "video",
         &[("width", "50%"), ("height", "50%")],
-        "",
+        "display: block",
         (200.0, 150.0),
     );
     check("video", BOTH, "width: 200px; height: auto", (200.0, 100.0));
@@ -274,19 +305,26 @@ fn a_video_takes_the_hints_and_the_ratio() {
     );
 }
 
-/// An iframe takes the two hints and **no** ratio; its 2px UA border sits
-/// outside them.
+/// An iframe takes the two hints and **no** ratio. Chrome measures each 4px
+/// larger, its 2px UA border sitting outside the content box; the fixture
+/// removes the border, because every rinch box is sized as a border box.
 #[test]
 fn an_iframe_takes_the_hints_and_no_ratio() {
-    check("iframe", BOTH, "", (104.0, 54.0));
-    check("iframe", &[("width", "100")], "", (104.0, 154.0));
+    const B0: &str = "border: 0";
+    check("iframe", BOTH, B0, (100.0, 50.0));
+    check("iframe", &[("width", "100")], B0, (100.0, 150.0));
     check(
         "iframe",
         &[("width", "50%"), ("height", "50%")],
-        "",
-        (204.0, 154.0),
+        "border: 0; display: block",
+        (200.0, 150.0),
     );
-    check("iframe", BOTH, "width: 200px; height: auto", (204.0, 154.0));
+    check(
+        "iframe",
+        BOTH,
+        "border: 0; width: 200px; height: auto",
+        (200.0, 150.0),
+    );
 }
 
 /// A canvas's attributes are its bitmap's size, read as integers — not
@@ -316,7 +354,7 @@ fn other_elements_take_no_hint() {
 fn a_later_write_or_removal_relays_out() {
     let (mut doc, img) = build("img", &[], "");
     assert_eq!(size(&doc, img), (0.0, 0.0));
-    let mut step = |doc: &mut RinchDocument, what: &str, want: (f32, f32)| {
+    let step = |doc: &mut RinchDocument, what: &str, want: (f32, f32)| {
         doc.resolve_layout(800.0, 600.0);
         assert_eq!(size(doc, img), want, "{what}");
     };
@@ -365,7 +403,11 @@ fn only_width_and_height_restyle_the_image() {
     assert_eq!(cascaded(&mut doc, "alt", "a picture"), 0, "alt");
     assert_eq!(cascaded(&mut doc, "data-x", "1"), 0, "data-x");
     assert_eq!(cascaded(&mut doc, "width", "120"), 1, "width");
-    assert_eq!(cascaded(&mut doc, "width", "120"), 0, "the same width again");
+    assert_eq!(
+        cascaded(&mut doc, "width", "120"),
+        0,
+        "the same width again"
+    );
     // And on an element with no mapping, not even those two.
     let (mut doc, div) = build("div", &[], "");
     let before = doc.tree.perf.total();
