@@ -437,6 +437,29 @@ fn a_declared_decoration_colour_equal_to_the_start_colour_stays_too() {
     SAME_AS_START_UNDERLINE.finished_matches_the_twin();
 }
 
+/// A `text-decoration-color` declared **above** the IFC root is not the
+/// underline's: the property is not inherited, and the layout is built from
+/// the root down.
+const DECLARED_ABOVE: Case = Case {
+    css: "body { text-decoration-color: rgb(10, 160, 10); } \
+          .u { text-decoration: underline; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: root_text,
+    from: "t u a",
+    to: "t u b",
+};
+
+#[test]
+fn a_decoration_colour_declared_above_the_root_does_not_hold_the_underline() {
+    let (mut doc, p) = DECLARED_ABOVE.started();
+    let red_line = exact_rows(&paint(&mut doc), RED, UNDER.0, UNDER.1);
+    assert!(red_line > 100, "positive control: {red_line} px");
+    age_transitions(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    assert_eq!(exact_rows(&px, RED, UNDER.0, UNDER.1), 0);
+    assert!(exact_rows(&px, colour_of(&doc, p), UNDER.0, UNDER.1) > 100);
+}
+
 const WAVY: Case = Case {
     css: ".u { text-decoration: underline wavy; } \
           .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
