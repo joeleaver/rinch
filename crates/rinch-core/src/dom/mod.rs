@@ -72,6 +72,9 @@
 /// The HTML boolean-attribute set and the truthiness rule for it (issue #551).
 mod bool_attr;
 
+/// HTML's rules for parsing dimension values, for `width`/`height` (#684).
+mod html_dimension;
+
 /// HTML's rules for parsing integers, for integer attributes (#1138, #1153).
 mod html_integer;
 
@@ -89,6 +92,7 @@ pub mod traits;
 pub use bool_attr::{
     attr_is_truthy, data_attr_is_on, is_boolean_attribute, is_presence_reflected_attribute,
 };
+pub use html_dimension::{HtmlDimension, parse_html_dimension};
 pub use html_integer::{parse_html_integer, parse_html_non_negative_integer};
 pub use inline_style::{
     StyleProp, normalize_property_name, serialize_declarations, split_declarations,

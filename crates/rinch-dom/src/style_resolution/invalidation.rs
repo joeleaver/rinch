@@ -246,6 +246,12 @@ impl RinchDocument {
             // A canvas's natural size is its `width` and `height` (#1173,
             // `replaced.rs`), re-read by the same restyle.
             (Some("canvas"), "width" | "height") => self.mark_restyle(node, false),
+            // The two dimension attributes are presentational hints on these
+            // (#684): declarations of the element's own cascade, and a ratio
+            // its measure reads (`replaced.rs`).
+            (Some(tag), "width" | "height") if crate::replaced::maps_dimension_attributes(tag) => {
+                self.mark_restyle(node, false)
+            }
             (Some("ol"), "start") => self.mark_element_children(node, false),
             (Some("li"), "value") => {
                 self.mark_restyle(node, false);
