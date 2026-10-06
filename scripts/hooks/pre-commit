@@ -5,9 +5,10 @@
 #
 # Install: ./scripts/setup-hooks.sh
 #
-# Toolchain: the repo pins `channel = "stable"` via rust-toolchain.toml,
-# so `cargo` below uses the same compiler CI uses. Run `rustup update stable`
-# periodically so your local toolchain picks up new lints before CI does.
+# Toolchain: rust-toolchain.toml pins one exact Rust version and CI installs
+# the version that file names (#736), so `cargo` below is the compiler and the
+# clippy CI runs. rustup downloads it on first use; there is nothing to update
+# by hand. Do not add a `+toolchain` here: it would override the pin.
 
 set -e
 
