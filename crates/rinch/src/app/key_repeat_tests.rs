@@ -274,6 +274,8 @@ fn every_injected_press_activates_though_the_channel_sends_no_releases() {
 }
 
 // ── review of PR #1416 (#479): the Android translator's output, through RinchApp ──
+// `shell` (and so `android_key`) is not part of an `embed`-only build.
+#[cfg(any(feature = "desktop", feature = "android"))]
 mod review_1416 {
     use super::*;
     use crate::shell::android_key::{KeyPhase, KeyTranslator, MapChar, RawKey};
