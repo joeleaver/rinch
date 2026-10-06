@@ -580,6 +580,151 @@ fn an_inline_spans_background_follows_its_transition() {
     SPAN_BACKGROUND.finished_matches_the_twin();
 }
 
+/// A background that fades **in**: the layout was built with no span for it,
+/// so the frame it appears on has to rebuild the layout — once.
+const SPAN_BACKGROUND_IN: Case = Case {
+    css: ".b { background-color: rgb(10, 10, 200); }",
+    build: span_in_paragraph,
+    from: "t",
+    to: "t b",
+};
+
+#[test]
+fn an_inline_spans_background_fades_in_from_none() {
+    let (mut doc, s) = SPAN_BACKGROUND_IN.started();
+    // A background part-way in from nothing is translucent, over a surface
+    // nothing else paints: count what is neither clear nor opaque. Before the
+    // run that is the glyphs' antialiased edges.
+    let translucent = |px: &[u8]| {
+        let px = px.as_chunks::<4>().0;
+        px.iter().filter(|p| p[3] > 0 && p[3] < 255).count()
+    };
+    let edges = translucent(&paint(&mut doc));
+    age_transitions(&mut doc, s, MID);
+    let (px, first) = frame(&mut doc);
+    assert!(
+        translucent(&px) > edges + 1000,
+        "the half-faded rectangle: {edges} -> {} translucent px",
+        translucent(&px)
+    );
+    assert_eq!(
+        first.get(Counter::ShapeIfcBuild),
+        1,
+        "the frame the background appears on builds its span"
+    );
+    let (_, second) = frame(&mut doc);
+    assert_eq!(shapes(&second), 0, "and no later frame shapes anything");
+    SPAN_BACKGROUND_IN.finished_matches_the_twin();
+}
+
+/// A background that fades **out** ends at nothing, not at the last colour
+/// the layout recorded.
+const SPAN_BACKGROUND_OUT: Case = Case {
+    css: ".a { background-color: rgb(200, 10, 10); }",
+    build: span_in_paragraph,
+    from: "t a",
+    to: "t",
+};
+
+#[test]
+fn an_inline_spans_background_fades_out_to_none() {
+    SPAN_BACKGROUND_OUT.finished_matches_the_twin();
+}
+
+/// A padded inline background is the element's box as it is styled now.
+const SPAN_PADDING: Case = Case {
+    css: ".a { background-color: rgb(200, 10, 10); padding: 0 2px; } \
+          .b { background-color: rgb(200, 10, 10); padding: 0 30px; } \
+          .t { transition: padding-left 100s linear, padding-right 100s linear; }",
+    build: span_in_paragraph,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn an_inline_spans_background_follows_a_padding_transition() {
+    let (mut doc, s) = SPAN_PADDING.started();
+    let before = exact(&paint(&mut doc), RED);
+    age_transitions(&mut doc, s, MID);
+    let (px, _) = frame(&mut doc);
+    assert!(
+        exact(&px, RED) > before + 1000,
+        "mid-run the rectangle is wider: {before} -> {} px",
+        exact(&px, RED)
+    );
+    SPAN_PADDING.finished_matches_the_twin();
+}
+
+// ── once the colour stops moving ────────────────────────────────────────────
+
+/// The colour the first text range of `root`'s layout was shaped in.
+fn shaped_colour(doc: &RinchDocument, root: NodeId) -> Rgb {
+    let layout = doc.tree.get(root.0).unwrap().text_layout.as_ref();
+    rgb_of(layout.expect("an IFC root").text_ranges[0].color)
+}
+
+/// While the colour moves, paint recolours a layout shaped in the start
+/// colour. The frame that ends the run rebuilds it, so every later paint is
+/// on the layout's own brushes again and compares nothing.
+#[test]
+fn the_frame_that_ends_a_colour_transition_reshapes_the_text_once() {
+    let (mut doc, p) = ROOT_COLOUR.started();
+    age_transitions(&mut doc, p, MID);
+    let (_, running) = frame(&mut doc);
+    assert_eq!(shapes(&running), 0);
+    assert_eq!(shaped_colour(&doc, p), RED, "still the layout it started with");
+
+    age_transitions(&mut doc, p, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(last.get(Counter::ShapeIfcBuild), 1, "the ending frame");
+    assert_eq!(last.get(Counter::TaffyRootComputes), 0, "moves no box");
+    assert_eq!(shaped_colour(&doc, p), BLUE);
+
+    let (_, after) = frame(&mut doc);
+    assert_eq!(shapes(&after), 0, "and nothing after it");
+}
+
+#[test]
+fn the_frame_that_settles_a_colour_animation_reshapes_the_text_once() {
+    let mut doc = doc_with(KEYFRAMES);
+    let p = root_text(&mut doc, "k");
+    settle(&mut doc);
+    paint(&mut doc);
+    age_animations(&mut doc, p, MID);
+    let (_, running) = frame(&mut doc);
+    assert_eq!(shapes(&running), 0);
+
+    age_animations(&mut doc, p, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(last.get(Counter::ShapeIfcBuild), 1, "the settling frame");
+    assert_eq!(shaped_colour(&doc, p), BLUE);
+    let (_, after) = frame(&mut doc);
+    assert_eq!(shapes(&after), 0, "a settled fill is re-applied quietly");
+}
+
+/// The same end, for text an anonymous block box lays out: no walk from the
+/// element finds that box.
+#[test]
+fn the_frame_that_ends_a_colour_transition_reshapes_an_anonymous_boxs_text() {
+    let (mut doc, d) = ANON_BOX.started();
+    age_transitions(&mut doc, d, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(last.get(Counter::ShapeIfcBuild), 1);
+    let (_, after) = frame(&mut doc);
+    assert_eq!(shapes(&after), 0);
+}
+
+/// A flex item's text is a leaf: paint colours it from the live style and no
+/// layout holds its colour, so the end of its transition owes nothing.
+#[test]
+fn the_end_of_a_text_leafs_colour_transition_reshapes_nothing() {
+    let (mut doc, p) = LEAF.started();
+    age_transitions(&mut doc, p, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(shapes(&last), 0);
+    assert_eq!(last.get(Counter::TaffyRootComputes), 0);
+}
+
 // ── @keyframes ──────────────────────────────────────────────────────────────
 
 const KEYFRAMES: &str = "@keyframes tint { from { color: rgb(200, 10, 10); } \

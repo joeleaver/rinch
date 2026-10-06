@@ -941,6 +941,62 @@ impl RinchDocument {
         }
     }
 
+    /// Those of `nodes` that are `display: inline` elements with no
+    /// background to draw — the ones a tick could give one
+    /// ([`Self::settle_ticked_text`]).
+    fn inlines_without_background<'a>(
+        &self,
+        nodes: impl Iterator<Item = &'a usize>,
+    ) -> Vec<usize> {
+        nodes
+            .copied()
+            .filter(|&id| {
+                self.tree.nodes.get(id).is_some_and(|n| {
+                    n.computed_style.display == crate::computed_style::DisplayValue::Inline
+                        && !crate::ifc::has_inline_background(&n.computed_style)
+                })
+            })
+            .collect()
+    }
+
+    /// The two things a transition or animation tick owes an inline layout it
+    /// does not re-measure (#679). A tick writes `computed_style` with no
+    /// cascade, and a frame of a colour or an inline background needs no new
+    /// layout: paint reads both from the style as it is
+    /// (`paint::text::LiveColours`, `ifc::inline_background_span`). What paint
+    /// cannot do is:
+    ///
+    /// - **Draw a background the layout has no span for.** One is recorded
+    ///   only for an inline element that had a background when the layout was
+    ///   built, so an element in `bare_inlines` (it had none before the tick)
+    ///   that has one now has its layout rebuilt — once, on the frame the
+    ///   background appears.
+    /// - **Stop comparing.** Text whose colour moved is drawn stretch by
+    ///   stretch for as long as its layout holds the old brush. So when the
+    ///   colour of a node in `colour_done` has stopped moving — its transition
+    ///   finished, its animation ended or settled into its fill — the layouts
+    ///   that colour is baked into are rebuilt, once, and paint is back on
+    ///   their own brushes.
+    ///
+    /// Neither sets `layout_dirty`: a rebuilt paint layout moves no box.
+    fn settle_ticked_text(&mut self, colour_done: Vec<usize>, bare_inlines: Vec<usize>) {
+        for id in bare_inlines {
+            if self
+                .tree
+                .nodes
+                .get(id)
+                .is_some_and(|n| crate::ifc::has_inline_background(&n.computed_style))
+            {
+                self.invalidate_ifc_for_node(id);
+            }
+        }
+        for id in colour_done {
+            if self.tree.nodes.contains(id) {
+                self.invalidate_text_brushes_for_node(id);
+            }
+        }
+    }
+
     /// Advance all active CSS transitions by one frame.
     /// Returns true if any transitions are still active (caller should keep polling).
     pub fn tick_transitions(&mut self) -> bool {
@@ -992,7 +1048,28 @@ impl RinchDocument {
             .map(|(id, _)| (*id, self.tree.nodes[*id].establishes_abs_containing_block()))
             .collect();
 
+        // What the tick owes text it does not re-measure (#679): see
+        // `settle_ticked_text`. Read before the tick, like the rest.
+        let colour_nodes: Vec<usize> = self
+            .tree
+            .active_transitions
+            .iter()
+            .filter(|(_, props)| props.contains_key(&crate::transition::TransitionProperty::Color))
+            .map(|(id, _)| *id)
+            .collect();
+        let bare_inlines = self.inlines_without_background(self.tree.active_transitions.keys());
+
         let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
+
+        let colour_done: Vec<usize> = colour_nodes
+            .into_iter()
+            .filter(|id| {
+                self.tree.active_transitions.get(id).is_none_or(|props| {
+                    !props.contains_key(&crate::transition::TransitionProperty::Color)
+                })
+            })
+            .collect();
+        self.settle_ticked_text(colour_done, bare_inlines);
 
         let mut resync_absolutes = Vec::new();
         for (node_id, was) in transform_nodes {
@@ -1176,7 +1253,36 @@ impl RinchDocument {
             .map(|(id, _)| *id)
             .collect();
 
+        // The animation twin of the colour bookkeeping in `tick_transitions`
+        // (#679): an animation a tick can still move, with a `color` stop.
+        let moving_colour = |anims: &[crate::animation::ActiveAnimation]| {
+            anims.iter().any(|a| {
+                !a.is_paused()
+                    && !a.fill_settled
+                    && a.animates(crate::transition::TransitionProperty::Color)
+            })
+        };
+        let colour_nodes: Vec<usize> = self
+            .tree
+            .active_animations
+            .iter()
+            .filter(|(_, anims)| moving_colour(anims))
+            .map(|(id, _)| *id)
+            .collect();
+        let bare_inlines = self.inlines_without_background(self.tree.active_animations.keys());
+
         let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
+
+        let colour_done: Vec<usize> = colour_nodes
+            .into_iter()
+            .filter(|id| {
+                self.tree
+                    .active_animations
+                    .get(id)
+                    .is_none_or(|anims| !moving_colour(anims))
+            })
+            .collect();
+        self.settle_ticked_text(colour_done, bare_inlines);
 
         for node_id in text_measure_nodes {
             self.invalidate_text_measure_for_node(node_id);
