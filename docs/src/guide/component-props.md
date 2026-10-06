@@ -746,7 +746,9 @@ item) and will not touch a value the child asked for itself.
 `rinch_core::dom::on_child_removed` is the other half, and a container takes it
 only if its per-item answer depends on a sibling's **position** (issue #745).
 `Stepper` does — a step that goes moves every step behind it backwards, which
-renumbers it and can restate it — so it registers both; `List` and `RadioGroup`
+renumbers it and can restate it — so it registers both (and on either event
+re-derives only the steps that moved: one it has already settled at the position
+it still holds costs three attribute reads, issue #748); `List` and `RadioGroup`
 register only the insertion half, since no row going away can change the icon or
 the size the next one should have. It is fired by the four verbs that take a
 node out of a tree (`remove_child`, `remove`, `discard`, and `replace_with` for

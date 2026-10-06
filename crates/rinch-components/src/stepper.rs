@@ -309,10 +309,10 @@ impl Component for Stepper {
             STEP_BOUNDARY,
             move |_inserted, scope| {
                 // The subtree that landed is deliberately ignored. What has to
-                // be recomputed is every step's *position*, and only the whole
-                // list gives that — an insertion in front of a step renumbers
-                // it and can restate it, so patching the newcomer alone would
-                // leave the stepper saying two different things.
+                // be found is every step's *position*, and only the whole list
+                // gives that — an insertion in front of a step renumbers it and
+                // can restate it, so patching the newcomer alone would leave the
+                // stepper saying two different things.
                 settle_steps(scope, &watched, &d);
             },
         );
@@ -452,8 +452,7 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: &Deriv
         let position = position as u32;
         let position_str = position.to_string();
 
-        let settled_here =
-            step.get_attribute(SETTLED_BY_ATTR).as_deref() == Some(&*d.settler);
+        let settled_here = step.get_attribute(SETTLED_BY_ATTR).as_deref() == Some(&*d.settler);
         // The derivation's own position, distinct from `STEP_ATTR` — which a
         // step's own `step` prop can override, for the *label* only (see
         // below). A click handler reads this one back at click time, never a
@@ -857,8 +856,9 @@ fn settle_step_icon(
         && !has.iter().any(|k| k == KEY_BASE)
         && let Some(live) = &live
     {
-        // Compared first: this pass re-runs over every step on every change to
-        // the list, and `set_text` does not early-out on an unchanged value.
+        // Compared first: a step that only changed stepper is derived again
+        // where it stands, and `set_text` does not early-out on an unchanged
+        // value.
         let number = number.to_string();
         if live.text_content().as_deref() != Some(number.as_str()) {
             live.set_text(&number);
@@ -1439,8 +1439,7 @@ mod differential_tests {
                         ..Default::default()
                     },
                 ] {
-                    let mut children: Vec<NodeHandle> =
-                        (0..3).map(|_| world.step(rng)).collect();
+                    let mut children: Vec<NodeHandle> = (0..3).map(|_| world.step(rng)).collect();
                     // A wrapper between the stepper and some of its steps, as a
                     // `for` loop puts one, and a completed block mid-list.
                     let wrapper = world.scope.create_element("div");
@@ -1449,7 +1448,7 @@ mod differential_tests {
                         wrapper.append_child(&step);
                     }
                     children.insert(1, wrapper);
-                    children.insert(3, StepperCompleted::default().render(&mut world.scope, &[]));
+                    children.insert(3, StepperCompleted.render(&mut world.scope, &[]));
                     let rendered = stepper.render(&mut world.scope, &children);
                     let container = rendered
                         .children()
