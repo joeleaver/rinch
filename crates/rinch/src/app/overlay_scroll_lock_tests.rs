@@ -857,3 +857,162 @@ fn closing_the_select_popup_releases_its_exemption() {
         "the exemption goes with the popup"
     );
 }
+
+// ── 8. A scroll container outside the overlay that is not the page (#701) ────
+
+/// The DOM menu bar (`render_with_menu_bar`, what a Linux window and a web page
+/// get) around a scrollable page and a `lock_scroll` modal, with the File menu
+/// open and long enough to overflow its `max-height: 95vh`.
+///
+/// Returns the app, the page scroller and the open dropdown.
+fn long_menu_over_modal(open: Signal<bool>) -> (RinchApp, usize, usize) {
+    use crate::menu::{Menu, MenuItem};
+
+    let page: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let page_in = page.clone();
+
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "position: relative; width: 800px; height: 572px");
+        let page_el = scope.create_element("div");
+        page_el.set_attribute(
+            "style",
+            "position: absolute; left: 0; top: 0; width: 800px; height: 572px; overflow: auto",
+        );
+        let tall = scope.create_element("div");
+        tall.set_attribute("style", "width: 100%; height: 2000px");
+        page_el.append_child(&tall);
+        page_in.set(Some(page_el.node_id().0));
+        root.append_child(&page_el);
+
+        let modal = Modal {
+            opened_fn: Some(reactive(open)),
+            lock_scroll: true,
+            close_on_click_outside: false,
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        root.append_child(&modal);
+
+        // 80 entries: far past the 570px a 600px window's `95vh` allows.
+        let mut file = Menu::new();
+        for i in 0..80 {
+            file = file.item(MenuItem::new(format!("Entry {i}")).on_click(|| {}));
+        }
+        crate::menu::render_with_menu_bar(scope, &[("File", &file)], root, 0)
+    });
+
+    // Open the menu the way a user does: a click on its label, which sits in
+    // the bar above the modal's root (`top: var(--rinch-window-top-inset)`).
+    let label = nodes_with_class(&app, "rinch-app-menu-item__label")[0];
+    let at = centre(&app, label);
+    for ev in [
+        PlatformEvent::MouseDown {
+            x: at.0,
+            y: at.1,
+            button: MouseButton::Left,
+        },
+        PlatformEvent::MouseUp {
+            x: at.0,
+            y: at.1,
+            button: MouseButton::Left,
+        },
+    ] {
+        app.handle_event(ev, (800, 600), 1.0);
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+    let dropdown = nodes_with_class(&app, "rinch-app-menu-item__dropdown")[0];
+    let max_scroll = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let nid = rinch_core::dom::NodeId(dropdown);
+        d.scroll_height(nid) - d.client_height(nid)
+    };
+    assert!(
+        max_scroll > -WHEEL_DY,
+        "precondition: the open menu must overflow by more than the gesture \
+         uses, or the assertions would sit on the clamp — got {max_scroll}"
+    );
+    (app, page.get().expect("the page's node id"), dropdown)
+}
+
+fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
+    let d = app.doc.as_ref().unwrap().borrow();
+    let mut out = Vec::new();
+    let mut stack = vec![d.tree.body_id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = d.tree.get(id) else {
+            continue;
+        };
+        if node
+            .attributes
+            .get("class")
+            .is_some_and(|c| c.split_whitespace().any(|c| c == class))
+        {
+            out.push(id);
+        }
+        stack.extend(node.children.iter().rev().copied());
+    }
+    out
+}
+
+/// **The positive control** for the fixture below: with nothing locked, a wheel
+/// over the open menu scrolls it. Without this, "the menu did not move" could
+/// be a wheel that never reached it.
+#[test]
+fn a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked() {
+    let open = Signal::new(false);
+    let (mut app, _page, dropdown) = long_menu_over_modal(open);
+
+    let inside = centre(&app, dropdown);
+    wheel(&mut app, inside, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&app, dropdown), -WHEEL_DY);
+}
+
+/// Issue #701. The menu bar is window chrome: it is in no overlay's root, and
+/// its dropdown is a scroll container (`max-height: 95vh; overflow-y: auto`)
+/// that paints **over** an open modal (the bar is `z-index: 201` against the
+/// modal's 200). So the pointer is on the menu, the menu is what the user is
+/// scrolling, and the lock refused it as if it were the page behind.
+#[test]
+fn a_long_menu_bar_dropdown_scrolls_over_a_locking_modal() {
+    let open = Signal::new(true);
+    let (mut app, page, dropdown) = long_menu_over_modal(open);
+
+    let inside = centre(&app, dropdown);
+    {
+        // The premise: at that point the menu is on top, not the modal.
+        let d = app.doc.as_ref().unwrap().borrow();
+        let hit = super::hit_testing::hit_test(&d.tree, inside.0, inside.1)
+            .expect("something is hit");
+        let mut cur = Some(hit);
+        let mut in_dropdown = false;
+        while let Some(id) = cur {
+            in_dropdown |= id == dropdown;
+            cur = d.tree.get(id).and_then(|n| n.parent);
+        }
+        assert!(in_dropdown, "the open menu paints over the modal");
+    }
+
+    wheel(&mut app, inside, 0.0, WHEEL_DY);
+    assert_eq!(
+        scroll_top(&app, dropdown),
+        -WHEEL_DY,
+        "the open menu is not the page behind the modal; its wheel is its own"
+    );
+
+    // Its thumb, which the same gate refused.
+    {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let (px, py, pw, ph) = painted_element_box(&d.tree, dropdown);
+        let hit = find_scrollbar_hit(&d.tree, px + pw - 3.0, py + ph / 2.0)
+            .expect("the menu's own bar is grabbable");
+        assert_eq!(hit.node_id, dropdown);
+    }
+
+    // Not a hole in the lock: the page behind still does not move. Aimed left
+    // of the modal's panel and right of the menu, at the backdrop.
+    let beside = (700.0, 450.0);
+    wheel(&mut app, beside, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&app, page), 0.0, "the page is still locked");
+}
