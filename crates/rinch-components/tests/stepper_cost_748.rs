@@ -254,6 +254,36 @@ fn a_step_inserted_in_front_still_derives_every_step_behind_it() {
     );
 }
 
+/// What renumbering costs a plain step that keeps its state: its position, its
+/// index, and the number it draws.
+const WRITES_PER_RENUMBERED_STEP: usize = 3;
+
+#[test]
+fn a_step_renumbered_without_being_restated_keeps_its_class() {
+    // On step 1, a step put in front moves every step back by one; all but the
+    // two around `active` were inactive and still are. Those are the steps the
+    // two sizes differ by.
+    let mut costs = Vec::new();
+    for n in [SMALL, LARGE] {
+        let mut tree = Tree::stepper_with(n, 1);
+        let step = tree.new_step();
+        let container = tree.container();
+        let first = tree.steps()[0].clone();
+        let cost = tree.cost(|| container.insert_before(&step, &first));
+        assert_eq!(tree.says(), expected(n + 1, 1));
+        costs.push(cost);
+    }
+
+    assert_eq!(
+        costs[1].writes() - costs[0].writes(),
+        (LARGE - SMALL) * WRITES_PER_RENUMBERED_STEP,
+        "#748: a step that is only renumbered has its `class` left alone: \
+         {SMALL} steps {:?}, {LARGE} steps {:?}",
+        costs[0],
+        costs[1]
+    );
+}
+
 #[test]
 fn a_step_moved_in_from_another_stepper_at_the_same_position_is_derived_again() {
     // Position alone does not say a step is settled: this one stood at position

@@ -886,10 +886,16 @@ fn settle_step_icon(
         }
     }
 
+    // Both arms compared first: a renumbered step is derived again, and
+    // neither `set_attribute` nor `remove_attribute` is free for an attribute
+    // that already says so (issue #748).
     let has = has.join(" ");
+    let recorded = icon_box.get_attribute(ICON_HAS_ATTR);
     if has.is_empty() {
-        icon_box.remove_attribute(ICON_HAS_ATTR);
-    } else if icon_box.get_attribute(ICON_HAS_ATTR).as_deref() != Some(has.as_str()) {
+        if recorded.is_some() {
+            icon_box.remove_attribute(ICON_HAS_ATTR);
+        }
+    } else if recorded.as_deref() != Some(has.as_str()) {
         icon_box.set_attribute(ICON_HAS_ATTR, &has);
     }
 }
