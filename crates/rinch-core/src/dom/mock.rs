@@ -48,6 +48,57 @@ pub struct MockDomDocument {
     /// rather than only the discarded subtree's: a bounded walk's count does
     /// not move when an unrelated sibling subtree grows.
     get_children_calls: std::cell::Cell<usize>,
+    /// **Test-only.** Calls counted by kind since the document was made
+    /// (issue #748) — see [`MockOpCounts`].
+    ops: std::cell::Cell<MockOpCounts>,
+}
+
+/// **Test-only.** How many of each kind of call a [`MockDomDocument`] has
+/// served (issue #748).
+///
+/// What lets a fixture state the cost of a pass as a count rather than a
+/// timing: a container that re-derives every item per change reads and writes
+/// in proportion to the items it holds, and one that touches only what moved
+/// does not. Read it with [`MockDomDocument::__op_counts`] and subtract a
+/// baseline taken in the same test.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MockOpCounts {
+    /// `get_attribute` calls.
+    pub attribute_reads: usize,
+    /// `set_attribute`, `remove_attribute` and `set_style` calls, whether or
+    /// not the value changed — the mock, like `rinch-dom`'s `set_attribute`,
+    /// does not early-out on an equal write.
+    pub attribute_writes: usize,
+    /// `set_text_content` calls.
+    pub text_writes: usize,
+    /// `text_content` calls made by a caller (not the recursion inside one).
+    pub text_reads: usize,
+    /// `get_children` calls.
+    pub children_reads: usize,
+}
+
+impl MockOpCounts {
+    /// The calls made between `earlier` and `self`.
+    pub fn since(self, earlier: MockOpCounts) -> MockOpCounts {
+        MockOpCounts {
+            attribute_reads: self.attribute_reads - earlier.attribute_reads,
+            attribute_writes: self.attribute_writes - earlier.attribute_writes,
+            text_writes: self.text_writes - earlier.text_writes,
+            text_reads: self.text_reads - earlier.text_reads,
+            children_reads: self.children_reads - earlier.children_reads,
+        }
+    }
+
+    /// Every write of either kind.
+    pub fn writes(self) -> usize {
+        self.attribute_writes + self.text_writes
+    }
+
+    /// Every read of any kind.
+    pub fn reads(self) -> usize {
+        self.attribute_reads + self.text_reads + self.children_reads
+    }
 }
 
 struct MockNode {
@@ -99,6 +150,35 @@ impl MockDomDocument {
     #[doc(hidden)]
     pub fn __get_children_calls(&self) -> usize {
         self.get_children_calls.get()
+    }
+
+    /// **Test-only.** The calls served so far, by kind (issue #748).
+    #[doc(hidden)]
+    pub fn __op_counts(&self) -> MockOpCounts {
+        self.ops.get()
+    }
+
+    fn count(&self, bump: impl FnOnce(&mut MockOpCounts)) {
+        let mut ops = self.ops.get();
+        bump(&mut ops);
+        self.ops.set(ops);
+    }
+
+    fn text_of(&self, node: NodeId) -> Option<String> {
+        let n = self.nodes.get(&node)?;
+        match n.kind {
+            MockNodeKind::Text | MockNodeKind::Comment => Some(n.text.clone()),
+            MockNodeKind::Element(_) => {
+                // Concatenate descendant text (depth-first), matching the real DOM.
+                let mut out = String::new();
+                for &child in &n.children {
+                    if let Some(t) = self.text_of(child) {
+                        out.push_str(&t);
+                    }
+                }
+                Some(out)
+            }
+        }
     }
 
     /// **Test-only.** Give `node` a border box, so
@@ -156,6 +236,7 @@ impl MockDomDocument {
             focused: None,
             selection_range: None,
             get_children_calls: std::cell::Cell::new(0),
+            ops: std::cell::Cell::new(MockOpCounts::default()),
         };
 
         // Create root and body
@@ -384,6 +465,7 @@ impl DomDocument for MockDomDocument {
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
+        self.count(|ops| ops.text_writes += 1);
         if let Some(n) = self.nodes.get_mut(&node) {
             n.text = text.to_string();
         }
@@ -391,6 +473,7 @@ impl DomDocument for MockDomDocument {
     }
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
+        self.count(|ops| ops.attribute_writes += 1);
         if let Some(n) = self.nodes.get_mut(&node) {
             // A programmatic write reaches the live text too, as `rinch-web`'s
             // `sync_reflected_property` makes it (issue #100).
@@ -405,6 +488,7 @@ impl DomDocument for MockDomDocument {
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
+        self.count(|ops| ops.attribute_writes += 1);
         if let Some(n) = self.nodes.get_mut(&node) {
             // `rinch-web` empties a control's live text when its `value`
             // attribute goes (`remove_value_attribute` writes `""`).
@@ -419,6 +503,7 @@ impl DomDocument for MockDomDocument {
     }
 
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
+        self.count(|ops| ops.attribute_reads += 1);
         self.nodes.get(&node)?.attributes.get(name).cloned()
     }
 
@@ -477,6 +562,7 @@ impl DomDocument for MockDomDocument {
     /// `RinchDocument` does and CSSOM's longhand list makes moot (#470); the
     /// strings agree everywhere else.
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
+        self.count(|ops| ops.attribute_writes += 1);
         if let Some(n) = self.nodes.get_mut(&node) {
             let style = n.attributes.entry("style".to_string()).or_default();
             let mut decls = super::split_declarations(style);
@@ -527,6 +613,7 @@ impl DomDocument for MockDomDocument {
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
         self.get_children_calls
             .set(self.get_children_calls.get() + 1);
+        self.count(|ops| ops.children_reads += 1);
         self.nodes
             .get(&node)
             .map(|n| n.children.clone())
@@ -661,20 +748,8 @@ impl DomDocument for MockDomDocument {
     }
 
     fn text_content(&self, node: NodeId) -> Option<String> {
-        let n = self.nodes.get(&node)?;
-        match n.kind {
-            MockNodeKind::Text | MockNodeKind::Comment => Some(n.text.clone()),
-            MockNodeKind::Element(_) => {
-                // Concatenate descendant text (depth-first), matching the real DOM.
-                let mut out = String::new();
-                for &child in &n.children {
-                    if let Some(t) = self.text_content(child) {
-                        out.push_str(&t);
-                    }
-                }
-                Some(out)
-            }
-        }
+        self.count(|ops| ops.text_reads += 1);
+        self.text_of(node)
     }
 }
 

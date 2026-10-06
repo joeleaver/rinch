@@ -2,7 +2,9 @@
 //!
 //! Step-by-step progress indicator.
 
+use std::cell::Cell;
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 use rinch_core::Component;
 use rinch_core::ValueCallback;
@@ -287,15 +289,18 @@ impl Component for Stepper {
             completed_icon: self.completed_icon,
             progress_icon: self.progress_icon,
             on_step_click: self.on_step_click.clone(),
+            settler: next_settler(),
         };
-        settle_steps(__scope, &steps_container, derivation.clone());
+        settle_steps(__scope, &steps_container, &derivation);
 
         // A step that arrives *after* this render — a `for` reconcile, a
         // `show_dom` branch, a hand-rolled `append_child` — needs the same pass,
         // and so do the steps it displaces: an insertion in front of a step
         // moves it, which changes its number and can change its state (issue
-        // #716). So the whole pass runs again, over every step, and it is
-        // written to be idempotent for exactly that reason.
+        // #716). So the pass runs again over the whole list, and it is written
+        // to be idempotent for exactly that reason. It derives only the steps
+        // the change moved (issue #748): one this stepper settled at the
+        // position it still holds is passed over.
         let watched = steps_container.clone();
         let d = derivation.clone();
         crate::late_children::adopt_late_children(
@@ -304,11 +309,11 @@ impl Component for Stepper {
             STEP_BOUNDARY,
             move |_inserted, scope| {
                 // The subtree that landed is deliberately ignored. What has to
-                // be recomputed is every step's *position*, and only the whole
-                // list gives that — an insertion in front of a step renumbers
-                // it and can restate it, so patching the newcomer alone would
-                // leave the stepper saying two different things.
-                settle_steps(scope, &watched, d.clone());
+                // be found is every step's *position*, and only the whole list
+                // gives that — an insertion in front of a step renumbers it and
+                // can restate it, so patching the newcomer alone would leave the
+                // stepper saying two different things.
+                settle_steps(scope, &watched, &d);
             },
         );
 
@@ -325,7 +330,7 @@ impl Component for Stepper {
             &steps_container,
             STEP_BOUNDARY,
             move |scope| {
-                settle_steps(scope, &watched, d.clone());
+                settle_steps(scope, &watched, &d);
             },
         );
 
@@ -350,6 +355,45 @@ struct Derivation {
     completed_icon: Option<TablerIcon>,
     progress_icon: Option<TablerIcon>,
     on_step_click: Option<ValueCallback<u32>>,
+    /// Which render of which stepper this is, as the value of
+    /// [`SETTLED_BY_ATTR`] (issue #748). Everything else in this struct is
+    /// fixed for the life of that render, so a step carrying this value was
+    /// settled under exactly these props.
+    settler: Rc<str>,
+}
+
+thread_local! {
+    /// The next [`Derivation::settler`] on this thread.
+    static NEXT_SETTLER: Cell<u64> = const { Cell::new(1) };
+
+    /// **Test-only.** Makes [`settle_steps`] derive every step on every pass,
+    /// as it did before #748 — the oracle the differential test compares the
+    /// skipping pass with.
+    #[cfg(test)]
+    static DERIVE_EVERY_STEP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A value no other `Stepper` render on this thread has: a counter, never
+/// reused. Per **render** and not per stepper, because a re-render can hand the
+/// same step nodes to a stepper whose props have changed.
+fn next_settler() -> Rc<str> {
+    NEXT_SETTLER.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        Rc::from(id.to_string())
+    })
+}
+
+/// Whether a pass may pass over a step it finds already settled.
+fn skips_settled_steps() -> bool {
+    #[cfg(test)]
+    {
+        !DERIVE_EVERY_STEP.with(Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
 }
 
 impl Derivation {
@@ -373,19 +417,42 @@ impl Derivation {
 /// container or leaves it, because either one renumbers the steps after it and
 /// can move them between states.
 ///
-/// Re-deriving every step per change makes growing a stepper one step at a
-/// time quadratic — 10.6 ms for 100 steps, 0.11 ms for the ten a real stepper
-/// has (issue #748). The per-pass *writes* are all guarded against an unchanged
-/// value, so a step this pass does not move re-dirties no style; what is left is
-/// the reads. Everything it reads is therefore a *stable* record of
-/// what the caller asked for — `data-state` for a named state,
-/// [`STEP_DERIVED_ATTR`] for an index this pass assigned, [`ICON_HAS_ATTR`] for
-/// the glyphs the box holds — never a record of what the last pass happened to
-/// draw.
-fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Derivation) {
+/// **A step already settled where it stands is passed over** (issue #748).
+/// Everything this pass gives a step is a function of three things: the
+/// stepper's props, which are fixed for a render and named by
+/// [`Derivation::settler`]; the step's position; and what the step asked for
+/// itself, which [`StepperStep`] writes once when it renders. So a step that
+/// carries this render's [`SETTLED_BY_ATTR`] and still stands at its
+/// [`POSITION_ATTR`] would be given exactly what it has, and costs three
+/// attribute reads — its `class`, read by [`collect_steps`], and those two —
+/// and no write. Only the steps a change moved are derived: one for an append,
+/// none for a removal from the end, the steps behind it for anything else.
+/// Every step used to be derived on every change, about twenty-four reads and
+/// three writes each.
+///
+/// The walk itself still visits every step per change, so growing a stepper one
+/// step at a time is still quadratic in those three reads. Not visiting them
+/// would rest on every arrival having been announced, and the late-child
+/// dispatch is suppressed for the length of any observer's callback.
+///
+/// What the skip gives up: a step's own asks are read when it is derived, not
+/// on every pass. Code that edits a settled step's `disabled`, `data-state` or
+/// `data-step` attribute by hand is not noticed until the step next moves. It
+/// was noticed before only at the next unrelated change to the list, never when
+/// it happened; a [`StepperStep`] whose props change re-renders into a new node,
+/// which is derived as any arrival is.
+///
+/// Everything a derivation reads is a *stable* record of what the caller asked
+/// for — `data-state` for a named state, [`STEP_DERIVED_ATTR`] for an index this
+/// pass assigned, [`ICON_HAS_ATTR`] for the glyphs the box holds — never a
+/// record of what the last pass happened to draw.
+fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: &Derivation) {
+    let skips = skips_settled_steps();
     for (position, step) in collect_steps(steps_container).iter().enumerate() {
         let position = position as u32;
+        let position_str = position.to_string();
 
+        let settled_here = step.get_attribute(SETTLED_BY_ATTR).as_deref() == Some(&*d.settler);
         // The derivation's own position, distinct from `STEP_ATTR` — which a
         // step's own `step` prop can override, for the *label* only (see
         // below). A click handler reads this one back at click time, never a
@@ -393,8 +460,12 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
         // after the handler is wired, through a later insertion or removal
         // (issues #716, #745) — the same reason `data-step` itself has to be
         // re-read rather than captured (#714's pattern).
-        let position_str = position.to_string();
-        if step.get_attribute(POSITION_ATTR).as_deref() != Some(position_str.as_str()) {
+        let stands_at = step.get_attribute(POSITION_ATTR);
+        let unmoved = stands_at.as_deref() == Some(position_str.as_str());
+        if skips && settled_here && unmoved {
+            continue;
+        }
+        if !unmoved {
             step.set_attribute(POSITION_ATTR, &position_str);
         }
 
@@ -409,7 +480,7 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
             }
         }
 
-        settle_step_clickability(scope, step, position, disabled, &d);
+        settle_step_clickability(scope, step, position, disabled, d);
 
         // The index the step shows. Its own wins, so a caller may number a
         // stepper however they like; that changes the *label*, not the position
@@ -423,9 +494,8 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
             || step.get_attribute(STEP_DERIVED_ATTR).is_some();
         if numbered_here {
             // Compared before writing. `set_attribute` does not early-out on an
-            // unchanged value, and this pass re-runs over *every* step each time
-            // one arrives or leaves, so an unguarded write re-dirties the whole
-            // stepper's style on every change.
+            // unchanged value, and a step that only changed stepper (see
+            // `SETTLED_BY_ATTR`) is derived again where it stands.
             let position = position.to_string();
             if step.get_attribute(STEP_ATTR).as_deref() != Some(position.as_str()) {
                 step.set_attribute(STEP_ATTR, &position);
@@ -459,14 +529,25 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
                 // *re-run* needs, since the class this pass is replacing is the
                 // one the last pass wrote. `remove_class` writes nothing when
                 // the class is absent (#730), so the two extra calls are free.
-                for state in [
+                //
+                // And none of it when the step already carries the derived
+                // class and neither of the others, which is every step a change
+                // renumbered without restating (issue #748).
+                const STATES: [StepState; 3] = [
                     StepState::Completed,
                     StepState::Progress,
                     StepState::Inactive,
-                ] {
-                    step.remove_class(state.class_name());
+                ];
+                let class = step.get_attribute("class").unwrap_or_default();
+                let stated = STATES.iter().all(|state| {
+                    class.split_whitespace().any(|c| c == state.class_name()) == (*state == derived)
+                });
+                if !stated {
+                    for state in STATES {
+                        step.remove_class(state.class_name());
+                    }
+                    step.add_class(derived.class_name());
                 }
-                step.add_class(derived.class_name());
                 derived
             }
         };
@@ -478,7 +559,12 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
             .unwrap_or(position)
             + 1;
 
-        settle_step_icon(scope, step, state, named_state.is_some(), number, &d);
+        settle_step_icon(scope, step, state, named_state.is_some(), number, d);
+
+        // Last, so a step carries it only once everything above has run.
+        if !settled_here {
+            step.set_attribute(SETTLED_BY_ATTR, &d.settler);
+        }
     }
 }
 
@@ -770,8 +856,9 @@ fn settle_step_icon(
         && !has.iter().any(|k| k == KEY_BASE)
         && let Some(live) = &live
     {
-        // Compared first: this pass re-runs over every step on every change to
-        // the list, and `set_text` does not early-out on an unchanged value.
+        // Compared first: a step that only changed stepper is derived again
+        // where it stands, and `set_text` does not early-out on an unchanged
+        // value.
         let number = number.to_string();
         if live.text_content().as_deref() != Some(number.as_str()) {
             live.set_text(&number);
@@ -799,10 +886,16 @@ fn settle_step_icon(
         }
     }
 
+    // Both arms compared first: a renumbered step is derived again, and
+    // neither `set_attribute` nor `remove_attribute` is free for an attribute
+    // that already says so (issue #748).
     let has = has.join(" ");
+    let recorded = icon_box.get_attribute(ICON_HAS_ATTR);
     if has.is_empty() {
-        icon_box.remove_attribute(ICON_HAS_ATTR);
-    } else if icon_box.get_attribute(ICON_HAS_ATTR).as_deref() != Some(has.as_str()) {
+        if recorded.is_some() {
+            icon_box.remove_attribute(ICON_HAS_ATTR);
+        }
+    } else if recorded.as_deref() != Some(has.as_str()) {
         icon_box.set_attribute(ICON_HAS_ATTR, &has);
     }
 }
@@ -845,6 +938,14 @@ const DISABLED_CLASS: &str = "rinch-stepper__step--disabled";
 /// later insertion or removal can renumber the step after the handler is
 /// wired (issues #716, #745).
 const POSITION_ATTR: &str = "data-step-position";
+
+/// Set by [`settle_steps`] on a step once it is fully derived: the
+/// [`Derivation::settler`] of the stepper render that derived it (issue #748).
+///
+/// With [`POSITION_ATTR`] it is what lets a later pass tell a step it has
+/// nothing to do for. The position alone cannot: a step moved in from another
+/// stepper can land at the position it left, under different props.
+const SETTLED_BY_ATTR: &str = "data-stepper-settled";
 
 /// The plain HTML `disabled` boolean attribute, read tag-agnostically
 /// (`node_is_disabled` honours it on any tag, not only the ones a browser
@@ -972,12 +1073,16 @@ const STEP_BOUNDARY: &[&str] = &[STEP_CLASS, COMPLETED_CLASS];
 /// is a position like any other.
 fn collect_steps(node: &NodeHandle) -> Vec<NodeHandle> {
     fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
+        // One read for both questions: this walk runs over every step on every
+        // change to the list (issue #748).
+        let class = node.get_attribute("class").unwrap_or_default();
+        let carries = |wanted: &str| class.split_whitespace().any(|c| c == wanted);
         // Asked first, so a node somehow carrying both classes is not a
         // position — the narrower answer.
-        if has_class(node, COMPLETED_CLASS) {
+        if carries(COMPLETED_CLASS) {
             return;
         }
-        if has_class(node, STEP_CLASS) {
+        if carries(STEP_CLASS) {
             out.push(node.clone());
             return;
         }
@@ -1233,5 +1338,783 @@ impl Component for StepperCompleted {
         }
 
         container
+    }
+}
+
+#[cfg(test)]
+mod differential_tests {
+    //! The skipping pass against the pass that derives every step (issue #748).
+    //!
+    //! Two documents get the same history — two steppers each, then a seeded
+    //! sequence of insertions, removals, reorders and moves between the two
+    //! steppers — one with [`DERIVE_EVERY_STEP`] set for every change. After
+    //! each change the two trees must be the same tree: every attribute this
+    //! file writes, every text node, every child, in order.
+
+    use super::*;
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_core::dom::traits::DomDocument;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    /// Every attribute a stepper, a step or an icon box can carry.
+    const ATTRS: &[&str] = &[
+        "class",
+        "style",
+        "tabindex",
+        "role",
+        "data-rid",
+        "data-active",
+        "data-icon-for",
+        DISABLED_ATTR,
+        POSITION_ATTR,
+        OWN_CLICKABLE_ATTR,
+        CLICK_HANDLER_ID_ATTR,
+        ICON_HAS_ATTR,
+        ICON_LIVE_ATTR,
+        STATE_ATTR,
+        STEP_ATTR,
+        STEP_DERIVED_ATTR,
+        SETTLED_BY_ATTR,
+    ];
+
+    /// Attributes whose value is an id minted from a thread-wide counter, which
+    /// the two documents therefore draw different numbers from. Compared by
+    /// order of first appearance instead.
+    const MINTED: &[&str] = &["data-rid", CLICK_HANDLER_ID_ATTR, SETTLED_BY_ATTR];
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+
+        fn one_in(&mut self, n: usize) -> bool {
+            self.below(n) == 0
+        }
+    }
+
+    struct World {
+        _doc: Rc<RefCell<MockDomDocument>>,
+        scope: RenderScope,
+        root: NodeHandle,
+        containers: Vec<NodeHandle>,
+        every_step: bool,
+    }
+
+    impl World {
+        fn new(every_step: bool, rng: &mut Rng) -> Self {
+            let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+            let body = doc.borrow().body();
+            let mut scope = RenderScope::new(doc.clone() as Rc<RefCell<dyn DomDocument>>, body);
+            let root = scope.create_element("div");
+            let mut world = Self {
+                _doc: doc,
+                scope,
+                root,
+                containers: Vec::new(),
+                every_step,
+            };
+            world.with_mode(|world| {
+                for stepper in [
+                    Stepper {
+                        active: 2,
+                        on_step_click: Some(ValueCallback::new(|_: u32| {})),
+                        completed_icon: Some(TablerIcon::CircleCheck),
+                        ..Default::default()
+                    },
+                    Stepper {
+                        active: 4,
+                        allow_next_steps_select: rng.one_in(2),
+                        progress_icon: Some(TablerIcon::Bell),
+                        ..Default::default()
+                    },
+                ] {
+                    let mut children: Vec<NodeHandle> = (0..3).map(|_| world.step(rng)).collect();
+                    // A wrapper between the stepper and some of its steps, as a
+                    // `for` loop puts one, and a completed block mid-list.
+                    let wrapper = world.scope.create_element("div");
+                    for _ in 0..2 {
+                        let step = world.step(rng);
+                        wrapper.append_child(&step);
+                    }
+                    children.insert(1, wrapper);
+                    children.insert(3, StepperCompleted.render(&mut world.scope, &[]));
+                    let rendered = stepper.render(&mut world.scope, &children);
+                    let container = rendered
+                        .children()
+                        .into_iter()
+                        .find(|c| has_class(c, "rinch-stepper__steps"))
+                        .expect("steps row");
+                    world.root.append_child(&rendered);
+                    world.containers.push(container);
+                }
+            });
+            world
+        }
+
+        fn with_mode<R>(&mut self, run: impl FnOnce(&mut Self) -> R) -> R {
+            DERIVE_EVERY_STEP.with(|flag| flag.set(self.every_step));
+            let out = run(self);
+            DERIVE_EVERY_STEP.with(|flag| flag.set(false));
+            out
+        }
+
+        fn step(&mut self, rng: &mut Rng) -> NodeHandle {
+            let icon = |rng: &mut Rng, icon| rng.one_in(3).then_some(icon);
+            StepperStep {
+                icon: icon(rng, TablerIcon::Home),
+                completed_icon: icon(rng, TablerIcon::Check),
+                progress_icon: icon(rng, TablerIcon::Clock),
+                allow_step_click: rng.one_in(5),
+                loading: rng.one_in(9),
+                disabled: rng.one_in(7),
+                state: match rng.below(8) {
+                    0 => "completed".into(),
+                    1 => "progress".into(),
+                    2 => "inactive".into(),
+                    _ => String::new(),
+                },
+                step: rng.one_in(6).then(|| rng.below(20) as u32),
+                ..Default::default()
+            }
+            .render(&mut self.scope, &[])
+        }
+
+        /// Every node a step can be put into: the two steps rows and the
+        /// wrappers inside them.
+        fn parents(&self) -> Vec<NodeHandle> {
+            let mut out = Vec::new();
+            for container in &self.containers {
+                out.push(container.clone());
+                for child in container.children() {
+                    if !has_class(&child, STEP_CLASS) && !has_class(&child, COMPLETED_CLASS) {
+                        out.push(child);
+                    }
+                }
+            }
+            out
+        }
+
+        fn steps(&self) -> Vec<NodeHandle> {
+            self.containers.iter().flat_map(collect_steps).collect()
+        }
+
+        /// Put `step` into parent `p` in front of that parent's child `at`, or
+        /// at its end.
+        fn place(&self, step: &NodeHandle, p: usize, at: usize) {
+            let parents = self.parents();
+            let parent = &parents[p % parents.len()];
+            let siblings: Vec<NodeHandle> = parent
+                .children()
+                .into_iter()
+                .filter(|c| c.node_id() != step.node_id())
+                .collect();
+            match siblings.get(at % (siblings.len() + 1)) {
+                Some(reference) => parent.insert_before(step, reference),
+                None => parent.append_child(step),
+            }
+        }
+
+        fn apply(&mut self, op: Op, rng: &mut Rng) {
+            self.with_mode(|world| match op {
+                Op::Insert { p, at } => {
+                    let step = world.step(rng);
+                    world.place(&step, p, at);
+                }
+                Op::Remove { which } => {
+                    let steps = world.steps();
+                    if !steps.is_empty() {
+                        steps[which % steps.len()].remove();
+                    }
+                }
+                Op::Move { which, p, at } => {
+                    let steps = world.steps();
+                    if !steps.is_empty() {
+                        world.place(&steps[which % steps.len()], p, at);
+                    }
+                }
+                Op::Replace { which } => {
+                    // What a `for` reconcile does to a changed row.
+                    let steps = world.steps();
+                    if !steps.is_empty() {
+                        let old = &steps[which % steps.len()];
+                        let new = world.step(rng);
+                        old.insert_after(&new);
+                        old.discard();
+                    }
+                }
+            });
+        }
+
+        fn dump(&self) -> String {
+            let mut out = String::new();
+            let mut minted = HashMap::new();
+            dump(&self.root, 0, &mut minted, &mut out);
+            out
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Op {
+        Insert { p: usize, at: usize },
+        Remove { which: usize },
+        Move { which: usize, p: usize, at: usize },
+        Replace { which: usize },
+    }
+
+    fn dump(
+        node: &NodeHandle,
+        depth: usize,
+        minted: &mut HashMap<(&'static str, String), usize>,
+        out: &mut String,
+    ) {
+        out.push_str(&"  ".repeat(depth));
+        match node.tag_name() {
+            Some(tag) => {
+                out.push_str(&tag);
+                for name in ATTRS {
+                    let Some(value) = node.get_attribute(name) else {
+                        continue;
+                    };
+                    let value = if MINTED.contains(name) {
+                        let next = minted.len();
+                        format!("#{}", minted.entry((name, value)).or_insert(next))
+                    } else {
+                        value
+                    };
+                    out.push_str(&format!(" {name}={value:?}"));
+                }
+                out.push('\n');
+                for child in node.children() {
+                    dump(&child, depth + 1, minted, out);
+                }
+            }
+            None => {
+                out.push_str(&format!("{:?}\n", node.text_content()));
+            }
+        }
+    }
+
+    fn run(seed: u64, ops: usize) {
+        // One generator per world, seeded alike, so the steps the two build are
+        // the same steps; a third draws the history.
+        let mut rng_a = Rng(seed);
+        let mut rng_b = Rng(seed);
+        let mut history = Rng(seed ^ 0x9e3779b97f4a7c15);
+        let mut skipping = World::new(false, &mut rng_a);
+        let mut reference = World::new(true, &mut rng_b);
+        assert_eq!(skipping.dump(), reference.dump(), "seed {seed}: at render");
+
+        for n in 0..ops {
+            let op = match history.below(10) {
+                0..=3 => Op::Insert {
+                    p: history.below(64),
+                    at: history.below(64),
+                },
+                4..=5 => Op::Remove {
+                    which: history.below(64),
+                },
+                6..=8 => Op::Move {
+                    which: history.below(64),
+                    p: history.below(64),
+                    at: history.below(64),
+                },
+                _ => Op::Replace {
+                    which: history.below(64),
+                },
+            };
+            skipping.apply(op, &mut rng_a);
+            reference.apply(op, &mut rng_b);
+            let (got, want) = (skipping.dump(), reference.dump());
+            assert!(
+                got == want,
+                "seed {seed}, change {n} ({op:?}): the skipping pass left a \
+                 different tree from the pass that derives every step.\n\
+                 --- skipping ---\n{got}\n--- every step ---\n{want}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_skipping_pass_leaves_the_tree_the_whole_pass_leaves() {
+        let seeds: u64 = std::env::var("RINCH_TWIN_SEEDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
+        for seed in 1..=seeds {
+            run(seed, 60);
+        }
+    }
+
+    #[test]
+    fn the_reference_pass_really_derives_every_step() {
+        // The oracle's own control: with the flag set, an append to a settled
+        // stepper reads far more than three attributes per step it leaves alone.
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone() as Rc<RefCell<dyn DomDocument>>, body);
+        let steps: Vec<NodeHandle> = (0..20)
+            .map(|_| StepperStep::default().render(&mut scope, &[]))
+            .collect();
+        let rendered = Stepper {
+            active: 9,
+            ..Default::default()
+        }
+        .render(&mut scope, &steps);
+        let container = rendered.children().into_iter().next().expect("steps row");
+
+        let mut reads = Vec::new();
+        for every_step in [false, true] {
+            let step = StepperStep::default().render(&mut scope, &[]);
+            DERIVE_EVERY_STEP.with(|flag| flag.set(every_step));
+            let before = doc.borrow().__op_counts();
+            container.append_child(&step);
+            reads.push(doc.borrow().__op_counts().since(before).attribute_reads);
+            DERIVE_EVERY_STEP.with(|flag| flag.set(false));
+        }
+        assert!(
+            reads[1] > reads[0] + 20 * 10,
+            "skipping {} reads, every step {} reads",
+            reads[0],
+            reads[1]
+        );
+    }
+}
+
+#[cfg(test)]
+mod extended_differential_tests {
+    //! The skipping pass against the pass that derives every step, over the
+    //! shapes [`differential_tests`] does not sample (from the review of PR
+    //! #1423): a stepper with every prop set at once, a nested stepper whose
+    //! steps move to and from the outer ones, a step removed and put back
+    //! later, a wrapper or completed block moved with its steps, and the same
+    //! step nodes handed to a new render with different props.
+    use super::*;
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_core::dom::traits::DomDocument;
+    use std::cell::RefCell;
+
+    const ATTRS: &[&str] = &[
+        "class",
+        "style",
+        "tabindex",
+        "role",
+        "data-rid",
+        "data-active",
+        "data-icon-for",
+        DISABLED_ATTR,
+        POSITION_ATTR,
+        OWN_CLICKABLE_ATTR,
+        CLICK_HANDLER_ID_ATTR,
+        ICON_HAS_ATTR,
+        ICON_LIVE_ATTR,
+        ICON_ALT_ATTR,
+        STATE_ATTR,
+        STEP_ATTR,
+        STEP_DERIVED_ATTR,
+    ];
+    const MINTED: &[&str] = &["data-rid", CLICK_HANDLER_ID_ATTR];
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+        fn one_in(&mut self, n: usize) -> bool {
+            self.below(n) == 0
+        }
+    }
+
+    struct Props {
+        active: u32,
+        next: bool,
+        click: bool,
+        ci: bool,
+        pi: bool,
+    }
+    impl Props {
+        fn stepper(&self) -> Stepper {
+            Stepper {
+                active: self.active,
+                allow_next_steps_select: self.next,
+                on_step_click: self.click.then(|| ValueCallback::new(|_: u32| {})),
+                completed_icon: self.ci.then_some(TablerIcon::CircleCheck),
+                progress_icon: self.pi.then_some(TablerIcon::Bell),
+                ..Default::default()
+            }
+        }
+    }
+
+    struct World {
+        _doc: Rc<RefCell<MockDomDocument>>,
+        scope: RenderScope,
+        root: NodeHandle,
+        steppers: Vec<(NodeHandle, NodeHandle, Props)>, // rendered root, container, props
+        stash: Vec<NodeHandle>,
+        every_step: bool,
+    }
+
+    fn container_of(rendered: &NodeHandle) -> NodeHandle {
+        rendered
+            .children()
+            .into_iter()
+            .find(|c| has_class(c, "rinch-stepper__steps"))
+            .expect("steps row")
+    }
+
+    impl World {
+        fn new(every_step: bool, rng: &mut Rng) -> Self {
+            let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+            let body = doc.borrow().body();
+            let mut scope = RenderScope::new(doc.clone() as Rc<RefCell<dyn DomDocument>>, body);
+            let root = scope.create_element("div");
+            let mut world = Self {
+                _doc: doc,
+                scope,
+                root,
+                steppers: Vec::new(),
+                stash: Vec::new(),
+                every_step,
+            };
+            world.with_mode(|world| {
+                // 0: everything on. 1: nothing. 2: nested in a step of 0. 3: bare under 1's row (double claim).
+                let nested_props = Props {
+                    active: 1,
+                    next: rng.one_in(2),
+                    click: true,
+                    ci: false,
+                    pi: true,
+                };
+                let nested_steps: Vec<NodeHandle> = (0..3).map(|_| world.step(rng, &[])).collect();
+                let nested = nested_props
+                    .stepper()
+                    .render(&mut world.scope, &nested_steps);
+                let nested_c = container_of(&nested);
+                for (i, props) in [
+                    Props {
+                        active: 2,
+                        next: true,
+                        click: true,
+                        ci: true,
+                        pi: true,
+                    },
+                    Props {
+                        active: 3,
+                        next: rng.one_in(2),
+                        click: rng.one_in(2),
+                        ci: rng.one_in(2),
+                        pi: rng.one_in(2),
+                    },
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut children: Vec<NodeHandle> =
+                        (0..3).map(|_| world.step(rng, &[])).collect();
+                    if i == 0 {
+                        let host = world.step(rng, std::slice::from_ref(&nested));
+                        children.push(host);
+                    }
+                    let wrapper = world.scope.create_element("div");
+                    for _ in 0..2 {
+                        let st = world.step(rng, &[]);
+                        wrapper.append_child(&st);
+                    }
+                    children.insert(1, wrapper);
+                    children.insert(3, StepperCompleted.render(&mut world.scope, &[]));
+                    let rendered = props.stepper().render(&mut world.scope, &children);
+                    let c = container_of(&rendered);
+                    world.root.append_child(&rendered);
+                    world.steppers.push((rendered, c, props));
+                }
+                world.steppers.push((nested, nested_c, nested_props));
+            });
+            world
+        }
+
+        fn with_mode<R>(&mut self, run: impl FnOnce(&mut Self) -> R) -> R {
+            DERIVE_EVERY_STEP.with(|flag| flag.set(self.every_step));
+            let out = run(self);
+            DERIVE_EVERY_STEP.with(|flag| flag.set(false));
+            out
+        }
+
+        fn step(&mut self, rng: &mut Rng, children: &[NodeHandle]) -> NodeHandle {
+            let icon = |rng: &mut Rng, icon| rng.one_in(3).then_some(icon);
+            StepperStep {
+                icon: icon(rng, TablerIcon::Home),
+                completed_icon: icon(rng, TablerIcon::Check),
+                progress_icon: icon(rng, TablerIcon::Clock),
+                allow_step_click: rng.one_in(5),
+                loading: rng.one_in(9),
+                disabled: rng.one_in(7),
+                state: match rng.below(8) {
+                    0 => "completed".into(),
+                    1 => "progress".into(),
+                    2 => "inactive".into(),
+                    _ => String::new(),
+                },
+                step: rng.one_in(6).then(|| rng.below(20) as u32),
+                ..Default::default()
+            }
+            .render(&mut self.scope, children)
+        }
+
+        /// Rows, wrappers and completed blocks.
+        fn parents(&self) -> Vec<NodeHandle> {
+            let mut out = Vec::new();
+            for (_, container, _) in &self.steppers {
+                out.push(container.clone());
+                for child in container.children() {
+                    if !has_class(&child, STEP_CLASS) {
+                        out.push(child);
+                    }
+                }
+            }
+            out
+        }
+
+        /// Every step node anywhere under the root, completed blocks included.
+        fn steps(&self) -> Vec<NodeHandle> {
+            fn walk(n: &NodeHandle, out: &mut Vec<NodeHandle>) {
+                if has_class(n, STEP_CLASS) {
+                    out.push(n.clone());
+                }
+                for c in n.children() {
+                    walk(&c, out);
+                }
+            }
+            let mut out = Vec::new();
+            walk(&self.root, &mut out);
+            out
+        }
+
+        fn is_under(node: &NodeHandle, anc: &NodeHandle) -> bool {
+            let mut cur = Some(node.clone());
+            while let Some(n) = cur {
+                if n.node_id() == anc.node_id() {
+                    return true;
+                }
+                cur = n.parent_node();
+            }
+            false
+        }
+
+        fn place(&self, node: &NodeHandle, p: usize, at: usize) -> bool {
+            let parents = self.parents();
+            let parent = &parents[p % parents.len()];
+            if Self::is_under(parent, node) {
+                return false;
+            }
+            let siblings: Vec<NodeHandle> = parent
+                .children()
+                .into_iter()
+                .filter(|c| c.node_id() != node.node_id())
+                .collect();
+            match siblings.get(at % (siblings.len() + 1)) {
+                Some(reference) => parent.insert_before(node, reference),
+                None => parent.append_child(node),
+            }
+            true
+        }
+
+        fn apply(&mut self, op: Op, rng: &mut Rng) {
+            self.with_mode(|world| match op {
+                Op::Insert { p, at } => {
+                    let step = world.step(rng, &[]);
+                    world.place(&step, p, at);
+                }
+                Op::Remove { which } => {
+                    let steps = world.steps();
+                    if steps.len() > 1 {
+                        steps[which % steps.len()].remove();
+                    }
+                }
+                Op::Move { which, p, at } => {
+                    let steps = world.steps();
+                    if !steps.is_empty() {
+                        world.place(&steps[which % steps.len()], p, at);
+                    }
+                }
+                Op::Stash { which } => {
+                    let steps = world.steps();
+                    if steps.len() > 1 {
+                        let s = steps[which % steps.len()].clone();
+                        s.remove();
+                        world.stash.push(s);
+                    }
+                }
+                Op::Unstash { p, at } => {
+                    if let Some(s) = world.stash.pop() {
+                        world.place(&s, p, at);
+                    }
+                }
+                Op::MoveGroup { which, p, at } => {
+                    // a wrapper or a completed block, with whatever it holds
+                    let groups: Vec<NodeHandle> = world
+                        .parents()
+                        .into_iter()
+                        .filter(|n| !has_class(n, "rinch-stepper__steps"))
+                        .collect();
+                    if !groups.is_empty() {
+                        let g = groups[which % groups.len()].clone();
+                        world.place(&g, p, at);
+                    }
+                }
+                Op::Rerender { which, active } => {
+                    // The same step nodes handed to a new render with other props.
+                    let idx = which % 2;
+                    let (old_root, old_c, _) = &world.steppers[idx];
+                    let (old_root, old_c) = (old_root.clone(), old_c.clone());
+                    let children = old_c.children();
+                    world.steppers[idx].2.active = active as u32;
+                    if active % 2 == 0 {
+                        world.steppers[idx].2.next = !world.steppers[idx].2.next;
+                    }
+                    let stepper = world.steppers[idx].2.stepper();
+                    let rendered = stepper.render(&mut world.scope, &children);
+                    let c = container_of(&rendered);
+                    old_root.insert_after(&rendered);
+                    old_root.discard();
+                    world.steppers[idx].0 = rendered;
+                    world.steppers[idx].1 = c;
+                }
+            });
+        }
+
+        fn dump(&self) -> String {
+            let mut out = String::new();
+            let mut minted = HashMap::new();
+            dump(&self.root, 0, &mut minted, &mut out);
+            for s in &self.stash {
+                dump(s, 1, &mut minted, &mut out);
+            }
+            out
+        }
+    }
+    use std::collections::HashMap;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Op {
+        Insert { p: usize, at: usize },
+        Remove { which: usize },
+        Move { which: usize, p: usize, at: usize },
+        Stash { which: usize },
+        Unstash { p: usize, at: usize },
+        MoveGroup { which: usize, p: usize, at: usize },
+        Rerender { which: usize, active: usize },
+    }
+
+    fn dump(
+        node: &NodeHandle,
+        depth: usize,
+        minted: &mut HashMap<(&'static str, String), usize>,
+        out: &mut String,
+    ) {
+        out.push_str(&"  ".repeat(depth));
+        match node.tag_name() {
+            Some(tag) => {
+                out.push_str(&tag);
+                for name in ATTRS {
+                    let Some(value) = node.get_attribute(name) else {
+                        continue;
+                    };
+                    let value = if MINTED.contains(name) {
+                        let next = minted.len();
+                        format!("#{}", minted.entry((name, value)).or_insert(next))
+                    } else {
+                        value
+                    };
+                    out.push_str(&format!(" {name}={value:?}"));
+                }
+                out.push('\n');
+                for child in node.children() {
+                    dump(&child, depth + 1, minted, out);
+                }
+            }
+            None => out.push_str(&format!("{:?}\n", node.text_content())),
+        }
+    }
+
+    fn run(seed: u64, ops: usize) -> usize {
+        let mut rng_a = Rng(seed);
+        let mut rng_b = Rng(seed);
+        let mut history = Rng(seed ^ 0x9e3779b97f4a7c15);
+        let mut skipping = World::new(false, &mut rng_a);
+        let mut reference = World::new(true, &mut rng_b);
+        assert_eq!(skipping.dump(), reference.dump(), "seed {seed}: at render");
+        let mut applied = 0;
+        for n in 0..ops {
+            let op = match history.below(16) {
+                0..=3 => Op::Insert {
+                    p: history.below(64),
+                    at: history.below(64),
+                },
+                4..=5 => Op::Remove {
+                    which: history.below(64),
+                },
+                6..=8 => Op::Move {
+                    which: history.below(64),
+                    p: history.below(64),
+                    at: history.below(64),
+                },
+                9..=10 => Op::Stash {
+                    which: history.below(64),
+                },
+                11..=12 => Op::Unstash {
+                    p: history.below(64),
+                    at: history.below(64),
+                },
+                13..=14 => Op::MoveGroup {
+                    which: history.below(64),
+                    p: history.below(64),
+                    at: history.below(64),
+                },
+                _ => Op::Rerender {
+                    which: history.below(64),
+                    active: history.below(7),
+                },
+            };
+            skipping.apply(op, &mut rng_a);
+            reference.apply(op, &mut rng_b);
+            applied += 1;
+            let (got, want) = (skipping.dump(), reference.dump());
+            assert!(
+                got == want,
+                "seed {seed}, change {n} ({op:?}):\n--- skipping ---\n{got}\n--- every step ---\n{want}"
+            );
+        }
+        applied
+    }
+
+    #[test]
+    fn the_skipping_pass_matches_the_whole_pass_over_the_shapes_the_review_added() {
+        let seeds: u64 = std::env::var("RINCH_REVIEW_SEEDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(40);
+        let mut total = 0;
+        for seed in 1..=seeds {
+            total += run(seed, 80);
+        }
+        assert!(total > 0);
+        eprintln!("extended differential: {seeds} seeds, {total} changes");
     }
 }

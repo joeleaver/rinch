@@ -746,13 +746,21 @@ item) and will not touch a value the child asked for itself.
 `rinch_core::dom::on_child_removed` is the other half, and a container takes it
 only if its per-item answer depends on a sibling's **position** (issue #745).
 `Stepper` does — a step that goes moves every step behind it backwards, which
-renumbers it and can restate it — so it registers both; `List` and `RadioGroup`
+renumbers it and can restate it — so it registers both (and on either event
+re-derives only the steps that moved: one it has already settled at the position
+it still holds costs three attribute reads, issue #748); `List` and `RadioGroup`
 register only the insertion half, since no row going away can change the icon or
 the size the next one should have. It is fired by the four verbs that take a
 node out of a tree (`remove_child`, `remove`, `discard`, and `replace_with` for
 the node it displaces) and by the implicit detach an insertion verb performs when
 handed a node that already has a parent, which is what tells the container a
 child **moved away**.
+
+Because of that, a step's `state`, `step` and `disabled` are read when the step
+arrives or moves, not on every change to the list: change them through the
+`StepperStep` props (which re-renders the step), not by writing `data-state`,
+`data-step` or `disabled` on a mounted step by hand or through a reactive root
+attribute.
 
 The removal half is handed the node the subtree *left* — its former parent —
 rather than the node that went, because a removed node is detached and after a
