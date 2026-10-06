@@ -252,6 +252,21 @@ define_counters! {
     InlineBlockComputes = "inline_block_computes",
     /// Extra root computes the `calc(%, px)` fixpoint ran.
     CalcFixpointPasses = "calc_fixpoint_passes",
+    /// Extra root computes run because an absolute box's containing block —
+    /// an ancestor that is not its layout parent — came out of the compute
+    /// at a size the box's Taffy style was not baked for (#386).
+    AbsContainingBlockPasses = "abs_containing_block_passes",
+    /// Absolute boxes resolved against a containing block Taffy does not
+    /// know — a non-parent ancestor (#386) or the initial containing block
+    /// (#204) — one per box per pass that looks at it: the size check after
+    /// each root compute (ancestor boxes only), the placement as a layout is
+    /// read back, the second placement at the end of a layout in which
+    /// something on the way to a containing block moved late (an atomic
+    /// inline, an anonymous block box, a clamped scroll offset), and the
+    /// placement a scroll runs. An absolute child of its own positioned
+    /// parent is never counted, and a scroll counts only when the scrolled
+    /// box lies between such a box and its containing block.
+    AbsBoxesVisited = "abs_boxes_visited",
 
     // ── Paint ──────────────────────────────────────────────────────────
     /// Frames actually painted (a scene or pixel buffer rebuilt).

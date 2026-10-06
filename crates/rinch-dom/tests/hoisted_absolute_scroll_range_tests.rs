@@ -21,7 +21,7 @@
 //! | static, inside a `relative` div | static | 200x100 |
 //! | static | `relative` > static span > the absolute | 200x361 |
 //!
-//! rinch places the box against its host, not the span (the #386 family), so
+//! rinch places the box against its host, not the span (#631), so
 //! where Chrome says 361 rinch's extent is 310 (300 + 10). These fixtures pin
 //! *whether* the box is counted — the bar and a range reaching past 300 — not
 //! that offset.

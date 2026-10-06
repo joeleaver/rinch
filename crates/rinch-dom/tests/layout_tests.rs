@@ -2961,12 +2961,13 @@ mod absolute_containing_block {
         assert_eq!(on_screen(&doc, abs), (15.0, 27.0));
     }
 
-    /// An intervening *positioned* ancestor that is not the direct parent is
-    /// still resolved against the direct parent — the half of #204 this change
-    /// deliberately leaves alone (#386), pinned so the follow-up has a starting
-    /// point.
+    /// A *positioned* ancestor that is not the direct parent is the containing
+    /// block (#386, the other half of #204): the box fills the 400x300
+    /// grandparent, not the 300x200 parent. Until #386 this test pinned the
+    /// parent-resolved 300x200 as a known gap;
+    /// `abs_containing_block_tests` holds the rest.
     #[test]
-    fn a_positioned_grandparent_is_not_yet_honoured() {
+    fn a_positioned_grandparent_is_the_containing_block() {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let outer = doc.create_element("div");
@@ -2985,11 +2986,7 @@ mod absolute_containing_block {
         doc.resolve_layout(800.0, 600.0);
 
         let l = doc.tree.get(abs.0).unwrap().layout;
-        assert_eq!(
-            (l.width, l.height),
-            (300.0, 200.0),
-            "known gap: this should be 400x300 (the positioned grandparent)"
-        );
+        assert_eq!((l.width, l.height), (400.0, 300.0));
     }
 
     /// An ICB-absolute in a `display: none` subtree is left alone — its Taffy

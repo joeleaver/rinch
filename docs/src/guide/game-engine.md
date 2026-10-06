@@ -619,24 +619,24 @@ if let Some(rect) = ctx.viewport_rect("main") {
 [#358]: https://github.com/joeleaver/rinch/issues/358
 [#361]: https://github.com/joeleaver/rinch/issues/361
 
-> **Overlays: which ancestor sizes them.** On the embed path layout runs through
-> Taffy, which treats an absolutely positioned child's **direct parent** as its
-> containing block. rinch corrects the common half of that ([#204]): an absolute
-> box with **no** positioned ancestor at all now resolves against the initial
-> containing block — the viewport — so a `position: absolute; inset: 0` overlay
-> dropped into an unpositioned, auto-height container fills the window, as it
-> does in a browser and under `rinch-web`.
+> **Overlays: which ancestor sizes them.** A `position: absolute` overlay is
+> sized and placed against its **containing block**, as in a browser and under
+> `rinch-web`: the padding box of its nearest positioned (or transformed)
+> ancestor, however many unpositioned elements sit between them ([#386]), or
+> the window when it has none ([#204]). So `position: absolute; inset: 0`
+> inside `position: relative` chrome fills the chrome even when the element
+> directly enclosing it has auto height, and dropped into unpositioned
+> containers it fills the window.
 >
-> What is *not* corrected yet ([#386]): an absolute whose nearest positioned
-> ancestor is not its direct parent still sizes against the direct parent. If the overlay
-> sits inside `position: relative` chrome and the element directly enclosing it
-> has **auto** height, the overlay still gets essentially no height. Nothing
-> errors and the styles are correct, so this reads as a broken overlay — give
-> the enclosing element an explicit height (`height: 100%` up the chain, or a
-> flex parent that stretches it).
+> Two things to know. An overlay meant to cover one panel needs that panel to
+> be `position: relative`, or it covers the next positioned ancestor up. And a
+> `position: relative` **inline** element (a `<span>`) is not honoured as a
+> containing block yet ([#631]): the overlay resolves against the block that
+> holds the span's line.
 
 [#204]: https://github.com/joeleaver/rinch/issues/204
 [#386]: https://github.com/joeleaver/rinch/issues/386
+[#631]: https://github.com/joeleaver/rinch/issues/631
 
 ### Resize and Scale Factor
 

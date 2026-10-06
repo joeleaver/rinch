@@ -2929,32 +2929,153 @@ each input above against a fresh layout of the final state, with the mutant
 that kills it named in the PR.
 
 **Absolute positioning.** Taffy resolves an out-of-flow box against its **direct
-parent**, always. CSS resolves an absolute box against its nearest *positioned*
-ancestor — or, when it has none, against the initial containing block. rinch
-corrects the second case (#204): an absolutely positioned box with **no**
-positioned ancestor (nothing non-`static`, no transform, up to `<html>`) resolves
-against the viewport, so `inset: 0` inside an unpositioned 300x200 div gives an
-800x600 box, matching the browser and therefore `rinch-web`. The correction is
-`crates/rinch-dom/src/out_of_flow.rs` — a pre-layout **size** bake into the Taffy
-style (so the box's own children lay out inside the right box) plus a post-layout
-**position** patch in `read_layout_results`. That patch writes a
-*parent-relative delta*, so `LayoutResult` keeps its meaning and no coordinate
-consumer — paint, stacking, hit testing, `ClickContext`, the MCP `absolute`
-contract — needs an exception. An axis with both insets `auto` keeps Taffy's
-static position, which is what CSS asks for.
+parent**, always. CSS resolves an absolute box against the **padding box of the
+nearest ancestor that establishes a containing block**
+(`Node::establishes_abs_containing_block`: positioned, or transformed) — or,
+when it has none, against the initial containing block. rinch corrects both
+(`crates/rinch-dom/src/out_of_flow.rs`, whose module doc has the detail):
 
-**Not covered (#386):** an absolute whose nearest positioned ancestor is not its
-direct parent is still parent-resolved (its used size isn't known until a first
-compute pass) — and so is one whose containing block is a non-parent
-*transformed* ancestor, identity transforms included since #415
-(`div(translateX(0); 200x80) > div(50x30) > abs(inset: 0)`: 50x30, Chrome
-200x80; it was the 800x600 ICB before #415); percentage `padding`/`margin` and percentage `min-`/`max-` sizes on the
-box; the shrink-to-fit available width of an auto-sized absolute. `position:
-fixed` is unchanged and now shares the same helper — which is what stops
-`tick_transitions`/`tick_animations` from dropping its viewport size on a
-transition frame. **A component whose overlay must cover its parent (e.g.
+- **No such ancestor** (#204, `OutOfFlowKind::IcbAbsolute`): the viewport.
+  `inset: 0` inside an unpositioned 300x200 div gives an 800x600 box.
+- **An ancestor that is not the box Taffy lays it out in** (#386,
+  `OutOfFlowKind::AncestorAbsolute(cb)`): that ancestor's padding box.
+  `relative 400x300 > static 300x200 > abs(inset: 0)` gives 400x300 at the
+  grandparent's origin, where it gave 300x200 in the parent. The layout parent
+  is the nearest ancestor that generates a box — a `display: contents` wrapper
+  and a non-atomic inline element are stepped over — so `relative > contents >
+  abs` is still Taffy's own answer and costs nothing.
+
+Both match the browser and therefore `rinch-web`. The correction is a pre-layout
+**size** bake into the Taffy style (so the box's own children lay out inside the
+right box) plus a **position** written as a *parent-relative* value
+(`out_of_flow::place_absolute`), so `LayoutResult` keeps its meaning and no
+coordinate consumer — paint, stacking, hit testing, `ClickContext`, the MCP
+`absolute` contract — needs an exception. An axis with both insets `auto` keeps
+Taffy's static position, which is what CSS asks for.
+
+**An ancestor's size is not known before the compute**, so that case is a
+fixpoint in `resolve_layout`, sharing `calc_layout`'s loop and its cap of 8:
+`out_of_flow::bake_at_style_site` bakes from the ancestor's **last** laid-out
+size when a style is (re)built, `RinchDocument::resolve_ancestor_absolutes`
+compares every such box after each root compute and rewrites the ones whose
+ancestor came out at another size, and the compute re-runs while it rewrote any
+(`abs_containing_block_passes`). An out-of-flow box sizes nothing above it, so
+this converges in **one** extra compute — plus one per level when a containing
+block is itself an absolute resolved against a non-parent. What it costs in
+**computes**, pinned in `perf_regression_scenarios`: a box whose size does not
+depend on its containing block (`right: 5px; bottom: 5px; width: 40px`) is
+placed and never re-sized, so it never pays one; a size-dependent one
+(`inset: 0`, `width: 50%`) pays one extra compute on the document's first
+layout and one per resize of its containing block — not on a later pass, a
+restyle of the box, its insertion under a block that already has a size, or an
+inline inset write (the #280 fast path bakes the size for the new insets
+itself, `out_of_flow::rebake_after_inset_write`).
+
+**The passes look only at the boxes that need them** (review of #1409; they
+iterated every `position: absolute` node at first, which cost a list of
+ordinary badges +12% per relayout). An absolute child of its own positioned
+parent — Taffy's own answer — is in no index and no pass, on a layout or a
+scroll. `NodeTree::ancestor_absolutes` holds the ancestor-resolved boxes (kept
+by the style sites; `read_layout_results` classifies every absolute box anyway,
+and one it finds the sites missed — a box *between* it and its containing block
+stopped being `display: contents` with no restyle of the absolute one — is
+added and the layout resolved again in the same pass,
+`out_of_flow::note_kind_at_read`); the size check after each compute iterates
+that. `NodeTree::placed_absolutes` holds what the read-back placed this layout
+(ancestor and ICB boxes); the second placement and a scroll iterate that. The
+counter is `abs_boxes_visited`, one per box per pass: 0 for a document of
+direct-child badges, 2 per layout per ancestor-resolved box (size check,
+placement), 1 per ICB box. Measured (Callgrind, 500 rows with one badge each,
+one leaf restyled and laid out, against `main`, which did not resolve these
+boxes at all): direct-child badges 1.78M → 1.79M instructions, ICB badges
+2.01M → 2.02M, ancestor-resolved badges 2.31M → 2.69–2.75M — about 0.8k
+instructions per ancestor-resolved box per layout, which is the size compare
+and the placement.
+
+**A change of containing block owes a layout whether or not a Taffy style
+changes.** A node that starts or stops establishing a containing block — in the
+cascade, or on the `tick_transitions` frame a `transform` transition finishes
+at `none` — re-syncs the absolute descendants that resolve against it (below;
+the walk stops below a nearer containing block, whose boxes the flip cannot
+reach, so a hover `transform` on a card of `position: relative` rows runs no
+compute) *and*, when there is one, sets `layout_dirty`: a box whose size
+does not depend on its containing block (`right: 5px; width: 40px`) has the
+same Taffy style under either, and only the read-back places it. Without that
+it stayed where the old containing block put it until something else laid out
+(`abs_containing_block_tests::a_position_only_box_follows_a_change_of_containing_block`;
+the initial-containing-block half was already so before #386).
+
+**Every site that rebuilds a Taffy style from `computed_style` calls
+`bake_at_style_site`** — the cascade's sync and both tick re-syncs — which is
+also what stops `tick_transitions`/`tick_animations` from dropping a `fixed`
+box's viewport size on a transition frame. A new rebuild site that skips it
+costs an ancestor case one compute (the pass after the compute puts the bake
+back) and loses the viewport cases until the next cascade.
+
+**The containing block's rules, for both absolute cases** (Chrome 153's numbers
+are in `crates/rinch-dom/tests/abs_containing_block_tests.rs`): insets and a
+percentage `width`/`height`/`min-*`/`max-*` resolve against the padding box, a
+percentage `padding` or `margin` against its **width** on every side; margins
+come out of the space between two insets; `margin: auto` between two insets
+centres a sized box (one `auto` takes all the free space; a box larger than the
+space still centres on the block axis and starts at the inset on the inline
+one); a mixed `calc()` in any of those resolves against the same box
+(`calc_layout`) — except for a box inside an atomic inline, where no `calc()`
+is resolved at all, in flow or out of it (#1412, older than #386: a `width: calc(50%
++ 10px)` child of a 200px `inline-block` is 10px wide; the plain-percentage
+rules above do hold there). A real 0x0 box is placed; one in a `display: none`
+subtree is not (`out_of_flow::is_laid_out`).
+
+**Scrolling.** A scroller *between* a box and its containing block does not
+carry the box — it is the containing block's content, not the scroller's — on
+an inset axis and a static-position one alike (Chrome: `top: 6px` and a
+static box both stay put at `scrollTop = 40`). The containing block's **own**
+scroll does carry it, and for the initial containing block the `<body>`'s
+scroll is that scroll (rinch's page scroll). Since `layout` is parent-relative,
+the position carries the scroll offsets of the boxes between
+(`+ Σ chain.scroll`), and a scroll runs no layout — so `NodeTree::mark_scrolled`
+calls `out_of_flow::replace_after_scroll`, which writes those boxes again.
+It costs one flag read unless the scrolled box lies between a placed box and
+its containing block (`Node::on_abs_chain`, set as the read-back walks each
+chain): a scroller of rows whose badges resolve against their own row, direct
+child or not, re-places nothing, and a scroller holding 500 ICB boxes re-places
+all 500 (about 0.6k instructions each, 0.3M a notch — each really has to be
+written again to stay still). It drops no hit-test extent: an absolute box is
+positioned, so it is in no `flow_extent`, and the stacking sequences that hold
+its offset are the ones a scroll drops anyway
+(`perf_regression_tests::a_second_wheel_notch_with_an_escaping_absolute_recomputes_no_extent`).
+The re-placed box is pushed paint-dirty, so a notch's damage includes a box
+that did not move on screen. **A new scroll-offset writer that
+bypasses `mark_scrolled` lets such a box ride the scroller until the next
+layout.** Before #386 an ICB box rode every scroller it was written in, and
+jumped back to the viewport on the next layout while the page was scrolled.
+`resolve_layout` also places every placed box a second time
+(`out_of_flow::replace_all`) when something on the way to a containing block
+was written after the read-back: an anonymous block box's own read-back, the
+line position an inline formatting context gives an `inline-block`, a scroll
+offset the clamp pulled in. Each of those three writers sets
+`NodeTree::abs_late_moves` when it actually moved something, and a layout in
+which none did skips the second placement. The `!layout_dirty` text-only path
+runs the second of them with no read-back at all — a `text-align` change moves
+an `inline-block` along its line there — so it calls `replace_all` too, after
+its `build_ifc_layouts`; `replace_all` consumes the flag
+(`review2_1409_tests::c1_*`, `c3_*`); **a new writer of a box's position
+or scroll offset that runs after `read_layout_results` must set it too.**
+
+**Not covered:** a containing block that generates no box — a `position:
+relative` **inline** span — is left to Taffy, which resolves against the
+span's block container (**#631**); the shrink-to-fit *available* width of an
+auto-width absolute is still the Taffy parent's (Chrome: four 130px
+inline-blocks under a 200px parent in a 400px containing block make a 400x40
+box; rinch 130x80 — **#1404**); a box whose containing block is a non-parent **scroll
+container** is placed in it but still counted in no scroll range (**#770**);
+`position: fixed` takes none of the margin, padding or min/max rules above,
+keeps the Taffy parent as its `calc()` basis, and is not contained by a
+transformed ancestor (**#1372**) — the `AncestorAbsolute` machinery is what
+that would use. **A component whose overlay must cover its parent (e.g.
 `LoadingOverlay`) needs that parent to declare `position: relative`** — without
-it the overlay now covers the window, as it always has on the web.
+it the overlay covers whatever positioned ancestor it does have, or the
+window, as it always has on the web.
 
 **Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
 not `visible`, and the box is neither a non-atomic `display: inline` element nor
@@ -3256,7 +3377,7 @@ correct, and each has a fixture in
   clipped away, where a browser paints it. Paint and hit testing agree on it, so
   it is a consistent deviation and not drift; the honest fix moves the collecting
   root's clip off the bracket and into every entry's chain, which would close
-  #386's shape too. A third consumer has to know the same thing from the other
+  the "Known gap" `stacking.rs` describes for an absolute too. A third consumer has to know the same thing from the other
   side: `paint::layer_bounds` walks the tree rather than the sequence, so it sees
   clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
   narrowing a translucent layer to less than it paints — which tiny-skia ignores
@@ -3437,8 +3558,9 @@ containing block of a fixed descendant (and an `opacity` one not), while
 `out_of_flow::out_of_flow_kind` answers "the viewport" for every fixed box. That
 was already wrong before #545 and is exactly as wrong after; what #545 preserves
 is that it is wrong *consistently*, since paint keeps handing a fixed entry the
-body's transform. Tracked with **#1372** (and #386 for the
-non-parent containing-block machinery it would need).
+body's transform. Tracked with **#1372**; the non-parent containing-block
+machinery it needs exists for `absolute` since #386
+(`OutOfFlowKind::AncestorAbsolute`).
 
 **Stage C reverted both workarounds.** `.rinch-dropdown-menu__backdrop`,
 `.rinch-select__backdrop` and `.rinch-app-menu-bar__overlay` are `position:

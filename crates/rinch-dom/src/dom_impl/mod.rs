@@ -1003,6 +1003,10 @@ impl RinchDocument {
             }
         }
         if !resync_absolutes.is_empty() {
+            // As in the cascade's twin — a
+            // position-only box has the same Taffy style under either
+            // containing block and is moved by the read-back alone.
+            self.tree.layout_dirty = true;
             self.tree.style_dirty_nodes.extend(resync_absolutes);
             self.apply_stylo_styles_to_taffy();
         }
@@ -1066,16 +1070,10 @@ impl RinchDocument {
                 // whose containing block is not its Taffy parent is sized from
                 // that containing block. Rebuilding the style from the computed
                 // values drops the override, so a transition/animation frame on
-                // a `position: fixed` (or ICB-absolute, #204) node used to
+                // a `position: fixed` (or absolute, #204/#386) node used to
                 // collapse it back onto its parent's box.
-                if let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id) {
-                    crate::out_of_flow::apply_out_of_flow_size_overrides(
-                        node,
-                        kind,
-                        self.tree.viewport,
-                        &mut taffy_style,
-                    );
-                }
+                crate::out_of_flow::bake_at_style_site(&mut self.tree, node_id, &mut taffy_style);
+                let node = &self.tree.nodes[node_id];
 
                 // Collapsed block (virtualized contenteditable): keep the
                 // estimated height apply_stylo_styles_to_taffy would have set.
@@ -1217,16 +1215,10 @@ impl RinchDocument {
                 // whose containing block is not its Taffy parent is sized from
                 // that containing block. Rebuilding the style from the computed
                 // values drops the override, so a transition/animation frame on
-                // a `position: fixed` (or ICB-absolute, #204) node used to
+                // a `position: fixed` (or absolute, #204/#386) node used to
                 // collapse it back onto its parent's box.
-                if let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id) {
-                    crate::out_of_flow::apply_out_of_flow_size_overrides(
-                        node,
-                        kind,
-                        self.tree.viewport,
-                        &mut taffy_style,
-                    );
-                }
+                crate::out_of_flow::bake_at_style_site(&mut self.tree, node_id, &mut taffy_style);
+                let node = &self.tree.nodes[node_id];
 
                 // Collapsed block (virtualized contenteditable): keep the
                 // estimated height apply_stylo_styles_to_taffy would have set.

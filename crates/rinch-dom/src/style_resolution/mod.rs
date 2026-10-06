@@ -1636,18 +1636,12 @@ impl RinchDocument {
             }
 
             // An out-of-flow box whose containing block is not the Taffy parent
-            // — `position: fixed` (the viewport), or a `position: absolute`
-            // with no positioned ancestor (the initial containing block, #204)
-            // — is sized here, before layout, so its own children lay out
-            // inside the right box.
-            if let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id) {
-                crate::out_of_flow::apply_out_of_flow_size_overrides(
-                    &self.tree.nodes[node_id],
-                    kind,
-                    self.tree.viewport,
-                    &mut taffy_style,
-                );
-            }
+            // — `position: fixed` (the viewport), a `position: absolute` with
+            // no positioned ancestor (the initial containing block, #204) or
+            // one whose positioned ancestor is further up (#386, from that
+            // ancestor's last laid-out size) — is sized here, before layout,
+            // so its own children lay out inside the right box.
+            crate::out_of_flow::bake_at_style_site(&mut self.tree, node_id, &mut taffy_style);
 
             // Collapsed block (virtualized contenteditable): override height
             // to the estimated value so Taffy doesn't need a measure callback.
@@ -1774,6 +1768,12 @@ impl RinchDocument {
         }
 
         if !resync_absolutes.is_empty() {
+            // Their containing block changed, so they move — whether or not
+            // the re-sync below changes a Taffy style. A box whose size does
+            // not depend on its containing block (`right: 5px; width: 40px`)
+            // has the same style under either, and is placed by the layout
+            // read-back alone (`out_of_flow::place_absolute`).
+            self.tree.layout_dirty = true;
             self.tree.style_dirty_nodes.extend(resync_absolutes);
             self.apply_stylo_styles_to_taffy();
         }
@@ -1788,6 +1788,11 @@ impl RinchDocument {
                 crate::computed_style::PositionValue::Absolute
             ) {
                 out.push(c);
+            }
+            // A box below a nearer containing
+            // block resolves against that one whatever `node_id` does.
+            if child.establishes_abs_containing_block() {
+                continue;
             }
             self.collect_absolute_descendants(c, out);
         }
