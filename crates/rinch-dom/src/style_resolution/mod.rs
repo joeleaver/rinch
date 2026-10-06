@@ -1789,6 +1789,11 @@ impl RinchDocument {
             ) {
                 out.push(c);
             }
+            // A box below a nearer containing
+            // block resolves against that one whatever `node_id` does.
+            if child.establishes_abs_containing_block() {
+                continue;
+            }
             self.collect_absolute_descendants(c, out);
         }
     }

@@ -1003,6 +1003,10 @@ impl RinchDocument {
             }
         }
         if !resync_absolutes.is_empty() {
+            // As in the cascade's twin — a
+            // position-only box has the same Taffy style under either
+            // containing block and is moved by the read-back alone.
+            self.tree.layout_dirty = true;
             self.tree.style_dirty_nodes.extend(resync_absolutes);
             self.apply_stylo_styles_to_taffy();
         }

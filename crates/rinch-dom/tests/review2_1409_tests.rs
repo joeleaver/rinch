@@ -60,7 +60,11 @@ fn diff(doc: &RinchDocument, final_html: &str) -> Vec<String> {
 #[track_caller]
 fn twin(doc: &RinchDocument, final_html: &str, what: &str) {
     let d = diff(doc, final_html);
-    assert!(d.is_empty(), "{what}: stale against a fresh layout:\n  {}", d.join("\n  "));
+    assert!(
+        d.is_empty(),
+        "{what}: stale against a fresh layout:\n  {}",
+        d.join("\n  ")
+    );
 }
 
 const CBS: &str = "width: 400px; height: 300px; margin: 13px 0 0 17px;";
@@ -98,7 +102,11 @@ fn a1_ancestor_gains_and_loses_position_transform_contents() {
         let (p, v) = on.trim_end_matches(';').split_once(": ").unwrap();
         doc.set_style(cb, p, v);
         frame(&mut doc);
-        twin(&doc, &page(on, "", BOXES), &format!("set_style gain {name}"));
+        twin(
+            &doc,
+            &page(on, "", BOXES),
+            &format!("set_style gain {name}"),
+        );
     }
     // the cb becomes display: contents (stops establishing) and back
     let on = "position: relative;";
@@ -106,7 +114,11 @@ fn a1_ancestor_gains_and_loses_position_transform_contents() {
     let cb = m(&doc, "cb");
     doc.set_attribute(cb, "style", &format!("{CBS}{on}display: contents;"));
     frame(&mut doc);
-    twin(&doc, &page(&format!("{on}display: contents;"), "", BOXES), "cb contents");
+    twin(
+        &doc,
+        &page(&format!("{on}display: contents;"), "", BOXES),
+        "cb contents",
+    );
     doc.set_attribute(cb, "style", &format!("{CBS}{on}"));
     frame(&mut doc);
     twin(&doc, &page(on, "", BOXES), "cb back from contents");
@@ -196,7 +208,11 @@ fn a4_inner_html_and_slab_reuse() {
     doc.set_inner_html(mid, plain);
     frame(&mut doc);
     twin(&doc, &page(on, "", plain), "recycled as plain");
-    assert!(doc.tree.ancestor_absolutes.is_empty(), "set not drained: {:?}", doc.tree.ancestor_absolutes);
+    assert!(
+        doc.tree.ancestor_absolutes.is_empty(),
+        "set not drained: {:?}",
+        doc.tree.ancestor_absolutes
+    );
     // recycle straight into direct-parent absolutes with no frame between
     doc.set_inner_html(mid, BOXES);
     let direct = r#"<div data-m="w" style="position: relative; width: 100px; height: 50px; margin-left: 9px"><div data-m="d1" style="position: absolute; inset: 2px"></div><div data-m="d2" style="position: absolute; right: 1px; width: 50%; height: 4px"></div></div>"#;
@@ -212,7 +228,11 @@ fn a4_inner_html_and_slab_reuse() {
     doc.set_scroll_top(mid, 0.0);
     doc.set_scroll_top(m(&doc, "cb"), 0.0);
     frame(&mut doc);
-    twin(&doc, &page(on, "", direct), "recycled with a scroll before the frame");
+    twin(
+        &doc,
+        &page(on, "", direct),
+        "recycled with a scroll before the frame",
+    );
 }
 
 #[test]
@@ -244,7 +264,13 @@ fn a5_display_none_roundtrips() {
 // ---- 1b. flips no cascade sees --------------------------------------
 
 fn finish_transitions(doc: &mut RinchDocument, id: NodeId) {
-    for t in doc.tree.active_transitions.get_mut(&id.0).unwrap().values_mut() {
+    for t in doc
+        .tree
+        .active_transitions
+        .get_mut(&id.0)
+        .unwrap()
+        .values_mut()
+    {
         t.start_time_ms -= 100_000.0;
     }
 }
@@ -252,17 +278,31 @@ fn finish_transitions(doc: &mut RinchDocument, id: NodeId) {
 #[test]
 fn b1_transform_transition_finishing_at_none_position_only_box() {
     let tr = "transition: transform 1000ms linear;";
-    let mut doc = build(&page(&format!("{tr}transform: translateX(20px);"), "", BOXES));
+    let mut doc = build(&page(
+        &format!("{tr}transform: translateX(20px);"),
+        "",
+        BOXES,
+    ));
     let cb = m(&doc, "cb");
     doc.set_attribute(cb, "style", &format!("{CBS}{tr}transform: none;"));
     frame(&mut doc);
-    assert!(doc.tree.active_transitions.contains_key(&cb.0), "control: transition runs");
+    assert!(
+        doc.tree.active_transitions.contains_key(&cb.0),
+        "control: transition runs"
+    );
     let _ = doc.take_dirty_nodes();
     finish_transitions(&mut doc, cb);
     doc.tick_transitions();
-    assert!(!doc.tree.nodes[cb.0].establishes_abs_containing_block(), "control");
+    assert!(
+        !doc.tree.nodes[cb.0].establishes_abs_containing_block(),
+        "control"
+    );
     frame(&mut doc);
-    twin(&doc, &page(&format!("{tr}transform: none;"), "", BOXES), "transition finished at none");
+    twin(
+        &doc,
+        &page(&format!("{tr}transform: none;"), "", BOXES),
+        "transition finished at none",
+    );
 }
 
 #[test]
@@ -270,21 +310,36 @@ fn b2_transform_transition_starting_from_none() {
     let tr = "transition: transform 1000ms linear;";
     let mut doc = build(&page(tr, "", BOXES));
     let cb = m(&doc, "cb");
-    doc.set_attribute(cb, "style", &format!("{CBS}{tr}transform: translateX(20px);"));
+    doc.set_attribute(
+        cb,
+        "style",
+        &format!("{CBS}{tr}transform: translateX(20px);"),
+    );
     frame(&mut doc);
-    assert!(doc.tree.active_transitions.contains_key(&cb.0), "control: transition runs");
+    assert!(
+        doc.tree.active_transitions.contains_key(&cb.0),
+        "control: transition runs"
+    );
     let _ = doc.take_dirty_nodes();
     finish_transitions(&mut doc, cb);
     doc.tick_transitions();
     frame(&mut doc);
     // compare relative to cb: the fresh twin has the final transform
-    twin(&doc, &page(&format!("{tr}transform: translateX(20px);"), "", BOXES), "transition from none finished");
+    twin(
+        &doc,
+        &page(&format!("{tr}transform: translateX(20px);"), "", BOXES),
+        "transition from none finished",
+    );
 }
 
 fn anim_page(class: &str) -> String {
     format!(
         r#"<style>@keyframes k {{ from {{ transform: translateX(30px); }} to {{ transform: translateX(10px); }} }} .run {{ animation: k 1000ms linear; }}</style>{}"#,
-        page("", "", BOXES).replacen(r#"data-m="cb""#, &format!(r#"data-m="cb" class="{class}""#), 1)
+        page("", "", BOXES).replacen(
+            r#"data-m="cb""#,
+            &format!(r#"data-m="cb" class="{class}""#),
+            1
+        )
     )
 }
 
@@ -294,8 +349,14 @@ fn b3_animation_start_after_first_layout() {
     let cb = m(&doc, "cb");
     doc.set_attribute(cb, "class", "run");
     frame(&mut doc);
-    assert!(doc.tree.active_animations.contains_key(&cb.0), "control: animation runs");
-    assert!(doc.tree.nodes[cb.0].establishes_abs_containing_block(), "control: cb while animating");
+    assert!(
+        doc.tree.active_animations.contains_key(&cb.0),
+        "control: animation runs"
+    );
+    assert!(
+        doc.tree.nodes[cb.0].establishes_abs_containing_block(),
+        "control: cb while animating"
+    );
     // the twin: a document that has the class from the start
     let fresh = build(&anim_page("run"));
     let rel = |d: &RinchDocument, n: &str| {
@@ -304,7 +365,11 @@ fn b3_animation_start_after_first_layout() {
         [x[0] - c[0], x[1] - c[1], x[2], x[3]]
     };
     for n in ["a", "b", "bc", "s"] {
-        assert_eq!(rel(&doc, n), rel(&fresh, n), "{n} once the animation started");
+        assert_eq!(
+            rel(&doc, n),
+            rel(&fresh, n),
+            "{n} once the animation started"
+        );
     }
 }
 
@@ -319,15 +384,25 @@ fn b3_animation_start_after_first_layout() {
 fn b4_animation_ending_without_fill() {
     let mut doc = build(&anim_page("run"));
     let cb = m(&doc, "cb");
-    assert!(doc.tree.nodes[cb.0].establishes_abs_containing_block(), "control");
+    assert!(
+        doc.tree.nodes[cb.0].establishes_abs_containing_block(),
+        "control"
+    );
     let _ = doc.take_dirty_nodes();
     for a in doc.tree.active_animations.get_mut(&cb.0).unwrap() {
         a.start_time_ms -= 100_000.0;
     }
     doc.tick_animations();
-    assert!(!doc.tree.nodes[cb.0].establishes_abs_containing_block(), "control: finished, no fill");
+    assert!(
+        !doc.tree.nodes[cb.0].establishes_abs_containing_block(),
+        "control: finished, no fill"
+    );
     frame(&mut doc);
-    twin(&doc, &page("", "", BOXES), "animation finished without fill");
+    twin(
+        &doc,
+        &page("", "", BOXES),
+        "animation finished without fill",
+    );
 }
 
 // ---- 3. late writers ------------------------------------------------
@@ -340,7 +415,10 @@ fn ib_page(align: &str, lead: &str) -> String {
 
 #[test]
 fn c1_text_align_moves_the_inline_block_in_the_text_only_path() {
-    for lead in ["", "<span data-m=\"sp\" style=\"display: inline-block; width: 50px; height: 10px\"></span>"] {
+    for lead in [
+        "",
+        "<span data-m=\"sp\" style=\"display: inline-block; width: 50px; height: 10px\"></span>",
+    ] {
         let mut doc = build(&ib_page("left", lead));
         let cb = m(&doc, "cb");
         let before = rects(&doc)["ib"];
@@ -357,11 +435,22 @@ fn c2_text_before_the_inline_block_changes() {
     let t = m(&doc, "t");
     doc.set_text_content(t, "abcdefgh ijkl");
     frame(&mut doc);
-    twin(&doc, &ib_page("left", r#"<span data-m="t">abcdefgh ijkl</span>"#), "text grew before the chip");
+    twin(
+        &doc,
+        &ib_page("left", r#"<span data-m="t">abcdefgh ijkl</span>"#),
+        "text grew before the chip",
+    );
     // letter-spacing on the lead span only
     doc.set_style(t, "letter-spacing", "3px");
     frame(&mut doc);
-    twin(&doc, &ib_page("left", r#"<span data-m="t" style="letter-spacing: 3px">abcdefgh ijkl</span>"#), "letter-spacing before the chip");
+    twin(
+        &doc,
+        &ib_page(
+            "left",
+            r#"<span data-m="t" style="letter-spacing: 3px">abcdefgh ijkl</span>"#,
+        ),
+        "letter-spacing before the chip",
+    );
 }
 
 /// ICB twin of c1 — the same late writer for the box main already corrected.
@@ -378,9 +467,11 @@ fn c3_text_align_icb() {
 /// An anonymous block box between: text beside a block child.
 #[test]
 fn c4_anonymous_box_between() {
-    let p = |h: u32| format!(
-        r#"<div data-m="cb" style="{CBS}position: relative; font-size: 16px; line-height: 20px;"><div data-m="blk" style="height: {h}px"></div>text <span>more<div data-m="a" style="position: absolute; left: 7px; top: 9px; width: 5px; height: 5px"></div><div data-m="s" style="position: absolute; width: 5px; height: 5px"></div></span></div>"#
-    );
+    let p = |h: u32| {
+        format!(
+            r#"<div data-m="cb" style="{CBS}position: relative; font-size: 16px; line-height: 20px;"><div data-m="blk" style="height: {h}px"></div>text <span>more<div data-m="a" style="position: absolute; left: 7px; top: 9px; width: 5px; height: 5px"></div><div data-m="s" style="position: absolute; width: 5px; height: 5px"></div></span></div>"#
+        )
+    };
     let mut doc = build(&p(10));
     doc.set_style(m(&doc, "blk"), "height", "33px");
     frame(&mut doc);
@@ -418,16 +509,28 @@ fn d1_chain_flags_follow_structure() {
     doc.set_scroll_left(inner, 31.0);
     doc.set_scroll_top(outer, 17.0);
     assert_eq!(rel(&doc, "a", "cb"), a0, "inset box after layout + scrolls");
-    assert_eq!(rel(&doc, "s", "cb"), s0, "static box after layout + scrolls");
+    assert_eq!(
+        rel(&doc, "s", "cb"),
+        s0,
+        "static box after layout + scrolls"
+    );
     // the inner scroller becomes the containing block: its own scroll carries
     doc.set_style(inner, "position", "relative");
     frame(&mut doc);
     let ai = rel(&doc, "a", "inner");
     doc.set_scroll_top(inner, 40.0);
-    assert_eq!(rel(&doc, "a", "inner"), [ai[0], ai[1] - 17.0], "own scroll carries");
+    assert_eq!(
+        rel(&doc, "a", "inner"),
+        [ai[0], ai[1] - 17.0],
+        "own scroll carries"
+    );
     // outer is no longer between a and its cb: scrolling it moves a with inner
     doc.set_scroll_top(outer, 30.0);
-    assert_eq!(rel(&doc, "a", "inner"), [ai[0], ai[1] - 17.0], "outer scroll: box rides with inner");
+    assert_eq!(
+        rel(&doc, "a", "inner"),
+        [ai[0], ai[1] - 17.0],
+        "outer scroll: box rides with inner"
+    );
     // back to static: outer and inner between again, with NO scroll before layout
     doc.set_style(inner, "position", "static");
     frame(&mut doc);
@@ -435,10 +538,18 @@ fn d1_chain_flags_follow_structure() {
     doc.set_scroll_top(inner, 5.0);
     doc.set_scroll_left(outer, 9.0);
     assert_eq!(rel(&doc, "a", "cb"), a0, "scrolls after the flip back");
-    assert_eq!(rel(&doc, "s", "cb"), s0, "static, scrolls after the flip back");
+    assert_eq!(
+        rel(&doc, "s", "cb"),
+        s0,
+        "static, scrolls after the flip back"
+    );
     // cb's own scroll (set_scroll_top on a non-scroller writes an offset)
     doc.set_scroll_top(cb, 4.0);
-    assert_eq!(rel(&doc, "a", "cb"), [a0[0], a0[1] - 4.0], "cb's own scroll carries");
+    assert_eq!(
+        rel(&doc, "a", "cb"),
+        [a0[0], a0[1] - 4.0],
+        "cb's own scroll carries"
+    );
 }
 
 /// A scroll between a change that makes the scroller "between" and the layout
@@ -474,7 +585,11 @@ fn d3_box_moved_into_and_out_of_a_scroller() {
     let a_direct = rel(&doc, "a", "cb");
     doc.set_scroll_top(outer, 12.0);
     doc.set_scroll_top(inner, 12.0);
-    assert_eq!(rel(&doc, "a", "cb"), a_direct, "direct child: no scroller between");
+    assert_eq!(
+        rel(&doc, "a", "cb"),
+        a_direct,
+        "direct child: no scroller between"
+    );
     doc.append_child(inner, a);
     frame(&mut doc);
     assert_eq!(rel(&doc, "a", "cb"), [5.0, 6.0]);
@@ -494,13 +609,23 @@ fn p1_transition_finishing_at_none_position_only() {
     let cb = m(&doc, "cb");
     doc.set_attribute(cb, "style", &format!("{CBS}{tr}transform: none;"));
     frame(&mut doc);
-    assert!(doc.tree.active_transitions.contains_key(&cb.0), "control: transition runs");
+    assert!(
+        doc.tree.active_transitions.contains_key(&cb.0),
+        "control: transition runs"
+    );
     let _ = doc.take_dirty_nodes();
     finish_transitions(&mut doc, cb);
     doc.tick_transitions();
-    assert!(!doc.tree.nodes[cb.0].establishes_abs_containing_block(), "control");
+    assert!(
+        !doc.tree.nodes[cb.0].establishes_abs_containing_block(),
+        "control"
+    );
     frame(&mut doc);
-    twin(&doc, &page(&format!("{tr}transform: none;"), "", POS), "transition finished at none (position only)");
+    twin(
+        &doc,
+        &page(&format!("{tr}transform: none;"), "", POS),
+        "transition finished at none (position only)",
+    );
 }
 
 #[test]
@@ -508,21 +633,35 @@ fn p2_transition_starting_from_none_position_only() {
     let tr = "transition: transform 1000ms linear;";
     let mut doc = build(&page(tr, "", POS));
     let cb = m(&doc, "cb");
-    doc.set_attribute(cb, "style", &format!("{CBS}{tr}transform: translateX(20px);"));
+    doc.set_attribute(
+        cb,
+        "style",
+        &format!("{CBS}{tr}transform: translateX(20px);"),
+    );
     frame(&mut doc);
-    assert!(doc.tree.active_transitions.contains_key(&cb.0), "control: transition runs");
+    assert!(
+        doc.tree.active_transitions.contains_key(&cb.0),
+        "control: transition runs"
+    );
     // first frame of the run: the cb contains the boxes already
     let rel = |d: &RinchDocument, n: &str| {
         let r = rects(d);
         let (c, x) = (r["cb"], r[n]);
         [x[0] - c[0], x[1] - c[1]]
     };
-    assert_eq!(rel(&doc, "a"), [355.0, 273.0], "mid-run: resolved against the cb");
+    assert_eq!(
+        rel(&doc, "a"),
+        [355.0, 273.0],
+        "mid-run: resolved against the cb"
+    );
 }
 
 #[test]
 fn p3_position_only_membership() {
-    for (name, on) in [("position", "position: relative;"), ("transform", "transform: translateX(0);")] {
+    for (name, on) in [
+        ("position", "position: relative;"),
+        ("transform", "transform: translateX(0);"),
+    ] {
         let mut doc = build(&page("", "", POS));
         let cb = m(&doc, "cb");
         let (p, v) = on.trim_end_matches(';').split_once(": ").unwrap();
@@ -534,7 +673,13 @@ fn p3_position_only_membership() {
         twin(&doc, &page("", "", POS), &format!("lose {name}"));
     }
     let on = "position: relative;";
-    for (name, mid) in [("contents", "display: contents;"), ("inline", "display: inline;"), ("inline-block", "display: inline-block;"), ("relative", "position: relative;"), ("none", "display: none;")] {
+    for (name, mid) in [
+        ("contents", "display: contents;"),
+        ("inline", "display: inline;"),
+        ("inline-block", "display: inline-block;"),
+        ("relative", "position: relative;"),
+        ("none", "display: none;"),
+    ] {
         let mut doc = build(&page(on, "", POS));
         let mid_id = m(&doc, "mid");
         doc.set_attribute(mid_id, "style", &format!("{MID}{mid}"));
@@ -545,7 +690,15 @@ fn p3_position_only_membership() {
         twin(&doc, &page(on, "", POS), &format!("mid back from {name}"));
     }
     // an extra wrapper between mid and the boxes toggles contents
-    let wrap = |w: &str| page(on, "", &format!(r#"<div data-m="w" style="margin: 4px 0 0 6px; width: 50px; height: 50px; {w}">{POS}</div>"#));
+    let wrap = |w: &str| {
+        page(
+            on,
+            "",
+            &format!(
+                r#"<div data-m="w" style="margin: 4px 0 0 6px; width: 50px; height: 50px; {w}">{POS}</div>"#
+            ),
+        )
+    };
     let mut doc = build(&wrap("display: contents;"));
     let w = m(&doc, "w");
     doc.set_style(w, "display", "block");
@@ -553,28 +706,45 @@ fn p3_position_only_membership() {
     twin(&doc, &wrap("display: block;"), "wrapper left contents");
     doc.set_style(w, "display", "contents");
     frame(&mut doc);
-    twin(&doc, &wrap("display: contents;"), "wrapper back to contents");
+    twin(
+        &doc,
+        &wrap("display: contents;"),
+        "wrapper back to contents",
+    );
 }
 
 /// Animation with a transform starts on the cb after the first layout:
 /// position-only boxes.
 #[test]
 fn p4_animation_start_position_only() {
-    let pg = |class: &str| format!(
-        r#"<style>@keyframes k {{ from {{ transform: translateX(30px); }} to {{ transform: translateX(10px); }} }} .run {{ animation: k 1000ms linear; }}</style>{}"#,
-        page("", "", POS).replacen(r#"data-m="cb""#, &format!(r#"data-m="cb" class="{class}""#), 1)
-    );
+    let pg = |class: &str| {
+        format!(
+            r#"<style>@keyframes k {{ from {{ transform: translateX(30px); }} to {{ transform: translateX(10px); }} }} .run {{ animation: k 1000ms linear; }}</style>{}"#,
+            page("", "", POS).replacen(
+                r#"data-m="cb""#,
+                &format!(r#"data-m="cb" class="{class}""#),
+                1
+            )
+        )
+    };
     let mut doc = build(&pg(""));
     let cb = m(&doc, "cb");
     doc.set_attribute(cb, "class", "run");
     frame(&mut doc);
-    assert!(doc.tree.nodes[cb.0].establishes_abs_containing_block(), "control: cb while animating");
+    assert!(
+        doc.tree.nodes[cb.0].establishes_abs_containing_block(),
+        "control: cb while animating"
+    );
     let rel = |d: &RinchDocument, n: &str| {
         let r = rects(d);
         let (c, x) = (r["cb"], r[n]);
         [x[0] - c[0], x[1] - c[1]]
     };
-    assert_eq!(rel(&doc, "a"), [355.0, 273.0], "resolved against the animated cb");
+    assert_eq!(
+        rel(&doc, "a"),
+        [355.0, 273.0],
+        "resolved against the animated cb"
+    );
 }
 
 // ---- cost probes (printed; run with --nocapture) ----------------------
@@ -605,12 +775,20 @@ fn q1_flip_cost_with_unaffected_absolutes() {
             let _ = doc.take_dirty_nodes();
         }
         eprintln!("Q1 n={n}: (computes, us) per hover flip = {out:?}");
+        assert!(
+            out.iter().all(|o| o.0 == 0),
+            "a flip that reaches no absolute box ran Taffy: {out:?}"
+        );
         // colour-only control
         let before = doc.tree.taffy_computes;
         let t = std::time::Instant::now();
         doc.set_style(card, "background-color", "red");
         frame(&mut doc);
-        eprintln!("Q1 n={n}: colour control computes={} us={}", doc.tree.taffy_computes - before, t.elapsed().as_micros());
+        eprintln!(
+            "Q1 n={n}: colour control computes={} us={}",
+            doc.tree.taffy_computes - before,
+            t.elapsed().as_micros()
+        );
     }
 }
 
@@ -620,7 +798,11 @@ fn q2_transition_ticks_run_no_compute() {
     let mut doc = build(&page(tr, "", BOXES));
     let cb = m(&doc, "cb");
     let c0 = doc.tree.taffy_computes;
-    doc.set_attribute(cb, "style", &format!("{CBS}{tr}transform: translateX(20px);"));
+    doc.set_attribute(
+        cb,
+        "style",
+        &format!("{CBS}{tr}transform: translateX(20px);"),
+    );
     frame(&mut doc);
     let start = doc.tree.taffy_computes - c0;
     let mut ticks = vec![];
@@ -636,20 +818,54 @@ fn q2_transition_ticks_run_no_compute() {
     finish_transitions(&mut doc, cb);
     doc.tick_transitions();
     frame(&mut doc);
-    eprintln!("Q2 start={start} ticks={ticks:?} finish={}", doc.tree.taffy_computes - c);
+    eprintln!(
+        "Q2 start={start} ticks={ticks:?} finish={}",
+        doc.tree.taffy_computes - c
+    );
     assert_eq!(ticks, vec![0, 0, 0], "a mid-run tick ran Taffy");
 }
 
 #[test]
 fn q3_inset_drag_computes() {
     for (name, cbs, mids, style) in [
-        ("direct child", "", "position: relative;", "left: 5px; top: 5px; width: 40px; height: 20px"),
-        ("ancestor, position only", "position: relative;", "", "left: 5px; top: 5px; width: 40px; height: 20px"),
-        ("ancestor, paired insets", "position: relative;", "", "left: 5px; right: 5px; top: 5px; height: 20px"),
-        ("ancestor, pct size", "position: relative;", "", "left: 5px; top: 5px; width: 50%; height: 20px"),
-        ("icb", "", "", "left: 5px; top: 5px; width: 40px; height: 20px"),
+        (
+            "direct child",
+            "",
+            "position: relative;",
+            "left: 5px; top: 5px; width: 40px; height: 20px",
+        ),
+        (
+            "ancestor, position only",
+            "position: relative;",
+            "",
+            "left: 5px; top: 5px; width: 40px; height: 20px",
+        ),
+        (
+            "ancestor, paired insets",
+            "position: relative;",
+            "",
+            "left: 5px; right: 5px; top: 5px; height: 20px",
+        ),
+        (
+            "ancestor, pct size",
+            "position: relative;",
+            "",
+            "left: 5px; top: 5px; width: 50%; height: 20px",
+        ),
+        (
+            "icb",
+            "",
+            "",
+            "left: 5px; top: 5px; width: 40px; height: 20px",
+        ),
     ] {
-        let mut doc = build(&page(cbs, mids, &format!(r#"<div data-m="a" style="position: absolute; {style}"><div data-m="k" style="width: 50%; height: 50%"></div></div>"#)));
+        let mut doc = build(&page(
+            cbs,
+            mids,
+            &format!(
+                r#"<div data-m="a" style="position: absolute; {style}"><div data-m="k" style="width: 50%; height: 50%"></div></div>"#
+            ),
+        ));
         let a = m(&doc, "a");
         let mut per = vec![];
         for i in 0..4 {
@@ -660,8 +876,20 @@ fn q3_inset_drag_computes() {
             per.push(doc.tree.taffy_computes - c);
         }
         eprintln!("Q3 {name}: computes per drag move = {per:?}");
-        let final_style = style.replace("left: 5px", "left: 31px").replace("top: 5px", "top: 31px");
-        twin(&doc, &page(cbs, mids, &format!(r#"<div data-m="a" style="position: absolute; {final_style}"><div data-m="k" style="width: 50%; height: 50%"></div></div>"#)), name);
+        let final_style = style
+            .replace("left: 5px", "left: 31px")
+            .replace("top: 5px", "top: 31px");
+        twin(
+            &doc,
+            &page(
+                cbs,
+                mids,
+                &format!(
+                    r#"<div data-m="a" style="position: absolute; {final_style}"><div data-m="k" style="width: 50%; height: 50%"></div></div>"#
+                ),
+            ),
+            name,
+        );
         assert!(per.iter().all(|&c| c == 1), "{name}: {per:?}");
     }
 }

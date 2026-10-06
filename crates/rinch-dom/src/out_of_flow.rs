@@ -876,8 +876,14 @@ fn replace(tree: &mut NodeTree, node_id: RawNodeId, kind: OutOfFlowKind) -> bool
 /// whose chain did not move is not written. Run once, after all three, in
 /// the order the boxes were read — parents first, so a box inside another
 /// placed box sees it where it ends up.
+///
+/// `resolve_layout`'s text-only path (`!layout_dirty`) calls this as well:
+/// it rebuilds dirty inline layouts, which is the second writer, with no
+/// read-back (a `text-align` change moves an `inline-block` along its line
+/// there). The flag is consumed here, so a later pass does not run on a
+/// stale `true`.
 pub(crate) fn replace_all(tree: &mut NodeTree) {
-    if tree.placed_absolutes.is_empty() || !tree.abs_late_moves {
+    if !std::mem::take(&mut tree.abs_late_moves) || tree.placed_absolutes.is_empty() {
         return;
     }
     let placed = std::mem::take(&mut tree.placed_absolutes);

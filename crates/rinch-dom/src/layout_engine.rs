@@ -243,6 +243,10 @@ impl RinchDocument {
                 self.layout_cx = temp_layout_cx;
                 self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
                 self.tree.dirty_ifc_text_roots.clear();
+                // The rebuild may have moved an
+                // atomic inline along its line (`text-align`), and no
+                // read-back runs on this path.
+                crate::out_of_flow::replace_all(&mut self.tree);
             } else {
                 if viewport_changed {
                     self.tree.hit_cache.invalidate();

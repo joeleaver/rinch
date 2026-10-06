@@ -2978,8 +2978,12 @@ instructions per ancestor-resolved box per layout, which is the size compare
 and the placement.
 
 **A change of containing block owes a layout whether or not a Taffy style
-changes.** A node that starts or stops establishing a containing block re-syncs
-its absolute descendants (below) *and* sets `layout_dirty`: a box whose size
+changes.** A node that starts or stops establishing a containing block — in the
+cascade, or on the `tick_transitions` frame a `transform` transition finishes
+at `none` — re-syncs the absolute descendants that resolve against it (below;
+the walk stops below a nearer containing block, whose boxes the flip cannot
+reach, so a hover `transform` on a card of `position: relative` rows runs no
+compute) *and*, when there is one, sets `layout_dirty`: a box whose size
 does not depend on its containing block (`right: 5px; width: 40px`) has the
 same Taffy style under either, and only the read-back places it. Without that
 it stayed where the old containing block put it until something else laid out
@@ -3036,7 +3040,11 @@ was written after the read-back: an anonymous block box's own read-back, the
 line position an inline formatting context gives an `inline-block`, a scroll
 offset the clamp pulled in. Each of those three writers sets
 `NodeTree::abs_late_moves` when it actually moved something, and a layout in
-which none did skips the second placement; **a new writer of a box's position
+which none did skips the second placement. The `!layout_dirty` text-only path
+runs the second of them with no read-back at all — a `text-align` change moves
+an `inline-block` along its line there — so it calls `replace_all` too, after
+its `build_ifc_layouts`; `replace_all` consumes the flag
+(`review2_1409_tests::c1_*`, `c3_*`); **a new writer of a box's position
 or scroll offset that runs after `read_layout_results` must set it too.**
 
 **Not covered:** a containing block that generates no box — a `position:

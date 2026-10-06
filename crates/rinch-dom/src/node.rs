@@ -2525,8 +2525,10 @@ pub struct NodeTree {
     /// Whether, since the last layout read-back began, a box's position or
     /// a scroll offset was written **after** that read-back placed the
     /// absolute boxes: an anonymous block box read back, an atomic inline
-    /// moved by its inline formatting context, a scroll offset clamped.
-    /// `out_of_flow::replace_all` has nothing to do when none was.
+    /// moved by its inline formatting context (on the text-only path of
+    /// `resolve_layout` too, where no read-back runs), a scroll offset
+    /// clamped. `out_of_flow::replace_all` has nothing to do when none was,
+    /// and clears it.
     pub(crate) abs_late_moves: bool,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,

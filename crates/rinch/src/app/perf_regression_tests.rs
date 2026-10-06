@@ -985,6 +985,7 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (IfcFullPasses, 1),
             (IfcFullTheme, 1),
             (TaffyRootComputes, 1),
+            (AbsBoxesVisited, 2),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullTheme, 1),
