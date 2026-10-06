@@ -325,38 +325,40 @@ fn a_running_colour_transition_on_an_inline_span_recolours_only_the_span() {
     assert_eq!(shapes(&stats), 0, "a colour frame shapes nothing");
 }
 
-/// Two sibling spans with one style share a Parley glyph run when no space
-/// separates them, so the split between an animated span and its still
-/// neighbour has to be made inside a run.
-fn twin_spans(doc: &mut RinchDocument, class: &str) -> NodeId {
+/// A `display: contents` wrapper whose text style is its parent's pushes no
+/// span of its own, so its text and the text before it are one Parley glyph
+/// run — and stay one when the wrapper's colour starts to move, since the
+/// re-shape at the start of the transition still sees two equal styles. The
+/// split between the two colours then falls inside a run.
+fn wrapper_sharing_a_run(doc: &mut RinchDocument, class: &str) -> NodeId {
     let body = doc.body();
-    let p = el(doc, body, "div", "para");
-    let s = el(doc, p, "span", class);
-    text(doc, s, "HHHH");
-    let still = el(doc, p, "span", "a");
-    text(doc, still, "MMMM");
-    s
+    let p = el(doc, body, "div", "a");
+    text(doc, p, "MMMM");
+    let w = el(doc, p, "span", class);
+    doc.set_attribute(w, "style", "display: contents");
+    text(doc, w, "HHHH");
+    w
 }
 
 const SHARED_RUN: Case = Case {
     css: ".a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
-    build: twin_spans,
+    build: wrapper_sharing_a_run,
     from: "t a",
     to: "t b",
 };
 
 #[test]
-fn a_span_sharing_a_glyph_run_with_a_still_neighbour_is_recoloured_alone() {
-    let (mut doc, s) = SHARED_RUN.started();
+fn text_sharing_a_glyph_run_with_still_text_is_recoloured_alone() {
+    let (mut doc, w) = SHARED_RUN.started();
     let red_before = exact(&paint(&mut doc), RED);
-    age_transitions(&mut doc, s, MID);
+    age_transitions(&mut doc, w, MID);
     let (px, _) = frame(&mut doc);
-    let now = colour_of(&doc, s);
+    let now = colour_of(&doc, w);
     let (moved, still) = (exact(&px, now), exact(&px, RED));
-    assert!(moved > 200, "the animated span: {moved} px of {now:?}");
+    assert!(moved > 200, "the animated text: {moved} px of {now:?}");
     assert!(
         still > 200 && still < red_before,
-        "the still neighbour keeps red and the animated span gives it up: \
+        "the text before it keeps red and the animated text gives it up: \
          {still} red px now, {red_before} before"
     );
     SHARED_RUN.finished_matches_the_twin();
@@ -468,8 +470,32 @@ const WAVY: Case = Case {
     to: "t u b",
 };
 
+/// Pixels in rows `y0..y1` that are mostly red: the start colour at three
+/// quarters coverage or more, and nothing a colour part-way to blue reaches.
+fn reddish_rows(px: &[u8], y0: usize, y1: usize) -> u32 {
+    let w = VW as usize;
+    px[y0 * w * 4..y1 * w * 4]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[0] > 150 && p[2] < 60)
+        .count() as u32
+}
+
 #[test]
 fn a_wavy_underline_follows_a_colour_transition() {
+    // Below every glyph of the line: only the wave is here.
+    const WAVE: (usize, usize) = (50, 60);
+    let (mut doc, s) = WAVY.started();
+    let before = reddish_rows(&paint(&mut doc), WAVE.0, WAVE.1);
+    assert!(before > 20, "positive control: the red wave, {before} px");
+    age_transitions(&mut doc, s, MID);
+    let (px, _) = frame(&mut doc);
+    assert_eq!(
+        reddish_rows(&px, WAVE.0, WAVE.1),
+        0,
+        "the wave left the start colour with the text"
+    );
     WAVY.finished_matches_the_twin();
 }
 
@@ -735,6 +761,48 @@ fn the_frame_that_ends_a_colour_transition_reshapes_an_anonymous_boxs_text() {
     assert_eq!(last.get(Counter::ShapeIfcBuild), 1);
     let (_, after) = frame(&mut doc);
     assert_eq!(shapes(&after), 0);
+}
+
+/// And for a split inline (#513): its text is laid out by the boxes around
+/// its fragments, which belong to its container and are found only through
+/// the text itself.
+fn split_inline(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let p = el(doc, body, "div", "");
+    let s = el(doc, p, "span", class);
+    text(doc, s, "MMMM");
+    let block = el(doc, s, "div", "still");
+    text(doc, block, "HHHH");
+    text(doc, s, "MMMM");
+    s
+}
+
+const SPLIT_INLINE: Case = Case {
+    css: ".still { color: rgb(10, 160, 10); } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: split_inline,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn a_split_inlines_text_follows_its_colour_transition_and_settles() {
+    let (mut doc, s) = SPLIT_INLINE.started();
+    age_transitions(&mut doc, s, MID);
+    let (px, running) = frame(&mut doc);
+    let now = colour_of(&doc, s);
+    assert!(exact(&px, now) > 600, "{} px of {now:?}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+    assert_eq!(shapes(&running), 0);
+
+    age_transitions(&mut doc, s, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(
+        last.get(Counter::ShapeIfcBuild),
+        2,
+        "the box around each of its two fragments is rebuilt"
+    );
+    SPLIT_INLINE.finished_matches_the_twin();
 }
 
 /// A flex item's text is a leaf: paint colours it from the live style and no
