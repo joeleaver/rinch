@@ -36,6 +36,7 @@ use rinch_editor_collab::{CollabError, CollabSession, OversizedTable};
 
 #[cfg(feature = "collaboration")]
 use super::collab::CollabBridge;
+use super::images::{ImageInput, ImageInputSource};
 use super::keys::EditorKey;
 use super::links::{LinkClick, LinkHover, LinkSpan};
 use super::registry;
@@ -103,6 +104,10 @@ struct EditorCore {
     /// Offered every key press before the editor acts on it — see
     /// [`EditorHandle::on_key`]. Cloned out and called with no borrow held.
     on_key: Option<KeyHook>,
+    /// Offered every picture pasted into or dropped on the editor — see
+    /// [`EditorHandle::on_image_input`]. Cloned out and called with no borrow
+    /// held.
+    on_image_input: Option<ImageInputHook>,
     /// Told when the selection changes — see
     /// [`EditorHandle::on_selection_change`]. Cloned out and called with no
     /// borrow held, by [`CoreMutGuard`]'s drop.
@@ -222,6 +227,8 @@ pub const REVEAL_PATIENCE: u8 = 8;
 
 /// See [`EditorHandle::on_key`].
 type KeyHook = Hook<dyn Fn(&EditorKey<'_>) -> bool>;
+/// See [`EditorHandle::on_image_input`].
+type ImageInputHook = Hook<dyn Fn(ImageInput) -> Option<(String, String)>>;
 /// See [`EditorHandle::on_selection_change`].
 type SelectionHook = Hook<dyn Fn(&Selection)>;
 
@@ -909,6 +916,7 @@ impl EditorHandle {
                 on_link_click: None,
                 on_link_hover: None,
                 on_key: None,
+                on_image_input: None,
                 on_selection_change: None,
                 selection_owed: false,
                 on_caret_moved: None,
@@ -964,6 +972,7 @@ impl EditorHandle {
                 on_link_click: None,
                 on_link_hover: None,
                 on_key: None,
+                on_image_input: None,
                 on_selection_change: None,
                 selection_owed: false,
                 on_caret_moved: None,
@@ -2407,6 +2416,166 @@ impl EditorHandle {
             self.notify_change();
         }
         true
+    }
+
+    /// Register the callback that is offered **every picture the person pastes
+    /// into or drops on this editor**. Replaces any previously registered
+    /// callback.
+    ///
+    /// This is how an app decides where a picture's bytes live. The editor
+    /// hands over the encoded bytes ([`ImageInput`]); the app stores them and
+    /// answers with the `src` (and `alt`) the document should carry. Only that
+    /// `src` enters the document, so an app that registers this never gets a
+    /// `data:` URL from a pasted bitmap or a dropped file.
+    ///
+    /// The callback may answer in either of two ways:
+    ///
+    /// - **At once**: return `Some((src, alt))`, and the editor inserts the
+    ///   image where the picture was aimed (one transaction, one undo step, as
+    ///   [`insert_image`](Self::insert_image)).
+    /// - **Later**: keep the input, return `None`, and when the picture is
+    ///   stored call [`insert_image_at`](Self::insert_image_at) with
+    ///   [`ImageInput::anchor`], which still names the place the person aimed
+    ///   at however much they typed meanwhile.
+    ///
+    /// `None` with nothing later is a refusal: nothing is inserted, and the
+    /// editor does **not** fall back to a `data:` URL.
+    ///
+    /// ```ignore
+    /// let editor = handle.clone();
+    /// handle.on_image_input(move |input| {
+    ///     let editor = editor.clone();
+    ///     store_blob_async(input.bytes, input.mime, move |src| {
+    ///         editor.insert_image_at(&input.anchor, &src, "");
+    ///     });
+    ///     None
+    /// });
+    /// ```
+    ///
+    /// When it is called: a paste whose clipboard holds a bitmap (a screenshot;
+    /// a browser's "Copy image", which also offers an `<img>` as html, counts,
+    /// and the bitmap is what is offered), and a drop of image files on the
+    /// editor, once per file in the order given, each a PNG, JPEG, GIF or WebP
+    /// by its first bytes. Not for a [read-only](Self::set_read_only) editor,
+    /// and not for an html paste that holds text as well as pictures: that is
+    /// an ordinary paste, and its `<img>` elements keep the `src` they came
+    /// with ([`Plugin::handle_paste`] is where an app rewrites those).
+    ///
+    /// **With no callback registered** nothing here applies and the platform
+    /// keeps its default: on desktop a pasted bitmap is inserted as a PNG
+    /// `data:` URL, and a file drop goes to the app's own file-drop handler.
+    ///
+    /// **Desktop only for now**: the browser runtime does not offer pictures
+    /// yet. Registering is harmless there.
+    ///
+    /// The callback runs with no internal borrow held, so it may re-enter the
+    /// handle. Registered while a component renders it belongs to that
+    /// component and is not called once it unmounts, like
+    /// [`on_change`](Self::on_change).
+    pub fn on_image_input(&self, cb: impl Fn(ImageInput) -> Option<(String, String)> + 'static) {
+        self.core_mut().on_image_input = Some(Hook::new(Rc::new(cb)));
+    }
+
+    /// Whether an [`on_image_input`](Self::on_image_input) callback is
+    /// registered and would be called (its component is still mounted). A
+    /// platform runtime asks before it does the work of reading a bitmap or a
+    /// dropped file.
+    pub fn has_image_input_callback(&self) -> bool {
+        self.core()
+            .on_image_input
+            .as_ref()
+            .is_some_and(|hook| hook.owner.as_ref().is_none_or(Owner::is_alive))
+    }
+
+    /// Offer a picture aimed at the **current selection** to the
+    /// [`on_image_input`](Self::on_image_input) callback, and insert the image
+    /// there if it answers with one. The platform runtime calls this, having
+    /// put the selection where the picture goes (the paste's anchor, the caret
+    /// at the drop point). Returns whether an image was inserted by this call.
+    ///
+    /// Answers `false` without calling anything when no callback is registered
+    /// or the editor [refuses edits](Self::refuses_edits). The callback runs
+    /// with no internal borrow held.
+    pub fn offer_image_input(
+        &self,
+        source: ImageInputSource,
+        bytes: Vec<u8>,
+        mime: &str,
+        name: Option<String>,
+    ) -> bool {
+        if self.refuses_edits() {
+            return false;
+        }
+        let Some(hook) = self.core().on_image_input.clone() else {
+            return false;
+        };
+        // Two anchors over one selection: the app's, to keep, and the one the
+        // synchronous answer is inserted at, so a callback that moved the
+        // selection (opened a dialog, focused elsewhere) does not move the
+        // picture.
+        let at = self.anchor_selection();
+        let input = ImageInput {
+            source,
+            bytes,
+            mime: mime.to_string(),
+            name,
+            anchor: self.anchor_selection(),
+        };
+        match hook.invoke(|cb| cb(input)).flatten() {
+            Some((src, alt)) => self.insert_image_at(&at, &src, &alt),
+            None => false,
+        }
+    }
+
+    /// Insert an image at `anchor`: [`insert_image`](Self::insert_image) at the
+    /// place a selection captured earlier has moved to, the completion half of
+    /// an [`on_image_input`](Self::on_image_input) callback that could not
+    /// answer at once. The selection ends up after the image.
+    ///
+    /// Returns `false`, inserting nothing, when the anchor no longer names a
+    /// place (its document was replaced, see [`SelectionAnchor::selection`]),
+    /// when it was taken from a different editor, or when the insertion is
+    /// refused (a read-only editor, a position that takes no image).
+    pub fn insert_image_at(&self, anchor: &SelectionAnchor, src: &str, alt: &str) -> bool {
+        let ours = Rc::downgrade(&self.core().anchors);
+        if !Weak::ptr_eq(&anchor.anchors, &ours) {
+            return false;
+        }
+        let Some(selection) = anchor.selection() else {
+            return false;
+        };
+        self.set_selection(selection);
+        self.insert_image(src, alt)
+    }
+
+    /// Whether `html` parses, under this editor's schema, to **pictures and
+    /// nothing else**: one or more `image` nodes, no text, no other leaf. What
+    /// a browser's "Copy image" puts on the clipboard as html, beside the
+    /// bitmap itself; a platform runtime asks so that such a paste is offered
+    /// to [`on_image_input`](Self::on_image_input) as the bitmap rather than
+    /// pasted as an `<img>` pointing wherever it was copied from.
+    pub fn html_is_only_images(&self, html: &str) -> bool {
+        let schema = self.core().schema.clone();
+        let Ok(slice) = slice_from_html(&schema, html) else {
+            return false;
+        };
+        let mut images = 0usize;
+        let mut other = false;
+        fn walk(node: &Node, images: &mut usize, other: &mut bool) {
+            if node.type_name() == "image" {
+                *images += 1;
+            } else if node.is_text() || node.is_atom() {
+                *other = true;
+            } else {
+                for i in 0..node.child_count() {
+                    walk(node.child(i), images, other);
+                }
+            }
+        }
+        for i in 0..slice.content.child_count() {
+            walk(slice.content.child(i), &mut images, &mut other);
+        }
+        images > 0 && !other
     }
 
     /// Toggle a `link` mark with `href` across the current selection — the

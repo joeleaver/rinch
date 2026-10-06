@@ -18,6 +18,7 @@ mod blink;
 mod collab;
 mod component;
 mod handle;
+mod images;
 mod keys;
 mod links;
 pub mod registry;
@@ -26,6 +27,7 @@ mod view;
 
 pub use component::Editor;
 pub use handle::{EditorHandle, REVEAL_PATIENCE, ScrollAlign, SelectionAnchor};
+pub use images::{ImageInput, ImageInputSource, sniff_image_mime};
 pub use keys::EditorKey;
 pub use links::{LinkClick, LinkHover, LinkSpan};
 #[cfg(feature = "collaboration")]
