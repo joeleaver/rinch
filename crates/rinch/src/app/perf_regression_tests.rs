@@ -926,6 +926,7 @@ fn ten_queued_drag_moves_lay_out_once() {
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 1),
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 2),
@@ -984,6 +985,7 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (IfcFullPasses, 1),
             (IfcFullTheme, 1),
             (TaffyRootComputes, 1),
+            (AbsBoxesVisited, 2),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullTheme, 1),
@@ -1031,6 +1033,7 @@ fn a_scale_factor_change_restyles_and_repaints_in_full() {
             (ShapePaint, 1),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
+            (AbsBoxesVisited, 2),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullResize, 1),
@@ -1113,6 +1116,7 @@ fn full_repaint_resize() {
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 11),
+            (AbsBoxesVisited, 2),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullResize, 1),
@@ -1353,6 +1357,7 @@ fn full_repaint_restyle() {
             (IfcScopeContainers, 2),
             (IfcScopeNodes, 4),
             (TaffyRootComputes, 1),
+            (AbsBoxesVisited, 2),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullRestyle, 1),
@@ -1731,6 +1736,81 @@ fn idle_viewports_repaint_nothing() {
     for s in surfaces {
         unregister_render_surface(s.id());
     }
+}
+
+// ── #386: an absolute box written inside a scroller it is not content of ────
+
+/// `a_second_wheel_notch_recomputes_no_extent` with one absolute box that has
+/// no positioned ancestor written inside the scroller's first row: the
+/// scroller is between the box and its containing block, so every notch
+/// writes the box's `layout` again (`out_of_flow::replace_after_scroll`,
+/// `abs_boxes_visited`). That moves a box and still recomputes **no**
+/// hit-test extent — an absolute box is in no flow extent, and the stacking
+/// sequences holding its offset are the ones a scroll drops anyway. PR
+/// #1409's first cut invalidated the hit cache in full there: 495 extents per
+/// notch. What the box does cost a notch is damage: the re-placed box is
+/// pushed paint-dirty, and its rect merges with the scroller's.
+#[test]
+fn a_second_wheel_notch_with_an_escaping_absolute_recomputes_no_extent() {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(ROW_CSS);
+        style.append_child(&css);
+        root.append_child(&style);
+        let scroller = scope.create_element("div");
+        scroller.set_attribute("class", "scroller");
+        for i in 0..SCROLL_ROWS {
+            let row = scope.create_element("div");
+            row.set_attribute("class", "row");
+            let t = scope.create_text(&format!("row {i}"));
+            row.append_child(&t);
+            if i == 0 {
+                let b = scope.create_element("div");
+                b.set_attribute(
+                    "style",
+                    "position: absolute; left: 400px; top: 10px; width: 10px; height: 10px",
+                );
+                row.append_child(&b);
+            }
+            scroller.append_child(&row);
+        }
+        root.append_child(&scroller);
+        *out2.borrow_mut() = Some(scroller.clone());
+        root
+    });
+    let scroller = out.borrow().clone().unwrap();
+    interaction(&mut app, wheel_notch);
+    let first = scroller.scroll_top();
+    assert!(first > 0.0, "positive control: the first notch scrolled");
+    let s = interaction(&mut app, wheel_notch);
+    assert!(
+        scroller.scroll_top() > first,
+        "positive control: the second notch scrolled further"
+    );
+    expect_frame(
+        "a second notch, an escaping absolute box",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (AbsBoxesVisited, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 167256),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 25),
+            (StackingOrderBuilds, 2),
+            (GlyphCacheHits, 126),
+            (ClipMasks, 2),
+            (ClipMaskPx, 290300),
+            (HitTests, 1),
+            (HitTestNodesVisited, 4),
+        ],
+    );
 }
 
 const BIG_LIST_CSS: &str = "

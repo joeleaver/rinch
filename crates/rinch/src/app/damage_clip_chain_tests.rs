@@ -170,10 +170,13 @@ fn an_absolute_box_escaping_the_clip_is_damaged_outside_it() {
         "position: absolute; left: 300px; top: 200px",
     );
     let before = full_frame(&mut app);
-    // At (320, 220): rinch resolves an absolute box against its direct
-    // parent when its containing block is further up (#386) — and paints it
-    // unclipped all the same, since the clip chain is truncated at the block.
-    let old = (320, 220, 360, 260);
+    // 300/200 from `outer`, its containing block, not from the clipper it is
+    // written in (#386) — so at x = 300, not 320. (`outer` itself starts at
+    // y = 20: the clipper's top margin collapses through it, so y is 220
+    // either way.) Painted unclipped, since the clip chain is truncated at
+    // the block.
+    let old = (300, 220, 340, 260);
+    assert_eq!(ink_in(&before, old), 1600, "the whole box, at x = 300");
     assert!(ink_in(&before, old) > 1000, "positive control");
 
     b.set_style("left", "400px");
@@ -182,9 +185,10 @@ fn an_absolute_box_escaping_the_clip_is_damaged_outside_it() {
     assert_incremental(&stats);
     let full = full_frame(&mut app);
     assert!(
-        ink_in(&full, (420, 220, 460, 260)) > 1000,
+        ink_in(&full, (400, 220, 440, 260)) > 1000,
         "positive control"
     );
+    assert_eq!(ink_in(&inc, (300, 220, 400, 260)), 0, "the old box ghosts");
     assert_eq!(
         diff_in(&inc, &full, WHOLE),
         0,
@@ -413,8 +417,8 @@ fn a_removed_box_that_escaped_the_clip_is_cleared() {
         "position: absolute; left: 300px; top: 200px",
     );
     let before = full_frame(&mut app);
-    let old = (320, 220, 360, 260);
-    assert!(ink_in(&before, old) > 1000, "positive control");
+    let old = (300, 220, 340, 260);
+    assert_eq!(ink_in(&before, old), 1600, "positive control");
 
     b.remove();
     resolve(&mut app);
@@ -743,4 +747,191 @@ fn the_hit_test_follows_a_contents_flip_of_a_positioned_wrapper() {
         Some(abs),
         "block again: clipped"
     );
+}
+
+// ── #386: the containing block is not the parent ────────────────────────────
+
+/// **An absolute box under a static scroller is drawn, hit and damaged in its
+/// containing block — and does not ride the scroller.** `outer` (positioned)
+/// holds a static 200x100 `overflow: auto` scroller with 500px of content,
+/// which holds the box at `left: 300px; top: 200px`. Its containing block is
+/// `outer` (padded by 10px, which keeps the scroller's margin from collapsing
+/// through it and moves no absolute box), so it sits at (300, 200) on screen
+/// — not (330, 230), 300/200 from the scroller it is written in — outside the
+/// scroller's box and unclipped by it. A wheel over the scroller scrolls the content and leaves the box where
+/// it is (Chrome 153: an absolute box whose containing block is above a
+/// scroller keeps its place at any `scrollTop`); the frame after the scroll is
+/// incremental and equals a from-scratch one.
+///
+/// Kills: placing the box against its parent (ink at (330, 230)); dropping
+/// the scroll term of `out_of_flow::place_absolute`, or not placing again
+/// after a scroll (the box moves up by the scroll distance: ink leaves
+/// (300, 200) and the hit test misses).
+#[test]
+fn an_absolute_box_under_a_static_scroller_stays_in_its_containing_block() {
+    let (mut app, h) = mount_with(Box::new(|scope, outer| {
+        outer.set_attribute(
+            "style",
+            "width: 600px; height: 400px; position: relative; padding: 10px",
+        );
+        let scroller = el(
+            scope,
+            outer,
+            "margin-left: 20px; margin-top: 20px; width: 200px; height: 100px; overflow: auto",
+        );
+        el(scope, &scroller, "height: 500px");
+        let b = el(
+            scope,
+            &scroller,
+            "width: 40px; height: 40px; background: rgb(0, 0, 200); position: absolute; \
+             left: 300px; top: 200px",
+        );
+        vec![scroller, b]
+    }));
+    let (scroller, abs) = (h[0].node_id().0, h[1].node_id().0);
+    let at = (300, 200, 340, 240);
+    let before = full_frame(&mut app);
+    assert_eq!(ink_in(&before, at), 1600, "the box, whole, at its place");
+    // Right of the scroller's own box (which paints a scrollbar thumb).
+    let outside = (240, 0, 600, 400);
+    assert_eq!(
+        ink_in(&before, outside),
+        1600,
+        "and nothing else: it is not also at (330, 230)"
+    );
+    assert_eq!(app.move_hit(310.0, 210.0), Some(abs));
+    assert_ne!(app.move_hit(350.0, 250.0), Some(abs), "not 20px further");
+
+    let _ = app.handle_event(
+        PlatformEvent::MouseWheel {
+            x: 100.0,
+            y: 60.0,
+            delta_x: 0.0,
+            delta_y: -60.0,
+        },
+        SIZE,
+        1.0,
+    );
+    let scrolled = app
+        .doc
+        .as_ref()
+        .expect("mounted")
+        .borrow()
+        .scroll_top(rinch_core::dom::NodeId(scroller));
+    assert!(
+        scrolled > 20.0,
+        "positive control: the scroller scrolled ({scrolled})"
+    );
+    assert_eq!(
+        app.move_hit(310.0, 210.0),
+        Some(abs),
+        "the box did not ride the scroller"
+    );
+    let (inc, _) = incremental_frame(&mut app);
+    let full = full_frame(&mut app);
+    assert_eq!(ink_in(&full, at), 1600, "still whole, still there");
+    assert_eq!(ink_in(&full, outside), 1600);
+    assert_eq!(
+        diff_in(&inc, &full, WHOLE),
+        0,
+        "the frame after the scroll != a from-scratch frame"
+    );
+}
+
+// ── #386: an absolute box written inside a scroller it is not content of ────
+
+/// The box OVERLAPS (and straddles the edge of) the scroller it is written
+/// in; two notches; hit inside the scroller's box.
+#[test]
+fn an_escaping_absolute_overlapping_its_scroller_paints_and_hits_after_scrolls() {
+    for (left, top) in [(60, 40), (210, 110), (100, 120)] {
+        let (mut app, h) = mount_with(Box::new(move |scope, outer| {
+            outer.set_attribute(
+                "style",
+                "width: 600px; height: 400px; position: relative; padding: 10px",
+            );
+            let scroller = el(
+                scope,
+                outer,
+                "margin-left: 20px; margin-top: 20px; width: 200px; height: 100px; overflow: auto; background: rgb(250, 250, 250)",
+            );
+            for i in 0..10 {
+                el(
+                    scope,
+                    &scroller,
+                    &format!("height: 50px; background: rgb({}, 200, 100)", 20 * i),
+                );
+            }
+            let b = el(
+                scope,
+                &scroller,
+                &format!(
+                    "width: 40px; height: 40px; background: rgb(0, 0, 200); position: absolute; \
+                     left: {left}px; top: {top}px"
+                ),
+            );
+            vec![scroller, b]
+        }));
+        let abs = h[1].node_id().0;
+        let at = (left, top, left + 40, top + 40);
+        let before = full_frame(&mut app);
+        let blue = |px: &[u8]| {
+            let mut n = 0;
+            for y in at.1..at.3 {
+                for x in at.0..at.2 {
+                    let i = ((y * 600 + x) * 4) as usize;
+                    if px[i] == 0 && px[i + 1] == 0 && px[i + 2] == 200 {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        assert_eq!(blue(&before), 1600, "({left},{top}) whole before");
+        // Warm the hit cache (extents and sequences) before any scroll.
+        assert_eq!(app.move_hit(left as f32 + 5.0, top as f32 + 5.0), Some(abs));
+        assert_ne!(
+            app.move_hit(left as f32 + 5.0, top as f32 + 45.0),
+            Some(abs)
+        );
+        for notch in 0..2 {
+            let _ = app.handle_event(
+                PlatformEvent::MouseWheel {
+                    x: 50.0,
+                    y: 60.0,
+                    delta_x: 0.0,
+                    delta_y: -60.0,
+                },
+                SIZE,
+                1.0,
+            );
+            assert_eq!(
+                app.move_hit(left as f32 + 5.0, top as f32 + 5.0),
+                Some(abs),
+                "({left},{top}) notch {notch}: hit"
+            );
+            assert_ne!(
+                app.move_hit(left as f32 + 5.0, top as f32 + 45.0),
+                Some(abs),
+                "({left},{top}) notch {notch}: below the box"
+            );
+            assert_ne!(
+                app.move_hit(left as f32 + 5.0, top as f32 - 5.0),
+                Some(abs),
+                "({left},{top}) notch {notch}: above the box"
+            );
+            let (inc, _) = incremental_frame(&mut app);
+            let full = full_frame(&mut app);
+            assert_eq!(
+                blue(&full),
+                1600,
+                "({left},{top}) notch {notch}: full frame"
+            );
+            assert_eq!(
+                diff_in(&inc, &full, WHOLE),
+                0,
+                "({left},{top}) notch {notch}: incremental != full"
+            );
+        }
+    }
 }
