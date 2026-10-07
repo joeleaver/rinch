@@ -4676,6 +4676,8 @@ It falls out of that, with no special cases:
 | `if open { p { "hi" } }` — fresh markup | `discard` | the branch built it; nothing can show it again |
 | `if open { {panel} }` — a captured handle (the #654 shape) | `remove` | the closure was handed it; the next show puts it back |
 | a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
+| a `for` view that builds a row once **through `s.cache_scope()`** and caches it with that scope (#733) | `remove` | the row's scope did not mint it; the cache scope has no parent |
+| a `for` view that builds a row once **through the row's own scope** and caches it | `discard` — the row is lost on web, and a warning says so | the row's scope minted it |
 | a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
 | `if open { div { {panel} } }` — a captured handle *inside* branch-built markup | `remove` for `panel`, `discard` for the `div` | the walk below takes `panel` out before the recursive discard reaches it (#732) |
 
@@ -4726,15 +4728,58 @@ there is a JS call. Measured: +9.8% instructions on a 1000-row hide (`shell::bra
 `rinch-web/tests/{reinsertion,branch_reclaim_732,editor_in_branch_732}.rs`,
 `rinch/tests/embed_drop_minting_732.rs`.
 
-**One more shape is lost on web, and only `for` can reach it: #733.** A `view`
-closure that builds *lazily through the row's own scope* and caches afterwards
-owns its row by this rule, so the first removal discards it. A branch closure or
-a `render_fn` can build its cached subtree outside itself and capture it; a `for`
-view is only ever handed the row's scope, so lazy-build-then-cache is the only
-way to write it there. Both were equally lost before #719 —
-`rinch-web` pruned every removed subtree — and `branch_helper_transition_tests`
-passes on both because `rinch-dom` reclaims nothing (#723), which is a fixed
-point worth remembering when reading that file.
+**A cache filled from inside the closure builds through a cache scope (#733).**
+A `view` closure that builds *lazily through the row's own scope* and caches
+afterwards owns its row by this rule, so the first removal discards it — and
+disposes every effect, signal and handler it made, on every backend (the
+reactive half is #141's rule, not the node rule: counted on the mock, an effect
+built through the row scope did not run again for a write made after its row
+had left and come back). A
+branch closure or a `render_fn` can build its cached subtree outside itself and
+capture it; a `for` view is only ever handed the row's scope. So the view asks
+for a scope that is not the row's:
+
+```rust
+move |id: u32, s: &mut RenderScope| {
+    if let Some((row, _scope)) = cache.borrow().get(&id) {
+        return row.clone();
+    }
+    let mut keep = s.cache_scope();                  // parentless, same document
+    let row = keep.build(|__scope| rsx! { article { {id.to_string()} } });
+    cache.borrow_mut().insert(id, (row.clone(), keep));   // the scope stays with the node
+    row
+}
+```
+
+In `rsx!` that closure is the `for` body, where `__scope` is the row's scope:
+`for id in ids.get() { {cached_tab(__scope, &cache, id)} }`
+(`rinch-macros/tests/rsx_for_cache_scope_733.rs`).
+
+`RenderScope::cache_scope(&self) -> RenderScope` is `RenderScope::new` on the
+same document: no ancestry parent, so no hide or row removal discards what it
+mints, including a cached node nested in row-built markup (the #732 walk takes
+it out first). `RenderScope::build(&mut self, f) -> R` runs `f` with the scope
+as the **ambient owner**; without it a `Signal::new` or an `onclick` made while
+building belongs to the row that happened to be rendering and is freed with it.
+The scope belongs to whoever keeps it: **dropping it disposes the row's effects,
+signals and handlers** (the node then comes back with dead bindings), and
+evicting is the cache's job — `scope.dispose()` then `node.discard()` — since
+nothing else reclaims a cached subtree. A key that never returns holds its row
+until the cache lets go.
+
+**A closure that hands back a retired node is reported** — the old shape, still
+lost: `dom::warn_if_retired`, called on what every `for` (initial, insert and
+changed arms), `virtual_list`, `if`, `match` and component re-render closure
+returns, logs one `tracing::warn!` per node (32 nodes at most per thread) naming
+the fix. It asks `DomDocument::is_retired` (default `false`), which `rinch-web`
+and `MockDomDocument` answer from their node tables; **`rinch-dom` cannot tell
+and does not warn**, because its `discard` reclaims nothing (#723) and the row
+still comes back there — so desktop alone gives no sign that the same code
+loses the row in a browser, and `branch_helper_transition_tests`'s lazy `for`
+fixture still passes on it. Pins: `reinsertion_tests::lazy_memo_733` (mock) and
+`rinch-web/tests/for_memo_733.rs` (Chrome 153): the row comes back, its effect
+runs while it is out, 200 toggles grow the node count by 0, and an eviction
+returns the count to where it was.
 
 Every other release site says the verb outright, because it knows: the editor's
 `ViewDesc` diff (popped children, kind-changed blocks, placeholder, selection

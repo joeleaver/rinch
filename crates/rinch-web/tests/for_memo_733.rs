@@ -92,7 +92,10 @@ fn a_row_built_through_a_cache_scope_comes_back_and_does_not_leak() {
     assert!(text(&host).contains("KEPT733"), "positive control: mounted");
 
     rows.set(vec![]);
-    assert!(!text(&host).contains("KEPT733"), "positive control: removed");
+    assert!(
+        !text(&host).contains("KEPT733"),
+        "positive control: removed"
+    );
     label.set("b".into());
     rows.set(vec![1]);
     assert!(text(&host).contains("KEPT733"), "#733: the row comes back");

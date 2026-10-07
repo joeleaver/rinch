@@ -531,11 +531,13 @@ fn a_churning_for_does_not_grow_the_document() {
 ///
 /// **Which flavour of memoisation this is matters.** The cached subtree here is
 /// built on the *outer* scope, before the `for`, and the view only ever hands it
-/// back — the supported shape. A view that builds **lazily through the row's own
-/// scope** and caches afterwards owns its row by this rule and loses it on the
-/// first removal; that is **#733**, and `rinch-dom`'s
+/// back. A view that builds **lazily through the row's own scope** and caches
+/// afterwards owns its row by this rule and loses it on the first removal
+/// (issue #733); a view that has to build lazily builds through
+/// [`RenderScope::cache_scope`] instead, which `lazy_memo_733` below pins.
+/// `rinch-dom`'s
 /// `branch_helper_transition_tests::a_for_row_reinserted_under_the_same_key_can_still_transition`
-/// is the fixture that models it and cannot see the loss.
+/// models the losing shape and cannot see the loss.
 #[test]
 fn a_memoised_for_row_survives_leaving_the_list() {
     let doc = doc();
@@ -2339,7 +2341,11 @@ mod lazy_memo_733 {
             doc.borrow().get_attribute(row, "data-n").as_deref(),
             Some("4")
         );
-        assert_eq!(__retired_view_returns(), (0, 0), "nothing retired came back");
+        assert_eq!(
+            __retired_view_returns(),
+            (0, 0),
+            "nothing retired came back"
+        );
     }
 
     /// A cached node *inside* markup the row builds: the wrapper is the row's
