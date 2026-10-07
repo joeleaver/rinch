@@ -68,6 +68,7 @@
 
 mod editor_input;
 mod event_delegation;
+mod images;
 mod menu_bar;
 pub mod web_document;
 
@@ -86,6 +87,14 @@ pub use event_delegation::{__force_trusted_clicks, __reset_activation_state};
 // default: an island mounted into somebody else's page must not take the
 // right-click away from the rest of it.
 pub use event_delegation::{set_suppress_native_context_menu, suppresses_native_context_menu};
+#[doc(hidden)]
+pub use images::__reset_image_sources;
+/// App-resolved image sources: an `<img>` whose `src` has a scheme the app
+/// registered shows what the app resolves it to. `rinch::image::
+/// register_image_scheme` and `rinch::image::reload_image` are the same calls as
+/// on desktop; `register_image_url_scheme` is the browser-only form that answers
+/// with a URL.
+pub use images::{LOGICAL_SRC_ATTR, register_image_url_scheme, unregister_image_url_scheme};
 /// The menu declaration types, re-exported so a web app names them in one place
 /// (`rinch_web::{Menu, MenuItem}`) while its desktop twin builds the very same
 /// values from `rinch::menu`. They are the same types, not a parallel set.
@@ -306,6 +315,10 @@ where
     web_doc.borrow_mut().append_child(body_id, root.node_id());
 
     clear_render_scope();
+
+    // Ask the app for the image sources this build gave its `<img>`s, now
+    // that no borrow of the document is held (`images.rs`).
+    images::resolve_pending();
 
     // Inject/refresh the page-global theme `<style>` (idempotent across roots).
     if let Some(css) = rinch_core::get_current_theme_css() {

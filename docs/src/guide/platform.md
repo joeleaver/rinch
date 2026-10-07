@@ -131,22 +131,119 @@ Avatar { src: "https://example.com/avatar.png", size: "lg" }
 
 ### Custom Image Loader
 
-You can implement the `ImageLoader` trait for custom loading strategies (e.g., embedded assets, authenticated downloads):
+An app that keeps pictures somewhere only it can reach (embedded assets, a blob
+store, an authenticated download) answers for a URL scheme of its own. Sources
+with that scheme go to the app's loader; every other source still goes to
+rinch's default loader (files, plus HTTP(S) with `image-network`), so there is
+nothing to forward:
 
 ```rust
-use rinch_core::image::{ImageLoader, ImageLoadResult};
+use rinch::image::ImageLoadResult;
+use rinch::prelude::*;
 
-struct AssetLoader;
-
-impl ImageLoader for AssetLoader {
-    fn load(&self, src: &str) -> ImageLoadResult {
-        match load_from_assets(src) {
+fn main() {
+    App::new(app)
+        .image_scheme("asset", |src: &str| match load_from_assets(src) {
             Ok(bytes) => ImageLoadResult::Loaded(bytes),
             Err(e) => ImageLoadResult::Failed(e.to_string()),
-        }
-    }
+        })
+        .run();
 }
+
+// Anywhere in the UI:
+// img { src: "asset:logo.png" }
 ```
+
+`rinch::image::register_image_scheme(scheme, loader)` is the same registration
+without the builder. A loader is any `Fn(&str) -> ImageLoadResult + Send + Sync`
+closure, or a type that implements `rinch::image::ImageLoader`.
+
+What a loader must know:
+
+- **It returns encoded bytes**: the contents of a PNG, JPEG, GIF or WebP file.
+  rinch decodes them. It never returns decoded pixels.
+- **It runs on a background thread** spawned for that one load, never the UI
+  thread, so it may block on I/O. Several loads run at once.
+- **Its answer is cached by source string, a failure included.** A source that
+  failed is not asked for again on its own.
+- **On desktop, a panic is a failed load.** It is caught on the load's thread and
+  cached as a failure carrying the panic's message, so `reload_image` can ask
+  again. In the browser (and on a native build with `panic = "abort"`) a
+  panicking loader or resolver aborts the whole app.
+- **The `data` scheme cannot be registered** (`register_image_scheme("data", ..)`
+  panics). No app loader is ever offered a `data:` URL; an `<img>`'s is decoded
+  in place.
+- **A registration lasts until `unregister_image_scheme`.** It is process-wide
+  and is not undone when the component that made it unmounts.
+
+#### A picture that arrives later
+
+When the bytes may not exist yet (still downloading, not synced), answer
+`ImageLoadResult::Failed` straight away rather than parking the thread, and tell
+rinch when they are there:
+
+```rust
+// From any thread, once "asset:photo-42" can be loaded:
+rinch::image::reload_image("asset:photo-42");
+```
+
+Every `<img>` and `background-image` naming that source, in every window, loads
+it again and takes its size. The same call refreshes a picture whose bytes
+changed under an unchanged source: the old picture stays on screen until the new
+one has decoded.
+
+- **Pass the source exactly as the element spelled it.** The source string is
+  the key, scheme case included: `reload_image("asset:photo-42")` does not reach
+  an element whose `src` is `Asset:photo-42`.
+- **Reloads of one source are ordered and coalesced.** A reload asked for while
+  a load of that source is still out (its first load or an earlier reload)
+  starts nothing at once: the answer on its way is dropped when it lands and the
+  source is loaded once more. So the picture shown is one the loader was asked
+  for after the last `reload_image`, and ten reloads during one slow load cost
+  one more load, not ten.
+- **Do not call `reload_image(src)` from inside the loader's answer for `src`**:
+  each call discards the answer being given and asks again.
+
+
+#### In the browser
+
+The same two calls work in a `rinch-web` build. The browser loads an `<img>`
+itself, so there the loader's bytes are wrapped in an object URL (`blob:…`) and
+that is what the element shows. The loader is called on the browser's one
+thread, so it must answer from what it already holds (`Failed` for "not yet",
+then `reload_image`).
+
+The app is never asked from inside a DOM write, so a resolver or loader may
+write signals. An element given a source with no remembered answer shows nothing
+until a microtask asks for it, once per source, before the next paint; sources
+given while a root mounts are asked for before `mount_into` returns.
+`reload_image` asks at once.
+
+An app that already has a URL to show (it made the object URL itself), or whose
+state lives in `Rc`s a `Send + Sync` loader cannot capture, uses the
+browser-only form instead:
+
+```rust
+rinch_web::register_image_url_scheme("asset", move |src| {
+    store.borrow().object_url(src)   // Some(url), or None for "not yet"
+});
+// later:
+rinch::image::reload_image("asset:photo-42");
+```
+
+Either way the element keeps the source it was given: it is in
+`data-rinch-src`, `NodeHandle::get_attribute("src")` answers it, and an editor
+document's `image` node never holds the resolved URL. While the answer is "not
+yet" the element has no `src` at all. A reload reaches every `<img>` rinch
+was given that source, including one in a branch that is hidden right now, and
+never an `<img>` the page made outside rinch. It asks nothing for a source no
+element was given, and forgets its answer. To make rinch forget a URL you
+revoked, call `reload_image` and answer `None`: pictures already shown stay, and
+an element given the source later shows nothing until the next reload. "Not yet"
+is remembered per source in the browser as on desktop: only `reload_image` asks
+again, never an element that is given the source again. `<img>` markup set with
+`set_inner_html` is resolved like any other. Only `<img src>` is resolved in the
+browser; a `background-image: url(…)` there is the browser's own.
 
 ---
 
