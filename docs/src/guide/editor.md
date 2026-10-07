@@ -478,6 +478,21 @@ documents: no panic, no invalid document, every step undoes exactly, and the con
 the HTML reader makes of the fuzz's markup (every starter-kit block, nested) always
 fits at a caret or a selection inside one textblock.
 
+**A delete is fitted the same way.** `Transform::delete(from, to)` is the plain
+`replace` when the range's ends are at the same depth. When they are not (from a list
+item into the item nested under it, from a paragraph into a list), it fits the empty
+slice: what is left of the textblock the range ends in joins the one it starts in, as
+ProseMirror's `Transform.delete` does, in one step. `deleteSelection`, Backspace and
+Delete over a selection, Enter, `insertHorizontalRule`, the word deletes and typing
+over a selection (`EditorHandle::insert_text`, which deletes the selection and then
+inserts; `Transaction::insert_text` alone is the plain replace) all go through it, and leave a caret where the range began. Still
+refused: a range that leaves or enters a table cell (an isolating node), a range that
+holds only the boundary between two textblocks that cannot join (the end of a code
+block and the start of marked text), and `insertHardBreak` or an image insert over a
+selection whose ends are at different depths (#1460). A selected list item is emptied,
+not removed (#1460). `tests/review_1422.rs` checks every range of random nested
+documents against those rules.
+
 `Step::apply` is where **schema enforcement** lives: a `ReplaceStep` whose slice
 would violate the parent's ContentMatch returns an error and the whole transaction is
 rejected. Invert is mechanical; map rebases positions through a `Mapping`; merge

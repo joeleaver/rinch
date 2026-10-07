@@ -221,8 +221,10 @@ impl<'a> Transform<'a> {
     /// the node the range ends in joins the node it starts in, and what
     /// followed it stays where it can (ProseMirror's `Transform.delete`).
     /// Like `replace_range`, a range whose ends are in different isolating
-    /// nodes (two table cells) is not fitted. One step is added, or none and
-    /// the plain replacement's error.
+    /// nodes (two table cells) is not fitted, and neither is one that holds
+    /// only the tokens between two textblocks that cannot join (code, then
+    /// marked text), which would delete nothing. One step is added, or none
+    /// and the plain replacement's error.
     pub fn delete(&mut self, from: usize, to: usize) -> Result<&mut Self, StepError> {
         let Some(plain) = self
             .step(Box::new(ReplaceStep::new(from, to, Slice::empty())))

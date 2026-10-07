@@ -274,7 +274,7 @@ fn check_all_ranges(schema: &Rc<Schema>, doc: &Node, tally: &mut Tally, show: bo
             leaves(&tf.doc, 0, &mut after);
             let expect: Vec<&(usize, String)> = before
                 .iter()
-                .filter(|(p, _)| *p + 1 <= from || *p >= to)
+                .filter(|(p, _)| *p < from || *p >= to)
                 .collect();
             let got: Vec<&String> = after.iter().map(|(_, s)| s).collect();
             let want: Vec<&String> = expect.iter().map(|(_, s)| s).collect();
@@ -291,7 +291,7 @@ fn check_all_ranges(schema: &Rc<Schema>, doc: &Node, tally: &mut Tally, show: bo
                 );
             }
             assert_eq!(map.map(from, -1), from, "{what}");
-            if show && text_ends && tally.fitted % 97 == 0 {
+            if show && text_ends && tally.fitted.is_multiple_of(97) {
                 eprintln!("FITTED {what}\n   -> {:?}\n   {step:?}", tf.doc);
             }
             // Through the state: the caret is at `from` and in a textblock
