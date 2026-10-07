@@ -2323,6 +2323,82 @@ fn a_box_sized_from_a_span_costs_one_more_compute_when_the_span_resizes() {
             (TaffyMeasureCalls, 2),
             (AbsContainingBlockPasses, 1),
             (AbsBoxesVisited, 160),
+            (AbsInlineMeasures, 1),
+            (AbsInlineMeasureSteps, 22),
+        ],
+    );
+}
+
+/// `n` badges, each hung from its own span, in **one** paragraph:
+/// `w <span rel>x[badge]</span> ` n times. Returns the document and the
+/// paragraph.
+fn span_badges_in_one_paragraph(n: usize) -> (RinchDocument, NodeId) {
+    let mut doc = doc_with(
+        ".p { width: 380px; }
+         .rel { position: relative; }
+         .badge { position: absolute; inset: 0; }",
+    );
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    for _ in 0..n {
+        text(&mut doc, p, "w ");
+        let span = el(&mut doc, p, "span", "rel");
+        text(&mut doc, span, "x");
+        el(&mut doc, span, "div", "badge");
+        text(&mut doc, p, " ");
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    (doc, p)
+}
+
+/// The measurement of the spans boxes hang from is **linear in the
+/// paragraph**, however many of them it holds (review of #1434, F1: it was
+/// one walk of the whole paragraph per box per pass, so 100 boxes in one
+/// paragraph cost four times what 50 did, and no counter moved with it).
+/// A text edit rebuilds the paragraph's lines; they are measured once, for
+/// every span together, and `abs_inline_measure_steps` — entries, ancestors,
+/// line items and clusters looked at — doubles when the paragraph does: 804
+/// steps for 50 badges, 1,608 for 100 (about 16 a badge).
+#[test]
+fn spans_in_one_paragraph_are_measured_in_one_linear_walk() {
+    let frame = |n: usize| {
+        let (mut doc, p) = span_badges_in_one_paragraph(n);
+        let first = NodeId(doc.tree.get(p.0).unwrap().children[0]);
+        doc.tree.perf.reset();
+        doc.set_text_content(first, "ww ");
+        doc.resolve_layout(VP.0, VP.1);
+        doc.tree.perf.end_frame()
+    };
+    let (small, large) = (frame(50), frame(100));
+    expect(
+        "50 span badges in one paragraph, its text edited",
+        &small,
+        &[
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 200),
+            (AbsInlineMeasures, 1),
+            (AbsInlineMeasureSteps, 804),
+        ],
+    );
+    expect(
+        "100 span badges in one paragraph, its text edited",
+        &large,
+        &[
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 400),
+            (AbsInlineMeasures, 1),
+            (AbsInlineMeasureSteps, 1608),
         ],
     );
 }

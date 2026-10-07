@@ -272,6 +272,15 @@ define_counters! {
     /// positioned parent is never counted, and a scroll counts only when the scrolled
     /// box lies between such a box and its containing block.
     AbsBoxesVisited = "abs_boxes_visited",
+    /// Inline formatting contexts whose lines were measured for the inline
+    /// spans absolute boxes hang from (#631): once per context per set of
+    /// lines, however many spans it holds.
+    AbsInlineMeasures = "abs_inline_measures",
+    /// What those measurements looked at: the context's entries (and the
+    /// ancestors of each up to the context's root), its line items and
+    /// clusters, and each span's own clusters on its first and last line.
+    /// Linear in the context for any number of spans in it.
+    AbsInlineMeasureSteps = "abs_inline_measure_steps",
 
     // ── Paint ──────────────────────────────────────────────────────────
     /// Frames actually painted (a scene or pixel buffer rebuilt).

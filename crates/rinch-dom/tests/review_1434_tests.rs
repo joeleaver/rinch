@@ -6,9 +6,11 @@
 //! `@font-face`), relative to the container's border box, in the scaffold of
 //! `abs_inline_containing_block_tests.rs`.
 //!
-//! The tests that pass at the PR head pin something no fixture of the PR
-//! does (each names the mutant it kills). The `#[ignore]`d ones are findings:
-//! they fail at the PR head, and say what Chrome gives.
+//! The first four pin something no fixture of the PR's first round did (each
+//! names the mutant it kills). The rest were the review's findings, which
+//! failed at that head (`209a686b`): three are fixed since and pass, one is
+//! pinned as a stated divergence (the ellipsized block), and one stays
+//! `#[ignore]`d for the issue that tracks it (#1438).
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -210,16 +212,16 @@ fn a_text_align_change_resizes_a_box_sized_from_a_wrapped_span() {
     );
 }
 
-// ── Findings (fail at the PR head) ──────────────────────────────────────────
+// ── The review's findings ──────────────────────────────────────────────────
 
-/// F2. The fragment is the **span's own** font box. `inline_fragments_box`
-/// takes the ascent of the first glyph run inside the span and the descent
-/// of the last, which are a *descendant's* runs when the span's content
-/// starts or ends with a child set in another size.
+/// F2. The fragment is the **span's own** font box, whatever its children
+/// are set in. At `209a686b` the measurement took the ascent of the first
+/// glyph run inside the span and the descent of the last, which are a
+/// *descendant's* runs when the span's content starts or ends with a child
+/// set in another size.
 ///
-/// rinch at the PR head: `[48, -3, 47, 39]` (the 32px child's box).
+/// rinch at `209a686b`: `[48, -3, 47, 39]` (the 32px child's box).
 #[test]
-#[ignore = "review of #1434, F2: a span's fragment takes its children's font"]
 fn the_fragment_is_the_spans_font_box_whatever_its_children_are_set_in() {
     let doc = build(
         "",
@@ -245,13 +247,12 @@ fn the_fragment_is_the_spans_font_box_whatever_its_children_are_set_in() {
     );
 }
 
-/// F4. In a block that draws a `text-overflow: ellipsis` "…", the lines are
-/// rebuilt as flat text with no member entries, the span cannot be found in
-/// them, and the box falls back to the block container (the pre-#631
-/// answer). rinch at the PR head: `[0, 0, 40, 30]`.
+/// F4, a stated divergence. In a block that draws a `text-overflow:
+/// ellipsis` "…" the lines are rebuilt as flat text with no member entries,
+/// the span has no fragment in them, and the box keeps the block container
+/// (the answer it had before #631). Chrome 153: `[47.64, 7, 40, 30]`.
 #[test]
-#[ignore = "review of #1434, F4: a span in an ellipsized block is not measured"]
-fn a_span_in_an_ellipsized_line_is_still_the_containing_block() {
+fn a_span_in_an_ellipsized_line_is_not_measured() {
     let doc = build(
         "width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
         &format!(
@@ -259,15 +260,13 @@ fn a_span_in_an_ellipsized_line_is_still_the_containing_block() {
             abs("width: 40px; height: 30px; top: 0; left: 0")
         ),
     );
-    assert_rect(rect(&doc, "abs"), [47.64, 7.0, 40.0, 30.0], "ellipsized");
+    assert_eq!(rect(&doc, "abs"), [0.0, 0.0, 40.0, 30.0]);
 }
 
-/// F5. `vertical-align` shifts a span's glyphs at paint (#724) and its
-/// fragment box does not follow: the box hangs from where the text would be
-/// unshifted. Chrome: a `<sub>`'s fragment starts at 14.19; rinch at the PR
-/// head: 10.
+/// F5. `vertical-align` shifts a span's glyphs at paint (#724), and its
+/// fragment box with them. Chrome: a `<sub>`'s fragment starts at 14.19;
+/// rinch at `209a686b` hung the box from the unshifted text, at 10.
 #[test]
-#[ignore = "review of #1434, F5: the fragment ignores the vertical-align shift"]
 fn a_sub_spans_fragment_is_where_its_text_is_drawn() {
     let doc = build(
         "",
@@ -288,7 +287,7 @@ fn a_sub_spans_fragment_is_where_its_text_is_drawn() {
 /// the box outside the scroller. Chrome: `elementFromPoint(60, 110)` is
 /// `BODY`, the box is not drawn.
 #[test]
-#[ignore = "review of #1434, F3: a span-hung box escapes a static scroller's clip"]
+#[ignore = "#1438: a span-hung box escapes a static scroller's clip in paint (older than #631)"]
 fn a_span_hung_box_is_clipped_by_a_static_scroller_around_the_span() {
     use rinch_dom::paint::skia_painter::TinySkiaPainter;
     let mut doc = build(
@@ -319,15 +318,17 @@ fn a_span_hung_box_is_clipped_by_a_static_scroller_around_the_span() {
 }
 
 /// F1b. A span of right-to-left text (parley reorders it whatever
-/// `direction` says). Its range starts at the visual **right**, so
-/// `line_range_x` answers `left > right`, `inline_fragments_box` skips the
-/// line as if the span were not on it, and the span is treated as empty: a
-/// zero-width block at the caret. rinch at the PR head: `[126, 7, 0, 19]`
-/// (the word is drawn across 47.64..126). Chrome 153: `[47.64, 7, 60.5, 20]`
-/// in its fallback face; the left edge follows `lead ` (Inter) in any face,
-/// and the width is the word's.
+/// `direction` says) is as wide as its text. Its range starts at the visual
+/// **right**; at `209a686b` the measurement took a caret at each end of the
+/// range, got `left > right`, skipped the line as if the span were not on it
+/// and treated the span as empty: `[126, 7, 0, 19]` (the word is drawn
+/// across 47.64..126). Chrome 153: `[47.64, 7, 60.5, 20]` in its fallback
+/// face. No bundled face covers Hebrew, so the word is set in whatever the
+/// host falls back to and only what holds in any face is asserted: the left
+/// edge follows `lead ` (Inter), and the block is as wide as a word. The
+/// exact numbers are pinned with Latin text forced right-to-left in
+/// `abs_inline_containing_block_tests::a_span_of_right_to_left_text`.
 #[test]
-#[ignore = "review of #1434, F1b: a span of right-to-left text is measured as empty"]
 fn a_span_of_right_to_left_text_is_not_empty() {
     let doc = build(
         "",

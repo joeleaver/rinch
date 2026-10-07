@@ -362,62 +362,6 @@ pub fn cluster_range_at_point(
     parley::layout::Cluster::from_point_exact(layout, x, y).map(|(c, _)| c.text_range())
 }
 
-/// Where the byte range `[start, end)` — already clamped to `line`'s own text
-/// range, and not empty — starts and ends on `line`, as layout-local `x`
-/// coordinates `(left, right)`. What a selection highlight covers on that
-/// line ([`selection_rects_for_layout`]) and where an inline element's
-/// fragment on it lies (`out_of_flow`, #631).
-///
-/// `newline_width` is the width a hard break at the end of the range is given
-/// (see below): a highlight shows one, an inline fragment has none.
-pub(crate) fn line_range_x(
-    layout: &parley::layout::Layout<Brush>,
-    line: &parley::layout::Line<'_, Brush>,
-    start: usize,
-    end: usize,
-    newline_width: bool,
-) -> (f32, f32) {
-    let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
-        .geometry(layout, 0.0)
-        .x0 as f32;
-    // A range that runs to (or past) the line's end ends at the line's
-    // trailing edge: an *upstream* caret there. A downstream caret at a
-    // soft line break stands at the start of the NEXT line (x = 0), which
-    // made every wrapped line's highlight a 1px sliver (#1010).
-    //
-    // A line ended by a hard break (`<br>`, a preserved `\n`) holds the
-    // break in its range, and even the upstream caret after it stands at
-    // the next line's start. Such a line is highlighted to the caret
-    // before the break plus a newline's width, the rule Parley's own
-    // `Selection::geometry` uses (a quarter of ascent + descent) — Chrome
-    // 153 paints `abc<br>def` line 0 across `0..32`, "abc" being 28px.
-    let range = line.text_range();
-    let metrics = line.metrics();
-    let right = if end == range.end
-        && range.end > range.start
-        && line.break_reason() == parley::layout::BreakReason::Explicit
-    {
-        let before_break = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
-            .geometry(layout, 0.0)
-            .x0 as f32;
-        if newline_width {
-            before_break + (metrics.ascent + metrics.descent) * 0.25
-        } else {
-            before_break
-        }
-    } else {
-        let end_affinity = if end == range.end {
-            Affinity::Upstream
-        } else {
-            Affinity::Downstream
-        };
-        Cursor::from_byte_index(layout, end, end_affinity)
-            .geometry(layout, 0.0)
-            .x0 as f32
-    };
-    (left, right)
-}
-
 /// Per-line selection rectangles `(x, y, width, height)` (layout-local) covering
 /// the byte range `[a, b)` in `layout`. One rect per visual line the range spans.
 /// Used to render a text selection's highlight.
@@ -460,7 +404,38 @@ pub fn selection_rects_for_layout(
             _ => metrics.block_max_coord,
         };
         let height = bottom - top;
-        let (left, right) = line_range_x(layout, &line, start, end, true);
+        let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
+            .geometry(layout, 0.0)
+            .x0 as f32;
+        // A range that runs to (or past) the line's end ends at the line's
+        // trailing edge: an *upstream* caret there. A downstream caret at a
+        // soft line break stands at the start of the NEXT line (x = 0), which
+        // made every wrapped line's highlight a 1px sliver (#1010).
+        //
+        // A line ended by a hard break (`<br>`, a preserved `\n`) holds the
+        // break in its range, and even the upstream caret after it stands at
+        // the next line's start. Such a line is highlighted to the caret
+        // before the break plus a newline's width, the rule Parley's own
+        // `Selection::geometry` uses (a quarter of ascent + descent) — Chrome
+        // 153 paints `abc<br>def` line 0 across `0..32`, "abc" being 28px.
+        let right = if end == range.end
+            && range.end > range.start
+            && line.break_reason() == parley::layout::BreakReason::Explicit
+        {
+            let before_break = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
+                .geometry(layout, 0.0)
+                .x0 as f32;
+            before_break + (metrics.ascent + metrics.descent) * 0.25
+        } else {
+            let end_affinity = if end == range.end {
+                Affinity::Upstream
+            } else {
+                Affinity::Downstream
+            };
+            Cursor::from_byte_index(layout, end, end_affinity)
+                .geometry(layout, 0.0)
+                .x0 as f32
+        };
         rects.push((left, top, (right - left).max(1.0), height));
     }
     rects

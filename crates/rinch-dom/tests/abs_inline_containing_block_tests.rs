@@ -318,9 +318,9 @@ fn an_empty_span_is_a_zero_width_fragment_in_the_line() {
 /// A span holding only an atomic inline is as wide as that box, and its
 /// fragment is still the font's line, not the box: lead 30px, box 50x10.
 /// Every horizontal number here is a declaration. (The `x` after the span
-/// gives the line a font: rinch's line has no strut, so a line of nothing
-/// but atomic inlines is as tall as they are — 10px here, where Chrome's is
-/// 20 — and the fragment with it.)
+/// gives the line a strut's worth of text: rinch's line has no strut (#624,
+/// #1258), so on a line of nothing but atomic inlines the baseline is the
+/// boxes' bottom edge, and the fragment hangs from that.)
 #[test]
 fn a_span_of_one_inline_block_is_that_wide() {
     let c = Case::new(&format!(
@@ -591,6 +591,33 @@ fn a_span_that_becomes_split_hands_the_box_back() {
     assert_eq!(c.rect("abs"), [0.0, 0.0, 400.0, 72.0], "split");
 }
 
+/// A second span in the same lines becomes positioned: the lines are not
+/// rebuilt, and already hold an answer for the first span, so they have to
+/// be measured again for both. The second box then fills `tail` (22.047
+/// wide, after `lead `, `text` and a space: 36.641 + 28.328 + 4.297 into the
+/// content box — Chrome's own advances, summed).
+#[test]
+fn a_second_span_in_measured_lines_is_measured_when_it_becomes_positioned() {
+    let mut c = Case::new(&format!(
+        r#"lead <span style="{REL}">text{}</span> <span data-m="b">tail<div data-m="second" style="position: absolute; inset: 0"></div></span>"#,
+        abs(&format!("{BOX} left: 0; top: 0"), "")
+    ));
+    assert_rect(c.rect("abs"), [47.641, 7.0, 40.0, 30.0], "first span");
+    assert_rect(
+        c.rect("second"),
+        [0.0, 0.0, 400.0, 27.0],
+        "static second span",
+    );
+    c.set_style("b", REL);
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_rect(c.rect("second"), [80.266, 7.0, 22.047, 20.0], "second span");
+    assert_rect(
+        c.rect("abs"),
+        [47.641, 7.0, 40.0, 30.0],
+        "first span, still",
+    );
+}
+
 // ── Cost ────────────────────────────────────────────────────────────────────
 
 /// A position-only box costs one compute per layout, like any other; a box
@@ -697,6 +724,17 @@ fn an_empty_span_after_an_inline_block_and_at_the_line_start() {
         [59.781, 7.0, 40.0, 30.0],
         "after text and a box",
     );
+    // The same with nothing after the span: there is no next character to
+    // stand before, and the box, not the text before it, is what it follows.
+    let c = Case::new(&format!(
+        r#"ab<span style="display: inline-block; width: 30px; height: 10px"></span><span style="{REL}">{}</span>"#,
+        abs(&format!("{BOX} left: 0; top: 0"), "")
+    ));
+    assert_rect(
+        c.rect("abs"),
+        [59.781, 7.0, 40.0, 30.0],
+        "after a box, last in the line",
+    );
 }
 
 /// A span whose only text is a collapsed space is empty too.
@@ -748,6 +786,135 @@ fn the_check_after_the_lines_skips_boxes_with_a_boxed_containing_block() {
     ));
     let f = c.frame();
     assert_eq!(f.get(Counter::AbsBoxesVisited), 7);
+}
+
+// ── Direction, mixed fonts, vertical-align (the review of #1434) ────────────
+
+/// A fragment's left and right are the **visual** extent of its content: a
+/// span of right-to-left text is as wide as its text and starts where the
+/// text is drawn, not at its first byte's caret (which is the right edge).
+/// Latin text under a U+202E override is right-to-left in the bundled face,
+/// so the numbers are Chrome's: `text` reversed is 28.172 wide.
+#[test]
+fn a_span_of_right_to_left_text() {
+    let rlo = |inner: &str, after: &str, style: &str| {
+        Case::new(&format!(
+            "lead <span style=\"{REL}\">{inner}{}</span> {after}",
+            abs(style, "")
+        ))
+    };
+    assert_rect(
+        rlo("\u{202E}text\u{202C}", "tail", "inset: 0").rect("abs"),
+        [47.641, 7.0, 28.172, 20.0],
+        "all right-to-left",
+    );
+    assert_rect(
+        rlo(
+            "\u{202E}text\u{202C}",
+            "tail",
+            &format!("{BOX} left: 0; top: 0"),
+        )
+        .rect("abs"),
+        [47.641, 7.0, 40.0, 30.0],
+        "top/left",
+    );
+    // Right-to-left then left-to-right, and the other way about.
+    assert_rect(
+        rlo("\u{202E}text\u{202C}tail", "end", "inset: 0").rect("abs"),
+        [47.641, 7.0, 50.219, 20.0],
+        "rtl then ltr",
+    );
+    assert_rect(
+        rlo("te\u{202E}xtta\u{202C}", "end", "inset: 0").rect("abs"),
+        [47.641, 7.0, 42.594, 20.0],
+        "ltr then rtl",
+    );
+}
+
+/// The fragment is the span's own font box when its content ends in a child
+/// set larger: `sm <b 32px>big</b>` in a 16px span is 20 tall, 5px into a
+/// line the child made 25px tall — not the child's 39.
+#[test]
+fn the_fragment_is_the_spans_font_box_beside_a_larger_child() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}">sm <b style="font-size: 32px; font-weight: normal">big</b>{}</span> tail"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(c.rect("abs"), [47.641, 12.0, 73.938, 20.0], "larger child");
+}
+
+/// A `<sup>`'s fragment is raised with its glyphs (`vertical-align: super`,
+/// 13.33px: 16 tall), so the box sits on the text as rinch draws it. That is
+/// 5px above Chrome's `(47.641, 9)`: Chrome grows the line for the raised
+/// text and rinch does not (#1357), so rinch's superscript itself is drawn
+/// that much higher. A `<sub>` lowers into room both give it, and matches
+/// (`review_1434_tests::a_sub_spans_fragment_is_where_its_text_is_drawn`).
+#[test]
+fn a_sup_spans_fragment_is_raised_with_its_text() {
+    let c = Case::new(&format!(
+        r#"lead <sup style="{REL}">text{}tail</sup>"#,
+        abs("inset: 0", "")
+    ));
+    assert_eq!(c.rect("abs"), [48.0, 4.0, 42.0, 16.0]);
+}
+
+/// A wrapped span whose last content is an atomic inline alone on a fourth
+/// line: the first fragment is still the first line's text (left 315.5), and
+/// the last is the box's line (bottom 87), so `right: 0; bottom: 0` hangs
+/// 30px above that.
+#[test]
+fn a_wrapped_span_ending_in_an_inline_block_on_its_own_line() {
+    let w = |style: &str| {
+        Case::new(&format!(
+            r#"<span style="display: inline-block; width: 300px; height: 10px"></span> <span style="{REL}">aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo<span style="display: inline-block; width: 300px; height: 10px"></span>{}</span> x"#,
+            abs(style, "")
+        ))
+    };
+    assert_rect(
+        w(&format!("{BOX} left: 0; top: 0")).rect("abs"),
+        [315.5, 7.0, 40.0, 30.0],
+        "top/left",
+    );
+    assert_rect(
+        w(&format!("{BOX} right: 0; bottom: 0")).rect("abs"),
+        [275.5, 57.0, 40.0, 30.0],
+        "right/bottom",
+    );
+}
+
+/// Two spans set in different sizes in one paragraph, a box in each: each
+/// fragment is its own span's font box (20 tall at 16px, 39 at 32px).
+#[test]
+fn two_spans_of_different_sizes_in_one_paragraph() {
+    let c = Case::new(&format!(
+        r#"lead <span style="{REL}">text{}</span> <span style="{REL}; font-size: 32px">big<div data-m="big" style="position: absolute; inset: 0"></div></span>"#,
+        abs("inset: 0", "")
+    ));
+    assert_rect(c.rect("abs"), [47.641, 12.0, 28.328, 20.0], "16px span");
+    assert_rect(c.rect("big"), [80.469, -3.0, 46.969, 39.0], "32px span");
+}
+
+/// A percentage of the fragment's height is of its **rounded** font box:
+/// ten times 20, not ten times Inter's 19.36.
+#[test]
+fn a_percentage_height_is_of_the_rounded_font_box() {
+    let c = Case::lead("left: 0; top: 0; width: 10px; height: 1000%");
+    assert_rect(c.rect("abs"), [47.641, 7.0, 10.0, 200.0], "1000%");
+}
+
+/// A span whose text holds an emoji, which takes a family of its own
+/// (#1204): the fragment covers the whole text. The emoji's width is the
+/// host face's, so only "wider than `text` and `tail` together" (50.375) is
+/// asserted.
+#[test]
+fn a_span_holding_an_emoji_covers_its_whole_text() {
+    let c = Case::new(&format!(
+        "lead <span style=\"{REL}\">text\u{1F600}tail{}</span>",
+        abs("inset: 0", "")
+    ));
+    let r = c.rect("abs");
+    assert_eq!((r[0], r[1], r[3]), (48.0, 7.0, 20.0));
+    assert!(r[2] > 52.0, "width {}: the whole text", r[2]);
 }
 
 // ── Stated divergences (none introduced here) ───────────────────────────────

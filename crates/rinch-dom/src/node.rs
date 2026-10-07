@@ -612,6 +612,13 @@ pub struct InlineLayout {
     /// What hanging the preserved spaces at a soft wrap cost this layout
     /// (the `ifc_hang_*` perf counters).
     pub hang: crate::ifc::HangStats,
+    /// Where each positioned inline span an absolute box hangs from lies in
+    /// these lines (#631), or `None` for one with no fragment in them. Empty
+    /// when the lines are built; filled by
+    /// `RinchDocument::measure_inline_containing_blocks`, so an answer here
+    /// is about exactly these lines.
+    pub(crate) span_fragments:
+        std::collections::HashMap<RawNodeId, Option<crate::out_of_flow::SpanFragments>>,
 }
 
 impl InlineLayout {

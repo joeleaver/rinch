@@ -6336,6 +6336,7 @@ impl RinchDocument {
                 max_width: max_width.unwrap_or(f32::INFINITY),
                 preserves_spaces,
                 hang,
+                span_fragments: Default::default(),
             },
             font_family_resolves.get(),
         )
@@ -6598,6 +6599,7 @@ impl RinchDocument {
                 // Every line fits: nothing hangs.
                 preserves_spaces: false,
                 hang: HangStats::default(),
+                span_fragments: Default::default(),
             },
             shapes,
         ))

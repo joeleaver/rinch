@@ -249,6 +249,7 @@ impl RinchDocument {
                 // same way, and a box whose containing block that span is
                 // (#631) with it; nothing but a second look says so.
                 if self.tree.abs_inline_cb_seen {
+                    self.measure_inline_containing_blocks();
                     self.tree.abs_late_moves = true;
                 }
                 crate::out_of_flow::replace_all(&mut self.tree);
@@ -524,6 +525,9 @@ impl RinchDocument {
             self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
             self.tree.dirty_ifc_text_roots.clear();
 
+            if self.tree.abs_inline_cb_seen {
+                self.measure_inline_containing_blocks();
+            }
             if self.tree.abs_inline_cb_seen
                 && inline_rounds < 8
                 && self.resolve_ancestor_absolutes(true)
