@@ -121,7 +121,10 @@ underline follows where it was `currentcolor`, and a wavy underline and an
 inline element's background are read from their element's style on every paint.
 The layout is rebuilt once, with no Taffy compute, on the frame the colour stops
 moving, so a finished fade costs what a colour-only hover costs and later frames
-compare nothing.
+recolour nothing (each paint still compares every range's colour with the one it
+was shaped in). A span on a line cut by `text-overflow: ellipsis` is the
+exception: that line is a flat rebuild with no text ranges, so the span keeps
+its start colour until the run ends (#1451).
 
 ### Why an atomic inline needs its own pass
 

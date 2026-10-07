@@ -988,7 +988,7 @@ impl RinchDocument {
     ///   built, so an element in `bare_inlines` (it had none before the tick)
     ///   that has one now has its layout rebuilt — once, on the frame the
     ///   background appears.
-    /// - **Stop comparing.** Text whose colour moved is drawn stretch by
+    /// - **Stop recolouring.** Text whose colour moved is drawn stretch by
     ///   stretch for as long as its layout holds the old brush. So when the
     ///   colour of a node in `colour_done` has stopped moving — its transition
     ///   finished, its animation ended or settled into its fill — the layouts
