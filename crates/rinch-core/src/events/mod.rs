@@ -39,6 +39,26 @@ pub use selection::*;
 /// overlay's backdrop should too.
 pub const BACKDROP_ATTRIBUTE: &str = "data-backdrop";
 
+/// Exempts a subtree from an overlay's **scroll lock** (issue #701).
+///
+/// While a `Modal`/`Drawer` with `lock_scroll` is open — or any overlay that
+/// called [`NodeHandle::set_scroll_locked`](crate::dom::NodeHandle::set_scroll_locked)
+/// — desktop refuses a wheel or scrollbar gesture on a scroll container that is
+/// not inside the locking overlay's root. That is right for the page behind the
+/// overlay and wrong for a scroll container that is neither: a popup or menu
+/// that paints over the overlay from outside its root (a `<body>` portal, window
+/// chrome). Such a container, or any ancestor of it, carries this attribute and
+/// keeps its own wheel and its own scrollbar; everything else stays locked.
+///
+/// One of rinch's `data-` boolean attributes: on unless its value is `false`
+/// (any case), read with [`crate::dom::data_attr_is_on`], and written by
+/// presence from a `bool` ([`crate::dom::is_boolean_attribute`]), so a reactive
+/// `false` removes it. The DOM menu bar's dropdowns and submenu flyouts carry
+/// it. It has no reader on the web and needs none: the lock there is
+/// `overflow: hidden` on `<html>`, which stops the page and no scroll container
+/// inside it.
+pub const SCROLL_LOCK_EXEMPT_ATTRIBUTE: &str = "data-scroll-lock-exempt";
+
 use std::cell::RefCell;
 
 /// Text hit testing result from the layout engine.

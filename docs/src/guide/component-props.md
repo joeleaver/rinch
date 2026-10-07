@@ -962,7 +962,11 @@ has a web equivalent:
   left to keep scrolling the page while the button is held.
 - The native `<select>` popup is **exempt**: its option list is appended to
   `<body>`, so it is not inside any overlay's root, and a long list inside a
-  dialog would otherwise be unscrollable. See [Focus](./focus.md#locking-the-page-behind-an-overlay).
+  dialog would otherwise be unscrollable. A scroll container of your own that
+  sits outside the overlay and must keep scrolling while it is open (a popup
+  portalled to `<body>`, a panel that paints over the dialog) says so with
+  **`data-scroll-lock-exempt`**; the DOM menu bar's dropdowns carry it. See
+  [Focus](./focus.md#a-scroll-container-outside-the-overlay-data-scroll-lock-exempt).
 
 On the web the lock is the whole page even in island mode — there is one
 `<html>` — so a rinch `Modal` inside an island freezes its host page too.

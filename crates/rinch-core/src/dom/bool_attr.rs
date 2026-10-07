@@ -40,11 +40,13 @@
 ///   `hidden="false"` hides. It fails exactly the way a boolean attribute
 ///   fails, so it is written the same way. (rinch honours it through
 ///   `.rinch-tabs__panel[hidden]`, a presence selector, so desktop agrees.)
-/// - **`data-disabled`**, **`data-nofocus`**, **`data-trap-focus`** and
-///   **`data-backdrop`** are rinch's own boolean attributes, documented as
-///   "present unless the value is `false`" — desktop reads all four that way,
-///   and the web reads the last three that way (it has no `data-disabled`
-///   reader at all). Writing them by presence makes a reactive binding correct
+/// - **`data-disabled`**, **`data-nofocus`**, **`data-trap-focus`**,
+///   **`data-backdrop`** and **`data-scroll-lock-exempt`** (issue #701) are
+///   rinch's own boolean attributes, documented as
+///   "present unless the value is `false`" — desktop reads all five that way,
+///   and the web reads `data-nofocus`, `data-trap-focus` and `data-backdrop`
+///   that way (it has no reader for the other two: the browser does not know
+///   `data-disabled`, and its scroll lock stops no inner scroller to exempt). Writing them by presence makes a reactive binding correct
 ///   by construction instead of correct by that tolerance.
 ///
 ///   `data-trap-focus` (issue #474) is the one that most needs it: it is
@@ -115,6 +117,7 @@ fn is_lowercase_boolean_attribute(name: &str) -> bool {
             | "data-nofocus"
             | "data-trap-focus"
             | "data-backdrop"
+            | "data-scroll-lock-exempt"
     )
 }
 
@@ -193,16 +196,17 @@ pub fn attr_is_truthy(value: &str) -> bool {
 
 /// Whether one of **rinch's own** `data-` boolean attributes is on.
 ///
-/// `data-disabled`, `data-nofocus`, `data-trap-focus` and `data-backdrop`
-/// (issue #1093) are rinch inventions,
+/// `data-disabled`, `data-nofocus`, `data-trap-focus`, `data-backdrop`
+/// (issue #1093) and `data-scroll-lock-exempt` (issue #701) are rinch inventions,
 /// not HTML, and rinch gives them an escape HTML has no equivalent of: present
 /// means on *unless* the value is the literal `false`, ASCII-case-insensitively.
-/// It is a rinch convention rather than a desktop quirk, and the latter two are
-/// what show that: desktop reads them through this function and the web through
+/// It is a rinch convention rather than a desktop quirk, and `data-nofocus`,
+/// `data-trap-focus` and `data-backdrop` are what show that: desktop reads them through this function and the web through
 /// `event_delegation.rs`'s `[data-nofocus]:not([data-nofocus="false" i])` and
 /// `[data-trap-focus]:not([data-trap-focus="false" i])`, and `data-backdrop`
-/// through this very function on both. (`data-disabled` has no
-/// web reader, so there is nothing on that side to agree or disagree with.)
+/// through this very function on both. (`data-disabled` and
+/// `data-scroll-lock-exempt` have no web reader, so there is nothing on that
+/// side to agree or disagree with.)
 ///
 /// The plain HTML `disabled` / `readonly` deliberately do **not** go through
 /// here: they are read by presence alone, the way a browser reads them (issue

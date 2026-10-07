@@ -2591,12 +2591,15 @@ pub struct NodeTree {
     /// the first one is also the count: pushing the popup there would exempt it
     /// and *take a lock*, freezing the page whenever any `<select>` was open.
     ///
-    /// Anything else that portals a **scroll container** to `<body>` needs an
-    /// entry here, with the same push-on-open / release-on-close lifetime.
-    /// `ContextMenu` (`rinch-components`' `context_menu.rs`) is the other body
-    /// portal today and needs none: its dropdown declares no `overflow` and no
-    /// `max-height`, so it is not a scroll container. Give it either and it
-    /// inherits this trap silently.
+    /// This list is the runtime's own, for a node it builds with the concrete
+    /// document in hand. A scroll container built through `RenderScope` /
+    /// `NodeHandle` — a component's, or an app's — says the same thing with
+    /// the `data-scroll-lock-exempt` attribute (#701), which
+    /// [`NodeTree::scroll_locked_out`] reads on the same walk and which needs
+    /// no release: it goes with its node. `ContextMenu` (`rinch-components`'
+    /// `context_menu.rs`) is the other body portal today and carries neither:
+    /// its dropdown declares no `overflow` and no `max-height`, so it is not a
+    /// scroll container. Give it either and it needs the attribute.
     pub scroll_lock_exempt: Vec<RawNodeId>,
     /// `<select>` elements whose own `value` attribute is currently the
     /// *freshest* selection write — the one `resolve_selected_index`'s step 1
@@ -3075,7 +3078,11 @@ impl NodeTree {
     /// the empty-`Vec` early return is the whole cost there.
     ///
     /// Inclusive of the locking root itself: an overlay that is its own scroller
-    /// scrolls. The walk is up `parent`, so an anonymous block box or a split
+    /// scrolls. A node carrying `data-scroll-lock-exempt`
+    /// ([`rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE`], #701) ends the
+    /// walk the same way, as does an entry of [`Self::scroll_lock_exempt`]: a
+    /// scroll container outside every overlay that is not the page behind one.
+    /// The attribute is read only here, so only while a lock is held. The walk is up `parent`, so an anonymous block box or a split
     /// inline between the two does not break the chain — they carry parents like
     /// any other node.
     ///
@@ -3092,7 +3099,17 @@ impl NodeTree {
             if self.scroll_lock_roots.contains(&id) || self.scroll_lock_exempt.contains(&id) {
                 return false;
             }
-            current = self.nodes.get(id).and_then(|n| n.parent);
+            let Some(node) = self.nodes.get(id) else {
+                break;
+            };
+            if node
+                .attributes
+                .get(rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE)
+                .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
+            {
+                return false;
+            }
+            current = node.parent;
         }
         true
     }

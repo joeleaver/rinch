@@ -1022,8 +1022,9 @@ fn hit_is_inside(app: &RinchApp, at: (f32, f32), ancestor: usize) -> bool {
     false
 }
 
-/// What every menu fixture below asserts of the open scroller: its wheel and
-/// its thumb are its own, and the page behind is still locked.
+/// What every menu fixture below asserts of the open scroller: its wheel is
+/// its own, and the page behind is still locked. (Its thumb is not asserted:
+/// see `a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked`.)
 fn assert_scrolls_over_the_lock(app: &mut RinchApp, scroller: usize, page: usize) {
     assert_room(app, scroller);
     let inside = centre(app, scroller);
@@ -1038,14 +1039,6 @@ fn assert_scrolls_over_the_lock(app: &mut RinchApp, scroller: usize, page: usize
         -WHEEL_DY,
         "the open menu is not the page behind the modal; its wheel is its own"
     );
-
-    {
-        let d = app.doc.as_ref().unwrap().borrow();
-        let (px, py, pw, ph) = painted_element_box(&d.tree, scroller);
-        let hit = find_scrollbar_hit(&d.tree, px + pw - 3.0, py + ph / 2.0)
-            .expect("the menu's own bar is grabbable");
-        assert_eq!(hit.node_id, scroller);
-    }
 
     // Not a hole in the lock: aimed at the backdrop, beside the menu and the
     // modal's panel.
@@ -1067,6 +1060,16 @@ fn a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked() {
     let inside = centre(&app, dropdown);
     wheel(&mut app, inside, 0.0, WHEEL_DY);
     assert_eq!(scroll_top(&app, dropdown), -WHEEL_DY);
+
+    // **Finding, pinned as it is (#1441):** the dropdown's scrollbar cannot be
+    // grabbed, locked or not. `find_scrollbar_hit_node` gives up on a subtree
+    // when the point is outside the ancestor's own box, and the dropdown hangs
+    // below its 28px bar. So the menu fixtures assert the wheel only; the thumb
+    // half of the exemption is `a_scroll_lock_exempt_scroller_scrolls_and_the_
+    // page_stays_locked`'s. A fix flips this to `Some`.
+    let d = app.doc.as_ref().unwrap().borrow();
+    let (px, py, pw, ph) = painted_element_box(&d.tree, dropdown);
+    assert!(find_scrollbar_hit(&d.tree, px + pw - 3.0, py + ph / 2.0).is_none());
 }
 
 /// Issue #701. The menu bar is window chrome: it is in no overlay's root, and
