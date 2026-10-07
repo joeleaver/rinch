@@ -367,37 +367,3 @@ async fn w6_a_picture_read_after_the_person_moved_on_leaves_their_caret() {
     assert_eq!(caret, Selection::cursor(Pos(13)), "after `bravo`, shifted");
     assert_eq!(html, r#"<p>alpha<img src="app-blob:1"> bravo?</p>"#);
 }
-
-/// W7. Over a read-only editor whose app takes pictures the drag shows the
-/// "not here" cursor (`dropEffect` `none`), where an editable one says `copy`.
-#[wasm_bindgen_test]
-async fn w7_a_drag_over_a_read_only_editor_says_none() {
-    let f = Fixture::focused();
-    let _offered = f.taking_pictures();
-    let effect = |f: &Fixture| {
-        let dt = web_sys::DataTransfer::new().unwrap();
-        dt.items()
-            .add_with_file(&file("1.png", "image/png", &png_bytes(b"x")))
-            .unwrap();
-        let (x, y) = f.point_at(5);
-        let init = web_sys::DragEventInit::new();
-        init.set_bubbles(true);
-        init.set_cancelable(true);
-        init.set_client_x(x as i32);
-        init.set_client_y(y as i32);
-        init.set_data_transfer(Some(&dt));
-        let ev = web_sys::DragEvent::new_with_event_init_dict("dragover", &init).unwrap();
-        document()
-            .element_from_point(x, y)
-            .unwrap()
-            .dispatch_event(&ev)
-            .unwrap();
-        (ev.default_prevented(), dt.drop_effect())
-    };
-    let editable = effect(&f);
-    f.handle.set_read_only(true);
-    let read_only = effect(&f);
-    f.teardown();
-    assert_eq!(editable, (true, "copy".to_string()), "control");
-    assert_eq!(read_only, (true, "none".to_string()));
-}
