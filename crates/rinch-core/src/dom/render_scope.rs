@@ -814,47 +814,44 @@ impl Drop for RenderScope {
     }
 }
 
-/// Batched DOM updates for efficiency.
+/// A list of **property writes** — text, attributes, inline style — applied
+/// to a document in push order.
 ///
-/// Collects multiple DOM mutations and applies them in a single batch,
-/// minimizing layout recalculations.
+/// It is a plain queue: [`apply`](Self::apply) is one loop of
+/// [`DomDocument`] calls and saves no layout work a run of
+/// [`NodeHandle`](super::NodeHandle) calls would not.
+///
+/// It carries no structural change (issue #756). Appending, inserting,
+/// removing and replacing nodes belong to [`NodeHandle`](super::NodeHandle)'s
+/// verbs (`append_child`, `insert_before`, `remove_child`, `replace_with`,
+/// `remove`, `discard`), which are what tell a registered container
+/// ([`on_child_inserted`](super::on_child_inserted),
+/// [`on_child_removed`](super::on_child_removed)) that its children changed.
 pub struct UpdateBatch {
     updates: Vec<DomUpdate>,
 }
 
-/// A single DOM update operation.
+/// A single property write. See [`UpdateBatch`].
+///
+/// The `AppendChild`, `InsertBefore`, `RemoveChild` and `ReplaceNode`
+/// variants were removed in #756: use the [`NodeHandle`](super::NodeHandle)
+/// verbs of the same names (`replace_with` for the last).
 #[derive(Debug)]
 pub enum DomUpdate {
-    SetText {
-        node: NodeId,
-        text: String,
-    },
+    /// [`DomDocument::set_text_content`]. On an **element** that replaces its
+    /// children with one text node, as `NodeHandle::set_text` does — the one
+    /// write here that can change a child list, and neither route tells a
+    /// removal observer (issue #1440). Target a text node.
+    SetText { node: NodeId, text: String },
+    /// [`DomDocument::set_attribute`]: the literal write.
     SetAttribute {
         node: NodeId,
         name: String,
         value: String,
     },
-    RemoveAttribute {
-        node: NodeId,
-        name: String,
-    },
-    AppendChild {
-        parent: NodeId,
-        child: NodeId,
-    },
-    RemoveChild {
-        parent: NodeId,
-        child: NodeId,
-    },
-    InsertBefore {
-        parent: NodeId,
-        child: NodeId,
-        reference: NodeId,
-    },
-    ReplaceNode {
-        old: NodeId,
-        new: NodeId,
-    },
+    /// [`DomDocument::remove_attribute`].
+    RemoveAttribute { node: NodeId, name: String },
+    /// [`DomDocument::set_style`]: one inline declaration, merged.
     SetStyle {
         node: NodeId,
         property: String,
@@ -875,18 +872,19 @@ impl UpdateBatch {
         self.updates.push(update);
     }
 
-    /// Apply all updates to a document.
+    /// Apply all updates to a document, in push order.
     ///
-    /// **The four structural arms bypass the late-child registry** — a node
-    /// appended, inserted, removed or replaced through this one tells no
-    /// registered container that its children changed, so a `List`, `RadioGroup`
-    /// or `Stepper` reached this way keeps the answers it last derived (issues
-    /// #716, #745). Nothing in this workspace applies a structural arm, and it
-    /// cannot be routed through [`NodeHandle`](super::NodeHandle)'s verbs as
-    /// this signature stands: a notification needs the `Rc<RefCell<..>>` a
-    /// `NodeHandle` holds a `Weak` of, and this is handed a `&mut dyn` borrowed
-    /// for the whole loop. Tracked as **#756**. Reach for `NodeHandle`'s verbs
-    /// instead when the nodes are inside a component library container.
+    /// Each arm is the [`DomDocument`] call of its name and nothing more, so
+    /// two things a [`NodeHandle`](super::NodeHandle) does are **not** done
+    /// here:
+    ///
+    /// - **`SetAttribute` is the literal write**, not
+    ///   `NodeHandle::write_attribute`: a boolean attribute given `"false"`
+    ///   stays *present* (`disabled="false"` is disabled, issue #551). Push a
+    ///   `RemoveAttribute` to turn one off.
+    /// - **No pending effect is flushed first.** Inside an event handler a
+    ///   `NodeHandle` call runs the effects queued so far before it touches
+    ///   the document; this takes the document as the caller borrowed it.
     pub fn apply(self, doc: &mut dyn DomDocument) {
         for update in self.updates {
             match update {
@@ -898,22 +896,6 @@ impl UpdateBatch {
                 }
                 DomUpdate::RemoveAttribute { node, name } => {
                     doc.remove_attribute(node, &name);
-                }
-                DomUpdate::AppendChild { parent, child } => {
-                    doc.append_child(parent, child);
-                }
-                DomUpdate::RemoveChild { parent, child } => {
-                    doc.remove_child(parent, child);
-                }
-                DomUpdate::InsertBefore {
-                    parent,
-                    child,
-                    reference,
-                } => {
-                    doc.insert_before(parent, child, reference);
-                }
-                DomUpdate::ReplaceNode { old, new } => {
-                    doc.replace_node(old, new);
                 }
                 DomUpdate::SetStyle {
                     node,
