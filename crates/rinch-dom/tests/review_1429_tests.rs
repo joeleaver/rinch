@@ -616,3 +616,45 @@ fn holds_reload_is_keyed_by_the_source_as_spelled() {
         .is_some()));
     assert_eq!(box_of(&doc, img), (3.0, 2.0));
 }
+
+/// A load that is still out when its document is dropped must not leave its
+/// answer in the process-wide queue: nothing would ever drain it, and
+/// `has_pending` would answer `true` for that key for the life of the process.
+/// (`a_dropped_document_leaves_no_reload_queued` raced this: its element's own
+/// load could land after the drop.)
+#[test]
+fn an_answer_that_lands_after_its_document_was_dropped_is_not_queued() {
+    let _alone = alone();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let loader = Arc::new(ParkOne {
+        held: Arc::new(Mutex::new(HashMap::new())),
+        calls: AtomicUsize::new(0),
+        park: 0, // the element's own load
+        gate: gate.clone(),
+    });
+    rinch_core::image::register_image_scheme_arc("review-dropped", loader.clone());
+    let (doc, _img) = doc_with_img("review-dropped:picture");
+    let key = doc.doc_key();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while loader.calls.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        loader.calls.load(Ordering::SeqCst),
+        1,
+        "control: in flight"
+    );
+    drop(doc);
+    assert!(!has_pending(key), "control: nothing queued at the drop");
+    {
+        let (lock, cv) = &*gate;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+    }
+    // The load thread answers now; give it time to push.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !has_pending(key),
+        "the answer of a load that outlived its document was queued for a key nothing drains"
+    );
+}
