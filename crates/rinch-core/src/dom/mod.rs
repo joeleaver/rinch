@@ -1697,6 +1697,98 @@ mod tests {
         );
     }
 
+    /// A batch carries **property writes only** (issue #756). The match has no
+    /// wildcard on purpose: a variant added to `DomUpdate` stops this compiling,
+    /// and a structural one (append, insert, remove, replace) must not come
+    /// back — `apply` is handed a `&mut dyn DomDocument` and cannot reach the
+    /// late-child registry the `NodeHandle` verbs notify.
+    #[test]
+    fn a_dom_update_is_a_property_write_and_nothing_else() {
+        fn kind(update: &DomUpdate) -> &'static str {
+            match update {
+                DomUpdate::SetText { .. } => "text",
+                DomUpdate::SetAttribute { .. } => "attribute",
+                DomUpdate::RemoveAttribute { .. } => "attribute",
+                DomUpdate::SetStyle { .. } => "style",
+            }
+        }
+        let node = NodeId(1);
+        let all = [
+            DomUpdate::SetText {
+                node,
+                text: String::new(),
+            },
+            DomUpdate::SetAttribute {
+                node,
+                name: String::new(),
+                value: String::new(),
+            },
+            DomUpdate::RemoveAttribute {
+                node,
+                name: String::new(),
+            },
+            DomUpdate::SetStyle {
+                node,
+                property: String::new(),
+                value: String::new(),
+            },
+        ];
+        assert_eq!(
+            all.iter().map(kind).collect::<Vec<_>>(),
+            ["text", "attribute", "attribute", "style"]
+        );
+    }
+
+    /// Every arm of `UpdateBatch::apply` lands, in push order (the last write
+    /// of one attribute wins, and a removal after a write removes).
+    #[test]
+    fn an_update_batch_applies_each_property_write_in_order() {
+        let mut doc = MockDomDocument::new();
+        let text = doc.create_text("old");
+        let el = doc.create_element("div");
+
+        let mut batch = UpdateBatch::new();
+        batch.push(DomUpdate::SetText {
+            node: text,
+            text: "new".to_string(),
+        });
+        batch.push(DomUpdate::SetAttribute {
+            node: el,
+            name: "title".to_string(),
+            value: "first".to_string(),
+        });
+        batch.push(DomUpdate::SetAttribute {
+            node: el,
+            name: "title".to_string(),
+            value: "second".to_string(),
+        });
+        batch.push(DomUpdate::SetAttribute {
+            node: el,
+            name: "lang".to_string(),
+            value: "en".to_string(),
+        });
+        batch.push(DomUpdate::RemoveAttribute {
+            node: el,
+            name: "lang".to_string(),
+        });
+        batch.push(DomUpdate::SetStyle {
+            node: el,
+            property: "color".to_string(),
+            value: "red".to_string(),
+        });
+        assert_eq!(batch.len(), 6);
+        batch.apply(&mut doc);
+
+        assert_eq!(doc.text_content(text), Some("new".to_string()));
+        assert_eq!(doc.get_attribute(el, "title"), Some("second".to_string()));
+        assert_eq!(doc.get_attribute(el, "lang"), None);
+        let style = doc.get_attribute(el, "style").unwrap_or_default();
+        assert!(
+            style.contains("color") && style.contains("red"),
+            "{style:?}"
+        );
+    }
+
     /// `on_cleanup` must fire when a `RenderScope` is merely dropped, not only
     /// when the by-value `dispose()` is called (issue #141).
     ///

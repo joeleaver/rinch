@@ -421,7 +421,16 @@ closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
 that take a node **out** of a tree (`remove_child`, `remove`, `discard`, and
 `replace_with` for the node it displaces) plus the implicit detach an insertion
 verb performs when handed a node that already has a parent — which is the only
-thing that tells a container a child *moved away*. The two halves are separate
+thing that tells a container a child *moved away*. Nothing else moves a node:
+`UpdateBatch` / `DomUpdate` (both in the prelude) carry **property writes only**
+(`SetText`, `SetAttribute`, `RemoveAttribute`, `SetStyle`) since #756, which
+removed their `AppendChild` / `InsertBefore` / `RemoveChild` / `ReplaceNode`
+variants — `apply` takes a `&mut dyn DomDocument` and could not notify, so a
+node moved through a batch reached no observer. `apply` is still the literal
+backend call per arm: `SetAttribute` is not `write_attribute` (no boolean
+rule), and no pending effect is flushed first. Not notified, and open: text
+written over an element's children (`NodeHandle::set_text`, `SetText`) orphans
+them with no removal callback (#1440). The two halves are separate
 registrations: `Stepper` takes both, `List` and `RadioGroup` only the first,
 since neither of their defaults can be changed by a row going away.
 
@@ -4934,8 +4943,7 @@ duration to expire, and the desktop shell keeps asking for frames while
 
 **Five places in `dom_impl/dom_document_impl.rs` write `parent = None`; four
 call the helper.** `remove_node` (every reactive removal funnels through
-`NodeHandle::remove`), `remove_child` (plus `RenderScope`'s batched
-`DomUpdate::RemoveChild`), `replace_node`'s displaced `old`, and —
+`NodeHandle::remove`), `remove_child`, `replace_node`'s displaced `old`, and —
 least obviously — **`set_text_content` on an element with children**, which
 orphans every one of them without freeing the slab, so a handle the app still
 holds stays alive and styled. That fourth one was missed on the first pass, when
