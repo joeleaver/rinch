@@ -569,10 +569,11 @@ impl EditorCore {
     ///
     /// With a `mapping`, each anchor is re-mapped and re-resolved against the new
     /// document (`Selection::map` falls back to the nearest valid selection if its
-    /// textblock went away). Without one — a `load_doc`, or a remote
-    /// re-projection, where the new document has no positional relationship to the
-    /// old — the anchor is invalidated instead of being silently pointed at
-    /// unrelated content.
+    /// textblock went away). Without one — a `load_doc`, where the new document
+    /// has no positional relationship to the old — the anchor is invalidated
+    /// instead of being silently pointed at unrelated content. A remote
+    /// collaboration change has no mapping either, but is not a load:
+    /// [`Self::carry_anchors_remote`] carries anchors across it.
     fn carry_anchors(&self, doc: &Node, mapping: Option<&Mapping>) {
         let mut anchors = self.anchors.borrow_mut();
         if anchors.live.is_empty() {
@@ -583,6 +584,39 @@ impl EditorCore {
                 (Some(sel), Some(mapping)) => Some(sel.map(doc, mapping)),
                 (Some(_), None) | (None, _) => None,
             };
+        }
+    }
+
+    /// Carry every live [`SelectionAnchor`] across a **remote** change, which
+    /// brings `prev`'s document to `doc` (the converged one).
+    ///
+    /// A remote integration rebuilds the document rather than applying mapped
+    /// local steps, but the two documents are related block by block, and the
+    /// live selection is already carried across on that relation
+    /// (`rinch_editor_collab::remote`). An anchor follows the same rule
+    /// ([`RemoteCarry`](rinch_editor_collab::RemoteCarry)): outside the blocks
+    /// the peer changed it shifts with them, inside a textblock the peer typed
+    /// in it keeps its place in the text. It is invalidated only when the block
+    /// it sat in is gone, or was split, joined or changed kind: there the place
+    /// the person aimed at cannot be named, and guessing would put an insertion
+    /// in unrelated content.
+    ///
+    /// It used to invalidate every anchor on every remote change, which was
+    /// survivable while an anchor lived for a clipboard read; an anchor now
+    /// lives for an upload (`on_image_input`), and a peer's keystroke anywhere
+    /// in the document lost the picture.
+    #[cfg(feature = "collaboration")]
+    fn carry_anchors_remote(&self, prev: &EditorState, doc: &Node) {
+        let mut anchors = self.anchors.borrow_mut();
+        if anchors.live.values().all(Option::is_none) {
+            return;
+        }
+        // `None`: the documents are the same, and every anchor stands.
+        let Some(carry) = rinch_editor_collab::RemoteCarry::new(prev, doc) else {
+            return;
+        };
+        for slot in anchors.live.values_mut() {
+            *slot = slot.take().and_then(|sel| carry.selection(&sel));
         }
     }
 
@@ -675,10 +709,14 @@ impl SelectionAnchor {
     /// since it was taken.
     ///
     /// `None` once the anchor can no longer mean anything: the editor was
-    /// dropped, or the document it pointed into was replaced wholesale
-    /// (`load_doc`/`load_html`, or a collaborative re-projection). A caller
-    /// should then abandon the operation rather than guess — the content the
-    /// user aimed at is gone.
+    /// dropped, the document it pointed into was replaced wholesale
+    /// (`load_doc`/`load_html`), or a collaborating peer removed, split, joined
+    /// or changed the kind of the block it sat in. A caller should then abandon
+    /// the operation rather than guess — the content the user aimed at is gone.
+    ///
+    /// Any other change by a peer carries the anchor as a local edit does: text
+    /// typed elsewhere shifts it, and text typed in its own paragraph leaves it
+    /// at the same place in the words.
     pub fn selection(&self) -> Option<Selection> {
         let anchors = self.anchors.upgrade()?;
         let anchors = anchors.borrow();
@@ -2436,7 +2474,10 @@ impl EditorHandle {
     /// - **Later**: keep the input, return `None`, and when the picture is
     ///   stored call [`insert_image_at`](Self::insert_image_at) with
     ///   [`ImageInput::anchor`], which still names the place the person aimed
-    ///   at however much they typed meanwhile.
+    ///   at however much they, or a collaborating peer, typed meanwhile. The
+    ///   picture lands there and the person's caret stays where they are. If
+    ///   that call answers `false` the place is gone (or takes no image any
+    ///   more): delete what was stored, nothing references it.
     ///
     /// `None` with nothing later is a refusal: nothing is inserted, and the
     /// editor does **not** fall back to a `data:` URL.
@@ -2457,7 +2498,9 @@ impl EditorHandle {
     /// and the bitmap is what is offered), and a drop of image files on the
     /// editor, once per file in the order given, each a PNG, JPEG, GIF or WebP
     /// by its first bytes. Not for a [read-only](Self::set_read_only) editor,
-    /// and not for an html paste that holds text as well as pictures: that is
+    /// not where an image cannot be inserted (a code block: the app is not
+    /// asked to store a picture that would be refused), and not for an html
+    /// paste that holds text as well as pictures: that is
     /// an ordinary paste, and its `<img>` elements keep the `src` they came
     /// with ([`Plugin::handle_paste`] is where an app rewrites those).
     ///
@@ -2493,15 +2536,37 @@ impl EditorHandle {
 
     /// Offer a picture aimed at the **current selection** to the
     /// [`on_image_input`](Self::on_image_input) callback, and insert the image
-    /// there if it answers with one. The platform runtime calls this, having
-    /// put the selection where the picture goes (the paste's anchor, the caret
-    /// at the drop point). Returns whether an image was inserted by this call.
-    ///
-    /// Answers `false` without calling anything when no callback is registered
-    /// or the editor [refuses edits](Self::refuses_edits). The callback runs
-    /// with no internal borrow held.
+    /// there if it answers with one. Returns whether an image was inserted by
+    /// this call. [`offer_image_input_at`](Self::offer_image_input_at) at the
+    /// selection as it is now.
     pub fn offer_image_input(
         &self,
+        source: ImageInputSource,
+        bytes: Vec<u8>,
+        mime: &str,
+        name: Option<String>,
+    ) -> bool {
+        let at = self.anchor_selection();
+        self.offer_image_input_at(&at, source, bytes, mime, name)
+    }
+
+    /// Offer a picture aimed at `at` to the
+    /// [`on_image_input`](Self::on_image_input) callback, and insert the image
+    /// there if it answers with one. The platform runtime calls this with the
+    /// place the picture goes (the paste's anchor, the caret at the drop
+    /// point), which may no longer be where the person's caret is: the
+    /// clipboard or the disk was read in between. Returns whether an image was
+    /// inserted by this call.
+    ///
+    /// Answers `false` **without calling the callback** when none is
+    /// registered, when the editor [refuses edits](Self::refuses_edits), when
+    /// `at` no longer names a place or belongs to another editor, and when the
+    /// place takes no image (a code block): the app is not asked to store a
+    /// picture that cannot be inserted. The callback runs with no internal
+    /// borrow held.
+    pub fn offer_image_input_at(
+        &self,
+        at: &SelectionAnchor,
         source: ImageInputSource,
         bytes: Vec<u8>,
         mime: &str,
@@ -2513,43 +2578,131 @@ impl EditorHandle {
         let Some(hook) = self.core().on_image_input.clone() else {
             return false;
         };
-        // Two anchors over one selection: the app's, to keep, and the one the
-        // synchronous answer is inserted at, so a callback that moved the
-        // selection (opened a dialog, focused elsewhere) does not move the
+        let Some(selection) = self.own_anchor_selection(at) else {
+            return false;
+        };
+        if !self.takes_image_at(&selection) {
+            return false;
+        }
+        // The app's own anchor over the same place: `at` is the caller's, and
+        // is what a synchronous answer is inserted at, so a callback that moved
+        // the selection (opened a dialog, focused elsewhere) does not move the
         // picture.
-        let at = self.anchor_selection();
         let input = ImageInput {
             source,
             bytes,
             mime: mime.to_string(),
             name,
-            anchor: self.anchor_selection(),
+            anchor: self.anchor_at(selection),
         };
         match hook.invoke(|cb| cb(input)).flatten() {
-            Some((src, alt)) => self.insert_image_at(&at, &src, &alt),
+            Some((src, alt)) => self.insert_image_at(at, &src, &alt),
             None => false,
         }
+    }
+
+    /// An anchor over `selection`, a selection of the current document.
+    fn anchor_at(&self, selection: Selection) -> SelectionAnchor {
+        let anchors = self.core().anchors.clone();
+        let id = {
+            let mut map = anchors.borrow_mut();
+            map.next_id += 1;
+            let id = map.next_id;
+            map.live.insert(id, Some(selection));
+            id
+        };
+        SelectionAnchor {
+            anchors: Rc::downgrade(&anchors),
+            id,
+        }
+    }
+
+    /// Where `anchor` points now; `None` when it names no place any more or was
+    /// taken from a different editor.
+    fn own_anchor_selection(&self, anchor: &SelectionAnchor) -> Option<Selection> {
+        let ours = Rc::downgrade(&self.core().anchors);
+        if !Weak::ptr_eq(&anchor.anchors, &ours) {
+            return None;
+        }
+        anchor.selection()
+    }
+
+    /// Whether an image can be inserted over `selection`: the dry run of
+    /// [`insert_image`](Self::insert_image) there. Not whether the editor
+    /// accepts edits at all ([`refuses_edits`](Self::refuses_edits)).
+    fn takes_image_at(&self, selection: &Selection) -> bool {
+        let cmd = rinch_editor_core::commands::insert_image(String::new(), String::new());
+        let core = self.core();
+        let mut aimed = core.state.clone();
+        aimed.selection = selection.clone();
+        aimed.command_applies(&cmd)
     }
 
     /// Insert an image at `anchor`: [`insert_image`](Self::insert_image) at the
     /// place a selection captured earlier has moved to, the completion half of
     /// an [`on_image_input`](Self::on_image_input) callback that could not
-    /// answer at once. The selection ends up after the image.
+    /// answer at once. One transaction, one undo step.
     ///
-    /// Returns `false`, inserting nothing, when the anchor no longer names a
-    /// place (its document was replaced, see [`SelectionAnchor::selection`]),
-    /// when it was taken from a different editor, or when the insertion is
-    /// refused (a read-only editor, a position that takes no image).
+    /// **The person's caret stays theirs.** If the selection is still the
+    /// anchor's (nobody moved since the picture was aimed), it ends up after
+    /// the image, as after [`insert_image`](Self::insert_image). If the person
+    /// has moved on, their selection is kept where it is in the text (shifted
+    /// by the image when that lands before it), and nothing scrolls: the next
+    /// letter they type lands where they are, not beside the picture.
+    ///
+    /// Returns `false`, changing neither the document nor the selection, when
+    /// the anchor no longer names a place (its document was replaced, or a
+    /// collaborating peer removed or restructured the block it was in; see
+    /// [`SelectionAnchor::selection`]), when it was taken from a different
+    /// editor, or when the insertion is refused (a read-only editor, a
+    /// position that takes no image). An app that stored the picture's bytes
+    /// for this insertion should delete them on `false`: nothing references
+    /// them.
     pub fn insert_image_at(&self, anchor: &SelectionAnchor, src: &str, alt: &str) -> bool {
-        let ours = Rc::downgrade(&self.core().anchors);
-        if !Weak::ptr_eq(&anchor.anchors, &ours) {
-            return false;
-        }
-        let Some(selection) = anchor.selection() else {
+        let Some(at) = self.own_anchor_selection(anchor) else {
             return false;
         };
-        self.set_selection(selection);
-        self.insert_image(src, alt)
+        let cmd = rinch_editor_core::commands::insert_image(src.to_string(), alt.to_string());
+        let mut core = self.core_mut();
+        let prev = core.state.clone();
+        // The command replaces the selection, so run it on the current state
+        // with the anchor's selection in place of the live one.
+        let moved = prev.selection != at;
+        let aimed = if moved {
+            // Through a transaction, not by writing the field: an explicit
+            // selection ends the history's typing group, so a picture that
+            // arrives while the person types is an undo step of its own and
+            // not part of the word they are in.
+            let mut tr = prev.tr();
+            tr.set_selection(at);
+            prev.apply(tr)
+        } else {
+            prev.clone()
+        };
+        let Some((mut next, mapping)) = aimed.run_command_mapped(&cmd) else {
+            return false;
+        };
+        if moved {
+            // Put the person's selection back, where it is in the text now.
+            // Again a transaction: what they type next is not grouped with the
+            // picture either.
+            let live = prev.selection.map(&next.doc, &mapping);
+            let mut tr = next.tr();
+            tr.set_selection(live);
+            next = next.apply(tr);
+            next.stored_marks = prev.stored_marks.clone();
+        }
+        // The person's own selection did not change, so there is nothing of
+        // theirs to bring into view.
+        let scroll = if moved { Scroll::No } else { Scroll::IfChanged };
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll) else {
+            return false;
+        };
+        drop(core);
+        if doc_changed {
+            self.notify_change();
+        }
+        true
     }
 
     /// Whether `html` parses, under this editor's schema, to **pictures and
@@ -2568,6 +2721,9 @@ impl EditorHandle {
         fn walk(node: &Node, images: &mut usize, other: &mut bool) {
             if node.type_name() == "image" {
                 *images += 1;
+            } else if node.type_name() == "hard_break" {
+                // A line break beside the picture (Safari, some mail clients
+                // write `<img><br>`) is not words.
             } else if node.is_text() || node.is_atom() {
                 *other = true;
             } else {
@@ -3128,10 +3284,7 @@ impl EditorHandle {
             .integrate_incremental(&prev, delta);
         match result {
             Ok(Some(next)) => {
-                // A remote integration rebuilds the document rather than applying
-                // mapped local steps, so there is no mapping to carry an anchor
-                // across; invalidate instead of guessing (see `carry_anchors`).
-                core.carry_anchors(&next.doc, None);
+                core.carry_anchors_remote(&prev, &next.doc);
                 if !prev.doc.same_ref(&next.doc) {
                     core.carry_caret_hint(&prev, &next);
                 }
@@ -3357,7 +3510,7 @@ impl EditorHandle {
             Err(e) => bridge.last_error = Some(e),
         }
         if !prev.doc.same_ref(&next.doc) {
-            core.carry_anchors(&next.doc, None);
+            core.carry_anchors_remote(&prev, &next.doc);
             core.carry_caret_hint(&prev, &next);
             core.note_selection(&prev.selection, &next.selection);
             core.state = next.clone();
@@ -3766,6 +3919,29 @@ mod tests {
         );
         h.handle.update_caret();
         assert_eq!(drain(&h).len(), 1, "the paste brings the caret into view");
+    }
+
+    /// A picture that lands late, away from the person's caret
+    /// ([`EditorHandle::insert_image_at`]), owes no scroll: their selection did
+    /// not change, and the view must not jump to where the picture went. When
+    /// the selection is still the anchor's, it is the ordinary insert and does.
+    #[test]
+    fn a_late_picture_away_from_the_caret_owes_no_scroll() {
+        let handle = crate::create_editor();
+        assert!(handle.load_html("<p>hello world</p><p>second</p>"));
+        handle.set_selection(Selection::cursor(Pos(6)));
+        let anchor = handle.anchor_selection();
+        handle.set_selection(Selection::cursor(Pos(20)));
+        handle.core_mut().scroll.pending = false;
+        assert!(handle.insert_image_at(&anchor, "app-blob:1", ""));
+        assert!(!handle.core().scroll.pending, "the person did not move");
+
+        let here = handle.anchor_selection();
+        assert!(handle.insert_image_at(&here, "app-blob:2", ""));
+        assert!(
+            handle.core().scroll.pending,
+            "control: an insert at the caret"
+        );
     }
 
     /// The gate's state machine directly: movement alone never scrolls, an owed

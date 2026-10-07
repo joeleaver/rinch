@@ -1840,11 +1840,12 @@ impl RinchApp {
                     };
                     // An editor that takes pictures itself gets a drop of image
                     // files first; anything else is the app's file-drop handler's.
+                    // What it does not take (the PDF dropped with a
+                    // photo, a file only named like a picture) is the app's
+                    // handler's still.
                     #[cfg(feature = "desktop")]
-                    let taken = self.editor_file_drop(x, y, &paths);
-                    #[cfg(not(feature = "desktop"))]
-                    let taken = false;
-                    if let Some(hit_id) = hit_id.filter(|_| !taken) {
+                    let paths = self.editor_file_drop(x, y, paths);
+                    if let Some(hit_id) = hit_id.filter(|_| !paths.is_empty()) {
                         Self::dispatch_file_drop(doc, hit_id, paths);
                     }
                     // Clean up hover state
@@ -3712,8 +3713,9 @@ impl RinchApp {
     /// is wherever the user has since wandered — the paste would land somewhere they
     /// never asked for. Mapping is what a transactional editor can offer, and it is
     /// exactly what the anchor does. If the document was *replaced* meanwhile
-    /// (`load_doc`, a collaborative re-projection) the anchor reports `None` and the
-    /// paste is dropped rather than aimed at unrelated content.
+    /// (`load_doc`), or a collaborating peer removed or restructured the block
+    /// the paste was aimed at, the anchor reports `None` and the paste is
+    /// dropped rather than aimed at unrelated content.
     ///
     /// # Threads
     ///
@@ -3748,23 +3750,8 @@ impl RinchApp {
         // unmounts first (rinch-core's parked-callback lifetime rule), which also
         // releases the anchor.
         let id = rinch_core::park_main_callback::<ClipboardResult<(RichPaste, Option<String>)>>(
-            move |result| match result {
-                // A browser's "Copy image" offers the picture twice: as html
-                // (`<img src="https://…">`) and as the bitmap. The probe
-                // prefers html, so an app that takes pictures itself
-                // (`EditorHandle::on_image_input`) would be handed an `<img>`
-                // pointing wherever it was copied from and never the bytes.
-                // For html that is pictures and nothing else, read the bitmap
-                // and offer that; with no bitmap there, the html is the paste.
-                Ok((RichPaste::Html(html), text))
-                    if handle.has_image_input_callback() && handle.html_is_only_images(&html) =>
-                {
-                    Self::paste_bitmap_or_html(handle, anchor, html, text);
-                }
-                Ok((content, text)) => {
-                    apply_paste_at_anchor(&handle, &anchor, content, text);
-                }
-                Err(_) => {}
+            move |result| {
+                paste_read_arrived(handle, anchor, result, Self::paste_bitmap_or_html);
             },
         );
         let deliver = move |result| {
@@ -3798,15 +3785,11 @@ impl RinchApp {
         html: String,
         text: Option<String>,
     ) {
-        use rinch_clipboard::{ClipboardResult, ImageData, RichPaste};
+        use rinch_clipboard::{ClipboardResult, ImageData};
 
         let id =
             rinch_core::park_main_callback::<ClipboardResult<ImageData<'static>>>(move |result| {
-                let content = match result {
-                    Ok(image) => RichPaste::Image(image),
-                    Err(_) => RichPaste::Html(html),
-                };
-                apply_paste_at_anchor(&handle, &anchor, content, text);
+                apply_paste_at_anchor(&handle, &anchor, bitmap_or_html(result, html), text);
             });
         crate::clipboard::paste_image_async(move |result| {
             rinch_core::run_on_main_thread(move || rinch_core::resume_main_callback(id, result));
@@ -3815,66 +3798,75 @@ impl RinchApp {
 
     /// A drop of files on an editor that takes pictures itself
     /// ([`on_image_input`](crate::editor::EditorHandle::on_image_input)): the
-    /// caret goes to the drop point and every image file among `paths` is read
-    /// off the UI thread and offered to the callback, in order. Returns whether
-    /// the editor took the drop; when it did not (the point is in no editor,
-    /// the editor has no callback or refuses edits, no path looks like an
-    /// image), the drop is the app's own file-drop handler's, as before.
+    /// caret goes to the drop point, the editor takes the keyboard, and every
+    /// picture among `paths` is read off the UI thread and offered to the
+    /// callback, in order, each as soon as it is read.
     ///
-    /// A path is taken for an image by its extension (`png`, `jpg`, `jpeg`,
-    /// `gif`, `webp`), which is what decides who gets the drop without touching
-    /// the disk; what is *offered* is decided by the file's first bytes
-    /// ([`sniff_image_mime`](crate::editor::sniff_image_mime)), so a text file
-    /// renamed `.png` is read and then skipped. The other files of a mixed drop
-    /// are ignored.
+    /// Returns the paths the editor did **not** take, which are the app's own
+    /// file-drop handler's: all of them when the editor takes nothing (the
+    /// point is in no editor, the editor has no callback or refuses edits, no
+    /// file is a picture), and otherwise the files that are not pictures.
+    ///
+    /// A file is a picture when its extension says so (`png`, `jpg`, `jpeg`,
+    /// `gif`, `webp`), its first bytes agree
+    /// ([`sniff_image_mime`](crate::editor::sniff_image_mime)) and it is at
+    /// most [`MAX_DROPPED_IMAGE_BYTES`]: see [`dropped_file_is_a_picture`]. So
+    /// a text file renamed `.png` is not claimed and reaches the app's handler
+    /// like any other file.
     #[cfg(feature = "desktop")]
     pub(crate) fn editor_file_drop(
         &mut self,
         x: f32,
         y: f32,
-        paths: &[std::path::PathBuf],
-    ) -> bool {
-        let Some((handle, anchor, images)) = self.claim_editor_file_drop(x, y, paths) else {
-            return false;
+        paths: Vec<std::path::PathBuf>,
+    ) -> Vec<std::path::PathBuf> {
+        let Some(claim) = self.claim_editor_file_drop(x, y, &paths) else {
+            return paths;
         };
+        let EditorDropClaim {
+            handle,
+            anchor,
+            images,
+            rest,
+        } = claim;
         // The reads are off the UI thread (a photo is megabytes, and the file
-        // may be on a slow mount); the offers are parked here, as a paste's
-        // insertion is, and dropped unrun if the editor unmounts first.
-        let id = rinch_core::park_main_callback::<Vec<DroppedImage>>(move |files| {
-            offer_dropped_images(&handle, &anchor, files);
-        });
+        // may be on a slow mount). One offer is parked here per file, as a
+        // paste's insertion is, and dropped unrun if the editor unmounts
+        // first; each is resumed as soon as its file is read, so the files of
+        // a drop are not all held in memory at once.
+        let anchor = Rc::new(anchor);
+        let ids: Vec<rinch_core::MainCallbackId> = images
+            .iter()
+            .map(|_| {
+                let (handle, anchor) = (handle.clone(), anchor.clone());
+                rinch_core::park_main_callback::<Option<DroppedImage>>(move |file| {
+                    offer_dropped_images(&handle, &anchor, file.into_iter().collect());
+                })
+            })
+            .collect();
         std::thread::spawn(move || {
-            let files: Vec<DroppedImage> = images
-                .iter()
-                .filter_map(|p| read_dropped_image(p))
-                .collect();
-            rinch_core::run_on_main_thread(move || rinch_core::resume_main_callback(id, files));
+            for (path, id) in images.iter().zip(ids) {
+                let file = read_dropped_image(path);
+                rinch_core::run_on_main_thread(move || rinch_core::resume_main_callback(id, file));
+            }
         });
-        true
+        rest
     }
 
     /// The synchronous half of [`Self::editor_file_drop`]: decide whether the
     /// editor under `(x, y)` takes this drop and, if so, put its caret at the
-    /// drop point. Answers the editor, that caret anchored, and the paths taken
-    /// for images, which are then read and offered
-    /// ([`read_dropped_image`], [`offer_dropped_images`]).
+    /// drop point and give it the keyboard (as a press there would, and as the
+    /// browser runtime does). `None` when it takes nothing.
     #[cfg(feature = "desktop")]
     pub(crate) fn claim_editor_file_drop(
         &mut self,
         x: f32,
         y: f32,
         paths: &[std::path::PathBuf],
-    ) -> Option<(
-        crate::editor::EditorHandle,
-        crate::editor::SelectionAnchor,
-        Vec<std::path::PathBuf>,
-    )> {
-        let images: Vec<std::path::PathBuf> = paths
-            .iter()
-            .filter(|p| path_looks_like_an_image(p))
-            .cloned()
-            .collect();
-        if images.is_empty() {
+    ) -> Option<EditorDropClaim> {
+        // Cheapest first: no disk is touched for a drop that cannot be the
+        // editor's.
+        if !paths.iter().any(|p| path_looks_like_an_image(p)) {
             return None;
         }
         let hit = self.editor_point(x, y)?;
@@ -3882,11 +3874,24 @@ impl RinchApp {
         if !handle.has_image_input_callback() || handle.refuses_edits() {
             return None;
         }
+        let (images, rest): (Vec<_>, Vec<_>) = paths
+            .iter()
+            .cloned()
+            .partition(|p| dropped_file_is_a_picture(p));
+        if images.is_empty() {
+            return None;
+        }
         let pos = hit.pos(&handle)?;
         handle.set_selection(rinch_editor_core::Selection::cursor(pos));
+        handle.focus();
         self.refresh_editor_overlays();
         let anchor = handle.anchor_selection();
-        Some((handle, anchor, images))
+        Some(EditorDropClaim {
+            handle,
+            anchor,
+            images,
+            rest,
+        })
     }
 
     /// Resolve a window/logical point inside whatever editor it lands on — the
@@ -4662,14 +4667,15 @@ fn apply_paste_at_anchor(
     let Some(selection) = anchor.selection() else {
         return false;
     };
-    handle.set_selection(selection);
     match content {
-        RichPaste::Html(html) => handle.paste(&PasteContent::new(text, Some(html))),
         // An app that takes pictures itself is handed the PNG and answers with
-        // the `src` (or inserts later, or refuses): no `data:` URL is made.
+        // the `src` (or inserts later, or refuses): no `data:` URL is made. It
+        // is offered AT the anchor, so the caret of a person who moved on while
+        // the clipboard was read stays where they are.
         RichPaste::Image(img) if handle.has_image_input_callback() => {
             image_rgba_to_png(img.width, img.height, &img.bytes).is_some_and(|png| {
-                handle.offer_image_input(
+                handle.offer_image_input_at(
+                    anchor,
                     crate::editor::ImageInputSource::Paste,
                     png,
                     "image/png",
@@ -4677,9 +4683,68 @@ fn apply_paste_at_anchor(
                 )
             })
         }
-        RichPaste::Image(img) => image_rgba_to_png_data_url(img.width, img.height, &img.bytes)
-            .is_some_and(|url| handle.insert_image(&url, "")),
-        RichPaste::Text(text) => handle.paste(&PasteContent::text(text)),
+        RichPaste::Html(html) => {
+            handle.set_selection(selection);
+            handle.paste(&PasteContent::new(text, Some(html)))
+        }
+        RichPaste::Image(img) => {
+            handle.set_selection(selection);
+            image_rgba_to_png_data_url(img.width, img.height, &img.bytes)
+                .is_some_and(|url| handle.insert_image(&url, ""))
+        }
+        RichPaste::Text(text) => {
+            handle.set_selection(selection);
+            handle.paste(&PasteContent::text(text))
+        }
+    }
+}
+
+/// The first clipboard read of an editor paste has answered: apply it at
+/// `anchor`, or ask for a second read.
+///
+/// A browser's "Copy image" offers the picture twice: as html
+/// (`<img src="https://…">`) and as the bitmap. The probe prefers html, so an
+/// app that takes pictures itself (`EditorHandle::on_image_input`) would be
+/// handed an `<img>` pointing wherever it was copied from and never the bytes.
+/// For html that is pictures and nothing else, `second_read` is called to read
+/// the bitmap ([`RinchApp::paste_bitmap_or_html`]; [`bitmap_or_html`] is what
+/// it then pastes). Everything else is applied here.
+#[cfg(all(feature = "desktop", feature = "clipboard"))]
+fn paste_read_arrived(
+    handle: crate::editor::EditorHandle,
+    anchor: crate::editor::SelectionAnchor,
+    result: rinch_clipboard::ClipboardResult<(rinch_clipboard::RichPaste, Option<String>)>,
+    second_read: impl FnOnce(
+        crate::editor::EditorHandle,
+        crate::editor::SelectionAnchor,
+        String,
+        Option<String>,
+    ),
+) {
+    use rinch_clipboard::RichPaste;
+    match result {
+        Ok((RichPaste::Html(html), text))
+            if handle.has_image_input_callback() && handle.html_is_only_images(&html) =>
+        {
+            second_read(handle, anchor, html, text);
+        }
+        Ok((content, text)) => {
+            apply_paste_at_anchor(&handle, &anchor, content, text);
+        }
+        Err(_) => {}
+    }
+}
+
+/// What the second read of a pictures-only html paste pastes: the bitmap when
+/// the clipboard held one, and otherwise the html, as it would have been.
+#[cfg(all(feature = "desktop", feature = "clipboard"))]
+fn bitmap_or_html(
+    bitmap: rinch_clipboard::ClipboardResult<rinch_clipboard::ImageData<'static>>,
+    html: String,
+) -> rinch_clipboard::RichPaste {
+    match bitmap {
+        Ok(image) => rinch_clipboard::RichPaste::Image(image),
+        Err(_) => rinch_clipboard::RichPaste::Html(html),
     }
 }
 
@@ -4717,6 +4782,18 @@ fn image_rgba_to_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>
     Some(png)
 }
 
+/// A file drop an editor took: see [`RinchApp::claim_editor_file_drop`].
+#[cfg(feature = "desktop")]
+pub(crate) struct EditorDropClaim {
+    pub(crate) handle: crate::editor::EditorHandle,
+    /// The caret at the drop point, anchored.
+    pub(crate) anchor: crate::editor::SelectionAnchor,
+    /// The pictures, to be read and offered.
+    pub(crate) images: Vec<std::path::PathBuf>,
+    /// The other files of the drop: the app's file-drop handler's.
+    pub(crate) rest: Vec<std::path::PathBuf>,
+}
+
 /// An image file dropped on an editor, read: its bytes, what they are, and the
 /// file's name.
 #[cfg(feature = "desktop")]
@@ -4726,8 +4803,16 @@ pub(crate) struct DroppedImage {
     pub(crate) name: Option<String>,
 }
 
+/// The largest dropped file an editor takes as a picture: 64 MiB. A bigger one
+/// is not claimed (it goes to the app's own file-drop handler with the other
+/// files, and a warning is logged): the file is read whole into memory and
+/// handed to the app as one `Vec`, and a drop is an easy way to hand over a
+/// video by mistake.
+#[cfg(feature = "desktop")]
+pub(crate) const MAX_DROPPED_IMAGE_BYTES: u64 = 64 << 20;
+
 /// Whether a dropped path is taken for an image, by extension alone (no disk
-/// access: this decides, on the UI thread, who gets the drop).
+/// access: the first, free test of who gets the drop).
 #[cfg(feature = "desktop")]
 pub(crate) fn path_looks_like_an_image(path: &std::path::Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
@@ -4737,17 +4822,72 @@ pub(crate) fn path_looks_like_an_image(path: &std::path::Path) -> bool {
     })
 }
 
-/// Read a dropped file; `None` when it cannot be read or its first bytes are
-/// not an image rinch decodes, whatever it is called. Runs off the UI thread.
+/// Whether a dropped file is a picture the editor takes: named like one
+/// ([`path_looks_like_an_image`]), a regular file of at most
+/// [`MAX_DROPPED_IMAGE_BYTES`], and an image by its first bytes
+/// ([`sniff_image_mime`](crate::editor::sniff_image_mime)). Reads twelve bytes,
+/// on the UI thread: this is what decides who gets the drop, and a file that
+/// is only *named* like a picture must reach the app's handler, not vanish.
+#[cfg(feature = "desktop")]
+pub(crate) fn dropped_file_is_a_picture(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    if !path_looks_like_an_image(path) {
+        return false;
+    }
+    // `metadata` follows a symlink; a device or a pipe is not a regular file,
+    // so nothing here can read without end or block on an open.
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    if meta.len() > MAX_DROPPED_IMAGE_BYTES {
+        tracing::warn!(
+            "dropped image {} is {} bytes, over the {} the editor takes; left to the app's file-drop handler",
+            path.display(),
+            meta.len(),
+            MAX_DROPPED_IMAGE_BYTES
+        );
+        return false;
+    }
+    let mut head = [0u8; 12];
+    let mut filled = 0;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    while filled < head.len() {
+        match file.read(&mut head[filled..]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => filled += n,
+        }
+    }
+    crate::editor::sniff_image_mime(&head[..filled]).is_some()
+}
+
+/// Read a dropped file; `None` when it cannot be read, is over
+/// [`MAX_DROPPED_IMAGE_BYTES`], or its first bytes are not an image rinch
+/// decodes, whatever it is called. Runs off the UI thread. The claim has asked
+/// [`dropped_file_is_a_picture`] already; the file may have changed since, so
+/// the answer here is the one that counts, and no more than the limit is read.
 #[cfg(feature = "desktop")]
 pub(crate) fn read_dropped_image(path: &std::path::Path) -> Option<DroppedImage> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::warn!("dropped image {} could not be read: {e}", path.display());
-            return None;
-        }
-    };
+    use std::io::Read;
+    if !dropped_file_is_a_picture(path) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path).and_then(|file| {
+        file.take(MAX_DROPPED_IMAGE_BYTES + 1)
+            .read_to_end(&mut bytes)
+    });
+    if let Err(e) = read {
+        tracing::warn!("dropped image {} could not be read: {e}", path.display());
+        return None;
+    }
+    if bytes.len() as u64 > MAX_DROPPED_IMAGE_BYTES {
+        return None;
+    }
     let mime = crate::editor::sniff_image_mime(&bytes)?;
     Some(DroppedImage {
         bytes,
@@ -4760,24 +4900,22 @@ pub(crate) fn read_dropped_image(path: &std::path::Path) -> Option<DroppedImage>
 /// [`on_image_input`](crate::editor::EditorHandle::on_image_input) callback,
 /// the completion half of [`RinchApp::editor_file_drop`], on the main thread.
 ///
-/// The first goes where the drop was aimed (`anchor`, mapped through whatever
-/// was typed while the files were read; a replaced document drops the whole
-/// drop). Each later one is offered at the selection the one before left, so
-/// pictures answered at once land side by side in the order they were dropped.
-/// Returns how many were inserted by this call.
+/// Every one is offered **at `anchor`**, where the drop was aimed (mapped
+/// through whatever was typed while the files were read; a replaced document
+/// drops the whole drop), and not at the live selection: the person's caret is
+/// theirs. An inserted picture moves the anchor past itself, so pictures
+/// answered at once land side by side in the order they were dropped, across
+/// calls with the same anchor too. Returns how many were inserted by this call.
 #[cfg(feature = "desktop")]
 pub(crate) fn offer_dropped_images(
     handle: &crate::editor::EditorHandle,
     anchor: &crate::editor::SelectionAnchor,
     files: Vec<DroppedImage>,
 ) -> usize {
-    let Some(selection) = anchor.selection() else {
-        return 0;
-    };
-    handle.set_selection(selection);
     let mut inserted = 0;
     for file in files {
-        if handle.offer_image_input(
+        if handle.offer_image_input_at(
+            anchor,
             crate::editor::ImageInputSource::Drop,
             file.bytes,
             file.mime,
@@ -5131,6 +5269,11 @@ mod image_input_tests {
         assert_eq!(mime, "image/png");
         assert_eq!(*name, None);
         assert_eq!(html(&handle), r#"<p>Xa<img src="app-blob:1">b</p>"#);
+        assert_eq!(
+            handle.selection(),
+            Selection::cursor(Pos(2)),
+            "the caret stays where the person was typing, after the X"
+        );
     }
 
     /// The app refusing (or answering later) inserts nothing now, and the
@@ -5248,6 +5391,91 @@ mod image_input_tests {
         );
         assert!(offered.borrow().is_empty());
         assert_eq!(html(&handle), "<p>another note</p>");
+    }
+
+    /// The html and text a second read was asked to fall back to.
+    type SecondRead = Option<(String, Option<String>)>;
+
+    /// What the first clipboard read of a paste did: asked for the bitmap
+    /// (`Some`), or was applied at once (`None`; the document says what).
+    fn route(handle: &crate::editor::EditorHandle, content: RichPaste) -> SecondRead {
+        let second: Rc<RefCell<SecondRead>> = Rc::default();
+        let second_in = second.clone();
+        super::paste_read_arrived(
+            handle.clone(),
+            handle.anchor_selection(),
+            Ok((content, Some("plain".to_string()))),
+            move |_, _, html, text| *second_in.borrow_mut() = Some((html, text)),
+        );
+        second.take()
+    }
+
+    /// A browser's "Copy image": the clipboard offers `<img src="https://…">`
+    /// as html beside the bitmap. With the callback, html that is pictures and
+    /// nothing else is NOT pasted; the bitmap is asked for instead. (Review
+    /// mutant M12, switching this branch off, survived the first suite.)
+    #[test]
+    fn a_copy_image_paste_asks_for_the_bitmap_and_does_not_paste_the_remote_img() {
+        const COPY_IMAGE: &str = r#"<meta charset="utf-8"><img src="https://example.com/cat.png">"#;
+        let handle = editor_with("<p>ab</p>", 2);
+        let offered = taking_pictures(&handle);
+        let second = route(&handle, RichPaste::Html(COPY_IMAGE.to_string()));
+        assert_eq!(
+            second,
+            Some((COPY_IMAGE.to_string(), Some("plain".to_string()))),
+            "the second read is asked for, with the html and text to fall back to"
+        );
+        assert_eq!(html(&handle), "<p>ab</p>", "and nothing is pasted yet");
+        assert!(offered.borrow().is_empty());
+
+        // Pictures and words: an ordinary html paste, no second read.
+        let words = r#"<p>see <img src="https://example.com/cat.png"></p>"#;
+        assert_eq!(route(&handle, RichPaste::Html(words.to_string())), None);
+        assert_eq!(
+            html(&handle),
+            r#"<p>asee <img src="https://example.com/cat.png">b</p>"#
+        );
+
+        // No callback: the html is the paste, as before the callback existed.
+        let plain = editor_with("<p>ab</p>", 2);
+        assert_eq!(route(&plain, RichPaste::Html(COPY_IMAGE.to_string())), None);
+        assert_eq!(
+            html(&plain),
+            r#"<p>a<img src="https://example.com/cat.png">b</p>"#
+        );
+    }
+
+    /// The second read's answer: the bitmap when there is one, else the html
+    /// the first read brought.
+    #[test]
+    fn the_second_read_pastes_the_bitmap_or_falls_back_to_the_html() {
+        use rinch_clipboard::ClipboardError;
+        let bitmap = ImageData::new(1, 1, vec![255, 0, 0, 255]);
+        assert!(matches!(
+            super::bitmap_or_html(Ok(bitmap), "<img>".to_string()),
+            RichPaste::Image(img) if img.width == 1 && img.bytes.len() == 4
+        ));
+        assert!(matches!(
+            super::bitmap_or_html(Err(ClipboardError::TimedOut), "<img>".to_string()),
+            RichPaste::Html(html) if html == "<img>"
+        ));
+    }
+
+    /// A bitmap pasted where no image fits (a code block): the app is not
+    /// asked to store it.
+    #[test]
+    fn a_bitmap_pasted_into_a_code_block_is_not_offered() {
+        let handle = editor_with("<pre><code>let x = 1;</code></pre>", 4);
+        let offered = taking_pictures(&handle);
+        let anchor = handle.anchor_selection();
+        let bitmap = ImageData::new(1, 1, vec![255, 0, 0, 255]);
+        assert!(!apply_paste_at_anchor(
+            &handle,
+            &anchor,
+            RichPaste::Image(bitmap),
+            None
+        ));
+        assert!(offered.borrow().is_empty());
     }
 }
 

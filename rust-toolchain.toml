@@ -1,4 +1,17 @@
+# One exact version, for contributors and CI alike (#736).
+#
+# `cargo` in this repository uses it automatically; rustup downloads it the
+# first time. Every workflow installs the version named here through
+# `.github/actions/rust-toolchain`, which refuses anything but `X.Y.Z`.
+#
+# It was `channel = "stable"`, which is a different compiler on every machine:
+# the newest stable in CI, and whatever `rustup update` last fetched locally. A
+# new stable brings new clippy lints, so a clean local `cargo clippy` could fail
+# in CI.
+#
+# Moving it is a pull request that changes this one line and fixes whatever the
+# new clippy reports: see "Rust toolchain" in CLAUDE.md.
 [toolchain]
-channel = "stable"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
 targets = ["wasm32-unknown-unknown"]

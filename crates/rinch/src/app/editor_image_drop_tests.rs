@@ -110,10 +110,11 @@ impl Page {
         position: (f64, f64),
         meanwhile: impl FnOnce(&crate::editor::EditorHandle),
     ) -> usize {
-        let (handle, anchor, images) = self
+        let claim = self
             .app
             .claim_editor_file_drop(position.0 as f32, position.1 as f32, &paths)
             .expect("the editor takes this drop");
+        let (handle, anchor, images) = (claim.handle, claim.anchor, claim.images);
         meanwhile(&handle);
         let files = images
             .iter()

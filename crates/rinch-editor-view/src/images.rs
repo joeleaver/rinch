@@ -10,7 +10,12 @@
 use crate::SelectionAnchor;
 
 /// How a picture reached the editor.
+///
+/// `#[non_exhaustive]`: another route (a pasted file list, say) can be added
+/// without breaking an app, so a `match` on it outside this crate needs a
+/// wildcard arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ImageInputSource {
     /// Pasted: the clipboard held a bitmap.
     Paste,
@@ -20,7 +25,13 @@ pub enum ImageInputSource {
 
 /// A picture the person pasted into or dropped on an editor, offered to the
 /// app — see [`EditorHandle::on_image_input`](crate::EditorHandle::on_image_input).
+///
+/// `#[non_exhaustive]`: a field can be added (the picture's pixel size, say)
+/// without breaking an app. Outside this crate it is read by field or
+/// destructured with `..`, and cannot be built with a struct literal; the
+/// editor is what makes one.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ImageInput {
     /// How it arrived.
     pub source: ImageInputSource,
