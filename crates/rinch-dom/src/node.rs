@@ -626,6 +626,13 @@ pub struct InlineLayout {
     /// What hanging the preserved spaces at a soft wrap cost this layout
     /// (the `ifc_hang_*` perf counters).
     pub hang: crate::ifc::HangStats,
+    /// Where each positioned inline span an absolute box hangs from lies in
+    /// these lines (#631), or `None` for one with no fragment in them. Empty
+    /// when the lines are built; filled by
+    /// `RinchDocument::measure_inline_containing_blocks`, so an answer here
+    /// is about exactly these lines.
+    pub(crate) span_fragments:
+        std::collections::HashMap<RawNodeId, Option<crate::out_of_flow::SpanFragments>>,
 }
 
 impl InlineLayout {
@@ -2562,6 +2569,13 @@ pub struct NodeTree {
     /// clamped. `out_of_flow::replace_all` has nothing to do when none was,
     /// and clears it.
     pub(crate) abs_late_moves: bool,
+    /// Whether the last read-back met an absolute box whose containing block
+    /// is an inline span (#631, `out_of_flow::has_inline_containing_block`).
+    /// Such a block is measured in the lines `build_ifc_layouts` builds
+    /// after the read-back, so `resolve_layout` checks those boxes' sizes
+    /// and places them again once the lines exist — and does neither when
+    /// this is `false`, which is every document without such a box.
+    pub(crate) abs_inline_cb_seen: bool,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
@@ -3034,6 +3048,7 @@ impl NodeTree {
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
             abs_late_moves: false,
+            abs_inline_cb_seen: false,
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),

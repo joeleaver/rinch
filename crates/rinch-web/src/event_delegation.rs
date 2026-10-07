@@ -7,8 +7,10 @@
 //! of raw mouse events) means the same code path covers mouse, touch, and pen —
 //! so the element drag-and-drop suite works on touch devices, where no synthetic
 //! mouse-move stream arrives during a finger drag. Pointer events resolve
-//! text-hit positions via `caretRangeFromPoint` so contenteditable apps get
-//! accurate caret placement (a no-op for apps without `data-block-index` blocks).
+//! text-hit positions via `caret_point_from_point` (`caretRangeFromPoint`, or the
+//! standard `caretPositionFromPoint` where a browser lacks it: Firefox) so
+//! contenteditable apps get accurate caret placement (a no-op for apps without
+//! `data-block-index` blocks).
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -1145,29 +1147,72 @@ pub(crate) fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize
     text.len() // offset is at or past the end
 }
 
-/// Use `document.caretRangeFromPoint` to resolve a click position to a text hit.
+/// The DOM point under a viewport position: the node and the offset in it where a
+/// caret would go.
+///
+/// `caretRangeFromPoint` is the older WebKit call, which Firefox never had;
+/// `document.caretPositionFromPoint` is the standard one (Firefox, Chromium 128+,
+/// Safari 18.4+) and is what answers there. Either can name a point two
+/// ways: a text node and an offset in its UTF-16 units, or an element and a child
+/// index. Callers walk the DOM from either (`compute_byte_offset_in_block`,
+/// the editor's `model_offset_in_block`). Over a text control the two differ
+/// (the standard call answers the control and a character offset in its value),
+/// and the older call's answer is the one returned: the control's parent and the
+/// control's child index. `None` outside any content.
+///
+/// In Chrome 153 the two calls give the same raw answer everywhere else measured
+/// (`tests/review_1449_caret_point.rs`). Nothing here has run in Firefox (#1461).
+pub(crate) fn caret_point_from_point(
+    doc: &web_sys::Document,
+    x: f32,
+    y: f32,
+) -> Option<(web_sys::Node, u32)> {
+    let call = |name: &str| -> Option<JsValue> {
+        let func: js_sys::Function = js_sys::Reflect::get(doc, &name.into())
+            .ok()?
+            .dyn_into()
+            .ok()?;
+        let answer = func.call2(doc, &JsValue::from(x), &JsValue::from(y)).ok()?;
+        (!answer.is_null() && !answer.is_undefined()).then_some(answer)
+    };
+    // The older call first where it exists: its answers are the ones every
+    // Chromium and WebKit behaviour here was measured against.
+    if let Some(range) = call("caretRangeFromPoint") {
+        let range: web_sys::Range = range.dyn_into().ok()?;
+        return Some((range.start_container().ok()?, range.start_offset().ok()?));
+    }
+    let position = call("caretPositionFromPoint")?;
+    let node: web_sys::Node = js_sys::Reflect::get(&position, &"offsetNode".into())
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let offset = js_sys::Reflect::get(&position, &"offset".into())
+        .ok()?
+        .as_f64()?;
+    // Over an `<input>` or `<textarea>` the standard call answers the control
+    // and a CHARACTER offset in its value, which a caller would read as a child
+    // index (and count the control's own text into the block). Name the point
+    // the way the older call does: the control's parent, and the control's
+    // index among its children.
+    if node.is_instance_of::<web_sys::HtmlInputElement>()
+        || node.is_instance_of::<web_sys::HtmlTextAreaElement>()
+    {
+        let parent = node.parent_node()?;
+        let siblings = parent.child_nodes();
+        let index = (0..siblings.length()).find(|&i| siblings.item(i).as_ref() == Some(&node))?;
+        return Some((parent, index));
+    }
+    Some((node, offset as u32))
+}
+
+/// Resolve a click position to a text hit ([`caret_point_from_point`]).
 /// Returns `Some(TextHitInfo)` if the click resolved to a text position inside a block.
 fn resolve_text_hit(
     browser_doc: &web_sys::Document,
     client_x: f32,
     client_y: f32,
 ) -> Option<events::TextHitInfo> {
-    // caretRangeFromPoint is non-standard but available in Chrome/Safari/Edge
-    let func = js_sys::Reflect::get(browser_doc, &"caretRangeFromPoint".into()).ok()?;
-    let func: js_sys::Function = func.dyn_into().ok()?;
-    let range_val = func
-        .call2(
-            browser_doc,
-            &JsValue::from(client_x),
-            &JsValue::from(client_y),
-        )
-        .ok()?;
-    if range_val.is_null() || range_val.is_undefined() {
-        return None;
-    }
-    let range: web_sys::Range = range_val.dyn_into().ok()?;
-    let start_container = range.start_container().ok()?;
-    let start_offset = range.start_offset().ok()?;
+    let (start_container, start_offset) = caret_point_from_point(browser_doc, client_x, client_y)?;
 
     // Walk up from start_container to find nearest ancestor with data-block-index
     let mut current: Option<web_sys::Node> = Some(start_container.clone());
@@ -1233,14 +1278,24 @@ fn walk_text_nodes_for_offset(
         return false;
     }
     let children = node.child_nodes();
-    for i in 0..children.length() {
+    // An element point (either call answers one on an image, beside a `<br>`
+    // or in an empty block): the offset is a child index, and only what is
+    // before it counts. This changed Chrome's answer too: the loop used to run
+    // over every child, so a press on an image in a block reported the whole
+    // block's text as its byte offset.
+    let stop = if node == target {
+        utf16_offset.min(children.length())
+    } else {
+        children.length()
+    };
+    for i in 0..stop {
         if let Some(child) = children.item(i)
             && walk_text_nodes_for_offset(&child, target, utf16_offset, byte_offset)
         {
             return true;
         }
     }
-    false
+    node == target
 }
 
 /// The nearest ancestor-or-self of `el` carrying handler attribute `attr`
