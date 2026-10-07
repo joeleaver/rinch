@@ -35,9 +35,32 @@ is its natural size — `display: block` included, so `margin: 0 auto` centres
 it rather than it filling its container — and a lone `width` or `height` (or a
 `min-*`/`max-*` clamp) gives the other dimension through the image's aspect
 ratio. A flex container still stretches an `<img>`, as in a browser; a grid
-container also still stretches it, where a browser does not (#1280). The
-`width`/`height` *attributes* are not read (#684): size an image with CSS. An
-image not yet loaded is 0x0.
+container also still stretches it, where a browser does not (#1280). An
+image not yet loaded has no natural size: with no size from anywhere it is 0x0.
+
+The `width` and `height` **attributes** reserve the box before the image
+arrives, as in a browser (#684):
+
+```rust
+img { src: "photo.jpg", width: "640", height: "480" }
+```
+
+Each is a length in CSS pixels (`"640"`) or a percentage (`"50%"`), and is a
+*presentational hint*: it has less weight than any declaration in your own
+CSS, so a stylesheet rule or an inline `style` for `width`/`height` wins (it
+still outranks the built-in browser-default sheet). Together they
+also give the image an aspect ratio until it loads, so the common responsive
+reset `img { width: 100%; height: auto }` keeps the right height from the
+first frame; once the image has loaded its own ratio is used. That ratio
+cannot be switched off: desktop reads no `aspect-ratio` property (#1286), so
+`aspect-ratio: auto` on such an image changes nothing, where a browser would
+drop the mapped ratio. And an image that has not loaded or failed reserves
+its attributes' box even with `alt` text, where a browser lays the alt text
+out instead. `<video>` reads
+the same two attributes with the same ratio, and `<iframe>` reads them with
+no ratio. The other legacy attributes (`hspace`, `vspace`, `border`, `align`,
+`<hr width>`, a table's `width`/`bgcolor`/…) still do nothing on desktop
+(#1419).
 
 ### Background layers
 

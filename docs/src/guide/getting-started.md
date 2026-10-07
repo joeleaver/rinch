@@ -4,7 +4,9 @@ From zero to window in about ninety seconds.
 
 ## Prerequisites
 
-- **Rust nightly** (Rinch uses a few unstable features — `let_chains`, etc.)
+- **Stable Rust**, edition 2024. Rinch itself is built and tested with the one
+  version its `rust-toolchain.toml` names (1.99.0 today); no nightly feature is
+  needed.
 - A C/C++ compiler (Stylo has native dependencies)
 - On Linux: `libfontconfig-dev` and `pkg-config` (for font discovery)
 
