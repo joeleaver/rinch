@@ -606,7 +606,12 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: &Deriv
 /// that makes it reachable again restores `data-rid` from it rather than
 /// registering a second handler and leaking the first (issue #141's handler
 /// side: a scope frees what it owns, and nothing here would ever ask the old
-/// one to release itself).
+/// one to release itself). **Once per step per stepper render**, to be exact
+/// (issue #1428): the handler closes over this render's `on_step_click`, so
+/// the record names who registered each id, and a step that arrives carrying
+/// another stepper's handler is given one of this stepper's — it used to keep
+/// calling the stepper it came from. In a stepper with no callback such a step
+/// also loses the clickable class, unless this stepper grants it one.
 ///
 /// `tabindex="0"` plus `data-rid` is the same shape [`Tree`](crate::tree::Tree)
 /// wires for its own rows — generic keyboard activation (Enter/Space) reads
@@ -636,10 +641,12 @@ fn settle_step_clickability(
 
         // SAFETY of the `expect`: `should_wire` just checked `is_some()`.
         let cb = d.on_step_click.clone().expect("on_step_click is Some");
-        let handler_id = match step
-            .get_attribute(CLICK_HANDLER_ID_ATTR)
-            .and_then(|s| s.parse::<usize>().ok())
-        {
+        // The handler **this render** registered for the step, if it has one
+        // (issue #1428). A record left by another stepper, or by an earlier
+        // render of this one, names a handler that calls *that* render's
+        // callback, so it is not ours to restore `data-rid` from.
+        let record = step.get_attribute(CLICK_HANDLER_ID_ATTR);
+        let handler_id = match recorded_handler(record.as_deref(), &d.settler) {
             Some(id) => id,
             None => {
                 let watched = step.clone();
@@ -653,7 +660,15 @@ fn settle_step_clickability(
                         }
                     })
                     .0;
-                step.set_attribute(CLICK_HANDLER_ID_ATTR, &id.to_string());
+                // Added to the record, not written over it: the step may be
+                // moved back, and the stepper it came from should find the
+                // handler it already paid for.
+                let entry = format!("{}:{id}", d.settler);
+                let record = match record {
+                    Some(record) if !record.is_empty() => format!("{record} {entry}"),
+                    _ => entry,
+                };
+                step.set_attribute(CLICK_HANDLER_ID_ATTR, &record);
                 id
             }
         };
@@ -673,6 +688,19 @@ fn settle_step_clickability(
         // and must be left alone — removing it would undo the no-callback
         // decorative behaviour #737 was explicit about preserving.
         if d.on_step_click.is_some() {
+            step.remove_class(CLICKABLE_CLASS);
+        } else if !own
+            && !(d.allow_next_steps_select && position > d.active && !disabled)
+            && step.get_attribute(CLICK_HANDLER_ID_ATTR).is_some()
+        {
+            // The one class a callback-less stepper does take off (issue
+            // #1428): the step was wired by a stepper that had a callback
+            // and has been moved here, so the class may be that wiring's,
+            // and nothing in this stepper grants it — not the step's own
+            // ask, not the `allow_next_steps_select` grant in
+            // `settle_steps`. Left on, the step shows a pointer with nothing
+            // behind it. A step no stepper ever wired carries no record and
+            // is not touched.
             step.remove_class(CLICKABLE_CLASS);
         }
         if step.get_attribute("data-rid").is_some() {
@@ -965,7 +993,28 @@ const OWN_CLICKABLE_ATTR: &str = "data-step-own-clickable";
 /// itself is paid once, and `data-rid` is set from this record — not
 /// re-derived — whenever the step becomes reachable again after a position
 /// shift made it briefly unreachable.
+///
+/// The value is a space-separated list of `<settler>:<handler id>` entries,
+/// one per stepper render that has wired the step (issue #1428). A handler
+/// closes over the `on_step_click` of the render that registered it, so a
+/// render restores `data-rid` only from its own entry
+/// ([`recorded_handler`]) and registers — and adds an entry — when it has
+/// none: a step moved from one stepper to another answers to the one it is
+/// in, and a step moved back finds the handler its first stepper registered.
+/// It was a bare id, which the second stepper took for its own.
+///
+/// An entry is never taken out, so the list grows by one for each distinct
+/// stepper render that wires the same step node, and a render that is gone
+/// leaves its entry behind (its handler is its owner's to free).
 const CLICK_HANDLER_ID_ATTR: &str = "data-stepper-click-handler";
+
+/// The handler id `settler` recorded in a [`CLICK_HANDLER_ID_ATTR`] value.
+fn recorded_handler(record: Option<&str>, settler: &str) -> Option<usize> {
+    record?.split_whitespace().find_map(|entry| {
+        let (by, id) = entry.split_once(':')?;
+        (by == settler).then(|| id.parse().ok())?
+    })
+}
 
 /// The three **content keys** a step's icon box deals in.
 ///
