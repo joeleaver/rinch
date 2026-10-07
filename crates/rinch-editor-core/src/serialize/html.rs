@@ -460,7 +460,8 @@ struct Building {
 struct Parsed {
     blocks: Vec<Node>,
     /// When there are no blocks: the whitespace the nodes hold directly,
-    /// which is the content of the line they are (`<div>&nbsp;</div>`).
+    /// which is the content of the line they are when a browser shows it
+    /// (`<div>&nbsp;</div>`; see [`HtmlParser::end_line`]).
     blank: Vec<Node>,
 }
 

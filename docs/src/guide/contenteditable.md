@@ -866,6 +866,12 @@ always valid content. Structure it cannot keep is approximated; text is not drop
 It is not a browser: it reads no CSS, so text hidden by `display: none`, `hidden`
 or a closed `<details>` is read, and whitespace is kept as written.
 
+- **Lines are where a browser puts them.** A block-level element ends the line
+  before it even when it is empty (`a<div></div>b` is two paragraphs), and is a
+  line itself only if it holds something: a `<div>` of spaces is none, one that
+  holds a non-breaking space is a blank line. An inline element that holds a block
+  ends no line by itself: `x<b>y<div>z</div>v</b>w` is `xy`, `z`, `vw`.
+
 - **An element the reader does not know** — Word's `<o:p>` and `<st1:place>`, a
   custom element, `<button>`, `<label>` — is read through. It is inline unless it
   holds a block, so `a <my-chip>b</my-chip> c` is one line and
@@ -884,10 +890,23 @@ or a closed `<details>` is read, and whitespace is kept as written.
   follows. An `<img>` with an empty `src` is no image.
 - **Broken markup is read as a browser reads it:** a `<p>` ends at the next block, an
   `<li>` at the next `<li>`, a cell at the next cell; an end tag with nothing to close
-  is skipped; a `<` that starts no tag (`a < b`) is text. Character references are
-  decoded (`&eacute;`, `&#233;`, Word's `&#146;`). The names known are HTML 4's and
-  need their `;`: a name outside them (`&plus;`, `&check;`) or without it (`&copy `)
-  stays as written, where a browser decodes it (#1415).
+  is skipped, except a `</p>`, which ends the line as it does in a browser
+  (`<p>a<ul>…</ul>c</p>d` reads `c` and `d` on two lines); a `<` that starts no tag
+  (`a < b`) is text.
+- **A bold, italic, link or code end tag written across a block**
+  (`<b>a<div>b</b>c</div>d`) ends the formatting where it is written, and what the
+  block already held keeps it: `a` and `b` are bold, `c` and `d` are not (#1410; the
+  bold used to run to the end of the document). As in a browser, such an end tag
+  is ignored when it would reach out of a table cell or across more than seven open
+  blocks. One browser rule is not followed: formatting that a block's end cut short
+  is not carried on after it, so `<p><b>a</p>b` has a bold `a` and a plain `b`
+  where a browser bolds both (#1445).
+- **Character references** are decoded as a browser decodes them (#1415): numeric
+  ones (`&#233;`, Word's `&#146;`), every name of the HTML standard (`&eacute;`,
+  `&plus;`, `&check;`, `&AMP;`), and the older names with no `;` (`&copy 2024` is
+  `© 2024`, `&notit;` is `¬it;`). In a link's address a name with no `;` is left
+  alone before `=`, a letter or a digit, so `?a=1&copy=2` stays a query string.
+  Anything else after an `&` is text (`R&D`, `&nosuch;`).
 - **Table parts with no `<table>`** are a table: a run of `<td>` is one row, a run of
   `<tr>` the rows of one table (#1392; they used to load as an invalid document and
   paste as plain text). What has no place in a table — text between its rows, a

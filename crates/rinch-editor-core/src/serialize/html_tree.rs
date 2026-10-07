@@ -51,7 +51,7 @@
 //! Not followed: a self-closing `<x/>` is an empty element whatever `x` is
 //! (in HTML only a void element is), a formatting element that a block's end
 //! closes is not opened again for what follows (a browser reconstructs its
-//! active formatting elements: `<p><b>a</p>b` is two bold lines there), and
+//! active formatting elements: `<p><b>a</p>b` is two bold lines there, #1445), and
 //! content that has no place in a table stays where it is written for the
 //! reader to move.
 
