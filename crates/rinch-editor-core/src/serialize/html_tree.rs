@@ -89,6 +89,9 @@ const MAX_ADOPT_BLOCKS: usize = 7;
 /// element's attributes are made. A browser has no such limit.
 const MAX_ADOPT: usize = 32;
 
+// An element the scan does not reach has more than `MAX_ADOPT` open above it.
+const _: () = assert!(MAX_ADOPT < MAX_SCAN);
+
 /// Every name [`is_special`] or [`is_foreign`] accepts: the only elements
 /// that an implied end tag closes, that stop one, or that an end tag does
 /// not reach across. What the index is asked about.
@@ -823,9 +826,9 @@ impl<'a> HtmlFragmentParser<'a> {
             {
                 found = Some(nearest);
                 across_block = self.nearest_scope(is_special).is_some_and(|b| b > nearest);
-                across_scope = self
-                    .nearest_scope(drawing_scope)
-                    .is_some_and(|b| b > nearest);
+                // (Whether a drawing's scope is between does not matter
+                // here: with a block between, an element this far up has
+                // more open above it than `end_under` takes.)
             }
         }
         match found {

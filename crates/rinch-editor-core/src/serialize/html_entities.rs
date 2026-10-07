@@ -93,14 +93,14 @@ fn reference(s: &str, in_attribute: bool, out: &mut String) -> Option<usize> {
         out.push(numeric(code));
         return Some(end);
     }
-    // The letters and digits after the `&`, as far as a name can reach.
+    // The letters and digits after the `&`, as far as a name can reach (a
+    // longer run has a letter or digit there, where a name has its `;`).
     let run = bytes
         .iter()
-        .take(MAX_NAME + 1)
+        .take(MAX_NAME)
         .take_while(|b| b.is_ascii_alphanumeric())
         .count();
-    if run <= MAX_NAME
-        && bytes.get(run) == Some(&b';')
+    if bytes.get(run) == Some(&b';')
         && let Some(i) = find(&s[..run])
     {
         out.push_str(value(i));
@@ -230,14 +230,20 @@ mod tests {
         // A legacy name needs no `;` (#1415); in an attribute it does when
         // `=`, a letter or a digit follows.
         assert_eq!(
-            decode_entities("&copy=2 &notit; &notin; &ampamp;"),
-            "\u{a9}=2 \u{ac}it; \u{2209} &amp;"
+            decode_entities("&copy=2 &notit; &notin; &ampamp; &middot1 &Aacutes &de"),
+            "\u{a9}=2 \u{ac}it; \u{2209} &amp; \u{b7}1 \u{c1}s &de"
         );
         assert_eq!(
             decode_attribute("?a&copy=2&reg2&notit;&amp;&lt&gt &copy;&copy"),
             "?a&copy=2&reg2&notit;&<> \u{a9}\u{a9}"
         );
         // A run longer than any name, at the end of the input and before it.
+        let name = "CounterClockwiseContourIntegral";
+        assert_eq!(name.len(), MAX_NAME);
+        assert_eq!(
+            decode_entities(&format!("&{name}; &{name} &{name}s;")),
+            format!("\u{2233} &{name} &{name}s;")
+        );
         let long = "a".repeat(MAX_NAME + 1);
         assert_eq!(decode_entities(&format!("&{long}")), format!("&{long}"));
         assert_eq!(

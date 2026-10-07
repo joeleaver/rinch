@@ -678,6 +678,11 @@ fn legacy_references_decode_without_a_semicolon_in_text() {
     );
     assert_eq!(html("&ampamp; &ltb&gtc"), "<p>&amp;amp; &lt;b&gt;c</p>");
     assert_eq!(html("&Aring &aring &AElig"), "<p>\u{c5} \u{e5} \u{c6}</p>");
+    // The longest of them are six letters.
+    assert_eq!(
+        html("a&middot1 &frac12x &Aacutes"),
+        "<p>a\u{b7}1 \u{bd}x \u{c1}s</p>"
+    );
     // A `<textarea>` holds text.
     assert_eq!(
         html("<p><textarea>&copy &notit; &plus;</textarea></p>"),
