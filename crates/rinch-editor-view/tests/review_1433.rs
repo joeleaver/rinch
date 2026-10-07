@@ -238,6 +238,82 @@ mod collab {
         assert_eq!(html(&guest), want);
     }
 
+    /// C3. A peer types in the SAME paragraph, before the place: the anchor
+    /// keeps its place in the text (it moves with the words), where the
+    /// block-level step map alone would put it at the paragraph's end.
+    #[test]
+    fn c3_a_peer_typing_in_the_same_paragraph_moves_the_anchor_with_the_text() {
+        let (host, guest) = pair("<p>hello world</p><p>second</p>");
+        host.set_selection(Selection::cursor(Pos(6)));
+        let kept = keeping_anchors(&host);
+        assert!(!offer(&host));
+        // The host's own caret goes elsewhere, so only the anchor is tested.
+        host.set_selection(Selection::cursor(Pos(20)));
+
+        guest.set_selection(Selection::cursor(Pos(1)));
+        assert!(guest.insert_text("XY"));
+        assert_eq!(html(&host), "<p>XYhello world</p><p>second</p>");
+
+        let anchor = kept.borrow_mut().remove(0);
+        assert_eq!(anchor.selection(), Some(Selection::cursor(Pos(8))));
+        assert!(host.insert_image_at(&anchor, "app-blob:1", ""));
+        let want = r#"<p>XYhello<img src="app-blob:1"> world</p><p>second</p>"#;
+        assert_eq!(html(&host), want);
+        assert_eq!(html(&guest), want);
+    }
+
+    /// C4. A peer types in an EARLIER paragraph: the anchor's own block is
+    /// untouched and shifts by what was typed. (C1's peer types in a later
+    /// paragraph, where a carry that left every position alone would pass.)
+    #[test]
+    fn c4_a_peer_typing_in_an_earlier_paragraph_shifts_the_anchor() {
+        let (host, guest) = pair("<p>first</p><p>hello world</p>");
+        host.set_selection(Selection::text(Pos(8), Pos(13))); // [hello]
+        let kept = keeping_anchors(&host);
+        assert!(!offer(&host));
+        host.set_selection(Selection::cursor(Pos(1)));
+
+        guest.set_selection(Selection::cursor(Pos(3)));
+        assert!(guest.insert_text("XYZ"));
+        assert_eq!(html(&host), "<p>fiXYZrst</p><p>hello world</p>");
+
+        let anchor = kept.borrow_mut().remove(0);
+        assert_eq!(
+            anchor.selection(),
+            Some(Selection::text(Pos(11), Pos(16))),
+            "the range still covers `hello`"
+        );
+        assert!(host.insert_image_at(&anchor, "app-blob:1", ""));
+        let want = r#"<p>fiXYZrst</p><p><img src="app-blob:1"> world</p>"#;
+        assert_eq!(html(&host), want);
+        assert_eq!(html(&guest), want);
+    }
+
+    /// C5. A peer removes the paragraph the picture was aimed at: the place is
+    /// gone, and the anchor says so rather than pointing at whatever is near.
+    /// The refused insert changes nothing, the host's caret included.
+    #[test]
+    fn c5_an_anchor_whose_paragraph_a_peer_removed_names_no_place() {
+        let (host, guest) = pair("<p>hello world</p><p>second</p><p>third</p>");
+        host.set_selection(Selection::cursor(Pos(6)));
+        let kept = keeping_anchors(&host);
+        assert!(!offer(&host));
+        host.set_selection(Selection::cursor(Pos(24))); // in `third`
+
+        // The peer selects from the start of the first paragraph into the
+        // second and deletes: the first paragraph's text is gone.
+        guest.set_selection(Selection::text(Pos(1), Pos(16)));
+        assert!(guest.command("deleteSelection"));
+        assert_eq!(html(&host), "<p>cond</p><p>third</p>");
+        let live = host.selection();
+
+        let anchor = kept.borrow_mut().remove(0);
+        assert_eq!(anchor.selection(), None);
+        assert!(!host.insert_image_at(&anchor, "app-blob:1", ""));
+        assert_eq!(html(&host), "<p>cond</p><p>third</p>");
+        assert_eq!(host.selection(), live);
+    }
+
     /// C2. The synchronous answer is not exposed to this: a control.
     #[test]
     fn c2_an_answer_at_once_is_unaffected_by_peers() {
@@ -279,4 +355,69 @@ fn r8_a_callback_whose_component_unmounted_is_gone() {
     assert!(!offer(&handle));
     assert_eq!(*calls.borrow(), 0);
     assert_eq!(html(&handle), "<p>ab</p>");
+}
+
+/// R9. The runtime offers a picture AT the place it was aimed
+/// (`offer_image_input_at`), which need not be where the person is by the time
+/// the clipboard or the disk has answered: an answer at once lands there and
+/// the person's caret stays theirs. An anchor that names no place any more
+/// does not ask the app to store anything.
+#[test]
+fn r9_a_picture_offered_at_an_anchor_leaves_the_live_caret_and_a_dead_anchor_asks_nobody() {
+    let handle = editor("<p>hello world</p><p>second</p>", 6);
+    let calls = Rc::new(RefCell::new(0));
+    let calls_in = calls.clone();
+    handle.on_image_input(move |_| {
+        *calls_in.borrow_mut() += 1;
+        Some(("app-blob:1".to_string(), String::new()))
+    });
+    let at = handle.anchor_selection();
+    handle.set_selection(Selection::cursor(Pos(20))); // second|
+    assert!(handle.offer_image_input_at(
+        &at,
+        ImageInputSource::Drop,
+        PNG.to_vec(),
+        "image/png",
+        None
+    ));
+    assert_eq!(
+        html(&handle),
+        r#"<p>hello<img src="app-blob:1"> world</p><p>second</p>"#
+    );
+    assert_eq!(handle.selection(), Selection::cursor(Pos(21)));
+
+    let dead = handle.anchor_selection();
+    assert!(handle.load_html("<p>another note</p>"));
+    assert!(!handle.offer_image_input_at(
+        &dead,
+        ImageInputSource::Drop,
+        PNG.to_vec(),
+        "image/png",
+        None
+    ));
+    assert_eq!(*calls.borrow(), 1, "the app was not asked for a dead place");
+}
+
+/// R10. A picture that arrives while the person types is an undo step of its
+/// own on both sides: it is not grouped with the letters typed just before it
+/// (R6) nor with the ones typed just after.
+#[test]
+fn r10_what_is_typed_after_a_late_picture_is_not_grouped_with_it() {
+    let handle = editor("<p>ab</p><p>cd</p>", 2);
+    let kept = keeping_anchors(&handle);
+    assert!(!offer(&handle));
+    handle.set_selection(Selection::cursor(Pos(7))); // cd|
+    let anchor = kept.borrow_mut().remove(0);
+    assert!(handle.insert_image_at(&anchor, "app-blob:1", ""));
+    assert!(handle.insert_text("?"));
+    assert_eq!(
+        html(&handle),
+        r#"<p>a<img src="app-blob:1">b</p><p>cd?</p>"#
+    );
+    assert!(handle.command("undo"));
+    assert_eq!(
+        html(&handle),
+        r#"<p>a<img src="app-blob:1">b</p><p>cd</p>"#,
+        "one undo takes back the letter and leaves the picture"
+    );
 }
