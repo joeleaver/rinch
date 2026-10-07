@@ -328,6 +328,24 @@ pub trait DomDocument {
         self.remove_node(node);
     }
 
+    /// Whether the backend holds nothing under `node` any more — it was
+    /// [`discard_node`](Self::discard_node)ed, on a backend that reclaims
+    /// (issue #733).
+    ///
+    /// This is a diagnostic, not part of the removal contract: the reactive
+    /// helpers ask it of the node a view hands them, to warn about a cache
+    /// returning a subtree that was discarded under it. `rinch-web` and
+    /// `MockDomDocument` answer from their node tables. The default is
+    /// `false`, which is all a backend whose `discard_node` reclaims nothing
+    /// can say — `rinch-dom` today (issue #723), where such a node still
+    /// re-inserts and nothing is lost to warn about.
+    ///
+    /// An id the document never issued also answers `true` where the backend
+    /// can tell; no caller hands one in.
+    fn is_retired(&self, _node: NodeId) -> bool {
+        false
+    }
+
     /// Set the text content of a node.
     fn set_text_content(&mut self, node: NodeId, text: &str);
 

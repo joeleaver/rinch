@@ -141,6 +141,7 @@ where
                 let _owner = child_scope.push_owner();
                 render_fn(&mut child_scope)
             };
+            crate::dom::warn_if_retired(&content, "if");
             marker.insert_after(&content);
             current_content.borrow_mut().push(content);
             *current_scope.borrow_mut() = Some(child_scope);
