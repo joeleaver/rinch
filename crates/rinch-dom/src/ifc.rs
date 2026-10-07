@@ -51,6 +51,75 @@ pub(crate) struct EllipsisStyle {
     alignment: parley::layout::Alignment,
 }
 
+/// The colour an IFC root's own style gives its text: the default brush of
+/// its layout, and of the flat `text-overflow: ellipsis` rebuild.
+pub(crate) fn root_text_color(cs: &crate::computed_style::ComputedStyle) -> peniko::Color {
+    cs.color.unwrap_or(peniko::Color::BLACK)
+}
+
+/// The colour a text node's glyphs are drawn in: its element's `color`.
+///
+/// A text node has no style of its own. `walk_inline_children` pushes each
+/// inline element's colour as a span around its text, a styled `display:
+/// contents` wrapper's (#574) and the DOM parent's for a member of an
+/// anonymous box, so in every case the brush a run gets is its text node's DOM
+/// parent's colour — which is what this answers, at the build (recorded as
+/// [`crate::node::IfcTextRange::color`]) and again at every paint (#679).
+pub(crate) fn text_color(nodes: &slab::Slab<Node>, text_node: usize) -> peniko::Color {
+    let mut cur = nodes.get(text_node).and_then(|t| t.parent);
+    while let Some(node) = cur.and_then(|id| nodes.get(id)) {
+        if let Some(color) = node.computed_style.color {
+            return color;
+        }
+        cur = node.parent;
+    }
+    peniko::Color::BLACK
+}
+
+/// The colour of an element's wavy underline: its `text-decoration-color`,
+/// or its `color` for `currentcolor`.
+pub(crate) fn wavy_underline_color(cs: &crate::computed_style::ComputedStyle) -> peniko::Color {
+    cs.text_decoration
+        .color
+        .or(cs.color)
+        .unwrap_or(peniko::Color::BLACK)
+}
+
+/// Whether an inline element has a background to draw: a colour that is not
+/// fully transparent. The one test [`inline_background_span`] makes, asked
+/// on its own by the transition and animation ticks (#679).
+pub(crate) fn has_inline_background(cs: &crate::computed_style::ComputedStyle) -> bool {
+    cs.background_color().is_some_and(|c| c.components[3] > 0.0)
+}
+
+/// The background span inline element `owner` draws over `start..end`, from
+/// its style as it is now; `None` when it has no background to draw.
+///
+/// Called at the build, which records one span per element that has one, and
+/// by paint for each recorded span, so the rectangle follows a colour,
+/// padding or radius written with no re-shape (#679).
+pub(crate) fn inline_background_span(
+    owner: &Node,
+    start: usize,
+    end: usize,
+) -> Option<crate::node::InlineBackgroundSpan> {
+    let cs = &owner.computed_style;
+    if !has_inline_background(cs) {
+        return None;
+    }
+    Some(crate::node::InlineBackgroundSpan {
+        owner: owner.id,
+        start,
+        end,
+        color: cs.background_color()?,
+        padding_left: cs.padding_left.to_px(),
+        padding_right: cs.padding_right.to_px(),
+        padding_top: cs.padding_top.to_px(),
+        padding_bottom: cs.padding_bottom.to_px(),
+        border_radius: cs.border_radius_top_left.to_px(),
+    })
+}
+
 impl EllipsisStyle {
     pub(crate) fn of(cs: &crate::computed_style::ComputedStyle, scale: f32) -> Self {
         Self {
@@ -62,7 +131,7 @@ impl EllipsisStyle {
             },
             font_weight: parley::style::FontWeight::new(cs.font_weight),
             font_style: cs.font_style.to_parley(),
-            color: cs.color.unwrap_or(peniko::Color::BLACK),
+            color: root_text_color(cs),
             line_height: cs.line_height.to_parley(),
             letter_spacing: cs.letter_spacing,
             word_spacing: cs.word_spacing,
@@ -5623,16 +5692,27 @@ impl RinchDocument {
                                 leaf_layouts.insert((text.node_id, wrap_bits), layout);
                                 size
                             }
-                            Some(NodeContext::Image { width, height, .. }) => {
-                                let iw = *width as f32;
-                                let ih = *height as f32;
-                                if iw == 0.0 || ih == 0.0 {
+                            Some(NodeContext::Image {
+                                width,
+                                height,
+                                hint_ratio,
+                                ..
+                            }) => {
+                                // A loaded image's own ratio; before it loads (or when
+                                // it failed), the one its `width` and `height`
+                                // attributes map to (#684); with neither, nothing.
+                                let (natural, ratio) = crate::replaced::image_natural_size(
+                                    *width,
+                                    *height,
+                                    *hint_ratio,
+                                );
+                                let Some(ratio) = ratio else {
                                     return taffy::Size::ZERO;
-                                }
+                                };
                                 // As the root compute measures one (#788, #1150).
                                 crate::replaced::measure(
-                                    (iw, ih),
-                                    true,
+                                    natural,
+                                    Some(ratio),
                                     known_dims,
                                     style,
                                     inputs.parent_size,
@@ -6076,9 +6156,7 @@ impl RinchDocument {
         // Get root style properties from typed ComputedStyle
         let root_computed = &nodes[root_id].computed_style;
         let root_font_size = root_computed.font_size * scale;
-        let root_color = root_computed.color.unwrap_or_else(|| {
-            peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
-        });
+        let root_color = root_text_color(root_computed);
 
         let font_family = crate::fonts::parley_font_family(font_cx, &root_computed.font_family);
 
@@ -6253,13 +6331,10 @@ impl RinchDocument {
         // (An inline element's covers its own range and is pushed by the walk.)
         if root_computed.text_decoration.is_wavy_underline() && flat_len > 0 {
             decoration_spans.push(crate::node::InlineDecorationSpan {
+                owner: root_id,
                 start: 0,
                 end: flat_len,
-                color: root_computed
-                    .text_decoration
-                    .color
-                    .or(root_computed.color)
-                    .unwrap_or(peniko::Color::BLACK),
+                color: wavy_underline_color(root_computed),
             });
         }
 
@@ -6319,12 +6394,14 @@ impl RinchDocument {
                 text_content,
                 child_positions,
                 text_ranges,
+                root_color,
                 background_spans,
                 decoration_spans,
                 vertical_align_spans,
                 max_width: max_width.unwrap_or(f32::INFINITY),
                 preserves_spaces,
                 hang,
+                span_fragments: Default::default(),
             },
             font_family_resolves.get(),
         )
@@ -6580,6 +6657,7 @@ impl RinchDocument {
                 text_content: text,
                 child_positions: Vec::new(),
                 text_ranges: Vec::new(),
+                root_color: style.color,
                 background_spans: Vec::new(),
                 decoration_spans: Vec::new(),
                 vertical_align_spans: Vec::new(),
@@ -6587,6 +6665,7 @@ impl RinchDocument {
                 // Every line fits: nothing hangs.
                 preserves_spaces: false,
                 hang: HangStats::default(),
+                span_fragments: Default::default(),
             },
             shapes,
         ))
@@ -6954,14 +7033,10 @@ impl RinchDocument {
         // the straight `Underline` for the same element.
         if owner.computed_style.text_decoration.is_wavy_underline() {
             decoration_spans.push(crate::node::InlineDecorationSpan {
+                owner: owner.id,
                 start,
                 end,
-                color: owner
-                    .computed_style
-                    .text_decoration
-                    .color
-                    .or(owner.computed_style.color)
-                    .unwrap_or(peniko::Color::BLACK),
+                color: wavy_underline_color(&owner.computed_style),
             });
         }
         // `vertical-align` (#724): a post-layout glyph shift, not a Parley
@@ -6985,25 +7060,9 @@ impl RinchDocument {
                 });
             }
         }
-        let Some(color) = owner.computed_style.background_color() else {
-            return;
-        };
-        // Skip transparent backgrounds (alpha == 0).
-        if color.components[3] <= 0.0 {
-            return;
+        if let Some(span) = inline_background_span(owner, start, end) {
+            background_spans.push(span);
         }
-        let cs = &owner.computed_style;
-        background_spans.push(crate::node::InlineBackgroundSpan {
-            owner: owner.id,
-            start,
-            end,
-            color,
-            padding_left: cs.padding_left.to_px(),
-            padding_right: cs.padding_right.to_px(),
-            padding_top: cs.padding_top.to_px(),
-            padding_bottom: cs.padding_bottom.to_px(),
-            border_radius: cs.border_radius_top_left.to_px(),
-        });
     }
 
     /// The `is_split_inline` DOM ancestors of `node_id` below `stop_at`,
@@ -7204,6 +7263,7 @@ impl RinchDocument {
                             is_br: false,
                             dom_text_len,
                             offset_map,
+                            color: text_color(nodes, child_id),
                         });
                         // Record position placeholder — actual position comes from layout
                         child_positions.push((child_id, LayoutResult::default()));
@@ -7226,6 +7286,7 @@ impl RinchDocument {
                         is_br: true,
                         dom_text_len: 1,
                         offset_map: Vec::new(),
+                        color: peniko::Color::BLACK,
                     });
                     child_positions.push((child_id, LayoutResult::default()));
                 }

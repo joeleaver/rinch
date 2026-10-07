@@ -449,6 +449,9 @@ struct Building {
     blocks: Vec<Node>,
     /// Inline content since the last block.
     loose: Inline,
+    /// The marks of the inline elements these nodes are inside, when one of
+    /// them holds a block ([`HtmlParser::read_marked_blocks`]).
+    active: Vec<Mark>,
     /// See [`Parsed::blank`].
     blank: Vec<Node>,
 }
@@ -457,7 +460,8 @@ struct Building {
 struct Parsed {
     blocks: Vec<Node>,
     /// When there are no blocks: the whitespace the nodes hold directly,
-    /// which is the content of the line they are (`<div>&nbsp;</div>`).
+    /// which is the content of the line they are when a browser shows it
+    /// (`<div>&nbsp;</div>`; see [`HtmlParser::end_line`]).
     blank: Vec<Node>,
 }
 
@@ -617,7 +621,7 @@ impl<'a> HtmlParser<'a> {
         b: &mut Building,
     ) -> Result<(), EditorError> {
         if !t.trim().is_empty() {
-            self.parse_inline(std::slice::from_ref(n), &[], &mut b.loose)?;
+            self.parse_inline(std::slice::from_ref(n), &b.active, &mut b.loose)?;
         } else if !b.loose.nodes.is_empty() {
             // Between two inline elements a browser shows this as one
             // space; before a block, as nothing.
@@ -656,13 +660,14 @@ impl<'a> HtmlParser<'a> {
         match self.block.get("ul") {
             Some(list) => {
                 let list = self.build_list(list, &[], tasks, &nodes[start..end])?;
-                b.blocks.push(list);
+                self.push_blocks(b, [list]);
             }
             // A schema with no bullet list: the items' content.
             None => {
                 for item in &nodes[start..end] {
                     if let ParsedNode::Element { children, .. } = item {
-                        b.blocks.extend(self.parse_blocks(children)?);
+                        let blocks = self.parse_blocks(children)?;
+                        self.push_blocks(b, blocks);
                     }
                 }
             }
@@ -687,8 +692,8 @@ impl<'a> HtmlParser<'a> {
         }
         self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
         if let Some(tables) = &self.tables {
-            b.blocks
-                .extend(self.build_table(tables, &nodes[start..end], false)?);
+            let table = self.build_table(tables, &nodes[start..end], false)?;
+            self.push_blocks(b, table);
         }
         Ok(end)
     }
@@ -714,7 +719,8 @@ impl<'a> HtmlParser<'a> {
                 if let Some(tables) = &self.tables {
                     self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
                     let parts: Vec<&ParsedNode> = children.iter().collect();
-                    b.blocks.extend(self.build_table(tables, &parts, true)?);
+                    let table = self.build_table(tables, &parts, true)?;
+                    self.push_blocks(b, table);
                     return Ok(());
                 }
             }
@@ -724,8 +730,8 @@ impl<'a> HtmlParser<'a> {
             }
             Some(nt) if !is_table_part(tag) => {
                 self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
-                b.blocks
-                    .push(self.build_block(nt, tag, attributes, children)?);
+                let block = self.build_block(nt, tag, attributes, children)?;
+                self.push_blocks(b, [block]);
                 return Ok(());
             }
             _ => {}
@@ -737,20 +743,21 @@ impl<'a> HtmlParser<'a> {
             // one `<div>` per line. A code block keeps its lines and
             // their indentation, which paragraphs would not.
             self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
-            b.blocks.push(self.build_code_block(code, children)?);
+            let block = self.build_code_block(code, children)?;
+            self.push_blocks(b, [block]);
             Ok(())
         } else if !holds_block && !is_block_level(tag) {
             // Inline as far as anyone can tell: a known inline element,
             // or one the reader does not know (`<o:p>`, `<st1:place>`,
             // a custom element) that holds no block.
-            self.parse_inline(std::slice::from_ref(n), &[], &mut b.loose)
+            self.parse_inline(std::slice::from_ref(n), &b.active, &mut b.loose)
         } else if *holds_block
             && self.marks.contains_key(tag.as_str())
             && let Some(mark) = self.mark_for(tag, attributes)?
         {
             self.read_marked_blocks(&mark, children, loose_as, b)
         } else {
-            self.read_container(children, loose_as, b)
+            self.read_container(tag, children, loose_as, b)
         }
     }
 
@@ -770,17 +777,48 @@ impl<'a> HtmlParser<'a> {
         let refs: Vec<&ParsedNode> = children.iter().collect();
         let inner = self.parse_block_refs(&refs, Some((nt, &attrs)))?;
         if inner.blocks.is_empty() {
-            b.blocks
-                .push(self.make_node(nt, attrs, inline_fragment(inner.blank))?);
+            let block = self.make_node(nt, attrs, inline_fragment(inner.blank))?;
+            self.push_blocks(b, [block]);
         } else {
-            b.blocks.extend(inner.blocks);
+            self.push_blocks(b, inner.blocks);
+        }
+        Ok(())
+    }
+
+    /// Add blocks that are not made of `b`'s own inline content: what is in
+    /// them is inside the inline elements `b` is being read inside.
+    fn push_blocks(&self, b: &mut Building, blocks: impl IntoIterator<Item = Node>) {
+        for block in blocks {
+            let marked = b
+                .active
+                .iter()
+                .fold(block, |block, mark| with_mark_inside(&block, mark));
+            b.blocks.push(marked);
+        }
+    }
+
+    /// Read `children` where their parent stands: for an inline element
+    /// that holds a block. As in a browser, the element ends no line: its
+    /// inline content is on the line of what comes before it and after it,
+    /// and only the blocks inside it are lines of their own.
+    fn read_children(
+        &self,
+        children: &[ParsedNode],
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<(), EditorError> {
+        let refs: Vec<&ParsedNode> = children.iter().collect();
+        let mut i = 0;
+        while i < refs.len() {
+            step();
+            i = self.read_block(&refs, i, loose_as, b)?;
         }
         Ok(())
     }
 
     /// A mark around blocks (`<a href><h3>…</h3><p>…</p></a>`, a card that
     /// is one link): the blocks stay blocks, and the mark goes on the inline
-    /// content inside them.
+    /// content inside them and beside them.
     fn read_marked_blocks(
         &self,
         mark: &Mark,
@@ -788,10 +826,37 @@ impl<'a> HtmlParser<'a> {
         loose_as: LooseAs<'_>,
         b: &mut Building,
     ) -> Result<(), EditorError> {
+        let inside = with_mark(&b.active, mark.clone());
+        let outside = std::mem::replace(&mut b.active, inside);
+        let read = self.read_children(children, loose_as, b);
+        b.active = outside;
+        read
+    }
+
+    /// An element that is a line of its own and holds no block: the line
+    /// before it ends there (`a<div></div>b` is two lines in a browser).
+    /// It is a line itself when the text it holds directly is more than
+    /// ASCII whitespace (a non-breaking space, which a browser gives a line
+    /// box); one that is empty, or holds only whitespace that collapses, is
+    /// none. Whitespace inside an inline element in it is content, and
+    /// makes a paragraph (`<div><span> </span></div>`; a browser shows no
+    /// line for that).
+    fn end_line(
+        &self,
+        blank: Vec<Node>,
+        loose_as: LooseAs<'_>,
+        b: &mut Building,
+    ) -> Result<(), EditorError> {
         self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
-        let refs: Vec<&ParsedNode> = children.iter().collect();
-        for block in self.parse_block_refs(&refs, loose_as)?.blocks {
-            b.blocks.push(with_mark_inside(&block, mark));
+        let shown = blank.iter().any(|node| {
+            node.text()
+                .is_some_and(|t| t.chars().any(|c| !c.is_ascii_whitespace()))
+        });
+        if shown {
+            for node in blank {
+                self.push_inline(&mut b.loose, node)?;
+            }
+            self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
         }
         Ok(())
     }
@@ -801,20 +866,21 @@ impl<'a> HtmlParser<'a> {
     /// copies in, Word's `<w:sdt>`, Sheets' `<google-sheets-html-origin>`.
     fn read_container(
         &self,
+        tag: &str,
         children: &[ParsedNode],
         loose_as: LooseAs<'_>,
         b: &mut Building,
     ) -> Result<(), EditorError> {
+        if !is_block_level(tag) {
+            return self.read_children(children, loose_as, b);
+        }
         let refs: Vec<&ParsedNode> = children.iter().collect();
         let inner = self.parse_block_refs(&refs, loose_as)?;
         if inner.blocks.is_empty() {
-            for node in inner.blank {
-                self.push_inline(&mut b.loose, node)?;
-            }
-        } else {
-            self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
-            b.blocks.extend(inner.blocks);
+            return self.end_line(inner.blank, loose_as, b);
         }
+        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        self.push_blocks(b, inner.blocks);
         Ok(())
     }
 
@@ -981,8 +1047,10 @@ impl<'a> HtmlParser<'a> {
     /// Google Docs writes a nested list, `<ul><li>a</li><ul><li>b</li></ul></ul>`,
     /// and what browsers build from it — goes under the item before it
     /// (ProseMirror's list normalisation), or in an item of its own when it
-    /// comes first. Any other child with content gets an item of its own:
-    /// nothing in a list is dropped for not being an `<li>`.
+    /// comes first. Any other child with content gets an item of its own,
+    /// inline children side by side one item between them (they are one
+    /// line in a browser): nothing in a list is dropped for not being an
+    /// `<li>`.
     fn list_item_contents(
         &self,
         children: &[&ParsedNode],
@@ -1009,8 +1077,19 @@ impl<'a> HtmlParser<'a> {
                 }
                 ParsedNode::Text(t) if t.trim().is_empty() => {}
                 stray => {
-                    // Table parts side by side are one table, as anywhere.
                     let start = i - 1;
+                    let inline = |n: &ParsedNode| match n {
+                        ParsedNode::Text(_) => true,
+                        ParsedNode::Element {
+                            tag, holds_block, ..
+                        } => !holds_block && !self.is_block_tag(tag),
+                    };
+                    if inline(stray) {
+                        while children.get(i).is_some_and(|next| inline(next)) {
+                            i += 1;
+                        }
+                    }
+                    // Table parts side by side are one table, as anywhere.
                     if matches!(stray, ParsedNode::Element { tag, .. } if is_table_part(tag)) {
                         while children.get(i).is_some_and(|next| match next {
                             ParsedNode::Text(t) => t.trim().is_empty(),

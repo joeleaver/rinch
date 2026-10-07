@@ -41,7 +41,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rinch_core::image::{ImageLoadResult, image_scheme, image_scheme_loader};
+use rinch_core::image::{ImageLoadResult, image_scheme_loader, scheme_of};
 use wasm_bindgen::JsCast;
 
 /// The attribute an `<img>` keeps the source rinch was given in, while its
@@ -107,7 +107,7 @@ pub fn register_image_url_scheme(
     scheme: &str,
     resolver: impl Fn(&str) -> Option<String> + 'static,
 ) {
-    let key = image_scheme(&format!("{scheme}:"))
+    let key = scheme_of(&format!("{scheme}:"))
         .unwrap_or_else(|| panic!("`{scheme}` is not a URL scheme an image source can carry"));
     URL_RESOLVERS.with(|r| r.borrow_mut().insert(key, Rc::new(resolver)));
 }
@@ -123,7 +123,7 @@ pub fn unregister_image_url_scheme(scheme: &str) -> bool {
 /// Whether the app answers for `src`: its scheme has a URL resolver or a
 /// loader registered.
 pub(crate) fn is_app_source(src: &str) -> bool {
-    let Some(scheme) = image_scheme(src) else {
+    let Some(scheme) = scheme_of(src) else {
         return false;
     };
     URL_RESOLVERS.with(|r| r.borrow().contains_key(&scheme)) || image_scheme_loader(src).is_some()
@@ -144,7 +144,7 @@ fn resolve(src: &str) -> Option<String> {
 /// Ask the app for `src`, with no borrow held (a resolver may call back into
 /// this module, to register or to reload).
 fn ask(src: &str) -> Option<Resolved> {
-    let scheme = image_scheme(src)?;
+    let scheme = scheme_of(src)?;
     if let Some(resolver) = URL_RESOLVERS.with(|r| r.borrow().get(&scheme).cloned()) {
         return resolver(src).map(|url| Resolved { url, owned: false });
     }

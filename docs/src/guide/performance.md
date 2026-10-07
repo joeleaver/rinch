@@ -126,7 +126,9 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `inline_block_computes` | Standalone Taffy computes that size an atomic inline |
 | | `calc_fixpoint_passes` | Extra computes run by the `calc(%, px)` fixpoint |
 | | `abs_containing_block_passes` | Extra computes run because an absolutely positioned box's containing block — a positioned ancestor that is not its layout parent — came out of a compute at a size the box was not sized for: the document's first layout, and a resize of that block. Only a box whose *size* depends on the block (`inset: 0`, `width: 50%`) can cause one |
-| | `abs_boxes_visited` | Absolutely positioned boxes resolved against a containing block the layout engine does not know — a positioned ancestor that is not the layout parent, or the initial containing block — one per box per pass that looks at it: the size check after each compute (ancestor boxes only), the placement as the layout is read back, a second placement when something between a box and its containing block moved late (an anonymous block box read back, an `inline-block` on its line — on a text-only pass too, as after a `text-align` change — a clamped scroll offset), and the placement a scroll runs. An absolute child of its own positioned parent is never counted; a scroll counts only when the scrolled box lies between such a box and its containing block |
+| | `abs_boxes_visited` | Absolutely positioned boxes resolved against a containing block the layout engine does not know — a positioned ancestor that is not the layout parent, or the initial containing block — one per box per pass that looks at it: the size check after each compute (ancestor boxes only), the placement as the layout is read back, a second placement when something between a box and its containing block moved late (an anonymous block box read back, an `inline-block` on its line — on a text-only pass too, as after a `text-align` change — a clamped scroll offset), and the placement a scroll runs. A box whose containing block is a positioned inline span is counted once more per layout by each of the two passes that follow the lines being built (its size check, and the second placement, which then covers every placed box). An absolute child of its own positioned parent is never counted; a scroll counts only when the scrolled box lies between such a box and its containing block |
+| | `abs_inline_measures` | Inline formatting contexts whose lines were measured for the positioned inline spans absolute boxes hang from: once per context per set of lines, however many spans it holds. `0` in a layout that rebuilt no such line |
+| | `abs_inline_measure_steps` | What those measurements looked at — the context's entries and their ancestors up to its root, its line items and clusters, each span's own clusters on its first and last line. Linear in the context's size for any number of sibling spans: twice the badges in one paragraph is twice the steps (spans nested in one another each walk their own clusters) |
 | Paint | `paint_frames` / `paint_cached_frames` | Frames actually painted, and redraws that reused the cached frame |
 | | `repaint_partial`, `repaint_full` | Software frames limited to their damage, and full repaints |
 | | `repaint_none` | Software frames whose scene was marked dirty but whose damage named nothing on screen, so the pixels on screen were kept and nothing was painted (an alt-tab, a focus move onto a box no rule styles) |
@@ -531,6 +533,11 @@ workspace crate look stale to cargo, so those rebuild on every run anyway. Only
 a push to `main` writes the cache, and only when its key misses. The key hashes
 every `Cargo.lock` and `Cargo.toml`, the toolchain and the compiler environment.
 Pull requests only read it.
+
+Base and head are both compiled with the Rust version the **head's**
+`rust-toolchain.toml` pins. A pull request that moves the pin therefore shows no
+difference from the new compiler's code generation, and its dependency build is
+cold. The job does not measure what a toolchain bump itself costs.
 
 ### Allocation is not what it costs in a real frame
 

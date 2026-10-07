@@ -222,6 +222,7 @@ rsx! { Editor { editor: editor.clone() } }
 | `load_html(&str) -> bool` | Parse schema-whitelisted HTML and replace the document. No markup is refused, however broken: its text is read, into valid content (see [What the HTML reader keeps](#what-the-html-reader-keeps)). Returns `false` only when the load itself is refused (a read-only collaborating editor). |
 | `doc() -> Node` | The current document (the save shape; serialize it under the `serde` feature). |
 | `insert_image(src, alt)` | Insert an image node (e.g. a `data:` URL), replacing the selection. |
+| `on_image_input(cb)` / `insert_image_at(&anchor, src, alt)` | Be offered pasted and dropped pictures and answer with the `src` to insert, at once or later. See [Pasted and dropped pictures](#pasted-and-dropped-pictures). |
 | `toggle_link(href) -> bool` | Add a `link` mark with `href` across the selection, or remove it if the selection is already linked. No-op (returns `false`) for a collapsed cursor. |
 | `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None` — except where it runs straight into a different link, where the caret is in the first. |
 | `paste(&PasteContent) -> bool` | Paste `text/plain` and/or `text/html` over the selection the way the user's paste does: your plugins first, then the default. See [Seeing and rewriting a paste](#seeing-and-rewriting-a-paste). |
@@ -367,6 +368,80 @@ editor.add_plugin(Rc::new(LinkOnPaste));
 `EditorHandle::paste(&PasteContent)` is the same entry point for an app of its
 own: a "Paste link" menu item that read the clipboard itself goes through the
 plugins exactly as Ctrl+V does.
+
+### Pasted and dropped pictures
+
+By default a bitmap pasted into a desktop editor becomes an image whose `src` is
+a PNG `data:` URL, and image files dropped on an editor go to the app's own
+`onfiledrop` handler. An app that keeps pictures somewhere of its own (a blob
+store, an upload) asks to be offered them instead:
+
+```rust
+let editor = handle.clone();
+handle.on_image_input(move |input: ImageInput| {
+    // input.bytes: the encoded file (a pasted bitmap arrives as PNG)
+    // input.mime:  "image/png", "image/jpeg", "image/gif" or "image/webp"
+    // input.name:  the dropped file's name; None for a paste
+    let src = store_blob(&input.bytes)?;        // answer at once...
+    Some((src, String::new()))                  // ...with (src, alt)
+});
+```
+
+The editor inserts an image with that `src` where the picture was aimed: the
+selection at the paste, or the caret at the drop point. When storing takes a
+round trip, keep the input, return `None`, and finish later:
+
+```rust
+handle.on_image_input(move |input| {
+    let editor = editor.clone();
+    store_blob_async(input.bytes, move |src| {
+        editor.insert_image_at(&input.anchor, &src, "");
+    });
+    None
+});
+```
+
+`input.anchor` is the place the picture was aimed at, kept pointed at the same
+content while the person, or a collaborating peer, types on. When the answer
+arrives the picture goes there and **the person's caret stays theirs**: if they
+have moved on, their selection is kept (shifted by the picture when it lands
+before it), nothing scrolls, and the picture is an undo step of its own. If
+they have not moved, the caret ends up after the picture, as after any insert.
+
+`insert_image_at` answers `false`, changing nothing, when the place is gone
+(the document was replaced, or a peer removed or restructured the block it was
+in), when the editor has become read-only, or when the place no longer takes an
+image. **Delete what you stored for it then**: nothing references it. Returning
+`None` and never inserting is a refusal: nothing is inserted, and no `data:`
+URL is made.
+
+`ImageInput` and `ImageInputSource` are `#[non_exhaustive]`: read the fields
+you need (or destructure with `..`), and give a `match` on the source a
+wildcard arm.
+
+With the callback registered:
+
+- A paste whose clipboard holds a bitmap is offered. That includes a browser's
+  "Copy image", which also puts an `<img>` on the clipboard as html: when the
+  html is pictures and nothing else, the bitmap is what the app gets.
+- Image files dropped on the editor are offered one by one, in order, each as
+  soon as it is read, and the editor takes the keyboard. A file is a picture
+  when its extension says so (`png`, `jpg`, `jpeg`, `gif`, `webp`), its first
+  bytes agree, and it is at most **64 MiB** (the file is read whole into
+  memory and handed over as one `Vec`). The app's `onfiledrop` handler gets
+  **every other file of the drop**: the PDF dropped with a photo, a text file
+  that is only named `.png`, a picture over the limit. A drop with no picture
+  in it, or on a read-only editor, is the handler's whole, as before.
+- A pasted bitmap has no size limit of its own: it is whatever the clipboard
+  held, encoded as PNG on the UI thread (about 50 to 90 ms for a 4K
+  screenshot).
+- Where an image cannot be inserted (the caret is in a code block), nothing is
+  offered: the app is not asked to store a picture that would be refused.
+- An html paste that holds text as well as pictures is an ordinary paste: its
+  `<img>` elements keep the `src` they came with. `Plugin::handle_paste` is
+  where an app rewrites or strips those.
+
+This is desktop only for now; the browser build does not offer pictures yet.
 
 ### Dark mode
 
@@ -866,6 +941,13 @@ always valid content. Structure it cannot keep is approximated; text is not drop
 It is not a browser: it reads no CSS, so text hidden by `display: none`, `hidden`
 or a closed `<details>` is read, and whitespace is kept as written.
 
+- **Lines are where a browser puts them.** A block-level element ends the line
+  before it even when it is empty (`a<div></div>b` is two paragraphs), and is a
+  line itself when it holds something: a `<div>` holding only spaces is none, one
+  that holds a non-breaking space is a blank line (and so, unlike in a browser, is
+  one whose space is inside an inline element: `<div><span> </span></div>`). An inline element that holds a block
+  ends no line by itself: `x<b>y<div>z</div>v</b>w` is `xy`, `z`, `vw`.
+
 - **An element the reader does not know** — Word's `<o:p>` and `<st1:place>`, a
   custom element, `<button>`, `<label>` — is read through. It is inline unless it
   holds a block, so `a <my-chip>b</my-chip> c` is one line and
@@ -884,10 +966,23 @@ or a closed `<details>` is read, and whitespace is kept as written.
   follows. An `<img>` with an empty `src` is no image.
 - **Broken markup is read as a browser reads it:** a `<p>` ends at the next block, an
   `<li>` at the next `<li>`, a cell at the next cell; an end tag with nothing to close
-  is skipped; a `<` that starts no tag (`a < b`) is text. Character references are
-  decoded (`&eacute;`, `&#233;`, Word's `&#146;`). The names known are HTML 4's and
-  need their `;`: a name outside them (`&plus;`, `&check;`) or without it (`&copy `)
-  stays as written, where a browser decodes it (#1415).
+  is skipped, except a `</p>`, which ends the line as it does in a browser
+  (`<p>a<ul>…</ul>c</p>d` reads `c` and `d` on two lines); a `<` that starts no tag
+  (`a < b`) is text.
+- **A bold, italic, link or code end tag written across a block**
+  (`<b>a<div>b</b>c</div>d`) ends the formatting where it is written, and what the
+  block already held keeps it: `a` and `b` are bold, `c` and `d` are not (#1410; the
+  bold used to run to the end of the document). As in a browser, such an end tag
+  is ignored when it would reach out of a table cell or across more than seven open
+  blocks. One browser rule is not followed: formatting that a block's end cut short
+  is not carried on after it, so `<p><b>a</p>b` has a bold `a` and a plain `b`
+  where a browser bolds both (#1445).
+- **Character references** are decoded as a browser decodes them (#1415): numeric
+  ones (`&#233;`, Word's `&#146;`), every name of the HTML standard (`&eacute;`,
+  `&plus;`, `&check;`, `&AMP;`), and the older names with no `;` (`&copy 2024` is
+  `© 2024`, `&notit;` is `¬it;`). In a link's address a name with no `;` is left
+  alone before `=`, a letter or a digit, so `?a=1&copy=2` stays a query string.
+  Anything else after an `&` is text (`R&D`, `&nosuch;`).
 - **Table parts with no `<table>`** are a table: a run of `<td>` is one row, a run of
   `<tr>` the rows of one table (#1392; they used to load as an invalid document and
   paste as plain text). What has no place in a table — text between its rows, a
@@ -948,9 +1043,16 @@ unaffected; move the caret about and nothing happens to it at all — a
 selection-only change is not a document change.
 
 If the document is *replaced* while the read is in flight (`load_doc` /
-`load_html`, or a collaborative re-projection) the anchor reports `None` and the
-paste is dropped: the content it was aimed at no longer exists, and reusing the
-raw offset would drop it into unrelated text.
+`load_html`) the anchor reports `None` and the paste is dropped: the content it
+was aimed at no longer exists, and reusing the raw offset would drop it into
+unrelated text.
+
+A collaborating peer's edit is not a replacement. The anchor is carried across
+it as across a local edit: text a peer types elsewhere shifts it, and text a
+peer types in the anchor's own paragraph leaves it at the same place in the
+words. It reports `None` only when the peer removed, split, joined or changed
+the kind of the block it sat in (a paragraph deleted, Enter pressed inside it,
+a paragraph made a list item): there the place can no longer be named.
 
 The same anchor is available to your own asynchronous insertions — an uploaded
 image, a completion from a model:
@@ -1278,14 +1380,20 @@ A table you make yourself whose merged cells span far more rows and columns than
 has cells (thousands of them) is refused before it is shared, and the session reports
 it as not syncing until you remove it.
 
-Two concurrent edits to images can still be lost, and both editors still end up
+Three concurrent edits to images can still be lost, and both editors still end up
 with the same document when they are. **Two identical images side by side**
 (same `src`, same `alt`, …) whose attributes two people change at the same
 moment: the CRDT sees them as one formatted run, and one change can overwrite the
-other (#860). And **splitting a block right before an image** (Enter) while
-someone else changes that image's attributes loses the change — a split moves
-content, and this is true of any mark change on moved text, not only images
-(#861).
+other (#860). And **splitting a block anywhere before an image in it** (Enter in the
+text before the image, not only right before it) while someone else changes that
+image's attributes loses the change — a split moves content, and this is true of any
+mark change on moved text, not only images (#861). Enter after the image keeps it.
+And **two people changing different attributes of one image** at the same moment
+(one its `alt`, the other its `title` or `src`): an image's attributes merge as one
+value, so the image ends up exactly as one of them left it and the other's change is
+lost. Changing an image's attributes while someone else types beside it, makes the
+line bold, turns it into a heading or deletes a neighbouring character keeps the
+change; if they delete the image, it is deleted.
 
 Typing right after a link while someone else changes that link at the same moment
 keeps their change — a new `href`, removing the link, or extending it over the text

@@ -40,12 +40,12 @@
 //! the viewport origin (Chrome: its static position —
 //! `read_layout_results`' fixed arm); an inline-level absolute (`<span
 //! style="position: absolute">`) takes a block's static position (Chrome: in the
-//! line — Stylo blockifies it). A fourth is the one shape with no wrapper-free
-//! twin: a `position: relative` inline is the absolute's containing block per
-//! CSS 2.1 §10.1, and rinch resolves the insets against the block container
-//! instead. Each is filed — #632 (static position after the line block), #633
-//! (`fixed` auto insets), #634 (inline-level absolute), #631 (the `relative`
-//! inline containing block); see the fixture docs.
+//! line — Stylo blockifies it). Each is filed — #632 (static
+//! position after the line block), #633 (`fixed` auto insets), #634
+//! (inline-level absolute); see the fixture docs. The one shape with no
+//! wrapper-free twin — a `position: relative` inline, which is the absolute's
+//! containing block per CSS 2.1 §10.1 — was a fourth until #631, and is
+//! pinned in `abs_inline_containing_block_tests`.
 //!
 //! # Fixed points these fixtures step off
 //!
@@ -663,16 +663,15 @@ fn an_absolute_in_a_multi_line_run_agrees_with_its_twin() {
 }
 
 /// **A `position: relative` inline is the absolute's containing block** (CSS 2.1
-/// §10.1) and rinch does not model that: the insets resolve against the block
-/// container, so `top: 0; left: 0` lands at the container's `(0, 0)` where
-/// Chrome lands at the span's first fragment — `(34.7, 1)` with `lead ` before
-/// the span, `(0, 1)` without. Same class as the case #386 corrected (the
-/// containing block is a positioned ancestor that is not the Taffy parent),
-/// one level worse because this ancestor has no box in Taffy at all, which is
-/// why `out_of_flow_kind` leaves it alone. Filed as #631; this fixture pins that the
-/// box is laid out, reachable, painted, and states the number it gets.
+/// §10.1, issue #631): `top: 0; left: 0` lands on the span's first fragment —
+/// after `lead `, on the line — not on the block container's corner, where it
+/// landed while the insets resolved against the container (the same class as
+/// #386's case, one level worse because this ancestor has no box in Taffy at
+/// all). The numbers are text-measured, so this fixture, which declares no
+/// face, asserts only what holds in any font; Chrome 153's are pinned with the
+/// bundled Inter in `abs_inline_containing_block_tests`.
 #[test]
-fn an_absolute_in_a_relative_inline_is_laid_out_and_the_containing_block_is_stated() {
+fn an_absolute_in_a_relative_inline_resolves_against_the_inlines_fragment() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = el(&mut doc, body, "div", CONTAINER);
@@ -686,13 +685,16 @@ fn an_absolute_in_a_relative_inline_is_laid_out_and_the_containing_block_is_stat
 
     assert!(reachable(&doc, abs), "laid out");
     assert_eq!(size_of(&doc, abs), (40.0, 30.0));
-    assert_eq!(
-        painted_at(&doc, abs, container),
-        (0.0, 0.0),
-        "DOCUMENTED DIVERGENCE (#631): resolved against the container; Chrome resolves \
-         against the span's first fragment (34.7, 1). When the containing-block \
-         #631 lands this assertion is the one to flip."
+    let (x, y) = painted_at(&doc, abs, container);
+    assert!(
+        (10.0..100.0).contains(&x),
+        "x = {x}: after `lead `, not at the container's corner"
     );
+    assert!(
+        y.abs() <= 3.0,
+        "y = {y}: the fragment's top, within the font's leading of the line's"
+    );
+    assert_eq!((x.fract(), y.fract()), (0.0, 0.0), "on the pixel grid");
     assert_consistent(&doc, "relative inline");
 }
 

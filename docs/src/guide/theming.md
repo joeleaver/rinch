@@ -433,7 +433,8 @@ Measured on the desktop engine:
 | `:indeterminate`, `:valid`, `:invalid`, `:in-range`, `:out-of-range`, `:default`, `:target`, `:fullscreen`, `:modal`, `:popover-open`, `:autofill`, `:user-valid`, `:user-invalid` | **never match** | they parse, then fall through to a catch-all `false` — rinch has no constraint validation, no document/fragment concept, and no "default" tracking distinct from current state |
 | `::before`, `::after` | works | |
 | camelCase SVG type selectors (`linearGradient`, `clipPath`) | works (#683) | `is_html_element_in_html_document` answers `false` for SVG content tags (`attr_name::is_svg_content_tag`), so the selector keeps the author's exact spelling instead of being lowercased as if every element were HTML |
-| Presentational attributes (`<img width=100>`, `<td bgcolor>`) | **no effect** | legacy-attribute hints are not synthesized |
+| `width` / `height` attributes on `<img>`, `<video>`, `<iframe>` | works | mapped to `width` / `height` below every author rule and above the UA sheet's normal rules, plus the pair's aspect ratio on an image or video (#684) |
+| Other presentational attributes (`<td bgcolor>`, `<img hspace>`, `<hr width>`, `<table width>`) | **no effect** | no hint is synthesized for them (#1419) |
 
 Reach for a class where the table says a selector does not match — that is the
 one spelling with no gap on either backend.
@@ -572,8 +573,9 @@ Where desktop still differs from a browser:
   plain `<span>` (at any depth of them) sitting directly in the containing
   block: the box then counts there, as a browser counts it. Under a
   `position: relative` span — which is then the box's containing block — it
-  is counted only when the scroll container is itself positioned, and at the
-  wrong offset (#1049).
+  counts when the scroll container is the block holding the span's line,
+  placed against the span's text (#1049, #631); with another block between
+  them it is counted nowhere (#770).
 - **A child's `transform` and its end margins** do not extend the scroll range;
   a browser's scroll range includes both.
 

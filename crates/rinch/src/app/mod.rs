@@ -69,6 +69,10 @@ mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_focus_and_reveal_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_image_drop_review_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_image_drop_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_inline_leaf_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_line_edge_scrolled_tests;
@@ -177,6 +181,8 @@ mod perf_stats_tests;
 mod popover_dropdown_transform_hit_test_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod review_1429_pimble_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]

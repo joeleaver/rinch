@@ -1,0 +1,89 @@
+name: Install the pinned Rust toolchain
+description: >-
+  Installs the exact Rust version `rust-toolchain.toml` names, so CI and a
+  contributor's `cargo` run the same compiler and the same clippy (#736).
+
+# Why this exists (#736). `rust-toolchain.toml` used to say `channel = "stable"`
+# and every job used `dtolnay/rust-toolchain@stable`. Both read "stable" and
+# meant different compilers: the action installs the newest stable on every run,
+# while a contributor's `stable` is whatever `rustup update` last fetched. A new
+# stable brings new clippy lints, so the exact CI command passed locally and
+# failed after the push (#729, on a lint 1.97 did not have). On 2026-10-06 CI
+# was on 1.99.0 and the development host on 1.98.1.
+#
+# Now the file names one exact version and this action is the only place a
+# workflow gets a toolchain from. To move it, see "Rust toolchain" in CLAUDE.md.
+#
+# The version is read with a strict pattern on purpose: `stable`, `1.99` or
+# `beta` in the file fails here, in every job, rather than quietly floating
+# again.
+
+inputs:
+  path:
+    description: Directory holding `rust-toolchain.toml` (the checkout).
+    default: .
+  components:
+    description: Comma-separated rustup components to install.
+    default: ""
+  targets:
+    description: Comma-separated extra targets to install.
+    default: ""
+  override:
+    description: >-
+      `true` exports `RUSTUP_TOOLCHAIN` for the rest of the job, so every
+      later `cargo` uses this version whatever directory it runs in. For a job
+      with more than one checkout (`perf.yml`).
+    default: "false"
+
+outputs:
+  channel:
+    description: The pinned version, e.g. `1.99.0`.
+    value: ${{ steps.pin.outputs.channel }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the pin from rust-toolchain.toml
+      id: pin
+      shell: bash
+      env:
+        TOOLCHAIN_FILE: ${{ inputs.path }}/rust-toolchain.toml
+      run: |
+        channel=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$TOOLCHAIN_FILE")
+        if [[ ! "$channel" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error file=rust-toolchain.toml::channel is '$channel'; it must be an exact version such as 1.99.0 (#736)"
+          exit 1
+        fi
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+        echo "rust-toolchain.toml pins $channel"
+
+    - name: Install Rust ${{ steps.pin.outputs.channel }}
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - name: Use it for every later step
+      if: inputs.override == 'true'
+      shell: bash
+      env:
+        CHANNEL: ${{ steps.pin.outputs.channel }}
+      run: echo "RUSTUP_TOOLCHAIN=$CHANNEL" >> "$GITHUB_ENV"
+
+    # The check that matters: what `cargo` in the checkout resolves to. A second
+    # toolchain file, an env override or a stale default would show here.
+    - name: Check the active toolchain
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        CHANNEL: ${{ steps.pin.outputs.channel }}
+        OVERRIDE: ${{ inputs.override }}
+      run: |
+        if [ "$OVERRIDE" = "true" ]; then export RUSTUP_TOOLCHAIN="$CHANNEL"; fi
+        got=$(rustc --version)
+        echo "$got"
+        case "$got" in
+          "rustc $CHANNEL "*) ;;
+          *) echo "::error::rustc is '$got', rust-toolchain.toml pins $CHANNEL"; exit 1 ;;
+        esac

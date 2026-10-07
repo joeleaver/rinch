@@ -72,6 +72,9 @@
 /// The HTML boolean-attribute set and the truthiness rule for it (issue #551).
 mod bool_attr;
 
+/// HTML's rules for parsing dimension values, for `width`/`height` (#684).
+mod html_dimension;
+
 /// HTML's rules for parsing integers, for integer attributes (#1138, #1153).
 mod html_integer;
 
@@ -89,6 +92,7 @@ pub mod traits;
 pub use bool_attr::{
     attr_is_truthy, data_attr_is_on, is_boolean_attribute, is_presence_reflected_attribute,
 };
+pub use html_dimension::{HtmlDimension, parse_html_dimension};
 pub use html_integer::{parse_html_integer, parse_html_non_negative_integer};
 pub use inline_style::{
     StyleProp, normalize_property_name, serialize_declarations, split_declarations,
@@ -1141,6 +1145,80 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 ///
 pub(crate) use render_scope::sweep_for_discard;
 
+thread_local! {
+    /// Every retired node a view handed back on this thread, and the nodes
+    /// already warned about (issue #733).
+    static RETIRED_RETURNS: (std::cell::Cell<u64>, RefCell<std::collections::HashSet<(u64, NodeId)>>) =
+        (std::cell::Cell::new(0), RefCell::new(std::collections::HashSet::new()));
+}
+
+/// How many distinct retired nodes are remembered as warned about. Past this
+/// nothing more is logged: the set must not grow with a list that churns
+/// through keys, and thirty-two reports of one mistake are enough.
+const RETIRED_WARNINGS: usize = 32;
+
+/// Count, and emit a `tracing` warning for, a `for` / `if` / `match` /
+/// component closure whose **returned node** the backend has retired
+/// (issue #733).
+///
+/// That is a cache returning a subtree that was discarded under it — built
+/// through the row's or branch's own scope, so the helper released it the
+/// first time the row left. The helper inserts nothing for such a node. Every
+/// such return is counted ([`__retired_view_returns`]); the warning is emitted
+/// once per `(document, node)`, for the first [`RETIRED_WARNINGS`] nodes on
+/// the thread and none after.
+///
+/// What this does **not** do:
+///
+/// - **Show anything by itself.** It is a `tracing::warn!`, seen only where a
+///   subscriber is installed. The desktop shell installs one, where
+///   `is_retired` is always `false`; `rinch-web` installs none (issue #1455)
+///   and neither does a `cargo test` run.
+/// - **Look inside the returned node.** A retired node nested in markup the
+///   closure built fresh is inserted (a no-op) by the closure's own
+///   `append_child`, not by a helper, and is neither counted nor warned about
+///   (issue #1456).
+/// - **Fire on `rinch-dom`.** Only a backend that reclaims can tell
+///   ([`DomDocument::is_retired`]): `rinch-web` and the mock. On `rinch-dom`
+///   the node still re-inserts (issue #723), so there is no loss to report —
+///   and no sign that the same code loses the row in a browser.
+pub(crate) fn warn_if_retired(node: &NodeHandle, helper: &'static str) {
+    let Some(doc) = node.doc.upgrade() else {
+        return;
+    };
+    let Ok(doc) = doc.try_borrow() else {
+        return;
+    };
+    if !doc.is_retired(node.node_id) {
+        return;
+    }
+    let key = (doc.doc_key(), node.node_id);
+    drop(doc);
+    let first = RETIRED_RETURNS.with(|(seen, warned)| {
+        seen.set(seen.get() + 1);
+        let mut warned = warned.borrow_mut();
+        warned.len() < RETIRED_WARNINGS && warned.insert(key)
+    });
+    if first {
+        tracing::warn!(
+            "rinch: a `{helper}` closure returned node {:?}, which was already discarded, so \
+             nothing is shown for it. A subtree that is built once and handed back from a \
+             cache must not be built through the scope the closure is given: that scope \
+             owns it, and it was released when the row or branch last went away. Build it \
+             through `scope.cache_scope()` and keep that scope with the cached node, or \
+             build it outside the closure (issue #733).",
+            node.node_id
+        );
+    }
+}
+
+/// **Test-only.** `(retired nodes views handed back, warnings logged)` on this
+/// thread so far (issue #733).
+#[doc(hidden)]
+pub fn __retired_view_returns() -> (u64, usize) {
+    RETIRED_RETURNS.with(|(seen, warned)| (seen.get(), warned.borrow().len()))
+}
+
 /// Release the scratch container an `rsx!` component site builds its children
 /// in (issue #719).
 ///
@@ -1267,6 +1345,7 @@ where
                 let _owner = child_scope.push_owner();
                 render_fn(&mut child_scope)
             };
+            warn_if_retired(&node, "component");
             m.insert_after(&node);
             cc.borrow_mut().push(node);
             *cs.borrow_mut() = Some(child_scope);
@@ -1690,6 +1769,98 @@ mod tests {
         assert_eq!(
             doc.get_attribute(node_id, "class"),
             Some("test".to_string())
+        );
+    }
+
+    /// A batch carries **property writes only** (issue #756). The match has no
+    /// wildcard on purpose: a variant added to `DomUpdate` stops this compiling,
+    /// and a structural one (append, insert, remove, replace) must not come
+    /// back — `apply` is handed a `&mut dyn DomDocument` and cannot reach the
+    /// late-child registry the `NodeHandle` verbs notify.
+    #[test]
+    fn a_dom_update_is_a_property_write_and_nothing_else() {
+        fn kind(update: &DomUpdate) -> &'static str {
+            match update {
+                DomUpdate::SetText { .. } => "text",
+                DomUpdate::SetAttribute { .. } => "attribute",
+                DomUpdate::RemoveAttribute { .. } => "attribute",
+                DomUpdate::SetStyle { .. } => "style",
+            }
+        }
+        let node = NodeId(1);
+        let all = [
+            DomUpdate::SetText {
+                node,
+                text: String::new(),
+            },
+            DomUpdate::SetAttribute {
+                node,
+                name: String::new(),
+                value: String::new(),
+            },
+            DomUpdate::RemoveAttribute {
+                node,
+                name: String::new(),
+            },
+            DomUpdate::SetStyle {
+                node,
+                property: String::new(),
+                value: String::new(),
+            },
+        ];
+        assert_eq!(
+            all.iter().map(kind).collect::<Vec<_>>(),
+            ["text", "attribute", "attribute", "style"]
+        );
+    }
+
+    /// Every arm of `UpdateBatch::apply` lands, in push order (the last write
+    /// of one attribute wins, and a removal after a write removes).
+    #[test]
+    fn an_update_batch_applies_each_property_write_in_order() {
+        let mut doc = MockDomDocument::new();
+        let text = doc.create_text("old");
+        let el = doc.create_element("div");
+
+        let mut batch = UpdateBatch::new();
+        batch.push(DomUpdate::SetText {
+            node: text,
+            text: "new".to_string(),
+        });
+        batch.push(DomUpdate::SetAttribute {
+            node: el,
+            name: "title".to_string(),
+            value: "first".to_string(),
+        });
+        batch.push(DomUpdate::SetAttribute {
+            node: el,
+            name: "title".to_string(),
+            value: "second".to_string(),
+        });
+        batch.push(DomUpdate::SetAttribute {
+            node: el,
+            name: "lang".to_string(),
+            value: "en".to_string(),
+        });
+        batch.push(DomUpdate::RemoveAttribute {
+            node: el,
+            name: "lang".to_string(),
+        });
+        batch.push(DomUpdate::SetStyle {
+            node: el,
+            property: "color".to_string(),
+            value: "red".to_string(),
+        });
+        assert_eq!(batch.len(), 6);
+        batch.apply(&mut doc);
+
+        assert_eq!(doc.text_content(text), Some("new".to_string()));
+        assert_eq!(doc.get_attribute(el, "title"), Some("second".to_string()));
+        assert_eq!(doc.get_attribute(el, "lang"), None);
+        let style = doc.get_attribute(el, "style").unwrap_or_default();
+        assert!(
+            style.contains("color") && style.contains("red"),
+            "{style:?}"
         );
     }
 

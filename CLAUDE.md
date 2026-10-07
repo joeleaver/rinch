@@ -145,6 +145,42 @@ cargo fmt                      # Format
 RINCH_TREE_CHECK=1 cargo test --workspace
 ```
 
+### Rust toolchain
+
+`rust-toolchain.toml` pins **one exact Rust version** (`channel = "1.99.0"`), and
+it is the compiler everywhere (#736). `cargo` in the repository uses it with no
+`+toolchain`; rustup downloads it (with `rustfmt`, `clippy` and the
+`wasm32-unknown-unknown` target) the first time. Every workflow installs the
+version that file names through `.github/actions/rust-toolchain`, the only place
+a workflow gets a toolchain from: it reads the file, fails on anything that is
+not `X.Y.Z`, and checks `rustc --version` afterwards. So `cargo clippy
+--workspace --all-targets -- -D warnings` run locally is the lint set CI runs.
+
+It used to say `channel = "stable"` beside `dtolnay/rust-toolchain@stable`: the
+newest stable in CI and whatever `rustup update` last fetched locally, under one
+name. A new stable brings new clippy lints, so a clean local clippy failed after
+the push (#729). Do not write `cargo +stable` or `cargo +<version>` in this
+repository to "match CI" any more; a `+toolchain` overrides the pin.
+
+- **Bumping it** is its own pull request: change the `channel` line, run the CI
+  clippy invocations (`ci.yml`'s `clippy`, `clippy-wasm`, `clippy-android` and
+  `check-android` jobs), fix what the new lints report in the same PR, and
+  update the version written in this section and in `rust-toolchain.toml`'s
+  comment. Nothing bumps it automatically, so new lints arrive only in that PR.
+- **Targets.** rustup adds the file's targets to the pinned toolchain only. The
+  Android targets are not in the file (CI's Android jobs ask the action for
+  them); add them with `rustup target add aarch64-linux-android
+  x86_64-linux-android` from inside the repository, which applies to the pinned
+  toolchain. `E0463: can't find crate for core` means a missing target, not a
+  broken build.
+- **After pulling a bump**, `cargo clean`: cargo keeps the old compiler's
+  artifacts beside the new ones, and a gated `target/` is 20 GB or more.
+- **CI caches** in `ci.yml` carry the version in their key, so a bump starts
+  each job from a cold `target/` once, not from the old compiler's.
+- **`perf.yml` compiles base and head with the head's pin** (it exports
+  `RUSTUP_TOOLCHAIN`), so a bump PR's table shows no codegen difference and the
+  job does not measure what a new compiler costs.
+
 ## Architecture
 
 ```
@@ -358,8 +394,18 @@ step gets `tabindex="0"`, `role="button"` and a `data-rid` — the same shape
 `register_focus_target` needed — and loses all three, **and the clickable
 class**, the moment a sibling insertion or removal shifts it past `active`
 with nothing else granting it (a step's own ask is the one thing that keeps
-the class regardless of position). The handler is registered once per step,
-lazily, and reads the step's *current* position back from the DOM at **click**
+the class regardless of position). The handler is registered once per step
+**per stepper render**, lazily (#1428: it closes over that render's
+`on_step_click`, so the step's record names who registered each id; a step
+moved to another stepper is wired to that one and stops calling the first, and
+one moved into a stepper with no callback loses its `data-rid`, `tabindex`
+and `role`, and the clickable class unless the step asked for it itself or
+that stepper's `allow_next_steps_select` grants it past `active`; an entry
+whose handler is gone is pruned at the next registration, and a handler a
+late pass registers is owned by the stepper's render, not by the code that
+made the insertion, so both go when the stepper unmounts; a wired step moved
+out of **every** stepper keeps its wiring, #1453), and reads the step's
+*current* position back from the DOM at **click**
 time rather than closing over the position it saw when it registered (the
 #714 pattern: a late insertion or removal can renumber a step after its
 handler is wired, issues #716/#745). With no `on_step_click` set, nothing is
@@ -385,7 +431,16 @@ closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
 that take a node **out** of a tree (`remove_child`, `remove`, `discard`, and
 `replace_with` for the node it displaces) plus the implicit detach an insertion
 verb performs when handed a node that already has a parent — which is the only
-thing that tells a container a child *moved away*. The two halves are separate
+thing that tells a container a child *moved away*. Nothing else moves a node:
+`UpdateBatch` / `DomUpdate` (both in the prelude) carry **property writes only**
+(`SetText`, `SetAttribute`, `RemoveAttribute`, `SetStyle`) since #756, which
+removed their `AppendChild` / `InsertBefore` / `RemoveChild` / `ReplaceNode`
+variants — `apply` takes a `&mut dyn DomDocument` and could not notify, so a
+node moved through a batch reached no observer. `apply` is still the literal
+backend call per arm: `SetAttribute` is not `write_attribute` (no boolean
+rule), and no pending effect is flushed first. Not notified, and open: text
+written over an element's children (`NodeHandle::set_text`, `SetText`) orphans
+them with no removal callback (#1440). The two halves are separate
 registrations: `Stepper` takes both, `List` and `RadioGroup` only the first,
 since neither of their defaults can be changed by a row going away.
 
@@ -415,8 +470,16 @@ The pieces that follow from it:
 - **A child moved between containers re-resolves**, because a container marks
   what it supplied (`data-list-icon`) and never touches what the child asked for
   itself.
-- **`Stepper` re-runs its whole pass, not just the newcomer**: an insertion
-  renumbers the steps after it and can restate them. That pass is idempotent by
+- **`Stepper` re-runs its pass over the whole list, not just the newcomer**: an
+  insertion renumbers the steps after it and can restate them. The pass walks
+  every step and **derives only the ones the change moved** (#748): a step
+  carrying this render's `data-stepper-settled` (a per-render id,
+  `Derivation::settler`) and still standing at its `data-step-position` is
+  passed over, since everything the pass gives a step follows from the
+  stepper's props, the step's position and what the step asked for when it
+  rendered. So a step's own asks (`disabled`, `data-state`, `data-step`) are
+  read when it is derived, and a hand edit of one on a settled step is not seen
+  until the step moves. That pass is idempotent by
   construction — `data-step-derived` says who wrote an index, `data-icon-has`
   records the step's icon *props* rather than what it drew, `data-icon-live`
   names the content key showing — and a glyph the step's props supplied is
@@ -424,7 +487,7 @@ The pieces that follow from it:
   later insertion — or a keyed `for` **reorder**, which repositions a live node
   with `insert_before` and can move it *backwards* — can want it back. Every
   alternate is kept while the stepper owns the step's state; one that named its
-  own `state` keeps none. A **removal** runs the same whole pass for the same
+  own `state` keeps none. A **removal** runs the same pass for the same
   reason, through `on_child_removed` (issue #745): a step that goes moves every
   step behind it backwards, which renumbers it and can restate it.
 - **A `StepperCompleted` is not a position, and neither is anything inside it**
@@ -447,8 +510,24 @@ The pieces that follow from it:
   `MockDomDocument` detach) and adds **+0.02 µs to every insertion** on the
   thread, for the parent read an insertion verb makes to find out whether it is
   moving a node out of somewhere. `Stepper` is the one container whose own patch
-  is O(n) per change, so growing *or shrinking* one step at a time is quadratic:
-  10.6 ms for 100 steps, against 0.11 ms for the ten a real stepper has (#748).
+  walks every item per change. A step already settled where it stands costs
+  three attribute reads and no write (#748), so what a change costs beyond that
+  is the steps it moved: one for an append, none for a removal from the end,
+  every step behind it otherwise (three writes each when only renumbered).
+  Counted on `MockDomDocument`, appending to a 40-step stepper went from 1005
+  attribute reads and 126 attribute writes to 142 and 4, and growing one from 0
+  to 40 steps from 2650 writes to 238. Growing or shrinking one step at a time
+  is still quadratic in the three reads, and a `for` row edited in place still
+  renumbers the steps behind it twice (an insertion, then a removal).
+  `crates/rinch-components/tests/stepper_cost_748.rs` pins the per-step
+  figures as differences between a 10-step and a 40-step stepper (three reads
+  per settled step, three writes per renumbered one, writes that do not grow
+  with the size) and the append and growth totals quoted here; the other
+  absolute counts are not pinned. `stepper::differential_tests` and
+  `stepper::extended_differential_tests` compare the pass with one that derives
+  every step, tree for tree, over random histories (insert, remove, move,
+  replace; nested steppers, stash and re-insert, moved wrappers and completed
+  blocks, re-render with new props).
 
 `RadioGroup::size` and the `Stepper` props are the same shape.
 
@@ -1353,6 +1432,7 @@ fn app() -> NodeHandle {
 | **Content / selection** | `load_html(&str)`, `load_doc(Node)`, `set_selection(Selection)`, `selection_clipboard()`, `anchor_selection()`, `set_dark_mode(bool)` |
 | **Notification** | `on_change(impl Fn() + 'static)` — the autosave / dirty-marking hook; `on_selection_change(impl Fn(&Selection))`, `on_caret_moved(impl Fn())` — see below |
 | **Links** | `on_link_click(impl Fn(&LinkClick) -> bool)` — a single primary press on a linked character, before the caret moves; `true` claims it. `on_link_hover(impl Fn(Option<&LinkHover>))` — enter / change / leave only. `link_at(pos) -> Option<LinkSpan>` |
+| **Pictures** | `on_image_input(impl Fn(ImageInput) -> Option<(String, String)>)` — offered every pasted or dropped picture as encoded bytes; `Some((src, alt))` inserts at once, `None` defers or refuses. `insert_image_at(&anchor, src, alt) -> bool` — the later answer, at the place the picture was aimed, the live caret kept; `false` = the place is gone or takes no image. `has_image_input_callback()`, `offer_image_input_at(&anchor, source, bytes, mime, name)` / `offer_image_input(..)` and `html_is_only_images(&str)` are the platform's side |
 | **Keys** | `on_key(impl Fn(&EditorKey) -> bool)` — offered every key press before the editor acts; `true` consumes it. `offer_key(&EditorKey) -> bool` is the platform's entry point |
 | **Geometry** | `caret_rect(Pos) -> Option<ElementBounds>` — where a caret at `pos` is on screen (logical window px on desktop, client px on web) |
 | **Focus / scroll** | `focus()` — take the keyboard as a press would, selection and scroll untouched; `scroll_into_view(from, to)` — bring a range (or `from == to`, a caret) on screen, start first, 16px margin, no focus needed; `scroll_into_view_aligned(from, to, ScrollAlign)` — `Nearest` is the same, `Fraction(f)` puts the start `f` of the way down the scroller's visible height (16px inside the edges, clamped by the content, moves even when in view; `NodeHandle::scroll_to_fraction` underneath) — see below |
@@ -1364,18 +1444,29 @@ completes **later** (an async paste, an image upload, a model completion). Every
 document-changing transaction maps the anchor forward through its steps, so
 `anchor.selection()` still points at the content the user aimed at however much they
 typed meanwhile; it answers `None` once the document is *replaced* (`load_doc`/
-`load_html`, a collab re-projection), and the anchor releases itself on drop. This is
+`load_html`), and the anchor releases itself on drop. **A remote collaboration change
+carries it too** (#1457): `integrate_remote` and `collab_delete_oversized_table` call
+`EditorCore::carry_anchors_remote`, which uses `rinch_editor_collab::RemoteCarry` — the
+rule the live selection is carried by (`remote.rs`: the block-level step map outside the
+top-level blocks the peer changed, `carried_position` inside a textblock the peer typed
+in), except that where the live selection is re-anchored to the nearest valid place, an
+anchor answers `None`: its block was removed, split, joined or changed kind (the changed
+run has a different block count before and after), and "nearby" would be a guess. It used
+to die on every remote change. Pins: `rinch-editor-view/tests/review_1433.rs` `collab::c1`
+to `c5`. This is
 what makes the asynchronous Ctrl+V (#149) land in the right place — desktop's
 `dispatch_editor_paste` anchors, reads the clipboard off-thread, then inserts at the
 anchor.
 
 **Seeing and rewriting a paste: `Plugin::handle_paste(&self, &EditorState, &PasteContent) -> Option<Transaction>`.** Every paste the platform reports as a paste event goes through `EditorHandle::paste(&PasteContent { text, html })`: desktop's Ctrl+V, Ctrl+Shift+V and context-menu Paste (`apply_paste_at_anchor`, at the anchor, in `event_dispatch.rs`) and the web's `paste` event (`on_paste`, `editor_input.rs`). A mobile keyboard's clipboard chip inserts text directly (`insert_text` / `beforeinput insertText`) and does **not** reach the hook. It asks `EditorState::handle_paste`, which offers the paste to each plugin in order; the first `Some` is dispatched as the paste (one transaction, so one undo step; `input: true`, so it scrolls; `commit`, so read-only refuses it and collaboration records it), and a claim that is refused does **not** fall through. No claim: html (`replace_selection_with_html`), else text; in a `NodeSpec::code` textblock the text flavour whenever there is one, verbatim. An empty paste asks no one; an image-only paste never reaches the hook (desktop's `RichPaste::Image`, the web's image-file branch). Desktop reads the text beside an html answer in the **same** clipboard job (`rinch_clipboard::paste_rich_with_text_async`), so a plugin sees both flavours on both platforms: a copied link's html is an `<a>` whose text may be a title, and the text is how a plugin tells a pasted URL. The web keeps its order html → image file → text: a bitmap with no html goes in as an image, as desktop's probe orders it. `set_paste_interceptor` still skips editor pastes; this is the editor's hook. Pins: `rinch-editor-core/tests/paste_hook.rs`, `rinch-editor-view/tests/paste_hook.rs`, `rinch/tests/editor_paste_hook.rs` (a real Ctrl+V through the clipboard worker; its own process because the completion needs a registered main thread), `rinch-web/tests/editor_paste_hook.rs`.
 
-**A paste is fitted, not just replaced** (#1382): the default paste is `Transaction::replace_selection(slice)` → `Transform::replace_range`, ProseMirror's `replaceRange` + `Fitter` (`rinch-editor-core/src/transform/fit.rs`), where it was a raw `tr.replace` that refused any block at a caret and fell back to `text/plain`. One step (a `ReplaceStep`, or a `ReplaceAroundStep` when the text after the caret moves into the pasted content) or nothing. Content open at the slice's start continues the textblock, the rest keeps its structure, the tail after the caret joins the textblock the slice ends in (`<p>a|bc</p>` + a two-item list = `<p>aA</p><ul><li>Bbc</li></ul>`); a closed block (rule, table) splits the textblock and leaves no empty block at its edge; over a whole textblock (an empty line included) a slice that starts in a **`NodeSpec::defining`** node replaces it (`list_item`, `task_item`, `heading`, `blockquote`, `code_block` — so a pasted list, heading or quote on an empty line is that block); list items pasted in a list are sibling items. `slice_from_html` opens each edge down to the textblock there (a list is open 3/3, a table or rule closed), `clipboard_slice` (what `selection_clipboard` cuts) keeps the list or table around content the top node does not take, so copied items say which list they were in. **Not ProseMirror's:** no node is created (`fillBefore`) or wrapped (`findWrapping`) to make a fit valid — `ContentMatch` is a part list, asked through `matches` / `matches_prefix`, not a DFA — so such a fit fails; a fit never leaves the isolating node the range starts in; a range across two isolating nodes gets the plain `replace` only. Two reader bugs went with it: a void `<meta>` / `<link>` was skipped by looking for its end tag, which dropped **everything** after the `<meta charset>` Chrome and Firefox put first in what they copy (such a paste was plain text), and an inline element around blocks (Google Docs' `<b style="font-weight:normal">`) flattened them into one bold line — it is a container now, and a mark element around blocks (`<a href><h3>…</h3><p>…</p></a>`) puts its mark on the inline content inside them (`with_mark_inside`), except a `<b>`/`<strong>` whose own style says `font-weight: normal|400`, which is no mark anywhere. A list directly inside a list (Docs: `<ul><li>a</li><ul><li>b</li></ul></ul>`) nests under the item before it, and any other non-`<li>` child with content gets an item of its own (`list_item_contents`; they were dropped). All reader changes reach `load_html` too. **The HTML reader is total about text** (#1397, #1392, #1401; `serialize/html_tree.rs` builds the tree, `html.rs` maps it): no markup is refused, the text of every element it reads goes into valid content, and comments, conditional comments, `<style>`, `<script>` and `<head>` give none. It is not a browser's rendering: no CSS is read (`display: none` text is read), HTML 4's named references only, and with their `;` (#1415), and an empty block element is no line boundary (#1413). A tag name runs to whitespace, `/` or `>` (the old tokenizer stopped reading at `<o:p>`'s colon, so a Word paste kept one paragraph); an element with no node or mark is read through, inline unless it holds a block; end tags are implied as a browser implies them; bare `<td>`/`<tr>` runs are a table and what has no place in a table goes in front of it; a mark around blocks leaves hard breaks bare; a `<div style="white-space: pre">` (VS Code) is a code block; the tree is at most 192 elements deep (`html_tree::MAX_DEPTH`), which bounds the reader's recursion: an element opened deeper stays open (its end tag is matched by name), but is flattened into the element at the limit — a block as a child of it, split around the blocks inside it (its attributes go with its first part that holds anything — moved, not copied a part, which was quadratic); an inline element as its content, its mark lost — so past the limit no text is lost and every block is still a line of its own; what goes is nesting (the first cut opened nothing past 128 and ran separate blocks' words together). One line break does differ past the limit: an inline element that *holds a block* is a line of its own under it and joins the line it is in past it (`a<b>d<p>e</p>f</b>g` is `a`, `d`, `e`, `f`, `g` shallow and `ad`, `e`, `fg` deep, which is Chrome's reading at any depth). Chrome's limit is 512 and it keeps every element too; 192 is what an unoptimized build reads on a 2 MB thread stack (about 6.4 KB of stack a level, 1.1 KB optimized; `the_depth_limit_reads_on_a_small_stack`), so a document nested deeper than that reads back from its own HTML as the same lines with less nesting. A tag finds the element it closes however many are open: it scans the innermost `MAX_SCAN` (192) and past those asks `open_at`, an index of where each tag name is open, about the names in `SCOPE_NAMES` (every special or foreign element — the only ones that are closed by implication, stop that, or bar an end tag), so the answer is the unbounded scan's at a fixed cost a tag. (Round 1 just stopped at 192, and with that many unclosed elements in a block its end tag ended nothing: `<h1>` + 250 `<u>` + `head</h1>body` was `headbody`.) Reading is linear in the input's size on every shape tried, and pinned by step count on the three that were not (many open elements, a block split past the limit, padding); the constant grows with nesting up to the limit: a mark element around blocks re-marks them once a level (`with_mark_inside`), so 192 `<b>` around a 10,000-row table (283 KB) takes seconds, as it does on main. Not read: `<input>` / `<select>` values, embedded-content fallback, `<svg>`, `<math>` (an unclosed `<svg>`/`<math>` ends at the first HTML start tag the HTML parser ends foreign content at, so it no longer swallows the rest of the input; an unclosed `<select>` or `<object>` still does, where Chrome shows what follows), an `<img>` with an empty `src`; whitespace is not collapsed (#1406). Bare table parts that do not make full rows are padded with empty cells to a rectangle (`HtmlParser::pad_rows`), since a ragged table stalls a collaborating editor's outbound — **only when that takes at most 8 empty cells for each cell written** (16 whatever the number): a span claims slots without writing them (`<td colspan=1000>` over 65 one-cell rows asked for 64,935 cells from 1.2 KB), so past the bound the rows are left as written, ragged, and the grid is not even laid out when the spans cannot cover enough of it. A `<table>` is read as written and never padded; the reader makes no cell the markup did not write there, and its `colspan` is capped at 1000 as before. A misnested inline end tag across a block (`<b>a<div>b</b>c</div>d`) leaves its mark on to the end of the input (#1410; main dropped the `d`). **Code pasted in a line of text is a line each** (`fit::code_lines_as_blocks`, decided once for the range in `Transform::replace_range`, before any candidate): a slice open into a `NodeSpec::code` textblock, replacing a range that starts in a textblock that is not code and is **not exactly that textblock's whole content**, has that block turned into a paragraph per line first — the first continues the line, the text after the range joins the last; a one-line block is just text continuing the line. Otherwise a multi-line VS Code paste after `ab` was one paragraph holding raw `\n`, and at the *start* of a line with text the fit replaced the line with the code block and took the line's own text into it. A range that is exactly one textblock's whole content (an empty line, a line selected whole) takes the block as a block — one that starts at a line's start and ends in a later line does not (review of #1411, round 3: that range, and one copied line at the start of a line with text, still made the kept text code, or a heading holding line ends); a slice closed at its start lands whole; a code target takes the text. Pins: `rinch-editor-core/tests/html_reader_total_1397.rs` (generator + `reading_is_linear_in_the_input`, by step count), `html_reader_review_1411.rs` and `html_reader_review2_1411.rs` (depth, `<svg>`, padding and its bound, unclosed elements by the hundred, the flattening's step count, code at the start, middle and end of a line, the reviews' mutants), `html_reader_clipboard_samples.rs`, `replace_range.rs` (`code_lines_that_continue_a_line_of_text_are_a_line_each`), `rinch-editor-view/tests/html_reader_total_1397.rs`. **A cell selection is not a range** (`from()..to()` are the positions before its corner cells): `Transaction::replace_selection` refuses one, and the paste clears the cells (`table_ops::clear_cells`) and fits into the top-left one in the same transaction, as `insert_text` does. Bullet and ordered items join as siblings; a task list pasted in a plain item (or the reverse) nests, as in ProseMirror. The fitter steps a `MatchState` per placed node (`ContentMatch::start`/`advance`), not the whole child list (that was n²: 16,000 paragraphs 2.8 s → 22 ms); `a_fit_is_linear_in_what_it_places` pins it by step count. Pins: `rinch-editor-view/tests/paste_fit_1382.rs`, `review_1394_defects.rs`, `rinch-editor-core/tests/replace_range.rs`, `replace_range_fuzz.rs`, `html_reader_1394.rs`.
+**A paste is fitted, not just replaced** (#1382): the default paste is `Transaction::replace_selection(slice)` → `Transform::replace_range`, ProseMirror's `replaceRange` + `Fitter` (`rinch-editor-core/src/transform/fit.rs`), where it was a raw `tr.replace` that refused any block at a caret and fell back to `text/plain`. One step (a `ReplaceStep`, or a `ReplaceAroundStep` when the text after the caret moves into the pasted content) or nothing. Content open at the slice's start continues the textblock, the rest keeps its structure, the tail after the caret joins the textblock the slice ends in (`<p>a|bc</p>` + a two-item list = `<p>aA</p><ul><li>Bbc</li></ul>`); a closed block (rule, table) splits the textblock and leaves no empty block at its edge; over a whole textblock (an empty line included) a slice that starts in a **`NodeSpec::defining`** node replaces it (`list_item`, `task_item`, `heading`, `blockquote`, `code_block` — so a pasted list, heading or quote on an empty line is that block); list items pasted in a list are sibling items. `slice_from_html` opens each edge down to the textblock there (a list is open 3/3, a table or rule closed), `clipboard_slice` (what `selection_clipboard` cuts) keeps the list or table around content the top node does not take, so copied items say which list they were in. **Not ProseMirror's:** no node is created (`fillBefore`) or wrapped (`findWrapping`) to make a fit valid — `ContentMatch` is a part list, asked through `matches` / `matches_prefix`, not a DFA — so such a fit fails; a fit never leaves the isolating node the range starts in; a range across two isolating nodes gets the plain `replace` only. Two reader bugs went with it: a void `<meta>` / `<link>` was skipped by looking for its end tag, which dropped **everything** after the `<meta charset>` Chrome and Firefox put first in what they copy (such a paste was plain text), and an inline element around blocks (Google Docs' `<b style="font-weight:normal">`) flattened them into one bold line — it is a container now, and a mark element around blocks (`<a href><h3>…</h3><p>…</p></a>`) puts its mark on the inline content inside them (`with_mark_inside`), except a `<b>`/`<strong>` whose own style says `font-weight: normal|400`, which is no mark anywhere. A list directly inside a list (Docs: `<ul><li>a</li><ul><li>b</li></ul></ul>`) nests under the item before it, and any other non-`<li>` child with content gets an item of its own (`list_item_contents`; they were dropped). All reader changes reach `load_html` too. **The HTML reader is total about text** (#1397, #1392, #1401; `serialize/html_tree.rs` builds the tree, `html.rs` maps it): no markup is refused, the text of every element it reads goes into valid content, and comments, conditional comments, `<style>`, `<script>` and `<head>` give none. It is not a browser's rendering: no CSS is read (`display: none` text is read) and whitespace is not collapsed (#1406). Character references are the HTML standard's (#1415): 2125 names in `serialize/html_entities_table.rs`, generated from the standard's `entities.json` by `tools/gen_html_entities.py` (never edited by hand; about 29 KB of data, +31 KB on a 246 KB size-optimised wasm build of the reader), matched as the tokenizer matches them — with its `;` a name is the whole run of letters and digits, and the 106 legacy names also decode with no `;` as the longest one the run starts with (`&notit;` is `¬it;`), except in an attribute value before `=`, a letter or a digit (`?a=1&copy=2` stays). **A block-level element that holds no block ends the line before it** (#1413, `HtmlParser::end_line`): `a<div></div>b` is two paragraphs, where it read `ab`; such an element is a line itself when the text it holds directly is more than ASCII whitespace (a non-breaking space), and one that is empty or holds only collapsible whitespace directly is none (`<div> </div>` was a paragraph of one space; `<div><span> </span></div>` still is, where a browser shows no line). **An inline element that holds a block ends no line** (`read_children`): its children are read where it stands, with its mark in `Building::active` (inline content is parsed with those marks, blocks get them once through `push_blocks`), so `x<b>y<div>z</div>v</b>w` is `xy`, `z`, `vw` as in Chrome, where each part was a line of its own; a `<span style>` around blocks still carries no colour or highlight (#1462), so one with a stray `</p>` inside it now loses the colour main kept on its one fused line. A tag name runs to whitespace, `/` or `>` (the old tokenizer stopped reading at `<o:p>`'s colon, so a Word paste kept one paragraph); an element with no node or mark is read through, inline unless it holds a block; end tags are implied as a browser implies them; bare `<td>`/`<tr>` runs are a table and what has no place in a table goes in front of it; a mark around blocks leaves hard breaks bare; a `<div style="white-space: pre">` (VS Code) is a code block; the tree is at most 192 elements deep (`html_tree::MAX_DEPTH`), which bounds the reader's recursion: an element opened deeper stays open (its end tag is matched by name), but is flattened into the element at the limit — a block as a child of it, split around the blocks inside it (its attributes go with its first part that holds anything — moved, not copied a part, which was quadratic); an inline element as its content, its mark lost — so past the limit no text is lost and every block is still a line of its own; what goes is nesting (the first cut opened nothing past 128 and ran separate blocks' words together). Chrome's limit is 512 and it keeps every element too; 192 is what an unoptimized build reads on a 2 MB thread stack (about 6.4 KB of stack a level, 1.1 KB optimized; `the_depth_limit_reads_on_a_small_stack`), so a document nested deeper than that reads back from its own HTML as the same lines with less nesting. A tag finds the element it closes however many are open: it scans the innermost `MAX_SCAN` (192) and past those asks `open_at`, an index of where each tag name is open, about the names in `SCOPE_NAMES` (every special or foreign element — the only ones that are closed by implication, stop that, or bar an end tag), so the answer is the unbounded scan's at a fixed cost a tag. (Round 1 just stopped at 192, and with that many unclosed elements in a block its end tag ended nothing: `<h1>` + 250 `<u>` + `head</h1>body` was `headbody`.) Reading is linear in the input's size on every shape tried, and pinned by step count on the three that were not (many open elements, a block split past the limit, padding); mark elements nested directly in one another around blocks mark them once for each mark type (it was once a level: 192 `<b>` around a 2,000-row table read in 1.9 s unoptimised, now 51 ms); with a block-level element between each pair (95 × `<b><div>`) it is still once a level, as on main, linear in the rows and bounded by the depth limit. Not read: `<input>` / `<select>` values, embedded-content fallback, `<svg>`, `<math>` (an unclosed `<svg>`/`<math>` ends at the first HTML start tag the HTML parser ends foreign content at, so it no longer swallows the rest of the input; an unclosed `<select>` or `<object>` still does, where Chrome shows what follows), an `<img>` with an empty `src`; whitespace is not collapsed (#1406). Bare table parts that do not make full rows are padded with empty cells to a rectangle (`HtmlParser::pad_rows`), since a ragged table stalls a collaborating editor's outbound — **only when that takes at most 8 empty cells for each cell written** (16 whatever the number): a span claims slots without writing them (`<td colspan=1000>` over 65 one-cell rows asked for 64,935 cells from 1.2 KB), so past the bound the rows are left as written, ragged, and the grid is not even laid out when the spans cannot cover enough of it. A `<table>` is read as written and never padded; the reader makes no cell the markup did not write there, and its `colspan` is capped at 1000 as before. **A formatting element's end tag across an open block ends the element there** (#1410, `HtmlFragmentParser::end_under`; the HTML parser's fourteen formatting elements — `a`, `b`, `i`, `code`, `em`, `strong`, `u`, `s`, …): in `<b>a<div>b</b>c</div>d` `a` and `b` are bold and `c` and `d` are not, as a browser's adoption agency algorithm leaves them (the end tag was skipped, and the bold ran to the end of the input). The element's entry on the open-element stack becomes a placeholder that is spliced into its parent when it closes, and every element open above it gets a copy of the element around what it holds so far, so no path in the tree gets deeper; an inline element open inside the innermost block that is no formatting element ends too. The end tag is still skipped where Chrome skips it — out of a table cell, an `<object>`, `<marquee>` or `<select>`, a `<foreignObject>`/`<desc>` inside an open `<svg>`, with more than 7 blocks open in between (`MAX_ADOPT_BLOCKS`, Chrome 153's number), and for an element that is no formatting element (`<span>`, `<mark>`, `<sub>`) — and, which a browser does not do, with more than 32 elements of any kind open in between (`MAX_ADOPT`, what bounds one end tag's cost). Not done: a browser also opens a formatting element again after a block's end closed it (`<p><b>a</p>b` is two bold lines there, one here; #1445), and a second `<a>` inside an open one does not end the first. **A `</p>` with no `<p>` to close ends the line** (an empty `<p>` in a browser): `<p>a<ul>…</ul>c</p>d` puts `c` and `d` on two lines; it is an empty block that makes no paragraph, not an empty paragraph. Inline children of a list side by side are one item (`<ul><b>Aa</b>Bb<li>…` is `AaBb`, then the item), where each was an item; an inline element that holds a block still starts an item of its own there (#1446). Pins: `rinch-editor-core/tests/html_reader_1413.rs` (each expectation is Chrome 153's `innerText` lines and computed bold/italic for the same markup), `html_entities.rs`'s unit tests. **Code pasted in a line of text is a line each** (`fit::code_lines_as_blocks`, decided once for the range in `Transform::replace_range`, before any candidate): a slice open into a `NodeSpec::code` textblock, replacing a range that starts in a textblock that is not code and is **not exactly that textblock's whole content**, has that block turned into a paragraph per line first — the first continues the line, the text after the range joins the last; a one-line block is just text continuing the line. Otherwise a multi-line VS Code paste after `ab` was one paragraph holding raw `\n`, and at the *start* of a line with text the fit replaced the line with the code block and took the line's own text into it. A range that is exactly one textblock's whole content (an empty line, a line selected whole) takes the block as a block — one that starts at a line's start and ends in a later line does not (review of #1411, round 3: that range, and one copied line at the start of a line with text, still made the kept text code, or a heading holding line ends); a slice closed at its start lands whole; a code target takes the text. Pins: `rinch-editor-core/tests/html_reader_total_1397.rs` (generator + `reading_is_linear_in_the_input`, by step count), `html_reader_review_1411.rs` and `html_reader_review2_1411.rs` (depth, `<svg>`, padding and its bound, unclosed elements by the hundred, the flattening's step count, code at the start, middle and end of a line, the reviews' mutants), `html_reader_clipboard_samples.rs`, `replace_range.rs` (`code_lines_that_continue_a_line_of_text_are_a_line_each`), `rinch-editor-view/tests/html_reader_total_1397.rs`. **A cell selection is not a range** (`from()..to()` are the positions before its corner cells): `Transaction::replace_selection` refuses one, and the paste clears the cells (`table_ops::clear_cells`) and fits into the top-left one in the same transaction, as `insert_text` does. Bullet and ordered items join as siblings; a task list pasted in a plain item (or the reverse) nests, as in ProseMirror. The fitter steps a `MatchState` per placed node (`ContentMatch::start`/`advance`), not the whole child list (that was n²: 16,000 paragraphs 2.8 s → 22 ms); `a_fit_is_linear_in_what_it_places` pins it by step count. Pins: `rinch-editor-view/tests/paste_fit_1382.rs`, `review_1394_defects.rs`, `rinch-editor-core/tests/replace_range.rs`, `replace_range_fuzz.rs`, `html_reader_1394.rs`.
+
+**Pasted and dropped pictures: `EditorHandle::on_image_input(|ImageInput { source, bytes, mime, name, anchor }| -> Option<(src, alt)>)`** (desktop; the web does not offer pictures yet). An app that stores pictures itself is handed the **encoded** bytes and answers with the `src` the document carries: `Some((src, alt))` inserts at once, or it keeps the input, returns `None` and calls `insert_image_at(&input.anchor, src, alt)` when the bytes are stored (the anchor is a `SelectionAnchor`, so it follows the place through later edits and dies with a replaced document). `None` with nothing later is a refusal; **no `data:` URL is made while a callback is registered**. The runtime calls `offer_image_input_at(&anchor, ..)` with the place the picture goes (`offer_image_input` is the same at the live selection), which never calls the callback for an editor that `refuses_edits()`, for an anchor that names no place, or **where no image can be inserted** (a code block: `takes_image_at`, the insert's dry run), so the app is not asked to store a picture that would be refused. **A late picture leaves the person's caret alone**: `insert_image_at` is one transaction at the anchor; when the live selection is not the anchor's it is kept (mapped through the insertion), the scroll gate is not armed, and the picture is an undo step of its own on both sides (two selection-setting transactions around the insert end the history's typing group); when it is the anchor's, the caret ends up after the image as after `insert_image`. A refused insert changes nothing, and `false` tells the app to delete what it stored. `ImageInput` / `ImageInputSource` are `#[non_exhaustive]`. Two routes reach it, both in `rinch/src/app/event_dispatch.rs`: `apply_paste_at_anchor`'s `RichPaste::Image` arm (the bitmap encoded by `image_rgba_to_png`), which a paste whose html is pictures and nothing else also takes (`html_is_only_images`, then a second read, `paste_bitmap_or_html`: a browser's "Copy image" offers an `<img>` as html beside the bitmap, and the probe prefers html); and `editor_file_drop`, tried by `PlatformEvent::FileDropped` before the app's `data-onfiledrop` handler: `claim_editor_file_drop` (hit test, callback present, then `dropped_file_is_a_picture` per file: image extension, a regular file of at most `MAX_DROPPED_IMAGE_BYTES` = 64 MiB, and an image by its first twelve bytes, read there; caret to the drop point, **focus**, anchor) on the UI thread, `read_dropped_image` (typed by `sniff_image_mime`) on a spawned thread, and one parked `offer_dropped_images` per file, resumed as each is read. `editor_file_drop` **returns the paths the editor did not take**, and the `FileDropped` arm hands those to the app's `data-onfiledrop` handler: the PDF of a mixed drop, a text file named `.png`, a picture over the limit. The first clipboard read is routed by `paste_read_arrived` and the second answered by `bitmap_or_html`, both plain functions so the "Copy image" branch has a fixture. With **no** callback nothing changed: a pasted bitmap is still a PNG `data:` URL and a file drop is still the app's. An html paste with text **and** pictures is an ordinary paste whose `<img>`s keep their `src`; `Plugin::handle_paste` is where an app rewrites those. Pins: `rinch-editor-view/tests/image_input.rs` and `review_1433.rs`, `image_input_tests` in `event_dispatch.rs`, `rinch/src/app/editor_image_drop_tests.rs` and `editor_image_drop_review_tests.rs`.
 
 `on_change` fires only for **local, document-changing** edits: `update` (which typing, paste and IME commit all funnel through), `command`, `insert_image`, and `toggle_link`. Those are the four `notify_change()` call sites in `rinch-editor-view/src/handle.rs`; if you add a fifth mutation path, it needs one too. It deliberately does **not** fire for selection-only changes, for `load_doc`/`load_html` (a programmatic load isn't a user edit — firing would make an autosave consumer immediately re-save what it just loaded), or for `collab_receive` (already in the shared CRDT). The callback runs with no internal borrow held, so it may re-enter the handle freely — e.g. call `doc()` to serialize for the save.
 
-**Links are the app's; the pointer asks about the character under it** (`on_link_click` / `on_link_hover`). The editor never follows a link. `rinch_editor_core::link_at(doc, pos)` answers the link carrying the character **starting** at `pos` (content covering `pos..pos+1`) as a `LinkSpan { href, title, from, to }` over the whole run of adjacent content with the same `href`, across other marks. That is deliberately **not** `ResolvedPos::marks`, which answers what a *caret* would inherit: a link is non-inclusive, so a caret at either edge of it inherits no link, while the pointer over the link's first or last letter is on it. Desktop finds the character with `rinch_dom::text_query::cluster_range_at_point` (Parley's `Cluster::from_point_exact`, `None` beside a line's end) — never `byte_offset_from_position`, which answers the nearest caret boundary; the web takes "is there a link" from the browser's own hit test (`closest("a[data-pm-mark='link']")`) and "which character" from `caretRangeFromPoint`'s boundary plus that element's `href`. A press is offered in `try_new_editor_click` / `handle_mousedown` before the caret moves, only for `click_count == 1` / `detail <= 1`, never for the context press or a leaf; a claimed one returns after focus with nothing else touched. Hover: `registry::set_link_hover(doc, Some((handle, hover)) | None)` keeps the one hovered link per document and fires callbacks only on a change, with no borrow held; `registry::link_hover_wanted()` (a thread-local count of editors with a hover callback, decremented in `EditorCore`'s `Drop`) gates all of it, so a pointer move pays one `Cell` read when no app asked, and desktop reuses the move's shared hit (`move_hit`, #881), called last in the hover arm because the callbacks are app code. The web decides a click's default action on an `a[href]` inside `[data-pm-editor]` in `handle_link_click` (a cancelled `mousedown` does not cancel the click's navigation): prevented when the editor is **editable** or has an `on_link_click` callback, native in a **read-only** editor without one; a `click` with `detail == 0` (Enter on the focused link, which is a Tab stop) is first offered to `on_link_click`, found from the anchor element (`link_of_anchor`), and a non-link-mark anchor is never offered. **Unmount is silent** (#147/#183): `EditorHandle::mount` releases its registration in `scope.on_cleanup`, and `unregister_editor` drops any `LINK_HOVER` entry the editor held without calling back, which also releases its `link_hover_wanted` count at the unmount. Neither callback runs inside a `batch()` (like `on_change`). Pins: `rinch-editor-core/src/links.rs`, `rinch-editor-view/src/links.rs`, `rinch/src/app/editor_link_tests.rs`, `rinch-web/tests/editor_links.rs`.
+**Links are the app's; the pointer asks about the character under it** (`on_link_click` / `on_link_hover`). The editor never follows a link. `rinch_editor_core::link_at(doc, pos)` answers the link carrying the character **starting** at `pos` (content covering `pos..pos+1`) as a `LinkSpan { href, title, from, to }` over the whole run of adjacent content with the same `href`, across other marks. That is deliberately **not** `ResolvedPos::marks`, which answers what a *caret* would inherit: a link is non-inclusive, so a caret at either edge of it inherits no link, while the pointer over the link's first or last letter is on it. Desktop finds the character with `rinch_dom::text_query::cluster_range_at_point` (Parley's `Cluster::from_point_exact`, `None` beside a line's end) — never `byte_offset_from_position`, which answers the nearest caret boundary; the web takes "is there a link" from the browser's own hit test (`closest("a[data-pm-mark='link']")`) and "which character" from the caret-from-point boundary plus that element's `href` (`event_delegation::caret_point_from_point`, the one place rinch-web asks the browser for a caret under a point: `caretRangeFromPoint` where it exists, the standard `caretPositionFromPoint` otherwise — Firefox has only the latter, and a press there placed no caret before #1449; the standard path is tested by hiding the old call in Chrome 153, where the two agree on every point measured, and has not run in Firefox, #1461). A press is offered in `try_new_editor_click` / `handle_mousedown` before the caret moves, only for `click_count == 1` / `detail <= 1`, never for the context press or a leaf; a claimed one returns after focus with nothing else touched. Hover: `registry::set_link_hover(doc, Some((handle, hover)) | None)` keeps the one hovered link per document and fires callbacks only on a change, with no borrow held; `registry::link_hover_wanted()` (a thread-local count of editors with a hover callback, decremented in `EditorCore`'s `Drop`) gates all of it, so a pointer move pays one `Cell` read when no app asked, and desktop reuses the move's shared hit (`move_hit`, #881), called last in the hover arm because the callbacks are app code. The web decides a click's default action on an `a[href]` inside `[data-pm-editor]` in `handle_link_click` (a cancelled `mousedown` does not cancel the click's navigation): prevented when the editor is **editable** or has an `on_link_click` callback, native in a **read-only** editor without one; a `click` with `detail == 0` (Enter on the focused link, which is a Tab stop) is first offered to `on_link_click`, found from the anchor element (`link_of_anchor`), and a non-link-mark anchor is never offered. **Unmount is silent** (#147/#183): `EditorHandle::mount` releases its registration in `scope.on_cleanup`, and `unregister_editor` drops any `LINK_HOVER` entry the editor held without calling back, which also releases its `link_hover_wanted` count at the unmount. Neither callback runs inside a `batch()` (like `on_change`). Pins: `rinch-editor-core/src/links.rs`, `rinch-editor-view/src/links.rs`, `rinch/src/app/editor_link_tests.rs`, `rinch-web/tests/editor_links.rs`.
 
 **Popup hooks: `on_key`, `on_selection_change`, `on_caret_moved`, `caret_rect`** (what a `[[` link picker or `@` mention list needs; guide: `contenteditable.md#autocomplete-popups-keys-selection-and-caret-geometry`). All single-slot like `on_change`, free when unregistered, and called with **no internal borrow held**. `on_selection_change` and `on_caret_moved` are owed, not called, where the state changes: `EditorCore::note_selection` (from `commit` and the remote integrate) and `update_caret` (only when the overlay moved) set a flag, and `CoreMutGuard`'s `Drop` — the mutable borrow every change is made under — releases the borrow and the flush suppression and **then** calls; so a new mutation path through `commit` reports by default. The guard skips its calls only for a panic raised while it was held (compared with `panicking` at the borrow: on wasm a caught panic leaves `thread::panicking()` true for the page's lifetime). `on_key` is offered by the platforms before any editor handling **and before the interceptor and the dismiss stack** — only a menu chord wins over it, on both backends: web at the top of `handle_keydown` (a `document` **capture** listener, ahead of the bubble delegate that runs `dispatch_keyboard_event`) after the composing check (not for `Unidentified`/`Process`), desktop ahead of step 1 of the `KeyDown` dispatch whenever `FocusTarget::Editor` holds and the text context menu is shut (the spacebar is `" "` there as everywhere, #1161; the arbiter's editor arm offers only a key not offered there). So an autocomplete popup that claims Escape inside a `Modal` closes and the modal stays; an unclaimed Escape still closes the modal. It was interceptor-and-dismiss-stack-first on desktop until #916's review (D2), which made Escape reach the modal on desktop and the popup on web. `offer_key` itself declines while a preedit is shown. **The four callbacks carry their owner** (`Hook`, #147/#183 — `on_change` too): the ambient owner at registration is stored beside the closure, a callback whose owner is disposed is not called (`offer_key` answers `false`), a live one runs inside `owner.run`, and one registered outside any render keeps app lifetime and runs `unowned`. Without it a component that registered popup hooks on an app-level handle and unmounted panicked on the app's next `set_selection`/`load_html` (freed signal). With an input method on (Linux IBus / Wayland `text-input`), plain characters may arrive as IME commits and never reach `on_key`; a `[[` trigger belongs in `on_selection_change`. `caret_rect` asks `DomDocument::query_caret_rect_with_affinity(node, byte, affinity)` (default: the affinity-blind `query_caret_rect`, default `None`), with the caret-affinity hint at the head and `Downstream` anywhere else (see **Caret affinity** below): rinch-dom answers Parley's caret pushed through the painted transform (`RinchDocument::text_caret_window_rect_with_affinity`, which `editor_caret_point` also uses), the web a collapsed `Range` — except for a downstream caret at a soft wrap, drawn at the start edge of the character after it (`WebDocument::text_caret_viewport_rect`; `head_screen_rect` delegates to `caret_rect`); an element with no text answers its box origin, text not yet laid out answers `None`. **Desktop answers `None` for a block edited since the last layout** — which is every callback but `on_caret_moved`, fired from the post-layout caret pass. The overlays anchor to the container's padding box while block offsets are summed border-box origins, so both backends answer `DomDocument::content_origin_inset` with the container's border widths (web `clientLeft/Top`, desktop the computed border widths; the desktop answered zero and drew every overlay one border width right of and below the text until `editor_wrapped_selection_tests`). The overlays themselves (caret, selection rects, node outline) sit at `left: 0; top: 0` and are placed by `transform: translate(x, y)`, rounded to whole px in container space — within a pixel of the old absolute-rounded insets, not identical (`view.rs`, `overlay_translate`; #906): paint-only, so a caret move runs no Taffy compute on desktop, and a test that wants an overlay's position reads the painted box (`painted_border_box`, `getBoundingClientRect`) or the `transform`, never `left`/`top`. Pins: `handle.rs` `tests::popup_hooks`, `rinch/src/app/editor_popup_hooks_tests.rs`, `rinch-web/tests/editor_popup_hooks.rs`.
 
@@ -1437,7 +1528,7 @@ The design rests on one invariant — **`model ≡ project(model)`**: every loca
 
 **The inline atoms are the same kind of change, and need the same upgrade.** The format tag did not move for them either, and an older peer reads `@atom` as an unknown mark name. Joining from a snapshot that holds an image or a hard break fails loud (`Schema`, "unknown mark type `@atom` in CRDT"). A **live** older peer whose session integrates one is **poisoned** — `SessionPoisoned`, sticky, inbound *and* outbound — for as long as any atom remains in the shared document, and heals only when the last one is deleted. Measured by the review of #838 against a pre-atom build. So no peer may insert an image or press Shift+Enter until every peer runs a build with inline atoms in scope.
 
-**The atom attribute is resynced per char, not per span.** yrs extends a formatted range over an insert at its end boundary, so a char typed right after an image lands inside the image's `@atom` range. A per-span resync then cleared and rewrote the image itself, and that fresh write reverted a peer's concurrent `src` change on every replica (the #193 resurrection shape; review of #838). `resync_per_char` in `projection.rs` clears only the stray chars; it does the same for every non-inclusive mark (`link`, which yrs extends over a char typed after it the same way — though a char typed after a link is now inserted outside it in the first place, see **Inherited marks** above), and every other mark stays per span. **Two losses are left.** A split right before an atom loses a peer's concurrent change to its attrs, as a split loses any concurrent mark change on the content it moves (#861, pre-existing). And yrs formatting semantics: two *identical adjacent* atoms are one formatting range, and when two peers change one each at once, one change can be lost (measured 15 to 22 of 40 random client-id pairs; #860). Convergence holds, and `two_adjacent_identical_images_edited_concurrently_converge` pins only that.
+**The atom attribute is resynced per char, not per span.** yrs extends a formatted range over an insert at its end boundary, so a char typed right after an image lands inside the image's `@atom` range. A per-span resync then cleared and rewrote the image itself, and that fresh write reverted a peer's concurrent `src` change on every replica (the #193 resurrection shape; review of #838). `resync_per_char` in `projection.rs` clears only the stray chars; it does the same for every non-inclusive mark (`link`, which yrs extends over a char typed after it the same way — though a char typed after a link is now inserted outside it in the first place, see **Inherited marks** above), and every other mark stays per span. **Three losses are left.** A split anywhere before an atom in its block (Enter inside the text before an image, not only right before it) loses a peer's concurrent change to its attrs, as a split loses any concurrent mark change on the content it moves (#861, pre-existing); a split after it keeps the change. And yrs formatting semantics: two *identical adjacent* atoms are one formatting range, and when two peers change one each at once, one change can be lost (measured 15 to 22 of 40 random client-id pairs; #860). Convergence holds, and `two_adjacent_identical_images_edited_concurrently_converge` pins only that. **And an atom's attrs merge as one value**: `@atom` holds the whole attribute map, so two peers changing *different* attrs of one image at once (`alt` and `title`, or `src` and `alt`) converge on the image as one of them left it and the other's change is lost (the higher client id's write is kept); merging per attribute would take one formatting attribute per attr, a wire change. `crates/rinch-editor-collab/tests/image_attrs.rs` pins that (random client ids and histories included), the round trip of `src`/`alt`/`title`, the split loss, and what is kept: an attr change beside a peer's typing on either side, bold over the line, a retype of the block, or a deleted neighbouring char (deleting the image wins over the change).
 
 **An A22-refused local edit stalls outbound, it does not wedge it (#220).** The
 model applies the edit even though the CRDT refuses it, so from that moment the
@@ -1886,14 +1977,17 @@ tag-agnostic where HTML ignores `disabled` on a `<div>`, and rinch has no
 browser has no notion of, which meant one markup and opposite behaviour. To say
 *enabled*, **remove** the attribute, which is what a falsey reactive `bool` does
 for you (`NodeHandle::write_attribute`, #551).
-rinch's **own** `data-disabled`, `data-nofocus`, `data-trap-focus` and
-`data-backdrop` (#1093) keep the escape, and are the only four that have it — a
-rinch convention rather than a desktop quirk, which the latter three are what
+rinch's **own** `data-disabled`, `data-nofocus`, `data-trap-focus`,
+`data-backdrop` (#1093) and `data-scroll-lock-exempt` (#701) keep the escape,
+and are the only five that have it — a
+rinch convention rather than a desktop quirk, which `data-nofocus`,
+`data-trap-focus` and `data-backdrop` are what
 show: the web reads them the same way, through
 `[data-nofocus]:not([data-nofocus="false" i])`,
 `[data-trap-focus]:not([data-trap-focus="false" i])` and `data_attr_is_on`
 itself for `data-backdrop`. (`data-disabled` has no web reader; the browser does
-not know the attribute.) The rules are one function each —
+not know the attribute. Nor has `data-scroll-lock-exempt`: the web's scroll
+lock stops the page and no scroll container inside it.) The rules are one function each —
 `rinch_core::dom::data_attr_is_on` for the `data-` family, a bare
 `contains_key` for the HTML pair — and `"0"` is the only value that can tell
 which one a reader uses, so every desktop reader pins it
@@ -2033,7 +2127,7 @@ after it, the first stop at `0`), all measured in Chrome 153 and pinned by
 **`data-nofocus` takes the click without the keyboard** (issue #312) — the
 `preventDefault()`-on-mousedown mechanism browsers converged on, which an editor
 toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
-`data-disabled` — including the `"false"` escape, which the three rinch-owned
+`data-disabled` — including the `"false"` escape, which the rinch-owned
 attributes keep and the HTML pair does not — read **anywhere on the pressed
 node's ancestor chain** so a toolbar carries it once; it protects whatever holds
 the keyboard (editor, input, surface, node), the `data-rid` click still fires,
@@ -2179,11 +2273,34 @@ register_focus_target(
   putting the popup there would freeze the page whenever a `<select>` was open.
   `ContextMenu` is the other body portal and needs none *today* — its dropdown
   declares no `overflow`/`max-height`, so it is not a scroll container; give it
-  either and it inherits the trap silently. The exemption has **no portable
-  spelling**: `push_scroll_lock_exempt` is a `NodeTree` method, reachable from
-  the runtime and not through `NodeHandle`, so a scroll container built by a
-  *component* and sitting outside the locking overlay stays refused — the Linux
-  in-app menu bar's own dropdown is the known instance (#701). What the lock does **not** gate:
+  either and it needs the attribute below. **The portable spelling of the
+  exemption is `data-scroll-lock-exempt`** (#701,
+  `rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE`): `push_scroll_lock_exempt`
+  is a `NodeTree` method, reachable from the runtime and not through
+  `NodeHandle`, so a scroll container built by a *component* or an app and
+  sitting outside the locking overlay carries the attribute instead — on itself
+  or on an ancestor, since `scroll_locked_out` reads it on the same ancestor
+  walk (and only there, so only while a lock is held). A mark on a node that
+  **contains a locking root** — `<body>`, a wrapper around the overlay — is
+  ignored (`NodeTree::holds_scroll_lock_root`, one parent walk per root when a
+  mark is met), or it would reach the page behind the overlay and switch the
+  lock off (review of #1443: the page moved 700). The mark is not checked
+  against paint order, so a marked scroller *behind* a modal's backdrop still
+  scrolls through the wheel's geometric fallback
+  (`a_marked_panel_behind_the_backdrop_still_scrolls` pins it). It goes with its node, so
+  there is nothing to release. It is the fifth rinch-owned `data-` boolean
+  (`data_attr_is_on`: on unless `"false"`; a falsey reactive `bool` removes it)
+  and has no web reader, because the web's lock stops no inner scroller. The DOM
+  menu bar stamps it on each dropdown and each submenu flyout (a flyout is the
+  dropdown's sibling, not its descendant): they are window chrome, in no
+  overlay's root, and paint over an open `Modal` in the wrapped layout (bar 201
+  against 200) and in the borderless titlebar layout (both 200, the layer later
+  in the document), so a menu past `95vh` could not be scrolled while a
+  `lock_scroll` overlay was open. Pins: section 8 of
+  `app/overlay_scroll_lock_tests.rs`. That is the wheel; the dropdown's
+  scrollbar *thumb* cannot be grabbed with or without a lock (#1441:
+  `find_scrollbar_hit_node` prunes a subtree at an ancestor's own box, and the
+  dropdown hangs below its 28px bar). What the lock does **not** gate:
   programmatic scrolling (`set_scroll_top`), and keyboard page-scrolling, which
   desktop does not have at all. A touch scroll and the MCP `scroll` tool both arrive as
   `PlatformEvent::MouseWheel`, so they are gated. `RenderScope::body_handle()`
@@ -2399,11 +2516,11 @@ box is measured by its rect and by its own lines, so a `nowrap` line wider than
 the container counts. The same list holds an out-of-flow box hoisted out of a
 flowed inline element into its host (#591), which the element walk never
 reached (it saw the inline's `0x0` box); the containing-block rule is asked of
-it as of any child — of the **host**, which is where that rule and
-`out_of_flow_kind` do drift apart today: under a `position: relative` span the
-span is the containing block, so Chrome counts the box in the scroller around
-the span (at the span's offset), while rinch counts it only if the host is
-itself positioned, and then placed against the host (**#1049**).
+it as of any child, walking its DOM ancestors up to the host: under a
+`position: relative` span the span is the containing block and the host's
+content, so the box counts when the scroller **is** the block holding the
+span's line (#1049), at the span's fragment (#631); with another block between
+the scroller and the line it counts nowhere (#770).
 `DomDocument::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
 `content_extents`, and so is layout's own clamp of a scrolled container
@@ -2421,7 +2538,7 @@ stops at the first **box**, so an absolute whose containing block is a **non-par
 ancestor contributes to no box's range at all — unless everything between it
 and a block container above is non-positioned flowed inline elements and
 `display: contents` wrappers, which hoist it into that block container's box
-list (#591, reached since #995; a positioned span is **#1049**) — Chrome gives it to that
+list (#591, reached since #995; under a positioned span it counts there too, #1049) — Chrome gives it to that
 ancestor (measured: a 700x1500 absolute under a static `overflow: auto` div
 lands on `documentElement.scrollHeight`), and rinch used to give it to the
 wrong box, which is what grew the phantom bar (**#770**). **#769 is fixed**:
@@ -2615,10 +2732,43 @@ box:
   frame. **Their Taffy re-sync marks atomic inlines separately**, because that
   pre-pass fires only for `font-size` while a `transition: width` on a box
   *inside* an `inline-block` is #661's own symptom reached without the cascade
-  (found by the review of #694). A `color` tick reaches a text **leaf** with no
-  invalidation at all, because paint colours a leaf from the live style (#904);
-  an IFC's `text_layout` carries the brush and is **not** dropped by a tick:
-  that is #679.
+  (found by the review of #694). **A running `color` frame re-shapes nothing, for a leaf or an IFC**
+  (the frame that ends the run rebuilds an IFC's paint layout once, below).
+  Paint colours a text leaf from the live style (#904). An IFC's `text_layout`
+  carries each run's colour as a brush, so paint asks every text range for its
+  colour again (#679): `ifc::text_color` — the `color` of the text node's DOM
+  parent — recorded at the build as `IfcTextRange::color` (the root's own as
+  `InlineLayout::root_color`, which is what a `text-overflow: ellipsis`
+  rebuild's text follows), and `paint::text::LiveColours` draws the ranges that
+  answer differently in the new colour, glyph by glyph where two ranges share a
+  Parley run. An underline or line-through follows only where it was
+  `currentcolor` (no `text-decoration-color` from the range's element up to the
+  IFC root); a wavy underline and an inline element's background rectangle
+  (colour, padding, radius) are read from their owner's style on every paint
+  (`ifc::wavy_underline_color`, `ifc::inline_background_span`). Two things a
+  tick still rebuilds a paint layout for, with no Taffy compute
+  (`settle_ticked_text`): the frame an inline element's background **appears**
+  on (the layout holds a span only for an element that had one), and the frame
+  a colour **stops** moving — a finished transition, an ended or fill-settled
+  animation — so later paints are back on the layout's own brushes rather than
+  recolouring stretch by stretch for good; every paint of an IFC still makes
+  the comparison, one pass over its text ranges
+  (`perf_regression_scenarios::a_colour_transition_frame_on_ifc_text_shapes_nothing`,
+  `the_frame_that_ends_a_colour_transition_rebuilds_one_layout`). An animation
+  paused by a restyle is re-shaped at its frozen colour by that restyle's
+  cascade (`rv_e_paused_animation`). A split inline's (#513) text is drawn by
+  its container's boxes, so `compute_damage` names each text child's `ifc_root`
+  for a paint-dirty split inline — without it the software renderer kept such
+  text in its start colour until the run ended (`rv_m5_damage_split_inline`).
+  Pins: `crates/rinch-dom/tests/animated_text_brush_679_tests.rs`. Not covered:
+  a span on a line cut by `text-overflow: ellipsis` keeps its start colour for
+  the whole run and is right once it ends — the flat rebuild records no text
+  ranges (#1451, pinned by `rv_b1_span_on_ellipsis_line_mid_run`); an ellipsis
+  line laid out by an anonymous block box keeps a stale colour, after a plain
+  class change too (#1450, older than #679; the four `rv_a*` fixtures are
+  `#[ignore]`d on it); a `padding` frame on an inline element still runs a
+  Taffy compute and a shape (#1437); and a `color` transition still stops at
+  its own node (text in a child that inherits takes the end colour at once).
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
   not the cascade's.** That pass stores it as `Display::None`
   (`node::display_contents_taffy_style`), while `to_taffy_style` maps `contents`
@@ -3062,9 +3212,74 @@ its `build_ifc_layouts`; `replace_all` consumes the flag
 (`review2_1409_tests::c1_*`, `c3_*`); **a new writer of a box's position
 or scroll offset that runs after `read_layout_results` must set it too.**
 
-**Not covered:** a containing block that generates no box — a `position:
-relative` **inline** span — is left to Taffy, which resolves against the
-span's block container (**#631**); the shrink-to-fit *available* width of an
+**A positioned inline span is a containing block too** (#631, CSS 2.1 §10.1):
+`out_of_flow_kind` answers `AncestorAbsolute(span)` for a `position: relative`
+or `sticky` non-atomic inline, which has no box at all, and the block is read
+out of the lines of the inline formatting context that flows the span: from
+the top-left of its first fragment to the bottom-right of its last, zero wide
+when that is left of the first (a wrapped span). A fragment's left and right
+are the **visual** extent of its content (a span of right-to-left text is as
+wide as its text), its top and bottom the span's **own font's** rounded ascent
+and descent around the baseline whatever its children are set in (the face its
+stack resolves an `x` to, `out_of_flow::font_box`), moved by the span's **own**
+`vertical-align` shift (the nearest one among the span and the inline elements
+around it, as its text is drawn — a shifted child at its start or end moves
+nothing); an empty span is a zero-width fragment where it sits
+(Chrome 153, pinned with the bundled Inter in
+`tests/abs_inline_containing_block_tests.rs` and `review_1434_tests.rs`).
+**The spans of one context are measured together, once per set of lines**
+(`RinchDocument::measure_inline_containing_blocks` →
+`out_of_flow::measure_span_fragments`): one walk of the lines' clusters and one
+of the context's entries, kept beside the lines in
+`InlineLayout::span_fragments`, so each look at a box is a lookup and rebuilt
+lines (which come back with none) are measured again. It was one walk of the
+whole context per box per pass, quadratic in the boxes of one paragraph (review
+of #1434: a relayout of 800 badges in one paragraph took 1.36 s). The counters
+are `abs_inline_measures` and `abs_inline_measure_steps`, pinned at two sizes
+by `perf_regression_scenarios::spans_in_one_paragraph_are_measured_in_one_linear_walk`
+(854 steps for 50 badges, 1,708 for 100; spans nested in one another each
+walk their own clusters, so that case grows with the nesting depth). The chain of such a box ends at the
+block container **element** holding the line (`out_of_flow::inline_host` — an
+anonymous block box is stepped through), so that element's scroll carries the
+box and a scroller between the two does not. The position is snapped to the
+pixel grid in that element's frame, since a fragment starts between pixels (a
+host that is itself an `inline-block` stands between pixels on its own line,
+and the box with it). **Lines are built after the read-back**, so both halves
+run late, and only when the read-back met such a box
+(`NodeTree::abs_inline_cb_seen`): after `build_ifc_layouts` the spans are
+measured, `replace_all` places the boxes (on the text-only path too, where a
+`text-align` change moves the span), and `resolve_ancestor_absolutes(true)`
+compares each bake with the fragment the new lines give — a rewrite sends
+`resolve_layout` round again (compute, read-back, lines), so a box **sized**
+from a fragment whose size changed costs one more compute in that layout (the
+first one, a text edit inside the span) and a position-only one costs none.
+Not Chrome's, each pinned: a **split** inline (one holding a block-level child,
+#513) is not measured and keeps the block container (**#1424**), and neither is
+a span in a block that draws a `text-overflow: ellipsis` "…" (its lines are
+rebuilt as flat text); a relative span's own `left`/`top` moves neither its
+text nor the box (**#1425**); an inline's horizontal padding takes no room on
+its line, so the padding box starts that much further left (**#1426**); a
+raised span's fragment (`<sup>`, any positive `vertical-align`) follows glyphs
+rinch draws higher than Chrome, whose line grows for them (#1357: a `<sup>` 5px
+higher, `vertical-align: 10px` 10px, and a raised span that wraps is shorter
+by the growth of each line); a span in a larger font with **no text of its
+own** (empty, or holding only an atomic inline or smaller text) is the right
+size and sits 5px high, because rinch's line gets no strut from it (**#1463**);
+a wrapped span in a font taller than its `line-height` allows spans lines
+rinch keeps at the line height (three 22px lines of `16px/20px`: 66 tall
+against Chrome's 70); a wrapped **right-to-left** span's right edge is 4.5px
+off Chrome's, since parley puts a right-to-left line's trailing space at the
+line's left end where Chrome hangs it out of the line, and an empty span at
+the very end of a right-to-left run is 5px right of Chrome's; a span that ends in a `<br>` has no empty last fragment
+on the next line; a line of nothing but atomic inlines has no strut (#624,
+#1258), so a span on one hangs from the boxes' bottom edge. And **paint does
+not clip such a box by a static scroller around its span** (**#1438**, older
+than #631: `stacking::Collector` descends the box tree, never meets the span,
+and ends the box's clip chain at the next positioned box), so a badge whose
+line is scrolled out of a static `overflow: auto` div is drawn outside it;
+layout, the scroll range and damage do see the span.
+
+**Not covered:** the shrink-to-fit *available* width of an
 auto-width absolute is still the Taffy parent's (Chrome: four 130px
 inline-blocks under a 200px parent in a 400px containing block make a 400x40
 box; rinch 130x80 — **#1404**); a box whose containing block is a non-parent **scroll
@@ -3655,8 +3870,46 @@ gives the other dimension through the image's ratio, inline, block and as a
 flex item. So the `Image` component (`width: 100%; height: auto`) under a block
 parent is now as tall as its ratio says, where it kept the natural height. A
 flex container still stretches an `<img>` (Chrome does too); a grid container
-still stretches it, where Chrome does not (#1280). Presentational
-`width`/`height` attributes are still not read (#684).
+still stretches it, where Chrome does not (#1280). **The
+`width`/`height` attributes of `<img>`, `<video>` and `<iframe>` are
+presentational hints** (#684): each maps to the property of its name, read by
+HTML's rules for parsing dimension values
+(`rinch_core::dom::parse_html_dimension`: `"100"`, `"100px"` and `"100abc"` are
+100px, `"50%"` a percentage, `".5"`, `"+1"` and `"50*"` errors — Chrome 153's
+answers), as a declaration block on `Node::presentational_hints` that
+`synthesize_presentational_hints_for_legacy_attributes` hands Stylo at
+`CascadeLevel::PresHints`: below every author rule (a `*` rule, a layered
+one, `width: auto`) and above the UA sheet's normal rules; `revert` drops the
+hint and `revert-layer` keeps it. A write or removal of
+either attribute on one of the three rebuilds the block
+(`RinchDocument::sync_presentational_hints`) and restyles that element alone
+(`note_attribute_change`); any other attribute on them, and `width`/`height`
+on any other element, still cascades nothing. On an `<img>` and a `<video>`
+the pair also maps to `aspect-ratio: auto w / h` when both are lengths above
+zero (`replaced::attribute_ratio`): rinch has no `aspect-ratio` property
+(#1286), so the ratio goes from the attributes to the measure context
+(`NodeContext::Image::hint_ratio`, `NodeContext::Replaced::ratio`, kept by
+`replaced::sync_replaced_measure` on each cascade), where it is the ratio of
+an image with no natural size (not loaded, or failed) —
+`<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
+before the image arrives — and a loaded image's own ratio replaces it. A
+`<canvas>`'s two attributes stay its bitmap size, read as integers (#1173).
+Not Chrome's: the mapped ratio cannot be switched off — an author
+`aspect-ratio` is not read (#1286), so `aspect-ratio: auto; width: 200px;
+height: auto` on an unloaded hinted image is 200x100 where Chrome gives
+200x0; an unloaded or failed image with a non-empty `alt` reserves its
+attributes' 100x50 where Chrome lays out the alt text (48x18, both attributes
+ignored), and a failed one with one attribute and no `alt` is 100x0 where
+Chrome draws its 16x16 broken-image box; an out-of-flow image with an `auto`
+dimension fills its containing block (#1432, older than the hints); an
+iframe's hinted size is its border box, since every rinch
+box is (#1278), so it is 4px smaller than Chrome's; a percentage `height`
+attribute does nothing on an inline-level image, as a CSS one does not
+(#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300
+wide where Chrome stretches it to its container. The other presentational
+attributes (`hspace`, `vspace`, `border`, `align`, `<hr width>`, a table's)
+map to nothing (#1419). Pins:
+`crates/rinch-dom/tests/presentational_size_hints_tests.rs`.
 
 **App-installed schemes and retry:** `App::image_scheme("myapp-blob", loader)` (or
 `rinch::image::register_image_scheme`, the same registry without a builder) makes
@@ -3672,8 +3925,23 @@ for a host holding the document) queues the source for every live document, coun
 A failed source goes back to loading, a decoded one keeps its pixels until the new
 answer lands (and if that fails), and one whose load is in flight has that answer
 dropped and is asked for once more (`ImageCache::begin_reload` / `take_retries`), so a
-"not yet" already on its way cannot beat the reload.
-`crates/rinch-dom/tests/image_scheme_reload_tests.rs` is the pin.
+"not yet" already on its way cannot beat the reload. "In flight" covers a **reload**
+too: a failed source being reloaded is `Loading`, and a decoded one is listed in
+`ImageCache::reloading` (its entry stays `Decoded`, so the picture stays up), so a
+second reload during the first starts no load of its own; the first's answer is
+dropped and one load follows it. Two parallel loads of one source would land in
+either order and the older answer could win. **Every load pushes exactly one answer**:
+`request_image_load` catches a panic in the loader or the decode and pushes it as a
+failure (`image loader panicked: …`); a load that pushed nothing would leave its
+source in flight for the life of the document, which a reload only waits on. The key
+is the source as spelled (`reload_image("x:a")` does not reach `X:a`). `data` cannot
+be registered (`register_image_scheme` panics), so no app loader is offered a `data:`
+URL; the document's own loader still is, for a background `data:` URL and an
+undecodable `<img>` one (#1464). `rinch_core::image::scheme_of(src)` is the parser
+(named apart from `App::image_scheme`, which registers).
+`crates/rinch-dom/tests/image_scheme_reload_tests.rs` and `review_1429_tests.rs` are
+the pins, and `crates/rinch/src/app/review_1429_pimble_tests.rs` drives the whole
+late-blob flow through a `RinchApp` with software frames.
 
 **The same two calls on the web** (`crates/rinch-web/src/images.rs`). The browser loads
 `<img>` itself, so `WebDocument::set_attribute` routes an `<img>`'s `src` through
@@ -4615,6 +4883,8 @@ It falls out of that, with no special cases:
 | `if open { p { "hi" } }` — fresh markup | `discard` | the branch built it; nothing can show it again |
 | `if open { {panel} }` — a captured handle (the #654 shape) | `remove` | the closure was handed it; the next show puts it back |
 | a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
+| a `for` view that builds a row once **through `s.cache_scope()`** and caches it with that scope (#733) | `remove` | the row's scope did not mint it; the cache scope has no parent |
+| a `for` view that builds a row once **through the row's own scope** and caches it | `discard` — the row is lost on web; counted, and a `tracing` warning emitted, only when it is the closure's root node | the row's scope minted it |
 | a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
 | `if open { div { {panel} } }` — a captured handle *inside* branch-built markup | `remove` for `panel`, `discard` for the `div` | the walk below takes `panel` out before the recursive discard reaches it (#732) |
 
@@ -4665,15 +4935,96 @@ there is a JS call. Measured: +9.8% instructions on a 1000-row hide (`shell::bra
 `rinch-web/tests/{reinsertion,branch_reclaim_732,editor_in_branch_732}.rs`,
 `rinch/tests/embed_drop_minting_732.rs`.
 
-**One more shape is lost on web, and only `for` can reach it: #733.** A `view`
-closure that builds *lazily through the row's own scope* and caches afterwards
-owns its row by this rule, so the first removal discards it. A branch closure or
-a `render_fn` can build its cached subtree outside itself and capture it; a `for`
-view is only ever handed the row's scope, so lazy-build-then-cache is the only
-way to write it there. Both were equally lost before #719 —
-`rinch-web` pruned every removed subtree — and `branch_helper_transition_tests`
-passes on both because `rinch-dom` reclaims nothing (#723), which is a fixed
-point worth remembering when reading that file.
+**A cache filled from inside the closure builds through a cache scope (#733).**
+A `view` closure that builds *lazily through the row's own scope* and caches
+afterwards owns its row by this rule, so the first removal discards it — and
+disposes every effect, signal and handler it made, on every backend (the
+reactive half is #141's rule, not the node rule: counted on the mock, an effect
+built through the row scope did not run again for a write made after its row
+had left and come back). A
+branch closure or a `render_fn` can build its cached subtree outside itself and
+capture it; a `for` view is only ever handed the row's scope. So the view asks
+for a scope that is not the row's:
+
+```rust
+move |id: u32, s: &mut RenderScope| {
+    if let Some((row, _scope)) = cache.borrow().get(&id) {
+        return row.clone();
+    }
+    let mut keep = s.cache_scope();                  // parentless, same document
+    let row = keep.build(|__scope| rsx! { article { {id.to_string()} } });
+    cache.borrow_mut().insert(id, (row.clone(), keep));   // the scope stays with the node
+    row
+}
+```
+
+In `rsx!` that closure is the `for` body, where `__scope` is the row's scope:
+`for id in ids.get() { {cached_tab(__scope, &cache, id)} }`
+(`rinch-macros/tests/rsx_for_cache_scope_733.rs`).
+
+`RenderScope::cache_scope(&self) -> RenderScope` is `RenderScope::new` on the
+same document: no ancestry parent, so no hide or row removal discards what it
+mints, including a cached node nested in row-built markup (the #732 walk takes
+it out first). `RenderScope::build(&mut self, f) -> R` runs `f` with the scope
+as the **ambient owner**; forgetting it (building through the cache scope's
+`&mut` directly) is silent: the node comes back, but a `Signal::new`, memo or
+`onclick` made while building belonged to the row that happened to be rendering
+and was freed with it, so its writes are no-ops and its bindings never update.
+
+**The scope and the node are two values the caller releases in step, and
+nothing ties them** (one owning value is #1454): drop the scope and keep the
+node → an inert row; discard the node and keep the scope → its effects keep
+running against a retired node; **drop both without discarding — which is what
+dropping the cache does, when the component that owns it unmounts — → the
+effects stop and every cached node stays in the backend for the life of the
+page.** A parentless scope's nodes are only detached by the hide around them
+(#732's rule) and `RenderScope`'s `Drop` discards nothing. Measured on the mock
+and in Chrome 153: 50 mounts of a list of two cached rows leave **+200** nodes,
+and **0** when the owner drains the cache in `on_cleanup`:
+
+```rust
+let evict = cache.clone();
+__scope.on_cleanup(move || {
+    for (_, (row, keep)) in evict.borrow_mut().drain() {
+        keep.dispose();
+        row.discard();
+    }
+});
+```
+
+Evicting one entry is the same pair. A key that never returns holds its row
+until then. The `Changed` arm hands the same cached node back for a changed
+item under one key, so a cached row is not rebuilt when its item changes.
+
+**A closure whose ROOT node is retired is counted, and a `tracing` warning is
+emitted for it** — the old shape, still lost: `dom::warn_if_retired`, called on
+what every `for` (initial, insert and changed arms), `virtual_list`, `if`,
+`match` and component re-render closure **returns**, bumps a per-thread counter
+(`dom::__retired_view_returns() -> (returns, nodes warned)`) and emits one
+`tracing::warn!` per `(doc_key, node)`, for the first 32 nodes on a thread and
+none after. Three limits, each measured:
+
+- **Nobody sees the warning by default where it can fire.** The desktop shell
+  is the only place rinch installs a `tracing` subscriber, and there
+  `is_retired` is always `false`; `rinch-web` installs none (#1455) and a
+  `cargo test` run prints none. A test asserts on the counter.
+- **Only the returned node is asked.** A retired node nested in markup the
+  closure builds fresh (`for t in tabs { div { {cached} } }`) loses the row the
+  same way — the wrapper comes back empty — and is neither counted nor logged
+  (#1456).
+- It asks `DomDocument::is_retired` (default `false`), which `rinch-web` and
+  `MockDomDocument` answer from their node tables; **`rinch-dom` cannot tell**,
+  because its `discard` reclaims nothing (#723) and the row still comes back
+  there — so desktop alone gives no sign that the same code loses the row in a
+  browser, and `branch_helper_transition_tests`'s lazy `for` fixture still
+  passes on it.
+
+Pins: `reinsertion_tests::lazy_memo_733` and `cache_scope_733_tests` (mock),
+`rinch-web/tests/for_memo_733.rs` and `for_memo_733_shapes.rs` (Chrome 153),
+`rinch-macros/tests/rsx_for_cache_scope_733.rs` (the guide's recipe, compiled):
+the row comes back, its effect runs while it is out, 200 toggles grow the node
+count by 0, an eviction returns the count to where it was, and the two leak
+directions above.
 
 Every other release site says the verb outright, because it knows: the editor's
 `ViewDesc` diff (popped children, kind-changed blocks, placeholder, selection
@@ -4821,8 +5172,7 @@ duration to expire, and the desktop shell keeps asking for frames while
 
 **Five places in `dom_impl/dom_document_impl.rs` write `parent = None`; four
 call the helper.** `remove_node` (every reactive removal funnels through
-`NodeHandle::remove`), `remove_child` (plus `RenderScope`'s batched
-`DomUpdate::RemoveChild`), `replace_node`'s displaced `old`, and —
+`NodeHandle::remove`), `remove_child`, `replace_node`'s displaced `old`, and —
 least obviously — **`set_text_content` on an element with children**, which
 orphans every one of them without freeing the slab, so a handle the app still
 holds stays alive and styled. That fourth one was missed on the first pass, when
@@ -5418,7 +5768,7 @@ Button { variant: "filled" }
 
 **Component Props vs HTML Attributes:**
 
-- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. **An attribute *name* is ASCII case-insensitive in HTML content and case-SENSITIVE in SVG content** (issue #688), so `RinchDocument::set_attribute` stores it lowercased unless the element's tag is an SVG one: `<div ID="up">` is `id`, and `#up`, `[id]`, `.x` via `CLASS=` and `STYLE=`'s inline style all work, while `viewBox`, `preserveAspectRatio`, `gradientUnits`, `stdDeviation`, `markerWidth` and `startOffset` keep the author's spelling. The decision is keyed on the **tag**, not on an `<svg>` ancestor, and that is forced rather than chosen: `rsx!` and the `Element::Html` parser both write an element's attributes *before* appending it to its parent, so at the write there is no ancestor to walk and a walk would lowercase every SVG child's name. `crates/rinch-dom/src/attr_name.rs` holds the list and the four SVG names it deliberately omits — `a`, `script`, `style`, `title` are HTML element names too, and the HTML reading is the likely one. That is free for three of them, which carry no camelCase SVG attribute, and **not** free for `a`: SVG's `requiredExtensions` / `systemLanguage` apply to it, so those two fold on an `<a>` inside an `<svg>`. Inert today rather than harmless — nothing in the workspace reads either name and `paint/svg.rs` drops `<a>` through its `_ => {}` arm — but it is the one place the list trades correctness for the ambiguity, and worth weighing again if conditional processing lands. `get_attribute` and `remove_attribute` fold the same way (a fold on the write and not the remove could never turn a boolean attribute off again), and so does `is_boolean_attribute`, or a `CHECKED: {|| false}` would fall through to the literal writer as `checked="false"` — #551 under a different spelling. The **value** is never folded, so an `id` still matches case-sensitively outside quirks mode. `rinch-web` needs none of this fold for the stored **attribute**: the browser folds the name itself, per namespace, because `web_document.rs` creates SVG elements with `createElementNS`. It still needed its own fold for a narrower question the browser's storage fold does not answer — which of a handful of names its own Rust `match` on the literal name treats as a live-property mirror (`checked`/`selected`/`muted`, below): `set_attribute("CHECKED", "")` always set the (browser-folded) content attribute, but fell through every arm of that match and so never called `sync_presence_property`, leaving `.checked` unmirrored on the web alone — desktop already folded via the tag-keyed `fold_attribute_name` above (issue #758). An **HTML boolean attribute** is the exception to "as a string": its *presence* is its value, so `rsx!` writes the bare presence form for a truthy value and **removes** the attribute for a falsey one, through `NodeHandle::write_attribute` rather than `set_attribute` (issue #551). Writing `disabled="false"` would leave the attribute present, which HTML — and therefore the browser, measured — reads as *disabled*; a reactive `disabled: {|| busy.get()}` was disabled from the first render and never recovered, on **both** backends. The set is `rinch_core::dom::is_boolean_attribute`: the 30 rows the WHATWG attributes index marks "Boolean attribute", plus `hidden` (enumerated, but its invalid-value default is the hidden state, so `hidden="false"` hides) and rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus` / `data-backdrop`. **The rule keys on the attribute name, not the value's type**, and that is load-bearing: `draggable` is enumerated (`"true"`/`"false"`, invalid → `auto`) and desktop's drag dispatch matches the literal `"true"`, the ARIA states are tri-valued, and `data-viewport-ready`'s *absence* means ready — presence-mapping any of them loses or inverts it. A *string* yielded into a boolean attribute follows `attr_is_truthy` (on unless `"false"` in any case, or `"0"`), which is the **writer's** rule and nobody's reader: every desktop reader of the HTML set is presence-only, correctly, because a browser is (`:checked` matches on `checked="false"`, `:disabled` on `disabled="false"`, both measured) — which is why #551 reproduced on desktop and why the cure is a writer that removes rather than a reader that learns a falsey string. **`set_attribute` is not that writer.** It is the literal primitive on both backends — including for the `checked` family, which is issue #612's divergence over again and what **#622** closed: the web arm used to presence-map `checked` / `selected` through `attr_is_truthy`, so `set_attribute("checked", "false")` unchecked the box on web and checked it on desktop. It now writes the string, leaving the attribute *present*, which checks the box on both. Writing a `bool` is `write_attribute`'s job; meaning "off" is `remove_attribute`'s. On web the live IDL property (`.checked`, `<option>.selected`) is mirrored from that **presence** and not from the string, because a browser stops mirroring the attribute onto the property once the user has toggled the control (the dirty-checkedness flag) and rinch has no such flag — desktop's reader sees the attribute and nothing else, so the app's write has to win on both. `indeterminate` is the exception and stays truthiness-mapped: HTML has no such content attribute at all, so it has no presence for anyone to read. **The same names are the reason `write_attribute` cannot skip a falsey write** (issue #687, and #754 for the third): its removal is otherwise guarded on the attribute being present, since "already absent" reads as "already off" and costs no style invalidation — but a user's toggle (or, for `muted`, a `<video controls>`'s own mute button) leaves the property on and the attribute absent, so the guard skipped the one write that could have corrected it and the control stayed checked/muted against a binding saying `false`. `checked`, `selected` and `muted` (`rinch_core::dom::is_presence_reflected_attribute`) therefore go to the backend unconditionally; desktop pays nothing for the extra call, because `RinchDocument::remove_attribute` returns before invalidating anything when the node does not carry the attribute — what `removeAttribute` does in a browser. `muted` joined the other two in #754: HTML's `muted` content attribute has no dynamic effect at all (it only seeds `defaultMuted`, once, at the media element's load algorithm), but rinch mirrors its presence onto the live `.muted` IDL property anyway — deliberately more dynamic than plain HTML — because nothing else lets a reactive `muted: {|| m.get()}` binding mute or unmute a `<video>`/`<audio>` element; desktop has no media element that reads `muted` at all, so this is web-only. A `"false"` escape survives for exactly four attributes, rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus` / `data-backdrop` (#1093), spelled once as `rinch_core::dom::data_attr_is_on`; issue #612 retired it from `disabled` / `readonly`, where it had been desktop-only and so a pure divergence. It is a deliberate convention rather than a leftover, and `data-nofocus` / `data-trap-focus` / `data-backdrop` are what show that — the web reads them the same way, through `[data-nofocus]:not([data-nofocus="false" i])`, `[data-trap-focus]:not([data-trap-focus="false" i])` and `data_attr_is_on`, while `data-disabled` has no web reader at all. Note `data_attr_is_on` is deliberately *narrower* than `attr_is_truthy`: `"0"` is on, matching those selectors, and `"0"` is therefore the only value that distinguishes the two rules — which is why every desktop reader pins it (`computed_style_tests::the_data_escape_excuses_only_false_at_the_reader`, `nofocus_tests::only_false_opts_out_not_zero`, `trap_focus_tests::the_false_escape_opts_out_and_zero_does_not`, `backdrop_any_button_1093_tests::data_backdrop_false_is_not_a_backdrop`). **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
+- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. **An attribute *name* is ASCII case-insensitive in HTML content and case-SENSITIVE in SVG content** (issue #688), so `RinchDocument::set_attribute` stores it lowercased unless the element's tag is an SVG one: `<div ID="up">` is `id`, and `#up`, `[id]`, `.x` via `CLASS=` and `STYLE=`'s inline style all work, while `viewBox`, `preserveAspectRatio`, `gradientUnits`, `stdDeviation`, `markerWidth` and `startOffset` keep the author's spelling. The decision is keyed on the **tag**, not on an `<svg>` ancestor, and that is forced rather than chosen: `rsx!` and the `Element::Html` parser both write an element's attributes *before* appending it to its parent, so at the write there is no ancestor to walk and a walk would lowercase every SVG child's name. `crates/rinch-dom/src/attr_name.rs` holds the list and the four SVG names it deliberately omits — `a`, `script`, `style`, `title` are HTML element names too, and the HTML reading is the likely one. That is free for three of them, which carry no camelCase SVG attribute, and **not** free for `a`: SVG's `requiredExtensions` / `systemLanguage` apply to it, so those two fold on an `<a>` inside an `<svg>`. Inert today rather than harmless — nothing in the workspace reads either name and `paint/svg.rs` drops `<a>` through its `_ => {}` arm — but it is the one place the list trades correctness for the ambiguity, and worth weighing again if conditional processing lands. `get_attribute` and `remove_attribute` fold the same way (a fold on the write and not the remove could never turn a boolean attribute off again), and so does `is_boolean_attribute`, or a `CHECKED: {|| false}` would fall through to the literal writer as `checked="false"` — #551 under a different spelling. The **value** is never folded, so an `id` still matches case-sensitively outside quirks mode. `rinch-web` needs none of this fold for the stored **attribute**: the browser folds the name itself, per namespace, because `web_document.rs` creates SVG elements with `createElementNS`. It still needed its own fold for a narrower question the browser's storage fold does not answer — which of a handful of names its own Rust `match` on the literal name treats as a live-property mirror (`checked`/`selected`/`muted`, below): `set_attribute("CHECKED", "")` always set the (browser-folded) content attribute, but fell through every arm of that match and so never called `sync_presence_property`, leaving `.checked` unmirrored on the web alone — desktop already folded via the tag-keyed `fold_attribute_name` above (issue #758). An **HTML boolean attribute** is the exception to "as a string": its *presence* is its value, so `rsx!` writes the bare presence form for a truthy value and **removes** the attribute for a falsey one, through `NodeHandle::write_attribute` rather than `set_attribute` (issue #551). Writing `disabled="false"` would leave the attribute present, which HTML — and therefore the browser, measured — reads as *disabled*; a reactive `disabled: {|| busy.get()}` was disabled from the first render and never recovered, on **both** backends. The set is `rinch_core::dom::is_boolean_attribute`: the 30 rows the WHATWG attributes index marks "Boolean attribute", plus `hidden` (enumerated, but its invalid-value default is the hidden state, so `hidden="false"` hides) and rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus` / `data-backdrop` / `data-scroll-lock-exempt`. **The rule keys on the attribute name, not the value's type**, and that is load-bearing: `draggable` is enumerated (`"true"`/`"false"`, invalid → `auto`) and desktop's drag dispatch matches the literal `"true"`, the ARIA states are tri-valued, and `data-viewport-ready`'s *absence* means ready — presence-mapping any of them loses or inverts it. A *string* yielded into a boolean attribute follows `attr_is_truthy` (on unless `"false"` in any case, or `"0"`), which is the **writer's** rule and nobody's reader: every desktop reader of the HTML set is presence-only, correctly, because a browser is (`:checked` matches on `checked="false"`, `:disabled` on `disabled="false"`, both measured) — which is why #551 reproduced on desktop and why the cure is a writer that removes rather than a reader that learns a falsey string. **`set_attribute` is not that writer.** It is the literal primitive on both backends — including for the `checked` family, which is issue #612's divergence over again and what **#622** closed: the web arm used to presence-map `checked` / `selected` through `attr_is_truthy`, so `set_attribute("checked", "false")` unchecked the box on web and checked it on desktop. It now writes the string, leaving the attribute *present*, which checks the box on both. Writing a `bool` is `write_attribute`'s job; meaning "off" is `remove_attribute`'s. On web the live IDL property (`.checked`, `<option>.selected`) is mirrored from that **presence** and not from the string, because a browser stops mirroring the attribute onto the property once the user has toggled the control (the dirty-checkedness flag) and rinch has no such flag — desktop's reader sees the attribute and nothing else, so the app's write has to win on both. `indeterminate` is the exception and stays truthiness-mapped: HTML has no such content attribute at all, so it has no presence for anyone to read. **The same names are the reason `write_attribute` cannot skip a falsey write** (issue #687, and #754 for the third): its removal is otherwise guarded on the attribute being present, since "already absent" reads as "already off" and costs no style invalidation — but a user's toggle (or, for `muted`, a `<video controls>`'s own mute button) leaves the property on and the attribute absent, so the guard skipped the one write that could have corrected it and the control stayed checked/muted against a binding saying `false`. `checked`, `selected` and `muted` (`rinch_core::dom::is_presence_reflected_attribute`) therefore go to the backend unconditionally; desktop pays nothing for the extra call, because `RinchDocument::remove_attribute` returns before invalidating anything when the node does not carry the attribute — what `removeAttribute` does in a browser. `muted` joined the other two in #754: HTML's `muted` content attribute has no dynamic effect at all (it only seeds `defaultMuted`, once, at the media element's load algorithm), but rinch mirrors its presence onto the live `.muted` IDL property anyway — deliberately more dynamic than plain HTML — because nothing else lets a reactive `muted: {|| m.get()}` binding mute or unmute a `<video>`/`<audio>` element; desktop has no media element that reads `muted` at all, so this is web-only. A `"false"` escape survives for exactly five attributes, rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus` / `data-backdrop` (#1093) / `data-scroll-lock-exempt` (#701), spelled once as `rinch_core::dom::data_attr_is_on`; issue #612 retired it from `disabled` / `readonly`, where it had been desktop-only and so a pure divergence. It is a deliberate convention rather than a leftover, and `data-nofocus` / `data-trap-focus` / `data-backdrop` are what show that — the web reads them the same way, through `[data-nofocus]:not([data-nofocus="false" i])`, `[data-trap-focus]:not([data-trap-focus="false" i])` and `data_attr_is_on`, while `data-disabled` and `data-scroll-lock-exempt` have no web reader at all. Note `data_attr_is_on` is deliberately *narrower* than `attr_is_truthy`: `"0"` is on, matching those selectors, and `"0"` is therefore the only value that distinguishes the two rules — which is why every desktop reader pins it (`computed_style_tests::the_data_escape_excuses_only_false_at_the_reader`, `nofocus_tests::only_false_opts_out_not_zero`, `trap_focus_tests::the_false_escape_opts_out_and_zero_does_not`, `backdrop_any_button_1093_tests::data_backdrop_false_is_not_a_backdrop`, `overlay_scroll_lock_tests::scroll_lock_exempt_false_opts_out_and_zero_does_not`). **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
   ```rust
   input {
       oninput: move |value: String| name_signal.set(value),
@@ -5571,7 +5921,7 @@ Make changes, rebuild, launch again. The full cycle:
 - **A `<p>`, list or `<pre>` suddenly has space around it, or an `<hr>` appeared**: #674 finished the UA-stylesheet audit #627 started. `p`, `blockquote`, `figure`, `ul`, `ol`, `menu`, `dir` and `pre` now carry the browser's `margin-block: 1em`; `blockquote`/`figure` also `margin-inline: 40px` and `dd` `margin-inline-start: 40px`; a list nested in a list carries **none**, spelled `:is(ul, ol, menu, dir) :is(…)` as Chrome spells it (a *descendant* combinator — a `<ul>` under an `<li>` counts; `:is()` verified to match in this Stylo build, unlike `:has()`). `menu` and `dir` were in **no** rinch UA rule at all and so were `display: inline`; Chrome gives both exactly `ul`'s treatment, `padding-left: 40px` included. `<pre>` gets `white-space: pre`, so it finally preserves its newlines. `code`/`kbd`/`samp`/`pre` get `font-family: monospace` from the **UA sheet** rather than only from the theme. `small`/`sub`/`sup` get `font-size: smaller` (Chrome's 1.2 divisor — 13.3333px from a 16px parent, and it compounds). And `<hr>`, which rendered **nothing** before because the sheet's own `* { border-width: 0 }` reset applied to it, now carries `color: gray; border: 1px inset; margin-block: 0.5em; margin-inline: auto; height: 0; overflow: hidden` — a 2px grey rule. Every value measured in Chrome 150; all cascade rules, so any author declaration wins, which is why `Divider`, `List`, `Blockquote`, `Breadcrumbs`, `Tree` and `Image` are unmoved (they all declare `margin: 0`) — `Code` had to be given one. **The editor has one exception**: its stylesheet declares `margin`, `font-family` and `white-space` for every tag it renders but no `font-size` for `sub`/`sup`, so editor subscripts and superscripts now take `smaller` — correct, and what rinch-web always did, pinned by `the_editors_sub_and_sup_do_take_the_new_smaller_rule`. **Three consequences worth knowing.** The `<hr>` border is `currentcolor` over a UA `color: gray`, so `<hr style="color: red">` gives a red rule. A bare `<hr>` in a `Stack` collapses to a 2px dot and centres, because auto cross-axis margins suppress a flex item's stretch — that is what a browser does too (measured); use `Divider`, or `width: 100%`. And rinch does **not** reproduce Chrome's monospace font-*size* quirk (13px for a `medium` monospace element), so `<code>` keeps the inherited size. `vertical-align: sub`/`super` on `<sub>`/`<sup>` is done now (#724): `sub { vertical-align: sub }` / `sup { vertical-align: super }` are two more rules in this sheet, and `ComputedStyle::vertical_align` plus its `ifc::vertical_align_shift_px` consumer (`crates/rinch-dom/src/ifc.rs`) give them an effect on an inline text run — a post-layout glyph shift applied by the painter and by `text_query::glyph_bounds_for_offset`/`caret_position_for_offset_with_affinity` alike, since Parley 0.11.1 has no per-run baseline offset. The `sub`/`super` ratios are calibrated against one measured point (Chrome 153, the bundled Inter, a 16px parent — see the field's own doc for the numbers and why they drift at other sizes); `<length>`/`<percentage>` are exact. Known gaps, both filed as #1357: the shift does not grow the line box the way Chrome's does, and `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse and round-trip through `ComputedStyle` but lay out as `baseline` (they only have a defined effect against an atomic inline or a table cell). `display: list-item` (#725) is now partly done. `DisplayValue::ListItem` exists (`li { display: list-item }` in the UA sheet) for the block-outside, flow-inside forms only — `display: inline list-item` stays `Inline`, as in Chrome 153 — and its box lays out as a `block` one does: `taffy::Display::Block`, `DisplayMode::Block`, and `compute_content_height` stacks its children; a new layout site that asks for `DisplayValue::Block` must ask for `ListItem` too (pinned by `list_item_layout_and_nesting_725_tests`). The UA sheet's marker defaults are Chrome's own html.css rules — `ul, menu, dir` disc, `ol` decimal, `:is(dir, menu, ol, ul) :is(dir, menu, ul)` circle and three levels square — so an `ol` counts as a nesting level (`ol > li > ul` is circle, `ul ol ul` square; measured in Chrome 153). `resolve_list_marker` generates the marker, as a span at the start of the item, only for an `<li>` whose parent is a `<ul>`/`<ol>`, whose computed `display` is `list-item` (Stylo's `is_list_item()`, not `DisplayValue`), whose `list-style-type` is not `none`, and which has **no pseudo-element child** — any `::before` or `::after` suppresses it (Chrome draws both; a `menu`/`dir` item and a non-`li` `display: list-item` get none — #1370). So an author override off `list-item` — `rinch-components`' `List` items with an icon, or every item of a `center`ed `List`, at `display: flex` — draws no marker (it drew a bullet beside the icon before). Its glyph follows the item's own `list-style-type` for `disc`/`circle`/`square` (`•`/`◦`/`▪`) and `decimal` (`N.` via `compute_list_item_counters`, `<ol start>`/`<li value>` included), each followed by an en space; any other keyword still gets the old tag-based bullet/number rather than none (alphabetic/roman types are out of scope, and roman is not in Stylo's servo-build keyword set). What is **still** missing is a real outside marker *box* (#1356): the span is inline content of the item, `list-style-position` is read nowhere, and on a wrapped item the continuation lines indent by the marker's width where a browser's `outside` marker leaves them flush. The editor's stylesheet takes that span out of flow and hangs it against the item's left edge, as a browser's outside marker hangs, and hangs its task-list checkbox `::before` the same way — as flex items beside the item's paragraph, they put a long paragraph on a line of its own, #1246.
 - **A raw `<input>` or `<textarea>` grew a grey border, padding and a smaller font**: #1194 gave the text controls Chrome 153's UA defaults (measured under a parent that declares the opposite of each). A text-state `<input>` (no `type`, `text`, `search`, `email`, `password`, `number`, an unknown type) has `padding: 1px 2px; border: 2px inset rgb(118, 118, 118)` (drawn solid, as every `inset` is); a `<textarea>` `padding: 2px; border: 1px solid` of the same grey; the date/time family `padding: 0 0 0 1px` (the inline start only) with the input border; `checkbox`, `radio`, `range`, `file`, `image`, `hidden`, the button types and `color` none (Chrome gives the button types `1px 6px` and a `2px outset` border and `color` `1px 2px` and a `1px solid` one — not modelled here, Refs #1266). Both controls take `font: normal 400 13.3333px/normal` and reset `letter-spacing`, `word-spacing`, `text-transform`, `text-indent` and `text-align` — Arial on an `<input>`, monospace on a `<textarea>` and the date/time inputs — and a `<textarea>` also `white-space: pre-wrap; overflow-wrap: break-word` (an `<input>` keeps inheriting both). Since #1177 a control is `size`/`cols` average characters of **its own** font wide, so this moves widths too. Overflow: an `<input>` other than a checkbox, radio or range is `overflow: clip !important` (Chrome's spelling — an author `overflow: auto` still computes `clip`); a `<textarea>` is `overflow: auto`, and an author `visible` on either axis computes `auto` (Chrome's post-cascade adjustment, made in `apply_stylo_styles_to_taffy`), so a raw textarea shrinks as a flex item (to 100px in a 100px row); an author `clip` or `hidden` is kept. rinch still never lays out or scrolls a textarea's text, so it paints no bar and takes no wheel (Refs #1266). All but the input `clip` are cascade rules, so `TextInput`, `Textarea`, `NumberInput`, `PasswordInput` and `ColorInput`, which declare their own font, padding and border, are unmoved, and the theme's `button, input, select, textarea { font-family: inherit }` still wins the family (the 13.3333px size stays, as in Chrome under the same sheet). Not done: `color: FieldText` / `background-color: Field` (the theme's `color: inherit` is deliberate), and the font reset on `<button>` and `<select>`. Pins: `crates/rinch-dom/tests/ua_form_control_defaults_tests.rs`.
 - **A CSS table (`display: table` and its parts) lays out only approximately**: rinch has no table formatting context. A `table-cell` / `table-caption` is a block container (#1072); a `table-row` is a flex row, so its cells sit side by side; a `table` / `inline-table` and a row group (`table-row-group` / `-header-group` / `-footer-group`) are a flex **column** when any of their layout children — read through `display: contents` wrappers — is a row or row group, and a flex **row** otherwise, so rows stack and a table of bare cells keeps them side by side (#1083, `RinchDocument::table_flex_direction`). The direction is not a computed value, so two things carry it. **Every** rebuild of a node's Taffy style from `computed_style` goes through `taffy_style_from_computed`, which applies it — the cascade's sync and both tick re-syncs (`tick_transitions` / `tick_animations`); a new rebuild site that calls `to_taffy_style` directly puts a table's rows back side by side on its first frame. And a child inserted, moved in, removed, or restyled into or out of being a row owes its container a check in `NodeTree::table_direction_owed`, deduplicated and drained once per layout by `resolve_table_directions`, which writes only `flex_direction` and only when it moved — so a keyed reorder or a bulk removal under a table costs no Taffy style sync (`perf_counter_baselines::table_*`). What is still not Chrome's, measured in 153: **columns do not align across rows** (each cell is its own width, where Chrome sizes a column to its widest cell); a table fills its container's width where Chrome shrink-wraps it; a table mixing bare cells and rows stacks every child, where Chrome puts each run of bare cells in one anonymous row; a `table-header-group` / `table-footer-group` stays in DOM order, where Chrome moves them first / last; a caption beside bare cells sits in their row; and an `inline-table` is block-level — it maps to `DisplayValue::Flex` like `table`, so it starts its own line where Chrome lays it out inline. HTML `<table>` / `<tr>` / `<td>` are unaffected: the UA sheet gives them no table display at all (`table` is `display: block`)
-- **A stylesheet rule that matches nothing**: desktop's **selector** surface is narrower than a browser's and every gap is silent — the rule parses, then matches nothing, with no warning. `#id` works as of **#675**: `TElement::id()` now hands Stylo a stored, interned `Atom` (`Node::id_atom`, written by `Node::write_attribute` / `erase_attribute`), where it returned a hard `None` before, so `SelectorMap::get_all_matching_rules` never consulted the id bucket and `has_id` — correct all along — never ran **for a rule whose rightmost compound carries the id**. An ancestor-side id (`#a > p`, bucketed by `p`) always worked, which is the asymmetry that hid it. An UPPERCASE attribute name — `<div ID="up">`, `[DATA-X]` — works as of **#688**: the store folds the name in HTML content and Stylo already hands `attr_matches` a lowercased selector name, so both ends meet. The `[attr=v i]` case-insensitive flag works too, since `attr_matches` delegates to the selectors crate's `AttrSelectorOperation::eval_str` — the evaluator Stylo's invalidation snapshots use, so an element and its snapshot cannot disagree (#682). A camelCase SVG type selector (`linearGradient { … }`) works as of **#683**: `is_html_element_in_html_document` answered a hardcoded `true` for every element, which made the selectors crate compare it against the selector's *lowercased* spelling (HTML's rule); it now answers `false` for an SVG content tag (`attr_name::is_svg_content_tag`, the predicate #688 already built for the sibling attribute-name question), so the author's exact spelling is kept. `:required` / `:optional` / `:read-only` / `:read-write` / `:placeholder-shown` / `:defined` / `:lang()` work as of **#681** — each narrower than the full CSS definition (see `Node::tag_supports_required` / `Node::tag_is_readonly_capable`'s docs for what is deliberately left out: no `<fieldset disabled>` inheritance, no non-form-control `:read-only`). The `:required`/`:read-only`-family invalidation rides the same mechanism `:checked` already does — each is fed into `ElementState` (`stylo_impl::element_state`) so Stylo's own invalidation maps see the dependency and restyle precisely; `:lang()` instead forces a self+subtree+later-siblings restyle on a `lang` write (`PSEUDO_CLASS_ATTRIBUTES`), because its answer is inherited through the nearest ancestor rather than a fact of the element's own state. Still silently dropped: `:has()` — `stylo`'s servo-feature `SelectorParser` answers `parse_has() -> false`, so the selector never even parses into a relative selector; this is an upstream `stylo` crate limitation (fixing it needs a patched/forked `stylo`, the shape of the vendored `wgpu` fork), not a `rinch-dom` bug, and #680 stays open for it. `:focus-within` was attempted for #681 and **reverted**: an eager ancestor-propagated bit went stale under `style_invalidation_twin_tests.rs`'s random-mutation oracle whenever a subtree was `Move`d while focus lived elsewhere (nothing re-derives it on a structural change, only on a focus change) — see `stylo_impl.rs`'s comment at the pseudo-class match's catch-all for the fix sketch. Presentational attributes (`<img width=100>`) and the rest of the state family — `:indeterminate` / `:valid` / `:invalid` / `:in-range` / `:out-of-range` / `:default` / `:target` / `:fullscreen` / `:modal` / `:popover-open` / `:autofill` / `:user-valid` / `:user-invalid` — still fall through the catch-all `_ => false` in `match_non_ts_pseudo_class` (no constraint validation, no document/fragment concept, no distinct "default" tracking). `docs/src/guide/theming.md` has the measured table. Everything above works on `rinch-web` (the browser matches), so a rule that works in the browser and not on desktop is probably one of the still-open ones; a class selector is the spelling with no gap on either backend
+- **A stylesheet rule that matches nothing**: desktop's **selector** surface is narrower than a browser's and every gap is silent — the rule parses, then matches nothing, with no warning. `#id` works as of **#675**: `TElement::id()` now hands Stylo a stored, interned `Atom` (`Node::id_atom`, written by `Node::write_attribute` / `erase_attribute`), where it returned a hard `None` before, so `SelectorMap::get_all_matching_rules` never consulted the id bucket and `has_id` — correct all along — never ran **for a rule whose rightmost compound carries the id**. An ancestor-side id (`#a > p`, bucketed by `p`) always worked, which is the asymmetry that hid it. An UPPERCASE attribute name — `<div ID="up">`, `[DATA-X]` — works as of **#688**: the store folds the name in HTML content and Stylo already hands `attr_matches` a lowercased selector name, so both ends meet. The `[attr=v i]` case-insensitive flag works too, since `attr_matches` delegates to the selectors crate's `AttrSelectorOperation::eval_str` — the evaluator Stylo's invalidation snapshots use, so an element and its snapshot cannot disagree (#682). A camelCase SVG type selector (`linearGradient { … }`) works as of **#683**: `is_html_element_in_html_document` answered a hardcoded `true` for every element, which made the selectors crate compare it against the selector's *lowercased* spelling (HTML's rule); it now answers `false` for an SVG content tag (`attr_name::is_svg_content_tag`, the predicate #688 already built for the sibling attribute-name question), so the author's exact spelling is kept. `:required` / `:optional` / `:read-only` / `:read-write` / `:placeholder-shown` / `:defined` / `:lang()` work as of **#681** — each narrower than the full CSS definition (see `Node::tag_supports_required` / `Node::tag_is_readonly_capable`'s docs for what is deliberately left out: no `<fieldset disabled>` inheritance, no non-form-control `:read-only`). The `:required`/`:read-only`-family invalidation rides the same mechanism `:checked` already does — each is fed into `ElementState` (`stylo_impl::element_state`) so Stylo's own invalidation maps see the dependency and restyle precisely; `:lang()` instead forces a self+subtree+later-siblings restyle on a `lang` write (`PSEUDO_CLASS_ATTRIBUTES`), because its answer is inherited through the nearest ancestor rather than a fact of the element's own state. Still silently dropped: `:has()` — `stylo`'s servo-feature `SelectorParser` answers `parse_has() -> false`, so the selector never even parses into a relative selector; this is an upstream `stylo` crate limitation (fixing it needs a patched/forked `stylo`, the shape of the vendored `wgpu` fork), not a `rinch-dom` bug, and #680 stays open for it. `:focus-within` was attempted for #681 and **reverted**: an eager ancestor-propagated bit went stale under `style_invalidation_twin_tests.rs`'s random-mutation oracle whenever a subtree was `Move`d while focus lived elsewhere (nothing re-derives it on a structural change, only on a focus change) — see `stylo_impl.rs`'s comment at the pseudo-class match's catch-all for the fix sketch. `<img width=100 height=50>` works as of **#684** (the `width`/`height` hints of `<img>`, `<video>` and `<iframe>`; every other presentational attribute, `<td bgcolor>` or `<hr width>`, still maps to nothing — #1419). The rest of the state family — `:indeterminate` / `:valid` / `:invalid` / `:in-range` / `:out-of-range` / `:default` / `:target` / `:fullscreen` / `:modal` / `:popover-open` / `:autofill` / `:user-valid` / `:user-invalid` — still fall through the catch-all `_ => false` in `match_non_ts_pseudo_class` (no constraint validation, no document/fragment concept, no distinct "default" tracking). `docs/src/guide/theming.md` has the measured table. Everything above works on `rinch-web` (the browser matches), so a rule that works in the browser and not on desktop is probably one of the still-open ones; a class selector is the spelling with no gap on either backend
 - **A sizing keyword on `min-width`/`max-width`/`min-height`/`max-height` did nothing**: the intrinsic keywords (`max-content`, `min-content`, `fit-content`, `stretch`, `-webkit-fill-available`) lay out on **`width`, `height` and `flex-basis`** since #691 and are laid out as `auto` on **`min-*`/`max-*`** (#1275). All parse — stylo's `static_prefs::pref!` is a *compile-time* macro in `stylo_static_prefs` that hard-codes those gates to `true`, unrelated to the runtime `stylo_config` store `RinchDocument::new` pokes — and survive as `DimensionValue::Intrinsic`, so `get_computed_styles` reports what the author wrote. `DimensionValue::to_taffy` hands Taffy 0.14 its own keyword, which it lays out on any box it computes as a **child**; `to_taffy_lpa` (Taffy's `min_size`/`max_size`, `LengthPercentageAuto`) has no keyword to hand over, and `from_stylo` prints one stderr line per such property and keyword per process. Two kinds of box Taffy cannot see a keyword on, so rinch resolves it: an **atomic inline** (`inline-block`/`-flex`/`-grid`) is computed as a Taffy *root*, which ignores its own size keyword — `ifc.rs::resolve_root_width_keyword` measures the width at `MaxContent`/`MinContent` and pins it, and `fit-content`/`stretch` (which need the containing block's width) ride `resolve_percentage_inline_blocks`, laying out as `auto` on the pass before the root compute; and a **fixed or ICB-absolute** box bakes `stretch` from the viewport less its insets (`out_of_flow.rs`), while the fixed post-layout patch fills between paired insets only for `auto`/`stretch` (`DimensionValue::fills_between_insets`). `fit-content(<length-percentage>)` stays `auto`, which is right: Chrome 153 does not accept it on `width`. Still not Chrome's, each pinned in the `KNOWN` list of `crates/rinch-dom/tests/intrinsic_sizing_twin_tests.rs` (the Chrome 153 twin over block/flex/grid/inline-block/abs/fixed): `fit-content` around content that **wraps** is as wide as its widest line, not the available width (#1276, the same measure that makes an auto absolute too narrow); `height: stretch` on an atomic inline and `width: stretch` on an overflowing flex item (#1277); an **`auto`** inline-block is still max-content (#658 — `width: fit-content` is the capped spelling). **`grid-template-columns: max-content` works** too (Taffy track sizing).
 - **An empty `<div>` is 0 tall** (#296): a block with no in-flow content has
   no line box, so its auto height is its padding and border — CSS 2.1 §10.6.3,

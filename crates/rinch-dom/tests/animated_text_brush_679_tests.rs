@@ -1,0 +1,1653 @@
+//! Issue #679 — a transition or animation tick writes `computed_style` with no
+//! cascade, and an inline formatting context's Parley layout carries the
+//! colour of every run as a baked brush. So text whose `color` is being
+//! interpolated has to be drawn in the colour its element computes **now**,
+//! not the one it was shaped with.
+//!
+//! Every fixture compares against something that is not derived from the
+//! thing under test: either a **twin document** built directly in the end
+//! state (pixel for pixel), or — mid-run, where no twin can be built because
+//! the tick reads the wall clock — the exact colour the tick wrote into
+//! `computed_style`, which a fully covered glyph pixel must then hold.
+//!
+//! The mid-run fixtures are the ones off the fixed point: at the end of a
+//! transition the animated value equals the cascaded one, so anything that
+//! re-reads the style once at the end passes there and only there.
+//!
+//! All text is the bundled Inter at a declared size and line height.
+
+use peniko::Brush;
+use rinch_core::dom::{DomDocument, NodeId};
+use rinch_dom::RinchDocument;
+use rinch_dom::paint::skia_painter::TinySkiaPainter;
+use rinch_dom::perf::Counter;
+
+const VW: f32 = 600.0;
+const VH: f32 = 300.0;
+
+const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+
+/// Heavy glyphs, so every letter has fully covered interior pixels.
+const BASE_CSS: &str = "body { font-family: T679; font-size: 48px; line-height: 60px; \
+                        color: rgb(0, 0, 0); margin: 0; }";
+
+type Rgb = (u8, u8, u8);
+const RED: Rgb = (200, 10, 10);
+const BLUE: Rgb = (10, 10, 200);
+const GREEN: Rgb = (10, 160, 10);
+
+fn doc_with(css: &str) -> RinchDocument {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let mut doc = RinchDocument::new();
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(INTER)),
+        Some(FontInfoOverride {
+            family_name: Some("T679"),
+            ..Default::default()
+        }),
+    );
+    doc.load_css(BASE_CSS);
+    doc.load_css(css);
+    doc
+}
+
+fn el(doc: &mut RinchDocument, parent: NodeId, tag: &str, class: &str) -> NodeId {
+    let e = doc.create_element(tag);
+    if !class.is_empty() {
+        doc.set_attribute(e, "class", class);
+    }
+    doc.append_child(parent, e);
+    e
+}
+
+fn text(doc: &mut RinchDocument, parent: NodeId, s: &str) -> NodeId {
+    let t = doc.create_text(s);
+    doc.append_child(parent, t);
+    t
+}
+
+fn settle(doc: &mut RinchDocument) {
+    doc.resolve_layout(VW, VH);
+    doc.resolve_layout(VW, VH);
+}
+
+fn paint(doc: &mut RinchDocument) -> Vec<u8> {
+    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        (VW, VH),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    painter.pixels().to_vec()
+}
+
+/// Fully opaque pixels of exactly this colour.
+fn exact(px: &[u8], rgb: Rgb) -> u32 {
+    px.as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] == 255 && (p[0], p[1], p[2]) == rgb)
+        .count() as u32
+}
+
+/// Fully opaque pixels of exactly this colour in the rows `y0..y1`.
+fn exact_rows(px: &[u8], rgb: Rgb, y0: usize, y1: usize) -> u32 {
+    let w = VW as usize;
+    exact(&px[y0 * w * 4..y1 * w * 4], rgb)
+}
+
+fn rgb_of(c: peniko::Color) -> Rgb {
+    let c = c.to_rgba8();
+    (c.r, c.g, c.b)
+}
+
+fn colour_of(doc: &RinchDocument, id: NodeId) -> Rgb {
+    rgb_of(
+        doc.tree
+            .get(id.0)
+            .unwrap()
+            .computed_style
+            .color
+            .expect("a cascaded element has a colour"),
+    )
+}
+
+/// Move every transition running on `id` so that it started `ago_ms` ago.
+fn age_transitions(doc: &mut RinchDocument, id: NodeId, ago_ms: f64) {
+    let now = now_ms();
+    for t in doc
+        .tree
+        .active_transitions
+        .get_mut(&id.0)
+        .expect("the class change should have started a transition")
+        .values_mut()
+    {
+        t.start_time_ms = now - ago_ms;
+    }
+}
+
+/// Move every animation running on `id` so that it started `ago_ms` ago.
+fn age_animations(doc: &mut RinchDocument, id: NodeId, ago_ms: f64) {
+    let now = now_ms();
+    for a in doc
+        .tree
+        .active_animations
+        .get_mut(&id.0)
+        .expect("the element should be animating")
+    {
+        a.start_time_ms = now - ago_ms;
+    }
+}
+
+fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// One frame the way a host runs it: tick, lay out, paint — with the frame's
+/// counters, which is how a fixture says the tick shaped nothing.
+fn frame(doc: &mut RinchDocument) -> (Vec<u8>, rinch_dom::perf::FrameStats) {
+    doc.tree.perf.reset();
+    doc.tick_transitions();
+    doc.tick_animations();
+    doc.resolve_layout(VW, VH);
+    let px = paint(doc);
+    (px, doc.tree.perf.end_frame())
+}
+
+fn shapes(s: &rinch_dom::perf::FrameStats) -> u64 {
+    [
+        Counter::ShapeMeasureIfc,
+        Counter::ShapeMeasureText,
+        Counter::ShapeIfcBuild,
+        Counter::ShapeAtomicInline,
+        Counter::EllipsisShapes,
+        Counter::ShapePaint,
+    ]
+    .iter()
+    .map(|&c| s.get(c))
+    .sum()
+}
+
+const LONG: f64 = 100_000.0;
+/// A 100 s transition aged 40 s: far from both ends, and a test that takes a
+/// second longer to reach its tick is still far from both ends.
+const MID: f64 = 40_000.0;
+
+const TRANSITION_CSS: &str = ".t { transition: color 100s linear, background-color 100s linear, \
+                              font-size 100s linear; }";
+
+/// A fixture document: `build` makes the tree and answers the element whose
+/// class flips from `from` to `to`.
+struct Case {
+    css: &'static str,
+    build: fn(&mut RinchDocument, &str) -> NodeId,
+    from: &'static str,
+    to: &'static str,
+}
+
+impl Case {
+    /// The document laid out and painted in `from`, then switched to `to`.
+    fn started(&self) -> (RinchDocument, NodeId) {
+        let mut doc = doc_with(&format!("{TRANSITION_CSS} {}", self.css));
+        let target = (self.build)(&mut doc, self.from);
+        settle(&mut doc);
+        paint(&mut doc);
+        doc.set_attribute(target, "class", self.to);
+        doc.resolve_layout(VW, VH);
+        (doc, target)
+    }
+
+    /// The pixels of the same tree built directly in `to`, no transition run.
+    fn twin(&self) -> Vec<u8> {
+        let mut doc = doc_with(self.css);
+        (self.build)(&mut doc, self.to);
+        settle(&mut doc);
+        paint(&mut doc)
+    }
+
+    /// The transition driven past its end, against the twin.
+    fn finished_matches_the_twin(&self) {
+        let (mut doc, target) = self.started();
+        age_transitions(&mut doc, target, LONG * 2.0);
+        let (got, _) = frame(&mut doc);
+        let want = self.twin();
+        let differing = got
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(want.as_chunks::<4>().0)
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "after the transition ends the frame should be the one a document \
+             built in the end state paints; {differing} px differ"
+        );
+    }
+}
+
+// ── colour on an IFC root's own text ────────────────────────────────────────
+
+fn root_text(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let p = el(doc, body, "div", class);
+    text(doc, p, "MMMM HHHH");
+    p
+}
+
+const ROOT_COLOUR: Case = Case {
+    css: ".a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: root_text,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn a_finished_colour_transition_on_block_text_is_drawn_in_the_end_colour() {
+    ROOT_COLOUR.finished_matches_the_twin();
+}
+
+#[test]
+fn a_running_colour_transition_on_block_text_is_drawn_in_the_frames_colour() {
+    let (mut doc, p) = ROOT_COLOUR.started();
+    age_transitions(&mut doc, p, MID);
+    let (px, stats) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    assert!(
+        now != RED && now != BLUE,
+        "the fixture must sample between the ends, got {now:?}"
+    );
+    assert!(
+        exact(&px, now) > 500,
+        "glyph interiors should hold the colour this frame's tick wrote \
+         ({now:?}): {} px",
+        exact(&px, now)
+    );
+    assert_eq!(exact(&px, RED), 0, "no glyph keeps the start colour");
+    assert_eq!(shapes(&stats), 0, "a colour frame shapes nothing");
+    assert_eq!(
+        stats.get(Counter::TaffyRootComputes),
+        0,
+        "a colour frame runs no Taffy compute"
+    );
+}
+
+// ── colour on an inline element inside a paragraph ──────────────────────────
+
+fn span_in_paragraph(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let p = el(doc, body, "div", "para");
+    text(doc, p, "MMM ");
+    let s = el(doc, p, "span", class);
+    text(doc, s, "HHH");
+    text(doc, p, " MMM");
+    s
+}
+
+const SPAN_COLOUR: Case = Case {
+    css: ".para { color: rgb(10, 160, 10); } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: span_in_paragraph,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn a_finished_colour_transition_on_an_inline_span_is_drawn_in_the_end_colour() {
+    SPAN_COLOUR.finished_matches_the_twin();
+}
+
+#[test]
+fn a_running_colour_transition_on_an_inline_span_recolours_only_the_span() {
+    let (mut doc, s) = SPAN_COLOUR.started();
+    // The paragraph's own text, before anything moves.
+    let green_before = exact(&paint(&mut doc), GREEN);
+    assert!(
+        green_before > 500,
+        "positive control: {green_before} green px"
+    );
+    age_transitions(&mut doc, s, MID);
+    let (px, stats) = frame(&mut doc);
+    let now = colour_of(&doc, s);
+    assert!(now != RED && now != BLUE, "between the ends, got {now:?}");
+    assert!(exact(&px, now) > 200, "the span: {} px", exact(&px, now));
+    assert_eq!(
+        exact(&px, RED),
+        0,
+        "the span keeps none of its start colour"
+    );
+    assert_eq!(
+        exact(&px, GREEN),
+        green_before,
+        "the text around the span keeps the paragraph's colour"
+    );
+    assert_eq!(shapes(&stats), 0, "a colour frame shapes nothing");
+}
+
+/// A `display: contents` wrapper whose text style is its parent's pushes no
+/// span of its own, so its text and the text before it are one Parley glyph
+/// run — and stay one when the wrapper's colour starts to move, since the
+/// re-shape at the start of the transition still sees two equal styles. The
+/// split between the two colours then falls inside a run.
+fn wrapper_sharing_a_run(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let p = el(doc, body, "div", "a");
+    text(doc, p, "MMMM");
+    let w = el(doc, p, "span", class);
+    doc.set_attribute(w, "style", "display: contents");
+    text(doc, w, "HHHH");
+    w
+}
+
+const SHARED_RUN: Case = Case {
+    css: ".a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: wrapper_sharing_a_run,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn text_sharing_a_glyph_run_with_still_text_is_recoloured_alone() {
+    let (mut doc, w) = SHARED_RUN.started();
+    let red_before = exact(&paint(&mut doc), RED);
+    age_transitions(&mut doc, w, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, w);
+    let (moved, still) = (exact(&px, now), exact(&px, RED));
+    assert!(moved > 200, "the animated text: {moved} px of {now:?}");
+    assert!(
+        still > 200 && still < red_before,
+        "the text before it keeps red and the animated text gives it up: \
+         {still} red px now, {red_before} before"
+    );
+    SHARED_RUN.finished_matches_the_twin();
+}
+
+// ── decorations ─────────────────────────────────────────────────────────────
+
+/// The rows of the first line that an underline can be in and no Inter
+/// capital reaches: below the baseline of a 48px face in a 60px line.
+const UNDER: (usize, usize) = (47, 60);
+
+const UNDERLINE: Case = Case {
+    css: ".u { text-decoration: underline; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: root_text,
+    from: "t u a",
+    to: "t u b",
+};
+
+#[test]
+fn a_currentcolor_underline_follows_a_running_colour_transition() {
+    let (mut doc, p) = UNDERLINE.started();
+    let red_line = exact_rows(&paint(&mut doc), RED, UNDER.0, UNDER.1);
+    assert!(
+        red_line > 100,
+        "positive control: the underline, {red_line} px"
+    );
+    age_transitions(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    assert!(
+        exact_rows(&px, now, UNDER.0, UNDER.1) > 100,
+        "the underline is drawn in the text's colour this frame"
+    );
+    assert_eq!(exact_rows(&px, RED, UNDER.0, UNDER.1), 0);
+    UNDERLINE.finished_matches_the_twin();
+}
+
+const FIXED_UNDERLINE: Case = Case {
+    css: ".u { text-decoration: underline; text-decoration-color: rgb(10, 160, 10); } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: root_text,
+    from: "t u a",
+    to: "t u b",
+};
+
+#[test]
+fn a_declared_decoration_colour_stays_through_a_colour_transition() {
+    let (mut doc, p) = FIXED_UNDERLINE.started();
+    let green_line = exact_rows(&paint(&mut doc), GREEN, UNDER.0, UNDER.1);
+    assert!(green_line > 100, "positive control: {green_line} px");
+    age_transitions(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    assert_eq!(
+        exact_rows(&px, GREEN, UNDER.0, UNDER.1),
+        green_line,
+        "`text-decoration-color` is not `color`"
+    );
+    assert!(exact(&px, colour_of(&doc, p)) > 500, "the glyphs did move");
+    FIXED_UNDERLINE.finished_matches_the_twin();
+}
+
+/// An explicit decoration colour that **equals** the text's start colour: a
+/// rule that told the two apart by comparing baked brushes would move it.
+const SAME_AS_START_UNDERLINE: Case = Case {
+    css: ".u { text-decoration: underline; text-decoration-color: rgb(200, 10, 10); } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: root_text,
+    from: "t u a",
+    to: "t u b",
+};
+
+#[test]
+fn a_declared_decoration_colour_equal_to_the_start_colour_stays_too() {
+    let (mut doc, p) = SAME_AS_START_UNDERLINE.started();
+    let line = exact_rows(&paint(&mut doc), RED, UNDER.0, UNDER.1);
+    assert!(line > 100, "positive control: {line} px");
+    age_transitions(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    assert_eq!(exact_rows(&px, RED, UNDER.0, UNDER.1), line);
+    SAME_AS_START_UNDERLINE.finished_matches_the_twin();
+}
+
+/// A `text-decoration-color` declared **above** the IFC root is not the
+/// underline's: the property is not inherited, and the layout is built from
+/// the root down.
+const DECLARED_ABOVE: Case = Case {
+    css: "body { text-decoration-color: rgb(10, 160, 10); } \
+          .u { text-decoration: underline; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: root_text,
+    from: "t u a",
+    to: "t u b",
+};
+
+#[test]
+fn a_decoration_colour_declared_above_the_root_does_not_hold_the_underline() {
+    let (mut doc, p) = DECLARED_ABOVE.started();
+    let red_line = exact_rows(&paint(&mut doc), RED, UNDER.0, UNDER.1);
+    assert!(red_line > 100, "positive control: {red_line} px");
+    age_transitions(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    assert_eq!(exact_rows(&px, RED, UNDER.0, UNDER.1), 0);
+    assert!(exact_rows(&px, colour_of(&doc, p), UNDER.0, UNDER.1) > 100);
+}
+
+const WAVY: Case = Case {
+    css: ".u { text-decoration: underline wavy; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: span_in_paragraph,
+    from: "t u a",
+    to: "t u b",
+};
+
+/// Pixels in rows `y0..y1` that are mostly red: the start colour at three
+/// quarters coverage or more, and nothing a colour part-way to blue reaches.
+fn reddish_rows(px: &[u8], y0: usize, y1: usize) -> u32 {
+    let w = VW as usize;
+    px[y0 * w * 4..y1 * w * 4]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[0] > 150 && p[2] < 60)
+        .count() as u32
+}
+
+#[test]
+fn a_wavy_underline_follows_a_colour_transition() {
+    // Below every glyph of the line: only the wave is here.
+    const WAVE: (usize, usize) = (50, 60);
+    let (mut doc, s) = WAVY.started();
+    let before = reddish_rows(&paint(&mut doc), WAVE.0, WAVE.1);
+    assert!(before > 20, "positive control: the red wave, {before} px");
+    age_transitions(&mut doc, s, MID);
+    let (px, _) = frame(&mut doc);
+    assert_eq!(
+        reddish_rows(&px, WAVE.0, WAVE.1),
+        0,
+        "the wave left the start colour with the text"
+    );
+    WAVY.finished_matches_the_twin();
+}
+
+// ── the other shapes an IFC's text arrives in ───────────────────────────────
+
+/// Text beside a block child is laid out by an anonymous block box, which no
+/// ancestor walk from the element finds.
+fn text_beside_a_block(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let d = el(doc, body, "div", class);
+    text(doc, d, "MMMM");
+    let inner = el(doc, d, "div", "still");
+    text(doc, inner, "HHHH");
+    d
+}
+
+const ANON_BOX: Case = Case {
+    css: ".still { color: rgb(10, 160, 10); } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: text_beside_a_block,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn text_in_an_anonymous_block_box_follows_its_containers_colour_transition() {
+    let (mut doc, d) = ANON_BOX.started();
+    age_transitions(&mut doc, d, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, d);
+    assert!(exact(&px, now) > 300, "{} px of {now:?}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+    ANON_BOX.finished_matches_the_twin();
+}
+
+const ELLIPSIS: Case = Case {
+    css: ".e { width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: root_text,
+    from: "t e a",
+    to: "t e b",
+};
+
+#[test]
+fn an_ellipsis_line_follows_a_colour_transition() {
+    let (mut doc, p) = ELLIPSIS.started();
+    age_transitions(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    assert!(exact(&px, now) > 200, "{} px of {now:?}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+    ELLIPSIS.finished_matches_the_twin();
+}
+
+fn inline_block_label(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let p = el(doc, body, "div", "");
+    let chip = el(doc, p, "span", class);
+    text(doc, chip, "MMMM");
+    chip
+}
+
+const INLINE_BLOCK: Case = Case {
+    css: ".ib { display: inline-block; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: inline_block_label,
+    from: "t ib a",
+    to: "t ib b",
+};
+
+#[test]
+fn an_inline_blocks_own_text_follows_its_colour_transition() {
+    let (mut doc, chip) = INLINE_BLOCK.started();
+    age_transitions(&mut doc, chip, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, chip);
+    assert!(exact(&px, now) > 300, "{} px of {now:?}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+    INLINE_BLOCK.finished_matches_the_twin();
+}
+
+/// Positive control for the harness, green before this issue: a flex item's
+/// own text is a leaf, which paint has coloured from the live style since
+/// #904.
+const LEAF: Case = Case {
+    css: ".f { display: flex; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: root_text,
+    from: "t f a",
+    to: "t f b",
+};
+
+#[test]
+fn a_text_leaf_follows_a_colour_transition_as_it_did() {
+    let (mut doc, p) = LEAF.started();
+    age_transitions(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    assert!(exact(&px, now) > 500);
+    assert_eq!(exact(&px, RED), 0);
+    LEAF.finished_matches_the_twin();
+}
+
+// ── an inline element's background ──────────────────────────────────────────
+
+const SPAN_BACKGROUND: Case = Case {
+    css: ".a { background-color: rgb(200, 10, 10); } \
+          .b { background-color: rgb(10, 10, 200); }",
+    build: span_in_paragraph,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn an_inline_spans_background_follows_its_transition() {
+    let (mut doc, s) = SPAN_BACKGROUND.started();
+    age_transitions(&mut doc, s, MID);
+    let (px, stats) = frame(&mut doc);
+    let now = rgb_of(
+        doc.tree
+            .get(s.0)
+            .unwrap()
+            .computed_style
+            .background_color()
+            .unwrap(),
+    );
+    assert!(now != RED && now != BLUE, "between the ends, got {now:?}");
+    assert!(exact(&px, now) > 1000, "{} px of {now:?}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+    assert_eq!(shapes(&stats), 0, "a background frame shapes nothing");
+    SPAN_BACKGROUND.finished_matches_the_twin();
+}
+
+/// A background that fades **in**: the layout was built with no span for it,
+/// so the frame it appears on has to rebuild the layout — once.
+const SPAN_BACKGROUND_IN: Case = Case {
+    css: ".b { background-color: rgb(10, 10, 200); }",
+    build: span_in_paragraph,
+    from: "t",
+    to: "t b",
+};
+
+#[test]
+fn an_inline_spans_background_fades_in_from_none() {
+    let (mut doc, s) = SPAN_BACKGROUND_IN.started();
+    // A background part-way in from nothing is translucent, over a surface
+    // nothing else paints: count what is neither clear nor opaque. Before the
+    // run that is the glyphs' antialiased edges.
+    let translucent = |px: &[u8]| {
+        let px = px.as_chunks::<4>().0;
+        px.iter().filter(|p| p[3] > 0 && p[3] < 255).count()
+    };
+    let edges = translucent(&paint(&mut doc));
+    age_transitions(&mut doc, s, MID);
+    let (px, first) = frame(&mut doc);
+    assert!(
+        translucent(&px) > edges + 1000,
+        "the half-faded rectangle: {edges} -> {} translucent px",
+        translucent(&px)
+    );
+    assert_eq!(
+        first.get(Counter::ShapeIfcBuild),
+        1,
+        "the frame the background appears on builds its span"
+    );
+    let (_, second) = frame(&mut doc);
+    assert_eq!(shapes(&second), 0, "and no later frame shapes anything");
+    SPAN_BACKGROUND_IN.finished_matches_the_twin();
+}
+
+/// A background that fades **out** ends at nothing, not at the last colour
+/// the layout recorded.
+const SPAN_BACKGROUND_OUT: Case = Case {
+    css: ".a { background-color: rgb(200, 10, 10); }",
+    build: span_in_paragraph,
+    from: "t a",
+    to: "t",
+};
+
+#[test]
+fn an_inline_spans_background_fades_out_to_none() {
+    SPAN_BACKGROUND_OUT.finished_matches_the_twin();
+}
+
+/// A padded inline background is the element's box as it is styled now.
+const SPAN_PADDING: Case = Case {
+    css: ".a { background-color: rgb(200, 10, 10); padding: 0 2px; } \
+          .b { background-color: rgb(200, 10, 10); padding: 0 30px; } \
+          .t { transition: padding-left 100s linear, padding-right 100s linear; }",
+    build: span_in_paragraph,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn an_inline_spans_background_follows_a_padding_transition() {
+    let (mut doc, s) = SPAN_PADDING.started();
+    let before = exact(&paint(&mut doc), RED);
+    age_transitions(&mut doc, s, MID);
+    let (px, _) = frame(&mut doc);
+    assert!(
+        exact(&px, RED) > before + 1000,
+        "mid-run the rectangle is wider: {before} -> {} px",
+        exact(&px, RED)
+    );
+    SPAN_PADDING.finished_matches_the_twin();
+}
+
+// ── once the colour stops moving ────────────────────────────────────────────
+
+/// The colour the first text range of `root`'s layout was shaped in.
+fn shaped_colour(doc: &RinchDocument, root: NodeId) -> Rgb {
+    let layout = doc.tree.get(root.0).unwrap().text_layout.as_ref();
+    rgb_of(layout.expect("an IFC root").text_ranges[0].color)
+}
+
+/// While the colour moves, paint recolours a layout shaped in the start
+/// colour. The frame that ends the run rebuilds it, so every later paint is
+/// on the layout's own brushes again and recolours nothing.
+#[test]
+fn the_frame_that_ends_a_colour_transition_reshapes_the_text_once() {
+    let (mut doc, p) = ROOT_COLOUR.started();
+    age_transitions(&mut doc, p, MID);
+    let (_, running) = frame(&mut doc);
+    assert_eq!(shapes(&running), 0);
+    assert_eq!(
+        shaped_colour(&doc, p),
+        RED,
+        "still the layout it started with"
+    );
+
+    age_transitions(&mut doc, p, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(last.get(Counter::ShapeIfcBuild), 1, "the ending frame");
+    assert_eq!(last.get(Counter::TaffyRootComputes), 0, "moves no box");
+    assert_eq!(shaped_colour(&doc, p), BLUE);
+
+    let (_, after) = frame(&mut doc);
+    assert_eq!(shapes(&after), 0, "and nothing after it");
+}
+
+#[test]
+fn the_frame_that_settles_a_colour_animation_reshapes_the_text_once() {
+    let mut doc = doc_with(KEYFRAMES);
+    let p = root_text(&mut doc, "k");
+    settle(&mut doc);
+    paint(&mut doc);
+    age_animations(&mut doc, p, MID);
+    let (_, running) = frame(&mut doc);
+    assert_eq!(shapes(&running), 0);
+
+    age_animations(&mut doc, p, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(last.get(Counter::ShapeIfcBuild), 1, "the settling frame");
+    assert_eq!(shaped_colour(&doc, p), BLUE);
+    let (_, after) = frame(&mut doc);
+    assert_eq!(shapes(&after), 0, "a settled fill is re-applied quietly");
+}
+
+/// The same end, for text an anonymous block box lays out: no walk from the
+/// element finds that box.
+#[test]
+fn the_frame_that_ends_a_colour_transition_reshapes_an_anonymous_boxs_text() {
+    let (mut doc, d) = ANON_BOX.started();
+    age_transitions(&mut doc, d, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(last.get(Counter::ShapeIfcBuild), 1);
+    let (_, after) = frame(&mut doc);
+    assert_eq!(shapes(&after), 0);
+}
+
+/// And for a split inline (#513): its text is laid out by the boxes around
+/// its fragments, which belong to its container and are found only through
+/// the text itself.
+fn split_inline(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let p = el(doc, body, "div", "");
+    let s = el(doc, p, "span", class);
+    text(doc, s, "MMMM");
+    let block = el(doc, s, "div", "still");
+    text(doc, block, "HHHH");
+    text(doc, s, "MMMM");
+    s
+}
+
+const SPLIT_INLINE: Case = Case {
+    css: ".still { color: rgb(10, 160, 10); } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: split_inline,
+    from: "t a",
+    to: "t b",
+};
+
+#[test]
+fn a_split_inlines_text_follows_its_colour_transition_and_settles() {
+    let (mut doc, s) = SPLIT_INLINE.started();
+    age_transitions(&mut doc, s, MID);
+    let (px, running) = frame(&mut doc);
+    let now = colour_of(&doc, s);
+    assert!(exact(&px, now) > 600, "{} px of {now:?}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+    assert_eq!(shapes(&running), 0);
+
+    age_transitions(&mut doc, s, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(
+        last.get(Counter::ShapeIfcBuild),
+        2,
+        "the box around each of its two fragments is rebuilt"
+    );
+    SPLIT_INLINE.finished_matches_the_twin();
+}
+
+/// A flex item's text is a leaf: paint colours it from the live style and no
+/// layout holds its colour, so the end of its transition owes nothing.
+#[test]
+fn the_end_of_a_text_leafs_colour_transition_reshapes_nothing() {
+    let (mut doc, p) = LEAF.started();
+    age_transitions(&mut doc, p, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(shapes(&last), 0);
+    assert_eq!(last.get(Counter::TaffyRootComputes), 0);
+}
+
+// ── @keyframes ──────────────────────────────────────────────────────────────
+
+const KEYFRAMES: &str = "@keyframes tint { from { color: rgb(200, 10, 10); } \
+                         to { color: rgb(10, 10, 200); } } \
+                         .k { animation: tint 100s linear forwards; }";
+
+#[test]
+fn a_running_colour_animation_on_block_text_is_drawn_in_the_frames_colour() {
+    let mut doc = doc_with(KEYFRAMES);
+    let p = root_text(&mut doc, "k");
+    settle(&mut doc);
+    paint(&mut doc);
+    age_animations(&mut doc, p, MID);
+    let (px, stats) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    assert!(now != RED && now != BLUE, "between the ends, got {now:?}");
+    assert!(exact(&px, now) > 500, "{} px of {now:?}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+    assert_eq!(shapes(&stats), 0, "a colour frame shapes nothing");
+    assert_eq!(stats.get(Counter::TaffyRootComputes), 0);
+
+    // And its fill, which is written by one tick and by no cascade.
+    age_animations(&mut doc, p, LONG * 2.0);
+    let (px, _) = frame(&mut doc);
+    assert!(
+        exact(&px, BLUE) > 500,
+        "{} px of the fill",
+        exact(&px, BLUE)
+    );
+}
+
+#[test]
+fn a_running_colour_animation_on_an_inline_span_is_drawn_in_the_frames_colour() {
+    let mut doc = doc_with(KEYFRAMES);
+    let s = span_in_paragraph(&mut doc, "k");
+    settle(&mut doc);
+    paint(&mut doc);
+    age_animations(&mut doc, s, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, s);
+    assert!(exact(&px, now) > 200, "{} px of {now:?}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+}
+
+// ── font-size ───────────────────────────────────────────────────────────────
+
+fn height_of(doc: &RinchDocument, id: NodeId) -> f32 {
+    doc.tree.get(id.0).unwrap().layout.height
+}
+
+/// `line-height: 1.5` so the line box follows the font size.
+const SPAN_FONT_SIZE: &str = ".para { width: 500px; line-height: 1.5; font-size: 20px; } \
+                              .a { font-size: 20px; } .b { font-size: 80px; }";
+
+fn sized_span(doc: &mut RinchDocument, class: &str, wrapper: &str) -> (NodeId, NodeId) {
+    let body = doc.body();
+    let p = el(doc, body, "div", "para");
+    text(doc, p, "MMM ");
+    let s = el(doc, p, "span", class);
+    if !wrapper.is_empty() {
+        doc.set_attribute(s, "style", wrapper);
+    }
+    text(doc, s, "HHH");
+    (p, s)
+}
+
+fn font_size_transition_on_a_span(wrapper: &str) {
+    let mut twin = doc_with(SPAN_FONT_SIZE);
+    let (twin_p, _) = sized_span(&mut twin, "b", wrapper);
+    settle(&mut twin);
+    let want = height_of(&twin, twin_p);
+    let want_px = paint(&mut twin);
+
+    let mut doc = doc_with(&format!("{TRANSITION_CSS} {SPAN_FONT_SIZE}"));
+    let (p, s) = sized_span(&mut doc, "t a", wrapper);
+    settle(&mut doc);
+    paint(&mut doc);
+    let small = height_of(&doc, p);
+    assert!(
+        want > small + 20.0,
+        "off the fixed point: {small} -> {want}"
+    );
+
+    doc.set_attribute(s, "class", "t b");
+    doc.resolve_layout(VW, VH);
+    age_transitions(&mut doc, s, MID);
+    frame(&mut doc);
+    let mid = height_of(&doc, p);
+    assert!(
+        mid > small + 5.0 && mid < want - 5.0,
+        "mid-run the paragraph is as tall as the frame's font size makes it: \
+         {small} < {mid} < {want}"
+    );
+
+    age_transitions(&mut doc, s, LONG * 2.0);
+    let (px, _) = frame(&mut doc);
+    assert_eq!(
+        height_of(&doc, p),
+        want,
+        "the finished height (was {small})"
+    );
+    assert!(px == want_px, "and the finished frame is the twin's");
+}
+
+#[test]
+fn a_font_size_transition_on_an_inline_span_resizes_its_paragraph() {
+    font_size_transition_on_a_span("");
+}
+
+#[test]
+fn a_font_size_transition_on_a_contents_wrapper_resizes_its_paragraph() {
+    font_size_transition_on_a_span("display: contents");
+}
+
+#[test]
+fn a_font_size_animation_on_an_inline_span_resizes_its_paragraph() {
+    let css = "@keyframes grow { from { font-size: 20px; } to { font-size: 80px; } } \
+               .k { animation: grow 100s linear forwards; }";
+    let mut doc = doc_with(&format!("{SPAN_FONT_SIZE} {css}"));
+    let (p, s) = sized_span(&mut doc, "k", "");
+    settle(&mut doc);
+    paint(&mut doc);
+    let small = height_of(&doc, p);
+    age_animations(&mut doc, s, MID);
+    frame(&mut doc);
+    let mid = height_of(&doc, p);
+    assert!(mid > small + 5.0, "mid-run: {small} -> {mid}");
+    age_animations(&mut doc, s, LONG * 2.0);
+    frame(&mut doc);
+    assert_eq!(height_of(&doc, p), 120.0, "80px at line-height 1.5");
+}
+
+// ═══ review of PR #1442 ═══
+
+fn diff_count(a: &[u8], b: &[u8]) -> usize {
+    a.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .filter(|(x, y)| x != y)
+        .count()
+}
+
+/// Bounding box (x0, y0, x1, y1) of differing pixels.
+fn diff_bbox(a: &[u8], b: &[u8]) -> Option<(usize, usize, usize, usize)> {
+    let w = VW as usize;
+    let mut bb: Option<(usize, usize, usize, usize)> = None;
+    for (i, (x, y)) in a
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .enumerate()
+    {
+        if x != y {
+            let (px, py) = (i % w, i / w);
+            bb = Some(match bb {
+                None => (px, py, px + 1, py + 1),
+                Some((x0, y0, x1, y1)) => (x0.min(px), y0.min(py), x1.max(px + 1), y1.max(py + 1)),
+            });
+        }
+    }
+    bb
+}
+
+// ── A: an ellipsis line laid out by an anonymous box ────────────────────────
+
+fn ellipsis_text_beside_a_block(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let d = el(doc, body, "div", class);
+    text(doc, d, "MMMM HHHH MMMM");
+    let inner = el(doc, d, "div", "still");
+    text(doc, inner, "HH");
+    d
+}
+
+const ANON_ELLIPSIS: Case = Case {
+    css: ".still { color: rgb(10, 160, 10); } \
+          .e { width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: ellipsis_text_beside_a_block,
+    from: "t e a",
+    to: "t e b",
+};
+
+// The four `rv_a*` fixtures are ignored, not green: an ellipsis line laid out
+// by an anonymous block box is drawn in the box's own copy of its container's
+// colour, which nothing refreshes — after a plain class change with no
+// transition too (`rv_a3`). Older than #679 and tracked as #1450; each is
+// written to pass once that is fixed.
+
+#[test]
+#[ignore = "#1450: an anonymous box's ellipsis line keeps a stale colour"]
+fn rv_a1_anon_box_ellipsis_mid_run() {
+    let (mut doc, d) = ANON_ELLIPSIS.started();
+    age_transitions(&mut doc, d, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, d);
+    eprintln!(
+        "A1 mid: now={now:?} px_now={} px_red={} px_blue={}",
+        exact(&px, now),
+        exact(&px, RED),
+        exact(&px, BLUE)
+    );
+    assert!(exact(&px, now) > 100);
+    assert_eq!(exact(&px, RED), 0);
+}
+
+#[test]
+#[ignore = "#1450: an anonymous box's ellipsis line keeps a stale colour"]
+fn rv_a2_anon_box_ellipsis_finished() {
+    ANON_ELLIPSIS.finished_matches_the_twin();
+}
+
+// ── B: a span on an ellipsis line whose colour starts equal to the root's ──
+
+fn span_on_ellipsis_line(doc: &mut RinchDocument, class: &str) -> NodeId {
+    let body = doc.body();
+    let p = el(doc, body, "div", "e a");
+    text(doc, p, "MM");
+    let s = el(doc, p, "span", class);
+    text(doc, s, "HHHH HHHH HHHH");
+    s
+}
+
+const SPAN_ELLIPSIS: Case = Case {
+    css: ".e { width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } \
+          .a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }",
+    build: span_on_ellipsis_line,
+    from: "t",
+    to: "t b",
+};
+
+/// **A pinned finding, #1451 — not the behaviour wanted.** The "…" is drawn
+/// from a flat rebuild of the paragraph that records no text ranges (#1091),
+/// so paint has only the root's colour to follow and the span keeps its start
+/// colour for the whole run; `rv_b2` shows it right once the run has ended. A
+/// fix makes the first assertion below fail: flip both then.
+#[test]
+fn rv_b1_span_on_ellipsis_line_mid_run() {
+    let (mut doc, s) = SPAN_ELLIPSIS.started();
+    age_transitions(&mut doc, s, MID);
+    let (px, st) = frame(&mut doc);
+    let now = colour_of(&doc, s);
+    assert!(now != RED && now != BLUE);
+    assert_eq!(
+        exact(&px, now),
+        0,
+        "#1451 is fixed if the span is drawn in the frame's colour: assert that instead"
+    );
+    assert!(
+        exact(&px, RED) > 1000,
+        "the whole line in the start colour: {} px",
+        exact(&px, RED)
+    );
+    assert_eq!(shapes(&st), 0);
+}
+
+#[test]
+fn rv_b2_span_on_ellipsis_line_finished() {
+    SPAN_ELLIPSIS.finished_matches_the_twin();
+}
+
+// ── D: text edited mid-run ──────────────────────────────────────────────────
+
+#[test]
+fn rv_d_text_edit_mid_run() {
+    let mut doc = doc_with(&format!("{TRANSITION_CSS} {}", ROOT_COLOUR.css));
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "t a");
+    let t = text(&mut doc, p, "MMMM HHHH");
+    settle(&mut doc);
+    paint(&mut doc);
+    doc.set_attribute(p, "class", "t b");
+    doc.resolve_layout(VW, VH);
+    age_transitions(&mut doc, p, MID);
+    let _ = frame(&mut doc);
+    doc.set_text_content(t, "HHHH MMMM HH");
+    age_transitions(&mut doc, p, MID + 20_000.0);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    assert!(exact(&px, now) > 500, "{}", exact(&px, now));
+    assert_eq!(exact(&px, RED), 0);
+    // one more frame later on
+    age_transitions(&mut doc, p, MID + 40_000.0);
+    let (px, st) = frame(&mut doc);
+    let now2 = colour_of(&doc, p);
+    assert_ne!(now, now2);
+    assert!(exact(&px, now2) > 500);
+    assert_eq!(exact(&px, now), 0, "nothing keeps the rebuild-time colour");
+    assert_eq!(shapes(&st), 0);
+}
+
+// ── E: paused animation ─────────────────────────────────────────────────────
+
+#[test]
+fn rv_e_paused_animation() {
+    let css = format!("{KEYFRAMES} .p {{ animation-play-state: paused; }}");
+    let mut doc = doc_with(&css);
+    let p = root_text(&mut doc, "k");
+    settle(&mut doc);
+    paint(&mut doc);
+    age_animations(&mut doc, p, MID);
+    let (_, _) = frame(&mut doc);
+    doc.set_attribute(p, "class", "k p");
+    let (px, st) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    eprintln!(
+        "E paused frame1: now={now:?} px_now={} shapes={} shaped={:?}",
+        exact(&px, now),
+        shapes(&st),
+        shaped_colour(&doc, p)
+    );
+    assert!(exact(&px, now) > 500);
+    let (px, st) = frame(&mut doc);
+    eprintln!(
+        "E paused frame2: px_now={} shapes={} shaped={:?} (shaped != now => slow path forever)",
+        exact(&px, colour_of(&doc, p)),
+        shapes(&st),
+        shaped_colour(&doc, p)
+    );
+    assert!(exact(&px, colour_of(&doc, p)) > 500);
+    assert_eq!(shapes(&st), 0);
+}
+
+// ── G: animation removed mid-run ────────────────────────────────────────────
+
+#[test]
+fn rv_g_animation_removed_mid_run() {
+    let css = format!("{KEYFRAMES} .base {{ color: rgb(10, 160, 10); }}");
+    let mut doc = doc_with(&css);
+    let p = root_text(&mut doc, "base k");
+    settle(&mut doc);
+    paint(&mut doc);
+    age_animations(&mut doc, p, MID);
+    let _ = frame(&mut doc);
+    doc.set_attribute(p, "class", "base");
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    eprintln!("G: now={now:?} green={}", exact(&px, GREEN));
+    assert_eq!(now, GREEN);
+    assert!(exact(&px, GREEN) > 500);
+    let (px2, st) = frame(&mut doc);
+    assert_eq!(diff_count(&px, &px2), 0);
+    assert_eq!(shapes(&st), 0);
+    assert_eq!(shaped_colour(&doc, p), GREEN, "settled: no slow path");
+}
+
+// ── H: transition reversed mid-run ──────────────────────────────────────────
+
+#[test]
+fn rv_h_transition_reversed_mid_run() {
+    let (mut doc, p) = ROOT_COLOUR.started();
+    age_transitions(&mut doc, p, MID);
+    let _ = frame(&mut doc);
+    doc.set_attribute(p, "class", "t a");
+    doc.resolve_layout(VW, VH);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    eprintln!("H after reverse: now={now:?} px={}", exact(&px, now));
+    assert!(exact(&px, now) > 500);
+    age_transitions(&mut doc, p, LONG * 2.0);
+    let (px, _) = frame(&mut doc);
+    assert!(exact(&px, RED) > 500);
+    assert_eq!(shaped_colour(&doc, p), RED);
+    let (_, st) = frame(&mut doc);
+    assert_eq!(shapes(&st), 0);
+}
+
+// ── I: whole-document restyle (theme change) mid-run ────────────────────────
+
+#[test]
+fn rv_i_full_restyle_mid_run() {
+    let (mut doc, p) = ROOT_COLOUR.started();
+    age_transitions(&mut doc, p, MID);
+    let _ = frame(&mut doc);
+    doc.recompute_all_styles_full();
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    eprintln!(
+        "I after full restyle: now={now:?} px_now={} shaped={:?} active={}",
+        exact(&px, now),
+        shaped_colour(&doc, p),
+        doc.tree.active_transitions.contains_key(&p.0)
+    );
+    assert!(exact(&px, now) > 500, "painted == computed");
+    let (px2, _) = frame(&mut doc);
+    let now2 = colour_of(&doc, p);
+    assert!(exact(&px2, now2) > 500);
+}
+
+// ── J: a span moved to another paragraph mid-run ────────────────────────────
+
+#[test]
+fn rv_j_span_moved_mid_run() {
+    let (mut doc, s) = SPAN_COLOUR.started();
+    age_transitions(&mut doc, s, MID);
+    let _ = frame(&mut doc);
+    let body = doc.body();
+    let p2 = el(&mut doc, body, "div", "para");
+    text(&mut doc, p2, "MM ");
+    doc.append_child(p2, s);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, s);
+    eprintln!(
+        "J moved: now={now:?} px_now={} red={} blue={}",
+        exact(&px, now),
+        exact(&px, RED),
+        exact(&px, BLUE)
+    );
+    assert!(exact(&px, now) > 200, "painted == computed after the move");
+    let (px2, st) = frame(&mut doc);
+    let now2 = colour_of(&doc, s);
+    assert!(exact(&px2, now2) > 200);
+    eprintln!("J frame2 shapes={}", shapes(&st));
+}
+
+// ── K: hidden text + recolour in one run ────────────────────────────────────
+
+#[test]
+fn rv_k_hidden_wrapper_and_recolour_share_a_run() {
+    let css = ".a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); } \
+               .hid { visibility: hidden; }";
+    let mut doc = doc_with(&format!("{TRANSITION_CSS} {css}"));
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "a");
+    text(&mut doc, p, "MM");
+    let h = el(&mut doc, p, "span", "hid");
+    doc.set_attribute(h, "style", "display: contents");
+    text(&mut doc, h, "HH");
+    let w = el(&mut doc, p, "span", "t a");
+    doc.set_attribute(w, "style", "display: contents");
+    text(&mut doc, w, "MMMM");
+    settle(&mut doc);
+    let before = paint(&mut doc);
+    let red_before = exact(&before, RED);
+    doc.set_attribute(w, "class", "t b");
+    doc.resolve_layout(VW, VH);
+    age_transitions(&mut doc, w, MID);
+    let (px, st) = frame(&mut doc);
+    let now = colour_of(&doc, w);
+    eprintln!(
+        "K: red_before={red_before} red={} now={} shapes={}",
+        exact(&px, RED),
+        exact(&px, now),
+        shapes(&st)
+    );
+    // MM stays red (1/3 of the visible M's), MMMM takes now.
+    assert!(exact(&px, RED) > 0 && exact(&px, RED) < red_before);
+    assert!(exact(&px, now) > exact(&px, RED));
+    // Geometry unchanged: the set of inked pixels is the same.
+    let inked = |px: &[u8]| px.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
+    assert_eq!(inked(&before), inked(&px));
+}
+
+// ── L: underline + line-through, mixed colours, split in a run ──────────────
+
+#[test]
+fn rv_l_strikethrough_with_declared_colour_and_currentcolor_underline_parent() {
+    // parent underlines in currentcolor; wrapper's text recolours: its
+    // underline segment must follow, the still text's must not.
+    let css = ".a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); } \
+               .u { text-decoration: underline; }";
+    let mut doc = doc_with(&format!("{TRANSITION_CSS} {css}"));
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "a u");
+    text(&mut doc, p, "MMMM");
+    // The wrapper declares the same underline, so it pushes no span of its
+    // own and its text shares the glyph run (and its underline segments).
+    let w = el(&mut doc, p, "span", "t a u");
+    doc.set_attribute(w, "style", "display: contents");
+    text(&mut doc, w, "MMMM");
+    settle(&mut doc);
+    paint(&mut doc);
+    doc.set_attribute(w, "class", "t b u");
+    doc.resolve_layout(VW, VH);
+    age_transitions(&mut doc, w, LONG * 2.0 - 1.0);
+    // not finished? use MID for mid-run and compare totals
+    age_transitions(&mut doc, w, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, w);
+    let (r, n) = (exact(&px, RED), exact(&px, now));
+    eprintln!("L: red={r} now={n}");
+    // same text both halves: equal ink both halves including underline
+    let d = (r as i64 - n as i64).abs();
+    assert!(
+        d < 40,
+        "halves should match (glyphs + underline): {r} vs {n}"
+    );
+}
+
+// ── M: damage — the dirty region covers what a colour frame changes ─────────
+
+fn damage_covers(case: &Case, label: &str) {
+    let (mut doc, target) = case.started();
+    age_transitions(&mut doc, target, MID);
+    let (before, _) = frame(&mut doc);
+    // consume dirty state as a paint would have
+    doc.tree.paint_dirty_nodes.clear();
+    age_transitions(&mut doc, target, MID + 30_000.0);
+    doc.tick_transitions();
+    doc.tick_animations();
+    doc.resolve_layout(VW, VH);
+    let region = rinch_dom::paint::compute_dirty_region(&doc.tree, 1.0, VW as f64, VH as f64);
+    let after = paint(&mut doc);
+    let bb = diff_bbox(&before, &after).expect("the frame changed pixels");
+    eprintln!("M {label}: diff bbox={bb:?} region={region:?}");
+    let r = region.expect("a colour frame damages something");
+    assert!(
+        r.x0 <= bb.0 as f64 && r.y0 <= bb.1 as f64 && r.x1 >= bb.2 as f64 && r.y1 >= bb.3 as f64,
+        "{label}: damage {r:?} does not cover the changed pixels {bb:?}"
+    );
+}
+
+#[test]
+fn rv_m1_damage_root() {
+    damage_covers(&ROOT_COLOUR, "root");
+}
+#[test]
+fn rv_m2_damage_span() {
+    damage_covers(&SPAN_COLOUR, "span");
+}
+#[test]
+fn rv_m3_damage_contents_wrapper() {
+    damage_covers(&SHARED_RUN, "contents wrapper");
+}
+#[test]
+fn rv_m4_damage_anon_box() {
+    damage_covers(&ANON_BOX, "anon box");
+}
+#[test]
+fn rv_m5_damage_split_inline() {
+    damage_covers(&SPLIT_INLINE, "split inline");
+}
+#[test]
+fn rv_m6_damage_span_background() {
+    damage_covers(&SPAN_BACKGROUND, "span background");
+}
+#[test]
+fn rv_m7_damage_inline_block() {
+    damage_covers(&INLINE_BLOCK, "inline-block");
+}
+
+// ── N: a reactive-text wrapper (display: contents) under an animated parent ─
+
+#[test]
+fn rv_n_contents_wrapper_under_animation_and_text_edit() {
+    let mut doc = doc_with(KEYFRAMES);
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "k");
+    text(&mut doc, p, "MMMM ");
+    let w = el(&mut doc, p, "span", "");
+    doc.set_attribute(w, "style", "display: contents");
+    let t = text(&mut doc, w, "HHHH");
+    settle(&mut doc);
+    paint(&mut doc);
+    age_animations(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    let wc = colour_of(&doc, w);
+    eprintln!(
+        "N mid: p={now:?} wrapper computed={wc:?} px_p={} px_wrapper={}",
+        exact(&px, now),
+        exact(&px, wc)
+    );
+    // The wrapper's text is painted in SOME colour that is the wrapper's
+    // computed one (inherit stops at own node) — never a third colour.
+    assert!(exact(&px, now) > 300);
+    assert!(exact(&px, wc) > 300, "wrapper text == its computed colour");
+    // now the reactive text changes mid-run → rebuild
+    doc.set_text_content(t, "HHHHH");
+    age_animations(&mut doc, p, MID + 30_000.0);
+    let (px, _) = frame(&mut doc);
+    let now2 = colour_of(&doc, p);
+    eprintln!(
+        "N after edit: p={now2:?} px_p={} px_wrapper={} px_old_p={}",
+        exact(&px, now2),
+        exact(&px, wc),
+        exact(&px, now)
+    );
+    assert!(exact(&px, now2) > 300);
+    assert!(exact(&px, wc) > 300);
+    assert_eq!(exact(&px, now), 0);
+    age_animations(&mut doc, p, MID + 50_000.0);
+    let (px, _) = frame(&mut doc);
+    let now3 = colour_of(&doc, p);
+    assert!(exact(&px, now3) > 300);
+    assert!(exact(&px, wc) > 300);
+    assert_eq!(exact(&px, now2), 0, "no text frozen at the rebuild colour");
+}
+
+// ── O: two properties, colour ends first ────────────────────────────────────
+
+#[test]
+fn rv_o_colour_ends_before_background() {
+    let css = ".t2 { transition: color 100s linear, background-color 1000s linear; } \
+               .a { color: rgb(200, 10, 10); background-color: rgb(10,160,10); } \
+               .b { color: rgb(10, 10, 200); background-color: rgb(160,160,10); }";
+    let mut doc = doc_with(css);
+    let s = span_in_paragraph(&mut doc, "t2 a");
+    settle(&mut doc);
+    paint(&mut doc);
+    doc.set_attribute(s, "class", "t2 b");
+    doc.resolve_layout(VW, VH);
+    age_transitions(&mut doc, s, LONG * 2.0);
+    let (px, st) = frame(&mut doc);
+    eprintln!(
+        "O: blue={} build={} still_active={}",
+        exact(&px, BLUE),
+        st.get(Counter::ShapeIfcBuild),
+        doc.tree.active_transitions.contains_key(&s.0)
+    );
+    assert!(exact(&px, BLUE) > 200);
+    assert_eq!(
+        st.get(Counter::ShapeIfcBuild),
+        1,
+        "colour settled, bg still runs"
+    );
+    let (_, st) = frame(&mut doc);
+    assert_eq!(shapes(&st), 0);
+}
+
+// ── Q: inline background on a span whose text is on an ellipsis-cut line ────
+// ── R: infinite alternate animation never reshapes ──────────────────────────
+
+#[test]
+fn rv_r_infinite_animation_never_shapes() {
+    let css = "@keyframes tint { from { color: rgb(200, 10, 10); } to { color: rgb(10, 10, 200); } } \
+               .k { animation: tint 100s linear infinite alternate; }";
+    let mut doc = doc_with(css);
+    let p = root_text(&mut doc, "k");
+    settle(&mut doc);
+    paint(&mut doc);
+    for ago in [MID, 99_999.0, 100_001.0, 150_000.0, 250_000.0] {
+        age_animations(&mut doc, p, ago);
+        let (px, st) = frame(&mut doc);
+        let now = colour_of(&doc, p);
+        assert!(exact(&px, now) > 500, "at {ago}: {}", exact(&px, now));
+        assert_eq!(shapes(&st), 0, "at {ago}");
+    }
+}
+
+// ── S: pseudo-element text under a transitioning originator ─────────────────
+
+#[test]
+fn rv_s_before_pseudo_with_own_colour() {
+    let css = ".a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); } \
+               .q::before { content: 'HHHH'; color: rgb(10, 160, 10); }";
+    let mut doc = doc_with(&format!("{TRANSITION_CSS} {css}"));
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "q t a");
+    text(&mut doc, p, "MMMM");
+    settle(&mut doc);
+    let px0 = paint(&mut doc);
+    let green0 = exact(&px0, GREEN);
+    assert!(green0 > 300, "pseudo drawn green: {green0}");
+    doc.set_attribute(p, "class", "q t b");
+    doc.resolve_layout(VW, VH);
+    age_transitions(&mut doc, p, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, p);
+    eprintln!(
+        "S: green0={green0} green={} now={}",
+        exact(&px, GREEN),
+        exact(&px, now)
+    );
+    assert_eq!(exact(&px, GREEN), green0, "the pseudo keeps its own colour");
+    assert!(exact(&px, now) > 300);
+}
+
+// ── T: transition with a delay: nothing moves, nothing shaped, fast path ────
+
+#[test]
+fn rv_t_nested_three_levels_inherit() {
+    // colour transition on a grandparent block; the IFC root two levels down
+    // inherits. Painted colour of the inner text must equal ITS computed
+    // colour at every frame (whatever that is), and the outer direct text its.
+    let css = ".a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); }";
+    let mut doc = doc_with(&format!("{TRANSITION_CSS} {css}"));
+    let body = doc.body();
+    let g = el(&mut doc, body, "div", "t a");
+    let mid = el(&mut doc, g, "div", "");
+    let inner = el(&mut doc, mid, "div", "");
+    text(&mut doc, inner, "MMMM");
+    let s = el(&mut doc, inner, "span", "");
+    text(&mut doc, s, "HHHH");
+    settle(&mut doc);
+    paint(&mut doc);
+    doc.set_attribute(g, "class", "t b");
+    doc.resolve_layout(VW, VH);
+    age_transitions(&mut doc, g, MID);
+    let (px, _) = frame(&mut doc);
+    let (ci, cs) = (colour_of(&doc, inner), colour_of(&doc, s));
+    eprintln!(
+        "T: g={:?} inner={ci:?} span={cs:?} px_inner={} red={}",
+        colour_of(&doc, g),
+        exact(&px, ci),
+        exact(&px, RED)
+    );
+    assert_eq!(ci, cs);
+    assert!(exact(&px, ci) > 600, "inner text == its computed colour");
+    age_transitions(&mut doc, g, LONG * 2.0);
+    let (px, _) = frame(&mut doc);
+    assert!(exact(&px, BLUE) > 600);
+    assert_eq!(exact(&px, RED), 0);
+}
+
+/// A3: the same anon-box ellipsis line, class flipped with NO transition.
+#[test]
+#[ignore = "#1450: an anonymous box's ellipsis line keeps a stale colour"]
+fn rv_a3_anon_box_ellipsis_static_restyle() {
+    let mut doc = doc_with(ANON_ELLIPSIS.css);
+    let d = ellipsis_text_beside_a_block(&mut doc, "e a");
+    settle(&mut doc);
+    paint(&mut doc);
+    doc.set_attribute(d, "class", "e b");
+    doc.resolve_layout(VW, VH);
+    let got = paint(&mut doc);
+    let want = ANON_ELLIPSIS.twin();
+    eprintln!(
+        "A3 static: differing={} red={} blue={}",
+        diff_count(&got, &want),
+        exact(&got, RED),
+        exact(&got, BLUE)
+    );
+    assert_eq!(diff_count(&got, &want), 0);
+}
+
+/// A4: how long the anon-box ellipsis stays stale after the run ends.
+#[test]
+#[ignore = "#1450: an anonymous box's ellipsis line keeps a stale colour"]
+fn rv_a4_anon_box_ellipsis_after_end() {
+    let (mut doc, d) = ANON_ELLIPSIS.started();
+    age_transitions(&mut doc, d, LONG * 2.0);
+    let (px, st) = frame(&mut doc);
+    eprintln!(
+        "A4 end frame: red={} blue={} build={}",
+        exact(&px, RED),
+        exact(&px, BLUE),
+        st.get(Counter::ShapeIfcBuild)
+    );
+    let (px, _) = frame(&mut doc);
+    eprintln!(
+        "A4 next frame: red={} blue={}",
+        exact(&px, RED),
+        exact(&px, BLUE)
+    );
+    assert_eq!(exact(&px, RED), 0);
+}
+
+/// Kills "the brush drop skips the node's own IFC root": a span's colour
+/// settling rebuilds the paragraph it is in.
+#[test]
+fn rv_u_span_colour_settles_its_paragraph() {
+    let (mut doc, s) = SPAN_COLOUR.started();
+    age_transitions(&mut doc, s, MID);
+    let _ = frame(&mut doc);
+    age_transitions(&mut doc, s, LONG * 2.0);
+    let (_, last) = frame(&mut doc);
+    assert_eq!(last.get(Counter::ShapeIfcBuild), 1);
+    let para = doc.tree.get(s.0).unwrap().parent.unwrap();
+    let layout = doc.tree.get(para).unwrap().text_layout.as_ref().unwrap();
+    assert!(
+        layout.text_ranges.iter().any(|r| rgb_of(r.color) == BLUE),
+        "the paragraph's layout is shaped in the end colour"
+    );
+}
+
+/// Kills "a wavy element's declared colour holds the straight underline it
+/// inherited": the wavy colour is the squiggle's only.
+#[test]
+fn rv_v_wavy_colour_does_not_hold_an_inherited_straight_underline() {
+    let css = ".a { color: rgb(200, 10, 10); } .b { color: rgb(10, 10, 200); } \
+               .u { text-decoration: underline; } \
+               .w { text-decoration: underline wavy rgb(10, 160, 10); }";
+    let mut doc = doc_with(&format!("{TRANSITION_CSS} {css}"));
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "u");
+    let s = el(&mut doc, p, "span", "t a w");
+    text(&mut doc, s, "MMMM");
+    settle(&mut doc);
+    let before = paint(&mut doc);
+    eprintln!("V before: red={}", exact(&before, RED));
+    doc.set_attribute(s, "class", "t b w");
+    doc.resolve_layout(VW, VH);
+    age_transitions(&mut doc, s, MID);
+    let (px, _) = frame(&mut doc);
+    let now = colour_of(&doc, s);
+    eprintln!(
+        "V mid: red={} now={} (before red {})",
+        exact(&px, RED),
+        exact(&px, now),
+        exact(&before, RED)
+    );
+    assert_eq!(
+        exact(&px, RED),
+        0,
+        "the straight underline follows the text"
+    );
+    assert_eq!(exact(&px, now), exact(&before, RED));
+}
+
+/// The frame that ends a split inline's colour transition damages its text.
+#[test]
+fn rv_m8_damage_split_inline_end_frame() {
+    let (mut doc, s) = SPLIT_INLINE.started();
+    age_transitions(&mut doc, s, MID);
+    let (before, _) = frame(&mut doc);
+    doc.tree.paint_dirty_nodes.clear();
+    age_transitions(&mut doc, s, LONG * 2.0);
+    doc.tick_transitions();
+    doc.resolve_layout(VW, VH);
+    let region = rinch_dom::paint::compute_dirty_region(&doc.tree, 1.0, VW as f64, VH as f64);
+    let after = paint(&mut doc);
+    let bb = diff_bbox(&before, &after).unwrap();
+    eprintln!("M8 end frame: bbox={bb:?} region={region:?}");
+    let r = region.unwrap();
+    assert!(
+        r.x0 <= bb.0 as f64 && r.y0 <= bb.1 as f64 && r.x1 >= bb.2 as f64 && r.y1 >= bb.3 as f64
+    );
+}
