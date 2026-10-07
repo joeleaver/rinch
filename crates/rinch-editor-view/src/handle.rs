@@ -3907,6 +3907,26 @@ mod tests {
         assert_eq!(drain(&h).len(), 1, "the paste brings the caret into view");
     }
 
+    /// A picture that lands late, away from the person's caret
+    /// ([`EditorHandle::insert_image_at`]), owes no scroll: their selection did
+    /// not change, and the view must not jump to where the picture went. When
+    /// the selection is still the anchor's, it is the ordinary insert and does.
+    #[test]
+    fn a_late_picture_away_from_the_caret_owes_no_scroll() {
+        let handle = crate::create_editor();
+        assert!(handle.load_html("<p>hello world</p><p>second</p>"));
+        handle.set_selection(Selection::cursor(Pos(6)));
+        let anchor = handle.anchor_selection();
+        handle.set_selection(Selection::cursor(Pos(20)));
+        handle.core_mut().scroll.pending = false;
+        assert!(handle.insert_image_at(&anchor, "app-blob:1", ""));
+        assert!(!handle.core().scroll.pending, "the person did not move");
+
+        let here = handle.anchor_selection();
+        assert!(handle.insert_image_at(&here, "app-blob:2", ""));
+        assert!(handle.core().scroll.pending, "control: an insert at the caret");
+    }
+
     /// The gate's state machine directly: movement alone never scrolls, an owed
     /// scroll waits for an anchor and is spent by it, and a text range drops it.
     #[test]

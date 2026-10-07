@@ -5266,6 +5266,11 @@ mod image_input_tests {
         assert_eq!(mime, "image/png");
         assert_eq!(*name, None);
         assert_eq!(html(&handle), r#"<p>Xa<img src="app-blob:1">b</p>"#);
+        assert_eq!(
+            handle.selection(),
+            Selection::cursor(Pos(2)),
+            "the caret stays where the person was typing, after the X"
+        );
     }
 
     /// The app refusing (or answering later) inserts nothing now, and the
