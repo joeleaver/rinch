@@ -316,6 +316,10 @@ where
 
     clear_render_scope();
 
+    // Ask the app for the image sources this build gave its `<img>`s, now
+    // that no borrow of the document is held (`images.rs`).
+    images::resolve_pending();
+
     // Inject/refresh the page-global theme `<style>` (idempotent across roots).
     if let Some(css) = rinch_core::get_current_theme_css() {
         web_document::update_theme_style_global(&css);

@@ -101,8 +101,8 @@ pub mod image_loader;
 /// changed, loaded again.
 pub mod image {
     pub use rinch_core::image::{
-        ImageLoadResult, ImageLoader, register_image_scheme, register_image_scheme_arc, reload_image,
-        scheme_of, unregister_image_scheme,
+        ImageLoadResult, ImageLoader, register_image_scheme, register_image_scheme_arc,
+        reload_image, scheme_of, unregister_image_scheme,
     };
 }
 

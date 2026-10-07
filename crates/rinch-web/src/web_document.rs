@@ -269,6 +269,8 @@ fn forget_recursive(
         forget_recursive(nodes, reg, &c);
         child = next;
     }
+    // An `<img>` the app's image sources recorded leaves that record with it.
+    crate::images::forget_node(node);
     if let Some(id) = get_nid(node) {
         // `nodes` is this document's map but the registry is page-global, so a
         // descendant belonging to a *different* `WebDocument` (an island mounted
@@ -1155,6 +1157,9 @@ impl Drop for WebDocument {
                 }
             }
         });
+        for node in self.nodes.values() {
+            crate::images::forget_node(node);
+        }
     }
 }
 
@@ -1517,7 +1522,7 @@ impl DomDocument for WebDocument {
                     return;
                 }
                 if matched == "src" {
-                    el.remove_attribute(crate::images::LOGICAL_SRC_ATTR).ok();
+                    crate::images::remove_img_src(&el);
                 }
                 el.remove_attribute(name).ok();
             }
@@ -1846,6 +1851,9 @@ impl DomDocument for WebDocument {
                     self.register_subtree(&child);
                 }
             }
+            // Parsed markup skipped `set_attribute`: an `<img>` source the
+            // app answers for goes through the same path as one set one.
+            crate::images::adopt_parsed_images(&el);
         }
     }
 

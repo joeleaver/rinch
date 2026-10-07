@@ -29,9 +29,11 @@ const RED_3X2_PNG: &[u8] = &[
 /// Let the microtask that asks the app for a newly given source run.
 async fn tick() {
     for _ in 0..2 {
-        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL))
-            .await
-            .unwrap();
+        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+            &wasm_bindgen::JsValue::NULL,
+        ))
+        .await
+        .unwrap();
     }
 }
 
@@ -401,7 +403,10 @@ async fn holds_a_first_answer_is_remembered_for_the_next_element() {
     urls.register("rv-first");
     urls.put("rv-first:pic", "https://example.test/first.png");
     let f = Fixture::with_images(&[("a", "rv-first:pic"), ("b", "pictures/plain.png")]);
-    assert_eq!(f.shown("a").as_deref(), Some("https://example.test/first.png"));
+    assert_eq!(
+        f.shown("a").as_deref(),
+        Some("https://example.test/first.png")
+    );
     assert_eq!(urls.asked.get(), 1);
     f.handle("b").set_attribute("src", "rv-first:pic");
     assert_eq!(

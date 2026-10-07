@@ -60,9 +60,11 @@ async fn finding_a_resolver_that_writes_a_signal_panics_inside_set_attribute() {
     img.set_attribute("src", "rv-reentry:pic");
     // The resolver is asked from a microtask, outside the document's borrow.
     for _ in 0..2 {
-        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL))
-            .await
-            .unwrap();
+        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+            &wasm_bindgen::JsValue::NULL,
+        ))
+        .await
+        .unwrap();
     }
 
     let badge = document
