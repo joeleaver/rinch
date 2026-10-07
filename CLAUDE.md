@@ -3948,8 +3948,12 @@ late-blob flow through a `RinchApp` with software frames.
 `images::set_img_src`: a source whose scheme the app answers for is kept in
 `data-rinch-src` (`LOGICAL_SRC_ATTR`; `get_attribute("src")` answers it) and the
 browser's `src` gets what it resolved to, or is **removed** while the answer is "not
-yet". Two ways to answer: `rinch::image::register_image_scheme` unchanged (the loader is
-called synchronously on the one thread; its bytes become an object URL rinch owns and
+yet". **The app is never asked inside a DOM write** (`set_attribute` runs under the
+`NodeHandle`'s `RefCell` borrow, and a resolver that wrote a signal panicked
+`RefCell already borrowed`): an element given a source with no remembered answer shows
+nothing until a microtask (`images::resolve_pending`, once per source) asks, and
+`mount_tree` runs it before `mount_into` returns. Two ways to answer:
+`rinch::image::register_image_scheme` unchanged (the loader is called on the one thread; its bytes become an object URL rinch owns and
 revokes when a reload replaces it), or `rinch_web::register_image_url_scheme(scheme,
 Fn(&str) -> Option<String>)` (browser only, may capture `Rc`s, answers a URL the app
 owns; wins over a loader for the same scheme). Successes are remembered by source;
@@ -3957,11 +3961,19 @@ owns; wins over a loader for the same scheme). Successes are remembered by sourc
 `rinch::image::reload_image` is `rinch_core::image::reload_image`, which calls each
 backend's reloader (`add_image_reloader`: rinch-dom's on its first document, rinch-web's
 on its first `WebDocument`); on the web it asks the app again and re-points every
-`<img>` on the page naming the source (including one rendered before the scheme was
-registered), leaving a picture on screen alone when the answer is still "not yet". The
+`<img>` **rinch was given** the source for, attached or not (`images::ELEMENTS`, filled by
+`set_img_src`, pruned when the `src` changes or goes and by `forget_recursive` /
+`WebDocument`'s drop, so a captured element in a hidden branch comes back with the new
+picture and a page `<img>` outside every root is never touched; one rendered before the
+scheme was registered is recorded too), leaving a picture on screen alone when the
+answer is still "not yet". A reload of a source no element was given asks nothing and
+forgets the answer (a rinch-made object URL is revoked); a "not yet" reload forgets an
+app-owned URL, which is how an app that revoked one makes rinch ask again. `<img>`
+markup set with `set_inner_html` goes through `set_img_src` too. The
 editor's model is never read back from the DOM, so an `image` node's `src` stays the
 app's URL. `background-image` is not resolved on the web.
-`crates/rinch-web/tests/image_sources.rs` is the pin.
+`crates/rinch-web/tests/image_sources.rs`, `review_1435.rs` and `review_1435_reentry.rs`
+(Chrome 153) are the pins.
 
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 

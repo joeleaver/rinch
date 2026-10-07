@@ -207,9 +207,15 @@ one has decoded.
 
 The same two calls work in a `rinch-web` build. The browser loads an `<img>`
 itself, so there the loader's bytes are wrapped in an object URL (`blob:…`) and
-that is what the element shows; the loader is called on the browser's one
-thread, when an `<img>` is given such a `src`, so it must answer from what it
-already holds (`Failed` for "not yet", then `reload_image`).
+that is what the element shows. The loader is called on the browser's one
+thread, so it must answer from what it already holds (`Failed` for "not yet",
+then `reload_image`).
+
+The app is never asked from inside a DOM write, so a resolver or loader may
+write signals. An element given a source with no remembered answer shows nothing
+until a microtask asks for it, once per source, before the next paint; sources
+given while a root mounts are asked for before `mount_into` returns.
+`reload_image` asks at once.
 
 An app that already has a URL to show (it made the object URL itself), or whose
 state lives in `Rc`s a `Send + Sync` loader cannot capture, uses the
@@ -226,7 +232,13 @@ rinch::image::reload_image("asset:photo-42");
 Either way the element keeps the source it was given: it is in
 `data-rinch-src`, `NodeHandle::get_attribute("src")` answers it, and an editor
 document's `image` node never holds the resolved URL. While the answer is "not
-yet" the element has no `src` at all. Only `<img src>` is resolved in the
+yet" the element has no `src` at all. A reload reaches every `<img>` rinch
+was given that source, including one in a branch that is hidden right now, and
+never an `<img>` the page made outside rinch. It asks nothing for a source no
+element was given, and forgets its answer. To make rinch forget a URL you
+revoked, call `reload_image` and answer `None`: pictures already shown stay, and
+the next element given the source asks again. `<img>` markup set with
+`set_inner_html` is resolved like any other. Only `<img src>` is resolved in the
 browser; a `background-image: url(…)` there is the browser's own.
 
 ---

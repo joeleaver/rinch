@@ -1,7 +1,7 @@
 //! Review fixtures for PR #1435 (app image schemes in the browser).
 //!
-//! `finding_*` tests FAIL at the PR head; `holds_*` / `observe_*` pass and pin
-//! or measure a behaviour.
+//! `finding_*` tests failed at the PR head (`bb8e9145`) and pass since the
+//! review round; `holds_*` / `observe_*` pin or measure a behaviour.
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::{Cell, RefCell};
@@ -456,4 +456,33 @@ fn mounting_asks_once_per_source() {
     let asked = urls.asked.get();
     f.teardown();
     assert_eq!(asked, 2);
+}
+
+/// W4 with an element still showing the picture: the app revokes its URL and
+/// reloads; the answer is "not yet". The element keeps what it shows, and the
+/// next element given the source asks the app instead of being handed the
+/// revoked URL.
+#[wasm_bindgen_test]
+async fn holds_a_not_yet_reload_forgets_an_app_url_an_element_still_shows() {
+    let urls = Urls::default();
+    urls.register("rv-w4b");
+    urls.put("rv-w4b:pic", "blob:https://example.test/revoked-soon");
+    let f = Fixture::with_images(&[("a", "rv-w4b:pic"), ("b", "pictures/plain.png")]);
+    assert_eq!(
+        f.shown("a").as_deref(),
+        Some("blob:https://example.test/revoked-soon")
+    );
+    urls.held.borrow_mut().clear();
+    reload_image("rv-w4b:pic");
+    assert_eq!(
+        f.shown("a").as_deref(),
+        Some("blob:https://example.test/revoked-soon"),
+        "a picture on screen stays"
+    );
+    let asked = urls.asked.get();
+    f.handle("b").set_attribute("src", "rv-w4b:pic");
+    tick().await;
+    let got = (urls.asked.get() - asked, f.shown("b"));
+    f.teardown();
+    assert_eq!(got, (1, None), "asked again, not handed the revoked URL");
 }
