@@ -536,7 +536,16 @@ fn an_inline_block_measures_its_box_with_its_own_text_style() {
     fn width_of(extra: &str) -> (f32, f32) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
-        let c = el(&mut doc, body, "div", CONTAINER);
+        // Wider than `CONTAINER`: the 32px row is ~400 wide in Chrome's face
+        // and wider in the host's, and an auto-width inline-block is capped at
+        // its containing block (#658) — it would wrap, and this is about the
+        // measurement, not the cap.
+        let c = el(
+            &mut doc,
+            body,
+            "div",
+            "width: 700px; line-height: 20px; font-size: 16px",
+        );
         let w = el(
             &mut doc,
             c,
@@ -676,20 +685,15 @@ fn an_inline_blocks_text_fits_the_box_it_was_measured_into() {
 /// `min-width: 10%` of a 400px cell is 40px, far under the ~580px this text
 /// wants, so the two spellings below are the same box by construction — a twin
 /// whose oracle is the input, like the rest of this file. Chrome 150 gives both
-/// `400x40`; rinch gives both `580x20` because an auto-width inline-block never
-/// caps at its containing block (`min(max-content, available)` — the
-/// min-content half of CSS 2.1 §10.3.5 is unimplemented, pre-existing and
-/// unchanged here, which is precisely why the twin rather than the number is
-/// asserted).
+/// `400x40`, and so does rinch since #658: an auto-width inline-block is
+/// shrink-to-fit, capped at its containing block. (Before that both were
+/// `580x20`, and the twin was all that could be asserted.)
 ///
-/// It is here because the percentage path is the only one that runs
-/// `measure_inline_blocks`' shrink-to-fit pin, and the pin has to be taken from
-/// **`unrounded_layout`**. Taffy rounds a final layout to whole pixels; pinning
-/// the rounded 580 for a 580.37px max-content line re-broke the text into two
-/// lines and left a 580-wide box holding an interior laid out for 400. Measured
-/// both ways: `(580, 20)` with the unrounded pin, `(580, 40)` with the rounded
-/// one, against a twin that is `(580, 20)` either way because it never reaches
-/// the pin at all.
+/// The unrounded pin this test used to guard (a 580.37px line pinned at the
+/// rounded 580 re-broke into two lines) is now
+/// `inline_block_shrink_to_fit_658_tests::a_fitting_box_is_pinned_at_its_unrounded_width`:
+/// a capped box is pinned at its containing block's width, which is no
+/// rounding question.
 #[test]
 fn a_percentage_min_width_that_cannot_bind_changes_nothing() {
     fn build(extra: &str) -> (f32, f32) {
@@ -720,9 +724,9 @@ fn a_percentage_min_width_that_cannot_bind_changes_nothing() {
          percentage re-measure must land where the plain one does",
     );
     assert_eq!(
-        bound.1, LINE,
-        "…on one line: the text was measured at the width the box has, not at \
-         a whole-pixel rounding of it",
+        bound,
+        (400.0, 2.0 * LINE),
+        "…capped at the 400px cell and wrapped onto two lines, as in Chrome",
     );
 }
 

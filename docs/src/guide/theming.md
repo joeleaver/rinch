@@ -660,9 +660,11 @@ differs, each with its issue:
 - **`height: stretch` on an `inline-block`** lays out as `auto`, and
   **`width: stretch` on a flex item** whose content is wider than the
   container is not capped by it (#1277).
-- An `inline-block` whose width is **`auto`** is still sized at max-content and
-  never capped at its containing block (#658). Spelling it `width:
-  fit-content` gets the capped, browser answer.
+- An `inline-block` (or `inline-flex`, `inline-grid`) whose width is
+  **`auto`** is shrink-to-fit since #658, as in a browser: capped at its
+  containing block, so wider content wraps there. Two such boxes **nested**
+  are not capped yet: the outer one is lined up with the inner one at its
+  full width, so neither wraps (#1476).
 
 For `min-*`/`max-*` rinch prints one line on stderr per property and keyword
 per process, so the substitution is visible rather than silent:

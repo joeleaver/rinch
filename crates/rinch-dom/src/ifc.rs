@@ -5816,6 +5816,15 @@ impl RinchDocument {
             let Ok(mut original) = self.tree.taffy.style(taffy_id).cloned() else {
                 continue;
             };
+            if available_width.is_none()
+                && let Some(&nid) = self.tree.taffy_map.get(&taffy_id)
+            {
+                if original.size.width.is_auto() && self.subtree_uses_percentage(taffy_id) {
+                    self.tree.auto_inline_percent_content.insert(nid);
+                } else if !self.tree.auto_inline_percent_content.is_empty() {
+                    self.tree.auto_inline_percent_content.remove(&nid);
+                }
+            }
             // A Taffy root ignores a sizing keyword on its own `size` (#691),
             // so a keyword width is resolved here and handed to the passes
             // below as the length (or `auto`) it means; `declared` is what
@@ -5829,38 +5838,31 @@ impl RinchDocument {
                 declared
             });
             let block_root = original.display == taffy::Display::Block;
-            let auto_width = original.size.width.is_auto();
             let clampable = !original.max_size.width.is_auto();
             let mut pinned = keyword_width.is_some();
 
-            // Pass A — the content's own width, so the definite pass below can
-            // be given a basis without being given a stretch.
-            if block_root && auto_width && available_width.is_some() {
-                Self::compute_atomic_inline_root(
-                    &mut self.tree,
-                    &mut self.font_cx,
-                    &mut self.layout_cx,
-                    taffy_id,
-                    max_content,
-                );
-                // **`unrounded_layout`, not `layout`.** Taffy rounds a final
-                // layout to whole pixels, and pinning the *rounded* width is
-                // pinning a width the content does not fit in: a 580.37px
-                // max-content line pinned at 580 re-broke into two lines, so
-                // the box came out 580 wide with an interior laid out for 400.
-                // Measured — this is the difference between `(580, 20)` and
-                // `(580, 40)` on `min-width: 10%` in a 400px cell.
-                let natural = self.tree.taffy.unrounded_layout(taffy_id).size.width;
-                let mut style = original.clone();
-                style.size.width = taffy::Dimension::length(natural);
-                let _ = self.tree.taffy.set_style(taffy_id, style);
-                pinned = true;
-            }
+            // There used to be a pass A here (#592): an `auto` width given a
+            // containing-block width was measured at max-content and that
+            // width pinned, so the definite pass below had a basis for a
+            // percentage without stretching the box. An `auto` width given a
+            // containing-block width is now resolved to its shrink-to-fit
+            // length above (#658), which is that pin capped at the containing
+            // block — unrounded, for the reason that pass gave: a 580.37px
+            // max-content line pinned at 580 re-broke into two lines.
 
-            // Pass B — the measure the caller asked for.
-            let avail = match available_width {
-                Some(w) => definite(w),
-                None => max_content,
+            // Pass B — the measure the caller asked for. Never narrower than
+            // a width resolved above: one allowed up to a pixel past its
+            // containing block (see `resolve_root_width_keyword`) re-broke
+            // its last word onto a second line under the narrower space.
+            let resolved_width = keyword_width
+                .filter(|w| w.tag() == taffy::CompactLength::LENGTH_TAG)
+                .map(|w| w.value());
+            let avail = match (available_width, resolved_width) {
+                (Some(w), Some(r)) => definite(w.max(r)),
+                // An `auto` box that fits (see `resolve_root_width_keyword`).
+                (Some(_), None) if original.size.width.is_auto() => max_content,
+                (Some(w), None) => definite(w),
+                (None, _) => max_content,
             };
             Self::compute_atomic_inline_root(
                 &mut self.tree,
@@ -5951,7 +5953,15 @@ impl RinchDocument {
         use taffy::CompactLength as C;
         use taffy::ResolveOrZero;
         let width = declared.size.width;
-        if !width.is_sizing_keyword() {
+        // An `auto` width is shrink-to-fit on an atomic inline (CSS 2.1
+        // §10.3.9), which is `fit-content` (css-sizing-3 §3.1) — but only
+        // once there is a containing-block width to fit (#658). Without one
+        // it is measured as Taffy measures `auto` under max-content space.
+        let auto = width.is_auto();
+        if auto && available_width.is_none() {
+            return None;
+        }
+        if !auto && !width.is_sizing_keyword() {
             return None;
         }
         let measure = |this: &mut Self, space: taffy::AvailableSpace| -> f32 {
@@ -5970,24 +5980,111 @@ impl RinchDocument {
             );
             this.tree.taffy.unrounded_layout(taffy_id).size.width
         };
+        // `min(max-content, max(min-content, stretch))`. The max-content
+        // width is measured first: when it fits, it is the answer and the
+        // min-content compute is not needed.
+        //
+        // "Fits" and the result both allow one pixel: an IFC lines an atomic
+        // inline up at its *rounded* `Node::layout` size, so a box whose
+        // only content is another one has a min-content width (and so a
+        // containing block) up to a pixel narrower than that box's unrounded
+        // max-content width — capped there, the inner box wrapped its last
+        // word onto a second line (an `inline-block` around an
+        // `inline-block`, 544.0 against 544.3).
+        //
+        // The max-content answer is handed back a hundredth of a pixel
+        // wider: laid out again at exactly its own max-content width, a
+        // line can break (measured: `"x y z"` in a padded `inline-block`,
+        // 32.64 wide, came out two lines tall), and a width that has room
+        // for its content must not wrap it. It rounds to the same pixel.
+        let this_max = std::cell::Cell::new(f32::INFINITY);
+        let fit_content = |this: &mut Self, stretch: f32| -> f32 {
+            let max = measure(this, taffy::AvailableSpace::MaxContent);
+            this_max.set(max + 0.01);
+            if max <= stretch + 1.0 {
+                return max + 0.01;
+            }
+            let min = measure(this, taffy::AvailableSpace::MinContent);
+            let fit = stretch.max(min);
+            if fit + 1.0 >= max { max + 0.01 } else { fit }
+        };
         let stretch = available_width.map(|cb| {
             let margin = declared.margin.resolve_or_zero(Some(cb), |_, _| 0.0);
             (cb - margin.left - margin.right).max(0.0)
         });
         let resolved = match width.tag() {
+            // An `auto` box that fits is measured as `auto`, under
+            // max-content space — exactly what a measure with no
+            // containing-block width does — rather than pinned at that
+            // width: a pinned line can break where the unpinned one did not
+            // (an inline formatting context holding an absolute box's
+            // placeholder does, pre-existing), and then a box resolved here
+            // and one a whole-document pass left alone came out at two
+            // heights. Not when a percentage in it, or its own, needs that
+            // width as its basis (#662): that box is pinned.
+            _ if auto => stretch.and_then(|stretch| {
+                let w = fit_content(self, stretch);
+                let max = this_max.get();
+                let percent_content = self
+                    .tree
+                    .taffy_map
+                    .get(&taffy_id)
+                    .is_some_and(|n| self.tree.auto_inline_percent_content.contains(n));
+                // Its own percentage `min-`/`max-width` needs the basis too.
+                let own_percent = [declared.min_size.width, declared.max_size.width]
+                    .iter()
+                    .any(|d| d.into_raw().tag() == C::PERCENT_TAG);
+                (w < max || percent_content || own_percent).then_some(w)
+            }),
             C::MAX_CONTENT_TAG if available_width.is_none() => None,
             C::MAX_CONTENT_TAG => Some(measure(self, taffy::AvailableSpace::MaxContent)),
             C::MIN_CONTENT_TAG => Some(measure(self, taffy::AvailableSpace::MinContent)),
-            C::FIT_CONTENT_KEYWORD_TAG => stretch.map(|stretch| {
-                let max = measure(self, taffy::AvailableSpace::MaxContent);
-                let min = measure(self, taffy::AvailableSpace::MinContent);
-                max.min(stretch.max(min))
-            }),
+            C::FIT_CONTENT_KEYWORD_TAG => stretch.map(|stretch| fit_content(self, stretch)),
             C::STRETCH_TAG => stretch,
             // `fit-content(<length-percentage>)` — rinch never produces one.
             _ => None,
         };
         Some(resolved.map_or(taffy::Dimension::auto(), taffy::Dimension::length))
+    }
+
+    /// Whether a box in `root`'s own Taffy subtree (not `root` itself, and not
+    /// inside a nested atomic inline, which is a root of its own) has a
+    /// percentage that resolves against its containing block's width (#662):
+    /// an inline size, a flex basis, a padding or margin on any side, a gap,
+    /// or a horizontal inset. Asked when an `auto`-width atomic inline is
+    /// measured with no containing-block width, so it costs one walk per
+    /// measure, not one per layout pass.
+    fn subtree_uses_percentage(&self, root: taffy::NodeId) -> bool {
+        use taffy::CompactLength as C;
+        let pct = |c: taffy::CompactLength| c.tag() == C::PERCENT_TAG;
+        let mut stack = self.tree.taffy.children(root).unwrap_or_default();
+        while let Some(n) = stack.pop() {
+            let Ok(s) = self.tree.taffy.style(n) else {
+                continue;
+            };
+            if pct(s.size.width.into_raw())
+                || pct(s.min_size.width.into_raw())
+                || pct(s.max_size.width.into_raw())
+                || pct(s.flex_basis.into_raw())
+                || pct(s.padding.left.into_raw())
+                || pct(s.padding.right.into_raw())
+                || pct(s.padding.top.into_raw())
+                || pct(s.padding.bottom.into_raw())
+                || pct(s.margin.left.into_raw())
+                || pct(s.margin.right.into_raw())
+                || pct(s.margin.top.into_raw())
+                || pct(s.margin.bottom.into_raw())
+                || pct(s.gap.width.into_raw())
+                || pct(s.inset.left.into_raw())
+                || pct(s.inset.right.into_raw())
+            {
+                return true;
+            }
+            if let Ok(children) = self.tree.taffy.children(n) {
+                stack.extend(children);
+            }
+        }
+        false
     }
 
     /// Whether any of this style's inline-axis sizes is a percentage.
@@ -5999,13 +6096,17 @@ impl RinchDocument {
     }
 
     /// Whether any of this style's inline-axis sizes needs a containing-block
-    /// width to resolve against: a percentage, or a `fit-content` or `stretch`
-    /// width (#691 — see [`Self::resolve_root_width_keyword`]).
+    /// width to resolve against: a percentage, a `fit-content` or `stretch`
+    /// width (#691 — see [`Self::resolve_root_width_keyword`]), or an `auto`
+    /// one, which is shrink-to-fit and so capped at the containing block
+    /// (#658).
     fn needs_containing_block_width(style: &crate::computed_style::ComputedStyle) -> bool {
-        use crate::computed_style::DimensionValue::{Intrinsic, Percent};
+        use crate::computed_style::DimensionValue::{Auto, Intrinsic, Percent};
         use crate::computed_style::IntrinsicSize::{FitContent, Stretch};
-        matches!(style.width, Percent(_) | Intrinsic(FitContent | Stretch))
-            || matches!(style.min_width, Percent(_))
+        matches!(
+            style.width,
+            Auto | Percent(_) | Intrinsic(FitContent | Stretch)
+        ) || matches!(style.min_width, Percent(_))
             || matches!(style.max_width, Percent(_))
     }
 
@@ -6026,12 +6127,10 @@ impl RinchDocument {
     /// resolves against a containing-block height that is itself usually content-
     /// derived, so there is no non-circular basis to feed back here.
     pub(crate) fn resolve_percentage_inline_blocks(&mut self) -> bool {
-        // What to re-measure, and what to compare against afterwards:
-        // targets  = (taffy id, containing block inner width)
-        // affected = (node id, IFC root id, width before, height before)
-        let mut targets: Vec<(taffy::NodeId, Option<f32>)> = Vec::new();
-        let mut affected: Vec<(usize, usize, f32, f32)> = Vec::new();
-        let mut keyword_cached: Vec<(usize, f32)> = Vec::new();
+        // The boxes to resolve, keyed (depth, id): popped outermost first,
+        // one at a time (see the two phases below).
+        let mut pending: std::collections::BTreeSet<(usize, usize)> =
+            std::collections::BTreeSet::new();
 
         // The registry, not the slab (layout audit F8/F12): this runs after
         // every root compute, and only an atomic inline in an IFC qualifies.
@@ -6045,6 +6144,43 @@ impl RinchDocument {
                     .is_some_and(|n| n.ifc_root.is_some() && n.display_mode.is_atomic_inline())
             });
         }
+        // The atomic inlines that hold a box this function sized against its
+        // containing block — one recorded in `keyword_inline_cb_width`, or
+        // one with a percentage size. Measured as `auto`, such an outer box
+        // was lined up with that box at the size it was resolved to, not at
+        // its natural contribution, so its max-content width is not its
+        // natural one and the fit test below proves nothing: it is resolved
+        // (and the box inside reset first, see phase 1). Without this a
+        // capped box kept the `inline-flex` around it as narrow as the cap
+        // had made it, where a whole-document pass widened both again.
+        // Usually empty: it costs a walk up from each such box.
+        let mut holds_resolved: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        {
+            let nodes = &self.tree.nodes;
+            let inner = self.tree.keyword_inline_cb_width.keys().copied().chain(
+                self.tree
+                    .atomic_inline_registry
+                    .iter()
+                    .copied()
+                    .filter(|&id| {
+                        nodes
+                            .get(id)
+                            .is_some_and(|n| Self::has_percentage_inline_size(&n.computed_style))
+                    }),
+            );
+            for id in inner {
+                let mut cur = nodes.get(id).and_then(|n| n.parent);
+                while let Some(a) = cur {
+                    let Some(an) = nodes.get(a) else {
+                        break;
+                    };
+                    if an.display_mode.is_atomic_inline() && !holds_resolved.insert(a) {
+                        break;
+                    }
+                    cur = an.parent;
+                }
+            }
+        }
         for &id in &self.tree.atomic_inline_registry {
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
@@ -6057,85 +6193,259 @@ impl RinchDocument {
             {
                 continue;
             }
-            // Asked last: it walks the ancestors, and only a percentage-sized
-            // box gets this far. A box outside the document is not measured
-            // (#1040).
-            if self.depth_if_connected(id).is_none() {
-                continue;
-            }
-            // The IFC root is this box's containing block by construction:
-            // an IFC root is a block container, which no inline-level box and
-            // no flex container is.
-            let Some(cb_taffy) = self.tree.nodes[root_id].taffy_id else {
+            let Some(inner_width) = self.containing_block_inner_width(root_id) else {
                 continue;
             };
-            let Ok(cb) = self.tree.taffy.layout(cb_taffy) else {
-                continue;
-            };
-            let inner_width = cb.size.width
-                - cb.padding.left
-                - cb.padding.right
-                - cb.border.left
-                - cb.border.right;
-            if !inner_width.is_finite() || inner_width <= 0.0 {
-                continue;
-            }
             // A box that needs the width only for a `fit-content`/`stretch`
-            // keyword (#691) is sized from that width and its own content
-            // alone. Its content changing re-measures it as `auto` first,
-            // which drops this entry, so an entry at the same width means
-            // nothing moved: skip the two or three computes. (A percentage
-            // size is left re-measured every pass, as before.)
+            // keyword (#691) or an `auto` width (#658) is sized from that
+            // width and its own content alone. Its content changing
+            // re-measures it as `auto` first, which drops this entry, so an
+            // entry at the same width means nothing moved: skip the two or
+            // three computes. (A percentage size is left re-measured every
+            // pass, as before.)
             let keyword_only = !Self::has_percentage_inline_size(&node.computed_style);
             if keyword_only {
-                if self
-                    .tree
-                    .keyword_inline_cb_width
-                    .get(&id)
-                    .is_some_and(|&w| (w - inner_width).abs() < 0.01)
-                {
-                    continue;
+                match self.tree.keyword_inline_cb_width.get(&id) {
+                    Some(&w) if (w - inner_width).abs() < 0.01 => continue,
+                    // An `auto` width measured as `auto` since it was last
+                    // resolved (no entry) is at its max-content width, and
+                    // one that fits is already its shrink-to-fit width
+                    // (#658): nothing to measure, and nothing to record —
+                    // a narrower containing block later finds it too wide
+                    // here and resolves it then. This is what keeps the
+                    // common atomic inline (a `<button>`, a badge) at one
+                    // compute per measure. Not when a percentage inside the
+                    // box needs the width it has as its basis (#662).
+                    None if matches!(
+                        node.computed_style.width,
+                        crate::computed_style::DimensionValue::Auto
+                    ) && !self.tree.auto_inline_percent_content.contains(&id)
+                        && !holds_resolved.contains(&id)
+                        && self.tree.taffy.style(taffy_id).is_ok_and(|s| {
+                            use taffy::ResolveOrZero;
+                            let m = s.margin.resolve_or_zero(Some(inner_width), |_, _| 0.0);
+                            node.layout.width <= inner_width - m.left - m.right + 0.5
+                        }) =>
+                    {
+                        continue;
+                    }
+                    _ => {}
                 }
-                keyword_cached.push((id, inner_width));
             }
-            targets.push((taffy_id, Some(inner_width)));
-            affected.push((id, root_id, node.layout.width, node.layout.height));
+            // Asked last: it walks the ancestors. A box outside the document
+            // is not measured (#1040).
+            if let Some(depth) = self.depth_if_connected(id) {
+                pending.insert((depth, id));
+            }
         }
 
-        if targets.is_empty() {
-            return false;
-        }
-
-        // Taffy caches per (node, available space); the first pass measured these
-        // under MaxContent, so mark them dirty to force a real re-measure.
-        for &(taffy_id, _) in &targets {
-            let _ = self.tree.taffy.mark_dirty(taffy_id);
-        }
-        self.measure_inline_blocks(&targets);
-        self.tree.keyword_inline_cb_width.extend(keyword_cached);
-
+        // Two phases.
+        //
+        // 1. Resolve the boxes against their containing blocks **outermost
+        //    first**: a box's containing block is laid out inside every
+        //    atomic inline around it, so its width is only known once those
+        //    are resolved. Before an outer box is resolved, every box inside
+        //    it that is resolved here is measured again as `auto` (no
+        //    containing-block width), so the outer box's min- and max-content
+        //    probes see their natural contributions — what a fresh layout,
+        //    which measures every atomic inline that way before the root
+        //    compute, shows them — and not whatever an earlier pass resolved
+        //    them to. Without that the answer depended on history, and the
+        //    scoped and whole-document passes disagreed (#1327).
+        // 2. Lay the boxes **around** a box that changed size out again,
+        //    innermost first, at the width each already has (see below).
+        let mut around: std::collections::BTreeSet<(usize, usize)> =
+            std::collections::BTreeSet::new();
         let mut changed = false;
-        for &(id, root_id, prev_w, prev_h) in &affected {
-            let node = &self.tree.nodes[id];
-            if (node.layout.width - prev_w).abs() > 0.5 || (node.layout.height - prev_h).abs() > 0.5
-            {
+        while let Some((depth, id)) = pending.pop_first() {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let (Some(root_id), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
+                continue;
+            };
+            if !node.display_mode.is_atomic_inline() {
+                continue;
+            }
+            let keyword_only = !Self::has_percentage_inline_size(&node.computed_style);
+            for (inner_depth, inner) in self.reset_resolved_atomic_inlines_inside(id, depth) {
+                pending.insert((inner_depth, inner));
+            }
+            let Some(available) = self.containing_block_inner_width(root_id) else {
+                continue;
+            };
+            let before = {
+                let n = &self.tree.nodes[id];
+                (n.layout.width, n.layout.height)
+            };
+            // Taffy caches per (node, available space); the first pass
+            // measured these under MaxContent, so mark them dirty to force a
+            // real re-measure.
+            let _ = self.tree.taffy.mark_dirty(taffy_id);
+            self.measure_inline_blocks(&[(taffy_id, Some(available))]);
+            if keyword_only {
+                self.tree.keyword_inline_cb_width.insert(id, available);
+            }
+            if self.atomic_inline_resized(id, root_id, before) {
                 changed = true;
-                // This IFC root's inline layout was measured against the stale box.
-                if let Some(root_taffy) = self.tree.nodes[root_id].taffy_id {
-                    let _ = self.tree.taffy.mark_dirty(root_taffy);
-                }
-                // The measure may be cached on the root's measure leaf rather
-                // than the root itself — dirty propagates up, not down (#466).
-                self.mark_ifc_measure_dirty(root_id);
-                // Measures cached under the stale inline-block size would be
-                // served straight back on the second pass, re-introducing the
-                // collapse. Only this root's: it used to clear the whole cache,
-                // which re-shaped every IFC root in the document whenever one
-                // percentage-sized chip moved by half a pixel.
-                self.tree.forget_ifc_measures(root_id);
+                self.queue_atomic_inlines_around(id, &mut around);
+            }
+        }
+        // Phase 2. **At the width each already has**, not sized again: the
+        // box inside was sized against a containing block inside them, so
+        // its new width is a cyclic contribution, which CSS takes as `auto` —
+        // what they were sized with (css-sizing-3 §5.2.1). Sized again, an
+        // `inline-block` around a `width: 50%` child shrank to half, and
+        // Chrome's does not (#662). Before #658 they were not laid out again
+        // at all, and kept the height they had with the box's old size — an
+        // `inline-flex` around a capped box stayed one line tall on a fresh
+        // layout while a scoped pass, re-measuring it for an unrelated
+        // change, got it right.
+        while let Some((_, id)) = around.pop_last() {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let (Some(root_id), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
+                continue;
+            };
+            let before = (node.layout.width, node.layout.height);
+            let _ = self.tree.taffy.mark_dirty(taffy_id);
+            self.relayout_atomic_inline_at_its_width(taffy_id);
+            if self.atomic_inline_resized(id, root_id, before) {
+                changed = true;
+                self.queue_atomic_inlines_around(id, &mut around);
             }
         }
         changed
+    }
+
+    /// Phase 1's reset (see `resolve_percentage_inline_blocks`): measure
+    /// again as `auto`, innermost first, every atomic inline inside `outer`
+    /// that is sized against its containing block, and return them (with
+    /// their depths) to be resolved after `outer`. Walks `outer`'s subtree,
+    /// which is only done for a box that is being resolved anyway.
+    fn reset_resolved_atomic_inlines_inside(
+        &mut self,
+        outer: usize,
+        outer_depth: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut found: Vec<(usize, usize)> = Vec::new();
+        let mut stack: Vec<(usize, usize)> = self
+            .tree
+            .nodes
+            .get(outer)
+            .map(|n| n.children.iter().map(|&c| (c, outer_depth + 1)).collect())
+            .unwrap_or_default();
+        while let Some((id, depth)) = stack.pop() {
+            let Some(n) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            if n.display_mode.is_atomic_inline()
+                && n.ifc_root.is_some()
+                && n.taffy_id.is_some()
+                && Self::needs_containing_block_width(&n.computed_style)
+            {
+                found.push((depth, id));
+            }
+            stack.extend(n.children.iter().map(|&c| (c, depth + 1)));
+        }
+        found.sort_by_key(|&(d, _)| std::cmp::Reverse(d));
+        for &(_, id) in &found {
+            let n = &self.tree.nodes[id];
+            let (Some(root_id), Some(taffy_id)) = (n.ifc_root, n.taffy_id) else {
+                continue;
+            };
+            let before = (n.layout.width, n.layout.height);
+            let _ = self.tree.taffy.mark_dirty(taffy_id);
+            // Drops its `keyword_inline_cb_width` entry, so it is resolved
+            // again below.
+            self.measure_inline_blocks(&[(taffy_id, None)]);
+            self.atomic_inline_resized(id, root_id, before);
+        }
+        found
+    }
+
+    /// Whether the atomic inline `id` came out at another size than
+    /// `before`; if so, the IFC `root_id` it is laid out in, which line-broke
+    /// against the stale box, is invalidated.
+    fn atomic_inline_resized(&mut self, id: usize, root_id: usize, before: (f32, f32)) -> bool {
+        let now = {
+            let n = &self.tree.nodes[id];
+            (n.layout.width, n.layout.height)
+        };
+        if (now.0 - before.0).abs() <= 0.5 && (now.1 - before.1).abs() <= 0.5 {
+            return false;
+        }
+        if let Some(root) = self.tree.nodes.get_mut(root_id) {
+            root.text_layout = None;
+        }
+        self.tree.dirty_ifc_text_roots.insert(root_id);
+        if let Some(root_taffy) = self.tree.nodes[root_id].taffy_id {
+            let _ = self.tree.taffy.mark_dirty(root_taffy);
+        }
+        // The measure may be cached on the root's measure leaf rather than
+        // the root itself — dirty propagates up, not down (#466).
+        self.mark_ifc_measure_dirty(root_id);
+        // Measures cached under the stale size would be served straight
+        // back. Only this root's: it used to clear the whole cache, which
+        // re-shaped every IFC root in the document whenever one
+        // percentage-sized chip moved by half a pixel.
+        self.tree.forget_ifc_measures(root_id);
+        true
+    }
+
+    /// Queue every atomic inline above `id` for phase 2 of
+    /// `resolve_percentage_inline_blocks`: the IFC `id` changed in is inside
+    /// each of them, and the root compute does not reach them (each is a
+    /// detached root of its own).
+    fn queue_atomic_inlines_around(
+        &self,
+        id: usize,
+        around: &mut std::collections::BTreeSet<(usize, usize)>,
+    ) {
+        let mut cur = self.tree.nodes.get(id).and_then(|n| n.parent);
+        while let Some(a) = cur {
+            let Some(an) = self.tree.nodes.get(a) else {
+                break;
+            };
+            if an.display_mode.is_atomic_inline()
+                && an.ifc_root.is_some()
+                && let Some(depth) = self.depth_if_connected(a)
+            {
+                around.insert((depth, a));
+            }
+            cur = an.parent;
+        }
+    }
+
+    /// Lay a detached atomic inline out again at the width it already has
+    /// (unrounded), so its interior and its height follow a change inside it
+    /// while its width stays — see `resolve_percentage_inline_blocks`.
+    fn relayout_atomic_inline_at_its_width(&mut self, taffy_id: taffy::NodeId) {
+        let Ok(declared) = self.tree.taffy.style(taffy_id).cloned() else {
+            return;
+        };
+        let w = self.tree.taffy.unrounded_layout(taffy_id).size.width;
+        let mut pinned = declared.clone();
+        pinned.size.width = taffy::Dimension::length(w);
+        let _ = self.tree.taffy.set_style(taffy_id, pinned);
+        self.measure_inline_blocks(&[(taffy_id, Some(w))]);
+        let _ = self.tree.taffy.set_style(taffy_id, declared);
+    }
+
+    /// The inner (content-box) width of the box an atomic inline in
+    /// `root_id`'s IFC is laid out in, from the last root compute. The IFC
+    /// root is that box's containing block by construction: an IFC root is a
+    /// block container, which no inline-level box and no flex container is.
+    fn containing_block_inner_width(&self, root_id: usize) -> Option<f32> {
+        let cb_taffy = self.tree.nodes.get(root_id)?.taffy_id?;
+        // Unrounded: a box whose max-content width is its containing
+        // block's (an `inline-block` around one other) would be capped at a
+        // whole-pixel rounding of it, and wrap.
+        let cb = self.tree.taffy.unrounded_layout(cb_taffy);
+        let inner_width =
+            cb.size.width - cb.padding.left - cb.padding.right - cb.border.left - cb.border.right;
+        (inner_width.is_finite() && inner_width > 0.0).then_some(inner_width)
     }
 
     /// Build a Parley inline layout for an IFC root node.

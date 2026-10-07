@@ -164,18 +164,24 @@ fn text_before_the_box_does_not_narrow_it() {
     assert_size(&doc, "t", (400.0, 40.0));
 }
 
-/// Nested auto-width atomic inlines: the inner one is capped at the outer's
-/// available width, which is the outer's containing block's.
+/// Nested auto-width atomic inlines. **Not Chrome's yet** (#1476): Chrome
+/// 153 caps both at the 400px block (`400 x 40` each), because the outer box's
+/// min-content takes the inner one's *min-content*. rinch lines the outer
+/// box's content up with the inner box at the size it already has — its
+/// max-content, since its containing block (the outer box) is that wide — so
+/// the outer box's min-content is the inner box's whole width and neither is
+/// capped. This pins that: both stay at their max-content width, unwrapped.
 #[test]
-fn nested_auto_width_atomic_inlines_are_both_capped() {
+fn nested_auto_width_atomic_inlines_are_not_capped_yet() {
     let doc = in_cb(
         "",
         &format!(
             r#"<span data-m="o" style="display: inline-block"><span data-m="i" style="display: inline-block">{LONG}</span></span>"#
         ),
     );
-    assert_size(&doc, "o", (400.0, 40.0));
-    assert_size(&doc, "i", (400.0, 40.0));
+    let (o, i) = (size(&doc, "o"), size(&doc, "i"));
+    assert!(o.0 > 500.0 && o.1 == 20.0, "outer {o:?}");
+    assert_eq!(o, i);
 }
 
 /// The twin table's `two` content in a 150px block: min-content 100,
@@ -224,4 +230,121 @@ fn a_percentage_child_with_white_space_around_it() {
     );
     assert_size(&doc, "o", (41.688, 20.0));
     assert_size(&doc, "i", (20.844, 20.0));
+}
+
+/// A box whose max-content width fits is pinned at that width for the pass
+/// that lays it out against its containing block — **unrounded**: "short
+/// text" is 71.844 wide, and pinned at a whole-pixel 71 it breaks onto two
+/// lines. The percentage `min-width` (which cannot bind) is what sends the box
+/// down that path; Chrome 153 gives it the plain box's size.
+#[test]
+fn a_fitting_box_is_pinned_at_its_unrounded_width() {
+    let doc = in_cb(
+        "",
+        r#"<span data-m="t" style="display: inline-block; min-width: 10%">short text</span>"#,
+    );
+    assert_size(&doc, "t", (71.844, 20.0));
+}
+
+/// A percentage `min-width` that binds still has its containing block as its
+/// basis on a box whose content fits: 50% of 400.
+#[test]
+fn a_binding_percentage_min_width_resolves_against_the_block() {
+    let doc = in_cb(
+        "",
+        r#"<span data-m="t" style="display: inline-block; min-width: 50%">short text</span>"#,
+    );
+    assert_size(&doc, "t", (200.0, 20.0));
+}
+
+/// An atomic inline around a box that is capped inside it is laid out again
+/// once that box has its size: an `inline-flex` holding a 110px block holding
+/// an `inline-flex` whose text is capped at 110 and wraps onto five lines.
+/// The outer box is as tall as the five lines, not the one it was measured
+/// with before the cap.
+#[test]
+fn a_box_around_a_capped_box_takes_its_new_height() {
+    let doc = in_cb(
+        "",
+        r#"<span data-m="o" style="display: inline-flex"><div style="width: 110px"><span data-m="i" style="display: inline-flex">Wavy milliliters WWW mmm Wavy milliliters</span></div></span>"#,
+    );
+    assert_size(&doc, "i", (110.0, 100.0));
+    assert_size(&doc, "o", (110.0, 100.0));
+}
+
+/// History: an edit inside an auto-width box that holds a percentage child
+/// lays it out as a fresh document with the edit already made does. Measured
+/// again as `auto` after the edit, the outer box is lined up with the child
+/// at its resolved 50%, not its natural width; resolving it from that would
+/// shrink it to fit the shrunk child (and the child again inside it).
+#[test]
+fn an_edit_beside_a_percentage_child_lays_out_as_a_fresh_document() {
+    let child = r#"<span data-m="i" style="display: inline-block; width: 50%">Wavy</span>"#;
+    let mut doc = in_cb(
+        "",
+        &format!(r#"<span data-m="o" style="display: inline-block">{child}</span>"#),
+    );
+    let o = query_selector(&doc.tree, "[data-m=o]")[0];
+    let t = doc.create_text(" mm");
+    doc.append_child(rinch_core::dom::NodeId(o), t);
+    doc.resolve_layout(800.0, 601.0);
+    let fresh = in_cb(
+        "",
+        &format!(r#"<span data-m="o" style="display: inline-block">{child} mm</span>"#),
+    );
+    for m in ["o", "i"] {
+        assert_eq!(size(&doc, m), size(&fresh, m), "{m}");
+    }
+}
+
+/// The same with a capped box inside the outer one: an edit beside it leaves
+/// both as a fresh layout has them.
+#[test]
+fn an_edit_beside_a_capped_box_lays_out_as_a_fresh_document() {
+    let inner = r#"<span data-m="i" style="display: inline-flex">Wavy milliliters WWW mmm Wavy milliliters</span>"#;
+    let mut doc = in_cb(
+        "",
+        &format!(
+            r#"<span data-m="o" style="display: inline-flex"><div data-m="d" style="width: 110px">{inner}</div></span>"#
+        ),
+    );
+    let d = query_selector(&doc.tree, "[data-m=d]")[0];
+    let t = doc.create_text("mm");
+    doc.append_child(rinch_core::dom::NodeId(d), t);
+    doc.resolve_layout(800.0, 601.0);
+    let fresh = in_cb(
+        "",
+        &format!(
+            r#"<span data-m="o" style="display: inline-flex"><div data-m="d" style="width: 110px">{inner}mm</div></span>"#
+        ),
+    );
+    for m in ["o", "d", "i"] {
+        assert_eq!(size(&doc, m), size(&fresh, m), "{m}");
+    }
+}
+
+/// A `fit-content` box whose content fits is pinned at its max-content width
+/// and keeps its one line.
+#[test]
+fn a_fit_content_box_that_fits_keeps_its_line() {
+    let doc = in_cb(
+        "",
+        r#"<span data-m="t" style="display: inline-block; width: fit-content; padding: 1px">x y z</span>"#,
+    );
+    assert_size(&doc, "t", (37.563, 22.0));
+}
+
+/// Whatever the face: a `fit-content` box that fits is one line tall. Laid
+/// out at exactly its own max-content width a line can break by a rounding
+/// hair, which is why the width it is pinned at is a hundredth of a pixel
+/// wider. The host's `sans-serif` here, not the bundled face: on DejaVu Sans
+/// `"x y z"` in a padded box is the measured case (32.64 wide, two lines).
+#[test]
+fn a_fit_content_box_that_fits_is_one_line_in_any_face() {
+    for text in ["x y z", "a", "word", "several words here", "x y z word"] {
+        let doc = lay_out(&format!(
+            r#"<div style="width: 400px; font: 16px/20px sans-serif"><span data-m="t" style="display: inline-block; width: fit-content; padding: 1px">{text}</span></div>"#
+        ));
+        assert_eq!(size(&doc, "t").1, 22.0, "{text:?}");
+    }
 }

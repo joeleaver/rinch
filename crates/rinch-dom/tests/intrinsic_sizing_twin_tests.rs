@@ -420,10 +420,6 @@ const KNOWN: &[(&str, &str, &str, f32)] = &[
     ("two", "grid 1fr cb150", "fit-content", 100.0),
     ("two", "abs cb150", "auto", 100.0),
     ("two", "abs cb150", "fit-content", 100.0),
-    // #658, pre-existing: an auto-width atomic inline is sized at max-content,
-    // never capped at its containing block. (`fit-content` spelled out is
-    // capped — `resolve_root_width_keyword`.)
-    ("two", "inline-block cb150", "auto", 200.0),
 ];
 
 fn rinch_table() -> Vec<(&'static str, &'static str, &'static str, f32, f32)> {
