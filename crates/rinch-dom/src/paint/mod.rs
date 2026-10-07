@@ -259,6 +259,38 @@ pub fn compute_damage(
             return DamageRegion::full(viewport_w, viewport_h);
         }
 
+        // A split inline's (#513) own text is drawn by the boxes around its
+        // fragments, which belong to its container: neither its own rect nor
+        // an `ifc_root` of its own names them. A change that reaches only how
+        // that text paints — a colour frame, which re-shapes nothing (#679) —
+        // damages each of those boxes, found as its text children's roots.
+        if node.is_split_inline() {
+            for &child in &node.children {
+                let Some(root_id) = tree
+                    .get(child)
+                    .filter(|c| matches!(c.kind, crate::node::NodeKind::Text(_)))
+                    .and_then(|c| c.ifc_root)
+                else {
+                    continue;
+                };
+                let Some(root) = tree.get(root_id) else {
+                    continue;
+                };
+                let (rx, ry, rt) = compute_absolute_position_and_transform(tree, root_id, scale);
+                let rw = root.layout.width as f64 * scale;
+                let rh = root.layout.height as f64 * scale;
+                if rw > 0.0
+                    && rh > 0.0
+                    && add(
+                        rt.transform_rect_bbox(Rect::new(rx, ry, rx + rw, ry + rh)),
+                        clip_now(root_id),
+                    )
+                {
+                    return DamageRegion::full(viewport_w, viewport_h);
+                }
+            }
+        }
+
         // A flowed inline element owns no box (`0x0`): its glyphs, its
         // decorations and its background are drawn by the IFC root it
         // flows into. So a restyle that changes only how it *paints* —
@@ -3631,6 +3663,7 @@ fn paint_node(
                     layout_cx,
                     ifc_text_shadows,
                     node_transform,
+                    node,
                     // The root's own visibility answers only for text no range
                     // maps to; each text run follows its own element (#829).
                     !visible,

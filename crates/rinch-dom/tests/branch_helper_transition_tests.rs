@@ -442,12 +442,15 @@ fn a_match_branch_switched_twice_can_still_transition() {
 /// reclaims nothing (#723): a fixed point where the correct and the broken code
 /// agree, which is the repo's own recurring test failure.
 ///
-/// Tracked as **#733**, which also records the three variants that do not fix
-/// it. It is not a regression — `rinch-web` pruned every removed subtree before
-/// #719 too — and the transition property this fixture is actually about is
-/// unaffected either way. The memoisation that *is* supported builds outside the
-/// `for` and only hands the node back; `rinch_core::reinsertion_tests::
-/// a_memoised_for_row_survives_leaving_the_list` pins it.
+/// That is issue **#733**. It is not a regression — `rinch-web` pruned every
+/// removed subtree before #719 too — and the transition property this fixture
+/// is actually about is unaffected either way. On `rinch-web` and the mock the
+/// helper now warns when the retired row is handed back; `rinch-dom` cannot
+/// tell and says nothing here. The memoisation that works on every backend
+/// builds through `RenderScope::cache_scope` and keeps that scope with the row
+/// (`rinch_core::reinsertion_tests::lazy_memo_733`), or builds outside the
+/// `for` and only hands the node back (`a_memoised_for_row_survives_leaving_
+/// the_list`, same file).
 #[test]
 fn a_for_row_reinserted_under_the_same_key_can_still_transition() {
     let (doc, mut scope, wrap) = harness();

@@ -84,8 +84,8 @@
 //! # Which routes are live
 //!
 //! The defect is in `rinch-dom`'s `DomDocument` implementation, so **every**
-//! tree-mutation caller reaches it. `NodeHandle::remove_child`, `RenderScope`'s
-//! batched `DomUpdate::RemoveChild`, `NodeHandle::replace_with` (which
+//! tree-mutation caller reaches it. `NodeHandle::remove_child`,
+//! `NodeHandle::replace_with` (which
 //! `rinch-editor-view`'s `ViewDesc` diff uses), any component that stashes a
 //! `NodeHandle` and re-attaches it — the pattern #654 was reported from — and,
 //! since #704, the three reactive branch helpers as well.
@@ -491,9 +491,8 @@ fn a_keyed_for_reorder_does_not_restart_a_running_transition() {
     );
 }
 
-/// `remove_child` is a detach route of its own — `NodeHandle::remove_child` and
-/// `RenderScope`'s batched `DomUpdate::RemoveChild` both reach it without going
-/// near `remove_node`.
+/// `remove_child` is a detach route of its own — `NodeHandle::remove_child`
+/// reaches it without going near `remove_node`.
 ///
 /// Kills the "reset in `remove_node` only" mutant.
 #[test]

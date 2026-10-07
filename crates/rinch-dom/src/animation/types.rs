@@ -179,6 +179,13 @@ impl ActiveAnimation {
             .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
     }
 
+    /// Whether any keyframe of this animation sets `property`.
+    pub fn animates(&self, property: TransitionProperty) -> bool {
+        self.keyframe_stops
+            .iter()
+            .any(|k| k.values.iter().any(|(p, _)| *p == property))
+    }
+
     /// Whether this animation has completed all iterations.
     pub fn is_complete(&self, current_time_ms: f64) -> bool {
         if self.paused_elapsed_ms.is_some() {

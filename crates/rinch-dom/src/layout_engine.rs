@@ -820,20 +820,30 @@ impl RinchDocument {
                                         }),
                                     }
                                 }
-                                Some(NodeContext::Image { width, height, .. }) => {
-                                    let iw = *width as f32;
-                                    let ih = *height as f32;
-                                    if iw == 0.0 || ih == 0.0 {
-                                        // Image still loading — return zero size
+                                Some(NodeContext::Image {
+                                    width,
+                                    height,
+                                    hint_ratio,
+                                    ..
+                                }) => {
+                                    // A loaded image's own ratio; before it loads (or when
+                                    // it failed), the one its `width` and `height`
+                                    // attributes map to (#684); with neither, nothing.
+                                    let (natural, ratio) = crate::replaced::image_natural_size(
+                                        *width,
+                                        *height,
+                                        *hint_ratio,
+                                    );
+                                    let Some(ratio) = ratio else {
                                         return taffy::Size::ZERO;
-                                    }
+                                    };
                                     // A replaced element with a natural size and
                                     // ratio (#788, #1150): a style width or height
                                     // gives the other through the ratio, and so do
                                     // `min-*`/`max-*` clamps.
                                     crate::replaced::measure(
-                                        (iw, ih),
-                                        true,
+                                        natural,
+                                        Some(ratio),
                                         known_dims,
                                         style,
                                         inputs.parent_size,
@@ -2331,6 +2341,34 @@ impl RinchDocument {
         }
     }
 
+    /// Drop the inline layouts `node_id`'s `color` is baked into as a brush:
+    /// the IFC the node is in or is the root of, and the anonymous boxes that
+    /// lay out its own text runs. Those are roots
+    /// [`Self::invalidate_text_measure_for_node`] reaches; the rest of what
+    /// that does is not owed. A colour moves no box and is no input of a text
+    /// leaf's layout (paint colours a leaf from the live style, #904), so no
+    /// atomic inline and no flex item's measure is marked, and a node in no
+    /// IFC — a flex container whose text is a leaf — drops nothing.
+    pub(crate) fn invalidate_text_brushes_for_node(&mut self, node_id: usize) {
+        let node = &self.tree.nodes[node_id];
+        let mut roots = node.run_boxes.clone();
+        roots.extend(node.ifc_root);
+        roots.extend(node.children.iter().filter_map(|&child| {
+            let child = self.tree.nodes.get(child)?;
+            matches!(child.kind, NodeKind::Text(_))
+                .then_some(child.ifc_root)
+                .flatten()
+        }));
+        if self.holds_ifc_layout(node_id) {
+            roots.push(node_id);
+        }
+        roots.sort_unstable();
+        roots.dedup();
+        for root in roots {
+            self.invalidate_ifc_root(root);
+        }
+    }
+
     /// Invalidate the IFC that owns a node (if any).
     ///
     /// Clears the IFC root's cached text_layout so it rebuilds on next layout pass.
@@ -2710,9 +2748,9 @@ impl RinchDocument {
     /// | route | who reaches it |
     /// |---|---|
     /// | `remove_node` | every reactive removal — `show_dom`, `match_dom`, `for_each_dom_typed`'s `Remove`, its re-render swap and `reclaim_displaced`, `virtual_list`, the component re-render effect, the editor's `ViewDesc` diff. They reach it by **two** verbs since #719: `NodeHandle::remove` where the same subtree may be shown again (`show_dom`, `match_dom`) and `NodeHandle::discard` where it may not (all the rest). On this backend `discard_node` **is** `remove_node` — the trait default — so both land here; only `rinch-web` tells them apart, by pruning its node maps on the second |
-    /// | `remove_child` | `NodeHandle::remove_child` and `RenderScope`'s batched `DomUpdate::RemoveChild` |
+    /// | `remove_child` | `NodeHandle::remove_child` |
     /// | `replace_node` | the displaced `old` subtree |
-    /// | `set_text_content` | `NodeHandle::set_text_content` and `RenderScope`'s batched `DomUpdate::SetTextContent`, **when the target is an element with children** — it orphans every one of them. Reactive text in `rsx!` targets a text node and takes the other branch, so this is app code writing over an element's children |
+    /// | `set_text_content` | `NodeHandle::set_text` and a batched `DomUpdate::SetText` (`UpdateBatch::apply`), **when the target is an element with children** — it orphans every one of them. Reactive text in `rsx!` targets a text node and takes the other branch, so this is app code writing over an element's children |
     ///
     /// The fifth is `set_inner_html`, and it is safe by **destruction** rather
     /// than by reset: it calls `NodeTree::remove_subtree`, which frees the slab
