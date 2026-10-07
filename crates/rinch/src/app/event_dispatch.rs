@@ -5393,13 +5393,13 @@ mod image_input_tests {
         assert_eq!(html(&handle), "<p>another note</p>");
     }
 
+    /// The html and text a second read was asked to fall back to.
+    type SecondRead = Option<(String, Option<String>)>;
+
     /// What the first clipboard read of a paste did: asked for the bitmap
-    /// (`Second`), or was applied at once (the html after it).
-    fn route(
-        handle: &crate::editor::EditorHandle,
-        content: RichPaste,
-    ) -> Option<(String, Option<String>)> {
-        let second: Rc<RefCell<Option<(String, Option<String>)>>> = Rc::default();
+    /// (`Some`), or was applied at once (`None`; the document says what).
+    fn route(handle: &crate::editor::EditorHandle, content: RichPaste) -> SecondRead {
+        let second: Rc<RefCell<SecondRead>> = Rc::default();
         let second_in = second.clone();
         super::paste_read_arrived(
             handle.clone(),
