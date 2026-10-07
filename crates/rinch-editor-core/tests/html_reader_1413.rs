@@ -362,10 +362,11 @@ fn an_ended_formatting_element_leaves_the_tree_as_it_would_be_without_it() {
         html("<div>x<b><div>y</b>z</div>w v</div>"),
         "<p>x</p><p><strong>y</strong>z</p><p>w v</p>"
     );
-    // The `<h2>` ends the `<h1>` it follows (it would nest in it otherwise).
+    // The `<h2>` ends the `<h1>` it follows, so `v` is no heading (Chrome:
+    // `ta`, `bc`, `u`, and `v` not bold).
     assert_eq!(
-        html("<h1>t<b>a<div>b</b>c</div><h2>u</h2>"),
-        "<h1>t<strong>a</strong></h1><h1><strong>b</strong>c</h1><h2>u</h2>"
+        html("<h1>t<b>a<div>b</b>c</div><h2>u</h2>v"),
+        "<h1>t<strong>a</strong></h1><h1><strong>b</strong>c</h1><h2>u</h2><p>v</p>"
     );
     assert_eq!(
         html("<i>x<b>a<div>b</b>c</div>d</i>e"),
@@ -496,14 +497,51 @@ fn a_stray_p_end_tag_ends_the_line() {
     );
 }
 
-/// With more elements open above the formatting element than a browser
+/// With more blocks open above the formatting element than a browser
 /// walks, the end tag is skipped as before: nothing is lost, and the mark
-/// runs on (Chrome 153 shows every letter of this bold too).
+/// runs on. Chrome 153: 7 `<div>` in between and `y` is not bold, 8 and
+/// every letter is.
 #[test]
-fn a_formatting_end_tag_under_many_open_elements_is_skipped() {
-    let src = format!("<b>a{}x</b>y{}z", "<div>".repeat(10), "</div>".repeat(10));
+fn a_formatting_end_tag_under_many_open_blocks_is_skipped() {
+    let read = |blocks: usize| {
+        html(&format!(
+            "<b>a{}x</b>y{}z",
+            "<div>".repeat(blocks),
+            "</div>".repeat(blocks)
+        ))
+    };
+    let ended = "<p><strong>a</strong></p><p><strong>x</strong>y</p><p>z</p>";
+    let skipped = "<p><strong>a</strong></p><p><strong>xy</strong></p><p><strong>z</strong></p>";
+    assert_eq!(read(6), ended);
+    assert_eq!(read(7), ended);
+    assert_eq!(read(8), skipped);
+    assert_eq!(read(10), skipped);
+    // Inline elements in between do not count against that (Chrome: `y` is
+    // not bold under nine `<span>`), up to this reader's own limit of 32
+    // open elements, past which it skips where a browser does not.
+    let spans = |n: usize| {
+        html(&format!(
+            "<b>a<div>{}x</b>y{}</div>z",
+            "<span>".repeat(n),
+            "</span>".repeat(n)
+        ))
+    };
+    assert_eq!(spans(9), ended);
+    assert_eq!(spans(31), ended);
+    assert_eq!(spans(32), skipped);
+}
+
+/// An `<object>` and a `<marquee>` are scopes a formatting end tag does not
+/// reach out of (Chrome: every letter bold; an `<object>`'s content is not
+/// read).
+#[test]
+fn a_formatting_end_tag_stays_inside_an_object_or_a_marquee() {
     assert_eq!(
-        html(&src),
+        html("<b>a<object><div>x</b>y</div></object>z"),
+        "<p><strong>az</strong></p>"
+    );
+    assert_eq!(
+        html("<b>a<marquee><div>x</b>y</div></marquee>z"),
         "<p><strong>a</strong></p><p><strong>xy</strong></p><p><strong>z</strong></p>"
     );
 }

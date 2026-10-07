@@ -26,8 +26,9 @@
 //!   parser's list) that has a block open between it and its start tag ends
 //!   the element there, as a browser's adoption agency algorithm does: what
 //!   the open elements in between hold so far keeps the formatting, what is
-//!   read after it does not. With more than [`MAX_ADOPT`] elements open in
-//!   between, the end tag is skipped.
+//!   read after it does not. With more than [`MAX_ADOPT_BLOCKS`] blocks open
+//!   in between (a browser's limit), or more than [`MAX_ADOPT`] elements of
+//!   any kind (this reader's), the end tag is skipped.
 //! - A `</p>` with no `<p>` to close ends the line (in a browser it is an
 //!   empty `<p>`).
 //! - `<textarea>` holds text, not markup.
@@ -75,15 +76,18 @@ pub(super) const MAX_DEPTH: usize = 192;
 /// closes.
 pub(super) const MAX_SCAN: usize = MAX_DEPTH;
 
-/// The most elements that may be open above a formatting element for its
-/// misnested end tag to end it ([`HtmlFragmentParser::end_under`]): each of
-/// them is visited, and each that holds content gets a copy of the element
-/// around it, so this bounds what one end tag costs and how many copies of
-/// one element's attributes are made. Chrome walks at most 8 blocks
-/// (`kOuterIterationLimit`) and past them keeps the formatting on; here the
-/// count is of every open element, and past it the end tag is skipped, which
-/// keeps the formatting on too.
-const MAX_ADOPT: usize = 8;
+/// The most blocks that may be open above a formatting element for its
+/// misnested end tag to end it ([`HtmlFragmentParser::end_under`]). Chrome
+/// 153's number, measured: with 7 `<div>` open between `<b>` and `</b>` the
+/// bold ends at the end tag, with 8 it runs on (its adoption agency loop
+/// runs 8 times, one a block and one to finish).
+const MAX_ADOPT_BLOCKS: usize = 7;
+
+/// The most elements of any kind that may be open above it. Each is
+/// visited, and each that holds content gets a copy of the element around
+/// it, so this bounds what one end tag costs and how many copies of one
+/// element's attributes are made. A browser has no such limit.
+const MAX_ADOPT: usize = 32;
 
 /// Every name [`is_special`] or [`is_foreign`] accepts: the only elements
 /// that an implied end tag closes, that stop one, or that an end tag does
@@ -849,6 +853,14 @@ impl<'a> HtmlFragmentParser<'a> {
     /// and a copy joins each such path once.
     fn end_under(&mut self, at: usize) {
         if self.stack.len() - 1 - at > MAX_ADOPT {
+            return;
+        }
+        let blocks = self.stack[at + 1..]
+            .iter()
+            .filter(|open| is_special(&open.tag))
+            .count();
+        steps(blocks as u64);
+        if blocks > MAX_ADOPT_BLOCKS {
             return;
         }
         // Above the innermost block: a browser pops these, and opens the
