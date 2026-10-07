@@ -7,8 +7,10 @@
 //! of raw mouse events) means the same code path covers mouse, touch, and pen —
 //! so the element drag-and-drop suite works on touch devices, where no synthetic
 //! mouse-move stream arrives during a finger drag. Pointer events resolve
-//! text-hit positions via `caretRangeFromPoint` so contenteditable apps get
-//! accurate caret placement (a no-op for apps without `data-block-index` blocks).
+//! text-hit positions via `caret_point_from_point` (`caretRangeFromPoint`, or the
+//! standard `caretPositionFromPoint` where a browser lacks it: Firefox) so
+//! contenteditable apps get accurate caret placement (a no-op for apps without
+//! `data-block-index` blocks).
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -1276,8 +1278,11 @@ fn walk_text_nodes_for_offset(
         return false;
     }
     let children = node.child_nodes();
-    // An element point (`caretPositionFromPoint` beside a `<br>`, or in an empty
-    // block): the offset is a child index, and everything before it counts.
+    // An element point (either call answers one on an image, beside a `<br>`
+    // or in an empty block): the offset is a child index, and only what is
+    // before it counts. This changed Chrome's answer too: the loop used to run
+    // over every child, so a press on an image in a block reported the whole
+    // block's text as its byte offset.
     let stop = if node == target {
         utf16_offset.min(children.length())
     } else {

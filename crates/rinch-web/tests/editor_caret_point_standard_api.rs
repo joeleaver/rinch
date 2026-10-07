@@ -8,6 +8,9 @@
 //! `caretRangeFromPoint` hidden on the document, which is the document Firefox
 //! presents. The answers must be the same positions.
 //!
+//! This is Chrome's implementation of the standard call, not Firefox's: no wasm
+//! suite runs in Firefox (#1461).
+//!
 //! ```text
 //! CHROMEDRIVER=/path/to/chromedriver \
 //!   cargo test -p rinch-web --target wasm32-unknown-unknown --test editor_caret_point_standard_api

@@ -1603,7 +1603,9 @@ fn on_input() {
 ///
 /// The browser's own hit test decides *whether* a link is under the pointer — the
 /// `<a data-pm-mark="link">` it found — and the model decides which one, as a
-/// whole run. `caretRangeFromPoint` answers the nearest caret boundary, which is
+/// whole run. The browser's caret-from-point call
+/// (`event_delegation::caret_point_from_point`: `caretRangeFromPoint`, or
+/// `caretPositionFromPoint` where that is missing) answers the nearest caret boundary, which is
 /// the start **or the end** of the character under the pointer, so the character
 /// is the one after that boundary if it carries the element's `href`, and else the
 /// one before it. That is what keeps the space after a link off the link: no `<a>`
