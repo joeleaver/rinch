@@ -297,15 +297,16 @@ fn an_end_tag_chrome_ignores_is_still_ignored() {
     );
 }
 
-/// A formatting end tag does not reach out of the part of an `<svg>` that
-/// holds HTML (Chrome: `a` and `z`, both bold), however many elements are
-/// open in between; an HTML element that is only named like one is no such
-/// thing (Chrome: `y` is not bold).
+/// A formatting end tag across a block does not reach out of the part of
+/// an `<svg>` that holds HTML: it is skipped, as before and as in Chrome
+/// (`a` and `z`, both bold), however many elements are open in between. An
+/// HTML element that is only named like such a part is none (Chrome: `y`
+/// is not bold).
 #[test]
-fn a_formatting_end_tag_stays_inside_a_drawing() {
-    for depth in [1, 7, 8, 9, html_reader_max_depth() + 40] {
+fn a_formatting_end_tag_across_a_block_stays_inside_a_drawing() {
+    for depth in [0, 1, 4, 5, 6, html_reader_max_depth() + 40] {
         let src = format!(
-            "<b>a<svg><desc>{}x</b>y{}</desc></svg>z",
+            "<b>a<svg><desc><div>{}x</b>y{}</div></desc></svg>z",
             "<span>".repeat(depth),
             "</span>".repeat(depth)
         );
@@ -315,6 +316,13 @@ fn a_formatting_end_tag_stays_inside_a_drawing() {
     assert_eq!(
         html("<b>a<desc><div>x</b>y</div></desc>z"),
         "<p><strong>a</strong></p><p><strong>x</strong>y</p><p>z</p>"
+    );
+    // With no block open the end tag closes the drawing with its element,
+    // as it did: what follows is read. (Chrome reads `y` into the drawing,
+    // where it is not shown, and keeps `z` bold.)
+    assert_eq!(
+        html("<b>a<svg><desc>x</b>y</desc></svg>z"),
+        "<p><strong>a</strong>yz</p>"
     );
 }
 

@@ -766,7 +766,13 @@ impl<'a> HtmlFragmentParser<'a> {
         let table_part = is_table_part(&tag);
         let special = is_special(&tag);
         let formatting = is_formatting(&tag);
-        let in_foreign = self.foreign > 0;
+        // The part of an `<svg>` or `<math>` that holds HTML is a scope too.
+        // Across one, with no block open, the end tag still closes its
+        // element and the drawing with it, as it always has: what follows
+        // would be read into the drawing otherwise, and dropped with it.
+        let drawing_scope = |open: &str| {
+            self.foreign > 0 && matches!(open, "foreignobject" | "desc" | "annotation-xml")
+        };
         // What an end tag does not reach across.
         let barrier = |open: &str| match open {
             "table" => tag != "table",
@@ -777,16 +783,14 @@ impl<'a> HtmlFragmentParser<'a> {
             }
             // A formatting element's end tag reaches across a block
             // (`end_under`), and not out of what HTML calls a scope.
-            _ if formatting => {
-                matches!(open, "applet" | "marquee" | "object")
-                    || in_foreign && matches!(open, "foreignobject" | "desc" | "annotation-xml")
-            }
+            _ if formatting => matches!(open, "applet" | "marquee" | "object"),
             "ul" | "ol" => tag == "li" || !special,
             _ => !special && is_special(open),
         };
         // The element the tag ends, and whether a block is open above it.
         let mut found = None;
         let mut across_block = false;
+        let mut across_scope = false;
         let mut scanned = false;
         for i in (0..self.stack.len()).rev().take(MAX_SCAN) {
             step();
@@ -801,6 +805,7 @@ impl<'a> HtmlFragmentParser<'a> {
                 break;
             }
             across_block |= is_special(open);
+            across_scope |= drawing_scope(open);
         }
         if !scanned && self.stack.len() > MAX_SCAN {
             // Further up than the scan looks: the same rule, from the index.
@@ -814,9 +819,14 @@ impl<'a> HtmlFragmentParser<'a> {
             {
                 found = Some(nearest);
                 across_block = self.nearest_scope(is_special).is_some_and(|b| b > nearest);
+                across_scope = self
+                    .nearest_scope(drawing_scope)
+                    .is_some_and(|b| b > nearest);
             }
         }
         match found {
+            // Out of a drawing's HTML part a browser skips the end tag.
+            Some(_) if formatting && across_block && across_scope => {}
             Some(found) if formatting && across_block => self.end_under(found),
             Some(found) => self.close_to(found),
             // In a browser a `</p>` with no `<p>` to close is an empty
