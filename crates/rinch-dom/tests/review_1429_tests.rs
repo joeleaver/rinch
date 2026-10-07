@@ -639,11 +639,7 @@ fn an_answer_that_lands_after_its_document_was_dropped_is_not_queued() {
     while loader.calls.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(
-        loader.calls.load(Ordering::SeqCst),
-        1,
-        "control: in flight"
-    );
+    assert_eq!(loader.calls.load(Ordering::SeqCst), 1, "control: in flight");
     drop(doc);
     assert!(!has_pending(key), "control: nothing queued at the drop");
     {

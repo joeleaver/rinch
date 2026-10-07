@@ -377,14 +377,24 @@ pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader
                     .unwrap_or_else(|| "(no message)".to_string());
                 Err(format!("image loader panicked: {message}"))
             });
-        PENDING_IMAGES
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(PendingImage {
-                doc_key,
-                src,
-                result,
-            });
+        {
+            // Only for a document that is still there: an answer queued for a
+            // dropped one is never drained. The live list is held across the
+            // push, and `purge_pending` leaves it first, so a document that
+            // drops meanwhile either purges this answer or stops it here.
+            let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
+            if !live.contains(&doc_key) {
+                return;
+            }
+            PENDING_IMAGES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(PendingImage {
+                    doc_key,
+                    src,
+                    result,
+                });
+        }
 
         // Wake the main thread. The desktop event loop runs on
         // `ControlFlow::Wait`, so without this the decode sits in the queue
@@ -492,14 +502,16 @@ pub(crate) fn register_document(doc_key: u64) {
 /// the process-global queue forever (nothing drains a dead doc_key). Called
 /// from `RinchDocument::drop` (issue #137).
 pub fn purge_pending(doc_key: u64) {
-    PENDING_IMAGES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .retain(|item| item.doc_key != doc_key);
+    // The live list first: a load thread that finishes from here on finds the
+    // document gone and queues nothing; one that queued before is purged below.
     LIVE_DOCUMENTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .retain(|key| *key != doc_key);
+    PENDING_IMAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|item| item.doc_key != doc_key);
     PENDING_RELOADS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
