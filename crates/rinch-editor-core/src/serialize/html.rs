@@ -835,9 +835,12 @@ impl<'a> HtmlParser<'a> {
 
     /// An element that is a line of its own and holds no block: the line
     /// before it ends there (`a<div></div>b` is two lines in a browser).
-    /// It is a line itself only when it holds something a browser gives a
-    /// line box, a non-breaking space; one that is empty, or holds
-    /// whitespace that collapses, is none.
+    /// It is a line itself when the text it holds directly is more than
+    /// ASCII whitespace (a non-breaking space, which a browser gives a line
+    /// box); one that is empty, or holds only whitespace that collapses, is
+    /// none. Whitespace inside an inline element in it is content, and
+    /// makes a paragraph (`<div><span> </span></div>`; a browser shows no
+    /// line for that).
     fn end_line(
         &self,
         blank: Vec<Node>,

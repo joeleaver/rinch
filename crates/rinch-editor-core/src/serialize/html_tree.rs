@@ -790,7 +790,8 @@ impl<'a> HtmlFragmentParser<'a> {
             }
             // A formatting element's end tag reaches across a block
             // (`end_under`), and not out of what HTML calls a scope.
-            _ if formatting => matches!(open, "applet" | "marquee" | "object"),
+            // (Nor out of a `<select>`, where a browser skips it too.)
+            _ if formatting => matches!(open, "applet" | "marquee" | "object" | "select"),
             "ul" | "ol" => tag == "li" || !special,
             _ => !special && is_special(open),
         };

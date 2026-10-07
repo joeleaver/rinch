@@ -169,7 +169,10 @@ tag ends it however many unclosed elements are inside. The reader (`serialize/ht
 - An element with no node or mark is read through. It is inline unless it holds a
   block or is a block-level HTML element (`div`, `section`, …).
 - A block-level element that holds no block ends the line before it (#1413) and is
-  a line itself only when it holds a non-breaking space. An inline element that
+  a line itself when the text it holds directly is more than ASCII whitespace (a
+  non-breaking space); empty, or holding only spaces and line ends directly, it is
+  none. (A space inside an inline element in it still makes a paragraph:
+  `<div><span> </span></div>`.) An inline element that
   holds a block ends none: its children are read where it stands, so the inline
   content beside the block stays on the line of what is beside the element.
 - A run of table parts with no `<table>` is a table; what has no place in a table
@@ -180,8 +183,9 @@ tag ends it however many unclosed elements are inside. The reader (`serialize/ht
 - A `<div style="white-space: pre">` is a code block, one line per `<div>` or `<br>`
   (what VS Code copies); so is `<pre>`, where a `<br>` is a line end too.
 - A mark element around blocks marks what the same element marks around inline
-  content: text and images, not hard breaks (#1401), once for each mark type however
-  many such elements nest. Neighbouring text with the same
+  content: text and images, not hard breaks (#1401). Mark elements nested directly
+  in one another mark the blocks once for each mark type; with a block-level
+  element between them it is once a level, as before. Neighbouring text with the same
   marks is one text node, and a mark of a type replaces an outer mark of that type.
 
 `tests/html_reader_total_1397.rs` is the property test: a tag-soup generator that

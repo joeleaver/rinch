@@ -546,6 +546,36 @@ fn a_formatting_end_tag_stays_inside_an_object_or_a_marquee() {
     );
 }
 
+/// Nor out of a `<select>` (review of #1448). Chrome 153: `Ad` bold, and
+/// `e` and `f` bold; a `<select>`'s options are not read.
+#[test]
+fn a_formatting_end_tag_inside_a_select_is_skipped() {
+    assert_eq!(
+        html("<b>Aa<select><option>Ab</b>Ac</option></select>Ad"),
+        "<p><strong>AaAd</strong></p>"
+    );
+    assert_eq!(
+        html("<b>a<div>b<select><option>c</b>d</option></select>e</div>f"),
+        "<p><strong>a</strong></p><p><strong>be</strong></p><p><strong>f</strong></p>"
+    );
+}
+
+/// What a block-level element with no block in it is, where it is not
+/// Chrome's: whitespace inside an inline element is content here, so the
+/// element is a paragraph of one space (Chrome shows `a` and `b` and no
+/// line between; main read the same paragraph).
+#[test]
+fn whitespace_inside_an_inline_element_in_a_block_is_still_a_paragraph() {
+    assert_eq!(
+        html("a<div><span> </span></div>b"),
+        "<p>a</p><p> </p><p>b</p>"
+    );
+    assert_eq!(
+        html("a<div>&#x200b;</div>b"),
+        "<p>a</p><p>\u{200b}</p><p>b</p>"
+    );
+}
+
 /// No text is lost and no line fused whatever is misnested, at any depth:
 /// the tokens come out in order, one line each where a block separates them.
 #[test]
@@ -632,6 +662,9 @@ fn misnested_end_tags_cost_steps_in_proportion() {
         .repeat(n)
     });
     assert_linear("stray </p>", 500, |n| "x</p>".repeat(n));
+    // Every `<b>` here holds a block (review of #1448: linear, at about
+    // three times main's cost).
+    assert_linear("stray </p> under open <b>", 250, |n| "<b>x</p>".repeat(n));
     assert_linear("stray </p> under open elements", 250, |n| {
         format!("{}{}", "<div>".repeat(n), "x</p>".repeat(n))
     });

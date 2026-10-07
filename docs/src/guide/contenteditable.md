@@ -868,8 +868,9 @@ or a closed `<details>` is read, and whitespace is kept as written.
 
 - **Lines are where a browser puts them.** A block-level element ends the line
   before it even when it is empty (`a<div></div>b` is two paragraphs), and is a
-  line itself only if it holds something: a `<div>` of spaces is none, one that
-  holds a non-breaking space is a blank line. An inline element that holds a block
+  line itself when it holds something: a `<div>` holding only spaces is none, one
+  that holds a non-breaking space is a blank line (and so, unlike in a browser, is
+  one whose space is inside an inline element: `<div><span> </span></div>`). An inline element that holds a block
   ends no line by itself: `x<b>y<div>z</div>v</b>w` is `xy`, `z`, `vw`.
 
 - **An element the reader does not know** — Word's `<o:p>` and `<st1:place>`, a
