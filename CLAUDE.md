@@ -3931,8 +3931,8 @@ too: a failed source being reloaded is `Loading`, and a decoded one is listed in
 second reload during the first starts no load of its own; the first's answer is
 dropped and one load follows it. Two parallel loads of one source would land in
 either order and the older answer could win. **Every load pushes exactly one answer**:
-`request_image_load` catches a panic in the loader or the decode and pushes it as a
-failure (`image loader panicked: …`); a load that pushed nothing would leave its
+`request_image_load` catches a panic in the loader or the decode (native, unwinding
+builds) and pushes it as a failure (`image loader panicked: …`); a load that pushed nothing would leave its
 source in flight for the life of the document, which a reload only waits on. The key
 is the source as spelled (`reload_image("x:a")` does not reach `X:a`). `data` cannot
 be registered (`register_image_scheme` panics), so no app loader is offered a `data:`
@@ -3956,8 +3956,12 @@ nothing until a microtask (`images::resolve_pending`, once per source) asks, and
 `rinch::image::register_image_scheme` unchanged (the loader is called on the one thread; its bytes become an object URL rinch owns and
 revokes when a reload replaces it), or `rinch_web::register_image_url_scheme(scheme,
 Fn(&str) -> Option<String>)` (browser only, may capture `Rc`s, answers a URL the app
-owns; wins over a loader for the same scheme). Successes are remembered by source;
-"not yet" is asked again by the next element and by a reload.
+owns; wins over a loader for the same scheme). Answers are remembered by source,
+"not yet" included (`images::NOT_YET`): only a reload asks again, as desktop caches a
+miss. Without it a resolver whose signal write re-created its `<img>` was asked again
+from a fresh microtask for ever and the page froze (round-2 review, W7). A panicking
+loader or resolver aborts the wasm app (no unwinding); only native unwinding builds
+catch it.
 `rinch::image::reload_image` is `rinch_core::image::reload_image`, which calls each
 backend's reloader (`add_image_reloader`: rinch-dom's on its first document, rinch-web's
 on its first `WebDocument`); on the web it asks the app again and re-points every
@@ -3968,7 +3972,8 @@ picture and a page `<img>` outside every root is never touched; one rendered bef
 scheme was registered is recorded too), leaving a picture on screen alone when the
 answer is still "not yet". A reload of a source no element was given asks nothing and
 forgets the answer (a rinch-made object URL is revoked); a "not yet" reload forgets an
-app-owned URL, which is how an app that revoked one makes rinch ask again. `<img>`
+app-owned URL and remembers "not yet", which is how an app that revoked one stops
+rinch handing it out. `<img>`
 markup set with `set_inner_html` goes through `set_img_src` too. The
 editor's model is never read back from the DOM, so an `image` node's `src` stays the
 app's URL. `background-image` is not resolved on the web.

@@ -460,8 +460,8 @@ fn mounting_asks_once_per_source() {
 
 /// W4 with an element still showing the picture: the app revokes its URL and
 /// reloads; the answer is "not yet". The element keeps what it shows, and the
-/// next element given the source asks the app instead of being handed the
-/// revoked URL.
+/// next element given the source is handed nothing ("not yet" is remembered
+/// until the next reload) rather than the revoked URL.
 #[wasm_bindgen_test]
 async fn holds_a_not_yet_reload_forgets_an_app_url_an_element_still_shows() {
     let urls = Urls::default();
@@ -484,5 +484,9 @@ async fn holds_a_not_yet_reload_forgets_an_app_url_an_element_still_shows() {
     tick().await;
     let got = (urls.asked.get() - asked, f.shown("b"));
     f.teardown();
-    assert_eq!(got, (1, None), "asked again, not handed the revoked URL");
+    assert_eq!(
+        got,
+        (0, None),
+        "not handed the revoked URL, and not asked again: \"not yet\" is remembered until a reload"
+    );
 }

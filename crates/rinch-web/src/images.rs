@@ -47,7 +47,7 @@
 //! [`DomDocument::get_attribute`]: rinch_core::dom::DomDocument::get_attribute
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use rinch_core::image::{ImageLoadResult, image_scheme_loader, scheme_of};
@@ -71,9 +71,14 @@ struct Resolved {
 
 thread_local! {
     static URL_RESOLVERS: RefCell<HashMap<String, UrlResolver>> = RefCell::new(HashMap::new());
-    /// Answers so far, by source. Only successes: "not yet" is asked again by
-    /// the next element that names the source, and by a reload.
+    /// Answers so far, by source.
     static RESOLVED: RefCell<HashMap<String, Resolved>> = RefCell::new(HashMap::new());
+    /// Sources the app last answered "not yet" for. An element given one shows
+    /// nothing and asks nothing; only `reload_image` asks again, as on desktop,
+    /// where a miss is cached until a reload. Without it a resolver whose
+    /// signal write re-creates its `<img>` was asked again from a fresh
+    /// microtask for ever, and the page never got back to its event loop.
+    static NOT_YET: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// The `<img>` elements rinch was given each source for, attached to the
     /// page or not: what a reload re-points. An element leaves its list when
     /// its `src` changes or is removed and when its document forgets it
@@ -121,7 +126,9 @@ fn registrable_scheme(scheme: &str) -> Option<String> {
 /// touch rinch's DOM. Sources given while a root is mounting are asked for
 /// before `mount_into` returns. `Some(url)` is shown and remembered for that
 /// source (the resolver is not asked again until a reload). `None` means "not
-/// yet": the element shows nothing, and
+/// yet": the element shows nothing, the answer is remembered too (an element
+/// given the source later shows nothing and asks nothing, as a desktop loader's
+/// miss is cached), and
 /// [`rinch::image::reload_image(src)`](rinch_core::image::reload_image) asks
 /// again for every `<img>` rinch was given that source, attached to the page
 /// or not, which is also how a picture whose URL changed is refreshed.
@@ -129,9 +136,12 @@ fn registrable_scheme(scheme: &str) -> Option<String> {
 /// A URL the resolver answers with is the app's to revoke; rinch never does.
 /// To make rinch forget one (the app evicted the blob), call `reload_image`
 /// and answer `None`: elements already showing the picture keep it (a browser
-/// keeps a loaded image), and the next element given the source asks again.
-/// A reload of a source no element was given forgets its answer without
-/// asking.
+/// keeps a loaded image), and an element given the source later is handed
+/// nothing until the next reload. A reload of a source no element was given
+/// forgets its answer, "not yet" included, without asking.
+///
+/// A resolver or loader that **panics** aborts the whole app: wasm has no
+/// unwinding, so nothing catches it here as desktop does.
 ///
 /// ```ignore
 /// rinch_web::register_image_url_scheme("myapp-blob", move |src| {
@@ -224,6 +234,7 @@ fn remember(src: &str, fresh: Resolved) {
 
 /// Forget the answer for `src`, revoking it when rinch made it.
 fn forget_answer(src: &str) {
+    NOT_YET.with(|n| n.borrow_mut().remove(src));
     if let Some(old) = RESOLVED.with(|r| r.borrow_mut().remove(src))
         && old.owned
     {
@@ -310,6 +321,7 @@ pub(crate) fn set_img_src(img: &web_sys::Element, name: &str, value: &str) {
     record(value, img);
     match remembered(value) {
         Some(url) => point(img, Some(&url)),
+        None if NOT_YET.with(|n| n.borrow().contains(value)) => point(img, None),
         None => {
             point(img, None);
             queue(value);
@@ -377,10 +389,11 @@ pub(crate) fn resolve_pending() {
             }
             continue;
         }
-        if elements_naming(&src).is_empty() {
+        if elements_naming(&src).is_empty() || NOT_YET.with(|n| n.borrow().contains(&src)) {
             continue;
         }
         let Some(fresh) = ask(&src) else {
+            NOT_YET.with(|n| n.borrow_mut().insert(src));
             continue;
         };
         let url = fresh.url.clone();
@@ -446,9 +459,10 @@ pub(crate) fn logical_src(el: &web_sys::Element) -> Option<String> {
 ///
 /// - No element was given `src`: nothing is asked, and a remembered answer is
 ///   forgotten (an object URL rinch made for it is revoked).
-/// - The answer is "not yet": an element showing a picture keeps it. A URL the
-///   app answered with before is forgotten, so the next element given the
-///   source asks again; one rinch made is kept while elements show it.
+/// - The answer is "not yet": an element showing a picture keeps it. "Not
+///   yet" is remembered (only the next reload asks again), and a URL the app
+///   answered with before is forgotten; one rinch made is kept while elements
+///   show it.
 /// - A new answer: every element points at it, and an object URL rinch made
 ///   for the old one is revoked.
 pub(crate) fn reload(src: &str) {
@@ -465,6 +479,7 @@ pub(crate) fn reload(src: &str) {
     let fresh = ask(src);
     let named = elements_naming(src);
     let Some(fresh) = fresh else {
+        NOT_YET.with(|n| n.borrow_mut().insert(src.to_string()));
         let app_owned = RESOLVED.with(|r| r.borrow().get(src).is_some_and(|a| !a.owned));
         if app_owned {
             RESOLVED.with(|r| r.borrow_mut().remove(src));
@@ -478,6 +493,7 @@ pub(crate) fn reload(src: &str) {
         }
         return;
     };
+    NOT_YET.with(|n| n.borrow_mut().remove(src));
     let url = fresh.url.clone();
     for img in &named {
         img.set_attribute(LOGICAL_SRC_ATTR, src).ok();
@@ -505,6 +521,7 @@ pub fn __reset_image_sources() {
     ELEMENTS.with(|e| e.borrow_mut().clear());
     ELEMENT_COUNT.set(0);
     PENDING.with(|p| p.borrow_mut().clear());
+    NOT_YET.with(|n| n.borrow_mut().clear());
     let answers: Vec<Resolved> =
         RESOLVED.with(|r| r.borrow_mut().drain().map(|(_, a)| a).collect());
     for answer in answers.into_iter().filter(|a| a.owned) {

@@ -45,9 +45,11 @@ pub enum ImageLoadResult {
 /// [`ImageLoadResult::Failed`] and have the app call `reload_image` when they
 /// arrive, rather than park a thread per missing picture.
 ///
-/// A loader that **panics** has failed that load: the panic is caught on the
-/// load's thread and recorded as an [`ImageLoadResult::Failed`] carrying its
-/// message, so the source can be reloaded like any other failure. A loader
+/// On desktop (any native target built with unwinding), a loader that
+/// **panics** has failed that load: the panic is caught on the load's thread
+/// and recorded as an [`ImageLoadResult::Failed`] carrying its message, so the
+/// source can be reloaded like any other failure. In the browser, and on a
+/// native build with `panic = "abort"`, a panic aborts the whole app. A loader
 /// must not call `reload_image` for the source it is being asked for: that
 /// discards the answer it is about to give and asks again, for ever.
 ///
