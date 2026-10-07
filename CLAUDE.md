@@ -3931,8 +3931,8 @@ too: a failed source being reloaded is `Loading`, and a decoded one is listed in
 second reload during the first starts no load of its own; the first's answer is
 dropped and one load follows it. Two parallel loads of one source would land in
 either order and the older answer could win. **Every load pushes exactly one answer**:
-`request_image_load` catches a panic in the loader or the decode and pushes it as a
-failure (`image loader panicked: …`); a load that pushed nothing would leave its
+`request_image_load` catches a panic in the loader or the decode (native, unwinding
+builds) and pushes it as a failure (`image loader panicked: …`); a load that pushed nothing would leave its
 source in flight for the life of the document, which a reload only waits on. The key
 is the source as spelled (`reload_image("x:a")` does not reach `X:a`). `data` cannot
 be registered (`register_image_scheme` panics), so no app loader is offered a `data:`
@@ -3941,8 +3941,44 @@ undecodable `<img>` one (#1464). `rinch_core::image::scheme_of(src)` is the pars
 (named apart from `App::image_scheme`, which registers).
 `crates/rinch-dom/tests/image_scheme_reload_tests.rs` and `review_1429_tests.rs` are
 the pins, and `crates/rinch/src/app/review_1429_pimble_tests.rs` drives the whole
-late-blob flow through a `RinchApp` with software frames. None of this exists
-on the web, where the browser loads `<img>` itself.
+late-blob flow through a `RinchApp` with software frames.
+
+**The same two calls on the web** (`crates/rinch-web/src/images.rs`). The browser loads
+`<img>` itself, so `WebDocument::set_attribute` routes an `<img>`'s `src` through
+`images::set_img_src`: a source whose scheme the app answers for is kept in
+`data-rinch-src` (`LOGICAL_SRC_ATTR`; `get_attribute("src")` answers it) and the
+browser's `src` gets what it resolved to, or is **removed** while the answer is "not
+yet". **The app is never asked inside a DOM write** (`set_attribute` runs under the
+`NodeHandle`'s `RefCell` borrow, and a resolver that wrote a signal panicked
+`RefCell already borrowed`): an element given a source with no remembered answer shows
+nothing until a microtask (`images::resolve_pending`, once per source) asks, and
+`mount_tree` runs it before `mount_into` returns. Two ways to answer:
+`rinch::image::register_image_scheme` unchanged (the loader is called on the one thread; its bytes become an object URL rinch owns and
+revokes when a reload replaces it), or `rinch_web::register_image_url_scheme(scheme,
+Fn(&str) -> Option<String>)` (browser only, may capture `Rc`s, answers a URL the app
+owns; wins over a loader for the same scheme). Answers are remembered by source,
+"not yet" included (`images::NOT_YET`): only a reload asks again, as desktop caches a
+miss. Without it a resolver whose signal write re-created its `<img>` was asked again
+from a fresh microtask for ever and the page froze (round-2 review, W7). A panicking
+loader or resolver aborts the wasm app (no unwinding); only native unwinding builds
+catch it.
+`rinch::image::reload_image` is `rinch_core::image::reload_image`, which calls each
+backend's reloader (`add_image_reloader`: rinch-dom's on its first document, rinch-web's
+on its first `WebDocument`); on the web it asks the app again and re-points every
+`<img>` **rinch was given** the source for, attached or not (`images::ELEMENTS`, filled by
+`set_img_src`, pruned when the `src` changes or goes and by `forget_recursive` /
+`WebDocument`'s drop, so a captured element in a hidden branch comes back with the new
+picture and a page `<img>` outside every root is never touched; one rendered before the
+scheme was registered is recorded too), leaving a picture on screen alone when the
+answer is still "not yet". A reload of a source no element was given asks nothing and
+forgets the answer (a rinch-made object URL is revoked); a "not yet" reload forgets an
+app-owned URL and remembers "not yet", which is how an app that revoked one stops
+rinch handing it out. `<img>`
+markup set with `set_inner_html` goes through `set_img_src` too. The
+editor's model is never read back from the DOM, so an `image` node's `src` stays the
+app's URL. `background-image` is not resolved on the web.
+`crates/rinch-web/tests/image_sources.rs`, `review_1435.rs` and `review_1435_reentry.rs`
+(Chrome 153) are the pins.
 
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 

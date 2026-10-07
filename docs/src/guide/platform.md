@@ -166,8 +166,10 @@ What a loader must know:
   thread, so it may block on I/O. Several loads run at once.
 - **Its answer is cached by source string, a failure included.** A source that
   failed is not asked for again on its own.
-- **A panic is a failed load.** It is caught on the load's thread and cached as
-  a failure carrying the panic's message, so `reload_image` can ask again.
+- **On desktop, a panic is a failed load.** It is caught on the load's thread and
+  cached as a failure carrying the panic's message, so `reload_image` can ask
+  again. In the browser (and on a native build with `panic = "abort"`) a
+  panicking loader or resolver aborts the whole app.
 - **The `data` scheme cannot be registered** (`register_image_scheme("data", ..)`
   panics). No app loader is ever offered a `data:` URL; an `<img>`'s is decoded
   in place.
@@ -202,8 +204,46 @@ one has decoded.
 - **Do not call `reload_image(src)` from inside the loader's answer for `src`**:
   each call discards the answer being given and asks again.
 
-None of this applies to the browser build, where the browser loads `<img>`
-itself.
+
+#### In the browser
+
+The same two calls work in a `rinch-web` build. The browser loads an `<img>`
+itself, so there the loader's bytes are wrapped in an object URL (`blob:…`) and
+that is what the element shows. The loader is called on the browser's one
+thread, so it must answer from what it already holds (`Failed` for "not yet",
+then `reload_image`).
+
+The app is never asked from inside a DOM write, so a resolver or loader may
+write signals. An element given a source with no remembered answer shows nothing
+until a microtask asks for it, once per source, before the next paint; sources
+given while a root mounts are asked for before `mount_into` returns.
+`reload_image` asks at once.
+
+An app that already has a URL to show (it made the object URL itself), or whose
+state lives in `Rc`s a `Send + Sync` loader cannot capture, uses the
+browser-only form instead:
+
+```rust
+rinch_web::register_image_url_scheme("asset", move |src| {
+    store.borrow().object_url(src)   // Some(url), or None for "not yet"
+});
+// later:
+rinch::image::reload_image("asset:photo-42");
+```
+
+Either way the element keeps the source it was given: it is in
+`data-rinch-src`, `NodeHandle::get_attribute("src")` answers it, and an editor
+document's `image` node never holds the resolved URL. While the answer is "not
+yet" the element has no `src` at all. A reload reaches every `<img>` rinch
+was given that source, including one in a branch that is hidden right now, and
+never an `<img>` the page made outside rinch. It asks nothing for a source no
+element was given, and forgets its answer. To make rinch forget a URL you
+revoked, call `reload_image` and answer `None`: pictures already shown stay, and
+an element given the source later shows nothing until the next reload. "Not yet"
+is remembered per source in the browser as on desktop: only `reload_image` asks
+again, never an element that is given the source again. `<img>` markup set with
+`set_inner_html` is resolved like any other. Only `<img src>` is resolved in the
+browser; a `background-image: url(…)` there is the browser's own.
 
 ---
 

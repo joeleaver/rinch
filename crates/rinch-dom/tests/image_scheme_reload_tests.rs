@@ -12,9 +12,9 @@
 //!   its way, and must not blank a picture that is on screen.
 
 use rinch_core::dom::{DomDocument, NodeId};
-use rinch_core::image::{ImageLoadResult, ImageLoader, register_image_scheme};
+use rinch_core::image::{ImageLoadResult, ImageLoader, register_image_scheme, reload_image};
 use rinch_dom::RinchDocument;
-use rinch_dom::image_cache::{has_pending, reload_image};
+use rinch_dom::image_cache::has_pending;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};

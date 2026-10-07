@@ -101,11 +101,9 @@ pub mod image_loader;
 /// changed, loaded again.
 pub mod image {
     pub use rinch_core::image::{
-        ImageLoadResult, ImageLoader, register_image_scheme, register_image_scheme_arc, scheme_of,
-        unregister_image_scheme,
+        ImageLoadResult, ImageLoader, register_image_scheme, register_image_scheme_arc,
+        reload_image, scheme_of, unregister_image_scheme,
     };
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
-    pub use rinch_dom::image_cache::reload_image;
 }
 
 /// Video playback (enable with `video` feature).
