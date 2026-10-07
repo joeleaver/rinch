@@ -2720,10 +2720,43 @@ box:
   frame. **Their Taffy re-sync marks atomic inlines separately**, because that
   pre-pass fires only for `font-size` while a `transition: width` on a box
   *inside* an `inline-block` is #661's own symptom reached without the cascade
-  (found by the review of #694). A `color` tick reaches a text **leaf** with no
-  invalidation at all, because paint colours a leaf from the live style (#904);
-  an IFC's `text_layout` carries the brush and is **not** dropped by a tick:
-  that is #679.
+  (found by the review of #694). **A running `color` frame re-shapes nothing, for a leaf or an IFC**
+  (the frame that ends the run rebuilds an IFC's paint layout once, below).
+  Paint colours a text leaf from the live style (#904). An IFC's `text_layout`
+  carries each run's colour as a brush, so paint asks every text range for its
+  colour again (#679): `ifc::text_color` — the `color` of the text node's DOM
+  parent — recorded at the build as `IfcTextRange::color` (the root's own as
+  `InlineLayout::root_color`, which is what a `text-overflow: ellipsis`
+  rebuild's text follows), and `paint::text::LiveColours` draws the ranges that
+  answer differently in the new colour, glyph by glyph where two ranges share a
+  Parley run. An underline or line-through follows only where it was
+  `currentcolor` (no `text-decoration-color` from the range's element up to the
+  IFC root); a wavy underline and an inline element's background rectangle
+  (colour, padding, radius) are read from their owner's style on every paint
+  (`ifc::wavy_underline_color`, `ifc::inline_background_span`). Two things a
+  tick still rebuilds a paint layout for, with no Taffy compute
+  (`settle_ticked_text`): the frame an inline element's background **appears**
+  on (the layout holds a span only for an element that had one), and the frame
+  a colour **stops** moving — a finished transition, an ended or fill-settled
+  animation — so later paints are back on the layout's own brushes rather than
+  recolouring stretch by stretch for good; every paint of an IFC still makes
+  the comparison, one pass over its text ranges
+  (`perf_regression_scenarios::a_colour_transition_frame_on_ifc_text_shapes_nothing`,
+  `the_frame_that_ends_a_colour_transition_rebuilds_one_layout`). An animation
+  paused by a restyle is re-shaped at its frozen colour by that restyle's
+  cascade (`rv_e_paused_animation`). A split inline's (#513) text is drawn by
+  its container's boxes, so `compute_damage` names each text child's `ifc_root`
+  for a paint-dirty split inline — without it the software renderer kept such
+  text in its start colour until the run ended (`rv_m5_damage_split_inline`).
+  Pins: `crates/rinch-dom/tests/animated_text_brush_679_tests.rs`. Not covered:
+  a span on a line cut by `text-overflow: ellipsis` keeps its start colour for
+  the whole run and is right once it ends — the flat rebuild records no text
+  ranges (#1451, pinned by `rv_b1_span_on_ellipsis_line_mid_run`); an ellipsis
+  line laid out by an anonymous block box keeps a stale colour, after a plain
+  class change too (#1450, older than #679; the four `rv_a*` fixtures are
+  `#[ignore]`d on it); a `padding` frame on an inline element still runs a
+  Taffy compute and a shape (#1437); and a `color` transition still stops at
+  its own node (text in a child that inherits takes the end colour at once).
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
   not the cascade's.** That pass stores it as `Display::None`
   (`node::display_contents_taffy_style`), while `to_taffy_style` maps `contents`
