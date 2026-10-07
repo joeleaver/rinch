@@ -532,6 +532,11 @@ a push to `main` writes the cache, and only when its key misses. The key hashes
 every `Cargo.lock` and `Cargo.toml`, the toolchain and the compiler environment.
 Pull requests only read it.
 
+Base and head are both compiled with the Rust version the **head's**
+`rust-toolchain.toml` pins. A pull request that moves the pin therefore shows no
+difference from the new compiler's code generation, and its dependency build is
+cold. The job does not measure what a toolchain bump itself costs.
+
 ### Allocation is not what it costs in a real frame
 
 glibc's `malloc` and `free` cost a different number of instructions depending

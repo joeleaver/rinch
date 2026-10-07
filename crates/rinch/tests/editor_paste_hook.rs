@@ -329,3 +329,68 @@ fn a_read_only_editor_is_unaffected_by_the_hook() {
         );
     });
 }
+
+/// Round-2 review of PR #1411: the code-lines rule through a real Ctrl+V
+/// (key event, clipboard worker, completion on the main thread, the paste at
+/// the anchor) — the PR pins it through `EditorHandle::paste` only. What VS
+/// Code copies for three lines, pasted inside a line of text, is a line of
+/// text each; never one paragraph holding line ends.
+#[test]
+fn ctrl_v_of_vs_code_lines_in_a_line_of_text_is_a_line_each() {
+    on_ui_thread(|| {
+        let vs_code = "<meta charset='utf-8'><div style=\"font-family: monospace;white-space: pre;\">\
+                       <div><span>fn main() {</span></div><div><span>    body();</span></div>\
+                       <div><span>}</span></div></div>";
+        let mut p = page(false);
+        let after = ctrl_v(
+            &mut p,
+            Selection::cursor(Pos(5)),
+            ("fn main() {\n    body();\n}", Some(vs_code)),
+            false,
+        );
+        assert_eq!(
+            after,
+            "<p>see fn main() {</p><p>    body();</p><p>}the docs here</p>"
+        );
+        // One undo step.
+        assert!(p.handle.command("undo"));
+        assert_eq!(html(&p), "<p>see the docs here</p>");
+    });
+}
+
+/// Round-2 review of PR #1411, a measurement (run with `--ignored
+/// --nocapture`): what a mounted desktop editor pays for 1.3 KB of bare
+/// table parts that the reader pads to 65,001 cells.
+#[test]
+#[ignore = "a measurement, not a pin"]
+fn measure_ctrl_v_of_bare_table_parts_padded_to_the_cap() {
+    on_ui_thread(|| {
+        let payload = format!(
+            "<td colspan=1000>a</td>{}",
+            "<tr><td>b</td></tr>".repeat(65)
+        );
+        let mut p = page(false);
+        rinch_clipboard::copy_html(&payload, Some("plain")).unwrap();
+        p.handle.set_selection(Selection::cursor(Pos(5)));
+        let before = html(&p);
+        let t = Instant::now();
+        chord(&mut p.app, KeyCode::KeyV, false);
+        let deadline = Instant::now() + Duration::from_secs(600);
+        loop {
+            rinch::core::drain_main_callbacks();
+            if html(&p) != before || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let pasted = t.elapsed();
+        let t = Instant::now();
+        p.app.resolve_and_repaint(800.0, 600.0);
+        let laid_out = t.elapsed();
+        let cells = html(&p).matches("<td").count();
+        eprintln!(
+            "{} bytes: {cells} cells; paste {pasted:?}, first layout {laid_out:?}",
+            payload.len()
+        );
+    });
+}

@@ -123,8 +123,13 @@ jobs:
           path: head
           persist-credentials: false
 
+      # The head's pin, exported as RUSTUP_TOOLCHAIN (`override`), so the key
+      # below is for the same compiler `instruction-counts` asks for.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./head/.github/actions/rust-toolchain
+        with:
+          path: head
+          override: true
 
       - name: Restore cargo cache
         id: cache
@@ -194,8 +199,18 @@ jobs:
       - name: Self-test the Perf scripts
         run: python3 head/.github/scripts/test_perf_scripts.py
 
+      # The head's pinned version, exported as RUSTUP_TOOLCHAIN (`override`) so
+      # that BOTH sides are compiled by it. Without that each `cargo` would read
+      # the `rust-toolchain.toml` of the checkout it runs in, and a PR that
+      # moves the pin would compare the base under the old compiler with the
+      # head under the new one: a table of codegen differences that reads as a
+      # regression of the PR's source (#736). So this job never measures what a
+      # toolchain bump itself costs; compare two `main` runs for that.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./head/.github/actions/rust-toolchain
+        with:
+          path: head
+          override: true
 
       # BEFORE the base checkout: rust-cache hashes every Cargo.toml/Cargo.lock
       # under the workspace into its key, and the seed job has only `head/`.

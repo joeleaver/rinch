@@ -382,6 +382,43 @@ fn a_fitted_paste_reaches_the_peer() {
     );
 }
 
+/// Review of #1411: copied cells and rows with no `<table>` around them that
+/// do not make full rows are a table the peers get: the reader pads it to a
+/// rectangle. (Unpadded it stalled outbound: "a table whose cells do not tile
+/// a rectangle".)
+#[cfg(feature = "collaboration")]
+#[test]
+fn a_paste_of_ragged_bare_table_parts_reaches_the_peer() {
+    use std::cell::RefCell;
+    type Q = Rc<RefCell<Vec<Vec<u8>>>>;
+    let host = editor("<p>abc</p>", 4, 4);
+    let to_guest: Q = Rc::default();
+    let sink = to_guest.clone();
+    let snap = host
+        .start_collaboration_host(move |d| sink.borrow_mut().push(d))
+        .unwrap();
+    let guest = create_editor();
+    guest.start_collaboration_guest(&snap, |_| {}).unwrap();
+    assert!(
+        host.paste(&PasteContent {
+            html: Some(
+                "<td>A</td><td>B</td><tr><td>C</td></tr><tr><td>D</td><td>E</td><td>F</td></tr>"
+                    .to_string()
+            ),
+            text: Some("plain".to_string()),
+        })
+    );
+    assert!(host.collab_outbound_stall().is_none());
+    assert!(host.collab_take_error().is_none());
+    for delta in to_guest.borrow_mut().drain(..) {
+        assert!(guest.collab_receive(&delta));
+    }
+    let got = node_to_html(&host.doc());
+    assert!(got.contains("<td><p>F</p></td>"), "{got}");
+    assert_eq!(got.matches("<td>").count(), 9, "{got}");
+    assert_eq!(node_to_html(&guest.doc()), got);
+}
+
 /// Over a cell selection the selected cells are cleared and the content goes
 /// into the top-left one: the grid is never touched, and it is one undo step.
 #[test]

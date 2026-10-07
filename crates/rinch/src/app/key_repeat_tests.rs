@@ -195,8 +195,8 @@ fn an_unknown_backend_still_latches_and_still_releases() {
 
 /// The `WindowFocus(false)` heal, which has been in the runtime since #147 and
 /// was pinned by nothing. It is what bounds the damage on a backend that
-/// answers `Unknown` — and on Android, which translates no `KeyAction::Up` at
-/// all (issue #479), it used to be the *only* thing that ever cleared the
+/// answers `Unknown` — and on Android, which translated no `KeyAction::Up`
+/// until issue #479, it used to be the *only* thing that ever cleared the
 /// latch.
 ///
 /// Kills deleting the `self.node_activation_held = None` in the
@@ -271,4 +271,172 @@ fn every_injected_press_activates_though_the_channel_sends_no_releases() {
         (800, 600),
     );
     assert_eq!(clicks.get(), 4, "each typed Space is its own press");
+}
+
+// ── review of PR #1416 (#479): the Android translator's output, through RinchApp ──
+// `shell` (and so `android_key`) is not part of an `embed`-only build.
+#[cfg(any(feature = "desktop", feature = "android"))]
+mod review_1416 {
+    use super::*;
+    use crate::shell::android_key::{KeyPhase, KeyTranslator, MapChar, RawKey};
+
+    fn raw(code: u32, phase: KeyPhase, key: Option<KeyCode>, ch: MapChar) -> RawKey {
+        RawKey {
+            id: (7, code),
+            phase,
+            key,
+            ch,
+            modifiers: Modifiers::default(),
+        }
+    }
+    const DOWN: KeyPhase = KeyPhase::Down { repeat_count: 0 };
+
+    /// Focus 4 of the brief: a translated Enter press arms the latch and the
+    /// translated release clears it. Red when `KeyPhase::Up` translates to
+    /// nothing (the pre-#479 behaviour): the `expect` fails.
+    #[test]
+    fn a_translated_release_clears_the_activation_latch() {
+        let (mut app, clicks) = focused_node_app();
+        let mut t = KeyTranslator::new();
+        let ev = t
+            .translate(
+                raw(66, DOWN, Some(KeyCode::Enter), MapChar::None),
+                |_, _| None,
+            )
+            .expect("press");
+        app.handle_event(ev, (800, 600), 1.0);
+        assert_eq!(clicks.get(), 1);
+        assert_eq!(app.node_activation_held, Some(KeyCode::Enter));
+        let ev = t
+            .translate(
+                raw(66, KeyPhase::Up, Some(KeyCode::Enter), MapChar::None),
+                |_, _| None,
+            )
+            .expect("android translates the release");
+        app.handle_event(ev, (800, 600), 1.0);
+        assert_eq!(app.node_activation_held, None);
+        // And an Unknown-backend press after it activates (the latch is what
+        // that reads).
+        press(&mut app, KeyCode::Enter, KeyRepeat::Unknown);
+        assert_eq!(clicks.get(), 2);
+    }
+
+    /// FINDING (documents current behaviour): a stranded spelling survives a
+    /// run of repeat-only downs. Shift+A down, its release lost; the key is
+    /// later seen only as auto-repeats typing "a" (held while the window
+    /// regained focus), then released. Every down since was "a"; the release
+    /// says "A".
+    #[test]
+    fn finding_a_stranded_spelling_outlives_repeat_only_downs() {
+        let mut t = KeyTranslator::new();
+        t.translate(
+            raw(29, DOWN, Some(KeyCode::KeyA), MapChar::Unicode('A')),
+            |_, _| None,
+        );
+        // release lost
+        for n in 1..4 {
+            t.translate(
+                raw(
+                    29,
+                    KeyPhase::Down { repeat_count: n },
+                    Some(KeyCode::KeyA),
+                    MapChar::Unicode('a'),
+                ),
+                |_, _| None,
+            );
+        }
+        let up = t.translate(
+            raw(29, KeyPhase::Up, Some(KeyCode::KeyA), MapChar::Unicode('a')),
+            |_, _| None,
+        );
+        match up {
+            Some(PlatformEvent::KeyUp { logical_key, .. }) => {
+                assert_eq!(logical_key.as_deref(), Some("A"), "current behaviour")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// FINDING (documents current behaviour): what `on_key`-style pairing by
+    /// string sees for dead-´ + held e. The repeat is a down spelled "e" that
+    /// no release ever names.
+    #[test]
+    fn finding_a_repeat_after_a_dead_key_is_a_down_no_release_names() {
+        let dead = |a: char, c: char| (a == '\u{b4}' && c == 'e').then_some('é');
+        let mut t = KeyTranslator::new();
+        let mut held: std::collections::BTreeSet<String> = Default::default();
+        let seq = [
+            raw(68, DOWN, None, MapChar::CombiningAccent('\u{b4}')),
+            raw(68, KeyPhase::Up, None, MapChar::CombiningAccent('\u{b4}')),
+            raw(33, DOWN, Some(KeyCode::KeyE), MapChar::Unicode('e')),
+            raw(
+                33,
+                KeyPhase::Down { repeat_count: 1 },
+                Some(KeyCode::KeyE),
+                MapChar::Unicode('e'),
+            ),
+            raw(33, KeyPhase::Up, Some(KeyCode::KeyE), MapChar::Unicode('e')),
+        ];
+        for r in seq {
+            match t.translate(r, dead) {
+                Some(PlatformEvent::KeyDown { logical_key, .. }) => {
+                    held.insert(logical_key.unwrap());
+                }
+                Some(PlatformEvent::KeyUp { logical_key, .. }) => {
+                    held.remove(&logical_key.unwrap());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            held.into_iter().collect::<Vec<_>>(),
+            ["e"],
+            "current behaviour: \"e\" looks held for ever"
+        );
+    }
+
+    /// UNPINNED BRANCH (mutant M1 `if repeat == KeyRepeat::Fresh {` survives
+    /// the PR's suite): a key first seen as an auto-repeat (held when the app
+    /// came to the front) is remembered by that repeat, so its release pairs
+    /// with the downs the app did see.
+    #[test]
+    fn a_key_first_seen_as_a_repeat_is_released_as_that_repeat_was_spelled() {
+        let mut t = KeyTranslator::new();
+        t.translate(
+            raw(
+                29,
+                KeyPhase::Down { repeat_count: 5 },
+                Some(KeyCode::KeyA),
+                MapChar::Unicode('A'),
+            ),
+            |_, _| None,
+        );
+        match t.translate(
+            raw(29, KeyPhase::Up, Some(KeyCode::KeyA), MapChar::Unicode('a')),
+            |_, _| None,
+        ) {
+            Some(PlatformEvent::KeyUp { logical_key, .. }) => {
+                assert_eq!(logical_key.as_deref(), Some("A"))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// UNPINNED BRANCH (mutants M2/M4 survive): a press that typed nothing is
+    /// remembered as nothing. Its release is not respelled from the map when
+    /// the modifier that silenced the press has gone up.
+    #[test]
+    fn a_press_that_typed_nothing_is_released_with_no_logical_key() {
+        let mut t = KeyTranslator::new();
+        t.translate(raw(29, DOWN, Some(KeyCode::KeyA), MapChar::None), |_, _| {
+            None
+        });
+        match t.translate(
+            raw(29, KeyPhase::Up, Some(KeyCode::KeyA), MapChar::Unicode('A')),
+            |_, _| None,
+        ) {
+            Some(PlatformEvent::KeyUp { logical_key, .. }) => assert_eq!(logical_key, None),
+            other => panic!("{other:?}"),
+        }
+    }
 }

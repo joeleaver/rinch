@@ -36,7 +36,26 @@
 //! its natural width, `margin: 0 auto` centres it, and a lone style `width`
 //! or `height` (or a `min-*`/`max-*` clamp) gives the other dimension through
 //! the ratio. Its context stays `NodeContext::Image`, which the image cache
-//! writes; an image not yet loaded measures 0x0.
+//! writes; an image not yet loaded has no natural size.
+//!
+//! **The `width` and `height` attributes of an `<img>`, `<video>` and
+//! `<iframe>` are presentational hints** (#684), not natural dimensions:
+//! HTML maps each to the property of its name, read by the rules for parsing
+//! dimension values (`rinch_core::dom::parse_html_dimension`: pixels or a
+//! percentage), in a declaration block Stylo cascades below every author rule
+//! ([`dimension_hints_css`], `Node::presentational_hints`). On an `<img>` and
+//! a `<video>` the pair also maps to `aspect-ratio: auto w / h`
+//! ([`attribute_ratio`]) when both are lengths above zero: the ratio of an
+//! image with no natural size (not loaded, or failed) and of a video, so
+//! `<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
+//! before its image arrives. A loaded image's own ratio replaces it. rinch
+//! has no `aspect-ratio` property; the ratio goes from the attributes to the
+//! measure context, and an author `aspect-ratio` declaration still does
+//! nothing (#1286) — so it cannot switch the mapped ratio off either, where
+//! Chrome 153 gives `aspect-ratio: auto; width: 200px; height: auto` on an
+//! unloaded hinted image 200x0. The hints sit below every author rule and
+//! above the UA sheet's normal rules. An unloaded or failed image with `alt`
+//! text still reserves its attributes' box (Chrome lays out the alt text).
 //!
 //! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
 //! `<textarea>` (#1195): it is not sized here (its measure stays
@@ -46,9 +65,11 @@
 //!
 //! **Not modelled:** a desktop `<video>` never holds video data (rinch's
 //! `VideoViewport` is a `div`), so a poster or a loaded video's natural size
-//! never applies; the `width`/`height` attributes of a `<video>` or an
-//! `<iframe>` are presentational hints (#684), not natural dimensions, and
-//! are not read.
+//! never applies. A `<video>` with a mapped ratio and both dimensions `auto`
+//! is 300 wide and as tall as the ratio says, where Chrome 153 stretches it
+//! to its container's width. The other presentational attributes (`hspace`,
+//! `vspace`, `border`, `align` on an image; `<hr width>`; a table's) map to
+//! nothing (#1419).
 
 use crate::node::{Node, NodeContext, NodeTree};
 use taffy::{MaybeResolve, ResolveOrZero};
@@ -100,6 +121,69 @@ pub fn is_unstretched_replaced(node: &Node) -> bool {
         || crate::form_control::form_control_content_height(node).is_some()
 }
 
+/// Whether HTML maps the `width` and `height` attributes of `tag` to the
+/// properties of those names (#684). A canvas's are its bitmap's size
+/// instead ([`replaced_context`]).
+pub fn maps_dimension_attributes(tag: &str) -> bool {
+    matches!(tag, "img" | "video" | "iframe")
+}
+
+fn dimension_attribute(node: &Node, name: &str) -> Option<rinch_core::dom::HtmlDimension> {
+    rinch_core::dom::parse_html_dimension(node.attributes.get(name)?)
+}
+
+/// The declarations the `width` and `height` attributes of `node` map to, as
+/// CSS text, or `None` when neither parses. The caller has checked
+/// [`maps_dimension_attributes`].
+pub(crate) fn dimension_hints_css(node: &Node) -> Option<String> {
+    use rinch_core::dom::HtmlDimension;
+    use std::fmt::Write;
+    let mut css = String::new();
+    for name in ["width", "height"] {
+        match dimension_attribute(node, name) {
+            Some(HtmlDimension::Length(v)) => write!(css, "{name}: {v}px;").unwrap(),
+            Some(HtmlDimension::Percentage(v)) => write!(css, "{name}: {v}%;").unwrap(),
+            None => {}
+        }
+    }
+    (!css.is_empty()).then_some(css)
+}
+
+/// The aspect ratio (width / height) the `width` and `height` attributes of
+/// an `<img>` or `<video>` map to: both must parse as lengths, not
+/// percentages, and be above zero. `None` for any other element.
+pub fn attribute_ratio(node: &Node) -> Option<f32> {
+    use rinch_core::dom::HtmlDimension;
+    if !matches!(node.tag(), Some("img" | "video")) {
+        return None;
+    }
+    match (
+        dimension_attribute(node, "width")?,
+        dimension_attribute(node, "height")?,
+    ) {
+        (HtmlDimension::Length(w), HtmlDimension::Length(h)) if w > 0.0 && h > 0.0 => {
+            let r = (w / h) as f32;
+            (r.is_finite() && r > 0.0).then_some(r)
+        }
+        _ => None,
+    }
+}
+
+/// An `<img>`'s natural size and the ratio it is measured with: its own once
+/// loaded, else `hint_ratio` with no natural size.
+pub(crate) fn image_natural_size(
+    width: u32,
+    height: u32,
+    hint_ratio: Option<f32>,
+) -> ((f32, f32), Option<f32>) {
+    if width == 0 || height == 0 {
+        ((0.0, 0.0), hint_ratio)
+    } else {
+        let (w, h) = (width as f32, height as f32);
+        ((w, h), Some(w / h))
+    }
+}
+
 /// The measure context `node` is owed, or `None` for any other element.
 pub fn replaced_context(node: &Node) -> Option<NodeContext> {
     let tag = node.tag()?;
@@ -111,7 +195,7 @@ pub fn replaced_context(node: &Node) -> Option<NodeContext> {
         return Some(NodeContext::Replaced {
             width: dw,
             height: dh,
-            ratio: false,
+            ratio: attribute_ratio(node),
         });
     }
     // HTML: a canvas's `width`/`height` content attributes are parsed with
@@ -127,14 +211,16 @@ pub fn replaced_context(node: &Node) -> Option<NodeContext> {
     Some(NodeContext::Replaced {
         width,
         height,
-        ratio: width > 0.0 && height > 0.0,
+        ratio: (width > 0.0 && height > 0.0).then(|| width / height),
     })
 }
 
 /// Make the Taffy measure context of `node_id` say what [`replaced_context`]
 /// says, and answer whether it had to change (the caller then owes a layout:
 /// `set_node_context` has already marked the Taffy node dirty). Called when
-/// the element is created and when a canvas's `width`/`height` changes.
+/// the element is created and by every cascade of it, which a `width` or
+/// `height` write asks for. For an `<img>` it keeps the context's
+/// `hint_ratio` current instead.
 pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool {
     let Some(node) = tree.nodes.get(node_id) else {
         return false;
@@ -142,6 +228,19 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
     let Some(taffy_id) = node.taffy_id else {
         return false;
     };
+    if node.tag() == Some("img") {
+        let want = attribute_ratio(node);
+        let Some(NodeContext::Image { hint_ratio, .. }) = tree.taffy.get_node_context_mut(taffy_id)
+        else {
+            return false;
+        };
+        if *hint_ratio == want {
+            return false;
+        }
+        *hint_ratio = want;
+        let _ = tree.taffy.mark_dirty(taffy_id);
+        return true;
+    }
     let Some(want) = replaced_context(node) else {
         return false;
     };
@@ -168,8 +267,9 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
 }
 
 /// The measure answer for [`NodeContext::Replaced`]: the **content-box** size
-/// of a replaced element with natural size `natural` (and a natural aspect
-/// ratio when `ratio`), shared by the root compute and the atomic-inline
+/// of a replaced element with natural size `natural` and aspect ratio `ratio`
+/// (width / height; an unloaded image with a mapped ratio has one and a
+/// `(0, 0)` natural size), shared by the root compute and the atomic-inline
 /// sizer. Taffy adds the padding and border, and keeps any dimension it
 /// already knows.
 ///
@@ -184,7 +284,7 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
 /// against an indefinite size being `auto`.
 pub(crate) fn measure(
     natural: (f32, f32),
-    ratio: bool,
+    ratio: Option<f32>,
     known: taffy::Size<Option<f32>>,
     style: &taffy::Style,
     parent: taffy::Size<Option<f32>>,
@@ -233,8 +333,7 @@ pub(crate) fn measure(
     let clamp_h = |v: f32| clamp(v, min.height, max.height);
 
     let (nw, nh) = natural;
-    let (width, height) = if ratio {
-        let r = nw / nh;
+    let (width, height) = if let Some(r) = ratio {
         match (w, h) {
             (Some(w), Some(h)) => (w, h),
             (Some(w), None) => (w, clamp_h(clamp_w(w) / r)),

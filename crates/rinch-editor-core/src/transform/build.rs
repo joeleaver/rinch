@@ -132,6 +132,10 @@ impl<'a> Transform<'a> {
     /// - content open at the slice's start continues the textblock the range
     ///   starts in, and the inline content after the range joins the
     ///   textblock the slice ends in;
+    /// - code pasted in a textblock that is not code, over anything but
+    ///   exactly that textblock's whole content, is a textblock for each of
+    ///   its lines, not one holding line ends and not a code block that
+    ///   takes the line's own text;
     /// - a block that is closed splits the textblock (leaving no empty block
     ///   when the range is at the textblock's edge);
     /// - over a whole textblock — a caret in an empty one included — a slice
@@ -160,6 +164,8 @@ impl<'a> Transform<'a> {
         if !fit::slice_is_sound(&slice) {
             return Err(StepError::new("the slice holds an invalid node"));
         }
+        let slice =
+            fit::code_lines_as_blocks(self.schema, &self.doc, from, to, &slice).unwrap_or(slice);
         let candidates = if self.same_isolating_scope(from, to) {
             fit::range_candidates(&self.doc, from, to, &slice)
         } else {

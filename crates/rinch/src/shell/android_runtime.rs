@@ -25,6 +25,7 @@ use rinch_platform::{
 use crate::app::{RinchApp, TextContextMenuPresentation, TextEditAction, TextEditState};
 use crate::shell::android_frame;
 use crate::shell::android_ime::{ImeAction, ImeComposition};
+use crate::shell::android_key::{KeyPhase, KeyTranslator, MapChar, RawKey};
 use crate::shell::touch_gesture::{EventClock, TouchAction, TouchGesture};
 
 // ── Cross-thread dispatch ────────────────────────────────────────────────────
@@ -185,7 +186,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // for the same reason: both are per-gesture state that has to survive
     // between turns of the loop. See `touch_gesture::EventClock`.
     let mut event_clock = EventClock::new();
-    let mut combining_accent: Option<char> = None;
+    // Hardware-key state that outlives one event: the pending dead key and
+    // how each held key's press was spelled. See `android_key`.
+    let mut keys = KeyTranslator::new();
     // The platform's floating text-selection toolbar, as the loop believes it
     // to be (issue #813). See `ToolbarMirror` for why a belief and a count.
     let mut text_toolbar = ToolbarMirror::new();
@@ -520,7 +523,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             &mut event_clock,
             scale_factor,
             Instant::now(),
-            &mut combining_accent,
+            &mut keys,
         );
         let mut toolbar_requested = false;
         for event in &input_events {
@@ -996,7 +999,7 @@ fn collect_input_events(
     event_clock: &mut EventClock,
     scale_factor: f64,
     now: Instant,
-    combining_accent: &mut Option<char>,
+    keys: &mut KeyTranslator,
 ) -> Vec<PlatformEvent> {
     let mut events = Vec::new();
 
@@ -1038,64 +1041,41 @@ fn collect_input_events(
                             meta: false,
                         };
 
-                        if key.action() == KeyAction::Down {
-                            let text = android_app
-                                .device_key_character_map(key.device_id())
-                                .ok()
-                                .and_then(|map| match map.get(key.key_code(), key.meta_state()) {
-                                    Ok(KeyMapChar::Unicode(ch)) => {
-                                        if let Some(accent) = combining_accent.take() {
-                                            match map.get_dead_char(accent, ch) {
-                                                Ok(Some(combined)) => Some(combined.to_string()),
-                                                _ => Some(ch.to_string()),
-                                            }
-                                        } else {
-                                            Some(ch.to_string())
-                                        }
-                                    }
-                                    Ok(KeyMapChar::CombiningAccent(accent)) => {
-                                        *combining_accent = Some(accent);
-                                        None
-                                    }
-                                    _ => None,
-                                });
-
-                            // The key-character-map char doubles as the logical
-                            // key value: it is the layout-produced, case-accurate
-                            // (`meta_state` includes Shift) character — exactly
-                            // what `KeyboardEvent.key` spells for a printable
-                            // key. Android hands us no DOM-style *name* for the
-                            // rest (Enter, arrows, CapsLock), so those stay
-                            // `None` and resolve through the physical `key`.
-                            // Android reports auto-repeat as a repeat count on
-                            // the same `ACTION_DOWN`, so the runtime never has
-                            // to infer it from a release — which matters twice
-                            // over here, since this backend translates no
-                            // `KeyAction::Up` at all (issue #479) and the
-                            // Enter/Space latch would otherwise be cleared only
-                            // by a window blur (issue #463).
-                            let repeat = if key.repeat_count() > 0 {
-                                KeyRepeat::Repeat
-                            } else {
-                                KeyRepeat::Fresh
+                        // Only what needs the device is done here: read the
+                        // event and ask the key character map. What the event
+                        // becomes is `android_key`'s, which host tests compile
+                        // (issue #479).
+                        let phase = match key.action() {
+                            KeyAction::Down => Some(KeyPhase::Down {
+                                repeat_count: key.repeat_count(),
+                            }),
+                            KeyAction::Up => Some(KeyPhase::Up),
+                            _ => None,
+                        };
+                        if let Some(phase) = phase {
+                            let map = android_app.device_key_character_map(key.device_id()).ok();
+                            let ch = match map
+                                .as_ref()
+                                .map(|map| map.get(key.key_code(), key.meta_state()))
+                            {
+                                Some(Ok(KeyMapChar::Unicode(ch))) => MapChar::Unicode(ch),
+                                Some(Ok(KeyMapChar::CombiningAccent(accent))) => {
+                                    MapChar::CombiningAccent(accent)
+                                }
+                                _ => MapChar::None,
                             };
-                            if let Some(key_code) = map_android_keycode(key.key_code()) {
-                                events.push(PlatformEvent::KeyDown {
-                                    key: key_code,
-                                    logical_key: text.clone(),
-                                    text,
-                                    modifiers,
-                                    repeat,
-                                });
-                            } else if let Some(text) = text {
-                                events.push(PlatformEvent::KeyDown {
-                                    key: KeyCode::Other,
-                                    logical_key: Some(text.clone()),
-                                    text: Some(text),
-                                    modifiers,
-                                    repeat,
-                                });
-                            }
+                            let raw = RawKey {
+                                id: (key.device_id(), key.key_code().into()),
+                                phase,
+                                key: map_android_keycode(key.key_code()),
+                                ch,
+                                modifiers,
+                            };
+                            let event = keys.translate(raw, |accent, ch| {
+                                map.as_ref()
+                                    .and_then(|map| map.get_dead_char(accent, ch).ok().flatten())
+                            });
+                            events.extend(event);
                         }
                     }
                     _ => {}
