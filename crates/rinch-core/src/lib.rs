@@ -39,6 +39,8 @@ pub mod virtual_list;
 
 #[cfg(test)]
 mod batch_dom_order_tests;
+#[cfg(test)]
+mod cache_scope_733_tests;
 /// The post-condition of `remove` vs `discard` across the reactive helpers
 /// (issue #719). Needs `MockDomDocument`, which is `cfg(test)` here.
 #[cfg(test)]

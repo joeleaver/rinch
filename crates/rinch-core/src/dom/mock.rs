@@ -464,6 +464,10 @@ impl DomDocument for MockDomDocument {
         self.forget_subtree(node);
     }
 
+    fn is_retired(&self, node: NodeId) -> bool {
+        !self.nodes.contains_key(&node)
+    }
+
     fn set_text_content(&mut self, node: NodeId, text: &str) {
         self.count(|ops| ops.text_writes += 1);
         if let Some(n) = self.nodes.get_mut(&node) {
