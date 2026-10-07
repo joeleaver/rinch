@@ -438,6 +438,14 @@ impl Transaction {
             return Ok(self);
         }
         self.delete(from, to)?;
+        // A fitted delete whose tail could not join the textblock it began in
+        // (code, then marked text) maps the range's end past `from`: the
+        // caret still goes where the range began (ProseMirror's
+        // `selectionToInsertionEnd`).
+        if !self.cur_selection.is_empty() {
+            let caret = Selection::near(&self.doc, Pos(from), -1);
+            self.set_selection(caret);
+        }
         Ok(self)
     }
 

@@ -338,6 +338,14 @@ Everything that goes through `NodeHandle` works:
 
 The abstraction is clean. If your component code doesn't import anything from `rinch-dom` or `winit` directly, it'll work on WASM without changes.
 
+**Browsers.** The wasm suites run in Chrome only. A press, drag or hover in the
+`Editor` (and the `data-block-index` text hit) finds its text position with
+`caretRangeFromPoint` where the browser has it and the standard
+`caretPositionFromPoint` otherwise, which is what Firefox has. That second path is
+tested by hiding the first in Chrome, where the two give the same positions; it has
+not been run in Firefox, and neither has the rest of the editor's input there
+(#1461).
+
 ## What Doesn't (Yet)
 
 - **Custom painting** — Vello and tiny-skia don't run in the browser. The browser paints for you instead.
