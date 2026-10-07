@@ -29,11 +29,20 @@ use crate::error::Result;
 /// history plugin and any origin-sensitive logic can tell it apart from local typing.
 pub const ORIGIN_REMOTE: &str = "collabOriginRemote";
 
-/// Build the transaction that brings `state`'s model up to the converged CRDT
-/// document `target`, as a minimal block-level replace. Returns `None` if nothing
-/// changed. The transaction is tagged remote + non-undoable.
-pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Option<Transaction>> {
-    let old = &state.doc;
+/// The block-level difference between an old document and the converged one:
+/// the top-level blocks the two share at their start and end, and the old
+/// document's positions around the changed middle.
+struct BlockDiff {
+    prefix: usize,
+    suffix: usize,
+    /// Position before the first changed block of the old document.
+    start: usize,
+    /// Position after its last changed block.
+    end: usize,
+}
+
+/// `None` when `old` and `target` are the same document.
+fn block_diff(old: &Node, target: &Node) -> Option<BlockDiff> {
     let on = old.child_count();
     let nn = target.child_count();
 
@@ -51,18 +60,47 @@ pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Op
         suffix += 1;
     }
     if prefix == on && nn == on {
-        return Ok(None); // identical
+        return None; // identical
     }
 
     // Model position before the first changed block, and after the last changed block.
     let start: usize = (0..prefix).map(|j| old.child(j).node_size()).sum();
     let end: usize = (0..on - suffix).map(|j| old.child(j).node_size()).sum();
+    Some(BlockDiff {
+        prefix,
+        suffix,
+        start,
+        end,
+    })
+}
 
+/// The transaction that replaces the changed middle of `state`'s document with
+/// `target`'s, selection untouched (mapped).
+fn replace_changed_blocks(
+    state: &EditorState,
+    target: &Node,
+    diff: &BlockDiff,
+) -> Result<Transaction> {
+    let nn = target.child_count();
     // The replacement blocks (the changed middle of the new doc).
-    let mid: Vec<Node> = (prefix..nn - suffix)
+    let mid: Vec<Node> = (diff.prefix..nn - diff.suffix)
         .map(|j| target.child(j).clone())
         .collect();
     let slice = Slice::new(Fragment::from_children(mid), 0, 0);
+    let mut tr = state.tr();
+    tr.replace(diff.start, diff.end, slice)?;
+    Ok(tr)
+}
+
+/// Build the transaction that brings `state`'s model up to the converged CRDT
+/// document `target`, as a minimal block-level replace. Returns `None` if nothing
+/// changed. The transaction is tagged remote + non-undoable.
+pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Option<Transaction>> {
+    let old = &state.doc;
+    let Some(diff) = block_diff(old, target) else {
+        return Ok(None);
+    };
+    let (prefix, suffix, start) = (diff.prefix, diff.suffix, diff.start);
 
     // Where the selection's ends belong afterwards, worked out against the old
     // document before it is replaced (see `carried_position`).
@@ -72,8 +110,7 @@ pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Op
         carried_position(old, target, prefix, suffix, start, old_selection.head().0),
     );
 
-    let mut tr = state.tr();
-    tr.replace(start, end, slice)?;
+    let mut tr = replace_changed_blocks(state, target, &diff)?;
     let new_doc = tr.doc().clone();
     match carried {
         // Both ends sat in changed textblocks that are still there: put them back
@@ -94,6 +131,81 @@ pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Op
     tr.set_add_to_history(false);
     tr.set_meta(ORIGIN_REMOTE, true);
     Ok(Some(tr))
+}
+
+/// Carries selections **other than the live one** across a remote change: a
+/// selection captured for work that finishes later (an editor's
+/// `SelectionAnchor`: an asynchronous paste, a picture being uploaded) must
+/// still name the content it was taken at after a peer's edit arrives.
+///
+/// The live selection is carried by [`build_remote_transaction`] itself; this
+/// is the same rule for any other selection of the same old document, with one
+/// difference. The live selection must always land somewhere, so an end the
+/// change cannot be followed through is re-anchored to the nearest valid
+/// place. A captured selection is a promise about *content*, so there the
+/// answer is `None`: the block it was in was deleted, split, joined or changed
+/// kind by the peer, and inserting "nearby" would be a guess.
+pub struct RemoteCarry {
+    old: Node,
+    new_doc: Node,
+    diff: BlockDiff,
+    mapping: rinch_editor_core::Mapping,
+}
+
+impl RemoteCarry {
+    /// Prepare to carry selections of `state`'s document over to `target`, the
+    /// converged document. `None` when the two are the same document (every
+    /// selection stands as it is) or the replace cannot be built.
+    pub fn new(state: &EditorState, target: &Node) -> Option<RemoteCarry> {
+        let diff = block_diff(&state.doc, target)?;
+        let tr = replace_changed_blocks(state, target, &diff).ok()?;
+        Some(RemoteCarry {
+            old: state.doc.clone(),
+            new_doc: tr.doc().clone(),
+            mapping: tr.mapping().clone(),
+            diff,
+        })
+    }
+
+    /// Where `pos` of the old document is now: unmoved or shifted when it lies
+    /// outside the changed blocks, followed through the text when it lies in
+    /// one that is still there, `None` when it lay in one that is not.
+    fn position(&self, pos: usize) -> Option<usize> {
+        let d = &self.diff;
+        if pos > d.start && pos < d.end {
+            return carried_position(&self.old, &self.new_doc, d.prefix, d.suffix, d.start, pos);
+        }
+        Some(self.mapping.map(pos, 1))
+    }
+
+    /// `selection`, taken in the old document, in the converged one; `None`
+    /// when the content it named is gone.
+    pub fn selection(&self, selection: &Selection) -> Option<Selection> {
+        let d = &self.diff;
+        let inside = |pos: usize| pos > d.start && pos < d.end;
+        let (anchor, head) = (selection.anchor().0, selection.head().0);
+        if !inside(anchor) && !inside(head) {
+            // Wholly outside the change: the block-level step map is exact.
+            return Some(selection.map(&self.new_doc, &self.mapping));
+        }
+        let (anchor, head) = (self.position(anchor)?, self.position(head)?);
+        let in_text = |pos: usize| {
+            self.new_doc
+                .resolve(Pos(pos))
+                .is_ok_and(|r| r.parent().is_textblock())
+        };
+        match selection {
+            Selection::Text(_) if in_text(anchor) && in_text(head) => {
+                Some(Selection::text(Pos(anchor), Pos(head)))
+            }
+            Selection::Text(_) => None,
+            // A selected node (an image in a paragraph a peer typed in) is
+            // still selected if a node is still there.
+            Selection::Node(_) => Selection::node_at(&self.new_doc, Pos(anchor)),
+            // A cell selection inside a table the peer changed: not followed.
+            Selection::Cell(_) => None,
+        }
+    }
 }
 
 /// Where model position `pos` of the old document belongs in the new one, when
