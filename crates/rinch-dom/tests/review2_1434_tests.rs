@@ -4,11 +4,11 @@
 //! bundled Inter through `@font-face`, rects relative to the container's
 //! border box.
 //!
-//! Three pass at the head and pin something the PR's suite does not (each
-//! names what it guards). One is `#[ignore]`d: the round-1 fix for the
-//! `vertical-align` shift reads the shift of the span's first and last
-//! **byte**, which belongs to a child when the span starts or ends with a
-//! shifted child.
+//! Four passed at that head and pin something the PR's suite did not (each
+//! names what it guards). The fifth was a finding, fixed since: the round-1
+//! fix for the `vertical-align` shift read the shift of the span's first and
+//! last **byte**, which belongs to a child when the span starts or ends with
+//! a shifted child.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -193,7 +193,6 @@ fn an_empty_span_inside_a_right_to_left_run() {
 /// at y 7 for `<sub>`). Asserted in rinch's own frame: the span's text `bc`
 /// / `ab` is drawn on the unshifted baseline, so y 7, height 20.
 #[test]
-#[ignore = "review2 of #1434: the fragment takes a first/last CHILD's vertical-align shift"]
 fn a_shifted_child_does_not_move_the_spans_fragment() {
     let i = r#"<i style="vertical-align: 7px; font-style: normal">"#;
     for (name, inner, width) in [

@@ -154,9 +154,15 @@
 //! - A relative span's own `left`/`top` moves neither its text nor a box
 //!   resolved against it (issue #1425), and its horizontal padding takes no
 //!   room on the line (issue #1426): the containing block is the span as
-//!   rinch draws it. So is a raised one: a `<sup>`'s fragment follows its
-//!   glyphs, which rinch draws higher than Chrome because the line does not
-//!   grow for them (issue #1357).
+//!   rinch draws it. So is a raised one (`<sup>`, any positive
+//!   `vertical-align`): its fragment follows its glyphs, which rinch draws
+//!   higher than Chrome because the line does not grow for them (issue
+//!   #1357). A span in a larger font with no text of its own sits 5px high
+//!   for the same kind of reason: it gives rinch's line no strut (issue
+//!   #1463).
+//! - A wrapped right-to-left span's right edge is 4.5px off Chrome's (parley
+//!   puts a right-to-left line's trailing space at the line's left end, where
+//!   Chrome hangs it out of the line).
 //! - **Paint does not clip a span-hung box by a static scroller around the
 //!   span** (issue #1438, older than #631): the paint sequence descends the
 //!   box tree, never meets the span, and ends the box's clip chain at the
@@ -556,7 +562,8 @@ enum Before {
 /// - an empty span is a zero-width fragment where it sits in the line;
 /// - a span holding only an atomic inline is as wide as that box and as tall
 ///   as its font, not as the box;
-/// - a `vertical-align` shift moves the fragment with its glyphs.
+/// - the span's **own** `vertical-align` shift moves the fragment with its
+///   glyphs; a shifted child at its start or end does not.
 ///
 /// A span answers `None` when it has no entry in these lines: a **split**
 /// inline (one holding a block-level child, #513, whose fragments lie in
@@ -694,11 +701,43 @@ fn measure_span_fragments(
             continue;
         };
         let (ascent, descent) = font_box(&span.computed_style);
-        // (line, x) of the first fragment's left and the last one's right,
-        // and the byte each fragment's glyphs are shifted by.
+        // The span's **own** `vertical-align` shift: the one its direct
+        // text is drawn with, which is the nearest shift among the span and
+        // the inline elements around it in this context (shifts do not add
+        // up; `InlineLayout::vertical_align_shift_at` takes the innermost
+        // one too). Not the shift of its first or last byte, which is a
+        // child's when the span starts or ends with a `<sub>`.
+        let shift = {
+            let mut shift = 0.0;
+            let mut at = Some(span_id);
+            while let Some(id) = at {
+                if id == root_id || Some(id) == stop {
+                    break;
+                }
+                *steps += 1;
+                let Some(el) = tree.get(id) else { break };
+                if !(el.is_element() && el.display_mode == crate::node::DisplayMode::Inline) {
+                    break;
+                }
+                if el.computed_style.vertical_align
+                    != crate::computed_style::VerticalAlignValue::Baseline
+                {
+                    let parent_size = el
+                        .parent
+                        .and_then(|p| tree.get(p))
+                        .map_or(el.computed_style.font_size, |p| p.computed_style.font_size);
+                    shift = RinchDocument::vertical_align_shift_px(&el.computed_style, parent_size);
+                    if shift != 0.0 {
+                        break;
+                    }
+                }
+                at = el.parent;
+            }
+            shift
+        };
+        // (line, x) of the first fragment's left and the last one's right.
         let mut first: Option<(usize, f32)> = None;
         let mut last: Option<(usize, f32)> = None;
-        let mut shift = (0.0, 0.0);
         let mut join_first = |line: usize, x: f32| {
             first = Some(match first {
                 Some((l, v)) if l < line => (l, v),
@@ -731,10 +770,6 @@ fn measure_span_fragments(
                     *steps += 1;
                     join_last(line, c.x1);
                 }
-                shift = (
-                    inline.vertical_align_shift_at(a),
-                    inline.vertical_align_shift_at(clusters[to - 1].start),
-                );
             }
         }
         for &(line, left, right) in &held.boxes {
@@ -778,9 +813,9 @@ fn measure_span_fragments(
             span_id,
             Some(SpanFragments {
                 left: first.1,
-                top: base_first + shift.0 - ascent.round(),
+                top: base_first + shift - ascent.round(),
                 right: last.1,
-                bottom: base_last + shift.1 + descent.round(),
+                bottom: base_last + shift + descent.round(),
             }),
         );
     }

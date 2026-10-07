@@ -843,11 +843,13 @@ fn the_fragment_is_the_spans_font_box_beside_a_larger_child() {
     assert_rect(c.rect("abs"), [47.641, 12.0, 73.938, 20.0], "larger child");
 }
 
-/// A `<sup>`'s fragment is raised with its glyphs (`vertical-align: super`,
-/// 13.33px: 16 tall), so the box sits on the text as rinch draws it. That is
-/// 5px above Chrome's `(47.641, 9)`: Chrome grows the line for the raised
-/// text and rinch does not (#1357), so rinch's superscript itself is drawn
-/// that much higher. A `<sub>` lowers into room both give it, and matches
+/// A raised span's fragment is raised with its glyphs (here a `<sup>`:
+/// `vertical-align: super`, 13.33px, 16 tall), so the box sits on the text
+/// as rinch draws it. That is 5px above Chrome's `(47.641, 9)`: Chrome grows
+/// the line for raised text and rinch does not (#1357), so rinch's
+/// superscript itself is drawn that much higher. The same holds for any
+/// positive `vertical-align` (`10px`: Chrome y 7, rinch -3). A lowered span
+/// goes into room both give it, and matches
 /// (`review_1434_tests::a_sub_spans_fragment_is_where_its_text_is_drawn`).
 #[test]
 fn a_sup_spans_fragment_is_raised_with_its_text() {
@@ -915,6 +917,25 @@ fn a_span_holding_an_emoji_covers_its_whole_text() {
     let r = c.rect("abs");
     assert_eq!((r[0], r[1], r[3]), (48.0, 7.0, 20.0));
     assert!(r[2] > 52.0, "width {}: the whole text", r[2]);
+}
+
+/// A span **inside** a `<sub>` is drawn with the `<sub>`'s shift, and its
+/// fragment with it: the same top and height as a positioned `<sub>` itself
+/// (16 tall, lowered), not the unshifted line's.
+#[test]
+fn a_span_inside_a_sub_takes_the_subs_shift() {
+    let own = Case::new(&format!(
+        r#"lead <sub style="{REL}">text{}tail</sub>"#,
+        abs("inset: 0", "")
+    ))
+    .rect("abs");
+    let inner = Case::new(&format!(
+        r#"lead <sub>te<span style="{REL}">xt{}</span>tail</sub>"#,
+        abs("inset: 0", "")
+    ))
+    .rect("abs");
+    assert_eq!((own[1], own[3]), (14.0, 16.0), "the sub itself");
+    assert_eq!((inner[1], inner[3]), (own[1], own[3]), "a span in it");
 }
 
 // ── Stated divergences (none introduced here) ───────────────────────────────

@@ -279,7 +279,7 @@ define_counters! {
     /// What those measurements looked at: the context's entries (and the
     /// ancestors of each up to the context's root), its line items and
     /// clusters, and each span's own clusters on its first and last line.
-    /// Linear in the context for any number of spans in it.
+    /// Linear in the context for any number of sibling spans in it.
     AbsInlineMeasureSteps = "abs_inline_measure_steps",
 
     // ── Paint ──────────────────────────────────────────────────────────

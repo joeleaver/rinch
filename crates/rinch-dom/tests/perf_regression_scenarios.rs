@@ -2324,7 +2324,7 @@ fn a_box_sized_from_a_span_costs_one_more_compute_when_the_span_resizes() {
             (AbsContainingBlockPasses, 1),
             (AbsBoxesVisited, 160),
             (AbsInlineMeasures, 1),
-            (AbsInlineMeasureSteps, 22),
+            (AbsInlineMeasureSteps, 23),
         ],
     );
 }
@@ -2358,8 +2358,8 @@ fn span_badges_in_one_paragraph(n: usize) -> (RinchDocument, NodeId) {
 /// paragraph cost four times what 50 did, and no counter moved with it).
 /// A text edit rebuilds the paragraph's lines; they are measured once, for
 /// every span together, and `abs_inline_measure_steps` — entries, ancestors,
-/// line items and clusters looked at — doubles when the paragraph does: 804
-/// steps for 50 badges, 1,608 for 100 (about 16 a badge).
+/// line items and clusters looked at — doubles when the paragraph does: 854
+/// steps for 50 badges, 1,708 for 100 (about 17 a badge).
 #[test]
 fn spans_in_one_paragraph_are_measured_in_one_linear_walk() {
     let frame = |n: usize| {
@@ -2383,7 +2383,7 @@ fn spans_in_one_paragraph_are_measured_in_one_linear_walk() {
             (TaffyMeasureCalls, 1),
             (AbsBoxesVisited, 200),
             (AbsInlineMeasures, 1),
-            (AbsInlineMeasureSteps, 804),
+            (AbsInlineMeasureSteps, 854),
         ],
     );
     expect(
@@ -2398,7 +2398,7 @@ fn spans_in_one_paragraph_are_measured_in_one_linear_walk() {
             (TaffyMeasureCalls, 1),
             (AbsBoxesVisited, 400),
             (AbsInlineMeasures, 1),
-            (AbsInlineMeasureSteps, 1608),
+            (AbsInlineMeasureSteps, 1708),
         ],
     );
 }

@@ -3176,8 +3176,10 @@ when that is left of the first (a wrapped span). A fragment's left and right
 are the **visual** extent of its content (a span of right-to-left text is as
 wide as its text), its top and bottom the span's **own font's** rounded ascent
 and descent around the baseline whatever its children are set in (the face its
-stack resolves an `x` to, `out_of_flow::font_box`), moved by its
-`vertical-align` shift; an empty span is a zero-width fragment where it sits
+stack resolves an `x` to, `out_of_flow::font_box`), moved by the span's **own**
+`vertical-align` shift (the nearest one among the span and the inline elements
+around it, as its text is drawn — a shifted child at its start or end moves
+nothing); an empty span is a zero-width fragment where it sits
 (Chrome 153, pinned with the bundled Inter in
 `tests/abs_inline_containing_block_tests.rs` and `review_1434_tests.rs`).
 **The spans of one context are measured together, once per set of lines**
@@ -3190,7 +3192,8 @@ whole context per box per pass, quadratic in the boxes of one paragraph (review
 of #1434: a relayout of 800 badges in one paragraph took 1.36 s). The counters
 are `abs_inline_measures` and `abs_inline_measure_steps`, pinned at two sizes
 by `perf_regression_scenarios::spans_in_one_paragraph_are_measured_in_one_linear_walk`
-(804 steps for 50 badges, 1,608 for 100). The chain of such a box ends at the
+(854 steps for 50 badges, 1,708 for 100; spans nested in one another each
+walk their own clusters, so that case grows with the nesting depth). The chain of such a box ends at the
 block container **element** holding the line (`out_of_flow::inline_host` — an
 anonymous block box is stepped through), so that element's scroll carries the
 box and a scroller between the two does not. The position is snapped to the
@@ -3211,8 +3214,18 @@ a span in a block that draws a `text-overflow: ellipsis` "…" (its lines are
 rebuilt as flat text); a relative span's own `left`/`top` moves neither its
 text nor the box (**#1425**); an inline's horizontal padding takes no room on
 its line, so the padding box starts that much further left (**#1426**); a
-`<sup>`'s fragment follows glyphs rinch draws higher than Chrome, whose line
-grows for them (#1357); a span that ends in a `<br>` has no empty last fragment
+raised span's fragment (`<sup>`, any positive `vertical-align`) follows glyphs
+rinch draws higher than Chrome, whose line grows for them (#1357: a `<sup>` 5px
+higher, `vertical-align: 10px` 10px, and a raised span that wraps is shorter
+by the growth of each line); a span in a larger font with **no text of its
+own** (empty, or holding only an atomic inline or smaller text) is the right
+size and sits 5px high, because rinch's line gets no strut from it (**#1463**);
+a wrapped span in a font taller than its `line-height` allows spans lines
+rinch keeps at the line height (three 22px lines of `16px/20px`: 66 tall
+against Chrome's 70); a wrapped **right-to-left** span's right edge is 4.5px
+off Chrome's, since parley puts a right-to-left line's trailing space at the
+line's left end where Chrome hangs it out of the line, and an empty span at
+the very end of a right-to-left run is 5px right of Chrome's; a span that ends in a `<br>` has no empty last fragment
 on the next line; a line of nothing but atomic inlines has no strut (#624,
 #1258), so a span on one hangs from the boxes' bottom edge. And **paint does
 not clip such a box by a static scroller around its span** (**#1438**, older
