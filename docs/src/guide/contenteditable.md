@@ -402,21 +402,41 @@ handle.on_image_input(move |input| {
 ```
 
 `input.anchor` is the place the picture was aimed at, kept pointed at the same
-content while the person types on; `insert_image_at` answers `false` if that
-document has been replaced meanwhile. Returning `None` and never inserting is a
-refusal: nothing is inserted, and no `data:` URL is made.
+content while the person, or a collaborating peer, types on. When the answer
+arrives the picture goes there and **the person's caret stays theirs**: if they
+have moved on, their selection is kept (shifted by the picture when it lands
+before it), nothing scrolls, and the picture is an undo step of its own. If
+they have not moved, the caret ends up after the picture, as after any insert.
+
+`insert_image_at` answers `false`, changing nothing, when the place is gone
+(the document was replaced, or a peer removed or restructured the block it was
+in), when the editor has become read-only, or when the place no longer takes an
+image. **Delete what you stored for it then**: nothing references it. Returning
+`None` and never inserting is a refusal: nothing is inserted, and no `data:`
+URL is made.
+
+`ImageInput` and `ImageInputSource` are `#[non_exhaustive]`: read the fields
+you need (or destructure with `..`), and give a `match` on the source a
+wildcard arm.
 
 With the callback registered:
 
 - A paste whose clipboard holds a bitmap is offered. That includes a browser's
   "Copy image", which also puts an `<img>` on the clipboard as html: when the
   html is pictures and nothing else, the bitmap is what the app gets.
-- Image files dropped on the editor are offered one by one, in order, and the
-  app's `onfiledrop` handler does not see that drop. A file counts as an image
-  by its extension (`png`, `jpg`, `jpeg`, `gif`, `webp`) and is offered only if
-  its first bytes agree. The other files of a mixed drop are ignored. A drop
-  with no image file, or on a read-only editor, is the app's handler's as
-  before.
+- Image files dropped on the editor are offered one by one, in order, each as
+  soon as it is read, and the editor takes the keyboard. A file is a picture
+  when its extension says so (`png`, `jpg`, `jpeg`, `gif`, `webp`), its first
+  bytes agree, and it is at most **64 MiB** (the file is read whole into
+  memory and handed over as one `Vec`). The app's `onfiledrop` handler gets
+  **every other file of the drop**: the PDF dropped with a photo, a text file
+  that is only named `.png`, a picture over the limit. A drop with no picture
+  in it, or on a read-only editor, is the handler's whole, as before.
+- A pasted bitmap has no size limit of its own: it is whatever the clipboard
+  held, encoded as PNG on the UI thread (about 50 to 90 ms for a 4K
+  screenshot).
+- Where an image cannot be inserted (the caret is in a code block), nothing is
+  offered: the app is not asked to store a picture that would be refused.
 - An html paste that holds text as well as pictures is an ordinary paste: its
   `<img>` elements keep the `src` they came with. `Plugin::handle_paste` is
   where an app rewrites or strips those.
@@ -1003,9 +1023,16 @@ unaffected; move the caret about and nothing happens to it at all — a
 selection-only change is not a document change.
 
 If the document is *replaced* while the read is in flight (`load_doc` /
-`load_html`, or a collaborative re-projection) the anchor reports `None` and the
-paste is dropped: the content it was aimed at no longer exists, and reusing the
-raw offset would drop it into unrelated text.
+`load_html`) the anchor reports `None` and the paste is dropped: the content it
+was aimed at no longer exists, and reusing the raw offset would drop it into
+unrelated text.
+
+A collaborating peer's edit is not a replacement. The anchor is carried across
+it as across a local edit: text a peer types elsewhere shifts it, and text a
+peer types in the anchor's own paragraph leaves it at the same place in the
+words. It reports `None` only when the peer removed, split, joined or changed
+the kind of the block it sat in (a paragraph deleted, Enter pressed inside it,
+a paragraph made a list item): there the place can no longer be named.
 
 The same anchor is available to your own asynchronous insertions — an uploaded
 image, a completion from a model:

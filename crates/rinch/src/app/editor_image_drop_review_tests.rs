@@ -194,7 +194,10 @@ fn d6_a_picture_over_the_size_limit_is_left_to_the_apps_handler() {
     f.write_all(PNG_MAGIC).unwrap();
     f.set_len(MAX_DROPPED_IMAGE_BYTES).unwrap();
     drop(f);
-    assert!(dropped_file_is_a_picture(&at_limit), "control: at the limit");
+    assert!(
+        dropped_file_is_a_picture(&at_limit),
+        "control: at the limit"
+    );
     assert!(!dropped_file_is_a_picture(&huge));
     assert!(read_dropped_image(&huge).is_none());
 

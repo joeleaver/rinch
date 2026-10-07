@@ -569,10 +569,11 @@ impl EditorCore {
     ///
     /// With a `mapping`, each anchor is re-mapped and re-resolved against the new
     /// document (`Selection::map` falls back to the nearest valid selection if its
-    /// textblock went away). Without one — a `load_doc`, or a remote
-    /// re-projection, where the new document has no positional relationship to the
-    /// old — the anchor is invalidated instead of being silently pointed at
-    /// unrelated content.
+    /// textblock went away). Without one — a `load_doc`, where the new document
+    /// has no positional relationship to the old — the anchor is invalidated
+    /// instead of being silently pointed at unrelated content. A remote
+    /// collaboration change has no mapping either, but is not a load:
+    /// [`Self::carry_anchors_remote`] carries anchors across it.
     fn carry_anchors(&self, doc: &Node, mapping: Option<&Mapping>) {
         let mut anchors = self.anchors.borrow_mut();
         if anchors.live.is_empty() {
@@ -708,10 +709,14 @@ impl SelectionAnchor {
     /// since it was taken.
     ///
     /// `None` once the anchor can no longer mean anything: the editor was
-    /// dropped, or the document it pointed into was replaced wholesale
-    /// (`load_doc`/`load_html`, or a collaborative re-projection). A caller
-    /// should then abandon the operation rather than guess — the content the
-    /// user aimed at is gone.
+    /// dropped, the document it pointed into was replaced wholesale
+    /// (`load_doc`/`load_html`), or a collaborating peer removed, split, joined
+    /// or changed the kind of the block it sat in. A caller should then abandon
+    /// the operation rather than guess — the content the user aimed at is gone.
+    ///
+    /// Any other change by a peer carries the anchor as a local edit does: text
+    /// typed elsewhere shifts it, and text typed in its own paragraph leaves it
+    /// at the same place in the words.
     pub fn selection(&self) -> Option<Selection> {
         let anchors = self.anchors.upgrade()?;
         let anchors = anchors.borrow();
@@ -2469,7 +2474,10 @@ impl EditorHandle {
     /// - **Later**: keep the input, return `None`, and when the picture is
     ///   stored call [`insert_image_at`](Self::insert_image_at) with
     ///   [`ImageInput::anchor`], which still names the place the person aimed
-    ///   at however much they typed meanwhile.
+    ///   at however much they, or a collaborating peer, typed meanwhile. The
+    ///   picture lands there and the person's caret stays where they are. If
+    ///   that call answers `false` the place is gone (or takes no image any
+    ///   more): delete what was stored, nothing references it.
     ///
     /// `None` with nothing later is a refusal: nothing is inserted, and the
     /// editor does **not** fall back to a `data:` URL.
@@ -2490,7 +2498,9 @@ impl EditorHandle {
     /// and the bitmap is what is offered), and a drop of image files on the
     /// editor, once per file in the order given, each a PNG, JPEG, GIF or WebP
     /// by its first bytes. Not for a [read-only](Self::set_read_only) editor,
-    /// and not for an html paste that holds text as well as pictures: that is
+    /// not where an image cannot be inserted (a code block: the app is not
+    /// asked to store a picture that would be refused), and not for an html
+    /// paste that holds text as well as pictures: that is
     /// an ordinary paste, and its `<img>` elements keep the `src` they came
     /// with ([`Plugin::handle_paste`] is where an app rewrites those).
     ///
@@ -3924,7 +3934,10 @@ mod tests {
 
         let here = handle.anchor_selection();
         assert!(handle.insert_image_at(&here, "app-blob:2", ""));
-        assert!(handle.core().scroll.pending, "control: an insert at the caret");
+        assert!(
+            handle.core().scroll.pending,
+            "control: an insert at the caret"
+        );
     }
 
     /// The gate's state machine directly: movement alone never scrolls, an owed

@@ -3713,8 +3713,9 @@ impl RinchApp {
     /// is wherever the user has since wandered — the paste would land somewhere they
     /// never asked for. Mapping is what a transactional editor can offer, and it is
     /// exactly what the anchor does. If the document was *replaced* meanwhile
-    /// (`load_doc`, a collaborative re-projection) the anchor reports `None` and the
-    /// paste is dropped rather than aimed at unrelated content.
+    /// (`load_doc`), or a collaborating peer removed or restructured the block
+    /// the paste was aimed at, the anchor reports `None` and the paste is
+    /// dropped rather than aimed at unrelated content.
     ///
     /// # Threads
     ///
@@ -4876,8 +4877,10 @@ pub(crate) fn read_dropped_image(path: &std::path::Path) -> Option<DroppedImage>
         return None;
     }
     let mut bytes = Vec::new();
-    let read = std::fs::File::open(path)
-        .and_then(|file| file.take(MAX_DROPPED_IMAGE_BYTES + 1).read_to_end(&mut bytes));
+    let read = std::fs::File::open(path).and_then(|file| {
+        file.take(MAX_DROPPED_IMAGE_BYTES + 1)
+            .read_to_end(&mut bytes)
+    });
     if let Err(e) = read {
         tracing::warn!("dropped image {} could not be read: {e}", path.display());
         return None;
