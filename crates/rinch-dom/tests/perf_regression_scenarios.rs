@@ -2306,3 +2306,191 @@ fn a_box_that_stops_being_ancestor_resolved_leaves_the_passes() {
         ],
     );
 }
+
+// ── a containing block that is an inline span (#631) ───────────────────────
+
+/// Twenty 20px lines in a 100px-high scroller, each `a <span rel>b[badge]</span>`
+/// with a 4px leaf under the last. The span is each badge's containing block
+/// and has no box: it is measured in its line. Returns the document, the
+/// scroller, the leaf and the first span's text.
+fn span_badge_rows(badge_css: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+    let mut doc = doc_with(&format!(
+        ".s {{ height: 100px; width: 300px; overflow: auto; }}
+         .line {{ height: 20px; }}
+         .rel {{ position: relative; }}
+         .leaf {{ height: 4px; }}
+         .badge {{ position: absolute; {badge_css} }}"
+    ));
+    let body = doc.body();
+    let s = el(&mut doc, body, "div", "s");
+    let mut first_text = None;
+    for _ in 0..20 {
+        let line = el(&mut doc, s, "div", "line");
+        text(&mut doc, line, "a ");
+        let span = el(&mut doc, line, "span", "rel");
+        let t = text(&mut doc, span, "b");
+        first_text.get_or_insert(t);
+        el(&mut doc, span, "div", "badge");
+    }
+    let leaf = el(&mut doc, s, "div", "leaf");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    (doc, s, leaf, first_text.unwrap())
+}
+
+/// A badge hung from a span by its position alone. A layout looks at each
+/// four times — the size check after the compute, the placement as it is
+/// read back, and both again once the lines the span is measured in are
+/// built — and runs **one** compute: no size depends on the span. A scroll of
+/// the scroller looks at none (it holds the lines; each badge's chain ends at
+/// its own line's block).
+#[test]
+fn position_only_boxes_hung_from_a_span_cost_no_compute() {
+    let (mut doc, scroller, leaf, _) =
+        span_badge_rows("right: 2px; top: 2px; width: 6px; height: 6px;");
+    let s = badge_relayout(&mut doc, leaf);
+    expect(
+        "span badges, a leaf restyled",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 80),
+        ],
+    );
+    let s = badge_scroll(&mut doc, scroller);
+    expect("span badges, the scroller scrolled", &s, &[]);
+}
+
+/// A badge **sized** from its span (`inset: 0`). While no span changes size
+/// a layout is the same as above. When one span's text grows, the compute
+/// runs with that badge baked for the old fragment, the lines are built, the
+/// check after them finds the new size, and the layout goes round once:
+/// `abs_containing_block_passes` 1, two computes, one style rewritten, the
+/// line shaped once to measure and once to paint as for any text edit (the
+/// second round re-shapes nothing), and every badge looked at four times per
+/// round.
+#[test]
+fn a_box_sized_from_a_span_costs_one_more_compute_when_the_span_resizes() {
+    let (mut doc, _, leaf, first_text) = span_badge_rows("inset: 0;");
+    let s = badge_relayout(&mut doc, leaf);
+    expect(
+        "sized span badges, a leaf restyled",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 80),
+        ],
+    );
+
+    doc.tree.perf.reset();
+    doc.set_text_content(first_text, "bbbb");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "sized span badges, one span's text grows",
+        &s,
+        &[
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 2),
+            (AbsContainingBlockPasses, 1),
+            (AbsBoxesVisited, 160),
+            (AbsInlineMeasures, 1),
+            (AbsInlineMeasureSteps, 23),
+        ],
+    );
+}
+
+/// `n` badges, each hung from its own span, in **one** paragraph:
+/// `w <span rel>x[badge]</span> ` n times. Returns the document and the
+/// paragraph.
+fn span_badges_in_one_paragraph(n: usize) -> (RinchDocument, NodeId) {
+    let mut doc = doc_with(
+        ".p { width: 380px; }
+         .rel { position: relative; }
+         .badge { position: absolute; inset: 0; }",
+    );
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    for _ in 0..n {
+        text(&mut doc, p, "w ");
+        let span = el(&mut doc, p, "span", "rel");
+        text(&mut doc, span, "x");
+        el(&mut doc, span, "div", "badge");
+        text(&mut doc, p, " ");
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    (doc, p)
+}
+
+/// The measurement of the spans boxes hang from is **linear in the
+/// paragraph**, however many of them it holds (review of #1434, F1: it was
+/// one walk of the whole paragraph per box per pass, so 100 boxes in one
+/// paragraph cost four times what 50 did, and no counter moved with it).
+/// A text edit rebuilds the paragraph's lines; they are measured once, for
+/// every span together, and `abs_inline_measure_steps` — entries, ancestors,
+/// line items and clusters looked at — doubles when the paragraph does: 854
+/// steps for 50 badges, 1,708 for 100 (about 17 a badge).
+#[test]
+fn spans_in_one_paragraph_are_measured_in_one_linear_walk() {
+    let frame = |n: usize| {
+        let (mut doc, p) = span_badges_in_one_paragraph(n);
+        let first = NodeId(doc.tree.get(p.0).unwrap().children[0]);
+        doc.tree.perf.reset();
+        doc.set_text_content(first, "ww ");
+        doc.resolve_layout(VP.0, VP.1);
+        doc.tree.perf.end_frame()
+    };
+    let (small, large) = (frame(50), frame(100));
+    expect(
+        "50 span badges in one paragraph, its text edited",
+        &small,
+        &[
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 200),
+            (AbsInlineMeasures, 1),
+            (AbsInlineMeasureSteps, 854),
+        ],
+    );
+    expect(
+        "100 span badges in one paragraph, its text edited",
+        &large,
+        &[
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 400),
+            (AbsInlineMeasures, 1),
+            (AbsInlineMeasureSteps, 1708),
+        ],
+    );
+}

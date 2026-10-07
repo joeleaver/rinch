@@ -21,10 +21,11 @@
 //! | static, inside a `relative` div | static | 200x100 |
 //! | static | `relative` > static span > the absolute | 200x361 |
 //!
-//! rinch places the box against its host, not the span (#631), so
-//! where Chrome says 361 rinch's extent is 310 (300 + 10). These fixtures pin
-//! *whether* the box is counted — the bar and a range reaching past 300 — not
-//! that offset.
+//! Since #631 rinch places the box against the span's fragment, as Chrome
+//! does (it was the host, which made the extent 310 where Chrome said 361).
+//! The fragment's top is the face's, and these fixtures declare none, so they
+//! pin *whether* the box is counted — the bar and a range reaching past 300 —
+//! not that offset; `abs_inline_containing_block_tests` pins the placement.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
