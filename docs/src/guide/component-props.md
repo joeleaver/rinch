@@ -962,7 +962,11 @@ has a web equivalent:
   left to keep scrolling the page while the button is held.
 - The native `<select>` popup is **exempt**: its option list is appended to
   `<body>`, so it is not inside any overlay's root, and a long list inside a
-  dialog would otherwise be unscrollable. See [Focus](./focus.md#locking-the-page-behind-an-overlay).
+  dialog would otherwise be unscrollable. A scroll container of your own that
+  sits outside the overlay and must keep scrolling while it is open (a popup
+  portalled to `<body>`, a panel that paints over the dialog) says so with
+  **`data-scroll-lock-exempt`**; the DOM menu bar's dropdowns carry it. See
+  [Focus](./focus.md#a-scroll-container-outside-the-overlay-data-scroll-lock-exempt).
 
 On the web the lock is the whole page even in island mode — there is one
 `<html>` — so a rinch `Modal` inside an island freezes its host page too.
@@ -1364,7 +1368,7 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `radius` | `String` | `""` | |
 | `icon_size` | `String` | `""` | |
 | `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), a step that arrives later included (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. With no `on_step_click` set, this grants only the class — exactly as before #737 |
-| `on_step_click` | `Option<ValueCallback<u32>>` | `None` | Fired with a step's 0-based position when it is clicked or activated (Enter/Space) on a step the stepper considers reachable (#737). Mantine's default: a strictly **completed** step (`position < active`) is clickable without `allow_next_steps_select`; the active step itself and every step past it need that flag or its own `allow_step_click`/`allow_step_select` (Mantine's active state is `'stepProgress'`, not `'stepCompleted'`, so it is not reachable by default either). `Stepper` does not move `active` itself — the caller does, from this callback, as `Tabs` moves its own selection. The index is read from the step's current position **at click time**, not baked in when the handler was wired (#714's pattern), since a later insertion or removal can renumber a step (#716, #745) — and the clickable class is removed the moment a shift makes a step unreachable, unless the step's own ask keeps it |
+| `on_step_click` | `Option<ValueCallback<u32>>` | `None` | Fired with a step's 0-based position when it is clicked or activated (Enter/Space) on a step the stepper considers reachable (#737). Mantine's default: a strictly **completed** step (`position < active`) is clickable without `allow_next_steps_select`; the active step itself and every step past it need that flag or its own `allow_step_click`/`allow_step_select` (Mantine's active state is `'stepProgress'`, not `'stepCompleted'`, so it is not reachable by default either). `Stepper` does not move `active` itself — the caller does, from this callback, as `Tabs` moves its own selection. The index is read from the step's current position **at click time**, not baked in when the handler was wired (#714's pattern), since a later insertion or removal can renumber a step (#716, #745) — and the clickable class is removed the moment a shift makes a step unreachable, unless the step's own ask keeps it. A step moved into another `Stepper` calls **that** stepper's callback, with its position there (#1428); moved into one with no `on_step_click` it is no longer wired (no `data-rid`, `tabindex` or `role`), and keeps the clickable class only if it asked for it itself or that stepper's `allow_next_steps_select` grants it. A wired step moved out of every stepper keeps its wiring (#1453) |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for the steps that set none (#707); the step's own wins, and a step that arrives later takes this one as it lands (#716) |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for the steps that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon`. A step that arrives later takes it as it lands (#716) |
 

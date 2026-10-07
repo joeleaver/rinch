@@ -307,6 +307,17 @@ item1.replace_with(&new_item);
 > through `set_inner_html` and pseudo-element pruning, and those *are* recycled —
 > issue #304, live today and independent of this API.)
 >
+> **A subtree you cache from inside a `for` body, a branch or a `render_fn`**
+> must not be built through the scope that closure is handed: that scope owns
+> what it builds, and the helper discards it when the row or branch goes. Build
+> it through `scope.cache_scope()` (with `build`, so its signals and handlers
+> are the cache scope's too), keep that scope beside the node, and when the
+> cache lets go — including when its owner unmounts — `dispose()` the scope
+> **and** `discard()` the node: dropping the scope alone leaves the node in the
+> backend. See
+> [A cache filled from inside a `for`](../guide/rsx-syntax.md#a-cache-filled-from-inside-a-for)
+> (issue #733).
+>
 > **Which to use.** If the same handle can be inserted again, `remove()`. If it
 > cannot — a pool shrunk, a glyph replaced, a panel rebuilt — `discard()`.
 > Reaching for `remove()` where you meant `discard()` costs memory; reaching for

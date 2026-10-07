@@ -531,11 +531,13 @@ fn a_churning_for_does_not_grow_the_document() {
 ///
 /// **Which flavour of memoisation this is matters.** The cached subtree here is
 /// built on the *outer* scope, before the `for`, and the view only ever hands it
-/// back — the supported shape. A view that builds **lazily through the row's own
-/// scope** and caches afterwards owns its row by this rule and loses it on the
-/// first removal; that is **#733**, and `rinch-dom`'s
+/// back. A view that builds **lazily through the row's own scope** and caches
+/// afterwards owns its row by this rule and loses it on the first removal
+/// (issue #733); a view that has to build lazily builds through
+/// [`RenderScope::cache_scope`] instead, which `lazy_memo_733` below pins.
+/// `rinch-dom`'s
 /// `branch_helper_transition_tests::a_for_row_reinserted_under_the_same_key_can_still_transition`
-/// is the fixture that models it and cannot see the loss.
+/// models the losing shape and cannot see the loss.
 #[test]
 fn a_memoised_for_row_survives_leaving_the_list() {
     let doc = doc();
@@ -2220,4 +2222,389 @@ fn set_inner_html_over_scope_built_children_purges_their_minting_entries() {
         before,
         "set_inner_html left the replaced children's minting entries behind"
     );
+}
+
+// ── #733: a `for` view that builds lazily and memoises ──────────────────────
+
+/// Issue #733. A view is only ever handed its row's scope, so a cache that is
+/// filled *from inside the view* cannot build through anything that outlives
+/// the row — unless it asks for one. [`RenderScope::cache_scope`] is that: a
+/// parentless scope on the same document, which the cache keeps beside the
+/// node it built.
+mod lazy_memo_733 {
+    use super::*;
+    use crate::dom::{__retired_view_returns, reactive_component_dom};
+    use std::cell::Cell;
+    use std::collections::HashMap;
+
+    type Cache = Rc<RefCell<HashMap<u32, (NodeHandle, RenderScope)>>>;
+
+    struct Probe {
+        /// Runs of the cached row's effect.
+        runs: Rc<Cell<u32>>,
+        /// A signal created *inside* the cached build, read by that effect.
+        inner: Rc<Cell<Option<Signal<u32>>>>,
+    }
+
+    /// A list whose view builds each row once, through a cache scope, inside
+    /// a wrapper the row's own scope builds when `wrapped`.
+    fn lazy_list(
+        sc: &mut RenderScope,
+        body: &NodeHandle,
+        rows: Signal<Vec<u32>>,
+        cache: &Cache,
+        wrapped: bool,
+    ) -> Probe {
+        let runs = Rc::new(Cell::new(0u32));
+        let inner: Rc<Cell<Option<Signal<u32>>>> = Rc::new(Cell::new(None));
+        let (c, r, i) = (cache.clone(), runs.clone(), inner.clone());
+        for_each_dom_typed(
+            sc,
+            body,
+            move || rows.get(),
+            |n: &u32| n.to_string(),
+            move |n: u32, s: &mut RenderScope| {
+                let cached = c.borrow().get(&n).map(|(row, _)| row.clone());
+                let row = cached.unwrap_or_else(|| {
+                    let mut keep = s.cache_scope();
+                    let (r, i) = (r.clone(), i.clone());
+                    let row = keep.build(|k| {
+                        let row = k.create_element("article");
+                        let text = k.create_text("ROW");
+                        row.append_child(&text);
+                        let local = Signal::new(0u32);
+                        i.set(Some(local));
+                        let target = row.clone();
+                        k.create_effect(move || {
+                            r.set(r.get() + 1);
+                            target.set_attribute("data-n", &local.get().to_string());
+                        });
+                        row
+                    });
+                    c.borrow_mut().insert(n, (row.clone(), keep));
+                    row
+                });
+                if wrapped {
+                    let wrap = s.create_element("section");
+                    wrap.append_child(&row);
+                    wrap
+                } else {
+                    row
+                }
+            },
+        );
+        Probe { runs, inner }
+    }
+
+    /// The row comes back with its subtree, and everything it built is still
+    /// live while it is out of the list: its effect runs, and a signal created
+    /// during the build can still be written and read.
+    ///
+    /// The signal half is what [`RenderScope::build`] is for. The view runs
+    /// with the *row* as the ambient owner, so a `Signal::new` made there
+    /// without it belongs to the row and is freed when the row leaves.
+    #[test]
+    fn a_row_built_through_a_cache_scope_survives_leaving_the_list() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let cache: Cache = Rc::default();
+        let rows = Signal::new(vec![7u32]);
+        let probe = lazy_list(&mut sc, &body, rows, &cache, false);
+        let row = cache.borrow()[&7].0.node_id();
+        assert_eq!(body_tags(&doc), ["article"], "precondition: mounted");
+        assert_eq!(probe.runs.get(), 1);
+
+        rows.set(vec![]);
+        assert_eq!(body_tags(&doc), Vec::<String>::new(), "precondition: out");
+        probe.inner.get().unwrap().set(3);
+        assert_eq!(
+            probe.runs.get(),
+            2,
+            "#733: the cached row's signal and effect outlive the row"
+        );
+        assert_eq!(
+            doc.borrow().get_attribute(row, "data-n").as_deref(),
+            Some("3"),
+            "#733: and the effect still reaches its node while it is out"
+        );
+
+        rows.set(vec![7]);
+        assert_eq!(body_tags(&doc), ["article"], "#733: the row comes back");
+        assert_eq!(
+            doc.borrow().get_children(row).len(),
+            1,
+            "#733: with its subtree"
+        );
+        probe.inner.get().unwrap().set(4);
+        assert_eq!(
+            doc.borrow().get_attribute(row, "data-n").as_deref(),
+            Some("4")
+        );
+        assert_eq!(
+            __retired_view_returns(),
+            (0, 0),
+            "nothing retired came back"
+        );
+    }
+
+    /// A cached node *inside* markup the row builds: the wrapper is the row's
+    /// and is discarded, the cached node is not the row's and is detached
+    /// first (the #732 walk). This is what "parentless" buys — a cache scope
+    /// that named the row's scope as its parent would be swept with the row.
+    #[test]
+    fn a_cached_node_inside_row_built_markup_survives_the_rows_discard() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let cache: Cache = Rc::default();
+        let rows = Signal::new(vec![7u32]);
+        let _probe = lazy_list(&mut sc, &body, rows, &cache, true);
+        let row = cache.borrow()[&7].0.node_id();
+
+        rows.set(vec![]);
+        rows.set(vec![7]);
+        assert_eq!(body_tags(&doc), ["section"]);
+        let wrap = mounted_element(&doc, doc.borrow().body());
+        assert_eq!(
+            doc.borrow().get_children(wrap),
+            [row],
+            "#733: the cached node is under the fresh wrapper"
+        );
+        assert_eq!(
+            doc.borrow().tag_name(row).as_deref(),
+            Some("article"),
+            "#733: and was not retired with the old one"
+        );
+    }
+
+    /// The other direction: the cache must not turn the list into a leak. A
+    /// key toggled 200 times holds one row, and the wrappers the row scope
+    /// builds around it are still reclaimed.
+    #[test]
+    fn a_cache_scoped_list_does_not_grow_the_document() {
+        for wrapped in [false, true] {
+            let doc = doc();
+            let mut sc = scope(&doc);
+            let body = body_handle(&doc);
+            let cache: Cache = Rc::default();
+            let rows = Signal::new(vec![]);
+            let _probe = lazy_list(&mut sc, &body, rows, &cache, wrapped);
+            let delta = growth(
+                &doc,
+                |i| rows.set(if i % 2 == 0 { vec![] } else { vec![7] }),
+                200,
+            );
+            assert_eq!(delta, 0, "#733 (wrapped: {wrapped}): leaked {delta} nodes");
+        }
+    }
+
+    /// What the cache owes when it evicts: dispose the scope, discard the
+    /// node. After that nothing of the row is left — no node, no effect.
+    #[test]
+    fn evicting_a_cache_entry_releases_its_nodes_and_effects() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let cache: Cache = Rc::default();
+        let rows = Signal::new(vec![]);
+        let probe = lazy_list(&mut sc, &body, rows, &cache, false);
+        let empty = doc.borrow().__node_count();
+
+        rows.set(vec![7]);
+        rows.set(vec![]);
+        assert_eq!(
+            doc.borrow().__node_count(),
+            empty + 2,
+            "precondition: the cache holds the row and its text"
+        );
+        let local = probe.inner.get().unwrap();
+        local.set(1);
+        let before = probe.runs.get();
+
+        let (row, keep) = cache.borrow_mut().remove(&7).unwrap();
+        keep.dispose();
+        row.discard();
+        assert_eq!(doc.borrow().__node_count(), empty, "#733: nodes released");
+        local.set(2);
+        assert_eq!(probe.runs.get(), before, "#733: effects released");
+    }
+
+    /// Dropping the kept scope is a dispose (and leaves the node to the
+    /// caller): a cache that keeps the node and drops the scope gets a row
+    /// whose bindings are dead.
+    #[test]
+    fn dropping_the_cache_scope_stops_the_rows_effects() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let cache: Cache = Rc::default();
+        let rows = Signal::new(vec![7u32]);
+        let probe = lazy_list(&mut sc, &body, rows, &cache, false);
+        let trigger = Signal::new(0u32);
+        let (row, keep) = cache.borrow_mut().remove(&7).unwrap();
+        let mut keep = keep;
+        let runs = probe.runs.clone();
+        keep.create_effect(move || {
+            let _ = trigger.get();
+            runs.set(runs.get() + 100);
+        });
+        let before = probe.runs.get();
+        drop(keep);
+        trigger.set(1);
+        assert_eq!(probe.runs.get(), before);
+        assert_eq!(
+            doc.borrow().tag_name(row.node_id()).as_deref(),
+            Some("article"),
+            "the node is the caller's to discard"
+        );
+    }
+
+    // ── the shape that is still lost, and now says so ───────────────────────
+
+    /// The issue's own shape: built through the **row's** scope, then cached.
+    /// The row owns it, the first removal retires it, and the key coming back
+    /// shows nothing. That is unchanged — what changed is that the helper
+    /// notices the retired node it was handed and warns, once per node.
+    #[test]
+    fn a_row_built_through_its_own_scope_is_still_lost_and_reported_once() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let cache: Rc<RefCell<HashMap<u32, NodeHandle>>> = Rc::default();
+        let rows = Signal::new(vec![1u32]);
+        let c = cache.clone();
+        for_each_dom_typed(
+            &mut sc,
+            &body,
+            move || rows.get(),
+            |n: &u32| n.to_string(),
+            move |n: u32, s: &mut RenderScope| {
+                let hit = c.borrow().get(&n).cloned();
+                hit.unwrap_or_else(|| {
+                    let row = s.create_element("article");
+                    c.borrow_mut().insert(n, row.clone());
+                    row
+                })
+            },
+        );
+        assert_eq!(__retired_view_returns(), (0, 0));
+        for _ in 0..3 {
+            rows.set(vec![]);
+            rows.set(vec![1]);
+        }
+        assert_eq!(body_tags(&doc), Vec::<String>::new(), "#733: still lost");
+        assert_eq!(
+            __retired_view_returns(),
+            (3, 1),
+            "#733: every return is seen, one warning per node"
+        );
+    }
+
+    /// A node discarded before the test's helper is handed it — the same
+    /// defect reached without a cache, so each call site can be driven alone.
+    fn dead(sc: &mut RenderScope) -> NodeHandle {
+        let node = sc.create_element("aside");
+        node.discard();
+        node
+    }
+
+    #[test]
+    fn a_for_reports_a_retired_node_on_its_first_render_and_on_a_changed_row() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let gone = dead(&mut sc);
+        let rows = Signal::new(vec![(1u32, 0u32)]);
+        for_each_dom_typed(
+            &mut sc,
+            &body,
+            move || rows.get(),
+            |n: &(u32, u32)| n.0.to_string(),
+            move |_n: (u32, u32), _s: &mut RenderScope| gone.clone(),
+        );
+        assert_eq!(__retired_view_returns().0, 1, "the initial render");
+        rows.set(vec![(1, 1)]);
+        assert_eq!(__retired_view_returns().0, 2, "a row whose data changed");
+        rows.set(vec![(1, 1), (2, 0)]);
+        assert_eq!(__retired_view_returns(), (3, 1), "an inserted row");
+    }
+
+    #[test]
+    fn a_show_branch_reports_a_retired_node() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let gone = dead(&mut sc);
+        let visible = Signal::new(true);
+        show_dom(
+            &mut sc,
+            &body,
+            move || visible.get(),
+            move |_s: &mut RenderScope| gone.clone(),
+            None::<fn(&mut RenderScope) -> NodeHandle>,
+        );
+        assert_eq!(__retired_view_returns(), (1, 1));
+    }
+
+    #[test]
+    fn a_match_arm_reports_a_retired_node() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let gone = dead(&mut sc);
+        let arm: Box<dyn Fn(&mut RenderScope) -> NodeHandle> = Box::new(move |_s| gone.clone());
+        match_dom(&mut sc, &body, || 0, vec![arm]);
+        assert_eq!(__retired_view_returns(), (1, 1));
+    }
+
+    #[test]
+    fn a_component_render_reports_a_retired_node() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let gone = dead(&mut sc);
+        reactive_component_dom(&mut sc, &body, move |_s: &mut RenderScope| gone.clone());
+        assert_eq!(__retired_view_returns(), (1, 1));
+    }
+
+    #[test]
+    fn a_virtual_list_row_reports_a_retired_node() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let gone = dead(&mut sc);
+        let list = crate::virtual_list(
+            &mut sc,
+            20.0,
+            || vec![0u32],
+            |n: &u32| *n,
+            2,
+            move |_n: u32, _rs: &mut RenderScope| gone.clone(),
+        );
+        body.append_child(&list);
+        assert!(__retired_view_returns().0 >= 1);
+        assert_eq!(__retired_view_returns().1, 1);
+    }
+
+    /// A live node — fresh, or handed back from outside — is never reported.
+    #[test]
+    fn a_live_node_is_not_reported() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let kept = sc.create_element("article");
+        let visible = Signal::new(true);
+        show_dom(
+            &mut sc,
+            &body,
+            move || visible.get(),
+            move |_s: &mut RenderScope| kept.clone(),
+            Some(|s: &mut RenderScope| s.create_element("p")),
+        );
+        for _ in 0..4 {
+            visible.update(|v| *v = !*v);
+        }
+        assert_eq!(__retired_view_returns(), (0, 0));
+    }
 }
