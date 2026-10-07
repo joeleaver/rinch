@@ -934,15 +934,9 @@ impl<'a> HtmlFragmentParser<'a> {
             // Ended earlier: what it holds is its parent's.
             if at < MAX_DEPTH && !open.children.is_empty() {
                 steps((open.children.len() / 8) as u64);
-                let siblings = self.siblings();
-                let mut children = open.children.drain(..).peekable();
-                if let (Some(ParsedNode::Text(last)), Some(ParsedNode::Text(first))) =
-                    (siblings.last_mut(), children.peek())
-                {
-                    last.push_str(first);
-                    children.next();
-                }
-                siblings.extend(children);
+                // (It is closed as soon as the last element open above it
+                // is, so these are the elements that closed under it.)
+                self.siblings().append(&mut open.children);
             }
             return;
         }
