@@ -1783,7 +1783,10 @@ mod tests {
         assert_eq!(doc.get_attribute(el, "title"), Some("second".to_string()));
         assert_eq!(doc.get_attribute(el, "lang"), None);
         let style = doc.get_attribute(el, "style").unwrap_or_default();
-        assert!(style.contains("color") && style.contains("red"), "{style:?}");
+        assert!(
+            style.contains("color") && style.contains("red"),
+            "{style:?}"
+        );
     }
 
     /// `on_cleanup` must fire when a `RenderScope` is merely dropped, not only

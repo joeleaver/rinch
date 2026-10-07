@@ -842,10 +842,7 @@ pub enum DomUpdate {
     /// children with one text node, as `NodeHandle::set_text` does — the one
     /// write here that can change a child list, and neither route tells a
     /// removal observer (issue #1440). Target a text node.
-    SetText {
-        node: NodeId,
-        text: String,
-    },
+    SetText { node: NodeId, text: String },
     /// [`DomDocument::set_attribute`]: the literal write.
     SetAttribute {
         node: NodeId,
@@ -853,10 +850,7 @@ pub enum DomUpdate {
         value: String,
     },
     /// [`DomDocument::remove_attribute`].
-    RemoveAttribute {
-        node: NodeId,
-        name: String,
-    },
+    RemoveAttribute { node: NodeId, name: String },
     /// [`DomDocument::set_style`]: one inline declaration, merged.
     SetStyle {
         node: NodeId,
