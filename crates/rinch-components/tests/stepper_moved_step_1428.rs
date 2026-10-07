@@ -220,6 +220,24 @@ fn a_callbackless_stepper_keeps_the_class_it_grants_itself_on_a_moved_step() {
     );
     assert_eq!(click(&moving), None);
 
+    // A step no stepper ever wired is outside this change: B's own third step
+    // got the class from B's grant at position 3, and keeps it when the steps
+    // in front of it go and it lands on `active` — what a callback-less
+    // stepper did before #1428, and still does.
+    let never_wired = steps_of(&b)[3].clone();
+    assert!(has_class(&never_wired, CLICKABLE));
+    for step in steps_of(&b).into_iter().take(3) {
+        step.remove();
+    }
+    assert_eq!(
+        never_wired.get_attribute("data-step-position").as_deref(),
+        Some("0")
+    );
+    assert!(
+        has_class(&never_wired, CLICKABLE),
+        "only a step some stepper wired has the class taken off"
+    );
+
     // And a step that asked for the class itself keeps it wherever it goes.
     let own = StepperStep {
         allow_step_click: true,
