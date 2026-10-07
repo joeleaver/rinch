@@ -174,3 +174,57 @@ fn d5_probe_a_fake_picture_is_read_whole_before_it_is_refused() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// D6. A file over the size limit is not the editor's, however it is named
+/// and whatever its first bytes are: it goes to the app's handler with the
+/// rest, and a picture dropped with it is still taken. (Sparse: the file
+/// occupies no disk, and only its length and first bytes are looked at.)
+#[test]
+fn d6_a_picture_over_the_size_limit_is_left_to_the_apps_handler() {
+    use super::event_dispatch::{MAX_DROPPED_IMAGE_BYTES, dropped_file_is_a_picture};
+    use std::io::Write;
+    let d = dir("huge");
+    let huge = d.join("film.png");
+    let mut f = std::fs::File::create(&huge).unwrap();
+    f.write_all(PNG_MAGIC).unwrap();
+    f.set_len(MAX_DROPPED_IMAGE_BYTES + 1).unwrap();
+    drop(f);
+    let at_limit = d.join("big.png");
+    let mut f = std::fs::File::create(&at_limit).unwrap();
+    f.write_all(PNG_MAGIC).unwrap();
+    f.set_len(MAX_DROPPED_IMAGE_BYTES).unwrap();
+    drop(f);
+    assert!(dropped_file_is_a_picture(&at_limit), "control: at the limit");
+    assert!(!dropped_file_is_a_picture(&huge));
+    assert!(read_dropped_image(&huge).is_none());
+
+    let cat = d.join("cat.png");
+    std::fs::write(&cat, PNG_MAGIC).unwrap();
+    let mut p = page();
+    p.handle.on_image_input(|_| None);
+    let claim = p
+        .app
+        .claim_editor_file_drop(20.0, 12.0, &[huge.clone(), cat.clone()])
+        .expect("the small picture is the editor's");
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(claim.images, vec![cat]);
+    assert_eq!(claim.rest, vec![huge]);
+}
+
+/// D7. Something that is not a regular file (a directory named like a
+/// picture) is not opened and not claimed.
+#[test]
+fn d7_a_directory_named_like_a_picture_is_not_a_picture() {
+    use super::event_dispatch::dropped_file_is_a_picture;
+    let d = dir("dir");
+    let folder = d.join("album.png");
+    std::fs::create_dir_all(&folder).unwrap();
+    let got = dropped_file_is_a_picture(&folder);
+    let mut p = page();
+    p.handle.on_image_input(|_| None);
+    p.drop_files(vec![folder.clone()], (20.0, 12.0));
+    let drops = p.app_drops.borrow().clone();
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(!got);
+    assert_eq!(drops, vec![vec![folder]]);
+}
