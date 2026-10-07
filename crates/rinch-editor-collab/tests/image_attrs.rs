@@ -313,3 +313,254 @@ fn an_alt_change_survives_a_peers_typing_on_either_side_of_the_image() {
         }
     }
 }
+
+// Review of #1431: the claims above under random client ids and histories,
+// and an `alt` change beside each of a peer's other edits to the same line.
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// Every image in the document, in order.
+fn images(doc: &Node) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    fn walk(n: &Node, out: &mut Vec<(String, String, String)>) {
+        for i in 0..n.child_count() {
+            let c = n.child(i);
+            if c.type_name() == "image" {
+                let a = |k: &str| c.attrs().get_str(k).unwrap_or("").to_string();
+                out.push((a("src"), a("alt"), a("title")));
+            }
+            walk(c, out);
+        }
+    }
+    walk(doc, &mut out);
+    out
+}
+
+fn random_id(rng: &mut Rng) -> u64 {
+    match rng.below(4) {
+        0 => 1 + rng.below(1000) as u64,
+        1 => rng.next() >> 32,
+        2 => rng.next() >> 11, // up to 2^53
+        _ => (rng.next() >> 12) | 1,
+    }
+}
+
+/// "The higher client id's write is kept": random id pairs (small, 32-bit, up
+/// to 2^53, larger), and a history before the concurrent edits that differs
+/// between the peers. The image is always exactly one peer's.
+#[test]
+fn the_higher_client_id_wins_under_random_ids_and_histories() {
+    let mut rng = Rng(0x1431_1431_1431);
+    let (mut higher, mut lower, mut trials) = (0usize, 0usize, 0usize);
+    let mut shapes = [[0usize; 2]; 6];
+    for trial in 0..240 {
+        let (ia, ib) = (random_id(&mut rng), random_id(&mut rng));
+        if ia == ib {
+            continue;
+        }
+        let schema = Rc::new(Schema::starter_kit());
+        let (mut a, mut b) = two_peers(
+            &schema,
+            line(&schema, SRC, "old alt", "old title"),
+            (ia, ib),
+        );
+        // A history, synced: either peer retitles, types, a few times.
+        let shape = trial % 6;
+        match shape {
+            0 => {}
+            1 => {
+                for i in 0..3 {
+                    a.set("alt", &format!("a{i}"));
+                    sync(&mut a, &mut b);
+                }
+            }
+            2 => {
+                for i in 0..3 {
+                    b.set("title", &format!("b{i}"));
+                    sync(&mut a, &mut b);
+                }
+            }
+            3 => {
+                a.set("alt", "a0");
+                sync(&mut a, &mut b);
+                b.set("alt", "b0");
+                sync(&mut a, &mut b);
+                a.set("title", "a1");
+                sync(&mut a, &mut b);
+            }
+            _ => {}
+        }
+        let (_, alt0, title0) = a.image();
+        // The concurrent edits.
+        match shape {
+            // A writes twice (unsynced), B once.
+            4 => {
+                a.set("alt", "mid alt");
+                a.set("alt", "new alt");
+                b.set("title", "new title");
+            }
+            // A types right before the image first, then retitles.
+            5 => {
+                a.local(|tr| {
+                    tr.set_selection(rinch_editor_core::Selection::cursor(
+                        rinch_editor_core::Pos(3),
+                    ));
+                    tr.insert_text("Q").unwrap();
+                });
+                // the image is now at 4
+                a.local(|tr| {
+                    tr.step(Box::new(SetNodeAttrStep::new(
+                        4,
+                        "alt",
+                        AttrValue::from("new alt"),
+                    )))
+                    .unwrap();
+                });
+                b.set("title", "new title");
+            }
+            _ => {
+                a.set("alt", "new alt");
+                b.set("title", "new title");
+            }
+        }
+        sync(&mut a, &mut b);
+        let (_, alt, title) = converged(&a, &b, &schema);
+        trials += 1;
+        let a_won = (alt.as_str(), title.as_str()) == ("new alt", title0.as_str());
+        let b_won = (alt.as_str(), title.as_str()) == (alt0.as_str(), "new title");
+        assert!(
+            a_won ^ b_won,
+            "trial {trial} ids ({ia},{ib}) shape {shape}: neither peer's image: {alt:?} {title:?}"
+        );
+        let higher_won = a_won == (ia > ib);
+        if higher_won {
+            higher += 1;
+            shapes[shape][0] += 1;
+        } else {
+            lower += 1;
+            shapes[shape][1] += 1;
+        }
+    }
+    assert!(trials > 200, "{trials}");
+    assert_eq!(
+        (higher, lower),
+        (trials, 0),
+        "by shape [higher, lower] {shapes:?}"
+    );
+}
+
+/// An `alt` change beside a peer's other concurrent edits to the same line:
+/// kept through bold over the line, a retype to a heading and a deleted char on
+/// either side; deleting the image wins over the change.
+#[test]
+fn an_alt_change_beside_a_peers_other_edits_to_the_line() {
+    type Edit = Box<dyn Fn(&mut Peer)>;
+    for ids in ID_ORDERS {
+        // (what B does, the alts left)
+        let cases: Vec<(&str, Edit, Vec<&str>)> = vec![
+            (
+                "bold over the whole line",
+                Box::new(|b: &mut Peer| {
+                    let bold = b.state.schema().mark_type("bold").unwrap().clone();
+                    b.local(|tr| {
+                        tr.add_mark(1, 6, rinch_editor_core::Mark::new(bold, Attrs::new()))
+                            .unwrap();
+                    })
+                }),
+                vec!["new alt"],
+            ),
+            (
+                "a retype to a heading",
+                Box::new(|b: &mut Peer| {
+                    let h = b.state.schema().node_type("heading").unwrap().clone();
+                    b.local(|tr| {
+                        tr.set_block_type(
+                            1,
+                            6,
+                            h,
+                            Attrs::new().with("level", AttrValue::from(2i64)),
+                        )
+                        .unwrap();
+                    })
+                }),
+                vec!["new alt"],
+            ),
+            (
+                "the char right before deleted",
+                Box::new(|b: &mut Peer| {
+                    b.local(|tr| {
+                        tr.delete(2, 3).unwrap();
+                    })
+                }),
+                vec!["new alt"],
+            ),
+            (
+                "the char right after deleted",
+                Box::new(|b: &mut Peer| {
+                    b.local(|tr| {
+                        tr.delete(4, 5).unwrap();
+                    })
+                }),
+                vec!["new alt"],
+            ),
+            (
+                "the image deleted",
+                Box::new(|b: &mut Peer| {
+                    b.local(|tr| {
+                        tr.delete(3, 4).unwrap();
+                    })
+                }),
+                vec![],
+            ),
+        ];
+        for (name, edit, expected) in cases {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", "t"), ids);
+            a.set("alt", "new alt");
+            edit(&mut b);
+            sync(&mut a, &mut b);
+            assert_eq!(a.state.doc, b.state.doc, "{name} {ids:?}: diverged");
+            for peer in [&a, &b] {
+                assert_eq!(peer.state.doc, peer.session.projected_doc(&schema).unwrap());
+            }
+            let imgs = images(&a.state.doc);
+            let alts: Vec<&str> = imgs.iter().map(|i| i.1.as_str()).collect();
+            assert_eq!(alts, expected, "{name} {ids:?}: {:?}", a.state.doc);
+        }
+    }
+}
+
+/// A known loss, pinned (#861's mechanism): Enter anywhere **before** the image
+/// in its own paragraph (inside the text before it as well as right before it)
+/// moves the image to a new block, a delete and an insert, so a peer's
+/// concurrent `alt` change is lost in both id orders. Enter after it keeps the
+/// change. A fix flips the first two.
+#[test]
+fn enter_before_the_image_in_its_line_loses_a_concurrent_alt_change() {
+    for ids in ID_ORDERS {
+        for (at, expected) in [(2, "old alt"), (3, "old alt"), (5, "new alt")] {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", "t"), ids);
+            a.set("alt", "new alt");
+            b.local(|tr| {
+                tr.split(at, 1, None).unwrap();
+            });
+            sync(&mut a, &mut b);
+            assert_eq!(a.state.doc, b.state.doc, "ids {ids:?}, Enter at {at}");
+            let imgs = images(&a.state.doc);
+            assert_eq!(imgs.len(), 1, "ids {ids:?}, Enter at {at}");
+            assert_eq!(imgs[0].1, expected, "ids {ids:?}, Enter at {at}");
+        }
+    }
+}
