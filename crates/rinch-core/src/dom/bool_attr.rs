@@ -271,16 +271,17 @@ mod tests {
         }
     }
 
-    /// The five deliberate additions, so removing one is a test failure rather
+    /// The six deliberate additions, so removing one is a test failure rather
     /// than a silent narrowing.
     #[test]
-    fn the_non_spec_additions_are_the_documented_five() {
+    fn the_non_spec_additions_are_the_documented_six() {
         for name in [
             "hidden",
             "data-disabled",
             "data-nofocus",
             "data-trap-focus",
             "data-backdrop",
+            "data-scroll-lock-exempt",
         ] {
             assert!(
                 is_boolean_attribute(name),

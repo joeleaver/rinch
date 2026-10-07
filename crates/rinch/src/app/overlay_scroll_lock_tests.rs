@@ -859,25 +859,47 @@ fn closing_the_select_popup_releases_its_exemption() {
 }
 
 // ── 8. A scroll container outside the overlay that is not the page (#701) ────
+//
+// `data-scroll-lock-exempt` is the portable exemption: a scroll container that
+// is in no locking overlay's root, and is not the page behind it either, says
+// so itself. The DOM menu bar is the instance that shipped broken.
 
-/// The DOM menu bar (`render_with_menu_bar`, what a Linux window and a web page
-/// get) around a scrollable page and a `lock_scroll` modal, with the File menu
-/// open and long enough to overflow its `max-height: 95vh`.
+use crate::menu::{Menu, MenuItem};
+
+/// Which of the menu bar's layouts the fixture mounts.
+#[derive(Clone, Copy)]
+enum BarLayout {
+    /// `render_with_menu_bar`: a decorated Linux window, and a web page.
+    Wrapped,
+    /// The borderless window's titlebar layer (`menu_in_titlebar`).
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    Inline,
+}
+
+/// 80 entries: far past the 570px a 600px window's `95vh` allows.
+fn long_menu() -> Menu {
+    let mut menu = Menu::new();
+    for i in 0..80 {
+        menu = menu.item(MenuItem::new(format!("Entry {i}")).on_click(|| {}));
+    }
+    menu
+}
+
+/// The DOM menu bar around a scrollable page and a `lock_scroll` modal, with
+/// the File menu open.
 ///
-/// Returns the app, the page scroller and the open dropdown.
-fn long_menu_over_modal(open: Signal<bool>) -> (RinchApp, usize, usize) {
-    use crate::menu::{Menu, MenuItem};
-
+/// Returns the app and the page scroller.
+fn menu_over_modal(open: Signal<bool>, layout: BarLayout, file: Menu) -> (RinchApp, usize) {
     let page: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
     let page_in = page.clone();
 
     let mut app = mount(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
-        root.set_attribute("style", "position: relative; width: 800px; height: 572px");
+        root.set_attribute("style", "position: relative; width: 800px; height: 560px");
         let page_el = scope.create_element("div");
         page_el.set_attribute(
             "style",
-            "position: absolute; left: 0; top: 0; width: 800px; height: 572px; overflow: auto",
+            "position: absolute; left: 0; top: 0; width: 800px; height: 560px; overflow: auto",
         );
         let tall = scope.create_element("div");
         tall.set_attribute("style", "width: 100%; height: 2000px");
@@ -894,18 +916,50 @@ fn long_menu_over_modal(open: Signal<bool>) -> (RinchApp, usize, usize) {
         .render(scope, &[]);
         root.append_child(&modal);
 
-        // 80 entries: far past the 570px a 600px window's `95vh` allows.
-        let mut file = Menu::new();
-        for i in 0..80 {
-            file = file.item(MenuItem::new(format!("Entry {i}")).on_click(|| {}));
+        match layout {
+            BarLayout::Wrapped => {
+                crate::menu::render_with_menu_bar(scope, &[("File", &file)], root, 0)
+            }
+            #[cfg(all(feature = "desktop", target_os = "linux"))]
+            BarLayout::Inline => {
+                use crate::menu::app_menu_bar::{render_inline_overlay, render_menu_items_inline};
+                // What `BorderlessWindow` builds with `menu_in_titlebar`.
+                let active_menu: Signal<i32> = Signal::new(-1);
+                let container = scope.create_element("div");
+                container.set_attribute("class", "rinch-borderlesswindow");
+                container.set_attribute("style", "position: relative;");
+                let titlebar = scope.create_element("div");
+                titlebar.set_attribute("class", "rinch-borderlesswindow__titlebar");
+                container.append_child(&titlebar);
+                let content = scope.create_element("div");
+                content.set_attribute("class", "rinch-borderlesswindow__content");
+                content.append_child(&root);
+                container.append_child(&content);
+                let layer = scope.create_element("div");
+                layer.set_attribute("class", "rinch-app-menu-bar__inline-layer");
+                layer.append_child(&render_inline_overlay(scope, active_menu));
+                let row = scope.create_element("div");
+                row.set_attribute("class", "rinch-app-menu-bar__inline-row");
+                row.append_child(&render_menu_items_inline(
+                    scope,
+                    &[("File", &file)],
+                    active_menu,
+                ));
+                layer.append_child(&row);
+                container.append_child(&layer);
+                container
+            }
         }
-        crate::menu::render_with_menu_bar(scope, &[("File", &file)], root, 0)
     });
 
-    // Open the menu the way a user does: a click on its label, which sits in
-    // the bar above the modal's root (`top: var(--rinch-window-top-inset)`).
+    // Open the menu the way a user does: a click on its label.
     let label = nodes_with_class(&app, "rinch-app-menu-item__label")[0];
     let at = centre(&app, label);
+    click(&mut app, at);
+    (app, page.get().expect("the page's node id"))
+}
+
+fn click(app: &mut RinchApp, at: (f32, f32)) {
     for ev in [
         PlatformEvent::MouseDown {
             x: at.0,
@@ -921,19 +975,6 @@ fn long_menu_over_modal(open: Signal<bool>) -> (RinchApp, usize, usize) {
         app.handle_event(ev, (800, 600), 1.0);
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
-
-    let dropdown = nodes_with_class(&app, "rinch-app-menu-item__dropdown")[0];
-    let max_scroll = {
-        let d = app.doc.as_ref().unwrap().borrow();
-        let nid = rinch_core::dom::NodeId(dropdown);
-        d.scroll_height(nid) - d.client_height(nid)
-    };
-    assert!(
-        max_scroll > -WHEEL_DY,
-        "precondition: the open menu must overflow by more than the gesture \
-         uses, or the assertions would sit on the clamp — got {max_scroll}"
-    );
-    (app, page.get().expect("the page's node id"), dropdown)
 }
 
 fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
@@ -956,13 +997,72 @@ fn nodes_with_class(app: &RinchApp, class: &str) -> Vec<usize> {
     out
 }
 
-/// **The positive control** for the fixture below: with nothing locked, a wheel
+/// The scroller must have more room than the gesture uses, or an assertion
+/// would sit on the clamp, where a moved and an unmoved container agree.
+fn assert_room(app: &RinchApp, scroller: usize) {
+    let d = app.doc.as_ref().unwrap().borrow();
+    let nid = rinch_core::dom::NodeId(scroller);
+    let max_scroll = d.scroll_height(nid) - d.client_height(nid);
+    assert!(
+        max_scroll > -WHEEL_DY,
+        "precondition: node {scroller} must overflow by more than the gesture — got {max_scroll}"
+    );
+}
+
+/// Whether the topmost box at `at` is `ancestor` or inside it.
+fn hit_is_inside(app: &RinchApp, at: (f32, f32), ancestor: usize) -> bool {
+    let d = app.doc.as_ref().unwrap().borrow();
+    let mut cur = hit_test(&d.tree, at.0, at.1);
+    while let Some(id) = cur {
+        if id == ancestor {
+            return true;
+        }
+        cur = d.tree.get(id).and_then(|n| n.parent);
+    }
+    false
+}
+
+/// What every menu fixture below asserts of the open scroller: its wheel and
+/// its thumb are its own, and the page behind is still locked.
+fn assert_scrolls_over_the_lock(app: &mut RinchApp, scroller: usize, page: usize) {
+    assert_room(app, scroller);
+    let inside = centre(app, scroller);
+    assert!(
+        hit_is_inside(app, inside, scroller),
+        "premise: the open menu paints over the modal at {inside:?}"
+    );
+
+    wheel(app, inside, 0.0, WHEEL_DY);
+    assert_eq!(
+        scroll_top(app, scroller),
+        -WHEEL_DY,
+        "the open menu is not the page behind the modal; its wheel is its own"
+    );
+
+    {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let (px, py, pw, ph) = painted_element_box(&d.tree, scroller);
+        let hit = find_scrollbar_hit(&d.tree, px + pw - 3.0, py + ph / 2.0)
+            .expect("the menu's own bar is grabbable");
+        assert_eq!(hit.node_id, scroller);
+    }
+
+    // Not a hole in the lock: aimed at the backdrop, beside the menu and the
+    // modal's panel.
+    let beside = (760.0, 500.0);
+    assert!(!hit_is_inside(app, beside, scroller));
+    wheel(app, beside, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(app, page), 0.0, "the page is still locked");
+}
+
+/// **The positive control** for the menu fixtures: with nothing locked, a wheel
 /// over the open menu scrolls it. Without this, "the menu did not move" could
 /// be a wheel that never reached it.
 #[test]
 fn a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked() {
     let open = Signal::new(false);
-    let (mut app, _page, dropdown) = long_menu_over_modal(open);
+    let (mut app, _page) = menu_over_modal(open, BarLayout::Wrapped, long_menu());
+    let dropdown = nodes_with_class(&app, "rinch-app-menu-item__dropdown")[0];
 
     let inside = centre(&app, dropdown);
     wheel(&mut app, inside, 0.0, WHEEL_DY);
@@ -977,42 +1077,161 @@ fn a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked() {
 #[test]
 fn a_long_menu_bar_dropdown_scrolls_over_a_locking_modal() {
     let open = Signal::new(true);
-    let (mut app, page, dropdown) = long_menu_over_modal(open);
+    let (mut app, page) = menu_over_modal(open, BarLayout::Wrapped, long_menu());
+    let dropdown = nodes_with_class(&app, "rinch-app-menu-item__dropdown")[0];
+    assert_scrolls_over_the_lock(&mut app, dropdown, page);
+}
 
-    let inside = centre(&app, dropdown);
-    {
-        // The premise: at that point the menu is on top, not the modal.
-        let d = app.doc.as_ref().unwrap().borrow();
-        let hit = super::hit_testing::hit_test(&d.tree, inside.0, inside.1)
-            .expect("something is hit");
-        let mut cur = Some(hit);
-        let mut in_dropdown = false;
-        while let Some(id) = cur {
-            in_dropdown |= id == dropdown;
-            cur = d.tree.get(id).and_then(|n| n.parent);
+/// A submenu's flyout is a **sibling** of the dropdown, not a descendant (so
+/// the dropdown's `overflow-y` does not clip it), and a scroll container of its
+/// own. An exemption on the dropdown alone does not reach it.
+#[test]
+fn a_long_submenu_flyout_scrolls_over_a_locking_modal() {
+    let open = Signal::new(true);
+    let file = Menu::new()
+        .submenu("Recent", long_menu())
+        .item(MenuItem::new("Quit").on_click(|| {}));
+    let (mut app, page) = menu_over_modal(open, BarLayout::Wrapped, file);
+
+    let trigger = nodes_with_class(&app, "rinch-app-menu-submenu__trigger")[0];
+    let at = centre(&app, trigger);
+    click(&mut app, at);
+    let flyout = nodes_with_class(&app, "rinch-app-menu-submenu__flyout")[0];
+    assert_scrolls_over_the_lock(&mut app, flyout, page);
+}
+
+/// The borderless window's titlebar layout: the menu layer and the modal are
+/// both at `z-index: 200` in the body's sequence, and the layer comes later in
+/// the document, so the menu is on top there too. Measured by the helper's
+/// premise, not assumed.
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[test]
+fn a_long_inline_menu_dropdown_scrolls_over_a_locking_modal() {
+    let open = Signal::new(true);
+    let (mut app, page) = menu_over_modal(open, BarLayout::Inline, long_menu());
+    let dropdown = nodes_with_class(&app, "rinch-app-menu-item__dropdown")[0];
+    assert_scrolls_over_the_lock(&mut app, dropdown, page);
+}
+
+/// A page, a lock held by a small overlay that covers nothing, and a side
+/// panel that scrolls — in no overlay's root, as a component-built popup or a
+/// docked panel is. `attr` is the panel's `data-scroll-lock-exempt` value;
+/// `on_wrapper` puts it on a non-scrolling ancestor of the panel instead.
+///
+/// Returns the app, the page and the panel.
+fn locked_page_with_side_panel(
+    attr: Option<&'static str>,
+    on_wrapper: bool,
+) -> (RinchApp, usize, usize) {
+    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0)));
+    let ids_in = ids.clone();
+
+    let app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+
+        let page = scope.create_element("div");
+        page.set_attribute(
+            "style",
+            "position: absolute; left: 0; top: 0; width: 800px; height: 600px; overflow: auto",
+        );
+        let tall = scope.create_element("div");
+        tall.set_attribute("style", "width: 100%; height: 2000px");
+        page.append_child(&tall);
+        root.append_child(&page);
+
+        let wrapper = scope.create_element("div");
+        wrapper.set_attribute(
+            "style",
+            "position: absolute; left: 500px; top: 100px; width: 200px; height: 200px",
+        );
+        let panel = scope.create_element("div");
+        panel.set_attribute("style", "width: 200px; height: 200px; overflow: auto");
+        let panel_tall = scope.create_element("div");
+        panel_tall.set_attribute("style", "width: 100%; height: 2000px");
+        panel.append_child(&panel_tall);
+        wrapper.append_child(&panel);
+        root.append_child(&wrapper);
+        if let Some(value) = attr {
+            let target = if on_wrapper { &wrapper } else { &panel };
+            target.set_attribute("data-scroll-lock-exempt", value);
         }
-        assert!(in_dropdown, "the open menu paints over the modal");
-    }
 
-    wheel(&mut app, inside, 0.0, WHEEL_DY);
-    assert_eq!(
-        scroll_top(&app, dropdown),
-        -WHEEL_DY,
-        "the open menu is not the page behind the modal; its wheel is its own"
-    );
+        let holder = scope.create_element("div");
+        holder.set_attribute(
+            "style",
+            "position: absolute; left: 0; top: 0; width: 10px; height: 10px",
+        );
+        root.append_child(&holder);
 
-    // Its thumb, which the same gate refused.
+        ids_in.set((page.node_id().0, panel.node_id().0, holder.node_id().0));
+        root
+    });
+
+    let (page, panel, holder) = ids.get();
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .set_scroll_locked(true, rinch_core::dom::NodeId(holder));
+    (app, page, panel)
+}
+
+/// The rule the exemption is an exception to, and the control for the three
+/// fixtures after it: an unmarked scroller outside the locking root is refused.
+#[test]
+fn an_unmarked_scroller_outside_the_locking_root_is_refused() {
+    let (mut app, _page, panel) = locked_page_with_side_panel(None, false);
+    let at = centre(&app, panel);
+    wheel(&mut app, at, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&app, panel), 0.0);
+}
+
+#[test]
+fn a_scroll_lock_exempt_scroller_scrolls_and_the_page_stays_locked() {
+    let (mut app, page, panel) = locked_page_with_side_panel(Some(""), false);
+    let at = centre(&app, panel);
+    wheel(&mut app, at, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&app, panel), -WHEEL_DY);
+
     {
         let d = app.doc.as_ref().unwrap().borrow();
-        let (px, py, pw, ph) = painted_element_box(&d.tree, dropdown);
+        let (px, py, pw, ph) = painted_element_box(&d.tree, panel);
         let hit = find_scrollbar_hit(&d.tree, px + pw - 3.0, py + ph / 2.0)
-            .expect("the menu's own bar is grabbable");
-        assert_eq!(hit.node_id, dropdown);
+            .expect("an exempt scroller's bar is grabbable");
+        assert_eq!(hit.node_id, panel);
     }
 
-    // Not a hole in the lock: the page behind still does not move. Aimed left
-    // of the modal's panel and right of the menu, at the backdrop.
-    let beside = (700.0, 450.0);
-    wheel(&mut app, beside, 0.0, WHEEL_DY);
-    assert_eq!(scroll_top(&app, page), 0.0, "the page is still locked");
+    wheel(&mut app, AIM, 0.0, WHEEL_DY);
+    assert_eq!(
+        scroll_top(&app, page),
+        0.0,
+        "the exemption is the panel's alone"
+    );
+}
+
+/// The attribute exempts a **subtree**, like a locking root does: a toolbar or
+/// popup carries it once and every scroller inside it scrolls.
+#[test]
+fn the_exemption_reaches_a_scroller_below_the_marked_node() {
+    let (mut app, _page, panel) = locked_page_with_side_panel(Some(""), true);
+    let at = centre(&app, panel);
+    wheel(&mut app, at, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&app, panel), -WHEEL_DY);
+}
+
+/// rinch's `data-` boolean rule (`data_attr_is_on`): on unless the value is
+/// `false`. `"0"` is the one value that tells that rule from the writer's
+/// `attr_is_truthy`, so it is pinned beside `"false"`.
+#[test]
+fn scroll_lock_exempt_false_opts_out_and_zero_does_not() {
+    let (mut app, _page, panel) = locked_page_with_side_panel(Some("false"), false);
+    let at = centre(&app, panel);
+    wheel(&mut app, at, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&app, panel), 0.0, "\"false\" is not exempt");
+
+    let (mut app, _page, panel) = locked_page_with_side_panel(Some("0"), false);
+    let at = centre(&app, panel);
+    wheel(&mut app, at, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&app, panel), -WHEEL_DY, "\"0\" is on");
 }
