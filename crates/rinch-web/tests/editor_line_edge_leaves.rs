@@ -22,6 +22,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "support/engine.rs"]
+mod engine;
+
 fn document() -> web_sys::Document {
     web_sys::window().unwrap().document().unwrap()
 }
@@ -282,7 +285,15 @@ fn home_and_end_around_an_image_on_a_line_of_its_own() {
     );
     let home = f.at(9, "Home");
     let end = f.at(2, "End");
-    assert_eq!(f.native(2, 2, false), "(P, 2)", "the oracle: Home");
+    // One point, spelled two ways: before the paragraph's third child
+    // (Chrome), or at offset 0 of that child, the text after the image
+    // (Firefox).
+    let after_the_image = if engine::is_gecko() {
+        "(child2, 0)"
+    } else {
+        "(P, 2)"
+    };
+    assert_eq!(f.native(2, 2, false), after_the_image, "the oracle: Home");
     assert_eq!(f.native(0, 1, true), "(child0, 5)", "the oracle: End");
     assert_eq!(
         home, 7,
@@ -380,6 +391,9 @@ fn native_u16(f: &F, off: u32, forward: bool) -> u32 {
 /// space — as on a Latin line, where Chrome agrees; Chrome stops before the
 /// space on this one. If this starts failing because rinch now matches
 /// Chrome, update the guide's mixed-direction caveat.
+///
+/// Firefox's own End takes the wrap point here (measured, 155 and 157), so in
+/// that engine rinch and the browser agree.
 #[wasm_bindgen_test]
 fn end_on_a_line_ending_in_rtl_text_takes_the_wrap_point() {
     let text = "alpha bravo שלום עולם אחד שניים charlie delta echo foxtrot golf";
@@ -396,11 +410,15 @@ fn end_on_a_line_ending_in_rtl_text_takes_the_wrap_point() {
     );
     let end = f.at(3, "End");
     let chrome = native_u16(&f, 2, true);
-    assert_eq!(
-        chrome,
-        wrap - 1,
-        "the oracle stops before the trailing space"
-    );
+    if engine::is_gecko() {
+        assert_eq!(chrome, wrap, "the oracle (Firefox) takes the wrap point");
+    } else {
+        assert_eq!(
+            chrome,
+            wrap - 1,
+            "the oracle stops before the trailing space"
+        );
+    }
     assert_eq!(end, wrap as usize + 1, "rinch: the wrap point");
     f.teardown();
 }

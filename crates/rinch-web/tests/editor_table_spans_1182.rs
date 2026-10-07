@@ -23,6 +23,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "support/engine.rs"]
+mod engine;
+
 fn document() -> web_sys::Document {
     web_sys::window().unwrap().document().unwrap()
 }
@@ -243,6 +246,29 @@ fn a_table_of_unbounded_spans_is_placed_as_its_table_map() {
     assert_eq!(got[3], s4("1", "-1", "auto", "auto"));
     let t = table(&m);
     let r: Vec<_> = c.iter().map(|e| rect(e, &t)).collect();
+    if engine::is_gecko() {
+        // Firefox's grid ends at line 10,000 (the range CSS Grid asks an
+        // engine to support; measured, 155 and 157), so it cannot hold the map's
+        // 1,048,576 columns: every span above is clamped to the grid's whole
+        // width, and each cell takes a row of its own. What still holds is
+        // what a reader needs: nothing overlaps, the cells stack in document
+        // order, and the table ends where they do.
+        let mut y = r[0].1;
+        for (i, b) in r.iter().enumerate() {
+            assert!(
+                (b.0 - r[0].0).abs() < 0.5 && (b.2 - r[0].2).abs() < 1.0,
+                "{i} spans the grid: {r:?}"
+            );
+            assert!((b.1 - y).abs() < 1.0, "{i} at {}, expected {y}: {r:?}", b.1);
+            y = b.1 + b.3;
+        }
+        let th = t.get_bounding_client_rect().height();
+        assert!(
+            (th - y).abs() <= 2.5,
+            "table {th} tall, cells end at {y}: {r:?}"
+        );
+        return;
+    }
     // The first cell spans the map's 1_000_000 of 1_048_576 columns — of the
     // bands' width, which is the grid's — and the second starts where it ends.
     // (Auto-placement puts the second at the first cell's top, where the map
