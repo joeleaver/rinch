@@ -5623,16 +5623,27 @@ impl RinchDocument {
                                 leaf_layouts.insert((text.node_id, wrap_bits), layout);
                                 size
                             }
-                            Some(NodeContext::Image { width, height, .. }) => {
-                                let iw = *width as f32;
-                                let ih = *height as f32;
-                                if iw == 0.0 || ih == 0.0 {
+                            Some(NodeContext::Image {
+                                width,
+                                height,
+                                hint_ratio,
+                                ..
+                            }) => {
+                                // A loaded image's own ratio; before it loads (or when
+                                // it failed), the one its `width` and `height`
+                                // attributes map to (#684); with neither, nothing.
+                                let (natural, ratio) = crate::replaced::image_natural_size(
+                                    *width,
+                                    *height,
+                                    *hint_ratio,
+                                );
+                                let Some(ratio) = ratio else {
                                     return taffy::Size::ZERO;
-                                }
+                                };
                                 // As the root compute measures one (#788, #1150).
                                 crate::replaced::measure(
-                                    (iw, ih),
-                                    true,
+                                    natural,
+                                    Some(ratio),
                                     known_dims,
                                     style,
                                     inputs.parent_size,
