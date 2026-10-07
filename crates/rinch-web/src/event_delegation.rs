@@ -1150,10 +1150,16 @@ pub(crate) fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize
 ///
 /// `caretRangeFromPoint` is the older WebKit call, which Firefox never had;
 /// `document.caretPositionFromPoint` is the standard one (Firefox, Chromium 128+,
-/// Safari 18.4+) and is what answers there. The two can name the same point two
+/// Safari 18.4+) and is what answers there. Either can name a point two
 /// ways: a text node and an offset in its UTF-16 units, or an element and a child
 /// index. Callers walk the DOM from either (`compute_byte_offset_in_block`,
-/// the editor's `model_offset_in_block`). `None` outside any content.
+/// the editor's `model_offset_in_block`). Over a text control the two differ
+/// (the standard call answers the control and a character offset in its value),
+/// and the older call's answer is the one returned: the control's parent and the
+/// control's child index. `None` outside any content.
+///
+/// In Chrome 153 the two calls give the same raw answer everywhere else measured
+/// (`tests/review_1449_caret_point.rs`). Nothing here has run in Firefox (#1461).
 pub(crate) fn caret_point_from_point(
     doc: &web_sys::Document,
     x: f32,
@@ -1181,6 +1187,19 @@ pub(crate) fn caret_point_from_point(
     let offset = js_sys::Reflect::get(&position, &"offset".into())
         .ok()?
         .as_f64()?;
+    // Over an `<input>` or `<textarea>` the standard call answers the control
+    // and a CHARACTER offset in its value, which a caller would read as a child
+    // index (and count the control's own text into the block). Name the point
+    // the way the older call does: the control's parent, and the control's
+    // index among its children.
+    if node.is_instance_of::<web_sys::HtmlInputElement>()
+        || node.is_instance_of::<web_sys::HtmlTextAreaElement>()
+    {
+        let parent = node.parent_node()?;
+        let siblings = parent.child_nodes();
+        let index = (0..siblings.length()).find(|&i| siblings.item(i).as_ref() == Some(&node))?;
+        return Some((parent, index));
+    }
     Some((node, offset as u32))
 }
 
