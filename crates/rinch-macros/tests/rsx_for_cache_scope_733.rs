@@ -125,3 +125,79 @@ fn a_for_over_a_cache_scoped_row_keeps_the_row_and_its_bindings() {
         "nothing retired came back"
     );
 }
+
+// ── the guide's recipe, whole: the component owns the cache and evicts ──────
+//
+// This is the code block of `docs/src/guide/rsx-syntax.md`, "A cache filled
+// from inside a `for`", with `label` standing in for the tab's content. Keep
+// the two in step: the guide is not compiled, this is.
+
+#[component]
+fn tab_strip(open: Signal<Vec<u32>>, label: Signal<String>) -> NodeHandle {
+    let cache = Cache::default();
+    // Dropping the cache is not evicting: it stops the tabs' effects and
+    // leaves their nodes in the backend. Let go of each one when the strip
+    // unmounts.
+    let evict = cache.clone();
+    __scope.on_cleanup(move || {
+        for (_, (tab, keep)) in evict.borrow_mut().drain() {
+            keep.dispose();
+            tab.discard();
+        }
+    });
+    rsx! {
+        div {
+            for id in open.get() {
+                {cached_tab(__scope, &cache, id, label)}
+            }
+        }
+    }
+}
+
+#[component]
+fn page(shown: Signal<bool>, open: Signal<Vec<u32>>, label: Signal<String>) -> NodeHandle {
+    rsx! {
+        main {
+            if shown.get() {
+                {tab_strip(__scope, open, label)}
+            }
+        }
+    }
+}
+
+/// The owner of the cache unmounts and mounts again, 50 times. With the
+/// `on_cleanup` drain nothing is left behind; without it every mount strands
+/// its cached tabs (`rinch_core::cache_scope_733_tests::r4_…`: +200 nodes for
+/// this shape).
+#[test]
+fn the_recipes_cache_owner_can_unmount_without_leaking() {
+    let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+    let body = doc.borrow().body();
+    let mut outer = RenderScope::new(doc.clone(), body);
+    let shown = Signal::new(true);
+    let open = Signal::new(vec![1u32, 2]);
+    let label = Signal::new(String::from("a"));
+    let root = page(&mut outer, shown, open, label);
+    assert_eq!(text(&root), "1:a:02:a:0", "precondition: mounted");
+
+    // A tab closed and reopened inside one mount is the same tab.
+    open.set(vec![1]);
+    label.set("b".into());
+    open.set(vec![1, 2]);
+    assert_eq!(text(&root), "1:b:02:b:0");
+
+    shown.set(false);
+    assert_eq!(text(&root), "", "precondition: unmounted");
+    let count = doc.borrow().__node_count();
+    for i in 0..100 {
+        shown.set(i % 2 == 0);
+    }
+    assert_eq!(
+        doc.borrow().__node_count(),
+        count,
+        "#733: 50 mounts of a list of cached tabs leave no node behind"
+    );
+    shown.set(true);
+    assert_eq!(text(&root), "1:b:02:b:0", "and a fresh mount builds afresh");
+    assert_eq!(__retired_view_returns(), (0, 0));
+}
