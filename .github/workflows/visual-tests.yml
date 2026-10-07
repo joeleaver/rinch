@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: ./.github/actions/rust-toolchain
 
       # The first line mirrors the `test` job in ci.yml — ui-zoo-desktop links
       # the same gtk/mpv stack, and the previous short list here was missing all
