@@ -844,11 +844,20 @@ impl<'a> TElement for RinchNode<'a> {
     fn synthesize_presentational_hints_for_legacy_attributes<V>(
         &self,
         _visited_handling: selectors::matching::VisitedHandlingMode,
-        _hints: &mut V,
+        hints: &mut V,
     ) where
         V: Push<ApplicableDeclarationBlock>,
     {
-        // TODO: Handle legacy attributes like align, bgcolor, etc.
+        // `width` / `height` on an `<img>`, `<video>` or `<iframe>` (#684).
+        // The other legacy attributes (`align`, `bgcolor`, `hspace`, a
+        // table's …) map to nothing yet.
+        if let Some(block) = &self.node().presentational_hints {
+            hints.push(ApplicableDeclarationBlock::from_declarations(
+                block.clone(),
+                style::rule_tree::CascadeLevel::PresHints,
+                style::stylesheets::layer_rule::LayerOrder::root(),
+            ));
+        }
     }
 
     fn local_name(&self) -> &BorrowedLocalName {
