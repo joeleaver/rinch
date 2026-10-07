@@ -3082,7 +3082,10 @@ impl NodeTree {
     /// ([`rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE`], #701) ends the
     /// walk the same way, as does an entry of [`Self::scroll_lock_exempt`]: a
     /// scroll container outside every overlay that is not the page behind one.
-    /// The attribute is read only here, so only while a lock is held. The walk is up `parent`, so an anonymous block box or a split
+    /// The attribute is read only here, so only while a lock is held, and a
+    /// mark on a node that holds a locking root below it is ignored
+    /// (`holds_scroll_lock_root`): marking `<body>` cannot unlock the
+    /// page. The walk is up `parent`, so an anonymous block box or a split
     /// inline between the two does not break the chain — they carry parents like
     /// any other node.
     ///
@@ -3106,12 +3109,37 @@ impl NodeTree {
                 .attributes
                 .get(rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE)
                 .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
+                && !self.holds_scroll_lock_root(id)
             {
                 return false;
             }
             current = node.parent;
         }
         true
+    }
+
+    /// Whether a locking root lies strictly below `ancestor`.
+    ///
+    /// A `data-scroll-lock-exempt` mark on such a node is **ignored** by
+    /// [`Self::scroll_locked_out`]: the exemption is for a container outside
+    /// the overlay, and a mark on `<body>` or on a wrapper around the overlay
+    /// would otherwise reach the page behind it and switch the lock off
+    /// (review of #1443). `ancestor` itself being a root never gets here — the
+    /// walk returns at a root first.
+    ///
+    /// Asked only when the walk meets a mark while a lock is held; one parent
+    /// walk per locking root, of which there are a handful.
+    fn holds_scroll_lock_root(&self, ancestor: RawNodeId) -> bool {
+        self.scroll_lock_roots.iter().any(|&root| {
+            let mut current = self.nodes.get(root).and_then(|n| n.parent);
+            while let Some(id) = current {
+                if id == ancestor {
+                    return true;
+                }
+                current = self.nodes.get(id).and_then(|n| n.parent);
+            }
+            false
+        })
     }
 
     /// Exempt `node_id`'s subtree from every scroll lock — see

@@ -2248,8 +2248,15 @@ register_focus_target(
   is a `NodeTree` method, reachable from the runtime and not through
   `NodeHandle`, so a scroll container built by a *component* or an app and
   sitting outside the locking overlay carries the attribute instead — on itself
-  or on any ancestor, since `scroll_locked_out` reads it on the same ancestor
-  walk (and only there, so only while a lock is held). It goes with its node, so
+  or on an ancestor, since `scroll_locked_out` reads it on the same ancestor
+  walk (and only there, so only while a lock is held). A mark on a node that
+  **contains a locking root** — `<body>`, a wrapper around the overlay — is
+  ignored (`NodeTree::holds_scroll_lock_root`, one parent walk per root when a
+  mark is met), or it would reach the page behind the overlay and switch the
+  lock off (review of #1443: the page moved 700). The mark is not checked
+  against paint order, so a marked scroller *behind* a modal's backdrop still
+  scrolls through the wheel's geometric fallback
+  (`a_marked_panel_behind_the_backdrop_still_scrolls` pins it). It goes with its node, so
   there is nothing to release. It is the fifth rinch-owned `data-` boolean
   (`data_attr_is_on`: on unless `"false"`; a falsey reactive `bool` removes it)
   and has no web reader, because the web's lock stops no inner scroller. The DOM

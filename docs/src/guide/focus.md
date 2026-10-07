@@ -831,8 +831,16 @@ div {
 - The attribute exempts its **subtree**, so a popup carries it once on its root
   and every scroller inside scrolls. On a component, write it the same way: a
   hyphenated attribute goes on the component's root element.
-- It exempts only what carries it. The page, and every other scroll container
-  outside the overlay, stays locked.
+- It exempts everything under the marked node and nothing else: an unmarked
+  scroll container outside the overlay stays locked.
+- **It cannot unlock the page.** A mark on a node that contains the locking
+  overlay — `<body>`, an app root, a wrapper around the dialog — is ignored, so
+  the page behind the overlay stays locked whatever its ancestors carry. Mark
+  the popup, not something above it.
+- **It is not checked against paint order.** A marked scroller that the overlay
+  covers also scrolls when the wheel is over it (the pointer is on the backdrop,
+  and the wheel finds the scroller underneath). Mark only what is shown above
+  the overlay.
 - It is one of rinch's `data-` boolean attributes: on unless its value is
   `"false"`, and a reactive `data-scroll-lock-exempt: {|| flag.get()}` removes
   it when `flag` is false. `rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE`

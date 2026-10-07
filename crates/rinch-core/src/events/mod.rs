@@ -47,8 +47,13 @@ pub const BACKDROP_ATTRIBUTE: &str = "data-backdrop";
 /// not inside the locking overlay's root. That is right for the page behind the
 /// overlay and wrong for a scroll container that is neither: a popup or menu
 /// that paints over the overlay from outside its root (a `<body>` portal, window
-/// chrome). Such a container, or any ancestor of it, carries this attribute and
-/// keeps its own wheel and its own scrollbar; everything else stays locked.
+/// chrome). Such a container carries this attribute, on itself or on an
+/// ancestor, and keeps its own wheel and its own scrollbar. The mark exempts
+/// everything under the marked node, with one exception: on a node that
+/// contains a locking overlay's root (`<body>`, an app wrapper) it is ignored,
+/// so it cannot unlock the page behind that overlay. It is not checked against
+/// paint order: a marked scroller the overlay covers scrolls too when the
+/// wheel is over it.
 ///
 /// One of rinch's `data-` boolean attributes: on unless its value is `false`
 /// (any case), read with [`crate::dom::data_attr_is_on`], and written by
