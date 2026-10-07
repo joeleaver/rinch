@@ -1152,14 +1152,15 @@ fn a_bake_is_undone_when_the_box_between_stops_generating_a_box() {
     );
 }
 
-/// A `position: relative` **inline** span is the box's containing block in
-/// CSS and is not honoured (#631): the box resolves against the block that
-/// holds the span's line, as it did before #386. Chrome 153 gives a box half
-/// the span's 46.25px fragment (23.125) at the span's corner; rinch gives half
-/// the 300px block. Pinned as a stated divergence — and so that the span is
-/// not mistaken for an ancestor with a box, which sizes the box to nothing.
+/// A `position: relative` **inline** span is the box's containing block
+/// (#631): the box is half the span's fragment wide and sits at its corner,
+/// after `lead `. Chrome 153's numbers are pinned with a declared face in
+/// `abs_inline_containing_block_tests`; this one declares none, so it
+/// asserts what holds in any font — the box is not half the 300px block
+/// (150), and the span is not mistaken for an ancestor with a box, which
+/// sizes the box to nothing.
 #[test]
-fn a_relative_inline_span_is_not_yet_a_containing_block() {
+fn a_relative_inline_span_is_a_containing_block() {
     let c = Case::scaffold(
         "",
         "font-size: 16px; line-height: 20px;",
@@ -1169,10 +1170,16 @@ fn a_relative_inline_span_is_not_yet_a_containing_block() {
         ),
     );
     let r = c.rect("abs");
-    assert_eq!(
-        (r[2], r[3]),
-        (150.0, 30.0),
-        "half the block, not half the span"
+    assert!(
+        (8.0..=30.0).contains(&r[2]),
+        "width {}: half of `text`, not half the block",
+        r[2]
+    );
+    assert_eq!(r[3], 30.0);
+    assert!(
+        (40.0..=130.0).contains(&r[0]),
+        "x {}: 30px into the containing block, then `lead `",
+        r[0]
     );
 }
 

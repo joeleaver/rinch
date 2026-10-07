@@ -245,7 +245,13 @@ impl RinchDocument {
                 self.tree.dirty_ifc_text_roots.clear();
                 // The rebuild may have moved an
                 // atomic inline along its line (`text-align`), and no
-                // read-back runs on this path.
+                // read-back runs on this path. It moves an inline span the
+                // same way, and a box whose containing block that span is
+                // (#631) with it; nothing but a second look says so.
+                if self.tree.abs_inline_cb_seen {
+                    self.measure_inline_containing_blocks();
+                    self.tree.abs_late_moves = true;
+                }
                 crate::out_of_flow::replace_all(&mut self.tree);
             } else {
                 if viewport_changed {
@@ -438,72 +444,100 @@ impl RinchDocument {
         // — a box between the two started or stopped generating a box, with
         // no restyle of the absolute one): the box is then resolved, computed
         // and read again before anything is painted from it.
-        let mut reread = false;
+        //
+        // #631: the outermost loop runs once, too. A containing block that is
+        // an inline span has no size until the lines are built, which is
+        // after the read-back; a box sized from one is checked against it
+        // then, and a rewrite sends the layout round again — compute, read,
+        // lines. Only a document holding such a box asks
+        // (`abs_inline_cb_seen`), and only a box whose **size** depends on a
+        // span whose fragment changed size this layout goes round: once,
+        // plus once per level of such a box inside another.
+        let mut inline_rounds = 0;
+        // Styles the check after the lines rewrote: a compute is owed.
+        let mut rebaked = false;
         loop {
-            let mut fixpoint_passes = 0;
+            let mut reread = false;
             loop {
-                let absolutes = self.resolve_ancestor_absolutes();
-                let calcs = self.resolve_layout_calcs();
-                if !absolutes && !calcs {
-                    break;
-                }
-                if absolutes {
-                    self.tree.perf.bump(Counter::AbsContainingBlockPasses);
-                    // A re-baked box inside an atomic inline is in that box's own
-                    // detached compute, which the root compute does not reach.
-                    self.remeasure_dirty_atomic_inlines();
-                }
-                if calcs {
-                    self.tree.perf.bump(Counter::CalcFixpointPasses);
-                }
-                text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
-                // The re-measure above sized a percentage atomic inline with no
-                // containing block, as the pass before the first compute does.
-                if absolutes && self.resolve_percentage_inline_blocks() {
+                let mut fixpoint_passes = 0;
+                loop {
+                    let absolutes = self.resolve_ancestor_absolutes(false) || rebaked;
+                    rebaked = false;
+                    let calcs = self.resolve_layout_calcs();
+                    if !absolutes && !calcs {
+                        break;
+                    }
+                    if absolutes {
+                        self.tree.perf.bump(Counter::AbsContainingBlockPasses);
+                        // A re-baked box inside an atomic inline is in that box's own
+                        // detached compute, which the root compute does not reach.
+                        self.remeasure_dirty_atomic_inlines();
+                    }
+                    if calcs {
+                        self.tree.perf.bump(Counter::CalcFixpointPasses);
+                    }
                     text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
+                    // The re-measure above sized a percentage atomic inline with no
+                    // containing block, as the pass before the first compute does.
+                    if absolutes && self.resolve_percentage_inline_blocks() {
+                        text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
+                    }
+                    fixpoint_passes += 1;
+                    if fixpoint_passes >= 8 {
+                        static CAP_WARNING: std::sync::Once = std::sync::Once::new();
+                        CAP_WARNING.call_once(|| {
+                        eprintln!(
+                            "[rinch] layout fixpoint hit its iteration cap; a mixed calc() in                          this document is feeding back into its own basis (or absolute                          boxes are nested more than 8 non-parent containing blocks deep)                          and its layout is approximate (reported once per process)"
+                        );
+                    });
+                        break;
+                    }
                 }
-                fixpoint_passes += 1;
-                if fixpoint_passes >= 8 {
-                    static CAP_WARNING: std::sync::Once = std::sync::Once::new();
-                    CAP_WARNING.call_once(|| {
-                    eprintln!(
-                        "[rinch] layout fixpoint hit its iteration cap; a mixed calc() in                          this document is feeding back into its own basis (or absolute                          boxes are nested more than 8 non-parent containing blocks deep)                          and its layout is approximate (reported once per process)"
-                    );
-                });
+
+                // Read layout results back into nodes
+                crate::out_of_flow::begin_read(&mut self.tree);
+                self.read_layout_results(self.tree.root_id);
+                // The walk above is over the **element** tree, and an anonymous block
+                // box is not in it (#566) — so nothing above visits one, and its
+                // `layout` would stay at the origin while its line is measured and
+                // painted from it. Read them back here rather than teaching the
+                // recursion a second child list: the recursion must keep visiting the
+                // run's *members* (their IFC-assigned position is preserved inside it),
+                // so a box tree walk that replaced them would lose that, and a walk
+                // that unioned them would cost every node a merge for the sake of a
+                // handful of boxes. This is O(boxes) and off the per-node path.
+                for anon_id in self.tree.anonymous_block_boxes.clone() {
+                    self.read_layout_results_for_box(anon_id);
+                }
+                if reread || !std::mem::take(&mut self.tree.abs_resolve_owed) {
+                    self.tree.abs_resolve_owed = false;
                     break;
                 }
+                reread = true;
             }
 
-            // Read layout results back into nodes
-            crate::out_of_flow::begin_read(&mut self.tree);
-            self.read_layout_results(self.tree.root_id);
-            // The walk above is over the **element** tree, and an anonymous block
-            // box is not in it (#566) — so nothing above visits one, and its
-            // `layout` would stay at the origin while its line is measured and
-            // painted from it. Read them back here rather than teaching the
-            // recursion a second child list: the recursion must keep visiting the
-            // run's *members* (their IFC-assigned position is preserved inside it),
-            // so a box tree walk that replaced them would lose that, and a walk
-            // that unioned them would cost every node a merge for the sake of a
-            // handful of boxes. This is O(boxes) and off the per-node path.
-            for anon_id in self.tree.anonymous_block_boxes.clone() {
-                self.read_layout_results_for_box(anon_id);
+            // Build inline layouts for IFC roots (rebuild with final widths and store)
+            // Temporarily take layout_cx out to avoid borrow conflict
+            let t = web_time::Instant::now();
+            let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
+            self.build_ifc_layouts(&mut temp_layout_cx);
+            self.layout_cx = temp_layout_cx;
+            self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
+            self.tree.dirty_ifc_text_roots.clear();
+
+            if self.tree.abs_inline_cb_seen {
+                self.measure_inline_containing_blocks();
             }
-            if reread || !std::mem::take(&mut self.tree.abs_resolve_owed) {
-                self.tree.abs_resolve_owed = false;
-                break;
+            if self.tree.abs_inline_cb_seen
+                && inline_rounds < 8
+                && self.resolve_ancestor_absolutes(true)
+            {
+                inline_rounds += 1;
+                rebaked = true;
+                continue;
             }
-            reread = true;
+            break;
         }
-
-        // Build inline layouts for IFC roots (rebuild with final widths and store)
-        // Temporarily take layout_cx out to avoid borrow conflict
-        let t = web_time::Instant::now();
-        let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
-        self.build_ifc_layouts(&mut temp_layout_cx);
-        self.layout_cx = temp_layout_cx;
-        self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
-        self.tree.dirty_ifc_text_roots.clear();
 
         // Copy cached text layouts to nodes (use the exact layouts from
         // measurement) — the root compute's text leaves and, since #904, the
@@ -528,7 +562,13 @@ impl RinchDocument {
         // inline on its line, and the scroll offsets as clamped. Place again
         // the ones that moves. (No box placed here is in any scroll range —
         // `contributes_to_scrollable_overflow` — so the clamp above did not
-        // need this first.)
+        // need this first.) A third: the lines themselves, which are what an
+        // inline span's fragments — a containing block with no box of its
+        // own, #631 — are measured in; a box resolved against one was read
+        // back before this layout's lines existed.
+        if self.tree.abs_inline_cb_seen {
+            self.tree.abs_late_moves = true;
+        }
         crate::out_of_flow::replace_all(&mut self.tree);
 
         // Arm transitions now that the first layout has completed, so nothing
@@ -1436,6 +1476,9 @@ impl RinchDocument {
                 // element, which generates no box to place.)
                 let kind = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id);
                 crate::out_of_flow::note_kind_at_read(&mut self.tree, node_id, kind);
+                if crate::out_of_flow::has_inline_containing_block(&self.tree, kind) {
+                    self.tree.abs_inline_cb_seen = true;
+                }
                 if let Some(kind) = kind
                     && crate::out_of_flow::is_laid_out(
                         &self.tree,
@@ -2338,6 +2381,34 @@ impl RinchDocument {
         // node's non-inherited properties change.
         for b in self.tree.nodes[node_id].run_boxes.clone() {
             self.invalidate_ifc_root(b);
+        }
+    }
+
+    /// Drop the inline layouts `node_id`'s `color` is baked into as a brush:
+    /// the IFC the node is in or is the root of, and the anonymous boxes that
+    /// lay out its own text runs. Those are roots
+    /// [`Self::invalidate_text_measure_for_node`] reaches; the rest of what
+    /// that does is not owed. A colour moves no box and is no input of a text
+    /// leaf's layout (paint colours a leaf from the live style, #904), so no
+    /// atomic inline and no flex item's measure is marked, and a node in no
+    /// IFC — a flex container whose text is a leaf — drops nothing.
+    pub(crate) fn invalidate_text_brushes_for_node(&mut self, node_id: usize) {
+        let node = &self.tree.nodes[node_id];
+        let mut roots = node.run_boxes.clone();
+        roots.extend(node.ifc_root);
+        roots.extend(node.children.iter().filter_map(|&child| {
+            let child = self.tree.nodes.get(child)?;
+            matches!(child.kind, NodeKind::Text(_))
+                .then_some(child.ifc_root)
+                .flatten()
+        }));
+        if self.holds_ifc_layout(node_id) {
+            roots.push(node_id);
+        }
+        roots.sort_unstable();
+        roots.dedup();
+        for root in roots {
+            self.invalidate_ifc_root(root);
         }
     }
 

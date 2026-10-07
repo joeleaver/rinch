@@ -1384,6 +1384,10 @@ impl DomDocument for WebDocument {
         forget_subtree(&mut self.nodes, &n);
     }
 
+    fn is_retired(&self, node: NodeId) -> bool {
+        !self.nodes.contains_key(&node.0)
+    }
+
     fn set_text_content(&mut self, node: NodeId, text: &str) {
         if let Some(n) = self.nodes.get(&node.0) {
             // A <textarea>'s child text is its *default value*, and nothing

@@ -15,6 +15,7 @@
 pub mod doc_json;
 pub mod html;
 mod html_entities;
+mod html_entities_table;
 mod html_integer;
 mod html_tree;
 #[cfg(feature = "markdown")]
