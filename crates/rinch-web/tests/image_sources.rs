@@ -131,8 +131,28 @@ impl Fixture {
     }
 }
 
-/// Wait until the browser has decoded `img` (or failed to).
+/// Wait until the browser has decoded `img`'s **current** `src` (or failed
+/// to), and answer its natural size.
+///
+/// `decode()` alone is not that in Firefox: called right after `src` changed,
+/// it resolves for the image the element was already showing, while the new
+/// request is still pending (measured, Firefox 157: the 3x2 picture's size
+/// after the 1x1 one was set). So this also waits, bounded, until the element
+/// is `complete` on the URL it was last given.
 async fn decoded(img: &web_sys::HtmlImageElement) -> (u32, u32) {
+    let _ = wasm_bindgen_futures::JsFuture::from(img.decode()).await;
+    for _ in 0..200 {
+        if img.complete() && img.current_src() == img.src() {
+            break;
+        }
+        let tick = js_sys::Promise::new(&mut |resolve, _| {
+            web_sys::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 10)
+                .unwrap();
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(tick).await;
+    }
     let _ = wasm_bindgen_futures::JsFuture::from(img.decode()).await;
     (img.natural_width(), img.natural_height())
 }
