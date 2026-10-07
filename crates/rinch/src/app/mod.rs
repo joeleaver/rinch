@@ -177,6 +177,8 @@ mod perf_stats_tests;
 mod popover_dropdown_transform_hit_test_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod review_1429_pimble_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
