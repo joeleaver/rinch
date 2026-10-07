@@ -126,21 +126,25 @@ fn evicting_a_cache_entry_releases_the_row() {
     let empty = __node_registry_len();
 
     rows.set(vec![1]);
+    let element = host.query_selector("article").unwrap().expect("mounted");
     rows.set(vec![]);
     assert_eq!(__node_registry_len(), empty + 2, "precondition: cached");
+    label.set("y".into());
+    assert_eq!(
+        element.get_attribute("data-l").as_deref(),
+        Some("y"),
+        "positive control: the effect reaches the cached element"
+    );
     let (row, keep) = cache.borrow_mut().remove(&1).unwrap();
     keep.dispose();
-    let element = doc.borrow().get_element(row.node_id());
     row.discard();
     assert_eq!(__node_registry_len(), empty, "#733: nodes released");
     label.set("z".into());
-    if let Some(el) = element {
-        assert_ne!(
-            el.get_attribute("data-l").as_deref(),
-            Some("z"),
-            "#733: effects released"
-        );
-    }
+    assert_eq!(
+        element.get_attribute("data-l").as_deref(),
+        Some("y"),
+        "#733: effects released"
+    );
     assert!(!text(&host).contains("KEPT733"));
 }
 

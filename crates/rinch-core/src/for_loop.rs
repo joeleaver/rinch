@@ -537,6 +537,7 @@ where
                     let _owner = child_scope.push_owner();
                     view(&item, &mut child_scope)
                 };
+                crate::dom::warn_if_retired(&node, "for");
 
                 if initial_nodes.is_empty() {
                     marker.insert_after(&node);
@@ -663,6 +664,7 @@ where
                             let _owner = child_scope.push_owner();
                             crate::reactive::untracked(|| view_clone(item, &mut child_scope))
                         };
+                        crate::dom::warn_if_retired(&node, "for");
 
                         // Insert at the correct position as sibling.
                         // Find the node to insert after: either the previous
@@ -779,6 +781,7 @@ where
                                 let _owner = child_scope.push_owner();
                                 crate::reactive::untracked(|| view_clone(item, &mut child_scope))
                             };
+                            crate::dom::warn_if_retired(&new_node, "for");
                             old_state.node.insert_after(&new_node);
                             // Ownership decides the verb (issue #719): the node
                             // being replaced is released only if the render that

@@ -415,6 +415,65 @@ impl RenderScope {
         }
     }
 
+    /// A scope for content that must **outlive** this one — a cache filled
+    /// from inside a row or branch (issue #733).
+    ///
+    /// A `for` view, a branch closure or a `render_fn` is handed the scope of
+    /// the row or branch being rendered, and everything built through that
+    /// scope dies with it: its nodes are discarded when the row leaves, its
+    /// effects, signals and event handlers are disposed. That is right for
+    /// fresh markup and wrong for a subtree the closure builds once and hands
+    /// back from a cache. Build that subtree through a cache scope instead:
+    ///
+    /// ```ignore
+    /// move |id: u32, s: &mut RenderScope| {
+    ///     if let Some((row, _scope)) = cache.borrow().get(&id) {
+    ///         return row.clone();
+    ///     }
+    ///     let mut keep = s.cache_scope();
+    ///     let row = keep.build(|__scope| rsx! { article { {id.to_string()} } });
+    ///     cache.borrow_mut().insert(id, (row.clone(), keep));
+    ///     row
+    /// }
+    /// ```
+    ///
+    /// The returned scope is on the same document and has **no ancestry
+    /// parent** (it is [`RenderScope::new`]): nothing the row or branch does
+    /// discards what it mints, including when the cached node sits inside
+    /// markup the row built. It belongs to whoever keeps it:
+    ///
+    /// - **Keep it for as long as the cached node.** Dropping it disposes
+    ///   every effect, signal and handler built through it, and a node handed
+    ///   back after that has dead bindings.
+    /// - **Build through [`build`](Self::build)**, which also makes the scope
+    ///   the owner of signals, memos and event handlers created meanwhile.
+    ///   Without it those belong to the row that happened to be rendering,
+    ///   and are freed when it leaves.
+    /// - **Evicting is the caller's job**: `scope.dispose()` and then
+    ///   `node.discard()`. Nothing else reclaims a cached subtree — a key that
+    ///   never comes back holds its row until the cache lets go.
+    ///
+    /// A subtree built *outside* the closure and captured by it needs none of
+    /// this; it was never the row's.
+    pub fn cache_scope(&self) -> RenderScope {
+        RenderScope::new(self.doc().expect("Document dropped"), self.parent_id)
+    }
+
+    /// Run `f` with this scope as the one that owns what `f` creates: nodes
+    /// and effects (as always, through the `&mut RenderScope` it is handed)
+    /// **and** the signals, memos, stores and event handlers it creates
+    /// (issue #733).
+    ///
+    /// The second half is the point. Reactive ownership follows the *ambient*
+    /// owner, and inside a `for` view or a branch closure that is the row or
+    /// branch being rendered — so content built through another scope, a
+    /// [`cache_scope`](Self::cache_scope) above all, would otherwise have its
+    /// nodes outlive the row while its `Signal::new` and `onclick` did not.
+    pub fn build<R>(&mut self, f: impl FnOnce(&mut RenderScope) -> R) -> R {
+        let _owner = self.push_owner();
+        f(self)
+    }
+
     /// This scope's [`ScopeId`] — the `parent` to pass to
     /// [`with_parent`](Self::with_parent) for a scope that builds content on
     /// this one's behalf.

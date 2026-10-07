@@ -1145,6 +1145,68 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 ///
 pub(crate) use render_scope::sweep_for_discard;
 
+thread_local! {
+    /// Every retired node a view handed back on this thread, and the nodes
+    /// already warned about (issue #733).
+    static RETIRED_RETURNS: (std::cell::Cell<u64>, RefCell<std::collections::HashSet<(u64, NodeId)>>) =
+        (std::cell::Cell::new(0), RefCell::new(std::collections::HashSet::new()));
+}
+
+/// How many distinct retired nodes are remembered as warned about. Past this
+/// nothing more is logged: the set must not grow with a list that churns
+/// through keys, and thirty-two reports of one mistake are enough.
+const RETIRED_WARNINGS: usize = 32;
+
+/// Report a `for` / `if` / `match` / component closure that handed back a
+/// node the backend has **retired** (issue #733).
+///
+/// That is a cache returning a subtree that was discarded under it — built
+/// through the row's or branch's own scope, so the helper released it the
+/// first time the row left. The helper inserts nothing for such a node, and
+/// nothing else says so. Warned once per node, [`RETIRED_WARNINGS`] nodes at
+/// most.
+///
+/// Only a backend that reclaims can tell ([`DomDocument::is_retired`]):
+/// `rinch-web` and the mock. On `rinch-dom` the node still re-inserts
+/// (issue #723), so there is no loss to report — and no warning that the same
+/// code loses the row in a browser.
+pub(crate) fn warn_if_retired(node: &NodeHandle, helper: &'static str) {
+    let Some(doc) = node.doc.upgrade() else {
+        return;
+    };
+    let Ok(doc) = doc.try_borrow() else {
+        return;
+    };
+    if !doc.is_retired(node.node_id) {
+        return;
+    }
+    let key = (doc.doc_key(), node.node_id);
+    drop(doc);
+    let first = RETIRED_RETURNS.with(|(seen, warned)| {
+        seen.set(seen.get() + 1);
+        let mut warned = warned.borrow_mut();
+        warned.len() < RETIRED_WARNINGS && warned.insert(key)
+    });
+    if first {
+        tracing::warn!(
+            "rinch: a `{helper}` closure returned node {:?}, which was already discarded, so \
+             nothing is shown for it. A subtree that is built once and handed back from a \
+             cache must not be built through the scope the closure is given: that scope \
+             owns it, and it was released when the row or branch last went away. Build it \
+             through `scope.cache_scope()` and keep that scope with the cached node, or \
+             build it outside the closure (issue #733).",
+            node.node_id
+        );
+    }
+}
+
+/// **Test-only.** `(retired nodes views handed back, warnings logged)` on this
+/// thread so far (issue #733).
+#[doc(hidden)]
+pub fn __retired_view_returns() -> (u64, usize) {
+    RETIRED_RETURNS.with(|(seen, warned)| (seen.get(), warned.borrow().len()))
+}
+
 /// Release the scratch container an `rsx!` component site builds its children
 /// in (issue #719).
 ///
@@ -1271,6 +1333,7 @@ where
                 let _owner = child_scope.push_owner();
                 render_fn(&mut child_scope)
             };
+            warn_if_retired(&node, "component");
             m.insert_after(&node);
             cc.borrow_mut().push(node);
             *cs.borrow_mut() = Some(child_scope);
