@@ -212,8 +212,40 @@ impl<'a> Transform<'a> {
     }
 
     /// Delete the range `from..to`.
+    ///
+    /// A range whose ends are at the same depth is one plain
+    /// [`replace`](Self::replace). One whose ends are not (from a list item
+    /// into the item nested under it, from a paragraph into a list) has no
+    /// plain replacement, so it is fitted as
+    /// [`replace_range`](Self::replace_range) fits a slice: what is left of
+    /// the node the range ends in joins the node it starts in, and what
+    /// followed it stays where it can (ProseMirror's `Transform.delete`).
+    /// Like `replace_range`, a range whose ends are in different isolating
+    /// nodes (two table cells) is not fitted, and neither is one that holds
+    /// only the tokens between two textblocks that cannot join (code, then
+    /// marked text), which would delete nothing. One step is added, or none
+    /// and the plain replacement's error.
     pub fn delete(&mut self, from: usize, to: usize) -> Result<&mut Self, StepError> {
-        self.replace(from, to, Slice::empty())
+        let Some(plain) = self
+            .step(Box::new(ReplaceStep::new(from, to, Slice::empty())))
+            .err()
+        else {
+            return Ok(self);
+        };
+        // A fit that only closes and reopens the nodes between the two ends
+        // deletes nothing (the document is the same size): that is a refusal,
+        // not an empty step in the history.
+        if self.same_isolating_scope(from, to)
+            && let Some(found) = fit::fit_step(&self.doc, from, to, &Slice::empty())
+            && found
+                .step
+                .apply(&self.doc)
+                .is_ok_and(|doc| doc.content_size() < self.doc.content_size())
+            && self.step(found.step).is_ok()
+        {
+            return Ok(self);
+        }
+        Err(plain)
     }
 
     /// Insert `text` replacing `from..to` (collapsed when `from == to`).
