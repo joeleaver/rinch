@@ -1238,3 +1238,391 @@ fn scroll_lock_exempt_false_opts_out_and_zero_does_not() {
     wheel(&mut app, at, 0.0, WHEEL_DY);
     assert_eq!(scroll_top(&app, panel), -WHEEL_DY, "\"0\" is on");
 }
+
+// ── 9. The exemption at every gate site, and its edges (review of PR #1443) ──
+
+/// Where a review scene puts `data-scroll-lock-exempt`.
+#[derive(Clone, Copy, PartialEq)]
+enum Mark {
+    None,
+    Panel,
+    /// The scene root: an ancestor of the page, the panel and the lock holder.
+    Root,
+    Body,
+    /// A box inside the page scroller that does not scroll itself.
+    InsidePage,
+    PanelUppercase,
+}
+
+struct Scene {
+    app: RinchApp,
+    page: usize,
+    panel: usize,
+    holder: usize,
+    inside: usize,
+    panel_handle: NodeHandle,
+}
+
+/// Page scroller (both axes), a side panel scroller (both axes) outside the
+/// lock holder, a tiny lock holder. `lock` takes the lock at once.
+fn scene(mark: Mark, lock: bool) -> Scene {
+    let ids: Rc<Cell<(usize, usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0, 0)));
+    let ids_in = ids.clone();
+    let handle: Rc<std::cell::RefCell<Option<NodeHandle>>> = Rc::new(std::cell::RefCell::new(None));
+    let handle_in = handle.clone();
+    let app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+        let page = scope.create_element("div");
+        page.set_attribute(
+            "style",
+            "position: absolute; left: 0; top: 0; width: 800px; height: 600px; overflow: auto",
+        );
+        let inside = scope.create_element("div");
+        inside.set_attribute("style", "width: 300px; height: 300px");
+        page.append_child(&inside);
+        let tall = scope.create_element("div");
+        tall.set_attribute("style", "width: 3000px; height: 3000px");
+        page.append_child(&tall);
+        root.append_child(&page);
+
+        let panel = scope.create_element("div");
+        panel.set_attribute(
+            "style",
+            "position: absolute; left: 500px; top: 100px; width: 200px; height: 200px; overflow: auto",
+        );
+        let panel_tall = scope.create_element("div");
+        panel_tall.set_attribute("style", "width: 3000px; height: 3000px");
+        panel.append_child(&panel_tall);
+        root.append_child(&panel);
+
+        let holder = scope.create_element("div");
+        holder.set_attribute(
+            "style",
+            "position: absolute; left: 0; top: 0; width: 10px; height: 10px",
+        );
+        root.append_child(&holder);
+
+        match mark {
+            Mark::None => {}
+            Mark::Panel => panel.set_attribute("data-scroll-lock-exempt", ""),
+            Mark::PanelUppercase => panel.set_attribute("DATA-SCROLL-LOCK-EXEMPT", ""),
+            Mark::Root => root.set_attribute("data-scroll-lock-exempt", ""),
+            Mark::Body => scope
+                .body_handle()
+                .set_attribute("data-scroll-lock-exempt", ""),
+            Mark::InsidePage => inside.set_attribute("data-scroll-lock-exempt", ""),
+        }
+        ids_in.set((
+            page.node_id().0,
+            panel.node_id().0,
+            holder.node_id().0,
+            inside.node_id().0,
+        ));
+        *handle_in.borrow_mut() = Some(panel.clone());
+        root
+    });
+    let (page, panel, holder, inside) = ids.get();
+    let s = Scene {
+        app,
+        page,
+        panel,
+        holder,
+        inside,
+        panel_handle: handle.borrow().clone().unwrap(),
+    };
+    if lock {
+        s.lock();
+    }
+    s
+}
+
+impl Scene {
+    fn lock(&self) {
+        self.app
+            .doc
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .set_scroll_locked(true, rinch_core::dom::NodeId(self.holder));
+    }
+    fn panel_bar(&self) -> (f32, f32) {
+        let d = self.app.doc.as_ref().unwrap().borrow();
+        let (px, py, pw, _ph) = painted_element_box(&d.tree, self.panel);
+        (px + pw - 3.0, py + 10.0)
+    }
+    fn press(&mut self, at: (f32, f32)) {
+        self.app.handle_event(
+            PlatformEvent::MouseDown {
+                x: at.0,
+                y: at.1,
+                button: MouseButton::Left,
+            },
+            (800, 600),
+            1.0,
+        );
+    }
+    fn move_to(&mut self, at: (f32, f32)) {
+        self.app.handle_event(
+            PlatformEvent::MouseMove { x: at.0, y: at.1 },
+            (800, 600),
+            1.0,
+        );
+    }
+}
+
+/// The horizontal arm honours the exemption, and refuses the unmarked twin.
+#[test]
+fn the_exemption_holds_on_the_horizontal_axis() {
+    for (mark, want) in [(Mark::None, 0.0), (Mark::Panel, 700.0)] {
+        let mut s = scene(mark, true);
+        let at = centre(&s.app, s.panel);
+        wheel(&mut s.app, at, WHEEL_DY, 0.0);
+        assert_eq!(scroll_left(&s.app, s.panel), want);
+        assert_eq!(scroll_left(&s.app, s.page), 0.0);
+    }
+}
+
+/// A thumb drag on an exempt scroller under a lock scrolls it; unmarked, not.
+#[test]
+fn an_exempt_scrollers_thumb_drags_under_the_lock() {
+    for (mark, moves) in [(Mark::None, false), (Mark::Panel, true)] {
+        let mut s = scene(mark, true);
+        let bar = s.panel_bar();
+        s.press(bar);
+        let after_press = scroll_top(&s.app, s.panel);
+        s.move_to((bar.0, bar.1 + 60.0));
+        let moved = scroll_top(&s.app, s.panel) - after_press;
+        assert_eq!(moved > 100.0, moves, "mark on: {moves}, moved {moved}");
+        assert_eq!(scroll_top(&s.app, s.page), 0.0);
+    }
+}
+
+/// A drag in flight on an exempt scroller survives the lock's arrival; on an
+/// unmarked one it is ended (#474's rule).
+#[test]
+fn a_drag_in_flight_on_an_exempt_scroller_survives_the_lock() {
+    for (mark, survives) in [(Mark::None, false), (Mark::Panel, true)] {
+        let mut s = scene(mark, false);
+        let bar = s.panel_bar();
+        s.press(bar);
+        assert!(s.app.scrollbar_drag.is_some(), "premise: drag armed");
+        let after_press = scroll_top(&s.app, s.panel);
+        s.lock();
+        s.move_to((bar.0, bar.1 + 60.0));
+        let moved = scroll_top(&s.app, s.panel) - after_press;
+        assert_eq!(s.app.scrollbar_drag.is_some(), survives);
+        assert_eq!(moved > 100.0, survives, "moved {moved}");
+    }
+}
+
+/// An exempt box INSIDE the page does not unlock the page around it.
+#[test]
+fn an_exempt_box_inside_the_page_does_not_unlock_the_page() {
+    let mut s = scene(Mark::InsidePage, true);
+    let at = centre(&s.app, s.inside);
+    assert!(hit_is_inside(&s.app, at, s.inside), "premise");
+    wheel(&mut s.app, at, WHEEL_DY, WHEEL_DY);
+    assert_eq!(offsets(&s.app, s.page), (0.0, 0.0));
+}
+
+/// A mark on a node that **contains a locking root** is ignored (review of
+/// #1443, F1): the exemption is for a container *outside* the overlay, and a
+/// mark on `<body>` or on a wrapper around the overlay would otherwise reach
+/// the page behind it and switch the lock off — the wheel moved the page 700
+/// and its bar was grabbable before the reader learnt this.
+///
+/// The second half is what a reader that simply stopped honouring marks would
+/// fail: with the ancestor marked, a marked **sibling** panel still scrolls.
+#[test]
+fn a_mark_on_an_ancestor_of_the_locking_root_does_not_unlock_the_page() {
+    for mark in [Mark::Root, Mark::Body] {
+        let mut s = scene(mark, true);
+        wheel(&mut s.app, (300.0, 450.0), 0.0, WHEEL_DY);
+        assert_eq!(
+            scroll_top(&s.app, s.page),
+            0.0,
+            "the page stays locked under a marked ancestor of the overlay"
+        );
+        {
+            let d = s.app.doc.as_ref().unwrap().borrow();
+            assert!(
+                find_scrollbar_hit(&d.tree, 797.0, 40.0).is_none(),
+                "and its bar stays inert"
+            );
+        }
+
+        // An unmarked panel under that ancestor is not exempted by it either…
+        let at = centre(&s.app, s.panel);
+        wheel(&mut s.app, at, 0.0, WHEEL_DY);
+        assert_eq!(scroll_top(&s.app, s.panel), 0.0);
+
+        // …and its own mark still works: it contains no locking root.
+        s.panel_handle.set_attribute("data-scroll-lock-exempt", "");
+        wheel(&mut s.app, at, 0.0, WHEEL_DY);
+        assert_eq!(scroll_top(&s.app, s.panel), -WHEEL_DY);
+        assert_eq!(scroll_top(&s.app, s.page), 0.0);
+    }
+}
+
+/// The #688 fold: an uppercase spelling is the same attribute.
+#[test]
+fn an_uppercase_spelling_is_the_same_attribute() {
+    let mut s = scene(Mark::PanelUppercase, true);
+    let at = centre(&s.app, s.panel);
+    wheel(&mut s.app, at, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&s.app, s.panel), -WHEEL_DY);
+}
+
+/// `write_attribute` (what a reactive `bool` goes through): false removes the
+/// attribute and the scroller is refused again; true restores it.
+#[test]
+fn a_falsey_write_removes_the_exemption() {
+    let mut s = scene(Mark::None, true);
+    let at = centre(&s.app, s.panel);
+    s.panel_handle
+        .write_attribute("data-scroll-lock-exempt", "true");
+    assert_eq!(
+        s.panel_handle
+            .get_attribute("data-scroll-lock-exempt")
+            .as_deref(),
+        Some("")
+    );
+    wheel(&mut s.app, at, 0.0, -100.0);
+    assert_eq!(scroll_top(&s.app, s.panel), 100.0);
+    s.panel_handle
+        .write_attribute("data-scroll-lock-exempt", "false");
+    assert_eq!(
+        s.panel_handle.get_attribute("data-scroll-lock-exempt"),
+        None
+    );
+    wheel(&mut s.app, at, 0.0, -100.0);
+    assert_eq!(scroll_top(&s.app, s.panel), 100.0, "refused again");
+}
+
+/// **A documented limit, pinned as it is** (review of #1443, F2): the mark is
+/// not checked against paint order, so a marked panel that sits BEHIND an open
+/// modal's backdrop still scrolls when the wheel is over it.
+/// The pointer is on the backdrop; the geometric fallback picks a container.
+#[test]
+fn a_marked_panel_behind_the_backdrop_still_scrolls() {
+    for marked in [false, true] {
+        let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+        let ids_in = ids.clone();
+        let open = Signal::new(true);
+        let mut app = mount(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let page = scope.create_element("div");
+            page.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 800px; height: 600px; overflow: auto",
+            );
+            let tall = scope.create_element("div");
+            tall.set_attribute("style", "width: 100%; height: 3000px");
+            page.append_child(&tall);
+            root.append_child(&page);
+            let panel = scope.create_element("div");
+            panel.set_attribute(
+                "style",
+                "position: absolute; left: 10px; top: 380px; width: 120px; height: 200px; overflow: auto",
+            );
+            if marked {
+                panel.set_attribute("data-scroll-lock-exempt", "");
+            }
+            let pt = scope.create_element("div");
+            pt.set_attribute("style", "width: 100%; height: 3000px");
+            panel.append_child(&pt);
+            root.append_child(&panel);
+            let modal = Modal {
+                opened_fn: Some(reactive(open)),
+                lock_scroll: true,
+                close_on_click_outside: false,
+                ..Default::default()
+            }
+            .render(scope, &[]);
+            root.append_child(&modal);
+            ids_in.set((page.node_id().0, panel.node_id().0));
+            root
+        });
+        let (page, panel) = ids.get();
+        let at = centre(&app, panel);
+        assert!(
+            !hit_is_inside(&app, at, panel),
+            "premise: the backdrop covers the panel, so the wheel reaches it \
+             only through the geometric fallback"
+        );
+        wheel(&mut app, at, 0.0, WHEEL_DY);
+        assert_eq!(
+            scroll_top(&app, panel),
+            if marked { -WHEEL_DY } else { 0.0 },
+            "marked={marked}"
+        );
+        assert_eq!(scroll_top(&app, page), 0.0);
+    }
+}
+
+/// The third layout, `render_menu_bar_standalone` (below a titlebar), which the
+/// PR left without a fixture.
+#[test]
+fn a_long_standalone_menu_dropdown_scrolls_over_a_locking_modal() {
+    for locked in [false, true] {
+        let page: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let page_in = page.clone();
+        let open = Signal::new(locked);
+        let file = long_menu();
+        let mut app = mount(move |scope: &mut RenderScope| {
+            let container = scope.create_element("div");
+            container.set_attribute(
+                "style",
+                "position: relative; width: 800px; height: 600px; padding-top: 64px; box-sizing: border-box",
+            );
+            let page_el = scope.create_element("div");
+            page_el.set_attribute("style", "width: 800px; height: 536px; overflow: auto");
+            let tall = scope.create_element("div");
+            tall.set_attribute("style", "width: 100%; height: 3000px");
+            page_el.append_child(&tall);
+            page_in.set(Some(page_el.node_id().0));
+            container.append_child(&page_el);
+            let modal = Modal {
+                opened_fn: Some(reactive(open)),
+                lock_scroll: true,
+                close_on_click_outside: false,
+                ..Default::default()
+            }
+            .render(scope, &[]);
+            container.append_child(&modal);
+            let bar = crate::menu::render_menu_bar_standalone(scope, &[("File", &file)], 36);
+            container.append_child(&bar);
+            container
+        });
+        let label = nodes_with_class(&app, "rinch-app-menu-item__label")[0];
+        let at = centre(&app, label);
+        click(&mut app, at);
+        let dropdown = nodes_with_class(&app, "rinch-app-menu-item__dropdown")[0];
+        let page = page.get().unwrap();
+        if locked {
+            assert_scrolls_over_the_lock(&mut app, dropdown, page);
+        } else {
+            let inside = centre(&app, dropdown);
+            wheel(&mut app, inside, 0.0, WHEEL_DY);
+            assert_eq!(scroll_top(&app, dropdown), -WHEEL_DY, "control");
+        }
+    }
+}
+
+/// A SHORT menu (no overflow) over the lock: the wheel over it must not reach
+/// the page through the exemption.
+#[test]
+fn a_short_menu_over_the_lock_does_not_scroll_the_page() {
+    let open = Signal::new(true);
+    let file = Menu::new()
+        .item(MenuItem::new("One").on_click(|| {}))
+        .item(MenuItem::new("Two").on_click(|| {}));
+    let (mut app, page) = menu_over_modal(open, BarLayout::Wrapped, file);
+    let dropdown = nodes_with_class(&app, "rinch-app-menu-item__dropdown")[0];
+    let inside = centre(&app, dropdown);
+    assert!(hit_is_inside(&app, inside, dropdown), "premise");
+    wheel(&mut app, inside, 0.0, WHEEL_DY);
+    assert_eq!(scroll_top(&app, page), 0.0);
+}
