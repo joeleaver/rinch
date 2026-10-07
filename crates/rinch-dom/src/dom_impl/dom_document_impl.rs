@@ -64,6 +64,7 @@ impl DomDocument for RinchDocument {
                 src: String::new(),
                 width: 0,
                 height: 0,
+                hint_ratio: None,
             };
             self.tree
                 .taffy
@@ -687,6 +688,7 @@ impl DomDocument for RinchDocument {
                 self.cache_inline_style(node.0, parse_inline_style(value));
             }
         }
+        self.sync_presentational_hints(node.0, name);
         // No IFC is invalidated here for a `style`/`class` write: the restyle
         // below re-cascades this node and its subtree, and the cascade drops
         // the text layout of exactly the nodes whose text inputs changed
@@ -790,6 +792,7 @@ impl DomDocument for RinchDocument {
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
         }
+        self.sync_presentational_hints(node.0, name);
         // Symmetric with `set_attribute`: removing an attribute a selector
         // named (`[data-highlighted]`, `[aria-selected]`) restyles what
         // Stylo's invalidator says it reaches.

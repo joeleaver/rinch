@@ -64,13 +64,16 @@ alone**, exactly as a browser reads them: `disabled="false"` disables and
 That applies to every tag the attribute reaches, so a `<textarea readonly="false">`
 is read-only too.
 
-rinch's **own** `data-disabled`, `data-nofocus`, `data-trap-focus` and
+rinch's **own** `data-disabled`, `data-nofocus`, `data-trap-focus`,
 `data-backdrop` (an overlay backdrop that answers a press of any button, #1093)
+and `data-scroll-lock-exempt` (a scroll container an overlay's scroll lock
+leaves alone, [below](#locking-the-page-behind-an-overlay))
 are the exception, and the only one: there the literal `"false"` turns the
 attribute off. `data-nofocus`, `data-trap-focus` and `data-backdrop` are read
 that way on both backends;
 `data-disabled` is a desktop attribute with no web reader, because the browser
-does not know it. Only `"false"` is excused — `"0"` is on, matching the web's
+does not know it, and so is `data-scroll-lock-exempt`, because the web's lock
+has nothing to exempt. Only `"false"` is excused — `"0"` is on, matching the web's
 `[data-nofocus="false" i]` selector. Reach for the escape
 when you are writing the attribute **by hand with `set_attribute`** and would
 otherwise have to branch between writing and removing it; a `bool` in `rsx!`
@@ -476,6 +479,19 @@ consumer code works against `rinch-web`. Case is identity, so a Shift pressed
 exactly as in a browser; track held keys by the physical `k.code`, or fold
 case at the comparison, if that matters to you.
 
+On **Android** a hardware key's release is spelled as its press was reported,
+whatever happened in between: `"W"` down with Shift held comes up as `"W"` even
+if Shift went up first, and a letter that combined with a dead key (`"é"`)
+comes up as that same string. A release whose press the app never saw (a key
+already held when the app came to the front) is spelled from the layout with
+the modifiers held at the release. An auto-repeat is still spelled from what it
+types: after a dead key the press is `"é"`, the repeats are `"e"` and the
+release is `"é"`, so track held keys by `k.code` there too
+([#1418](https://github.com/joeleaver/rinch/issues/1418)). Text the
+soft keyboard commits goes through `InputConnection` and has no key events; a
+raw key event an IME sends (`sendKeyEvent`, typically Backspace and Enter)
+comes through the same translation as a hardware key, release included.
+
 Two things to know:
 
 - A release is delivered to whoever holds the claim **at release time**. A
@@ -794,19 +810,51 @@ Do **not** reach for `RenderScope::body_handle()` and set `overflow: hidden`
 there: on the web that handle is `<div id="rinch-body">`, a descendant of the
 real `<body>`, and styling it does not stop the page scrolling.
 
-**A scroll container the runtime portals to `<body>` is exempt**, because it is
-not a descendant of any overlay's root: the native `<select>` popup registers
-itself with `NodeTree::push_scroll_lock_exempt` while it is open, so a long
-option list inside a dialog still scrolls. Anything else that portals a
-*scrollable* element to the body needs the same, with the same
-push-on-open / release-on-close lifetime.
+### A scroll container outside the overlay: `data-scroll-lock-exempt`
 
-The exemption has no portable spelling yet, so it covers the runtime's own
-portals and nothing else. A scroll container of yours that sits **outside** the
-locking overlay in the tree — window chrome, a panel anchored to the frame — is
-refused while the lock is held; the Linux in-app menu bar's own dropdown is the
-known instance, tracked in
-[issue #701](https://github.com/joeleaver/rinch/issues/701).
+On desktop the lock refuses every scroll container that is not inside a locking
+overlay's root. That is the page behind the overlay, which is the point, but it
+is also any scroll container of yours that sits **outside** the overlay in the
+tree and is still meant to be used while it is open: a popup portalled to
+`<body>`, a menu hanging from window chrome, a panel that paints over the
+dialog. Mark it:
+
+```rust
+div {
+    class: "my-popup-list",
+    style: "max-height: 300px; overflow-y: auto;",
+    data-scroll-lock-exempt: "",
+    // ...
+}
+```
+
+- The attribute exempts its **subtree**, so a popup carries it once on its root
+  and every scroller inside scrolls. On a component, write it the same way: a
+  hyphenated attribute goes on the component's root element.
+- It exempts everything under the marked node and nothing else: an unmarked
+  scroll container outside the overlay stays locked.
+- **It cannot unlock the page.** A mark on a node that contains the locking
+  overlay — `<body>`, an app root, a wrapper around the dialog — is ignored, so
+  the page behind the overlay stays locked whatever its ancestors carry. Mark
+  the popup, not something above it.
+- **It is not checked against paint order.** A marked scroller that the overlay
+  covers also scrolls when the wheel is over it (the pointer is on the backdrop,
+  and the wheel finds the scroller underneath). Mark only what is shown above
+  the overlay.
+- It is one of rinch's `data-` boolean attributes: on unless its value is
+  `"false"`, and a reactive `data-scroll-lock-exempt: {|| flag.get()}` removes
+  it when `flag` is false. `rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE`
+  is the name, for code that writes it through a `NodeHandle`.
+- There is nothing to release: the exemption goes with the node.
+- **Desktop only, and the web needs none.** The web's lock is
+  `overflow: hidden` on `<html>`, which stops the page and leaves every scroll
+  container inside it scrolling, so the attribute is inert there.
+
+The DOM menu bar (the in-app bar of a Linux window) marks its own dropdowns and
+submenu flyouts, so a menu too long for the window scrolls while a dialog is
+open (issue #701). The runtime's native `<select>` popup, which it appends to
+`<body>`, is exempt the same way through the runtime's own list
+(`NodeTree::push_scroll_lock_exempt`); you do not need to mark a `<select>`.
 
 ## Undo and redo in a text field
 

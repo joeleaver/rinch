@@ -71,17 +71,18 @@
 //!   is never the body, and the detached pair has no parent yet.
 //! - **`rinch/src/app/select_widget.rs`'s popup teardown**, which `remove_node`s
 //!   a panel and a backdrop it mounted into `<body>` itself. Same reason.
-//! - **[`UpdateBatch::apply`](super::UpdateBatch::apply)** — and this one *can*.
-//!   Its `AppendChild` / `InsertBefore` / `RemoveChild` / `ReplaceNode` arms take
-//!   arbitrary ids, and `UpdateBatch` is exported from the `rinch` prelude, so an
-//!   app can move a node anywhere through it and no observer hears about it.
-//!   Nothing in this workspace applies a structural arm — the one consumer is a
-//!   unit test that batches `SetText` and `SetAttribute` — and it cannot be
-//!   routed through the notifying verbs as it stands, because it is handed a
-//!   `&mut dyn DomDocument` and a notification needs the `Rc` a `NodeHandle`
-//!   holds a `Weak` of. Tracked as **#756**;
-//!   `an_update_batch_bypasses_both_halves` pins the hole so the claim cannot go
-//!   stale in either direction.
+//!
+//! - **Text written over an element's children** — `NodeHandle::set_text` and
+//!   a batched `DomUpdate::SetText` both reach `set_text_content`, which on
+//!   `rinch-dom` orphans every child of an element, and neither fires the
+//!   removal half. This one *can* take children out of a registered container
+//!   (issue #1440; measured on `rinch-dom`, and `MockDomDocument` keeps the
+//!   children, so no test here shows it). `set_inner_html` replaces a child
+//!   list the same way.
+//!
+//! [`UpdateBatch`](super::UpdateBatch) used to be on this list for four
+//! structural `DomUpdate` variants that took arbitrary ids; #756 removed them,
+//! and a batch carries property writes only.
 //!
 //! A new direct call is the thing to watch for: it will silently not notify.
 //!
@@ -312,9 +313,7 @@ crate::reactive::restore::restore_slot!(DispatchingSlot: bool = DISPATCHING);
 ///
 /// Called from the four [`NodeHandle`] methods that put a node into a tree.
 /// Anything that reaches for [`super::traits::DomDocument`] directly bypasses
-/// it — see **What bypasses this** in the module docs for the enumeration, and
-/// for the one entry there that can genuinely land a child inside a registered
-/// container ([`UpdateBatch::apply`](super::UpdateBatch::apply), #756).
+/// it — see **What bypasses this** in the module docs for the enumeration.
 pub(super) fn notify_inserted(parent: &NodeHandle, inserted: &NodeHandle) {
     notify(parent, inserted, Half::Inserted);
 }
@@ -897,57 +896,6 @@ mod tests {
              so `forget_node` has to release both halves and not only the one \
              it knew about before #745"
         );
-    }
-
-    #[test]
-    fn an_update_batch_bypasses_both_halves() {
-        // **This pins a documented hole, not a behaviour worth keeping** — see
-        // "What bypasses this" in the module docs and issue #756. `UpdateBatch`
-        // is prelude-exported and its four structural arms take arbitrary ids,
-        // so a node moved through one reaches no observer. If you route those
-        // arms through `NodeHandle`'s verbs, this test and those two doc
-        // paragraphs go together.
-        use crate::dom::{DomUpdate, UpdateBatch};
-
-        let (d, body) = doc();
-        let root = element(&d, "div");
-        body.append_child(&root);
-        let child = element(&d, "span");
-        root.append_child(&child);
-
-        let (inserted, sink) = recorder();
-        on_child_inserted(&root, move |node| sink.borrow_mut().push(node.node_id()));
-        let removed = watch_removals(&root);
-
-        let fresh = element(&d, "b");
-        let mut batch = UpdateBatch::new();
-        batch.push(DomUpdate::AppendChild {
-            parent: root.node_id(),
-            child: fresh.node_id(),
-        });
-        batch.push(DomUpdate::RemoveChild {
-            parent: root.node_id(),
-            child: child.node_id(),
-        });
-        {
-            let mut doc = d.borrow_mut();
-            batch.apply(&mut *doc);
-        }
-
-        assert_eq!(
-            root.children().len(),
-            1,
-            "positive control: the batch really did restructure the tree — \
-             without this the two zeroes below would be a test of nothing"
-        );
-        assert!(
-            inserted.borrow().is_empty() && removed.borrow().is_empty(),
-            "neither half hears a batch: it is handed a `&mut dyn DomDocument` \
-             and a notification needs the `Rc` a `NodeHandle` holds a `Weak` of"
-        );
-
-        forget((root.doc_key(), root.node_id()), Half::Inserted);
-        forget((root.doc_key(), root.node_id()), Half::Removed);
     }
 
     /// An observer runs inside whatever effect made the insertion or removal

@@ -404,6 +404,10 @@ fn build_top_level_item(
 
     // Dropdown panel — visibility controlled by the active_menu signal.
     let dropdown = scope.create_element("div");
+    // The dropdown scrolls (`max-height: 95vh; overflow-y: auto`) and is window
+    // chrome: it is in no overlay's root, and it paints over an open `Modal`.
+    // A `lock_scroll` overlay must not take its wheel (#701).
+    dropdown.set_attribute(rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE, "");
     {
         let dropdown_handle = dropdown.clone();
         Effect::new(move || {
@@ -439,6 +443,9 @@ fn build_top_level_item(
         let flyout_idx = flyout_idx as i32;
         let flyout = scope.create_element("div");
         flyout.set_attribute("class", "rinch-app-menu-submenu__flyout");
+        // A scroll container of its own and a sibling of the dropdown, so the
+        // dropdown's exemption does not reach it (#701).
+        flyout.set_attribute(rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE, "");
 
         let top_px = LABEL_HEIGHT + flyout_data.trigger_y;
         let pos_style = format!("left: 220px; top: {top_px}px;");
