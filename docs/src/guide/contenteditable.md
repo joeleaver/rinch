@@ -1278,14 +1278,20 @@ A table you make yourself whose merged cells span far more rows and columns than
 has cells (thousands of them) is refused before it is shared, and the session reports
 it as not syncing until you remove it.
 
-Two concurrent edits to images can still be lost, and both editors still end up
+Three concurrent edits to images can still be lost, and both editors still end up
 with the same document when they are. **Two identical images side by side**
 (same `src`, same `alt`, …) whose attributes two people change at the same
 moment: the CRDT sees them as one formatted run, and one change can overwrite the
-other (#860). And **splitting a block right before an image** (Enter) while
-someone else changes that image's attributes loses the change — a split moves
-content, and this is true of any mark change on moved text, not only images
-(#861).
+other (#860). And **splitting a block anywhere before an image in it** (Enter in the
+text before the image, not only right before it) while someone else changes that
+image's attributes loses the change — a split moves content, and this is true of any
+mark change on moved text, not only images (#861). Enter after the image keeps it.
+And **two people changing different attributes of one image** at the same moment
+(one its `alt`, the other its `title` or `src`): an image's attributes merge as one
+value, so the image ends up exactly as one of them left it and the other's change is
+lost. Changing an image's attributes while someone else types beside it, makes the
+line bold, turns it into a heading or deletes a neighbouring character keeps the
+change; if they delete the image, it is deleted.
 
 Typing right after a link while someone else changes that link at the same moment
 keeps their change — a new `href`, removing the link, or extending it over the text
