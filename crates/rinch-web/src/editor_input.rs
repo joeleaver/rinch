@@ -1150,6 +1150,15 @@ fn install_capture_listeners(ta: &web_sys::HtmlTextAreaElement) {
 /// menu cycle: a press or key that moves focus ends the cycle first
 /// (`end_context_menu_cycle`), and the `editor_native_context_menu` suite passes
 /// without one.
+///
+/// The repaint waits when a document is borrowed. `blur` is dispatched
+/// synchronously inside whatever moved focus, and that can be rinch itself with
+/// the document borrowed: a modal opening in an effect (`focus_into`), a closing
+/// one handing focus back (`restore_focus`), `request_focus`. Repainting the
+/// caret writes styles to that document, so a modal opened from a menu shortcut
+/// while an editor held the keyboard panicked with "RefCell already borrowed"
+/// and left every editor dead. Otherwise (a press or Tab moving focus) it
+/// repaints at once, as before.
 fn on_capture_blur() {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         return;
@@ -1164,8 +1173,22 @@ fn on_capture_blur() {
     }
     if focused_editor().is_some() {
         set_focused_editor(None);
-        refresh_caret();
+        if crate::a_document_is_borrowed() {
+            queue_caret_refresh();
+        } else {
+            refresh_caret();
+        }
     }
+}
+
+/// [`refresh_caret`] once the current call stack has unwound and every borrow
+/// it held is released (a microtask: before the next event, before paint).
+fn queue_caret_refresh() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let run = wasm_bindgen::closure::Closure::once_into_js(refresh_caret);
+    window.queue_microtask(run.unchecked_ref());
 }
 
 /// Whether an editor holds the keyboard right now: one is focused and the

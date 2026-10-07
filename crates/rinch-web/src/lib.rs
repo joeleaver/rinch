@@ -150,6 +150,21 @@ thread_local! {
     static DELEGATION_INSTALLED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Whether any mounted root's document is borrowed right now: rinch is in the
+/// middle of writing to it, and a browser event dispatched synchronously from
+/// inside that write (the `blur` a `focus()` fires) must not write to it too.
+pub(crate) fn a_document_is_borrowed() -> bool {
+    MOUNTED_ROOTS
+        .try_with(|roots| {
+            roots.try_borrow().map_or(true, |roots| {
+                roots
+                    .values()
+                    .any(|root| root.web_doc.try_borrow_mut().is_err())
+            })
+        })
+        .unwrap_or(true)
+}
+
 /// A handle to a mounted root. Drop it freely (the root stays mounted); call
 /// [`unmount`](Self::unmount) to remove that root's DOM and handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
