@@ -776,6 +776,26 @@ impl RinchDocument {
         }
     }
 
+    /// Rebuild the node's presentational hints (#684) after a write or
+    /// removal of attribute `name`; a no-op for any attribute or element HTML
+    /// maps nothing for. The restyle that re-reads them is
+    /// `note_attribute_change`'s.
+    pub(crate) fn sync_presentational_hints(&mut self, node_id: usize, name: &str) {
+        if !matches!(name, "width" | "height") {
+            return;
+        }
+        let node = &self.tree.nodes[node_id];
+        if !node
+            .tag()
+            .is_some_and(crate::replaced::maps_dimension_attributes)
+        {
+            return;
+        }
+        let css = crate::replaced::dimension_hints_css(node);
+        self.tree.nodes[node_id].presentational_hints =
+            css.map(|css| ServoArc::new(self.tree.guard.wrap(parse_inline_style(&css))));
+    }
+
     /// Cache a parsed inline `style` block on the node for Stylo's next
     /// cascade of it. Pair with [`parse_inline_style`].
     pub(crate) fn cache_inline_style(&mut self, node_id: usize, pdb: PropertyDeclarationBlock) {
@@ -1406,6 +1426,7 @@ impl RinchDocument {
         if let Some(img) = self.tree.image_cache.get(src) {
             // Already decoded — update intrinsic dimensions on the Taffy node
             let (iw, ih) = (img.width, img.height);
+            let hint_ratio = crate::replaced::attribute_ratio(&self.tree.nodes[node_id]);
             if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
                 let _ = self.tree.taffy.set_node_context(
                     taffy_id,
@@ -1413,6 +1434,7 @@ impl RinchDocument {
                         src: src.to_string(),
                         width: iw,
                         height: ih,
+                        hint_ratio,
                     }),
                 );
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
@@ -1434,6 +1456,7 @@ impl RinchDocument {
         self.tree.image_cache.mark_loading(src.to_string());
 
         // Update NodeContext with src (0x0 dims while loading)
+        let hint_ratio = crate::replaced::attribute_ratio(&self.tree.nodes[node_id]);
         if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
             let _ = self.tree.taffy.set_node_context(
                 taffy_id,
@@ -1441,6 +1464,7 @@ impl RinchDocument {
                     src: src.to_string(),
                     width: 0,
                     height: 0,
+                    hint_ratio,
                 }),
             );
         }
@@ -1530,6 +1554,7 @@ impl RinchDocument {
                 .collect();
 
             for node_id in node_ids {
+                let hint_ratio = crate::replaced::attribute_ratio(&self.tree.nodes[node_id]);
                 if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
                     let _ = self.tree.taffy.set_node_context(
                         taffy_id,
@@ -1537,6 +1562,7 @@ impl RinchDocument {
                             src: src.clone(),
                             width: iw,
                             height: ih,
+                            hint_ratio,
                         }),
                     );
                     let _ = self.tree.taffy.mark_dirty(taffy_id);

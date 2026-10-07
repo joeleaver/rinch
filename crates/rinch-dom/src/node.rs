@@ -82,6 +82,11 @@ pub enum NodeContext {
         width: u32,
         /// Intrinsic height (0 while loading).
         height: u32,
+        /// The ratio the `width` and `height` attributes map to (#684,
+        /// [`crate::replaced::attribute_ratio`]), which sizes the image while
+        /// it has no natural size; a loaded image's own ratio replaces it.
+        /// Kept current by [`crate::replaced::sync_replaced_measure`].
+        hint_ratio: Option<f32>,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
     ///
@@ -134,9 +139,10 @@ pub enum NodeContext {
         width: f32,
         /// Natural content-box height.
         height: f32,
-        /// Whether `width / height` is a natural aspect ratio (a canvas
-        /// with both dimensions non-zero; a video or iframe has none).
-        ratio: bool,
+        /// The aspect ratio (width / height): a canvas's natural one when
+        /// both dimensions are non-zero, the one a video's `width` and
+        /// `height` attributes map to (#684); an iframe has none.
+        ratio: Option<f32>,
     },
 }
 
@@ -1111,6 +1117,14 @@ pub struct Node {
     /// Cached parsed inline style attribute (Stylo PropertyDeclarationBlock).
     /// Populated when style attribute is set, used by Stylo for cascade.
     pub style_attribute_cache: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+    /// The declarations this element's presentational attributes map to
+    /// (#684): `width` / `height` on an `<img>`, `<video>` or `<iframe>`.
+    /// Stylo cascades them below every author rule and above the UA sheet's
+    /// normal rules
+    /// (`synthesize_presentational_hints_for_legacy_attributes`). Rebuilt by
+    /// `RinchDocument::sync_presentational_hints` on each write or removal of
+    /// a mapped attribute; `None` when no attribute maps to anything.
+    pub presentational_hints: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
     /// An `<option>`'s **live selectedness**, once something has set it (#692).
     ///
     /// HTML gives an `<option>` two states, and they come apart. The `selected`
@@ -1420,6 +1434,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            presentational_hints: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -1489,6 +1504,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            presentational_hints: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -1557,6 +1573,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            presentational_hints: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -1623,6 +1640,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            presentational_hints: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
