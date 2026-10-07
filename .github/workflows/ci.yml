@@ -432,6 +432,27 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
 
+      # The same test binaries, a second engine. The suite was written against
+      # Chrome alone, and the first Firefox run found a real bug (the caret on
+      # the last line of a code block drawn a line too high: Firefox answers a
+      # collapsed range after a newline differently) beside two dozen tests that
+      # asserted Chrome's own answers. Nothing is rebuilt: only the runner's
+      # browser changes. `GECKODRIVER` outranks the `CHROMEDRIVER` the step
+      # above exported (wasm-bindgen-test-runner reads the variables in that
+      # order), and the runner image ships Firefox with a matching geckodriver
+      # at `$GECKOWEBDRIVER`.
+      - name: Run wasm tests (headless Firefox)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          export GECKODRIVER="$GECKOWEBDRIVER/geckodriver"
+          firefox --version
+          "$GECKODRIVER" --version | head -1
+          cargo test -p rinch-storage --target wasm32-unknown-unknown
+          cargo test -p rinch-web --target wasm32-unknown-unknown
+          cargo test -p rinch-web --target wasm32-unknown-unknown \
+            --features collaboration --test editor_read_only
+
   # Type-check and lint the Android target. Nothing else in this pipeline compiles it.
   #
   # Almost every module in `crates/rinch-android` is `#[cfg(target_os =

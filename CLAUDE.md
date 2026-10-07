@@ -143,7 +143,19 @@ cargo fmt                      # Format
 # Sweep the layout-tree invariants after every layout in every test (#584).
 # Debug builds only; a violation FAILS the test it happened in. CI sets this.
 RINCH_TREE_CHECK=1 cargo test --workspace
+
+# rinch-web's browser tests, in a real browser through its WebDriver. CI runs
+# them in Chrome and in Firefox; a web change is tested in both.
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+CHROMEDRIVER=/path/to/chromedriver cargo test -p rinch-web --target wasm32-unknown-unknown
+GECKODRIVER=/path/to/geckodriver   cargo test -p rinch-web --target wasm32-unknown-unknown
 ```
+
+Browser tests that pin what the browser itself answers state each engine's
+answer (`crates/rinch-web/tests/support/engine.rs`), and build clipboard events
+with `tests/support/clipboard.rs` (Firefox drops a synthetic event's
+`clipboardData`). Setup and the known engine differences:
+`docs/src/guide/wasm.md#browsers-and-running-the-browser-tests`.
 
 ### Rust toolchain
 
