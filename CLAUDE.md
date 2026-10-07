@@ -394,8 +394,12 @@ step gets `tabindex="0"`, `role="button"` and a `data-rid` — the same shape
 `register_focus_target` needed — and loses all three, **and the clickable
 class**, the moment a sibling insertion or removal shifts it past `active`
 with nothing else granting it (a step's own ask is the one thing that keeps
-the class regardless of position). The handler is registered once per step,
-lazily, and reads the step's *current* position back from the DOM at **click**
+the class regardless of position). The handler is registered once per step
+**per stepper render**, lazily (#1428: it closes over that render's
+`on_step_click`, so the step's record names who registered each id; a step
+moved to another stepper is wired to that one and stops calling the first, and
+one moved into a stepper with no callback loses its `data-rid`, `tabindex`,
+`role` and the clickable class the wiring gave it), and reads the step's *current* position back from the DOM at **click**
 time rather than closing over the position it saw when it registered (the
 #714 pattern: a late insertion or removal can renumber a step after its
 handler is wired, issues #716/#745). With no `on_step_click` set, nothing is
