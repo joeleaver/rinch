@@ -131,22 +131,79 @@ Avatar { src: "https://example.com/avatar.png", size: "lg" }
 
 ### Custom Image Loader
 
-You can implement the `ImageLoader` trait for custom loading strategies (e.g., embedded assets, authenticated downloads):
+An app that keeps pictures somewhere only it can reach (embedded assets, a blob
+store, an authenticated download) answers for a URL scheme of its own. Sources
+with that scheme go to the app's loader; every other source still goes to
+rinch's default loader (files, plus HTTP(S) with `image-network`), so there is
+nothing to forward:
 
 ```rust
-use rinch_core::image::{ImageLoader, ImageLoadResult};
+use rinch::image::ImageLoadResult;
+use rinch::prelude::*;
 
-struct AssetLoader;
-
-impl ImageLoader for AssetLoader {
-    fn load(&self, src: &str) -> ImageLoadResult {
-        match load_from_assets(src) {
+fn main() {
+    App::new(app)
+        .image_scheme("asset", |src: &str| match load_from_assets(src) {
             Ok(bytes) => ImageLoadResult::Loaded(bytes),
             Err(e) => ImageLoadResult::Failed(e.to_string()),
-        }
-    }
+        })
+        .run();
 }
+
+// Anywhere in the UI:
+// img { src: "asset:logo.png" }
 ```
+
+`rinch::image::register_image_scheme(scheme, loader)` is the same registration
+without the builder. A loader is any `Fn(&str) -> ImageLoadResult + Send + Sync`
+closure, or a type that implements `rinch::image::ImageLoader`.
+
+What a loader must know:
+
+- **It returns encoded bytes**: the contents of a PNG, JPEG, GIF or WebP file.
+  rinch decodes them. It never returns decoded pixels.
+- **It runs on a background thread** spawned for that one load, never the UI
+  thread, so it may block on I/O. Several loads run at once.
+- **Its answer is cached by source string, a failure included.** A source that
+  failed is not asked for again on its own.
+- **A panic is a failed load.** It is caught on the load's thread and cached as
+  a failure carrying the panic's message, so `reload_image` can ask again.
+- **The `data` scheme cannot be registered** (`register_image_scheme("data", ..)`
+  panics). No app loader is ever offered a `data:` URL; an `<img>`'s is decoded
+  in place.
+- **A registration lasts until `unregister_image_scheme`.** It is process-wide
+  and is not undone when the component that made it unmounts.
+
+#### A picture that arrives later
+
+When the bytes may not exist yet (still downloading, not synced), answer
+`ImageLoadResult::Failed` straight away rather than parking the thread, and tell
+rinch when they are there:
+
+```rust
+// From any thread, once "asset:photo-42" can be loaded:
+rinch::image::reload_image("asset:photo-42");
+```
+
+Every `<img>` and `background-image` naming that source, in every window, loads
+it again and takes its size. The same call refreshes a picture whose bytes
+changed under an unchanged source: the old picture stays on screen until the new
+one has decoded.
+
+- **Pass the source exactly as the element spelled it.** The source string is
+  the key, scheme case included: `reload_image("asset:photo-42")` does not reach
+  an element whose `src` is `Asset:photo-42`.
+- **Reloads of one source are ordered and coalesced.** A reload asked for while
+  a load of that source is still out (its first load or an earlier reload)
+  starts nothing at once: the answer on its way is dropped when it lands and the
+  source is loaded once more. So the picture shown is one the loader was asked
+  for after the last `reload_image`, and ten reloads during one slow load cost
+  one more load, not ten.
+- **Do not call `reload_image(src)` from inside the loader's answer for `src`**:
+  each call discards the answer being given and asks again.
+
+None of this applies to the browser build, where the browser loads `<img>`
+itself.
 
 ---
 

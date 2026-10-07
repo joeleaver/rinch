@@ -109,7 +109,12 @@ pub fn premultiply_rgba(data: &[u8]) -> Vec<u8> {
 /// State of an image in the cache.
 enum ImageState {
     /// Image is currently being loaded/decoded on a background thread.
-    Loading,
+    ///
+    /// `reload` is set when [`reload_image`] named this source while the load
+    /// was in flight: the answer on its way was asked for *before* the app
+    /// said the source changed, so it is discarded when it lands and the
+    /// source is asked for once more.
+    Loading { reload: bool },
     /// Image has been decoded and is ready to paint.
     Decoded(DecodedImage),
     /// Image loading or decoding failed.
@@ -134,9 +139,28 @@ pub struct PendingImage {
 /// document's [`ImageCache::drain_pending`] removes only its own entries.
 static PENDING_IMAGES: Mutex<Vec<PendingImage>> = Mutex::new(Vec::new());
 
+/// Sources [`reload_image`] named, one entry per live document, waiting for
+/// that document's next [`RinchDocument::drain_pending_images`](crate::RinchDocument::drain_pending_images).
+static PENDING_RELOADS: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+
+/// The `doc_key` of every live [`RinchDocument`](crate::RinchDocument), so a
+/// reload asked for from any thread reaches each document's cache and no
+/// entry is ever queued for a document that can no longer drain it.
+static LIVE_DOCUMENTS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
 /// Cache of loaded images, keyed by source string (file path or URL).
 pub struct ImageCache {
     entries: HashMap<String, ImageState>,
+    /// Sources whose in-flight answer was discarded by [`Self::drain_pending`]
+    /// because a reload was asked for meanwhile: the document starts them again.
+    retries: Vec<String>,
+    /// The **decoded** sources whose reload is in flight (the entry stays
+    /// `Decoded`, so the picture stays on screen). The value is the mark
+    /// `Loading { reload }` carries for a source with no picture: a further
+    /// reload was asked for while this one was out, so its answer is discarded
+    /// when it lands and the source asked for once more. Removed when the
+    /// reload's answer is taken.
+    reloading: HashMap<String, bool>,
 }
 
 impl Default for ImageCache {
@@ -150,6 +174,8 @@ impl ImageCache {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            retries: Vec::new(),
+            reloading: HashMap::new(),
         }
     }
 
@@ -168,7 +194,65 @@ impl ImageCache {
 
     /// Mark a source as currently loading.
     pub fn mark_loading(&mut self, src: String) {
-        self.entries.insert(src, ImageState::Loading);
+        self.entries
+            .insert(src, ImageState::Loading { reload: false });
+    }
+
+    /// Whether loading or decoding `src` failed (and nothing has asked for it
+    /// again since).
+    pub fn is_failed(&self, src: &str) -> bool {
+        matches!(self.entries.get(src), Some(ImageState::Failed(_)))
+    }
+
+    /// Forget what is known about `src` so that it is asked for again: the
+    /// cache half of [`reload_image`]. Returns whether the caller should start
+    /// a load for it now.
+    ///
+    /// - A **failed** source goes back to loading: `true`.
+    /// - A **decoded** one keeps its pixels on screen until the new answer
+    ///   replaces them (no flash of an empty box): `true`. If the new load
+    ///   fails, the pixels it had are kept.
+    /// - One whose load is **in flight** — a first load, or the reload of a
+    ///   failed or decoded source that has not been answered yet — is marked,
+    ///   so the answer on its way is discarded and the source asked for once
+    ///   more ([`Self::take_retries`]): `false`, nothing to start yet. However
+    ///   many reloads are asked for while one load is out, one load follows
+    ///   it, so the last answer taken was asked for after the last reload.
+    /// - A source nothing has asked for has nothing to forget: `false`. It is
+    ///   loaded fresh when an element first names it.
+    ///
+    /// A caller that gets `true` must start the load
+    /// ([`request_image_load`]): the source counts as in flight until that
+    /// load's answer is drained.
+    pub fn begin_reload(&mut self, src: &str) -> bool {
+        match self.entries.get_mut(src) {
+            Some(state @ ImageState::Failed(_)) => {
+                *state = ImageState::Loading { reload: false };
+                true
+            }
+            Some(ImageState::Decoded(_)) => match self.reloading.get_mut(src) {
+                Some(again) => {
+                    *again = true;
+                    false
+                }
+                None => {
+                    self.reloading.insert(src.to_string(), false);
+                    true
+                }
+            },
+            Some(ImageState::Loading { reload }) => {
+                *reload = true;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// The sources [`Self::drain_pending`] discarded an answer for because a
+    /// reload was asked for while it was in flight. They are marked loading;
+    /// the caller starts their loads.
+    pub fn take_retries(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.retries)
     }
 
     /// Insert a decoded image into the cache.
@@ -194,6 +278,26 @@ impl ImageCache {
             .collect();
         let mut newly_decoded = Vec::new();
         for item in pending {
+            // A reload was asked for while this load was in flight: its answer
+            // predates whatever changed, so it is dropped and asked for again.
+            if let Some(ImageState::Loading { reload }) = self.entries.get_mut(&item.src)
+                && *reload
+            {
+                *reload = false;
+                self.retries.push(item.src);
+                continue;
+            }
+            // The same for the reload of a picture that is on screen: a
+            // further reload was asked for while this one was out. The retry
+            // is the reload now in flight, with nothing asked for behind it.
+            if let Some(again) = self.reloading.get_mut(&item.src) {
+                if *again {
+                    *again = false;
+                    self.retries.push(item.src);
+                    continue;
+                }
+                self.reloading.remove(&item.src);
+            }
             match item.result {
                 Ok(img) => {
                     newly_decoded.push(item.src.clone());
@@ -201,7 +305,10 @@ impl ImageCache {
                 }
                 Err(e) => {
                     tracing::warn!("Image load failed for {}: {}", item.src, e);
-                    self.entries.insert(item.src, ImageState::Failed(e));
+                    // A reload of a picture that is on screen keeps it there.
+                    if !matches!(self.entries.get(&item.src), Some(ImageState::Decoded(_))) {
+                        self.entries.insert(item.src, ImageState::Failed(e));
+                    }
                 }
             }
         }
@@ -241,34 +348,53 @@ pub fn request_image_load(_doc_key: u64, _src: String, _loader: Arc<dyn ImageLoa
 #[cfg(not(target_arch = "wasm32"))]
 pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
     std::thread::spawn(move || {
-        let result = loader.load(&src);
-        let pending = match result {
-            ImageLoadResult::Loaded(bytes) => match image::load_from_memory(&bytes) {
-                Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = (rgba.width(), rgba.height());
-                    PendingImage {
-                        doc_key,
-                        src,
-                        result: Ok(DecodedImage::new(rgba.into_raw(), w, h)),
+        // A scheme the app installed a loader for is the app's to answer;
+        // everything else is the document's loader's.
+        let loader = rinch_core::image::image_scheme_loader(&src).unwrap_or(loader);
+        // Every load pushes exactly one answer. A loader is app code (a
+        // closure over a blob store), and one that panics must not take the
+        // answer with it: the source would stay "loading" for the life of the
+        // document, and a reload of a loading source only waits for the answer
+        // on its way. So a panic, in the loader or in the decode, is a failed
+        // load, which a reload starts again like any other failure.
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match loader.load(&src) {
+                ImageLoadResult::Loaded(bytes) => match image::load_from_memory(&bytes) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = (rgba.width(), rgba.height());
+                        Ok(DecodedImage::new(rgba.into_raw(), w, h))
                     }
-                }
-                Err(e) => PendingImage {
+                    Err(e) => Err(format!("Failed to decode image: {}", e)),
+                },
+                ImageLoadResult::Failed(e) => Err(e),
+            }))
+            .unwrap_or_else(|panic| {
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "(no message)".to_string());
+                Err(format!("image loader panicked: {message}"))
+            });
+        {
+            // Only for a document that is still there: an answer queued for a
+            // dropped one is never drained. The live list is held across the
+            // push, and `purge_pending` leaves it first, so a document that
+            // drops meanwhile either purges this answer or stops it here.
+            let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
+            if !live.contains(&doc_key) {
+                return;
+            }
+            PENDING_IMAGES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(PendingImage {
                     doc_key,
                     src,
-                    result: Err(format!("Failed to decode image: {}", e)),
-                },
-            },
-            ImageLoadResult::Failed(e) => PendingImage {
-                doc_key,
-                src,
-                result: Err(e),
-            },
-        };
-        PENDING_IMAGES
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(pending);
+                    result,
+                });
+        }
 
         // Wake the main thread. The desktop event loop runs on
         // `ControlFlow::Wait`, so without this the decode sits in the queue
@@ -301,6 +427,73 @@ pub fn has_pending(doc_key: u64) -> bool {
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .any(|item| item.doc_key == doc_key)
+        || PENDING_RELOADS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|(key, _)| *key == doc_key)
+}
+
+/// Ask every document to load `src` again: the way a picture that failed to
+/// load, or whose bytes have changed, gets another go without a restart.
+///
+/// A load's answer is cached by source string, **failures included**: once a
+/// loader has answered [`ImageLoadResult::Failed`] for a source, no element
+/// that names it asks again. An app whose loader can answer late (a file that
+/// is still downloading, a blob that has not been synced yet) calls this when
+/// the bytes exist, and every `<img>` and `background-image` naming `src`, in
+/// every window, picks the picture up: its box takes the decoded size and it
+/// is painted, as for a first load.
+///
+/// Callable from **any thread**; it queues the request and wakes the UI
+/// thread, and each document acts on it at its next layout. What happens per
+/// document depends on what it knew ([`ImageCache::begin_reload`]): a failed
+/// source is loaded again; a decoded one is loaded again and keeps showing its
+/// old pixels until the new ones land; one whose load is still in flight (a
+/// first load, or an earlier reload) has that answer discarded and is asked
+/// for once more, so an answer that was already on its way cannot beat the
+/// reload, and any number of reloads asked for while one load is out cost one
+/// more load; a source no element has asked for is left alone (it loads fresh
+/// when one does). `data:` sources never change and are ignored.
+///
+/// `src` is the cache key: it must be the source **exactly as the element or
+/// stylesheet spelled it**, scheme case included (`MyApp:x` and `myapp:x` go
+/// to one loader and are two sources).
+pub fn reload_image(src: &str) {
+    if src.is_empty() || src.starts_with("data:") {
+        return;
+    }
+    {
+        let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut reloads = PENDING_RELOADS.lock().unwrap_or_else(|e| e.into_inner());
+        for &doc_key in live.iter() {
+            if !reloads.iter().any(|(key, s)| *key == doc_key && s == src) {
+                reloads.push((doc_key, src.to_string()));
+            }
+        }
+    }
+    // Promptness only, as for a finished decode: `has_pending` is what makes
+    // every host's frame gate come round to the drain.
+    rinch_core::run_on_main_thread(|| {});
+}
+
+/// Take the sources [`reload_image`] queued for this document.
+pub(crate) fn take_pending_reloads(doc_key: u64) -> Vec<String> {
+    PENDING_RELOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extract_if(.., |(key, _)| *key == doc_key)
+        .map(|(_, src)| src)
+        .collect()
+}
+
+/// Note a document as live, so [`reload_image`] reaches it. Undone by
+/// [`purge_pending`] when the document drops.
+pub(crate) fn register_document(doc_key: u64) {
+    LIVE_DOCUMENTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(doc_key);
 }
 
 /// Remove all queued entries for a document that is being torn down.
@@ -309,10 +502,20 @@ pub fn has_pending(doc_key: u64) -> bool {
 /// the process-global queue forever (nothing drains a dead doc_key). Called
 /// from `RinchDocument::drop` (issue #137).
 pub fn purge_pending(doc_key: u64) {
+    // The live list first: a load thread that finishes from here on finds the
+    // document gone and queues nothing; one that queued before is purged below.
+    LIVE_DOCUMENTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|key| *key != doc_key);
     PENDING_IMAGES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .retain(|item| item.doc_key != doc_key);
+    PENDING_RELOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(key, _)| *key != doc_key);
 }
 
 /// Decode a `data:` URI into raw bytes.

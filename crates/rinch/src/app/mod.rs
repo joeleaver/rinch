@@ -181,6 +181,8 @@ mod perf_stats_tests;
 mod popover_dropdown_transform_hit_test_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod review_1429_pimble_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
@@ -9422,6 +9424,75 @@ mod pending_image_tests {
             !app.has_pending_images(),
             "a data: URI never goes near the pending queue"
         );
+    }
+
+    /// A picture whose bytes arrive after it was first asked for: the app's
+    /// scheme loader said "not here", the app went idle, and
+    /// `rinch::image::reload_image` is all that happens next. The two idle
+    /// gates have to come round to it exactly as they do for a decode, or the
+    /// reload sits queued behind a frame loop that is asleep.
+    #[test]
+    fn a_reload_of_a_missed_source_on_an_idle_app_reaches_the_box() {
+        let held: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+        let held_in = held.clone();
+        crate::image::register_image_scheme("app-idle-reload", move |src: &str| {
+            match held_in.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                Some(bytes) => ImageLoadResult::Loaded(bytes),
+                None => ImageLoadResult::Failed(format!("{src} is not here yet")),
+            }
+        });
+
+        let captured: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let img = scope.create_element("img");
+            img.set_attribute("src", "app-idle-reload:picture");
+            root.append_child(&img);
+            *captured_in.borrow_mut() = Some(img);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        let img = captured.borrow().clone().expect("img captured at mount");
+
+        // The miss lands and is drained; then the app is idle with an empty box.
+        let failed = |app: &RinchApp| {
+            let doc = app.doc.as_ref().expect("mounted");
+            doc.borrow()
+                .tree
+                .image_cache
+                .is_failed("app-idle-reload:picture")
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !failed(&app) && Instant::now() < deadline {
+            app.resolve_and_repaint(800.0, 600.0);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            failed(&app),
+            "the scheme loader's miss is what the cache holds"
+        );
+        for _ in 0..8 {
+            if !app.has_pending_layout() {
+                break;
+            }
+            app.resolve_and_repaint(800.0, 600.0);
+        }
+        assert!(!app.has_pending_layout() && !app.has_dirty_nodes());
+        assert_eq!(img_box(&app, &img), (0.0, 0.0));
+
+        // The bytes arrive and the app says so.
+        *held.lock().unwrap_or_else(|e| e.into_inner()) = Some(RED_3X2_PNG.to_vec());
+        crate::image::reload_image("app-idle-reload:picture");
+        assert!(app.has_pending_layout(), "the paint preamble's gate");
+        assert!(app.has_dirty_nodes(), "the frame clock's gate");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while img_box(&app, &img) != (3.0, 2.0) && Instant::now() < deadline {
+            app.resolve_and_repaint(800.0, 600.0);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(img_box(&app, &img), (3.0, 2.0));
     }
 }
 

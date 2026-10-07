@@ -94,6 +94,20 @@ pub mod windows_stub;
 #[cfg(feature = "image-network")]
 pub mod image_loader;
 
+/// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
+/// answer for its own URL schemes ([`register_image_scheme`](image::register_image_scheme),
+/// or [`App::image_scheme`](crate::App::image_scheme) on the builder), and
+/// [`reload_image`](image::reload_image) to have a source that failed, or
+/// changed, loaded again.
+pub mod image {
+    pub use rinch_core::image::{
+        ImageLoadResult, ImageLoader, register_image_scheme, register_image_scheme_arc, scheme_of,
+        unregister_image_scheme,
+    };
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    pub use rinch_dom::image_cache::reload_image;
+}
+
 /// Video playback (enable with `video` feature).
 #[cfg(feature = "video")]
 pub mod video {
