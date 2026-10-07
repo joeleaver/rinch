@@ -1408,11 +1408,11 @@ struct ReadImage {
     name: Option<String>,
 }
 
-/// Read `files` and offer each to `handle`'s `on_image_input` callback, the
-/// first where the selection is **now** (anchored, so typing while the files
-/// are read does not move it), each later one at the selection the one before
-/// left: pictures answered at once land side by side, in order. A document
-/// replaced meanwhile drops the lot.
+/// Read `files` and offer each to `handle`'s `on_image_input` callback where
+/// the selection is **now** (anchored, so typing while the files are read does
+/// not move it, and an inserted picture moves the anchor past itself):
+/// pictures answered at once land side by side, in order. A document replaced
+/// meanwhile drops the lot.
 fn offer_image_files(handle: &EditorHandle, source: ImageInputSource, files: Vec<web_sys::File>) {
     let handle = handle.clone();
     let anchor = handle.anchor_selection();
@@ -1429,12 +1429,10 @@ fn offer_read_images(
     source: ImageInputSource,
     images: Vec<ReadImage>,
 ) {
-    let Some(selection) = anchor.selection() else {
-        return;
-    };
-    handle.set_selection(selection);
+    // At the anchor, not at the live selection: the person's caret is theirs
+    // if they moved while the files were read.
     for image in images {
-        handle.offer_image_input(source, image.bytes, &image.mime, image.name);
+        handle.offer_image_input_at(anchor, source, image.bytes, &image.mime, image.name);
     }
     refresh_caret();
 }
@@ -1481,8 +1479,11 @@ fn read_images(
     let _ = reader.read_as_array_buffer(&file);
 }
 
-/// The editor a drag of files is over, when its app takes pictures itself and
-/// it accepts edits: its container id and handle.
+/// The editor a drag of files is over, when its app takes pictures itself: its
+/// container id and handle. An editor with no callback is not involved in
+/// drops at all. One that has the callback and refuses edits (read-only, a
+/// collaboration freeze) is answered too: it takes nothing, but the drop must
+/// still be prevented ([`on_drop`]).
 fn file_drop_editor(event: &web_sys::DragEvent) -> Option<(usize, EditorHandle)> {
     let dt = event.data_transfer()?;
     let types = dt.types();
@@ -1497,16 +1498,22 @@ fn file_drop_editor(event: &web_sys::DragEvent) -> Option<(usize, EditorHandle)>
     let container = element.closest("[data-pm-editor]").ok()??;
     let id = get_nid(&container.into())?.0;
     let handle = registry::editor_for(id)?;
-    (handle.has_image_input_callback() && !handle.refuses_edits()).then_some((id, handle))
+    handle.has_image_input_callback().then_some((id, handle))
 }
 
 /// `dragover` of files over an editor that takes pictures: say the drop is
-/// wanted, or the browser never delivers it.
+/// wanted, or the browser never delivers it. Over one that refuses edits the
+/// event is prevented all the same, with the "not here" cursor: left to the
+/// browser, releasing the file would open it in place of the app.
 fn on_drag_over(event: &web_sys::DragEvent) {
-    if file_drop_editor(event).is_some() {
+    if let Some((_, handle)) = file_drop_editor(event) {
         event.prevent_default();
         if let Some(dt) = event.data_transfer() {
-            dt.set_drop_effect("copy");
+            dt.set_drop_effect(if handle.refuses_edits() {
+                "none"
+            } else {
+                "copy"
+            });
         }
     }
 }
@@ -1516,12 +1523,18 @@ fn on_drag_over(event: &web_sys::DragEvent) {
 /// the app (`EditorHandle::on_image_input`), in order. The browser's own
 /// handling of the drop (opening the file in place of the page) is prevented
 /// whatever the files are; the other files of a mixed drop are ignored. An
-/// editor with no callback is not involved at all.
+/// editor with no callback is not involved at all. One that refuses edits
+/// (read-only) prevents the drop and does nothing else: no offer, no caret
+/// move, no focus. A viewer of a read-only note who drops a picture on it must
+/// not lose the app to the browser's navigation.
 fn on_drop(event: &web_sys::DragEvent, doc: &web_sys::Document) {
     let Some((id, handle)) = file_drop_editor(event) else {
         return;
     };
     event.prevent_default();
+    if handle.refuses_edits() {
+        return;
+    }
     let files = event
         .data_transfer()
         .map(|dt| image_files(&dt))

@@ -396,12 +396,14 @@ async fn a_drop_on_an_editor_that_does_not_take_pictures_is_left_to_the_browser(
         (false, false)
     );
 
-    // A callback, but read-only.
+    // A callback, but read-only: the editor takes nothing, and the drop is
+    // prevented all the same, or the browser would open the file in place of
+    // the page (review of #1436, W1).
     let offered = f.taking_pictures();
     f.handle.set_read_only(true);
     assert_eq!(
         f.drop_files(std::slice::from_ref(&picture), f.point_at(5)),
-        (false, false)
+        (true, true)
     );
     settle().await;
     assert!(offered.borrow().is_empty());

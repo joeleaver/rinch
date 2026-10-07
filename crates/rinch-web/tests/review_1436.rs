@@ -346,3 +346,58 @@ async fn w5_a_drop_focuses_an_unfocused_editor() {
     f.teardown();
     assert!(focused, "the editor took the keyboard");
 }
+
+/// W6. The file read is asynchronous in a browser: the person pastes a picture
+/// and moves on before it has been read. An app that answers at once gets the
+/// picture where the paste was aimed, and the person's caret stays where they
+/// went (the read's completion offers at the anchor, not at the live caret).
+#[wasm_bindgen_test]
+async fn w6_a_picture_read_after_the_person_moved_on_leaves_their_caret() {
+    let f = Fixture::focused();
+    let offered = f.taking_pictures();
+    f.handle.set_selection(Selection::cursor(Pos(6)));
+    f.paste(&[file("image.png", "image/png", &png_bytes(b"x"))], None);
+    assert!(offered.borrow().is_empty(), "control: not read yet");
+    f.handle.set_selection(Selection::cursor(Pos(12)));
+    until(|| !offered.borrow().is_empty()).await;
+    let caret = f.handle.selection();
+    assert!(f.handle.insert_text("?"));
+    let html = f.html();
+    f.teardown();
+    assert_eq!(caret, Selection::cursor(Pos(13)), "after `bravo`, shifted");
+    assert_eq!(html, r#"<p>alpha<img src="app-blob:1"> bravo?</p>"#);
+}
+
+/// W7. Over a read-only editor whose app takes pictures the drag shows the
+/// "not here" cursor (`dropEffect` `none`), where an editable one says `copy`.
+#[wasm_bindgen_test]
+async fn w7_a_drag_over_a_read_only_editor_says_none() {
+    let f = Fixture::focused();
+    let _offered = f.taking_pictures();
+    let effect = |f: &Fixture| {
+        let dt = web_sys::DataTransfer::new().unwrap();
+        dt.items()
+            .add_with_file(&file("1.png", "image/png", &png_bytes(b"x")))
+            .unwrap();
+        let (x, y) = f.point_at(5);
+        let init = web_sys::DragEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_client_x(x as i32);
+        init.set_client_y(y as i32);
+        init.set_data_transfer(Some(&dt));
+        let ev = web_sys::DragEvent::new_with_event_init_dict("dragover", &init).unwrap();
+        document()
+            .element_from_point(x, y)
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        (ev.default_prevented(), dt.drop_effect())
+    };
+    let editable = effect(&f);
+    f.handle.set_read_only(true);
+    let read_only = effect(&f);
+    f.teardown();
+    assert_eq!(editable, (true, "copy".to_string()), "control");
+    assert_eq!(read_only, (true, "none".to_string()));
+}
