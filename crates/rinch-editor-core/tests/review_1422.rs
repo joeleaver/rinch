@@ -220,7 +220,11 @@ fn check_all_ranges(schema: &Rc<Schema>, doc: &Node, tally: &mut Tally, show: bo
                     }
                     if text_ends {
                         tally.refused_text_ends += 1;
-                        if same {
+                        // A range with no leaf in it holds only the tokens
+                        // between two textblocks that cannot join: nothing
+                        // to delete, so a refusal.
+                        let holds_a_leaf = before.iter().any(|(p, _)| *p >= from && *p < to);
+                        if same && holds_a_leaf {
                             tally.refused_text_ends_same_scope += 1;
                             if show {
                                 eprintln!("REFUSED(text ends, one scope) {what}");

@@ -230,8 +230,15 @@ impl<'a> Transform<'a> {
         else {
             return Ok(self);
         };
+        // A fit that only closes and reopens the nodes between the two ends
+        // deletes nothing (the document is the same size): that is a refusal,
+        // not an empty step in the history.
         if self.same_isolating_scope(from, to)
             && let Some(found) = fit::fit_step(&self.doc, from, to, &Slice::empty())
+            && found
+                .step
+                .apply(&self.doc)
+                .is_ok_and(|doc| doc.content_size() < self.doc.content_size())
             && self.step(found.step).is_ok()
         {
             return Ok(self);
