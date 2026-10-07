@@ -214,26 +214,12 @@ fn model_offset_in_block(
     n
 }
 
-/// `document.caretRangeFromPoint(x, y)` — non-standard but available in Chromium/WebKit
-/// (the same call the generic `resolve_text_hit` uses). `None` outside any text.
-fn caret_range_from_point(doc: &web_sys::Document, x: f32, y: f32) -> Option<web_sys::Range> {
-    let func = js_sys::Reflect::get(doc, &"caretRangeFromPoint".into()).ok()?;
-    let func: js_sys::Function = func.dyn_into().ok()?;
-    let val = func.call2(doc, &JsValue::from(x), &JsValue::from(y)).ok()?;
-    if val.is_null() || val.is_undefined() {
-        return None;
-    }
-    val.dyn_into::<web_sys::Range>().ok()
-}
-
 /// Resolve a viewport point to an editor position: walk up from the caret range's start
 /// container to the innermost `[data-pm-type]` block (the textblock) and the enclosing
 /// `[data-pm-editor]` container, then compute the within-block byte offset. Marks
 /// (`[data-pm-mark]`) are skipped because only blocks carry `data-pm-type`.
 fn resolve_editor_point(doc: &web_sys::Document, x: f32, y: f32) -> Option<EditorHit> {
-    let range = caret_range_from_point(doc, x, y)?;
-    let start = range.start_container().ok()?;
-    let offset = range.start_offset().ok()?;
+    let (start, offset) = crate::event_delegation::caret_point_from_point(doc, x, y)?;
 
     let mut cur: Option<web_sys::Node> = Some(start.clone());
     let mut textblock: Option<web_sys::Element> = None;
