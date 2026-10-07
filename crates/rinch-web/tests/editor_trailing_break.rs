@@ -131,6 +131,18 @@ fn mouse(name: &str, x: f32, y: f32) {
     target.dispatch_event(&ev).unwrap();
 }
 
+/// Whether a caret whose top is `top` (from the block's top) is on line `n`
+/// (0-based) of `line`-high lines.
+///
+/// Half a pixel of slack at the line's top: Chrome's `<br>` box is the glyph
+/// box, a couple of pixels inside the line, but Firefox's on an empty line is
+/// the line box itself, so the caret's top is the line's top exactly — and
+/// that `f32`, widened, is a hair under the `f64` `n * line` (26.399993… for a
+/// 26.4px line).
+fn on_line(top: f64, n: f64, line: f64) -> bool {
+    top >= n * line - 0.5 && top < (n + 1.0) * line - 0.5
+}
+
 impl F {
     /// The paragraph's line box height: its computed `line-height` (the
     /// editor's stylesheet sets its own).
@@ -167,7 +179,7 @@ fn a_paragraph_ending_in_a_break_shows_its_empty_line_and_the_caret_is_on_it() {
     assert!(f.caret_top(2) < line, "before the break: line 1");
     let top = f.caret_top(3);
     assert!(
-        (line..2.0 * line).contains(&top),
+        on_line(top, 1.0, line),
         "after the break: line 2, got {top}"
     );
     // A press on the empty line lands after the break.
@@ -186,7 +198,7 @@ fn a_paragraph_ending_in_a_break_shows_its_empty_line_and_the_caret_is_on_it() {
         .get_bounding_client_rect();
     let top = caret.y() - f.block().get_bounding_client_rect().y();
     assert!(
-        (line..2.0 * line).contains(&top),
+        on_line(top, 1.0, line),
         "the drawn caret is on line 2, got {top}"
     );
     // Typing there: the text takes the line and the placeholder goes.
@@ -206,14 +218,11 @@ fn the_caret_after_the_first_of_two_breaks_is_on_the_line_between() {
     assert_eq!(f.placeholders(), 0, "the paragraph does not end in a break");
     let top = f.caret_top(3);
     assert!(
-        (line..2.0 * line).contains(&top),
+        on_line(top, 1.0, line),
         "between the breaks: line 2, got {top}"
     );
     let top = f.caret_top(4);
-    assert!(
-        (2.0 * line..3.0 * line).contains(&top),
-        "after both: line 3, got {top}"
-    );
+    assert!(on_line(top, 2.0, line), "after both: line 3, got {top}");
     f.done();
 }
 
@@ -224,7 +233,7 @@ fn the_caret_after_a_break_before_text_is_at_the_texts_start() {
     let f = F::new("<p>ab<br>cd</p>");
     let line = f.line();
     let top = f.caret_top(3);
-    assert!((line..2.0 * line).contains(&top), "line 2, got {top}");
+    assert!(on_line(top, 1.0, line), "line 2, got {top}");
     let c = f.char_rect(1, 0);
     let x = f.handle.caret_rect(Pos(4)).unwrap().x as f64;
     assert!(
@@ -292,7 +301,7 @@ fn the_caret_after_a_break_before_marked_text_is_on_line_two() {
     let f = F::new("<p>ab<br><strong>cd</strong></p>");
     let line = f.line();
     let top = f.caret_top(3);
-    assert!((line..2.0 * line).contains(&top), "line 2, got {top}");
+    assert!(on_line(top, 1.0, line), "line 2, got {top}");
     f.done();
 }
 
