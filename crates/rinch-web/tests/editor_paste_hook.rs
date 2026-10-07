@@ -29,6 +29,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "support/clipboard.rs"]
+mod clipboard;
+
 fn document() -> web_sys::Document {
     web_sys::window().unwrap().document().unwrap()
 }
@@ -191,11 +194,7 @@ impl Fixture {
         if let Some(html) = html {
             dt.set_data("text/html", html).unwrap();
         }
-        let init = web_sys::ClipboardEventInit::new();
-        init.set_bubbles(true);
-        init.set_cancelable(true);
-        init.set_clipboard_data(Some(&dt));
-        let ev = web_sys::ClipboardEvent::new_with_event_init_dict("paste", &init).unwrap();
+        let ev = clipboard::clipboard_event("paste", &dt);
         self.capture().dispatch_event(&ev).unwrap();
         ev.default_prevented()
     }
