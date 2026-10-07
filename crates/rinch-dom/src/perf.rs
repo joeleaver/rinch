@@ -254,7 +254,9 @@ define_counters! {
     CalcFixpointPasses = "calc_fixpoint_passes",
     /// Extra root computes run because an absolute box's containing block —
     /// an ancestor that is not its layout parent — came out of the compute
-    /// at a size the box's Taffy style was not baked for (#386).
+    /// at a size the box's Taffy style was not baked for (#386) — or, for a
+    /// containing block that is an inline span, came out of the **lines**
+    /// built after the compute at such a size (#631).
     AbsContainingBlockPasses = "abs_containing_block_passes",
     /// Absolute boxes resolved against a containing block Taffy does not
     /// know — a non-parent ancestor (#386) or the initial containing block
@@ -263,10 +265,22 @@ define_counters! {
     /// read back, the second placement at the end of a layout in which
     /// something on the way to a containing block moved late (an atomic
     /// inline, an anonymous block box, a clamped scroll offset), and the
-    /// placement a scroll runs. An absolute child of its own positioned
-    /// parent is never counted, and a scroll counts only when the scrolled
+    /// placement a scroll runs. A box whose containing block is an inline
+    /// span (#631) is counted once more by the size check that follows the
+    /// lines being built, and makes the second placement run in every layout
+    /// (the lines are what it is placed in). An absolute child of its own
+    /// positioned parent is never counted, and a scroll counts only when the scrolled
     /// box lies between such a box and its containing block.
     AbsBoxesVisited = "abs_boxes_visited",
+    /// Inline formatting contexts whose lines were measured for the inline
+    /// spans absolute boxes hang from (#631): once per context per set of
+    /// lines, however many spans it holds.
+    AbsInlineMeasures = "abs_inline_measures",
+    /// What those measurements looked at: the context's entries (and the
+    /// ancestors of each up to the context's root), its line items and
+    /// clusters, and each span's own clusters on its first and last line.
+    /// Linear in the context for any number of sibling spans in it.
+    AbsInlineMeasureSteps = "abs_inline_measure_steps",
 
     // ── Paint ──────────────────────────────────────────────────────────
     /// Frames actually painted (a scene or pixel buffer rebuilt).

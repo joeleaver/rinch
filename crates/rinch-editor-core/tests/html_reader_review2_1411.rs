@@ -493,13 +493,15 @@ fn code_lines_are_paragraphs_at_the_start_middle_and_end_of_a_line() {
     }
 }
 
-/// The one line break that depth does change: an inline element that holds
-/// a block is a line of its own under the limit and joins its line past it
-/// (Chrome's reading at any depth, by the round-2 review's measurement).
+/// An inline element that holds a block joins the line it is on, past the
+/// limit and under it (Chrome's reading at any depth, by the round-2
+/// review's measurement). Under the limit it was a line of its own, the one
+/// line break depth changed, until the reader stopped ending a line at an
+/// inline element (#1413).
 #[test]
 fn an_inline_element_around_a_block_joins_its_line_past_the_limit() {
     let read = |depth: usize| lines_of(&format!("{}a<b>d<p>e</p>f</b>g", "<div>".repeat(depth)));
-    assert_eq!(read(2), ["a", "d", "e", "f", "g"]);
+    assert_eq!(read(2), ["ad", "e", "fg"]);
     assert_eq!(read(html_reader_max_depth() + 5), ["ad", "e", "fg"]);
 }
 
