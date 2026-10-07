@@ -3815,8 +3815,23 @@ for a host holding the document) queues the source for every live document, coun
 A failed source goes back to loading, a decoded one keeps its pixels until the new
 answer lands (and if that fails), and one whose load is in flight has that answer
 dropped and is asked for once more (`ImageCache::begin_reload` / `take_retries`), so a
-"not yet" already on its way cannot beat the reload.
-`crates/rinch-dom/tests/image_scheme_reload_tests.rs` is the pin. None of this exists
+"not yet" already on its way cannot beat the reload. "In flight" covers a **reload**
+too: a failed source being reloaded is `Loading`, and a decoded one is listed in
+`ImageCache::reloading` (its entry stays `Decoded`, so the picture stays up), so a
+second reload during the first starts no load of its own; the first's answer is
+dropped and one load follows it. Two parallel loads of one source would land in
+either order and the older answer could win. **Every load pushes exactly one answer**:
+`request_image_load` catches a panic in the loader or the decode and pushes it as a
+failure (`image loader panicked: …`); a load that pushed nothing would leave its
+source in flight for the life of the document, which a reload only waits on. The key
+is the source as spelled (`reload_image("x:a")` does not reach `X:a`). `data` cannot
+be registered (`register_image_scheme` panics), so no app loader is offered a `data:`
+URL; the document's own loader still is, for a background `data:` URL and an
+undecodable `<img>` one (#1464). `rinch_core::image::scheme_of(src)` is the parser
+(named apart from `App::image_scheme`, which registers).
+`crates/rinch-dom/tests/image_scheme_reload_tests.rs` and `review_1429_tests.rs` are
+the pins, and `crates/rinch/src/app/review_1429_pimble_tests.rs` drives the whole
+late-blob flow through a `RinchApp` with software frames. None of this exists
 on the web, where the browser loads `<img>` itself.
 
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).

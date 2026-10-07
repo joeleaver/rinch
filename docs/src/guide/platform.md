@@ -166,7 +166,13 @@ What a loader must know:
   thread, so it may block on I/O. Several loads run at once.
 - **Its answer is cached by source string, a failure included.** A source that
   failed is not asked for again on its own.
-- `data:` URLs never reach a loader; they are decoded in place.
+- **A panic is a failed load.** It is caught on the load's thread and cached as
+  a failure carrying the panic's message, so `reload_image` can ask again.
+- **The `data` scheme cannot be registered** (`register_image_scheme("data", ..)`
+  panics). No app loader is ever offered a `data:` URL; an `<img>`'s is decoded
+  in place.
+- **A registration lasts until `unregister_image_scheme`.** It is process-wide
+  and is not undone when the component that made it unmounts.
 
 #### A picture that arrives later
 
@@ -183,6 +189,18 @@ Every `<img>` and `background-image` naming that source, in every window, loads
 it again and takes its size. The same call refreshes a picture whose bytes
 changed under an unchanged source: the old picture stays on screen until the new
 one has decoded.
+
+- **Pass the source exactly as the element spelled it.** The source string is
+  the key, scheme case included: `reload_image("asset:photo-42")` does not reach
+  an element whose `src` is `Asset:photo-42`.
+- **Reloads of one source are ordered and coalesced.** A reload asked for while
+  a load of that source is still out (its first load or an earlier reload)
+  starts nothing at once: the answer on its way is dropped when it lands and the
+  source is loaded once more. So the picture shown is one the loader was asked
+  for after the last `reload_image`, and ten reloads during one slow load cost
+  one more load, not ten.
+- **Do not call `reload_image(src)` from inside the loader's answer for `src`**:
+  each call discards the answer being given and asks again.
 
 None of this applies to the browser build, where the browser loads `<img>`
 itself.

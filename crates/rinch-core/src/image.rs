@@ -45,6 +45,12 @@ pub enum ImageLoadResult {
 /// [`ImageLoadResult::Failed`] and have the app call `reload_image` when they
 /// arrive, rather than park a thread per missing picture.
 ///
+/// A loader that **panics** has failed that load: the panic is caught on the
+/// load's thread and recorded as an [`ImageLoadResult::Failed`] carrying its
+/// message, so the source can be reloaded like any other failure. A loader
+/// must not call `reload_image` for the source it is being asked for: that
+/// discards the answer it is about to give and asks again, for ever.
+///
 /// # Closures
 ///
 /// Any `Fn(&str) -> ImageLoadResult + Send + Sync + 'static` is a loader.
@@ -70,11 +76,18 @@ where
 /// embed contexts), so a scheme means the same thing in all of them.
 static SCHEME_LOADERS: RwLock<Vec<(String, Arc<dyn ImageLoader>)>> = RwLock::new(Vec::new());
 
-/// The URL scheme of `src`, lowercased: the part before the first `:` when it
+/// The URL scheme **of an image source**, lowercased
+/// (`scheme_of("MyApp-Blob:1234")` is `Some("myapp-blob")`): the part before
+/// the first `:` when it
 /// is a valid scheme (RFC 3986: a letter, then letters, digits, `+`, `-`, `.`)
 /// of **two or more** characters. A single letter is a Windows drive
-/// (`C:\pictures\a.png`), not a scheme.
-pub fn image_scheme(src: &str) -> Option<String> {
+/// (`C:\pictures\a.png`), not a scheme. The source is read as spelled: leading
+/// white space is not trimmed, so `" myapp:x"` has no scheme.
+///
+/// This is the question the registry asks of each source; an app rarely needs
+/// it. (`App::image_scheme` is a different thing: it *registers* a loader for
+/// a scheme.)
+pub fn scheme_of(src: &str) -> Option<String> {
     let (scheme, _) = src.split_once(':')?;
     let mut chars = scheme.chars();
     let first = chars.next()?;
@@ -95,8 +108,13 @@ pub fn image_scheme(src: &str) -> Option<String> {
 /// own loader (files, plus HTTP(S) with rinch's `image-network` feature), so
 /// the fallback is automatic: an app installs only what it alone can resolve.
 /// Registering a scheme the default loader also handles (`https`, `file`)
-/// takes it over. `data:` is never offered to a loader: a `data:` URL is
-/// decoded in place.
+/// takes it over. `data` is the one scheme that cannot be registered: no app
+/// loader is ever offered a `data:` URL (an `<img>`'s is decoded in place).
+///
+/// The registration is process-wide and lasts until
+/// [`unregister_image_scheme`]: it is not tied to the component that made it
+/// and stays after that component unmounts (a loader is `Send + Sync`, so it
+/// can hold no `Signal` an unmount would free).
 ///
 /// The scheme is matched case-insensitively and is given without the colon.
 /// Registering it again replaces the earlier loader. See [`ImageLoader`] for
@@ -105,15 +123,16 @@ pub fn image_scheme(src: &str) -> Option<String> {
 /// # Panics
 ///
 /// If `scheme` is not a valid URL scheme of two or more characters (see
-/// [`image_scheme`]): such a registration could never match a source.
+/// [`scheme_of`]; a name with a `:` in it is not one), or if it is `data`:
+/// such a registration could never be asked for a source.
 pub fn register_image_scheme(scheme: &str, loader: impl ImageLoader) {
     register_image_scheme_arc(scheme, Arc::new(loader));
 }
 
 /// [`register_image_scheme`] for a loader that is already shared.
 pub fn register_image_scheme_arc(scheme: &str, loader: Arc<dyn ImageLoader>) {
-    let key = image_scheme(&format!("{scheme}:"))
-        .unwrap_or_else(|| panic!("`{scheme}` is not a URL scheme an image source can carry"));
+    let key = registrable_scheme(scheme)
+        .unwrap_or_else(|| panic!("`{scheme}` is not a URL scheme an app can load images for"));
     let mut loaders = SCHEME_LOADERS.write().unwrap_or_else(|e| e.into_inner());
     match loaders.iter_mut().find(|(s, _)| *s == key) {
         Some(entry) => entry.1 = loader,
@@ -121,10 +140,22 @@ pub fn register_image_scheme_arc(scheme: &str, loader: Arc<dyn ImageLoader>) {
     }
 }
 
-/// Remove the loader installed for `scheme`. Returns whether there was one.
-/// Sources already loaded (or already failed) keep their cached answer.
+/// The registry key for `scheme` as an app names it (no colon, any case), or
+/// `None` for a name that is not a scheme or is `data`. Registering and
+/// unregistering read a name the same way.
+fn registrable_scheme(scheme: &str) -> Option<String> {
+    scheme_of(&format!("{scheme}:")).filter(|key| key.len() == scheme.len() && key != "data")
+}
+
+/// Remove the loader installed for `scheme` (named as it was registered: no
+/// colon, any case). Returns whether there was one; a name that could not
+/// have been registered answers `false`.
+/// Sources already loaded (or already failed) keep their cached answer, and a
+/// load already running finishes with the loader it started with.
 pub fn unregister_image_scheme(scheme: &str) -> bool {
-    let key = scheme.to_ascii_lowercase();
+    let Some(key) = registrable_scheme(scheme) else {
+        return false;
+    };
     let mut loaders = SCHEME_LOADERS.write().unwrap_or_else(|e| e.into_inner());
     let before = loaders.len();
     loaders.retain(|(s, _)| *s != key);
@@ -133,7 +164,7 @@ pub fn unregister_image_scheme(scheme: &str) -> bool {
 
 /// The app-installed loader that answers for `src`, if its scheme has one.
 pub fn image_scheme_loader(src: &str) -> Option<Arc<dyn ImageLoader>> {
-    let scheme = image_scheme(src)?;
+    let scheme = scheme_of(src)?;
     SCHEME_LOADERS
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -148,17 +179,14 @@ mod tests {
 
     #[test]
     fn a_scheme_is_what_precedes_the_colon_and_a_drive_letter_is_not_one() {
-        assert_eq!(
-            image_scheme("pimble-blob:a/b").as_deref(),
-            Some("pimble-blob")
-        );
-        assert_eq!(image_scheme("HTTPS://x/y.png").as_deref(), Some("https"));
-        assert_eq!(image_scheme("a+b.c-d:x").as_deref(), Some("a+b.c-d"));
-        assert_eq!(image_scheme("C:\\pictures\\a.png"), None);
-        assert_eq!(image_scheme("pictures/a.png"), None);
-        assert_eq!(image_scheme("pictures/a:b.png"), None);
-        assert_eq!(image_scheme("1x:y"), None);
-        assert_eq!(image_scheme(":y"), None);
+        assert_eq!(scheme_of("pimble-blob:a/b").as_deref(), Some("pimble-blob"));
+        assert_eq!(scheme_of("HTTPS://x/y.png").as_deref(), Some("https"));
+        assert_eq!(scheme_of("a+b.c-d:x").as_deref(), Some("a+b.c-d"));
+        assert_eq!(scheme_of("C:\\pictures\\a.png"), None);
+        assert_eq!(scheme_of("pictures/a.png"), None);
+        assert_eq!(scheme_of("pictures/a:b.png"), None);
+        assert_eq!(scheme_of("1x:y"), None);
+        assert_eq!(scheme_of(":y"), None);
     }
 
     #[test]
@@ -193,6 +221,37 @@ mod tests {
         assert!(unregister_image_scheme("core-test-a"));
         assert!(!unregister_image_scheme("core-test-a"));
         assert!(image_scheme_loader("core-test-a:1").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "`DATA` is not a URL scheme an app can load images for")]
+    fn the_data_scheme_cannot_be_registered() {
+        register_image_scheme("DATA", |_: &str| ImageLoadResult::Failed(String::new()));
+    }
+
+    #[test]
+    #[should_panic(expected = "not a URL scheme")]
+    fn a_name_with_a_colon_in_it_is_not_registered_as_its_first_part() {
+        // `my:app` would otherwise be read as the scheme `my`.
+        register_image_scheme("core-test-my:app", |_: &str| {
+            ImageLoadResult::Failed(String::new())
+        });
+    }
+
+    #[test]
+    fn unregistering_reads_the_name_as_registering_does() {
+        register_image_scheme("core-test-un", |_: &str| {
+            ImageLoadResult::Failed(String::new())
+        });
+        assert!(
+            !unregister_image_scheme("core-test-un:"),
+            "a trailing colon is not the registered name"
+        );
+        assert!(image_scheme_loader("core-test-un:1").is_some());
+        assert!(unregister_image_scheme("CORE-TEST-UN"), "any case");
+        assert!(image_scheme_loader("core-test-un:1").is_none());
+        assert!(!unregister_image_scheme("c"));
+        assert!(!unregister_image_scheme("data"));
     }
 
     #[test]

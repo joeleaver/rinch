@@ -212,7 +212,7 @@ where
     ///
     /// # Panics
     ///
-    /// If `scheme` is not a URL scheme of two or more characters.
+    /// If `scheme` is not a URL scheme of two or more characters, or is `data`.
     pub fn image_scheme(self, scheme: &str, loader: impl crate::image::ImageLoader) -> Self {
         crate::image::register_image_scheme(scheme, loader);
         self

@@ -1,8 +1,10 @@
 //! Review fixtures for PR #1429 (app image schemes + `reload_image`).
 //!
-//! Each test states what the PR's docs promise and what the code does. The
-//! ones named `finding_*` FAIL at the PR head; the ones named `holds_*` pass
-//! and pin a claimed behaviour the PR has no test for.
+//! The ones named `finding_*` are the review's findings: each failed at the
+//! PR's first head (`39b8c3e3`) and passes since the review round's fixes
+//! (a loader panic is a failed load; reloads of one source are ordered and
+//! coalesced; `data` cannot be registered). The rest pin behaviour the PR
+//! had no test for.
 
 use rinch_core::NodeId;
 use rinch_core::dom::DomDocument;
@@ -156,7 +158,9 @@ fn a_loader_panic_during_the_reload_of_a_shown_picture_keeps_it_and_the_next_rel
     reload_image(src);
     assert!(settle_for(&mut doc, Duration::from_secs(5), |d| box_of(
         d, img
-    ) == (1.0, 1.0)));
+    ) == (
+        1.0, 1.0
+    )));
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
@@ -254,7 +258,8 @@ fn finding_the_older_of_two_reloads_of_a_shown_picture_can_win() {
         *lock.lock().unwrap() = true;
         cv.notify_all();
     }
-    assert!(settle(&mut doc, |d| loader.calls.load(Ordering::SeqCst) == 3
+    assert!(settle(&mut doc, |d| loader.calls.load(Ordering::SeqCst)
+        == 3
         && !has_pending(d.doc_key())));
     settle_for(&mut doc, Duration::from_millis(300), |_| false);
     assert!(!has_pending(doc.doc_key()));
@@ -313,7 +318,8 @@ fn a_second_reload_of_a_failed_source_beats_the_first_reloads_older_answer() {
         *lock.lock().unwrap() = true;
         cv.notify_all();
     }
-    assert!(settle(&mut doc, |d| loader.calls.load(Ordering::SeqCst) == 3
+    assert!(settle(&mut doc, |d| loader.calls.load(Ordering::SeqCst)
+        == 3
         && !has_pending(d.doc_key())));
     settle_for(&mut doc, Duration::from_millis(300), |_| false);
     assert_eq!(box_of(&doc, img), (3.0, 2.0));
