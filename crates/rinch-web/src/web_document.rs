@@ -269,6 +269,8 @@ fn forget_recursive(
         forget_recursive(nodes, reg, &c);
         child = next;
     }
+    // An `<img>` the app's image sources recorded leaves that record with it.
+    crate::images::forget_node(node);
     if let Some(id) = get_nid(node) {
         // `nodes` is this document's map but the registry is page-global, so a
         // descendant belonging to a *different* `WebDocument` (an island mounted
@@ -844,6 +846,21 @@ impl WebDocument {
             // follows it starts (#1202).
             return self.caret_where_next_starts_at(&text_node, off, block);
         }
+        // Firefox does give that caret a rect, and for the one right after a
+        // preserved `"\n"` it is the newline's own box: the line the newline
+        // ends, one above the caret's (measured, Firefox 155 and 157: `ab\n\ncd`
+        // in a `<pre>` at offset 3 answers the end of `ab`, and `ab\n` at 3,
+        // before the trailing-break placeholder, the same). A hard line break
+        // is not a soft wrap, so the caret after it has one line whatever its
+        // affinity: where what follows starts, when that is a line further
+        // down. Chrome's collapsed range is already there (or has no rect,
+        // above), so nothing moves in it.
+        if self.follows_a_preserved_newline(&text_node, off)
+            && let Some(next) = self.caret_where_next_starts_at(&text_node, off, block)
+            && next.1 as f64 >= collapsed.y() + collapsed.height() * 0.5
+        {
+            return Some(next);
+        }
         let upstream = (
             collapsed.x() as f32,
             collapsed.y() as f32,
@@ -859,6 +876,32 @@ impl WebDocument {
             Some(ch) if ch.1 as f64 >= collapsed.y() + collapsed.height() * 0.5 => Some(ch),
             _ => Some(upstream),
         }
+    }
+
+    /// Whether UTF-16 offset `off` of `text_node` is right after a `"\n"` the
+    /// text's `white-space` preserves as a line break (`pre`, `pre-wrap`,
+    /// `pre-line`, `break-spaces`: every editor block). In collapsing text a
+    /// `"\n"` is a space, and the caret after it is an ordinary one.
+    fn follows_a_preserved_newline(&self, text_node: &web_sys::Node, off: u32) -> bool {
+        if off == 0 {
+            return false;
+        }
+        let text = text_node.text_content().unwrap_or_default();
+        if text.encode_utf16().nth(off as usize - 1) != Some(u16::from(b'\n')) {
+            return false;
+        }
+        let Some(parent) = text_node.parent_element() else {
+            return false;
+        };
+        let Some(style) = self
+            .browser_doc
+            .default_view()
+            .and_then(|w| w.get_computed_style(&parent).ok().flatten())
+        else {
+            return false;
+        };
+        let ws = style.get_property_value("white-space").unwrap_or_default();
+        ws.starts_with("pre") || ws.contains("break-spaces") || ws.contains("preserve")
     }
 
     /// The start edge of the character at UTF-16 `start..start + len` of
@@ -1007,6 +1050,7 @@ impl WebDocument {
     /// Creates a `<div id="rinch-root">` as root and `<div id="rinch-body">`
     /// as body, appending root to `document.body()`.
     pub fn new(browser_doc: web_sys::Document) -> Self {
+        crate::images::install_reloader();
         let mut doc = Self {
             doc_key: rinch_core::dom::next_doc_key(),
             browser_doc,
@@ -1052,6 +1096,7 @@ impl WebDocument {
     /// component tree is appended directly inside it. No fixed ids are set, so
     /// any number of islands can coexist on one page without id collisions.
     pub fn new_into(browser_doc: web_sys::Document, host: web_sys::Element) -> Self {
+        crate::images::install_reloader();
         let mut doc = Self {
             doc_key: rinch_core::dom::next_doc_key(),
             browser_doc,
@@ -1153,6 +1198,9 @@ impl Drop for WebDocument {
                 }
             }
         });
+        for node in self.nodes.values() {
+            crate::images::forget_node(node);
+        }
     }
 }
 
@@ -1468,6 +1516,14 @@ impl DomDocument for WebDocument {
                         write_value_attribute(&el, value);
                         return;
                     }
+                    // An `<img>` source the app answers for (`images.rs`) is
+                    // shown from the URL the app resolves it to; the source
+                    // itself is kept beside it and is what `get_attribute`
+                    // answers.
+                    "src" if el.tag_name().eq_ignore_ascii_case("img") => {
+                        crate::images::set_img_src(&el, name, value);
+                        return;
+                    }
                     _ => {
                         el.set_attribute(name, value).ok();
                     }
@@ -1506,6 +1562,9 @@ impl DomDocument for WebDocument {
                     remove_value_attribute(&el);
                     return;
                 }
+                if matched == "src" {
+                    crate::images::remove_img_src(&el);
+                }
                 el.remove_attribute(name).ok();
             }
             // Keep the reflected property in sync when the attribute is removed,
@@ -1526,6 +1585,13 @@ impl DomDocument for WebDocument {
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
         let n = self.nodes.get(&node.0)?;
         let el: web_sys::Element = n.clone().dyn_into().ok()?;
+        // An app-resolved `<img>` answers the source it was given, not the
+        // object URL the browser is loading for it.
+        if name.eq_ignore_ascii_case("src")
+            && let Some(logical) = crate::images::logical_src(&el)
+        {
+            return Some(logical);
+        }
         el.get_attribute(name)
     }
 
@@ -1826,6 +1892,9 @@ impl DomDocument for WebDocument {
                     self.register_subtree(&child);
                 }
             }
+            // Parsed markup skipped `set_attribute`: an `<img>` source the
+            // app answers for goes through the same path as one set one.
+            crate::images::adopt_parsed_images(&el);
         }
     }
 

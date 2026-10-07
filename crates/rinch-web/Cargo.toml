@@ -77,6 +77,10 @@ web-sys = { version = "0.3", features = [
     # Files dragged onto an editor from outside the page, offered to the app's
     # `EditorHandle::on_image_input` (`on_drop` in editor_input.rs).
     "DragEvent",
+    # Object URLs over the bytes an app's image loader answers with
+    # (`images.rs`): an `<img>` whose `src` scheme the app registered is shown
+    # from one.
+    "BlobPropertyBag", "Url",
 ] }
 
 # Browser-driven tests for `<style>` injection (#155): they need a real
@@ -101,8 +105,10 @@ wasm-bindgen-futures = "0.4"
 # the collab adapter's test seam rather than linking yrs here.
 rinch-editor-collab = { workspace = true, features = ["test-util"] }
 # A synthetic `drop` carrying a `File`, and a `File` to put on a `paste`
-# (tests/editor_image_input.rs).
-web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag"] }
+# (tests/editor_image_input.rs); `HTMLImageElement.decode()` / `naturalWidth`
+# in tests/image_sources.rs: that the browser really decodes what an app's
+# image loader answered with.
+web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "HtmlImageElement"] }
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which

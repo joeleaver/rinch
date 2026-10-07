@@ -22,6 +22,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "support/clipboard.rs"]
+mod clipboard;
+
 const HOST: &str = "data-test-host-1112";
 const GIF: &str = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
@@ -55,11 +58,7 @@ fn mouse(name: &str, x: f32, y: f32) {
 /// Dispatch a `copy`/`cut` at `target`; answers (defaultPrevented, text/plain).
 fn clipboard_event(target: &web_sys::EventTarget, name: &str) -> (bool, String) {
     let dt = web_sys::DataTransfer::new().unwrap();
-    let init = web_sys::ClipboardEventInit::new();
-    init.set_bubbles(true);
-    init.set_cancelable(true);
-    init.set_clipboard_data(Some(&dt));
-    let ev = web_sys::ClipboardEvent::new_with_event_init_dict(name, &init).unwrap();
+    let ev = clipboard::clipboard_event(name, &dt);
     target.dispatch_event(&ev).unwrap();
     (ev.default_prevented(), dt.get_data("text/plain").unwrap())
 }
