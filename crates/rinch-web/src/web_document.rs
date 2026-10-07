@@ -846,6 +846,21 @@ impl WebDocument {
             // follows it starts (#1202).
             return self.caret_where_next_starts_at(&text_node, off, block);
         }
+        // Firefox does give that caret a rect, and for the one right after a
+        // preserved `"\n"` it is the newline's own box: the line the newline
+        // ends, one above the caret's (measured, Firefox 155 and 157: `ab\n\ncd`
+        // in a `<pre>` at offset 3 answers the end of `ab`, and `ab\n` at 3,
+        // before the trailing-break placeholder, the same). A hard line break
+        // is not a soft wrap, so the caret after it has one line whatever its
+        // affinity: where what follows starts, when that is a line further
+        // down. Chrome's collapsed range is already there (or has no rect,
+        // above), so nothing moves in it.
+        if self.follows_a_preserved_newline(&text_node, off)
+            && let Some(next) = self.caret_where_next_starts_at(&text_node, off, block)
+            && next.1 as f64 >= collapsed.y() + collapsed.height() * 0.5
+        {
+            return Some(next);
+        }
         let upstream = (
             collapsed.x() as f32,
             collapsed.y() as f32,
@@ -861,6 +876,32 @@ impl WebDocument {
             Some(ch) if ch.1 as f64 >= collapsed.y() + collapsed.height() * 0.5 => Some(ch),
             _ => Some(upstream),
         }
+    }
+
+    /// Whether UTF-16 offset `off` of `text_node` is right after a `"\n"` the
+    /// text's `white-space` preserves as a line break (`pre`, `pre-wrap`,
+    /// `pre-line`, `break-spaces`: every editor block). In collapsing text a
+    /// `"\n"` is a space, and the caret after it is an ordinary one.
+    fn follows_a_preserved_newline(&self, text_node: &web_sys::Node, off: u32) -> bool {
+        if off == 0 {
+            return false;
+        }
+        let text = text_node.text_content().unwrap_or_default();
+        if text.encode_utf16().nth(off as usize - 1) != Some(u16::from(b'\n')) {
+            return false;
+        }
+        let Some(parent) = text_node.parent_element() else {
+            return false;
+        };
+        let Some(style) = self
+            .browser_doc
+            .default_view()
+            .and_then(|w| w.get_computed_style(&parent).ok().flatten())
+        else {
+            return false;
+        };
+        let ws = style.get_property_value("white-space").unwrap_or_default();
+        ws.starts_with("pre") || ws.contains("break-spaces") || ws.contains("preserve")
     }
 
     /// The start edge of the character at UTF-16 `start..start + len` of
