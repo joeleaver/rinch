@@ -311,7 +311,10 @@ item1.replace_with(&new_item);
 > must not be built through the scope that closure is handed: that scope owns
 > what it builds, and the helper discards it when the row or branch goes. Build
 > it through `scope.cache_scope()` (with `build`, so its signals and handlers
-> are the cache scope's too) and keep that scope beside the node — see
+> are the cache scope's too), keep that scope beside the node, and when the
+> cache lets go — including when its owner unmounts — `dispose()` the scope
+> **and** `discard()` the node: dropping the scope alone leaves the node in the
+> backend. See
 > [A cache filled from inside a `for`](../guide/rsx-syntax.md#a-cache-filled-from-inside-a-for)
 > (issue #733).
 >

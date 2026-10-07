@@ -442,16 +442,38 @@ impl RenderScope {
     /// discards what it mints, including when the cached node sits inside
     /// markup the row built. It belongs to whoever keeps it:
     ///
-    /// - **Keep it for as long as the cached node.** Dropping it disposes
-    ///   every effect, signal and handler built through it, and a node handed
-    ///   back after that has dead bindings.
     /// - **Build through [`build`](Self::build)**, which also makes the scope
     ///   the owner of signals, memos and event handlers created meanwhile.
-    ///   Without it those belong to the row that happened to be rendering,
-    ///   and are freed when it leaves.
-    /// - **Evicting is the caller's job**: `scope.dispose()` and then
-    ///   `node.discard()`. Nothing else reclaims a cached subtree — a key that
-    ///   never comes back holds its row until the cache lets go.
+    ///   Without it those belong to the row that happened to be rendering and
+    ///   are freed when it leaves — silently: the node comes back, a write to
+    ///   such a signal is a no-op, and nothing panics.
+    /// - **The scope and the node are two values, released together by the
+    ///   caller.** Nothing ties them (issue #1454 is the one-owner value):
+    ///   - scope dropped, node kept: the node comes back inert — every effect,
+    ///     signal and handler built through the scope was disposed;
+    ///   - node discarded, scope kept: its effects go on running against a
+    ///     node the backend no longer holds, for as long as the scope lives;
+    ///   - **both dropped, node not discarded**: the effects stop and the
+    ///     nodes stay in the backend for the life of the document. The scope's
+    ///     `Drop` discards nothing, and a hide around a parentless scope's
+    ///     nodes only detaches them.
+    /// - **So evicting is `scope.dispose()` and then `node.discard()`**, and
+    ///   **dropping the cache is not evicting**. A cache owned by something
+    ///   that can unmount drains itself in that owner's cleanup:
+    ///
+    ///   ```ignore
+    ///   let evict = cache.clone();
+    ///   scope.on_cleanup(move || {
+    ///       for (_, (row, keep)) in evict.borrow_mut().drain() {
+    ///           keep.dispose();
+    ///           row.discard();
+    ///       }
+    ///   });
+    ///   ```
+    ///
+    ///   Counted on `MockDomDocument` and in Chrome: 50 mounts of a list of
+    ///   two cached rows leave 200 nodes behind without that drain and none
+    ///   with it. A key that never comes back holds its row until then.
     ///
     /// A subtree built *outside* the closure and captured by it needs none of
     /// this; it was never the row's.

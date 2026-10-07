@@ -1157,19 +1157,31 @@ thread_local! {
 /// through keys, and thirty-two reports of one mistake are enough.
 const RETIRED_WARNINGS: usize = 32;
 
-/// Report a `for` / `if` / `match` / component closure that handed back a
-/// node the backend has **retired** (issue #733).
+/// Count, and emit a `tracing` warning for, a `for` / `if` / `match` /
+/// component closure whose **returned node** the backend has retired
+/// (issue #733).
 ///
 /// That is a cache returning a subtree that was discarded under it — built
 /// through the row's or branch's own scope, so the helper released it the
-/// first time the row left. The helper inserts nothing for such a node, and
-/// nothing else says so. Warned once per node, [`RETIRED_WARNINGS`] nodes at
-/// most.
+/// first time the row left. The helper inserts nothing for such a node. Every
+/// such return is counted ([`__retired_view_returns`]); the warning is emitted
+/// once per `(document, node)`, for the first [`RETIRED_WARNINGS`] nodes on
+/// the thread and none after.
 ///
-/// Only a backend that reclaims can tell ([`DomDocument::is_retired`]):
-/// `rinch-web` and the mock. On `rinch-dom` the node still re-inserts
-/// (issue #723), so there is no loss to report — and no warning that the same
-/// code loses the row in a browser.
+/// What this does **not** do:
+///
+/// - **Show anything by itself.** It is a `tracing::warn!`, seen only where a
+///   subscriber is installed. The desktop shell installs one, where
+///   `is_retired` is always `false`; `rinch-web` installs none (issue #1455)
+///   and neither does a `cargo test` run.
+/// - **Look inside the returned node.** A retired node nested in markup the
+///   closure built fresh is inserted (a no-op) by the closure's own
+///   `append_child`, not by a helper, and is neither counted nor warned about
+///   (issue #1456).
+/// - **Fire on `rinch-dom`.** Only a backend that reclaims can tell
+///   ([`DomDocument::is_retired`]): `rinch-web` and the mock. On `rinch-dom`
+///   the node still re-inserts (issue #723), so there is no loss to report —
+///   and no sign that the same code loses the row in a browser.
 pub(crate) fn warn_if_retired(node: &NodeHandle, helper: &'static str) {
     let Some(doc) = node.doc.upgrade() else {
         return;
