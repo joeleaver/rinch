@@ -76,8 +76,8 @@ rsx! {
 A handful of HTML attributes carry no useful string: their **presence** is their
 value. `disabled`, `checked`, `readonly`, `required`, `multiple`, `hidden`,
 `selected`, `open`, `autofocus` and the rest of the HTML boolean set are all of
-this kind, and so are rinch's own `data-disabled`, `data-nofocus` and
-`data-trap-focus`.
+this kind, and so are rinch's own `data-disabled`, `data-nofocus`,
+`data-trap-focus`, `data-backdrop` and `data-scroll-lock-exempt`.
 
 Write them as a `bool` — static or reactive — and `rsx!` renders the right
 *shape* rather than the string:
@@ -119,12 +119,13 @@ bare `""` that components write stays on.
 That rule is the **writer's**, and for the HTML set it is nobody's reader: no
 reader of `disabled`, `checked`, `readonly` and their kind has a falsey string on
 either backend, because a browser has none (issue #612). rinch's own
-`data-disabled`, `data-nofocus` and `data-trap-focus` — listed as boolean
+`data-disabled`, `data-nofocus`, `data-trap-focus`, `data-backdrop` and
+`data-scroll-lock-exempt` — listed as boolean
 attributes above — are the exception, and the only one: their readers do honour a
-literal `"false"`, on desktop through `rinch_core::dom::data_attr_is_on` and on
-the web through selectors like
+literal `"false"`, on desktop through `rinch_core::dom::data_attr_is_on` and,
+for the ones the web reads at all, through selectors like
 `[data-nofocus]:not([data-nofocus="false" i])`. That escape is narrower
-than the writer's rule, too: `"0"` is **on** for those three.
+than the writer's rule, too: `"0"` is **on** for those five.
 
 **Writing one by hand.** `set_attribute` is the *literal* primitive on both
 backends: it writes the string you give it, so `set_attribute("checked",
@@ -558,7 +559,8 @@ That covers `data-*`, `aria-*` and any other hyphenated name (issue #433). The
 rules are the HTML element's rules:
 
 - A **boolean attribute** — the HTML set and rinch's own `data-disabled`,
-  `data-nofocus`, `data-trap-focus` and `data-backdrop` — is written as a
+  `data-nofocus`, `data-trap-focus`, `data-backdrop` and
+  `data-scroll-lock-exempt` — is written as a
   presence for a truthy value and **removed** for a falsey one
   ([Boolean attributes](#boolean-attributes)). Any other attribute is written as
   the string.
