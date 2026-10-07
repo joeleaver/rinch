@@ -459,6 +459,12 @@ pub struct IfcTextRange {
     /// removed or expanded maps to the end of it. Read it through
     /// [`Self::dom_for_flat`] and [`Self::flat_for_dom`].
     pub offset_map: Vec<(usize, usize)>,
+    /// The colour this range's glyphs were shaped in — what
+    /// [`crate::ifc::text_color`] answered for the text node when the layout
+    /// was built. Paint asks again and draws in the answer it gets then, so
+    /// a colour written with no re-shape (a transition or animation frame)
+    /// is on screen without one (#679). Unused for a `<br>`.
+    pub color: peniko::Color,
 }
 
 impl IfcTextRange {
@@ -545,12 +551,16 @@ pub struct InlineBackgroundSpan {
 /// byte range over the flat IFC text, and painted as a zigzag path — the same
 /// shape [`InlineBackgroundSpan`] takes, and for the same reason.
 pub struct InlineDecorationSpan {
+    /// The element whose underline this is. Paint reads the colour from its
+    /// current style, as it reads a glyph's (#679).
+    pub owner: RawNodeId,
     /// Byte range start in the IFC `text_content`.
     pub start: usize,
     /// Byte range end (exclusive) in the IFC `text_content`.
     pub end: usize,
     /// The line's colour, already resolved: `text-decoration-color` when the
-    /// element set one, otherwise the element's own `color` (CSS `currentcolor`).
+    /// element set one, otherwise the element's own `color` (CSS `currentcolor`)
+    /// — as of the build, and drawn only if `owner` is gone by paint.
     pub color: peniko::Color,
 }
 
@@ -594,6 +604,10 @@ pub struct InlineLayout {
     pub child_positions: Vec<(RawNodeId, LayoutResult)>,
     /// Map from IFC flat byte ranges to DOM text nodes / `<br>` elements.
     pub text_ranges: Vec<IfcTextRange>,
+    /// The colour the root's own style gave the layout
+    /// ([`crate::ifc::root_text_color`] at the build): what text no range
+    /// covers was shaped in. See [`IfcTextRange::color`].
+    pub root_color: peniko::Color,
     /// Background spans for inline elements (code, mark, etc.).
     pub background_spans: Vec<InlineBackgroundSpan>,
     /// Wavy-underline spans (`text-decoration-style: wavy`), which Parley cannot

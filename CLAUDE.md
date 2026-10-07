@@ -2720,10 +2720,43 @@ box:
   frame. **Their Taffy re-sync marks atomic inlines separately**, because that
   pre-pass fires only for `font-size` while a `transition: width` on a box
   *inside* an `inline-block` is #661's own symptom reached without the cascade
-  (found by the review of #694). A `color` tick reaches a text **leaf** with no
-  invalidation at all, because paint colours a leaf from the live style (#904);
-  an IFC's `text_layout` carries the brush and is **not** dropped by a tick:
-  that is #679.
+  (found by the review of #694). **A running `color` frame re-shapes nothing, for a leaf or an IFC**
+  (the frame that ends the run rebuilds an IFC's paint layout once, below).
+  Paint colours a text leaf from the live style (#904). An IFC's `text_layout`
+  carries each run's colour as a brush, so paint asks every text range for its
+  colour again (#679): `ifc::text_color` — the `color` of the text node's DOM
+  parent — recorded at the build as `IfcTextRange::color` (the root's own as
+  `InlineLayout::root_color`, which is what a `text-overflow: ellipsis`
+  rebuild's text follows), and `paint::text::LiveColours` draws the ranges that
+  answer differently in the new colour, glyph by glyph where two ranges share a
+  Parley run. An underline or line-through follows only where it was
+  `currentcolor` (no `text-decoration-color` from the range's element up to the
+  IFC root); a wavy underline and an inline element's background rectangle
+  (colour, padding, radius) are read from their owner's style on every paint
+  (`ifc::wavy_underline_color`, `ifc::inline_background_span`). Two things a
+  tick still rebuilds a paint layout for, with no Taffy compute
+  (`settle_ticked_text`): the frame an inline element's background **appears**
+  on (the layout holds a span only for an element that had one), and the frame
+  a colour **stops** moving — a finished transition, an ended or fill-settled
+  animation — so later paints are back on the layout's own brushes rather than
+  recolouring stretch by stretch for good; every paint of an IFC still makes
+  the comparison, one pass over its text ranges
+  (`perf_regression_scenarios::a_colour_transition_frame_on_ifc_text_shapes_nothing`,
+  `the_frame_that_ends_a_colour_transition_rebuilds_one_layout`). An animation
+  paused by a restyle is re-shaped at its frozen colour by that restyle's
+  cascade (`rv_e_paused_animation`). A split inline's (#513) text is drawn by
+  its container's boxes, so `compute_damage` names each text child's `ifc_root`
+  for a paint-dirty split inline — without it the software renderer kept such
+  text in its start colour until the run ended (`rv_m5_damage_split_inline`).
+  Pins: `crates/rinch-dom/tests/animated_text_brush_679_tests.rs`. Not covered:
+  a span on a line cut by `text-overflow: ellipsis` keeps its start colour for
+  the whole run and is right once it ends — the flat rebuild records no text
+  ranges (#1451, pinned by `rv_b1_span_on_ellipsis_line_mid_run`); an ellipsis
+  line laid out by an anonymous block box keeps a stale colour, after a plain
+  class change too (#1450, older than #679; the four `rv_a*` fixtures are
+  `#[ignore]`d on it); a `padding` frame on an inline element still runs a
+  Taffy compute and a shape (#1437); and a `color` transition still stops at
+  its own node (text in a child that inherits takes the end colour at once).
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
   not the cascade's.** That pass stores it as `Display::None`
   (`node::display_contents_taffy_style`), while `to_taffy_style` maps `contents`
@@ -4786,6 +4819,8 @@ It falls out of that, with no special cases:
 | `if open { p { "hi" } }` — fresh markup | `discard` | the branch built it; nothing can show it again |
 | `if open { {panel} }` — a captured handle (the #654 shape) | `remove` | the closure was handed it; the next show puts it back |
 | a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
+| a `for` view that builds a row once **through `s.cache_scope()`** and caches it with that scope (#733) | `remove` | the row's scope did not mint it; the cache scope has no parent |
+| a `for` view that builds a row once **through the row's own scope** and caches it | `discard` — the row is lost on web; counted, and a `tracing` warning emitted, only when it is the closure's root node | the row's scope minted it |
 | a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
 | `if open { div { {panel} } }` — a captured handle *inside* branch-built markup | `remove` for `panel`, `discard` for the `div` | the walk below takes `panel` out before the recursive discard reaches it (#732) |
 
@@ -4836,15 +4871,96 @@ there is a JS call. Measured: +9.8% instructions on a 1000-row hide (`shell::bra
 `rinch-web/tests/{reinsertion,branch_reclaim_732,editor_in_branch_732}.rs`,
 `rinch/tests/embed_drop_minting_732.rs`.
 
-**One more shape is lost on web, and only `for` can reach it: #733.** A `view`
-closure that builds *lazily through the row's own scope* and caches afterwards
-owns its row by this rule, so the first removal discards it. A branch closure or
-a `render_fn` can build its cached subtree outside itself and capture it; a `for`
-view is only ever handed the row's scope, so lazy-build-then-cache is the only
-way to write it there. Both were equally lost before #719 —
-`rinch-web` pruned every removed subtree — and `branch_helper_transition_tests`
-passes on both because `rinch-dom` reclaims nothing (#723), which is a fixed
-point worth remembering when reading that file.
+**A cache filled from inside the closure builds through a cache scope (#733).**
+A `view` closure that builds *lazily through the row's own scope* and caches
+afterwards owns its row by this rule, so the first removal discards it — and
+disposes every effect, signal and handler it made, on every backend (the
+reactive half is #141's rule, not the node rule: counted on the mock, an effect
+built through the row scope did not run again for a write made after its row
+had left and come back). A
+branch closure or a `render_fn` can build its cached subtree outside itself and
+capture it; a `for` view is only ever handed the row's scope. So the view asks
+for a scope that is not the row's:
+
+```rust
+move |id: u32, s: &mut RenderScope| {
+    if let Some((row, _scope)) = cache.borrow().get(&id) {
+        return row.clone();
+    }
+    let mut keep = s.cache_scope();                  // parentless, same document
+    let row = keep.build(|__scope| rsx! { article { {id.to_string()} } });
+    cache.borrow_mut().insert(id, (row.clone(), keep));   // the scope stays with the node
+    row
+}
+```
+
+In `rsx!` that closure is the `for` body, where `__scope` is the row's scope:
+`for id in ids.get() { {cached_tab(__scope, &cache, id)} }`
+(`rinch-macros/tests/rsx_for_cache_scope_733.rs`).
+
+`RenderScope::cache_scope(&self) -> RenderScope` is `RenderScope::new` on the
+same document: no ancestry parent, so no hide or row removal discards what it
+mints, including a cached node nested in row-built markup (the #732 walk takes
+it out first). `RenderScope::build(&mut self, f) -> R` runs `f` with the scope
+as the **ambient owner**; forgetting it (building through the cache scope's
+`&mut` directly) is silent: the node comes back, but a `Signal::new`, memo or
+`onclick` made while building belonged to the row that happened to be rendering
+and was freed with it, so its writes are no-ops and its bindings never update.
+
+**The scope and the node are two values the caller releases in step, and
+nothing ties them** (one owning value is #1454): drop the scope and keep the
+node → an inert row; discard the node and keep the scope → its effects keep
+running against a retired node; **drop both without discarding — which is what
+dropping the cache does, when the component that owns it unmounts — → the
+effects stop and every cached node stays in the backend for the life of the
+page.** A parentless scope's nodes are only detached by the hide around them
+(#732's rule) and `RenderScope`'s `Drop` discards nothing. Measured on the mock
+and in Chrome 153: 50 mounts of a list of two cached rows leave **+200** nodes,
+and **0** when the owner drains the cache in `on_cleanup`:
+
+```rust
+let evict = cache.clone();
+__scope.on_cleanup(move || {
+    for (_, (row, keep)) in evict.borrow_mut().drain() {
+        keep.dispose();
+        row.discard();
+    }
+});
+```
+
+Evicting one entry is the same pair. A key that never returns holds its row
+until then. The `Changed` arm hands the same cached node back for a changed
+item under one key, so a cached row is not rebuilt when its item changes.
+
+**A closure whose ROOT node is retired is counted, and a `tracing` warning is
+emitted for it** — the old shape, still lost: `dom::warn_if_retired`, called on
+what every `for` (initial, insert and changed arms), `virtual_list`, `if`,
+`match` and component re-render closure **returns**, bumps a per-thread counter
+(`dom::__retired_view_returns() -> (returns, nodes warned)`) and emits one
+`tracing::warn!` per `(doc_key, node)`, for the first 32 nodes on a thread and
+none after. Three limits, each measured:
+
+- **Nobody sees the warning by default where it can fire.** The desktop shell
+  is the only place rinch installs a `tracing` subscriber, and there
+  `is_retired` is always `false`; `rinch-web` installs none (#1455) and a
+  `cargo test` run prints none. A test asserts on the counter.
+- **Only the returned node is asked.** A retired node nested in markup the
+  closure builds fresh (`for t in tabs { div { {cached} } }`) loses the row the
+  same way — the wrapper comes back empty — and is neither counted nor logged
+  (#1456).
+- It asks `DomDocument::is_retired` (default `false`), which `rinch-web` and
+  `MockDomDocument` answer from their node tables; **`rinch-dom` cannot tell**,
+  because its `discard` reclaims nothing (#723) and the row still comes back
+  there — so desktop alone gives no sign that the same code loses the row in a
+  browser, and `branch_helper_transition_tests`'s lazy `for` fixture still
+  passes on it.
+
+Pins: `reinsertion_tests::lazy_memo_733` and `cache_scope_733_tests` (mock),
+`rinch-web/tests/for_memo_733.rs` and `for_memo_733_shapes.rs` (Chrome 153),
+`rinch-macros/tests/rsx_for_cache_scope_733.rs` (the guide's recipe, compiled):
+the row comes back, its effect runs while it is out, 200 toggles grow the node
+count by 0, an eviction returns the count to where it was, and the two leak
+directions above.
 
 Every other release site says the verb outright, because it knows: the editor's
 `ViewDesc` diff (popped children, kind-changed blocks, placeholder, selection

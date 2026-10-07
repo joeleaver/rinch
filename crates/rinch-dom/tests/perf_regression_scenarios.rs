@@ -826,6 +826,98 @@ fn a_colour_hover_on_an_inline_flex_label_skips_layout() {
     );
 }
 
+/// A paragraph of ordinary (IFC) text part-way through a `transition:
+/// color`, and the frame that ends it (#679). A tick writes the colour with no
+/// cascade; paint draws each text range in the colour its element computes
+/// now, so a running frame is a tick and a paint. The ending frame rebuilds
+/// the one layout the colour was baked into, so later paints are back on the
+/// layout's own brushes.
+fn colour_transition_frames() -> (FrameStats, FrameStats, FrameStats) {
+    let mut doc = doc_with(
+        ".row { width: 200px; color: rgb(10, 10, 10); transition: color 100s linear; } \
+         .row.hot { color: rgb(200, 10, 10); }",
+    );
+    let body = doc.body();
+    let d = el(&mut doc, body, "div", "row");
+    text(&mut doc, d, "a paragraph of text");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.set_attribute(d, "class", "row hot");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0;
+    let frame = |doc: &mut RinchDocument, ago_ms: f64| {
+        for t in doc
+            .tree
+            .active_transitions
+            .get_mut(&d.0)
+            .into_iter()
+            .flat_map(|props| props.values_mut())
+        {
+            t.start_time_ms = now - ago_ms;
+        }
+        doc.tree.perf.reset();
+        doc.tick_transitions();
+        doc.resolve_layout(VP.0, VP.1);
+        paint(doc);
+        doc.tree.perf.end_frame()
+    };
+    let running = frame(&mut doc, 40_000.0);
+    let ending = frame(&mut doc, 200_000.0);
+    let after = frame(&mut doc, 200_000.0);
+    (running, ending, after)
+}
+
+#[test]
+fn a_colour_transition_frame_on_ifc_text_shapes_nothing() {
+    let (running, _, _) = colour_transition_frames();
+    expect(
+        "colour transition, running frame",
+        &running,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+#[test]
+fn the_frame_that_ends_a_colour_transition_rebuilds_one_layout() {
+    let (_, ending, after) = colour_transition_frames();
+    // One paint layout rebuilt (`ShapeIfcBuild`), with its cached measures
+    // dropped beside it (`IfcMeasureInvalidations`), and no Taffy compute:
+    // `LayoutSkippedTextOnly`. What a colour-only hover costs.
+    expect(
+        "colour transition, ending frame",
+        &ending,
+        &[
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+    expect(
+        "colour transition, the frame after",
+        &after,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 // ── pseudo_element_passes ──────────────────────────────────────────────────
 
 /// A sheet with a `::before` rule and no `::after` rule: one pass per cascaded

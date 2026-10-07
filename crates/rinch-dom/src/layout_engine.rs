@@ -2384,6 +2384,34 @@ impl RinchDocument {
         }
     }
 
+    /// Drop the inline layouts `node_id`'s `color` is baked into as a brush:
+    /// the IFC the node is in or is the root of, and the anonymous boxes that
+    /// lay out its own text runs. Those are roots
+    /// [`Self::invalidate_text_measure_for_node`] reaches; the rest of what
+    /// that does is not owed. A colour moves no box and is no input of a text
+    /// leaf's layout (paint colours a leaf from the live style, #904), so no
+    /// atomic inline and no flex item's measure is marked, and a node in no
+    /// IFC — a flex container whose text is a leaf — drops nothing.
+    pub(crate) fn invalidate_text_brushes_for_node(&mut self, node_id: usize) {
+        let node = &self.tree.nodes[node_id];
+        let mut roots = node.run_boxes.clone();
+        roots.extend(node.ifc_root);
+        roots.extend(node.children.iter().filter_map(|&child| {
+            let child = self.tree.nodes.get(child)?;
+            matches!(child.kind, NodeKind::Text(_))
+                .then_some(child.ifc_root)
+                .flatten()
+        }));
+        if self.holds_ifc_layout(node_id) {
+            roots.push(node_id);
+        }
+        roots.sort_unstable();
+        roots.dedup();
+        for root in roots {
+            self.invalidate_ifc_root(root);
+        }
+    }
+
     /// Invalidate the IFC that owns a node (if any).
     ///
     /// Clears the IFC root's cached text_layout so it rebuilds on next layout pass.

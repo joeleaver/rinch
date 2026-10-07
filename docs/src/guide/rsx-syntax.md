@@ -850,6 +850,118 @@ and it is only ever detached. A `RenderScope::new` placed inside a branch's
 markup belongs to no branch, so a hide only detaches its nodes; if nothing
 shows them again they are never reclaimed.
 
+#### A cache filled from inside a `for`
+
+An `if` can be handed a panel that was built before it. A `for` row usually
+cannot: the row's subtree depends on the item, so a cache of rows is filled
+*inside* the row's body, the first time each key is seen. Everything built
+through the scope the body is given belongs to the row — its nodes are discarded
+when the key leaves the list, and its effects, signals and event handlers are
+disposed — so a row cached that way is gone the next time its key appears
+(issue #733). On `rinch-web` nothing is shown for it; on desktop the nodes come
+back and their reactive bindings do not.
+
+Build a cached row through a **cache scope** instead, and keep the scope with
+the row:
+
+```rust
+type TabCache = Rc<RefCell<HashMap<u32, (NodeHandle, RenderScope)>>>;
+
+/// Hand back the cached tab, or build it once and keep its scope with it.
+fn cached_tab(scope: &mut RenderScope, cache: &TabCache, id: u32) -> NodeHandle {
+    if let Some((tab, _keep)) = cache.borrow().get(&id) {
+        return tab.clone();
+    }
+    let mut keep = scope.cache_scope();
+    let tab = keep.build(|__scope| rsx! {
+        article { {expensive_tab(__scope, id)} }
+    });
+    cache.borrow_mut().insert(id, (tab.clone(), keep));
+    tab
+}
+
+#[component]
+fn tab_strip(open_tabs: Signal<Vec<u32>>) -> NodeHandle {
+    let cache = TabCache::default();
+    // Let go of every cached tab when the strip unmounts.
+    let evict = cache.clone();
+    __scope.on_cleanup(move || {
+        for (_, (tab, keep)) in evict.borrow_mut().drain() {
+            keep.dispose();
+            tab.discard();
+        }
+    });
+    rsx! {
+        div {
+            for id in open_tabs.get() {
+                {cached_tab(__scope, &cache, id)}
+            }
+        }
+    }
+}
+```
+
+(This block is compiled and run as
+`crates/rinch-macros/tests/rsx_for_cache_scope_733.rs`.)
+
+- `scope.cache_scope()` returns a new `RenderScope` on the same document that
+  belongs to no row and no branch. Nothing the list does discards what it
+  builds.
+- `keep.build(|__scope| …)` builds through it **and** makes it the owner of
+  every `Signal::new`, `Memo::new`, store and event handler created inside.
+  **Do not skip `build`** and use the cache scope's `&mut` directly: the row
+  then comes back with its nodes, but a `Signal::new`, a memo or an `onclick`
+  made while building belonged to the row that happened to be rendering and was
+  freed with it. A write to that signal is then a no-op, the bindings that read
+  it never update, and nothing panics or warns.
+- **The scope and the node are released together, by you.** They are two
+  values, and nothing ties them:
+  - drop the scope and keep the node, and the node comes back inert — its
+    effects, signals and handlers were disposed;
+  - discard the node and keep the scope, and its effects go on running against
+    a node that no longer exists, for as long as the scope lives;
+  - **drop both without discarding the node** — which is what happens when the
+    cache itself is dropped, because the component that owns it unmounted — and
+    the effects stop but every cached node stays in the backend for the life of
+    the page. Measured on the mock and in Chrome 153: 50 mounts of a list of
+    two cached rows leave 200 nodes behind without the `on_cleanup` above, and
+    none with it.
+
+  So evicting one entry is `scope.dispose()` and then `node.discard()`, and a
+  cache owned by anything that can unmount drains itself in `on_cleanup`, as
+  `tab_strip` does. A key that never comes back holds its row until then. (One
+  value that owns both and releases them in step is issue #1454.)
+- **A cached row is not rebuilt when its item changes.** The body is called
+  again for a changed item under the same key and hands the same node back, so
+  anything in it that should follow the item has to be reactive.
+
+The same works in an `if` or `match` body whose cache is filled lazily.
+
+**What tells you when a cached row was built the wrong way.** If a body's
+**root** node — the node the body itself evaluates to — was already discarded,
+rinch counts it and emits a `tracing` warning that names `cache_scope`, once per
+node and for at most 32 nodes per thread. That is narrower than it sounds:
+
+- **It is a `tracing` event, and nothing shows it unless a subscriber is
+  installed.** The desktop shell installs one; `rinch-web` installs none (issue
+  #1455), so a browser app sees it only with a console subscriber of its own
+  (the `tracing-wasm` crate is one), and `cargo test` prints it only if the
+  test installs one (`tracing_subscriber::fmt().with_test_writer()`). What a
+  test can assert on without one is the counter,
+  `rinch_core::dom::__retired_view_returns()` — `(returns seen, nodes warned
+  about)` on the current thread.
+- **Only a backend that reclaims discarded nodes can notice**: `rinch-web`, and
+  the `MockDomDocument` your component tests run on. Desktop reclaims nothing
+  yet, so it shows the row and reports nothing.
+- **A discarded node nested in fresh markup is not noticed.**
+  `for t in tabs.get() { div { class: "tab", {cached} } }` with `cached` built
+  through the row's scope loses the row in the same way — the `div` comes back
+  empty — and nothing is counted or logged, because the body's root is the
+  fresh `div` (issue #1456).
+
+So the absence of a warning proves nothing: test a cached list on the mock or
+in a browser, not only on desktop, and assert that the row is there.
+
 Two more things to know. The branch's `RenderScope` is disposed on every hide,
 so effects *created inside the branch closure* stop; put the reactive wiring in
 the same scope as the `panel` binding, not in the closure. And a subtree that is
