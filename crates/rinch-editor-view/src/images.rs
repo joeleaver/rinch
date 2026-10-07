@@ -36,15 +36,17 @@ pub struct ImageInput {
     /// How it arrived.
     pub source: ImageInputSource,
     /// The picture's **encoded** bytes: a file's contents, as they would sit on
-    /// disk. A pasted bitmap is encoded as PNG first; a dropped file's bytes
-    /// are the file's, untouched.
+    /// disk. On desktop a pasted bitmap is encoded as PNG first; a dropped
+    /// file's bytes, and in the browser a pasted file's, are the file's,
+    /// untouched.
     pub bytes: Vec<u8>,
-    /// The media type of `bytes`: `image/png` for a pasted bitmap; for a
-    /// dropped file what its first bytes say it is (`image/png`, `image/jpeg`,
-    /// `image/gif`, `image/webp`).
+    /// The media type of `bytes`: what their first bytes say they are
+    /// (`image/png`, `image/jpeg`, `image/gif`, `image/webp`), else, in the
+    /// browser, what the browser called the file (`image/svg+xml`, …).
     pub mime: String,
-    /// The dropped file's name (`holiday.jpg`), without its directory. `None`
-    /// for a paste: a clipboard bitmap has no name.
+    /// The file's name (`holiday.jpg`), without its directory. On desktop
+    /// `None` for a paste: a clipboard bitmap has no name. The browser names
+    /// every pasted file (`image.png` for a bitmap).
     pub name: Option<String>,
     /// Where the picture goes: the selection at the paste, or the caret at the
     /// drop point, **anchored**, so it still names the same place after the

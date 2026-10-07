@@ -2505,11 +2505,15 @@ impl EditorHandle {
     /// with ([`Plugin::handle_paste`] is where an app rewrites those).
     ///
     /// **With no callback registered** nothing here applies and the platform
-    /// keeps its default: on desktop a pasted bitmap is inserted as a PNG
-    /// `data:` URL, and a file drop goes to the app's own file-drop handler.
+    /// keeps its default: a pasted bitmap is inserted as a `data:` URL, and a
+    /// file drop goes to the app's own file-drop handler on desktop and to the
+    /// browser on the web.
     ///
-    /// **Desktop only for now**: the browser runtime does not offer pictures
-    /// yet. Registering is harmless there.
+    /// The same on both platforms. In the browser a pasted or dropped picture
+    /// is a `File`: its bytes are offered untouched (a pasted bitmap arrives
+    /// from the browser as a PNG file), `name` is the browser's name for it
+    /// for a paste as well, and a dropped file counts as an image when the
+    /// browser says so.
     ///
     /// The callback runs with no internal borrow held, so it may re-enter the
     /// handle. Registered while a component renders it belongs to that
