@@ -2886,6 +2886,12 @@ pub struct NodeTree {
     /// and asks here; `resolve_percentage_inline_blocks` measures them after
     /// the compute and has it run again.
     pub(crate) atomic_min_requests: std::cell::RefCell<Vec<RawNodeId>>,
+    /// Whether the last `resolve_percentage_inline_blocks` found a box in
+    /// `atomic_min_requests`: a measure before it lined that box up at a
+    /// stand-in size, so the compute after it can size a container
+    /// differently, and the pass has to look at the boxes once more after
+    /// that compute.
+    pub(crate) atomic_contributions_changed: bool,
     /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
     /// to clear after the frame's style pass.
     pub styled_unrendered: Vec<RawNodeId>,
@@ -3119,6 +3125,7 @@ impl NodeTree {
             auto_inline_percent_content: HashSet::new(),
             atomic_min_content: HashMap::new(),
             atomic_min_requests: std::cell::RefCell::new(Vec::new()),
+            atomic_contributions_changed: false,
             styled_unrendered: Vec::new(),
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),

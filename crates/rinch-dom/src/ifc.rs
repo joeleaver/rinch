@@ -448,7 +448,11 @@ impl AtomicContributions<'_> {
                 .get(&id)
                 .is_some_and(|&w| (w - wrap).abs() < 0.01)
         {
-            return layout;
+            // Capped: its margin box, as below.
+            return match plain_shrink_to_fit_margins(&node.computed_style) {
+                Some(margins) if layout.0 + 0.5 < natural.0 => (layout.0 + margins, layout.1),
+                _ => layout,
+            };
         }
         let Some(margins) = plain_shrink_to_fit_margins(&node.computed_style) else {
             return layout;
@@ -463,13 +467,18 @@ impl AtomicContributions<'_> {
             self.requests.borrow_mut().push(id);
             return at(natural.0, natural.1);
         };
+        // A capped box is lined up at its **margin box**: the line is then
+        // as wide as what the box takes of it, so a container sized from
+        // this answer leaves the box the width it was capped at here once
+        // its margins come out again. (A box that fits is lined up without
+        // them, as the paint layout lines every box up.)
         match atomic_inline_capped_width(min_width, natural.0, stretch) {
             None => at(natural.0, natural.1),
-            Some(fit) if fit == min_width => at(fit, min_height),
+            Some(fit) if fit == min_width => (fit + margins, min_height),
             // Its height at a width it has not been laid out at is not
             // known; the one it has stands in until
             // `resolve_percentage_inline_blocks` lays it out there.
-            Some(fit) => at(fit, layout.1),
+            Some(fit) => (fit + margins, layout.1),
         }
     }
 }
@@ -5638,7 +5647,7 @@ impl RinchDocument {
         // width, and one sized earlier in the pass for another reason was never
         // sized again (both found by the scoped pass's random differential).
         let mut changed = false;
-        while let Some((_, id)) = pending.pop_last() {
+        while let Some((depth, id)) = pending.pop_last() {
             // The predicate is `inline_block_measure_roots`' — a node may have
             // been removed, or have stopped being an atomic inline, since it
             // was marked.
@@ -5655,6 +5664,13 @@ impl RinchDocument {
             if !self.tree.atomic_min_content.is_empty() {
                 self.tree.atomic_min_content.remove(&id);
             }
+            // A box inside that was resolved against its containing block
+            // (a percentage width) is lined up at the size that gave it, so
+            // this box's `auto` size would depend on what its containing
+            // block was before the change. Measured as `auto` first — what
+            // a fresh layout has when it measures this box — and resolved
+            // again after the compute, as every such box is.
+            self.reset_resolved_atomic_inlines_inside(id, depth, false);
             // Taffy caches a measure per (node, available space), and the
             // previous pass measured this box at exactly the available space
             // this one will ask for — so without a mark the stale size is
@@ -6583,10 +6599,12 @@ impl RinchDocument {
         // computes above — lined up at their max-content size for want of a
         // min-content one (#1476). One capped above has it by now.
         let asked = std::mem::take(&mut *self.tree.atomic_min_requests.borrow_mut());
-        if !asked.is_empty() && self.measure_atomic_min_contents(asked, true) {
-            changed = true;
-        }
-        changed
+        // Asked at all: some measure used a stand-in, whether its box was
+        // measured here or by the capping above, so the pass has to look
+        // again after the compute that uses the real size.
+        self.tree.atomic_contributions_changed = !asked.is_empty();
+        let measured = !asked.is_empty() && self.measure_atomic_min_contents(asked, true);
+        changed || measured
     }
 
     /// Phase 1's reset (see `resolve_percentage_inline_blocks`): measure

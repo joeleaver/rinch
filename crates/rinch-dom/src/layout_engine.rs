@@ -408,10 +408,15 @@ impl RinchDocument {
         // it up at its max-content width for want of its min-content one;
         // the pass measures that, the next compute sizes the container from
         // it, and the pass after caps the box in it.
+        // A pass that measured no such size is followed by one compute and
+        // no further pass, as before.
         let mut inline_rounds_left = 4;
         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
             inline_rounds_left -= 1;
+            if !self.tree.atomic_contributions_changed {
+                break;
+            }
         }
 
         // #386: an absolute box whose containing block is an ancestor that is
@@ -492,6 +497,9 @@ impl RinchDocument {
                         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
                             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
                             inline_rounds_left -= 1;
+                            if !self.tree.atomic_contributions_changed {
+                                break;
+                            }
                         }
                     }
                     fixpoint_passes += 1;

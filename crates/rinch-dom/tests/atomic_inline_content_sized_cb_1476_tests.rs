@@ -236,16 +236,6 @@ const CHROME: &[(&str, &str, &str)] = &[
         "o=300.0x40.0 f=300.0x40.0 t=150.0x20.0",
     ),
     (
-        "d03_pct_max_width_in_flex_item",
-        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;max-width:80%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=400.0x40.0 t=320.0x40.0",
-    ),
-    (
-        "d04_fit_content_in_flex_item",
-        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;width:fit-content">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=400.0x40.0 t=400.0x40.0",
-    ),
-    (
         "d06_button_in_narrow_item",
         r##"<div style="width:100px;display:flex"><div data-m="f">Label <span data-m="t" style="display:inline-flex;padding:0 8px">Add item now</span></div></div>"##,
         "f=100.0x60.0 t=100.0x40.0",
@@ -274,11 +264,6 @@ const CHROME: &[(&str, &str, &str)] = &[
         "d11_inline_flex_row_of_boxes",
         r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="o" style="display:inline-flex"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy</span><span data-m="u" style="display:inline-block">milliliters WWW mmm Wavy milliliters</span></span></div></div>"##,
         "o=400.0x40.0 f=400.0x40.0 t=190.9x40.0 u=209.1x40.0",
-    ),
-    (
-        "d12_abs_right_only",
-        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;right:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=380.0x40.0 t=380.0x40.0",
     ),
     (
         "d14_column_start_margins",
@@ -312,6 +297,27 @@ const GAPS: &[(&str, &str, &str, &str, &str)] = &[
         "f=400.0x40.0 t=400.0x40.0",
         "f=380.0x40.0 t=380.0x40.0",
         "#1404: Taffy shrinks an auto-width absolute box to fit its parent's width, not that width less its insets",
+    ),
+    (
+        "d03_pct_max_width_in_flex_item",
+        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;max-width:80%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=278.0x60.0 t=278.0x60.0",
+        "f=400.0x40.0 t=320.0x40.0",
+        "a percentage `max-width` is not plain shrink-to-fit: the box is lined up at the size it has, which its own cyclic percentage shrinks (the #1293 class)",
+    ),
+    (
+        "d04_fit_content_in_flex_item",
+        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;width:fit-content">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=544.0x20.0 t=544.0x20.0",
+        "f=400.0x40.0 t=400.0x40.0",
+        "a `fit-content` width is not `auto`: the box is lined up at the size it has (max-content)",
+    ),
+    (
+        "d12_abs_right_only",
+        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;right:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x40.0 t=400.0x40.0",
+        "f=380.0x40.0 t=380.0x40.0",
+        "#1404, as c17",
     ),
 ];
 
@@ -374,6 +380,10 @@ const SHAPES: &[(&str, &str)] = &[
     (
         "fit_content_block",
         r#"<div data-m="c" style="width:{W}px"><div data-m="f" style="width:fit-content">ab <span data-m="t" style="display:inline-block">{T}</span></div></div>"#,
+    ),
+    (
+        "column_start_margins",
+        r#"<div data-m="c" style="width:{W}px;display:flex;flex-direction:column;align-items:flex-start"><div data-m="f"><span data-m="t" style="display:inline-block;margin:0 30px">{T}</span></div></div>"#,
     ),
     (
         "percentage_box_inside",
