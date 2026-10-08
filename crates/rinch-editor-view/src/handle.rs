@@ -2887,9 +2887,10 @@ impl EditorHandle {
     ///   [`NodeHandle::focus`](rinch_core::dom::NodeHandle::focus) posts, which
     ///   now focuses an editor container too). The runtime applies it after the
     ///   current event or effect, through the focus arbiter, as
-    ///   `FocusTarget::Editor`: at once when called from an event handler, and
-    ///   on the next turn of the event loop otherwise. [`selection`](Self::selection)
-    ///   is unaffected either way. A [`blur`](Self::blur) in the same turn is
+    ///   `FocusTarget::Editor`: right after the handler of a click or of an
+    ///   Enter/Space activation, otherwise before the next key press, pointer
+    ///   press or IME event is routed, and at the latest on the next turn of
+    ///   the event loop. [`selection`](Self::selection) is unaffected either way. A [`blur`](Self::blur) in the same turn is
     ///   applied in call order with it: the later of the two wins.
     /// - **Web** focuses the editor's hidden capture textarea on the spot, as a
     ///   mousedown in the editor does, with `preventScroll`.
@@ -2924,21 +2925,36 @@ impl EditorHandle {
     ///
     /// - **Desktop** posts a release that the runtime applies through the
     ///   focus arbiter at the same point as [`focus`](Self::focus)'s request:
-    ///   at once when called from an event handler, and on the next turn of
-    ///   the event loop otherwise. The two are applied **in the order they
-    ///   were called**, so `focus(); blur()` in one handler or effect leaves
+    ///   right after the handler of a click or of an Enter/Space activation,
+    ///   otherwise before the next key press, pointer press or IME event is
+    ///   routed (so a key already queued behind the one whose handler blurred
+    ///   does not reach this editor), and at the latest on the next turn of
+    ///   the event loop. The two are applied **in the order they were
+    ///   called**, so `focus(); blur()` in one handler or effect leaves
     ///   nothing focused, `blur(); focus()` leaves the editor focused, and
     ///   neither call discards a focus request posted by anything else (an
     ///   overlay opening keeps its focus move). Whether the editor holds the
-    ///   keyboard is judged then, after the requests before it.
+    ///   keyboard is judged then, after the requests before it. Effects a
+    ///   signal write queued earlier in the same handler run first, as before
+    ///   any `NodeHandle` call, so `open.set(false); editor.blur()` releases
+    ///   after the closing overlay handed focus back. A composition in
+    ///   progress is dropped with the keyboard (the preedit is cleared, not
+    ///   committed).
     /// - **Web** blurs the editor's hidden capture textarea on the spot, if
     ///   this editor is the focused one and the textarea is the document's
     ///   active element; focus goes to the page body, as a browser's own
-    ///   `blur()` does.
+    ///   `blur()` does. The textarea is blurred while the editor is still the
+    ///   focused one, so the `compositionend` a browser raises inside the
+    ///   focus change commits a composition in progress, as a press that
+    ///   moves focus away does.
     ///
     /// **Before mount, a no-op.** Blurring an editor that is not focused
     /// changes nothing.
     pub fn blur(&self) {
+        // Program order (the `NodeHandle` rule): an effect queued by a signal
+        // write before this call — an overlay closing and handing focus back,
+        // an effect that focuses — posts its focus work first.
+        rinch_core::reactive::flush_pending_effects();
         let Some((container, doc_key)) = self
             .core()
             .view

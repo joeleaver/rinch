@@ -657,10 +657,10 @@ fn blur_editor(container_nid: usize) {
         return;
     }
     end_context_menu_cycle();
-    // Released first, so the `blur` the browser raises inside `ta.blur()` finds
-    // no editor to release and repaints nothing on its own.
-    set_focused_editor(None);
-    set_goal_x(None);
+    // The textarea is blurred while the editor is still the focused one: a
+    // browser ends a live composition inside `ta.blur()` (`compositionend`,
+    // before `blur`), and that has to reach this editor to commit the text
+    // and take its preedit down, as it does when a press moves focus away.
     if let Some(ta) = capture_target() {
         let field_active = web_sys::window()
             .and_then(|w| w.document())
@@ -669,6 +669,10 @@ fn blur_editor(container_nid: usize) {
             let _ = ta.blur();
         }
     }
+    // Released here whatever `on_capture_blur` did (it keeps the editor while
+    // the page itself lacks the focus).
+    set_focused_editor(None);
+    set_goal_x(None);
     refresh_caret();
 }
 

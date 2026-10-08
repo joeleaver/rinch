@@ -106,7 +106,10 @@ fn preedit_shown(app: &RinchApp) -> bool {
     let d = doc.borrow();
     d.tree.nodes.iter().any(|(_, n)| {
         n.attributes.contains_key("data-pm-preedit")
-            && !n.attributes.get("style").is_some_and(|s| s.contains("display: none"))
+            && !n
+                .attributes
+                .get("style")
+                .is_some_and(|s| s.contains("display: none"))
     })
 }
 
@@ -167,7 +170,10 @@ fn p2_blur_mid_preedit() {
     p.a.focus();
     idle(&mut p.app);
     assert_eq!(p.app.focus_target, FocusTarget::Editor(p.a_id));
-    assert!(!preedit_shown(&p.app), "the composition ended with the blur: focus brings no preedit back");
+    assert!(
+        !preedit_shown(&p.app),
+        "the composition ended with the blur: focus brings no preedit back"
+    );
 }
 
 /// P2b: the same through a press on the <input> (no blur()): is it pre-existing?
@@ -193,7 +199,10 @@ fn p2b_press_away_mid_preedit() {
     p.a.focus();
     idle(&mut p.app);
     assert_eq!(p.app.focus_target, FocusTarget::Editor(p.a_id));
-    assert!(!preedit_shown(&p.app), "the composition ended with the blur: focus brings no preedit back");
+    assert!(
+        !preedit_shown(&p.app),
+        "the composition ended with the blur: focus brings no preedit back"
+    );
 }
 
 /// P3: the caret stays hidden through a relayout after blur.
@@ -207,7 +216,8 @@ fn p3_caret_stays_hidden_after_relayout() {
     assert!(!caret_shown(&p.app));
     p.app.resolve_and_repaint(700.0, 500.0);
     for _ in 0..4 {
-        p.app.handle_event(PlatformEvent::AboutToWait, (700, 500), 1.0);
+        p.app
+            .handle_event(PlatformEvent::AboutToWait, (700, 500), 1.0);
     }
     assert!(!caret_shown(&p.app), "still hidden after a relayout");
     // a programmatic selection change on the blurred editor draws no caret
@@ -240,7 +250,11 @@ fn p4_blur_from_on_key_then_a_key_in_the_same_batch() {
         "P4 focus right after the Escape handler = {right_after:?}; A's line = {:?}",
         first_line(&p.a)
     );
-    assert_eq!(p.app.focus_target, FocusTarget::None, "after the frame clock");
+    assert_eq!(
+        p.app.focus_target,
+        FocusTarget::None,
+        "after the frame clock"
+    );
     assert_eq!(first_line(&p.a), "line 0", "the key after the blur typed");
 }
 
@@ -290,8 +304,16 @@ fn p7_two_documents() {
     focus_a(&mut p2);
     p1.a.blur();
     idle(&mut p2.app);
-    assert_eq!(p2.app.focus_target, FocusTarget::Editor(p2.a_id), "doc 2 untouched");
-    assert_eq!(p1.app.focus_target, FocusTarget::Editor(p1.a_id), "not yet applied");
+    assert_eq!(
+        p2.app.focus_target,
+        FocusTarget::Editor(p2.a_id),
+        "doc 2 untouched"
+    );
+    assert_eq!(
+        p1.app.focus_target,
+        FocusTarget::Editor(p1.a_id),
+        "not yet applied"
+    );
     idle(&mut p1.app);
     assert_eq!(p1.app.focus_target, FocusTarget::None);
     assert_eq!(p2.app.focus_target, FocusTarget::Editor(p2.a_id));
@@ -326,6 +348,13 @@ fn p9_signal_write_whose_effect_focuses_then_blur() {
         a.blur(); // ... then blur
     });
     idle(&mut p.app);
-    eprintln!("P9 focus after set(effect focuses); blur() = {:?}", p.app.focus_target);
-    assert_eq!(p.app.focus_target, FocusTarget::None, "set (its effect focuses) then blur(): the later call wins");
+    eprintln!(
+        "P9 focus after set(effect focuses); blur() = {:?}",
+        p.app.focus_target
+    );
+    assert_eq!(
+        p.app.focus_target,
+        FocusTarget::None,
+        "set (its effect focuses) then blur(): the later call wins"
+    );
 }

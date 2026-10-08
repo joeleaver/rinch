@@ -179,7 +179,6 @@ fn focused_a(f: &Fixture) {
     assert_eq!(f.carets_visible(), 1, "control: A's caret is drawn");
 }
 
-
 // ── review probes ────────────────────────────────────────────────────────────
 
 fn capture() -> web_sys::HtmlTextAreaElement {
@@ -206,7 +205,10 @@ fn preedits() -> u32 {
     (0..all.length())
         .filter_map(|i| all.item(i))
         .filter_map(|n| n.dyn_into::<web_sys::Element>().ok())
-        .filter(|e| !e.get_attribute("style").is_some_and(|s| s.contains("display: none")))
+        .filter(|e| {
+            !e.get_attribute("style")
+                .is_some_and(|s| s.contains("display: none"))
+        })
         .count() as u32
 }
 
@@ -215,16 +217,20 @@ fn preedits() -> u32 {
 /// field's `blur` listeners run. A synthetic composition is not ended by the
 /// browser, so this stands in for it: a capture listener on the document,
 /// which runs before the textarea's own `blur` listener.
-fn end_composition_on_blur(data: &'static str) -> wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)> {
-    let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
-        let ta = capture();
-        let is_ta = e
-            .target()
-            .is_some_and(|t| t.dyn_ref::<web_sys::Element>() == Some(ta.as_ref()));
-        if is_ta {
-            composition("compositionend", data);
-        }
-    });
+fn end_composition_on_blur(
+    data: &'static str,
+) -> wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)> {
+    let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
+        move |e: web_sys::Event| {
+            let ta = capture();
+            let is_ta = e
+                .target()
+                .is_some_and(|t| t.dyn_ref::<web_sys::Element>() == Some(ta.as_ref()));
+            if is_ta {
+                composition("compositionend", data);
+            }
+        },
+    );
     document()
         .add_event_listener_with_callback_and_bool("blur", cb.as_ref().unchecked_ref(), true)
         .unwrap();
@@ -268,12 +274,19 @@ fn w1_blur_mid_composition_leaves_no_preedit() {
         .unwrap();
     assert!(!f.capture_has_focus());
     let left = preedits();
-    console_log!("W1 preedit nodes after blur(): {left}; A = {:?}", f.first_line(0));
+    console_log!(
+        "W1 preedit nodes after blur(): {left}; A = {:?}",
+        f.first_line(0)
+    );
     assert_eq!(left, 0, "a blurred editor shows no preedit");
     // And the next composition anywhere is not confused by a stale flag: A
     // focused again types.
     f.a.focus();
-    assert_eq!(preedits(), 0, "the composition ended with the blur: focus brings no preedit back");
+    assert_eq!(
+        preedits(),
+        0,
+        "the composition ended with the blur: focus brings no preedit back"
+    );
     f.teardown();
 }
 

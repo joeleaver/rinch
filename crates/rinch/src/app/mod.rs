@@ -65,8 +65,6 @@ mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_blur_tests;
 #[cfg(all(test, feature = "desktop"))]
-mod review_1481_probe_tests;
-#[cfg(all(test, feature = "desktop"))]
 mod editor_caret_affinity_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
@@ -187,6 +185,8 @@ mod popover_dropdown_transform_hit_test_tests;
 mod repaint_old_rect_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod review_1429_pimble_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod review_1481_probe_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]

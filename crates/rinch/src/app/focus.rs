@@ -315,6 +315,7 @@ impl RinchApp {
                 // change doesn't dirty layout, so the post-layout caret pass may
                 // short-circuit; hide explicitly here at the focus choke-point.
                 if let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), prev) {
+                    handle.ime_clear_preedit();
                     handle.hide_overlays();
                 }
             }

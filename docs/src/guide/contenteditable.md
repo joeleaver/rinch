@@ -671,9 +671,20 @@ On **desktop** it posts a release that the runtime applies at the same point as
 `focus(); blur()` in one handler or effect leaves nothing focused and
 `blur(); focus()` leaves the editor focused. A release never displaces a focus
 request posted by anything else (an overlay opening still moves focus into itself),
-and several releases in one turn are all applied. On the **web** it blurs the hidden
+and several releases in one turn are all applied. Both are applied right after a
+click or Enter/Space handler, otherwise before the next key press, pointer press or
+IME event is routed — a key already queued behind the Escape whose `on_key` called
+`blur()` does not reach the editor — and at the latest on the next turn of the event
+loop. On the **web** it blurs the hidden
 capture textarea during the call if this editor is the focused one; focus goes to
 the page body, as a browser's own `blur()` does.
+
+Effects queued by a signal write earlier in the same handler run before the blur, as
+they do before any `NodeHandle` call, so `open.set(false); editor.blur()` leaves
+nothing focused even when the closing overlay hands focus back to the editor. A
+composition in progress ends with the blur and leaves no preedit behind: the web
+commits it (the browser's `compositionend` reaches the editor before it lets go),
+desktop drops it.
 
 All three are **no-ops before the editor is mounted**, and nothing is remembered for the
 mount: call them after the `Editor {}` has rendered.

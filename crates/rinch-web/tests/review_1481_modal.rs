@@ -155,10 +155,17 @@ async fn w2a_open_then_blur_in_one_batch() {
     assert!(!caret_visible());
     f.open.set(false);
     microtask().await;
-    console_log!("W2a after close active = {:?} tag={:?}", active_id(), document().active_element().map(|e| e.tag_name()));
+    console_log!(
+        "W2a after close active = {:?} tag={:?}",
+        active_id(),
+        document().active_element().map(|e| e.tag_name())
+    );
     let before = f.handle.doc().content().size();
     f.handle.insert_text("!");
-    assert!(f.handle.doc().content().size() > before, "the editor still edits");
+    assert!(
+        f.handle.doc().content().size() > before,
+        "the editor still edits"
+    );
     f.root.unmount();
     f.host.remove();
 }
@@ -185,7 +192,11 @@ async fn w2b_blur_then_open_and_blur_from_an_effect() {
     assert!(!caret_visible());
     f.open.set(false);
     microtask().await;
-    console_log!("W2b after close active = {:?} tag={:?}", active_id(), document().active_element().map(|e| e.tag_name()));
+    console_log!(
+        "W2b after close active = {:?} tag={:?}",
+        active_id(),
+        document().active_element().map(|e| e.tag_name())
+    );
     f.handle.focus();
     microtask().await;
     assert!(caret_visible(), "focus() brings the caret back");
