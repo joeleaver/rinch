@@ -65,6 +65,8 @@ mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_blur_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod review_1481_probe_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_caret_affinity_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
