@@ -1760,8 +1760,7 @@ impl RinchApp {
                 }
                 // Process any pending input focus request (e.g., from an Effect
                 // triggered by run_on_main_thread that called request_focus).
-                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
-                    self.apply_focus_request(request);
+                if self.drain_focus_requests(true) {
                     actions.push(AppAction::RequestRedraw);
                 }
                 // And any pending set_selection_range()/select() (issue #552),
@@ -1904,8 +1903,7 @@ impl RinchApp {
                 }
 
                 // Process any pending input focus request from effects
-                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
-                    self.apply_focus_request(request);
+                if self.drain_focus_requests(true) {
                     actions.push(AppAction::RequestRedraw);
                 }
                 // And any pending set_selection_range()/select() (issue #552),

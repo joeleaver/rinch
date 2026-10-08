@@ -652,7 +652,30 @@ and the runtime applies it through the focus arbiter after the current event or
 effect; on the **web** it focuses the editor's hidden capture textarea during the
 call (`preventScroll`), as a mousedown does.
 
-Both are **no-ops before the editor is mounted**, and nothing is remembered for the
+**`blur()`** is the other half: if this editor holds the keyboard, it lets go and
+nothing holds it — what a press on page content that takes no focus does. Keys stop
+reaching it, and its caret and selection highlight are hidden as on any blur; the
+selection is kept, so a later `focus()` shows it again. If the editor does not hold
+the keyboard, nothing happens: another editor or a field that has it keeps it. An app
+with several editors calls it when a pane stops holding a document:
+
+```rust
+// The person focused an empty pane: no editor takes keys now.
+for pane_editor in &editors {
+    pane_editor.blur();
+}
+```
+
+On **desktop** it posts a release that the runtime applies at the same point as
+`focus()`'s request, and **the two are applied in the order they were called**:
+`focus(); blur()` in one handler or effect leaves nothing focused and
+`blur(); focus()` leaves the editor focused. A release never displaces a focus
+request posted by anything else (an overlay opening still moves focus into itself),
+and several releases in one turn are all applied. On the **web** it blurs the hidden
+capture textarea during the call if this editor is the focused one; focus goes to
+the page body, as a browser's own `blur()` does.
+
+All three are **no-ops before the editor is mounted**, and nothing is remembered for the
 mount: call them after the `Editor {}` has rendered.
 
 ### Links: clicking and hovering

@@ -2889,7 +2889,8 @@ impl EditorHandle {
     ///   current event or effect, through the focus arbiter, as
     ///   `FocusTarget::Editor`: at once when called from an event handler, and
     ///   on the next turn of the event loop otherwise. [`selection`](Self::selection)
-    ///   is unaffected either way.
+    ///   is unaffected either way. A [`blur`](Self::blur) in the same turn is
+    ///   applied in call order with it: the later of the two wins.
     /// - **Web** focuses the editor's hidden capture textarea on the spot, as a
     ///   mousedown in the editor does, with `preventScroll`.
     ///
@@ -2906,6 +2907,52 @@ impl EditorHandle {
             // Desktop: the runtime's focus request drain maps an editor
             // container to `FocusTarget::Editor`.
             None => container.focus(),
+        }
+    }
+
+    /// Take the keyboard away from this editor, leaving it with **nothing** —
+    /// what a press on page content that takes no focus does: typing, the
+    /// arrows, the clipboard chords and an IME stop reaching it, and its caret
+    /// and selection highlight are hidden, as on any blur. The selection itself
+    /// is kept, so a later [`focus`](Self::focus) shows it again and typing
+    /// continues where it left off.
+    ///
+    /// Only this editor lets go: **if it does not hold the keyboard, nothing
+    /// happens** — another editor, an `<input>` or any other control that holds
+    /// it keeps it. That is the call for "this pane no longer takes keys" in an
+    /// app with several editors.
+    ///
+    /// - **Desktop** posts a release that the runtime applies through the
+    ///   focus arbiter at the same point as [`focus`](Self::focus)'s request:
+    ///   at once when called from an event handler, and on the next turn of
+    ///   the event loop otherwise. The two are applied **in the order they
+    ///   were called**, so `focus(); blur()` in one handler or effect leaves
+    ///   nothing focused, `blur(); focus()` leaves the editor focused, and
+    ///   neither call discards a focus request posted by anything else (an
+    ///   overlay opening keeps its focus move). Whether the editor holds the
+    ///   keyboard is judged then, after the requests before it.
+    /// - **Web** blurs the editor's hidden capture textarea on the spot, if
+    ///   this editor is the focused one and the textarea is the document's
+    ///   active element; focus goes to the page body, as a browser's own
+    ///   `blur()` does.
+    ///
+    /// **Before mount, a no-op.** Blurring an editor that is not focused
+    /// changes nothing.
+    pub fn blur(&self) {
+        let Some((container, doc_key)) = self
+            .core()
+            .view
+            .as_ref()
+            .map(|v| (v.container().node_id().0, v.doc_key()))
+        else {
+            return;
+        };
+        match crate::registry::blur_handler() {
+            // The web: the platform blurs its capture field itself.
+            Some(blur) => blur(container),
+            // Desktop: the runtime's focus drain releases the arbiter's
+            // `FocusTarget::Editor` if this container still holds it.
+            None => rinch_core::post_release_request(doc_key, container),
         }
     }
 
@@ -8736,6 +8783,59 @@ mod tests {
             assert_eq!(h.handle.selection(), Selection::text(Pos(3), Pos(7)));
             h.handle.update_caret();
             assert!(drain(&h).is_empty(), "focus scrolls nothing");
+        }
+
+        thread_local! {
+            static BLURRED: Cell<Option<usize>> = const { Cell::new(None) };
+        }
+
+        fn record_blur(container: usize) {
+            BLURRED.with(|f| f.set(Some(container)));
+        }
+
+        #[test]
+        fn blur_before_mount_is_a_no_op() {
+            let h = crate::create_editor();
+            BLURRED.with(|f| f.set(None));
+            crate::registry::set_blur_handler(record_blur);
+            h.blur();
+            assert_eq!(BLURRED.with(Cell::get), None, "nothing to blur");
+        }
+
+        #[test]
+        fn blur_hands_the_container_to_the_platform_and_keeps_the_selection() {
+            let h = measured();
+            h.handle.set_selection(Selection::text(Pos(3), Pos(7)));
+            drain(&h);
+            BLURRED.with(|f| f.set(None));
+            crate::registry::set_blur_handler(record_blur);
+            h.handle.blur();
+            assert_eq!(BLURRED.with(Cell::get), Some(h.container_id.0));
+            assert_eq!(h.handle.selection(), Selection::text(Pos(3), Pos(7)));
+            h.handle.update_caret();
+            assert!(drain(&h).is_empty(), "blur scrolls nothing");
+        }
+
+        /// Desktop registers no blur handler: the handle parks a release for
+        /// its container, in posting order with a focus request.
+        #[test]
+        fn without_a_handler_blur_parks_a_release_after_a_focus() {
+            let h = measured();
+            let key = h.doc.borrow().doc_key();
+            let _ = rinch_core::take_pending_focus_steps(key, true);
+            // The mock document posts no focus request of its own, so park the
+            // one desktop's `focus()` would.
+            rinch_core::request_focus(key, h.container_id.0);
+            h.handle.blur();
+            assert_eq!(
+                rinch_core::take_pending_focus_steps(key, true),
+                vec![
+                    rinch_core::FocusStep::Request(rinch_core::FocusRequest::Node(
+                        h.container_id.0
+                    )),
+                    rinch_core::FocusStep::Release(h.container_id.0),
+                ]
+            );
         }
 
         #[test]

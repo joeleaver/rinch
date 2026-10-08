@@ -543,9 +543,7 @@ impl RinchApp {
                 // No layout has run since the handler mutated state, so an
                 // overlay request is re-parked rather than resolved against the
                 // pre-open tree (issue #695).
-                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
-                    self.apply_or_repark_focus_request(request);
-                }
+                self.drain_focus_requests(false);
                 // Likewise a pending set_selection_range()/select() (issue
                 // #552) — drained *after* the focus request above, so a
                 // selection posted alongside a focus() for the same node

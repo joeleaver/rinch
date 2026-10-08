@@ -643,6 +643,35 @@ fn focus_editor(container_nid: usize) {
     refresh_caret();
 }
 
+/// Take the keyboard away from the editor at `container_nid` —
+/// [`EditorHandle::blur`], through [`registry::set_blur_handler`]. Only if that
+/// editor is the focused one: then the capture textarea is blurred, as a press
+/// on page content that takes no focus would blur it, and the browser's focus
+/// goes to the body. The editor is released here rather than left to
+/// [`on_capture_blur`], which keeps the editor while the page itself lacks the
+/// focus (a window switch); a blur from code is meant whatever the window is
+/// doing. Any other editor or field that holds the keyboard is left alone, and
+/// the selection is kept for a later focus.
+fn blur_editor(container_nid: usize) {
+    if focused_editor() != Some(container_nid) {
+        return;
+    }
+    end_context_menu_cycle();
+    // Released first, so the `blur` the browser raises inside `ta.blur()` finds
+    // no editor to release and repaints nothing on its own.
+    set_focused_editor(None);
+    set_goal_x(None);
+    if let Some(ta) = capture_target() {
+        let field_active = web_sys::window()
+            .and_then(|w| w.document())
+            .is_some_and(|d| d.active_element().as_ref() == Some(ta.as_ref()));
+        if field_active {
+            let _ = ta.blur();
+        }
+    }
+    refresh_caret();
+}
+
 /// The editor at `container_nid` has unmounted ([`registry::set_unregister_listener`]).
 ///
 /// If it was the focused one, the capture textarea still holds the keyboard,
@@ -3116,6 +3145,8 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // capture textarea, so a programmatic focus has to go through the same
     // steps a press does.
     registry::set_focus_handler(focus_editor);
+    // `EditorHandle::blur`: its other half.
+    registry::set_blur_handler(blur_editor);
     // An editor unmounting while it holds the keyboard must take its text out
     // of the capture textarea with it (#1112).
     registry::set_unregister_listener(on_editor_unregistered);
