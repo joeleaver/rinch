@@ -6355,6 +6355,14 @@ impl RinchDocument {
     /// Only the *inline* axis is corrected. A percentage height on an inline-block
     /// resolves against a containing-block height that is itself usually content-
     /// derived, so there is no non-circular basis to feed back here.
+    ///
+    /// Last, it measures the min-content size of every `auto` box a measure
+    /// asked for since the last pass (`NodeTree::atomic_min_requests`,
+    /// #1476 — see [`AtomicContributions`]) and says so in
+    /// `NodeTree::atomic_contributions_changed`: the caller then runs this
+    /// pass once more after the compute, because a container sized from
+    /// that box can come out narrower than the box, which is only then too
+    /// wide for it.
     pub(crate) fn resolve_percentage_inline_blocks(&mut self) -> bool {
         // The boxes to resolve, keyed (depth, id): popped outermost first,
         // one at a time (see the two phases below).

@@ -147,9 +147,10 @@ is what lets a container sized from its content — a flex item, a grid `auto`
 track, a shrink-to-fit absolute box, another `auto` atomic inline — come out
 narrower than the box, so the cap can bind. The min-content size is measured
 only when a line narrower than the box asks for it, after the compute that
-asked (a measure cannot start a compute), and the compute then runs again;
-the pass and the compute alternate until the pass changes nothing, four times
-at most. A component
+asked (a measure cannot start a compute), and the compute then runs again,
+followed by the pass once more: a pass that found such a request is looked at
+again after its compute, up to four passes, and one that found none is
+followed by a single compute as before. A component
 that declares `display: inline-flex` —
 `Badge`, `Button` and the rest of the list in CLAUDE.md — is one of these
 whenever it sits beside text rather than inside a `Stack`.
