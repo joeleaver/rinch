@@ -264,3 +264,153 @@ fn known_gaps_pin_rinchs_current_answer() {
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// The shapes of the histories below: a container `[data-m=c]` of width
+/// `{W}` around an `auto` box `[data-m=t]` holding `{T}`.
+const SHAPES: &[(&str, &str)] = &[
+    (
+        "nested",
+        r#"<div data-m="c" style="width:{W}px"><span data-m="o" style="display:inline-block"><span data-m="t" style="display:inline-block">{T}</span></span></div>"#,
+    ),
+    (
+        "flex_item",
+        r#"<div data-m="c" style="width:{W}px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block">{T}</span></div></div>"#,
+    ),
+    (
+        "flex_item_two",
+        r#"<div data-m="c" style="width:{W}px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block">{T}</span></div><div data-m="u"><span data-m="a" style="display:inline-block">short text here</span></div></div>"#,
+    ),
+    (
+        "grid_auto_track",
+        r#"<div data-m="c" style="width:{W}px;display:grid;grid-template-columns:auto 50px"><div data-m="f"><span data-m="t" style="display:inline-block">{T}</span></div><div>x</div></div>"#,
+    ),
+    (
+        "absolute",
+        r#"<div data-m="c" style="position:relative;width:{W}px;height:100px"><div data-m="f" style="position:absolute"><span data-m="t" style="display:inline-block">{T}</span></div></div>"#,
+    ),
+    (
+        "column_align_start",
+        r#"<div data-m="c" style="width:{W}px;display:flex;flex-direction:column;align-items:flex-start"><div data-m="f"><span data-m="t" style="display:inline-block">{T}</span></div></div>"#,
+    ),
+    (
+        "nested_in_flex_item",
+        r#"<div data-m="c" style="width:{W}px;display:flex"><div data-m="f"><span data-m="o" style="display:inline-flex"><span data-m="t" style="display:inline-block">{T}</span></span></div></div>"#,
+    ),
+    (
+        "fit_content_block",
+        r#"<div data-m="c" style="width:{W}px"><div data-m="f" style="width:fit-content">ab <span data-m="t" style="display:inline-block">{T}</span></div></div>"#,
+    ),
+    (
+        "inside_an_abs_inside_a_box",
+        r#"<div data-m="c" style="width:{W}px"><span data-m="o" style="display:inline-flex;position:relative;width:50px;height:20px"><div data-m="f" style="position:absolute;width:{W}px;display:grid;grid-template-columns:1fr 1fr"><div data-m="u">ab <span data-m="t" style="display:inline-block">{T}</span></div></div></span></div>"#,
+    ),
+];
+
+fn shape(template: &str, width: u32, text: &str) -> String {
+    template
+        .replace("{W}", &width.to_string())
+        .replace("{T}", text)
+}
+
+const TEXTS: &[&str] = &[
+    L,
+    "Wavy",
+    "Wavy milliliters WWW",
+    "Wavymillilitersunbroken WWW mmm Wavy milliliters WWW mmm Wavy",
+    L,
+];
+
+/// Incremental layout equals a fresh layout of the same document, through
+/// container resizes (wider, where a capped box has to come back to its
+/// max-content width, and narrower than its longest word) and text edits
+/// (which change the box's min-content width, so the one that was measured
+/// must not be used again).
+#[test]
+fn a_history_of_resizes_and_edits_equals_a_fresh_layout() {
+    let mut bad = vec![];
+    for (name, template) in SHAPES {
+        let mut doc = lay_out(&shape(template, 400, L));
+        let (c, t) = (id(&doc, "c"), id(&doc, "t"));
+        let text_node = rinch_core::dom::NodeId(doc.tree.get(t.0).unwrap().children[0]);
+        let mut tick = 0.0;
+        let mut text = L;
+        let mut check = |doc: &mut RinchDocument, what: String, width: u32, text: &str| {
+            tick += 1.0;
+            doc.resolve_layout(800.0, 600.0 + tick);
+            let (inc, fresh) = (dump(doc), dump(&lay_out(&shape(template, width, text))));
+            if inc != fresh {
+                bad.push(format!("{name} {what}: incremental[{inc}] fresh[{fresh}]"));
+            }
+        };
+        for width in [600, 300, 700, 60, 400, 545, 543, 400] {
+            doc.set_style(c, "width", &format!("{width}px"));
+            if *name == "inside_an_abs_inside_a_box" {
+                doc.set_style(id(&doc, "f"), "width", &format!("{width}px"));
+            }
+            check(&mut doc, format!("width {width}"), width, text);
+        }
+        for (n, new) in TEXTS.iter().enumerate() {
+            text = new;
+            doc.set_text_content(text_node, text);
+            check(&mut doc, format!("text {n}"), 400, text);
+            doc.set_style(c, "width", "200px");
+            if *name == "inside_an_abs_inside_a_box" {
+                doc.set_style(id(&doc, "f"), "width", "200px");
+            }
+            check(&mut doc, format!("text {n} at 200"), 200, text);
+            doc.set_style(c, "width", "400px");
+            if *name == "inside_an_abs_inside_a_box" {
+                doc.set_style(id(&doc, "f"), "width", "400px");
+            }
+            check(&mut doc, format!("text {n} back at 400"), 400, text);
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// What the min-content size costs, in computes of the box
+/// (`inline_block_computes`), and who pays it.
+///
+/// - A box on lines that are never narrower than it — a chip in a block —
+///   is measured once and never at min-content.
+/// - A box in a container sized from its content (a flex item here) is asked
+///   for its min-content size by that container: the min-content compute and
+///   the `auto` measure that puts its interior back, once.
+/// - After that a layout that changes nothing inside the box measures
+///   nothing, and capping it uses the size already measured.
+#[test]
+fn the_min_content_size_is_measured_once_and_only_when_a_line_asks() {
+    use rinch_dom::perf::Counter;
+    let computes = |doc: &RinchDocument| doc.tree.perf.total().get(Counter::InlineBlockComputes);
+    let chip = r#"<div><span style="display:inline-block">short text</span></div>"#;
+
+    // 20 chips in blocks.
+    let doc = lay_out(&format!(
+        r#"<div data-m="c" style="width:700px">{}</div>"#,
+        chip.repeat(20)
+    ));
+    assert_eq!(computes(&doc), 20, "a chip in a block: one compute");
+
+    // 20 chips in flex items.
+    let mut doc = lay_out(&format!(
+        r#"<div data-m="c" style="width:700px;display:flex;flex-wrap:wrap">{}</div>"#,
+        chip.repeat(20)
+    ));
+    let first = computes(&doc);
+    assert_eq!(first, 60, "a chip in a flex item: three computes, once");
+    let c = id(&doc, "c");
+    doc.set_style(c, "width", "690px");
+    doc.resolve_layout(800.0, 601.0);
+    assert_eq!(computes(&doc), first, "a relayout measures no chip");
+
+    // One box too wide for its flex item: the three above, then the capped
+    // layout (a max-content probe and the layout at the capped width).
+    let mut doc = lay_out(&shape(SHAPES[1].1, 400, L));
+    let first = computes(&doc);
+    assert_eq!(first, 5);
+    // Narrower: the min-content size is known. One probe, one layout.
+    let c = id(&doc, "c");
+    doc.set_style(c, "width", "300px");
+    doc.resolve_layout(800.0, 601.0);
+    assert_eq!(computes(&doc) - first, 2);
+}
