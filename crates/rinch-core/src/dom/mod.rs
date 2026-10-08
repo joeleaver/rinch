@@ -215,6 +215,66 @@ pub fn has_render_scope() -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
 
+/// Whether writing or removing the attribute `name` on the **focused** element
+/// can make a browser blur it inside the write (issue #1478): `hidden`,
+/// `tabindex` and `contenteditable`, ASCII case-insensitively. See
+/// [`DomDocument::before_attribute_write`], the only thing this gates.
+pub fn is_focus_revoking_attribute(name: &str) -> bool {
+    // Three lengths no other common attribute name shares, so the hot path
+    // (`class`, `style`, `data-rid`) is one length compare.
+    match name.len() {
+        6 => name.eq_ignore_ascii_case("hidden"),
+        8 => name.eq_ignore_ascii_case("tabindex"),
+        15 => name.eq_ignore_ascii_case("contenteditable"),
+        _ => false,
+    }
+}
+
+/// Run what the backend wants done before an attribute write that may cost
+/// the focused element its focus, with the document **not** borrowed
+/// ([`DomDocument::before_attribute_write`]).
+fn before_attribute_write(
+    doc: &Rc<RefCell<dyn DomDocument>>,
+    node: NodeId,
+    name: &str,
+    value: Option<&str>,
+) {
+    if !is_focus_revoking_attribute(name) {
+        return;
+    }
+    // A statement of its own: the borrow ends before the work runs.
+    let work = doc.borrow().before_attribute_write(node, name, value);
+    if let Some(work) = work {
+        work();
+    }
+}
+
+/// How many times a mutation verb asks the backend to let the focus go before
+/// it mutates anyway: once for the focus that was there, and again while a
+/// listener keeps putting one back inside the part that is going.
+const FOCUS_RELEASE_ROUNDS: usize = 4;
+
+/// Run whatever the backend wants done before a mutation takes `node` (or,
+/// with `children_only`, what is under it) out of place, with the document
+/// **not** borrowed ([`DomDocument::release_focus_within`], issue #1478).
+///
+/// On the web that is a `blur()` of the focused element inside the part that
+/// goes: the browser would otherwise run its focus listeners inside the DOM
+/// call, under the caller's `borrow_mut`, and rinch's listeners touch the
+/// document. Asked again after each release, because a listener is app code
+/// and may focus something else in there; a listener that does so every time
+/// is given up on, and the mutation runs as it did before.
+fn release_focus_within(doc: &Rc<RefCell<dyn DomDocument>>, node: NodeId, children_only: bool) {
+    for _ in 0..FOCUS_RELEASE_ROUNDS {
+        // A statement of its own: the borrow ends before the work runs.
+        let work = doc.borrow().release_focus_within(node, children_only);
+        match work {
+            Some(work) => work(),
+            None => return,
+        }
+    }
+}
+
 /// A stable handle to a DOM node for surgical updates.
 ///
 /// NodeHandles are lightweight (Rc-based) and can be cloned freely.
@@ -301,6 +361,7 @@ impl NodeHandle {
                 self.node_id.0,
                 text.len()
             );
+            release_focus_within(&doc, self.node_id, true);
             doc.borrow_mut().set_text_content(self.node_id, text);
         } else {
             tracing::warn!(
@@ -317,6 +378,7 @@ impl NodeHandle {
     #[doc(hidden)]
     pub fn set_attribute(&self, name: &str, value: &str) {
         if let Some(doc) = self.accessed_doc() {
+            before_attribute_write(&doc, self.node_id, name, Some(value));
             doc.borrow_mut().set_attribute(self.node_id, name, value);
         }
     }
@@ -371,6 +433,7 @@ impl NodeHandle {
     /// Remove an attribute from this element.
     pub fn remove_attribute(&self, name: &str) {
         if let Some(doc) = self.accessed_doc() {
+            before_attribute_write(&doc, self.node_id, name, None);
             doc.borrow_mut().remove_attribute(self.node_id, name);
         }
     }
@@ -403,6 +466,7 @@ impl NodeHandle {
         // and `None` unless something on the thread is watching for removals.
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
+            release_focus_within(&doc, child.node_id, false);
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
         late_child::notify_vacated(vacated.as_ref(), self);
@@ -412,6 +476,7 @@ impl NodeHandle {
     /// Remove a child node from this element.
     pub fn remove_child(&self, child: &NodeHandle) {
         if let Some(doc) = self.accessed_doc() {
+            release_focus_within(&doc, child.node_id, false);
             doc.borrow_mut().remove_child(self.node_id, child.node_id);
         }
         // This node *is* the parent that lost a child, so there is nothing to
@@ -423,6 +488,7 @@ impl NodeHandle {
     pub fn insert_before(&self, child: &NodeHandle, reference: &NodeHandle) {
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
+            release_focus_within(&doc, child.node_id, false);
             doc.borrow_mut()
                 .insert_before(self.node_id, child.node_id, reference.node_id);
         }
@@ -438,6 +504,9 @@ impl NodeHandle {
         let parent = self.parent_node();
         let vacated = late_child::vacated_parent(replacement);
         if let Some(doc) = self.accessed_doc() {
+            // Both nodes leave where they are.
+            release_focus_within(&doc, self.node_id, false);
+            release_focus_within(&doc, replacement.node_id, false);
             doc.borrow_mut()
                 .replace_node(self.node_id, replacement.node_id);
         }
@@ -463,6 +532,7 @@ impl NodeHandle {
     pub fn remove(&self) {
         let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.accessed_doc() {
+            release_focus_within(&doc, self.node_id, false);
             doc.borrow_mut().remove_node(self.node_id);
         }
         if let Some(vacated) = vacated {
@@ -500,10 +570,22 @@ impl NodeHandle {
         late_child::forget_node(self);
         let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.accessed_doc() {
+            release_focus_within(&doc, self.node_id, false);
             doc.borrow_mut().discard_node(self.node_id);
         }
         if let Some(vacated) = vacated {
             late_child::notify_removed(&vacated);
+        }
+    }
+
+    /// Let go of any keyboard focus inside this subtree before a caller that
+    /// holds the document itself takes it out ([`release_focus_within`]): the
+    /// web's `RootHandle::unmount`. Every `NodeHandle` verb that removes or
+    /// moves a node does this itself.
+    #[doc(hidden)]
+    pub fn release_focus_before_detach(&self) {
+        if let Some(doc) = self.doc.upgrade() {
+            release_focus_within(&doc, self.node_id, false);
         }
     }
 
@@ -673,6 +755,7 @@ impl NodeHandle {
         if let Some(doc) = self.accessed_doc() {
             let parent_id = doc.borrow().parent_node(self.node_id);
             if let Some(parent_id) = parent_id {
+                release_focus_within(&doc, new_node.node_id, false);
                 let mut next = doc.borrow().next_sibling(self.node_id);
                 // Already right after `self`: the anchor is then `new_node`'s
                 // own next sibling — the DOM's `insertBefore` rule ("if child
@@ -953,6 +1036,7 @@ impl NodeHandle {
         // are their ownership records (issue #732).
         render_scope::purge_descendants(self);
         if let Some(doc) = self.accessed_doc() {
+            release_focus_within(&doc, self.node_id, true);
             doc.borrow_mut().set_inner_html(self.node_id, html);
         }
     }

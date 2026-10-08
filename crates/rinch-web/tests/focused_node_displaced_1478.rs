@@ -14,6 +14,12 @@
 //! (`DomDocument::release_focus_within`): the listeners run against a free
 //! document in which the node is still where it was, and then the node goes.
 //!
+//! Chrome also blurs the focused element inside three attribute writes
+//! (`hidden` on it; `tabindex` / `contenteditable` removed from an element
+//! focusable only through it). Only the browser knows which write is one, so
+//! for those names the browser write itself is made first, with no borrow held
+//! (`DomDocument::before_attribute_write`).
+//!
 //! Firefox fires nothing when a focused node is removed. Because the release
 //! is rinch's own `blur()`, which fires `focusout` in every engine, none of
 //! these fixtures depends on which engine it runs in.
@@ -31,6 +37,9 @@ use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
+
+#[path = "support/engine.rs"]
+mod engine;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -136,7 +145,15 @@ fn fixture(tag: &str, n: &'static str) -> Fx {
         let page = s.create_element("div");
         let wrap = s.create_element("div");
         wrap.set_attribute("id", &format!("wrap-{n}"));
-        let trigger = s.create_element(&tag);
+        // `tag` is a tag name, optionally followed by an attribute that makes
+        // it focusable.
+        let mut parts = tag.split(' ');
+        let trigger = s.create_element(parts.next().unwrap());
+        match parts.next() {
+            Some("tabindex") => trigger.set_attribute("tabindex", "0"),
+            Some(attr) => trigger.set_attribute(attr, "true"),
+            None => {}
+        }
         trigger.set_attribute("id", &format!("trigger-{n}"));
         wrap.append_child(&trigger);
         page.append_child(&wrap);
@@ -289,7 +306,7 @@ fn replacing_another_node_with_the_focused_owner() {
     assert!(gone("other-repby"));
     assert!(!gone("trigger-repby"), "the trigger is where `other` was");
     f.assert_left_once();
-    f.assert_usable();
+    f.trigger.set_attribute("data-after", "1");
     f.done();
 }
 
@@ -324,7 +341,11 @@ fn inserting_the_focused_owner_before_and_after_a_sibling() {
     f.assert_left_once();
     // Focus it again and move it back: [wrap, other].
     by_id("trigger-ins").focus().unwrap();
-    assert_eq!(active_id(), "trigger-ins", "positive control: focused again");
+    assert_eq!(
+        active_id(),
+        "trigger-ins",
+        "positive control: focused again"
+    );
     f.page.insert_before(&f.wrap, &f.other);
     assert_eq!(
         by_id("wrap-ins").next_element_sibling().unwrap().id(),
@@ -511,8 +532,8 @@ fn unmounting_a_root_that_holds_the_focused_owner() {
     host.remove();
 }
 
-/// A listener that puts the focus back inside the subtree that is going: the
-/// verb still completes, and the document is usable afterwards.
+/// A listener that puts the focus back inside the subtree that is going. The
+/// verb lets go of that focus too before it removes anything.
 #[wasm_bindgen_test]
 fn a_listener_that_refocuses_inside_the_subtree_being_removed() {
     let host = host();
@@ -538,7 +559,11 @@ fn a_listener_that_refocuses_inside_the_subtree_being_removed() {
             |_| false,
             move || {
                 c.set(c.get() + 1);
-                z.focus();
+                // Once: the first time focus leaves, send it to a sibling
+                // that is going as well.
+                if c.get() == 1 {
+                    z.focus();
+                }
             },
         ));
         *sl.borrow_mut() = Some((wrap, other));
@@ -546,50 +571,156 @@ fn a_listener_that_refocuses_inside_the_subtree_being_removed() {
     });
     let (wrap, other) = slots.borrow_mut().take().unwrap();
     by_id("trigger-stubborn").focus().unwrap();
+    assert_eq!(active_id(), "trigger-stubborn", "positive control");
     wrap.remove();
     assert!(gone("trigger-stubborn") && gone("z-stubborn"), "removed");
-    assert!(calls.get() >= 1, "the listener ran");
+    // An entry is told on every focus move that leaves its owner unfocused:
+    // the trigger's blur, the `focusin` of the sibling the listener focused,
+    // and that sibling's own blur, which is the second release. Without it
+    // the sibling goes with the focus and its `focusout` runs under the
+    // removal's borrow, so the third never arrives.
+    // Chrome 153's count. No Firefox was measured for a `focus()` made from
+    // inside a `blur()`'s own `focusout`, so there only the first is pinned.
+    if engine::is_gecko() {
+        assert!(
+            calls.get() >= 1,
+            "the entry heard the trigger lose the focus"
+        );
+    } else {
+        assert_eq!(
+            calls.get(),
+            3,
+            "the sibling the listener focused was released too"
+        );
+    }
     other.set_attribute("data-after", "1");
     assert_eq!(
-        by_id("other-stubborn").get_attribute("data-after").as_deref(),
+        by_id("other-stubborn")
+            .get_attribute("data-after")
+            .as_deref(),
         Some("1")
     );
     root.unmount();
     host.remove();
 }
 
-/// The attribute and style writes that make the focused element unfocusable
-/// run no focus listener inside the write: a browser drops such a focus later,
-/// when it next updates the rendering, or (`disabled`) not at all. Measured in
-/// Chrome 153: 0 `focusout` inside each write and inside the forced layout
-/// after it. Asserted here only as "the write and a geometry read complete
-/// with a live key entry", which holds whenever an engine fires it.
-#[wasm_bindgen_test]
-fn making_the_focused_owner_unfocusable_in_place() {
-    for (n, write) in [
-        ("disabled", 0),
-        ("hidden", 1),
-        ("displaynone", 2),
-        ("tabindex", 3),
-    ] {
-        let n: &'static str = n;
-        let f = fixture(if write == 3 { "div" } else { "button" }, n);
-        if write == 3 {
-            // A `<div>` is focusable only through its `tabindex`.
-            f.trigger.set_attribute("tabindex", "0");
-            by_id(&format!("trigger-{n}")).focus().unwrap();
-            assert_eq!(active_id(), format!("trigger-{n}"), "positive control");
-        }
-        match write {
-            0 => f.trigger.write_attribute("disabled", "true"),
-            1 => f.trigger.write_attribute("hidden", "true"),
-            2 => f.wrap.set_style("display", "none"),
-            _ => f.trigger.remove_attribute("tabindex"),
-        }
-        // A geometry read forces style and layout under a document borrow.
-        let _ = f.trigger.get_layout_bounds();
-        let _ = f.other.get_layout_bounds();
-        f.assert_usable();
-        f.done();
+/// What a write in place did to the focus, per engine.
+///
+/// Chrome 153 blurs the focused element **inside** three attribute writes
+/// (`hidden` on it; `tabindex` or `contenteditable` removed from an element
+/// focusable only through it), so there the entry must have heard it, which it
+/// did not while the listener ran under the write's borrow. No Firefox was
+/// measured: there the fixture pins only that the write lands and the document
+/// is usable.
+fn assert_blurred_inside_the_write(f: &Fx) {
+    if engine::is_gecko() {
+        return;
     }
+    assert_eq!(
+        f.seen.left.get(),
+        1,
+        "Chrome blurs inside this write, and the entry heard it"
+    );
+    assert!(f.seen.wrote.get(), "and its handle write landed");
+}
+
+/// Chrome 153 fires nothing inside these writes, nor inside the forced layout
+/// after them: it drops such a focus later, or (`disabled`) not at all.
+fn assert_no_blur_inside_the_write(f: &Fx) {
+    if engine::is_gecko() {
+        return;
+    }
+    assert_eq!(f.seen.left.get(), 0, "Chrome fires no focusout here");
+}
+
+/// A write that makes the focused element unfocusable in place, then a
+/// geometry read (which forces style and layout), with a live key entry.
+fn in_place(n: &'static str, tag: &str, write: impl FnOnce(&Fx), check: fn(&Fx)) {
+    let f = fixture(tag, n);
+    write(&f);
+    let _ = f.trigger.get_layout_bounds();
+    let _ = f.other.get_layout_bounds();
+    check(&f);
+    f.assert_usable();
+    f.done();
+}
+
+#[wasm_bindgen_test]
+fn hiding_the_focused_owner_with_the_hidden_attribute() {
+    in_place(
+        "hidden",
+        "button",
+        |f| {
+            f.trigger.write_attribute("hidden", "true");
+            assert!(by_id("trigger-hidden").has_attribute("hidden"));
+        },
+        assert_blurred_inside_the_write,
+    );
+}
+
+/// A `<div>` is focusable only through its `tabindex`.
+#[wasm_bindgen_test]
+fn removing_the_tabindex_that_made_the_owner_focusable() {
+    in_place(
+        "tabindex",
+        "div tabindex",
+        |f| {
+            f.trigger.remove_attribute("tabindex");
+            assert!(!by_id("trigger-tabindex").has_attribute("tabindex"));
+        },
+        assert_blurred_inside_the_write,
+    );
+}
+
+#[wasm_bindgen_test]
+fn removing_the_contenteditable_that_made_the_owner_focusable() {
+    in_place(
+        "editable",
+        "div contenteditable",
+        |f| {
+            f.trigger.remove_attribute("contenteditable");
+            assert!(!by_id("trigger-editable").has_attribute("contenteditable"));
+        },
+        assert_blurred_inside_the_write,
+    );
+}
+
+/// The roving-tabindex write: the focused item stays focusable, so it keeps
+/// the focus in every engine. (Blurring before any `tabindex` write would
+/// lose it.)
+#[wasm_bindgen_test]
+fn rewriting_the_tabindex_of_the_focused_owner_keeps_its_focus() {
+    let f = fixture("div tabindex", "roving");
+    f.trigger.set_attribute("tabindex", "-1");
+    f.trigger.set_attribute("tabindex", "0");
+    assert_eq!(active_id(), "trigger-roving", "still focused");
+    assert_eq!(f.seen.left.get(), 0, "focus did not leave");
+    f.assert_usable();
+    f.done();
+}
+
+#[wasm_bindgen_test]
+fn disabling_the_focused_owner() {
+    in_place(
+        "disabled",
+        "button",
+        |f| f.trigger.write_attribute("disabled", "true"),
+        assert_no_blur_inside_the_write,
+    );
+}
+
+#[wasm_bindgen_test]
+fn hiding_an_ancestor_of_the_focused_owner() {
+    in_place(
+        "displaynone",
+        "button",
+        |f| f.wrap.set_style("display", "none"),
+        assert_no_blur_inside_the_write,
+    );
+    in_place(
+        "hiddenwrap",
+        "button",
+        |f| f.wrap.write_attribute("hidden", "true"),
+        assert_no_blur_inside_the_write,
+    );
 }

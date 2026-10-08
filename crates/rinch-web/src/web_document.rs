@@ -1353,6 +1353,19 @@ fn restore_focus_now(
     }
 }
 
+/// `blur()` on whatever kind of element holds the focus: an `HTMLElement`, or
+/// an SVG or MathML one (focusable through `tabindex`), which has the method
+/// without being one.
+fn blur_now(active: &web_sys::Element) {
+    if let Some(el) = active.dyn_ref::<web_sys::HtmlElement>() {
+        el.blur().ok();
+    } else if let Ok(blur) = js_sys::Reflect::get(active, &JsValue::from_str("blur"))
+        && let Some(blur) = blur.dyn_ref::<js_sys::Function>()
+    {
+        blur.call0(active).ok();
+    }
+}
+
 impl DomDocument for WebDocument {
     fn doc_key(&self) -> u64 {
         self.doc_key
@@ -2069,6 +2082,54 @@ impl DomDocument for WebDocument {
             for job in work {
                 job();
             }
+        }))
+    }
+
+    /// The focused element, when it is inside the part of `node` that is about
+    /// to go: its `blur()` (issue #1478).
+    ///
+    /// Two JS calls for a node that holds no focus (`activeElement`, then
+    /// `contains`), which is every call but the rare one.
+    fn release_focus_within(&self, node: NodeId, children_only: bool) -> Option<Box<dyn FnOnce()>> {
+        let n = self.nodes.get(&node.0)?;
+        let active = self.browser_doc.active_element()?;
+        if !n.contains(Some(active.unchecked_ref())) {
+            return None;
+        }
+        if children_only && n.is_same_node(Some(active.unchecked_ref())) {
+            return None;
+        }
+        // `<body>` is the browser's spelling of "nothing is focused" (an
+        // island mounted into it contains it), and blurring it does nothing.
+        if self
+            .browser_doc
+            .body()
+            .is_some_and(|b| b.is_same_node(Some(active.unchecked_ref())))
+        {
+            return None;
+        }
+        Some(Box::new(move || blur_now(&active)))
+    }
+
+    /// For the focused element: the literal browser write, which is what
+    /// `set_attribute` / `remove_attribute` make for these names (issue #1478).
+    fn before_attribute_write(
+        &self,
+        node: NodeId,
+        name: &str,
+        value: Option<&str>,
+    ) -> Option<Box<dyn FnOnce()>> {
+        let el = self.nodes.get(&node.0)?.dyn_ref::<web_sys::Element>()?;
+        let active = self.browser_doc.active_element()?;
+        if !el.is_same_node(Some(active.unchecked_ref())) {
+            return None;
+        }
+        let (el, name, value) = (el.clone(), name.to_owned(), value.map(str::to_owned));
+        Some(Box::new(move || {
+            match value {
+                Some(value) => el.set_attribute(&name, &value).ok(),
+                None => el.remove_attribute(&name).ok(),
+            };
         }))
     }
 

@@ -502,6 +502,10 @@ pub trait DomDocument {
     ///
     /// # Arguments
     /// * `node_id` - The ID of the element to focus
+    ///
+    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// runs it once its borrow is released. A direct caller must run
+    /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
     fn focus_element(&mut self, node_id: NodeId);
 
     /// Select a `[start, end)` range of a text control's text, in **UTF-16
@@ -637,6 +641,10 @@ pub trait DomDocument {
     /// runtime applies once layout has run, exactly as
     /// [`focus_element`](Self::focus_element) already does.
     ///
+    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// runs it once its borrow is released. A direct caller must run
+    /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
+    ///
     /// Defaulted to a no-op.
     fn focus_into(&mut self, _root: NodeId, _policy: FocusIntoPolicy) {}
 
@@ -668,6 +676,10 @@ pub trait DomDocument {
     /// a real answer and not a missing one: it means "there is nothing to hand
     /// back to", i.e. go straight to rule 3.
     ///
+    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// runs it once its borrow is released. A direct caller must run
+    /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
+    ///
     /// Defaulted to a no-op.
     fn restore_focus(&mut self, _opener: Option<NodeId>, _root: NodeId) {}
 
@@ -686,14 +698,101 @@ pub trait DomDocument {
     /// rinch's own listeners touch the document (the editor repaints its caret
     /// on `blur`; `focusin` asks each key entry's owner for `active_element()`,
     /// which flushes pending effects). Called under the borrow, each of those
-    /// panicked with "RefCell already borrowed" and, since wasm does not unwind,
-    /// left the document borrowed for good. Desktop posts focus as a request
-    /// the runtime applies later, outside any borrow, and answers `None`.
+    /// panicked with "RefCell already borrowed" inside the listener, which
+    /// aborted it (a key entry's `on_focus_leave`, the editor's caret repaint)
+    /// and, since wasm does not unwind, left whatever that listener itself held
+    /// (the editor's core) borrowed for good. The document was not: the frame
+    /// that borrowed it drops the borrow normally. Desktop posts focus as a
+    /// request the runtime applies later, outside any borrow, and answers
+    /// `None`.
+    ///
+    /// **A direct caller of [`focus_element`](Self::focus_element),
+    /// [`focus_into`](Self::focus_into) or
+    /// [`restore_focus`](Self::restore_focus) must take this and run it after
+    /// releasing its borrow.** On the web those three only queue; nothing else
+    /// drains the queue until the next `NodeHandle` focus verb, by which time
+    /// the work is stale.
     ///
     /// [`NodeHandle::focus`]: super::NodeHandle::focus
     /// [`NodeHandle::focus_into`]: super::NodeHandle::focus_into
     /// [`NodeHandle::restore_focus`]: super::NodeHandle::restore_focus
     fn take_after_borrow(&mut self) -> Option<Box<dyn FnOnce()>> {
+        None
+    }
+
+    /// Work to run **before** a mutation takes `node` out of place, with no
+    /// borrow of this document held, or `None` (issue #1478).
+    ///
+    /// `children_only` is `false` for a mutation that removes or moves `node`
+    /// itself with its subtree (`remove_node`, `discard_node`, `remove_child`,
+    /// `replace_node` for both nodes, and `append_child` / `insert_before` /
+    /// `insert_child` for a child that is already somewhere), and `true` for
+    /// one that replaces only what is under it (`set_inner_html`,
+    /// `set_text_content` on an element).
+    ///
+    /// `rinch-web` answers `Some` when the keyboard focus is inside the part
+    /// that goes, and the work is a `blur()` of the focused element. Chrome
+    /// fires `focusout`, `blur` and (for a modified field) `change`
+    /// synchronously inside the DOM call that removes or moves a focused node,
+    /// and rinch's own listeners touch the document, so made under the
+    /// caller's `borrow_mut` that call panicked inside the listener with
+    /// "RefCell already borrowed": the key entry of an open `Select` never
+    /// heard its trigger lose the focus. Released first, the same listeners
+    /// run against a free document in which the node is still where it was,
+    /// and a node that holds no focus leaves with no event. Firefox fires
+    /// nothing for a removed node; the `blur()` makes the two agree.
+    ///
+    /// Every [`NodeHandle`](super::NodeHandle) verb named above asks this,
+    /// runs the answer, and asks again (a listener may put the focus back)
+    /// before it borrows to mutate. **A direct caller of one of those
+    /// mutations does not get it**: it must ask before it borrows, or its
+    /// mutation runs the browser's listeners under its borrow as before
+    /// ([`UpdateBatch::apply`]'s `SetText` is one, since it is handed the
+    /// document already borrowed).
+    ///
+    /// Defaulted to `None`: desktop's focus is the runtime's own state, and a
+    /// node leaving the tree dispatches nothing.
+    ///
+    /// [`UpdateBatch::apply`]: super::UpdateBatch::apply
+    fn release_focus_within(
+        &self,
+        _node: NodeId,
+        _children_only: bool,
+    ) -> Option<Box<dyn FnOnce()>> {
+        None
+    }
+
+    /// Work to run **before** writing (`Some(value)`) or removing (`None`) the
+    /// attribute `name` on `node`, with no borrow of this document held, or
+    /// `None` (issue #1478). Asked only for a name
+    /// [`is_focus_revoking_attribute`](super::is_focus_revoking_attribute)
+    /// accepts.
+    ///
+    /// Chrome blurs the focused element synchronously, inside the attribute
+    /// write, when the write leaves it unfocusable: `hidden` set on it, and
+    /// `tabindex` or `contenteditable` removed from an element that was
+    /// focusable only through it (measured in Chrome 153; `disabled`, `inert`,
+    /// `display: none`, and any of them on an *ancestor*, fire nothing inside
+    /// the write). Only the browser knows whether a given write is such a one
+    /// (`tabindex="0"` over `-1` on the focused item of a roving list is not,
+    /// and must keep the focus), so `rinch-web`'s answer for a write to the
+    /// focused element is **the browser write itself**: made here, outside the
+    /// borrow, it fires whatever the browser fires against a free document,
+    /// and the write the caller then makes under its borrow repeats it and
+    /// changes nothing.
+    ///
+    /// `NodeHandle::set_attribute`, `write_attribute` and `remove_attribute`
+    /// ask this. A direct caller of
+    /// [`set_attribute`](Self::set_attribute) / [`remove_attribute`](Self::remove_attribute)
+    /// does not get it.
+    ///
+    /// Defaulted to `None`.
+    fn before_attribute_write(
+        &self,
+        _node: NodeId,
+        _name: &str,
+        _value: Option<&str>,
+    ) -> Option<Box<dyn FnOnce()>> {
         None
     }
 
