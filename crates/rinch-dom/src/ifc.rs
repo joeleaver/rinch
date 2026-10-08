@@ -6167,8 +6167,7 @@ impl RinchDocument {
                 continue;
             };
             let style = &node.computed_style;
-            if !node.display_mode.is_atomic_inline() || !Self::needs_containing_block_width(style)
-            {
+            if !node.display_mode.is_atomic_inline() || !Self::needs_containing_block_width(style) {
                 continue;
             }
             let percent = Self::has_percentage_inline_size(style);
@@ -6285,7 +6284,10 @@ impl RinchDocument {
                 };
                 if n.ifc_root.is_none()
                     || n.taffy_id.is_none()
-                    || !matches!(n.computed_style.width, crate::computed_style::DimensionValue::Auto)
+                    || !matches!(
+                        n.computed_style.width,
+                        crate::computed_style::DimensionValue::Auto
+                    )
                     || Self::has_percentage_inline_size(&n.computed_style)
                     || self.tree.keyword_inline_cb_width.contains_key(&id)
                 {
