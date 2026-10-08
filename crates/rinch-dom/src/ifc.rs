@@ -6144,58 +6144,66 @@ impl RinchDocument {
                     .is_some_and(|n| n.ifc_root.is_some() && n.display_mode.is_atomic_inline())
             });
         }
-        // The atomic inlines that hold a box this function sized against its
-        // containing block — one recorded in `keyword_inline_cb_width`, or
-        // one with a percentage size. Measured as `auto`, such an outer box
-        // was lined up with that box at the size it was resolved to, not at
-        // its natural contribution, so its max-content width is not its
-        // natural one and the fit test below proves nothing: it is resolved
-        // (and the box inside reset first, see phase 1). Without this a
-        // capped box kept the `inline-flex` around it as narrow as the cap
-        // had made it, where a whole-document pass widened both again.
-        // Usually empty: it costs a walk up from each such box.
-        let mut holds_resolved: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        {
-            let nodes = &self.tree.nodes;
-            let inner = self.tree.keyword_inline_cb_width.keys().copied().chain(
-                self.tree
-                    .atomic_inline_registry
-                    .iter()
-                    .copied()
-                    .filter(|&id| {
-                        nodes
-                            .get(id)
-                            .is_some_and(|n| Self::has_percentage_inline_size(&n.computed_style))
-                    }),
-            );
-            for id in inner {
-                let mut cur = nodes.get(id).and_then(|n| n.parent);
-                while let Some(a) = cur {
-                    let Some(an) = nodes.get(a) else {
-                        break;
-                    };
-                    if an.display_mode.is_atomic_inline() && !holds_resolved.insert(a) {
-                        break;
-                    }
-                    cur = an.parent;
-                }
-            }
-        }
+        // `auto` boxes the fit test below left alone, in case one holds a
+        // box sized against its containing block (see `holds_resolved`).
+        let mut fitting: Vec<(usize, usize)> = Vec::new();
+        // Whether any percentage-sized atomic inline is in the registry.
+        let mut any_percent = false;
+        let percent_content = !self.tree.auto_inline_percent_content.is_empty();
         for &id in &self.tree.atomic_inline_registry {
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
             };
-            let (Some(root_id), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
+            let (Some(root_id), Some(_)) = (node.ifc_root, node.taffy_id) else {
                 continue;
             };
-            if !node.display_mode.is_atomic_inline()
-                || !Self::needs_containing_block_width(&node.computed_style)
+            let style = &node.computed_style;
+            if !node.display_mode.is_atomic_inline() || !Self::needs_containing_block_width(style)
             {
                 continue;
             }
+            let percent = Self::has_percentage_inline_size(style);
+            any_percent |= percent;
             let Some(inner_width) = self.containing_block_inner_width(root_id) else {
                 continue;
             };
+            // An `auto` width measured as `auto` since it was last resolved
+            // (no `keyword_inline_cb_width` entry) is at its max-content
+            // width, and one that fits is already its shrink-to-fit width
+            // (#658): nothing to measure, and nothing to record — a narrower
+            // containing block later finds it too wide here and resolves it
+            // then. Not when a percentage inside the box needs the width it
+            // has as its basis (#662). This is the path every ordinary
+            // atomic inline (a `<button>`, a badge) takes on every pass, so
+            // it is asked first and as cheaply as it can be: the box's own
+            // margins from its computed style when they are lengths.
+            if !percent
+                && matches!(style.width, crate::computed_style::DimensionValue::Auto)
+                && !self.tree.keyword_inline_cb_width.contains_key(&id)
+                && !(percent_content && self.tree.auto_inline_percent_content.contains(&id))
+            {
+                use crate::computed_style::LengthPercentageAutoValue as M;
+                let margin = |m: M| match m {
+                    M::Auto => Some(0.0),
+                    M::Length(px) => Some(px),
+                    _ => None,
+                };
+                let margins = match (margin(style.margin_left), margin(style.margin_right)) {
+                    (Some(l), Some(r)) => l + r,
+                    _ => {
+                        use taffy::ResolveOrZero;
+                        let Ok(s) = self.tree.taffy.style(node.taffy_id.unwrap()) else {
+                            continue;
+                        };
+                        let m = s.margin.resolve_or_zero(Some(inner_width), |_, _| 0.0);
+                        m.left + m.right
+                    }
+                };
+                if node.layout.width <= inner_width - margins + 0.5 {
+                    fitting.push((id, root_id));
+                    continue;
+                }
+            }
             // A box that needs the width only for a `fit-content`/`stretch`
             // keyword (#691) or an `auto` width (#658) is sized from that
             // width and its own content alone. Its content changing
@@ -6203,39 +6211,68 @@ impl RinchDocument {
             // entry at the same width means nothing moved: skip the two or
             // three computes. (A percentage size is left re-measured every
             // pass, as before.)
-            let keyword_only = !Self::has_percentage_inline_size(&node.computed_style);
-            if keyword_only {
-                match self.tree.keyword_inline_cb_width.get(&id) {
-                    Some(&w) if (w - inner_width).abs() < 0.01 => continue,
-                    // An `auto` width measured as `auto` since it was last
-                    // resolved (no entry) is at its max-content width, and
-                    // one that fits is already its shrink-to-fit width
-                    // (#658): nothing to measure, and nothing to record —
-                    // a narrower containing block later finds it too wide
-                    // here and resolves it then. This is what keeps the
-                    // common atomic inline (a `<button>`, a badge) at one
-                    // compute per measure. Not when a percentage inside the
-                    // box needs the width it has as its basis (#662).
-                    None if matches!(
-                        node.computed_style.width,
-                        crate::computed_style::DimensionValue::Auto
-                    ) && !self.tree.auto_inline_percent_content.contains(&id)
-                        && !holds_resolved.contains(&id)
-                        && self.tree.taffy.style(taffy_id).is_ok_and(|s| {
-                            use taffy::ResolveOrZero;
-                            let m = s.margin.resolve_or_zero(Some(inner_width), |_, _| 0.0);
-                            node.layout.width <= inner_width - m.left - m.right + 0.5
-                        }) =>
-                    {
-                        continue;
-                    }
-                    _ => {}
-                }
+            if !percent
+                && self
+                    .tree
+                    .keyword_inline_cb_width
+                    .get(&id)
+                    .is_some_and(|&w| (w - inner_width).abs() < 0.01)
+            {
+                continue;
             }
             // Asked last: it walks the ancestors. A box outside the document
             // is not measured (#1040).
             if let Some(depth) = self.depth_if_connected(id) {
                 pending.insert((depth, id));
+            }
+        }
+        // A fitting box that holds a box sized against its containing block
+        // — one recorded in `keyword_inline_cb_width`, or one with a
+        // percentage size — is resolved after all. Measured as `auto`, it
+        // was lined up with that box at the size it was resolved to, not at
+        // its natural contribution, so its max-content width is not its
+        // natural one and the fit test proves nothing (the box inside is
+        // reset first, see phase 1). Without this a capped box kept the
+        // `inline-flex` around it as narrow as the cap had made it, where a
+        // whole-document pass widened both again. Built only when there can
+        // be such a box: usually there is none, and it costs a walk up from
+        // each.
+        if !fitting.is_empty() && (any_percent || !self.tree.keyword_inline_cb_width.is_empty()) {
+            let mut holds_resolved: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+            {
+                let nodes = &self.tree.nodes;
+                let inner = self.tree.keyword_inline_cb_width.keys().copied().chain(
+                    self.tree
+                        .atomic_inline_registry
+                        .iter()
+                        .copied()
+                        .filter(|&id| {
+                            any_percent
+                                && nodes.get(id).is_some_and(|n| {
+                                    Self::has_percentage_inline_size(&n.computed_style)
+                                })
+                        }),
+                );
+                for id in inner {
+                    let mut cur = nodes.get(id).and_then(|n| n.parent);
+                    while let Some(a) = cur {
+                        let Some(an) = nodes.get(a) else {
+                            break;
+                        };
+                        if an.display_mode.is_atomic_inline() && !holds_resolved.insert(a) {
+                            break;
+                        }
+                        cur = an.parent;
+                    }
+                }
+            }
+            for (id, _) in fitting {
+                if holds_resolved.contains(&id)
+                    && let Some(depth) = self.depth_if_connected(id)
+                {
+                    pending.insert((depth, id));
+                }
             }
         }
 
