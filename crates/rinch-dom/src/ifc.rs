@@ -6505,7 +6505,7 @@ impl RinchDocument {
         let cb = self.tree.taffy.unrounded_layout(cb_taffy);
         let inner_width =
             cb.size.width - cb.padding.left - cb.padding.right - cb.border.left - cb.border.right;
-        (inner_width.is_finite() && inner_width > 0.0).then_some(inner_width)
+        inner_width.is_finite().then_some(inner_width.max(0.0))
     }
 
     /// Build a Parley inline layout for an IFC root node.
