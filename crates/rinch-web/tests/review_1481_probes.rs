@@ -158,21 +158,6 @@ fn editor() -> EditorHandle {
     handle
 }
 
-/// A printable `keydown` where the browser would send it: the focused element.
-fn type_key(key: &str, code: &str) {
-    let init = web_sys::KeyboardEventInit::new();
-    init.set_bubbles(true);
-    init.set_cancelable(true);
-    init.set_key(key);
-    init.set_code(code);
-    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
-    let target: web_sys::EventTarget = match document().active_element() {
-        Some(el) => el.into(),
-        None => document().body().unwrap().into(),
-    };
-    target.dispatch_event(&ev).unwrap();
-}
-
 fn focused_a(f: &Fixture) {
     f.a.focus();
     assert!(f.capture_has_focus(), "control: A has the keyboard");
