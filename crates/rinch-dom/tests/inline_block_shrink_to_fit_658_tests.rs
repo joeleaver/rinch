@@ -361,3 +361,14 @@ fn a_box_that_fits_the_block_but_not_its_margins_is_capped() {
     );
     assert_size(&doc, "t", (340.0, 40.0));
 }
+
+/// The same with percentage margins (5% of 400 a side): they come out of the
+/// available width too, resolved against the containing block.
+#[test]
+fn percentage_margins_come_out_of_the_fit_test() {
+    let doc = in_cb(
+        "",
+        r#"<span data-m="t" style="display: inline-block; margin: 0 5%">Wavy milliliters WWW mmm Wavy milliliters WWW</span>"#,
+    );
+    assert_size(&doc, "t", (360.0, 40.0));
+}
