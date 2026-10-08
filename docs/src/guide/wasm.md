@@ -324,6 +324,56 @@ cargo build --target wasm32-unknown-unknown --release
 wasm-bindgen target/wasm32-unknown-unknown/release/my_app_web.wasm --out-dir pkg --target web
 ```
 
+## Browsers, and running the browser tests
+
+The browser backend is tested in **Chrome and Firefox**: CI runs
+`crates/rinch-web`'s browser tests (and `rinch-storage`'s IndexedDB tests) in
+both, headless, on every pull request (`test-wasm` in
+`.github/workflows/ci.yml`). Safari is not run anywhere.
+
+The tests are ordinary `wasm-bindgen-test` files under `crates/rinch-web/tests/`.
+`wasm-bindgen-test-runner` loads each in a real browser through that browser's
+WebDriver, and which driver it finds decides the browser:
+
+```bash
+# Once: the runner, at the wasm-bindgen version Cargo.lock pins.
+cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep -o '[0-9.]*')" --locked
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+
+# Chrome: a chromedriver of the same version as the installed Chrome.
+CHROMEDRIVER=/path/to/chromedriver \
+  cargo test -p rinch-web --target wasm32-unknown-unknown
+
+# Firefox: geckodriver (https://github.com/mozilla/geckodriver/releases), with
+# `firefox` on PATH.
+GECKODRIVER=/path/to/geckodriver \
+  cargo test -p rinch-web --target wasm32-unknown-unknown
+
+# One file, and the tests behind the `collaboration` feature:
+GECKODRIVER=/path/to/geckodriver \
+  cargo test -p rinch-web --target wasm32-unknown-unknown --features collaboration --test editor_read_only
+```
+
+When both variables are set, `GECKODRIVER` wins. To use a Firefox that is not
+on `PATH`, put a `webdriver.json` in `crates/rinch-web/` (do not commit it):
+
+```json
+{ "moz:firefoxOptions": { "binary": "/path/to/firefox", "args": ["-headless"] } }
+```
+
+Two things to know when a test passes in one engine only:
+
+- **A synthetic `ClipboardEvent` does not carry its `clipboardData` in
+  Firefox.** `new ClipboardEvent("paste", { clipboardData })` hands the
+  listeners an empty transfer there. Build clipboard events with
+  `tests/support/clipboard.rs`.
+- **The engines answer geometry questions differently**, which is often why the
+  code under test exists: after a preserved newline Chrome gives a collapsed
+  range no rect and Firefox gives it the line above; a `<br>` on an empty line
+  is the glyph box in Chrome and the line box in Firefox. A positive control
+  that pins the browser's own answer states each engine's
+  (`tests/support/engine.rs`, `is_gecko()`), never one engine's for both.
+
 ## What Works
 
 Everything that goes through `NodeHandle` works:

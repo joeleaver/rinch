@@ -20,6 +20,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "support/engine.rs"]
+mod engine;
+
 const HOST: &str = "data-test-host-review-1449";
 const GIF: &str = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 const OLD_CALL: &str = "caretRangeFromPoint";
@@ -296,6 +299,8 @@ fn where_the_old_call_answers_nothing_the_standard_one_answers_nothing() {
         window.inner_height().unwrap().as_f64().unwrap(),
     );
     let (mut total, mut both_null, mut only_new, mut only_old, mut differ) = (0, 0, 0, 0, 0);
+    // Points where the answers differ and neither names a text control.
+    let mut differ_outside_controls = 0;
     let mut samples: Vec<String> = Vec::new();
     let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
     let mut y = -20.0;
@@ -323,6 +328,10 @@ fn where_the_old_call_answers_nothing_the_standard_one_answers_nothing() {
                 }
                 (a, b) if a != b => {
                     differ += 1;
+                    let control = |r: &str| r.starts_with("INPUT[") || r.starts_with("TEXTAREA[");
+                    if !control(a) && !control(b) {
+                        differ_outside_controls += 1;
+                    }
                     Some("differ")
                 }
                 _ => None,
@@ -363,12 +372,23 @@ fn where_the_old_call_answers_nothing_the_standard_one_answers_nothing() {
         (0, 0),
         "kinds {kinds:?}; samples {samples:?}"
     );
-    assert!(
-        kinds
-            .keys()
-            .all(|k| k.contains("INPUT#inp") || k.contains("TEXTAREA#ta")),
+    // Every difference is over a text control, by what the answers name.
+    assert_eq!(
+        differ_outside_controls, 0,
         "kinds {kinds:?}; samples {samples:?}"
     );
+    // By the element under the point too, in Chrome. Firefox 157 (which has
+    // both calls) also differs just below the textarea, where
+    // `elementFromPoint` answers the host `<div>` and both calls still name
+    // the textarea, at character offsets that disagree: the old call says 0.
+    if !engine::is_gecko() {
+        assert!(
+            kinds
+                .keys()
+                .all(|k| k.contains("INPUT#inp") || k.contains("TEXTAREA#ta")),
+            "kinds {kinds:?}; samples {samples:?}"
+        );
+    }
 }
 
 /// The generic text hit: a `data-block-index` block with a click handler; the

@@ -143,7 +143,19 @@ cargo fmt                      # Format
 # Sweep the layout-tree invariants after every layout in every test (#584).
 # Debug builds only; a violation FAILS the test it happened in. CI sets this.
 RINCH_TREE_CHECK=1 cargo test --workspace
+
+# rinch-web's browser tests, in a real browser through its WebDriver. CI runs
+# them in Chrome and in Firefox; a web change is tested in both.
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+CHROMEDRIVER=/path/to/chromedriver cargo test -p rinch-web --target wasm32-unknown-unknown
+GECKODRIVER=/path/to/geckodriver   cargo test -p rinch-web --target wasm32-unknown-unknown
 ```
+
+Browser tests that pin what the browser itself answers state each engine's
+answer (`crates/rinch-web/tests/support/engine.rs`), and build clipboard events
+with `tests/support/clipboard.rs` (Firefox drops a synthetic event's
+`clipboardData`). Setup and the known engine differences:
+`docs/src/guide/wasm.md#browsers-and-running-the-browser-tests`.
 
 ### Rust toolchain
 
@@ -2102,7 +2114,12 @@ that applies to, and **a consumer that has not run a layout re-parks them** —
 the two synchronous drains after `dispatch_event` (`click_handling` and
 `activate_focused_node`) otherwise consumed the slot and lost the move for good,
 which is every overlay opened by a click or by Enter. `rinch-web` answers on the
-spot and lets the browser refuse what it should refuse. "Still there" means
+spot and lets the browser refuse what it should refuse — after `NodeHandle`
+has released its document borrow and before the call returns
+(`DomDocument::take_after_borrow`), because a browser `focus()`/`blur()` runs
+every focus listener synchronously and rinch's own listeners touch the document
+(an editor's caret on `blur`, the key entries on `focusin`); under the borrow
+they panicked "RefCell already borrowed". "Still there" means
 **can still take focus**, not merely attached: a `disabled` opener, or one
 inside an outer overlay closed first, releases the keyboard instead. Identity is
 not checked, so a recycled node id (issue #304, live on desktop through
