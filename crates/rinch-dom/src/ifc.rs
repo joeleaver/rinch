@@ -6200,7 +6200,7 @@ impl RinchDocument {
                     if inner.is_empty() {
                         break;
                     }
-                    this.measure_atomic_min_contents(inner);
+                    this.measure_atomic_min_contents(inner, false);
                     asked = this.tree.atomic_min_requests.borrow().len();
                     min = measure(this, taffy::AvailableSpace::MinContent);
                 }
@@ -6583,7 +6583,7 @@ impl RinchDocument {
         // computes above — lined up at their max-content size for want of a
         // min-content one (#1476). One capped above has it by now.
         let asked = std::mem::take(&mut *self.tree.atomic_min_requests.borrow_mut());
-        if !asked.is_empty() && self.measure_atomic_min_contents(asked) {
+        if !asked.is_empty() && self.measure_atomic_min_contents(asked, true) {
             changed = true;
         }
         changed
@@ -6692,7 +6692,13 @@ impl RinchDocument {
     ///
     /// Costs two computes of the box, once, until something inside it
     /// changes — and only for a box some line was too narrow for.
-    fn measure_atomic_min_contents(&mut self, ids: Vec<usize>) -> bool {
+    ///
+    /// `around`: also measure again, as `auto`, every atomic inline around a
+    /// box whose answer changed. The IFC that lined the box up is inside
+    /// each of them, in a detached compute the root compute does not reach.
+    /// Not from inside the measure of one of those boxes
+    /// (`resolve_root_width_keyword`), which is laying it out anyway.
+    fn measure_atomic_min_contents(&mut self, ids: Vec<usize>, around: bool) -> bool {
         let mut stack = ids;
         let mut retried: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let mut changed = false;
@@ -6760,12 +6766,20 @@ impl RinchDocument {
             }
             self.tree.atomic_min_content.insert(id, min);
             let natural = self.tree.nodes[id].natural_inline_size.0;
-            if self.atomic_inline_resized(id, root_id, before) {
-                changed = true;
-            } else if min.0 + 1.0 < natural {
-                self.invalidate_ifc_of_atomic_inline(root_id);
-                changed = true;
+            let resized = self.atomic_inline_resized(id, root_id, before);
+            if !resized && min.0 + 1.0 >= natural {
+                continue;
             }
+            if !resized {
+                self.invalidate_ifc_of_atomic_inline(root_id);
+            }
+            changed = true;
+            if around && let Some(parent) = self.tree.nodes[id].parent {
+                self.mark_atomic_inline_dirty(parent);
+            }
+        }
+        if around {
+            self.remeasure_dirty_atomic_inlines();
         }
         changed
     }

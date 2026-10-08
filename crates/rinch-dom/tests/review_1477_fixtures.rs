@@ -191,6 +191,9 @@ const CHROME: &[(&str, &str, &str)] = &[
 ];
 
 /// (name, html, rinch today, Chrome 153, why)
+/// (The five #1476 rows that were here — an `auto` box in a flex item, a grid
+/// item, a shrink-to-fit absolute box — are Chrome's now, and live in
+/// `atomic_inline_content_sized_cb_1476_tests.rs`.)
 const GAPS: &[(&str, &str, &str, &str, &str)] = &[
     (
         "p04_pct_padding_short",
@@ -205,41 +208,6 @@ const GAPS: &[(&str, &str, &str, &str, &str)] = &[
         "t=100.0x160.0",
         "t=200.0x80.0",
         "pre-existing: pass C re-resolves a percentage max-width against the clamped width (issue draft 1)",
-    ),
-    (
-        "p08_in_flex_item",
-        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=544.0x20.0 t=544.0x20.0",
-        "f=400.0x40.0 t=400.0x40.0",
-        "#1476 class: CB sized from the atomic inline's min-content contribution",
-    ),
-    (
-        "p09_in_grid_item",
-        r##"<div style="width:400px;display:grid"><div data-m="f"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=544.0x20.0 t=544.0x20.0",
-        "f=400.0x40.0 t=400.0x40.0",
-        "#1476 class",
-    ),
-    (
-        "p10_in_grid_autocol",
-        r##"<div style="width:400px;display:grid;grid-template-columns:auto 50px"><div data-m="f"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div><div>x</div></div>"##,
-        "f=544.0x20.0 t=544.0x20.0",
-        "f=350.0x40.0 t=350.0x40.0",
-        "#1476 class",
-    ),
-    (
-        "p12_in_abs",
-        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=544.0x20.0 t=544.0x20.0",
-        "f=400.0x40.0 t=400.0x40.0",
-        "#1476 class (shrink-to-fit absolute)",
-    ),
-    (
-        "p19_ib_in_ib_in_flex",
-        r##"<div style="width:400px;display:flex"><span data-m="o" style="display:inline-block"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></span></div>"##,
-        "o=544.0x20.0 t=544.0x20.0",
-        "o=400.0x40.0 t=400.0x40.0",
-        "#1476 class",
     ),
     (
         "p26_img_child_maxw",

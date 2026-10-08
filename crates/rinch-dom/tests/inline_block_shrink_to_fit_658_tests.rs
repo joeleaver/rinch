@@ -164,24 +164,21 @@ fn text_before_the_box_does_not_narrow_it() {
     assert_size(&doc, "t", (400.0, 40.0));
 }
 
-/// Nested auto-width atomic inlines. **Not Chrome's yet** (#1476): Chrome
-/// 153 caps both at the 400px block (`400 x 40` each), because the outer box's
-/// min-content takes the inner one's *min-content*. rinch lines the outer
-/// box's content up with the inner box at the size it already has — its
-/// max-content, since its containing block (the outer box) is that wide — so
-/// the outer box's min-content is the inner box's whole width and neither is
-/// capped. This pins that: both stay at their max-content width, unwrapped.
+/// #1476: two auto-width atomic inlines nested. The outer box's shrink-to-fit
+/// width comes from the inner one's min-content contribution (its longest
+/// word), so it is the 400px block, and the inner box is laid out in that.
+/// (Both were max-content, 544 x 20, until an IFC measure lined an atomic
+/// inline up at its min-content size.) Chrome 153: 400 x 40 both.
 #[test]
-fn nested_auto_width_atomic_inlines_are_not_capped_yet() {
+fn nested_auto_width_atomic_inlines_are_capped() {
     let doc = in_cb(
         "",
         &format!(
             r#"<span data-m="o" style="display: inline-block"><span data-m="i" style="display: inline-block">{LONG}</span></span>"#
         ),
     );
-    let (o, i) = (size(&doc, "o"), size(&doc, "i"));
-    assert!(o.0 > 500.0 && o.1 == 20.0, "outer {o:?}");
-    assert_eq!(o, i);
+    assert_size(&doc, "o", (400.0, 40.0));
+    assert_size(&doc, "i", (400.0, 40.0));
 }
 
 /// The twin table's `two` content in a 150px block: min-content 100,
