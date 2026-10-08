@@ -744,7 +744,17 @@ pub trait DomDocument {
     ///
     /// Every [`NodeHandle`](super::NodeHandle) verb named above asks this,
     /// runs the answer, and asks again (a listener may put the focus back)
-    /// before it borrows to mutate. **A direct caller of one of those
+    /// before it borrows to mutate. It does not ask for a mutation it can see
+    /// the backend will refuse (an insertion whose reference is not a child of
+    /// the parent, or into the node's own subtree), which moves nothing.
+    ///
+    /// `last_round` is the last time the verb will ask. The work must then
+    /// leave no focus in the part that goes **and no way for a listener to put
+    /// one back**: `rinch-web` sets `inert` on `node` for the length of that
+    /// blur (a `focus()` into an inert subtree is refused) and takes it off
+    /// again before the mutation. Only a listener that refocuses in there on
+    /// every earlier round reaches it; a `MutationObserver` or an `[inert]`
+    /// selector of the app's can see that one toggle. **A direct caller of one of those
     /// mutations does not get it**: it must ask before it borrows, or its
     /// mutation runs the browser's listeners under its borrow as before
     /// ([`UpdateBatch::apply`]'s `SetText` is one, since it is handed the
@@ -758,6 +768,7 @@ pub trait DomDocument {
         &self,
         _node: NodeId,
         _children_only: bool,
+        _last_round: bool,
     ) -> Option<Box<dyn FnOnce()>> {
         None
     }

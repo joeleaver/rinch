@@ -262,17 +262,56 @@ const FOCUS_RELEASE_ROUNDS: usize = 4;
 /// goes: the browser would otherwise run its focus listeners inside the DOM
 /// call, under the caller's `borrow_mut`, and rinch's listeners touch the
 /// document. Asked again after each release, because a listener is app code
-/// and may focus something else in there; a listener that does so every time
-/// is given up on, and the mutation runs as it did before.
-fn release_focus_within(doc: &Rc<RefCell<dyn DomDocument>>, node: NodeId, children_only: bool) {
-    for _ in 0..FOCUS_RELEASE_ROUNDS {
+/// and may focus something else in there. For a listener that does so every
+/// time, the last round's work also keeps the focus from coming back (on the
+/// web it holds the part that goes `inert` for the length of that blur), so
+/// the mutation never runs a listener under its borrow. That matters beyond
+/// the one panic: wasm does not unwind, and a listener aborted there left the
+/// reactive runtime's flush guard set, so later signal writes stopped reaching
+/// the DOM.
+///
+/// `will_run` says whether the mutation is one the backend will carry out. It
+/// is asked only once the backend has something to release (so not at all on
+/// desktop, and on the web only with the focus in the part named): an
+/// insertion a browser refuses moves nothing and must not cost the focus.
+fn release_focus_within(
+    doc: &Rc<RefCell<dyn DomDocument>>,
+    node: NodeId,
+    children_only: bool,
+    will_run: impl Fn(&dyn DomDocument) -> bool,
+) {
+    for round in 0..FOCUS_RELEASE_ROUNDS {
+        // The last time, the backend also keeps a listener from putting the
+        // focus back in there, so the mutation never runs one under its borrow.
+        let last = round + 1 == FOCUS_RELEASE_ROUNDS;
         // A statement of its own: the borrow ends before the work runs.
-        let work = doc.borrow().release_focus_within(node, children_only);
+        let work = {
+            let doc = doc.borrow();
+            doc.release_focus_within(node, children_only, last)
+                .filter(|_| round > 0 || will_run(&*doc))
+        };
         match work {
             Some(work) => work(),
             None => return,
         }
     }
+}
+
+/// Whether `parent` can take `child` as a child: it is still a node of the
+/// document, and it is not `child` or inside it (a browser refuses that
+/// insertion with a `HierarchyRequestError`).
+fn can_take(doc: &dyn DomDocument, parent: NodeId, child: NodeId) -> bool {
+    if doc.is_retired(parent) {
+        return false;
+    }
+    let mut at = Some(parent);
+    while let Some(id) = at {
+        if id == child {
+            return false;
+        }
+        at = doc.parent_node(id);
+    }
+    true
 }
 
 /// A stable handle to a DOM node for surgical updates.
@@ -361,7 +400,7 @@ impl NodeHandle {
                 self.node_id.0,
                 text.len()
             );
-            release_focus_within(&doc, self.node_id, true);
+            release_focus_within(&doc, self.node_id, true, |_| true);
             doc.borrow_mut().set_text_content(self.node_id, text);
         } else {
             tracing::warn!(
@@ -466,7 +505,8 @@ impl NodeHandle {
         // and `None` unless something on the thread is watching for removals.
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
-            release_focus_within(&doc, child.node_id, false);
+            let (parent, moved) = (self.node_id, child.node_id);
+            release_focus_within(&doc, moved, false, |d| can_take(d, parent, moved));
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
         late_child::notify_vacated(vacated.as_ref(), self);
@@ -476,7 +516,8 @@ impl NodeHandle {
     /// Remove a child node from this element.
     pub fn remove_child(&self, child: &NodeHandle) {
         if let Some(doc) = self.accessed_doc() {
-            release_focus_within(&doc, child.node_id, false);
+            let (parent, gone) = (self.node_id, child.node_id);
+            release_focus_within(&doc, gone, false, |d| d.parent_node(gone) == Some(parent));
             doc.borrow_mut().remove_child(self.node_id, child.node_id);
         }
         // This node *is* the parent that lost a child, so there is nothing to
@@ -488,7 +529,10 @@ impl NodeHandle {
     pub fn insert_before(&self, child: &NodeHandle, reference: &NodeHandle) {
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
-            release_focus_within(&doc, child.node_id, false);
+            let (parent, moved, before) = (self.node_id, child.node_id, reference.node_id);
+            release_focus_within(&doc, moved, false, |d| {
+                can_take(d, parent, moved) && d.parent_node(before) == Some(parent)
+            });
             doc.borrow_mut()
                 .insert_before(self.node_id, child.node_id, reference.node_id);
         }
@@ -504,9 +548,16 @@ impl NodeHandle {
         let parent = self.parent_node();
         let vacated = late_child::vacated_parent(replacement);
         if let Some(doc) = self.accessed_doc() {
-            // Both nodes leave where they are.
-            release_focus_within(&doc, self.node_id, false);
-            release_focus_within(&doc, replacement.node_id, false);
+            // Both nodes leave where they are, when there is a place to
+            // replace this one in and the replacement can go there.
+            let (old, new) = (self.node_id, replacement.node_id);
+            let replaces = move |d: &dyn DomDocument| {
+                old != new
+                    && d.parent_node(old)
+                        .is_some_and(|parent| can_take(d, parent, new))
+            };
+            release_focus_within(&doc, old, false, replaces);
+            release_focus_within(&doc, new, false, replaces);
             doc.borrow_mut()
                 .replace_node(self.node_id, replacement.node_id);
         }
@@ -532,7 +583,7 @@ impl NodeHandle {
     pub fn remove(&self) {
         let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.accessed_doc() {
-            release_focus_within(&doc, self.node_id, false);
+            release_focus_within(&doc, self.node_id, false, |_| true);
             doc.borrow_mut().remove_node(self.node_id);
         }
         if let Some(vacated) = vacated {
@@ -570,7 +621,7 @@ impl NodeHandle {
         late_child::forget_node(self);
         let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.accessed_doc() {
-            release_focus_within(&doc, self.node_id, false);
+            release_focus_within(&doc, self.node_id, false, |_| true);
             doc.borrow_mut().discard_node(self.node_id);
         }
         if let Some(vacated) = vacated {
@@ -585,7 +636,7 @@ impl NodeHandle {
     #[doc(hidden)]
     pub fn release_focus_before_detach(&self) {
         if let Some(doc) = self.doc.upgrade() {
-            release_focus_within(&doc, self.node_id, false);
+            release_focus_within(&doc, self.node_id, false, |_| true);
         }
     }
 
@@ -755,7 +806,8 @@ impl NodeHandle {
         if let Some(doc) = self.accessed_doc() {
             let parent_id = doc.borrow().parent_node(self.node_id);
             if let Some(parent_id) = parent_id {
-                release_focus_within(&doc, new_node.node_id, false);
+                let moved = new_node.node_id;
+                release_focus_within(&doc, moved, false, |d| can_take(d, parent_id, moved));
                 let mut next = doc.borrow().next_sibling(self.node_id);
                 // Already right after `self`: the anchor is then `new_node`'s
                 // own next sibling — the DOM's `insertBefore` rule ("if child
@@ -1036,7 +1088,7 @@ impl NodeHandle {
         // are their ownership records (issue #732).
         render_scope::purge_descendants(self);
         if let Some(doc) = self.accessed_doc() {
-            release_focus_within(&doc, self.node_id, true);
+            release_focus_within(&doc, self.node_id, true, |_| true);
             doc.borrow_mut().set_inner_html(self.node_id, html);
         }
     }

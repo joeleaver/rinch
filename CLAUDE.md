@@ -2129,7 +2129,18 @@ so `remove`, `discard`, `remove_child`, `replace_with`, `set_inner_html`,
 (`rinch_core::dom::release_focus_within`, up to `FOCUS_RELEASE_ROUNDS` times,
 since a listener may focus something else in there) and `rinch-web` answers a
 `blur()` of the focused element inside the part that goes; then the verb
-borrows and mutates as before. The listeners see the node still in place and
+borrows and mutates as before. The last round's blur is made with the
+departing node held `inert`, so a listener that refocuses in there every time
+(a field that refocuses itself on blur) cannot: run under the removal's borrow
+it was aborted with the runtime's flush guard set, and later signal writes
+stopped reaching the DOM. The verb does not ask for a mutation the backend
+will refuse (`can_take`: a reference that is not the parent's child, a node
+into its own subtree), which moves nothing and keeps the focus. The ask is
+free while nothing is focused: `FOCUS_MAY_BE_HELD` (`web_document.rs`, raised
+by `focusin`, lowered by a `focusout` that leaves `activeElement` at `<body>`)
+answers with no JS call, and a text write to a text node asks only `nodeType`.
+A modified field's `onchange` runs from that blur only while its handler is
+alive: a field the hidden branch built has had it freed first (#141 order). The listeners see the node still in place and
 not yet retired, the mutation and the document's maps stay one synchronous
 step, and Firefox, which fires nothing for a removed node, gets the same
 `focusout`. A moved node loses the focus on the web, as in a browser (desktop

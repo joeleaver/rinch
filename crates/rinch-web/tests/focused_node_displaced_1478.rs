@@ -724,3 +724,247 @@ fn hiding_an_ancestor_of_the_focused_owner() {
         assert_no_blur_inside_the_write,
     );
 }
+
+thread_local! {
+    static AFTER: Cell<Signal<u32>> = Cell::new(Signal::new(0));
+}
+
+/// A listener that puts the focus back inside the departing subtree **every**
+/// time (a field that refocuses itself on blur). The last release keeps it
+/// from coming back, so no listener runs inside the removal. One that did was
+/// aborted there with the runtime's flush guard set, and from then on a plain
+/// signal write no longer reached the DOM.
+#[wasm_bindgen_test]
+fn a_listener_that_always_refocuses_inside_the_subtree_being_removed() {
+    let host = host();
+    let keep: Rc<RefCell<Vec<rinch_core::DismissHandle>>> = Default::default();
+    let slots: Rc<RefCell<Option<(NodeHandle, NodeHandle)>>> = Default::default();
+    let calls = Rc::new(Cell::new(0u32));
+    let (k, sl, c) = (keep.clone(), slots.clone(), calls.clone());
+    let after = AFTER.with(|a| a.get());
+    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |s| {
+        let page = s.create_element("div");
+        let wrap = s.create_element("div");
+        wrap.set_attribute("id", "wrap-always");
+        let mut mk = |id: &str, into: &NodeHandle| {
+            let b = s.create_element("button");
+            b.set_attribute("id", id);
+            into.append_child(&b);
+            b
+        };
+        let (t, z) = (mk("trigger-always", &wrap), mk("z-always", &wrap));
+        page.append_child(&wrap);
+        let other = mk("other-always", &page);
+        // Asked afterwards: do effects still flush?
+        let live = other.clone();
+        s.create_effect(move || live.set_attribute("data-n", &after.get().to_string()));
+        let c = c.clone();
+        k.borrow_mut().push(rinch_core::push_key_handler(
+            &t,
+            |_| false,
+            move || {
+                c.set(c.get() + 1);
+                if c.get() < 50 {
+                    z.focus();
+                }
+            },
+        ));
+        *sl.borrow_mut() = Some((wrap, other));
+        page
+    });
+    let (wrap, other) = slots.borrow_mut().take().unwrap();
+    by_id("trigger-always").focus().unwrap();
+    assert_eq!(active_id(), "trigger-always", "positive control");
+    wrap.remove();
+    assert!(gone("trigger-always") && gone("z-always"), "removed");
+    assert!(calls.get() >= 1, "the entry heard the focus leave");
+    assert!(calls.get() < 50, "and the listener was not still at it");
+    assert!(
+        !wrap.get_attribute("inert").is_some(),
+        "the node is not left inert"
+    );
+    other.set_attribute("data-after", "1");
+    after.set(7);
+    assert_eq!(
+        by_id("other-always").get_attribute("data-n").as_deref(),
+        Some("7"),
+        "a signal write after the removal still reaches the DOM"
+    );
+    // It comes back usable (#719): something in it takes the focus again.
+    other.insert_after(&wrap);
+    by_id("z-always").focus().unwrap();
+    assert_eq!(active_id(), "z-always", "not left inert");
+    root.unmount();
+    host.remove();
+}
+
+/// A verb the browser refuses moves nothing, so it does not cost the focus.
+#[wasm_bindgen_test]
+fn a_move_that_cannot_happen_keeps_the_focus() {
+    let f = fixture("button", "refused");
+    // `other` is not a child of `wrap`: `insertBefore` throws.
+    f.wrap.insert_before(&f.trigger, &f.other);
+    assert_eq!(active_id(), "trigger-refused", "refused insert_before");
+    // A node into its own descendant: a hierarchy error.
+    f.trigger.append_child(&f.wrap);
+    assert_eq!(active_id(), "trigger-refused", "refused cyclic append");
+    f.trigger.insert_after(&f.page);
+    assert_eq!(
+        active_id(),
+        "trigger-refused",
+        "refused cyclic insert_after"
+    );
+    // Not `other`'s child.
+    f.other.remove_child(&f.wrap);
+    assert_eq!(active_id(), "trigger-refused", "refused remove_child");
+    // A node replaced by itself, and by its own ancestor.
+    f.wrap.replace_with(&f.wrap);
+    f.trigger.replace_with(&f.page);
+    assert_eq!(active_id(), "trigger-refused", "refused replace_with");
+    assert_eq!(f.seen.left.get(), 0, "focus never left");
+    assert_eq!(
+        by_id("trigger-refused").parent_element().unwrap().id(),
+        "wrap-refused",
+        "and nothing moved"
+    );
+    // Positive control: the same verb, when it can run, does take the focus.
+    f.page.insert_before(&f.wrap, &f.other);
+    f.page.append_child(&f.wrap);
+    assert_ne!(active_id(), "trigger-refused");
+    f.done();
+}
+
+/// What the guide does **not** promise: a field the hidden branch *built* has
+/// had its handlers freed before it goes (the branch's scope is disposed
+/// first), so its `onchange` commits nothing. Only a captured field, or one
+/// removed directly, still has a handler to run
+/// (`removing_a_modified_focused_field_runs_onchange`).
+#[wasm_bindgen_test]
+fn a_field_the_hidden_branch_built_commits_nothing() {
+    let host = host();
+    let show = Signal::new(true);
+    let got = Signal::new(String::from("untouched"));
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |__scope: &mut RenderScope| {
+            rsx! {
+                div {
+                    if show.get() {
+                        input { id: "field-built", onchange: move |v: String| got.set(v) }
+                    }
+                }
+            }
+        },
+    );
+    by_id("field-built").focus().unwrap();
+    let exec: js_sys::Function = js_sys::Reflect::get(&document(), &"execCommand".into())
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let ok = exec
+        .call3(
+            &document(),
+            &"insertText".into(),
+            &false.into(),
+            &"typed".into(),
+        )
+        .unwrap();
+    assert!(ok.as_bool().unwrap_or(false), "positive control: typed");
+    show.set(false);
+    assert!(gone("field-built"), "hidden");
+    assert_eq!(got.get(), "untouched", "its handler was already freed");
+    root.unmount();
+    host.remove();
+}
+
+/// Counts `document.activeElement` reads and `Node.contains` calls.
+const COUNTERS: &str = r#"(function(){
+ if(window.__ae!==undefined){window.__ae=0;window.__ct=0;return 0;}
+ const d=Object.getOwnPropertyDescriptor(Document.prototype,'activeElement');
+ window.__ae=0;window.__ct=0;
+ Object.defineProperty(Document.prototype,'activeElement',{get(){window.__ae++;return d.get.call(this)},configurable:true});
+ const c=Node.prototype.contains;
+ Node.prototype.contains=function(o){window.__ct++;return c.call(this,o)};
+ return 0;})()"#;
+
+fn js(src: &str) -> f64 {
+    js_sys::eval(src).unwrap().as_f64().unwrap_or(-1.0)
+}
+
+/// The cost side: asking "is the focus in there" before every structural verb
+/// and text write is free while nothing holds the focus, and a text write to a
+/// text node never asks where the focus is.
+#[wasm_bindgen_test]
+fn asking_costs_no_browser_call_while_nothing_is_focused() {
+    let host = host();
+    let rows = Signal::new(Vec::<u32>::new());
+    let tick = Signal::new(0u32);
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |__scope: &mut RenderScope| {
+            rsx! {
+                div {
+                    input { id: "cost-in" }
+                    p { id: "cost-tick", {|| tick.get().to_string()} }
+                    ul { id: "cost-ul",
+                        for n in rows.get() {
+                            li { key: n, span { {n.to_string()} } }
+                        }
+                    }
+                }
+            }
+        },
+    );
+    // Whatever an earlier test left focused, let it go.
+    by_id("cost-in").focus().unwrap();
+    by_id("cost-in").blur().unwrap();
+    js(COUNTERS);
+    let _ = document().active_element();
+    let _ = document().body().unwrap().contains(None);
+    assert_eq!(
+        (js("window.__ae"), js("window.__ct")),
+        (1.0, 1.0),
+        "positive control: the counters count"
+    );
+
+    js(COUNTERS);
+    rows.set((0..200).collect());
+    for i in 1..=100 {
+        tick.set(i);
+    }
+    rows.set((0..200).rev().collect());
+    rows.set(Vec::new());
+    assert_eq!(
+        by_id("cost-tick").text_content().as_deref(),
+        Some("100"),
+        "positive control: the updates ran"
+    );
+    assert_eq!(
+        (js("window.__ae"), js("window.__ct")),
+        (0.0, 0.0),
+        "nothing focused: no activeElement read, no contains call"
+    );
+
+    // With a field focused elsewhere on the page, a reactive text update (a
+    // write to a text node) still asks neither.
+    by_id("cost-in").focus().unwrap();
+    assert_eq!(active_id(), "cost-in", "positive control: focused");
+    js(COUNTERS);
+    for i in 101..=200 {
+        tick.set(i);
+    }
+    assert_eq!(by_id("cost-tick").text_content().as_deref(), Some("200"));
+    assert_eq!(
+        (js("window.__ae"), js("window.__ct")),
+        (0.0, 0.0),
+        "a text node holds no focused child"
+    );
+    // And a structural verb does ask, so the flag is not simply stuck off.
+    rows.set(vec![1]);
+    assert!(js("window.__ae") >= 1.0, "positive control: it asks now");
+    assert_eq!(active_id(), "cost-in", "and the field kept the focus");
+    root.unmount();
+    host.remove();
+}

@@ -774,12 +774,21 @@ panel, a keyed `for` moving a row, and unmounting a root. The focused element
 is blurred, with the document free, and then the node goes. So:
 
 - a key entry whose owner is in the part that goes gets its `on_focus_leave`
-  (an open `Select` in a hidden panel closes), and a modified field in it gets
-  its `onchange`, in every browser. Chrome fires those events by itself when a
-  focused node is removed; Firefox fires nothing, and rinch's own `blur()`
-  makes the two agree;
+  (an open `Select` in a hidden panel closes). Chrome fires the focus events by
+  itself when a focused node is removed; Firefox fires nothing, and rinch's own
+  `blur()` makes the two agree;
+- a modified field in it gets its `onchange` **only while its handler is still
+  alive**: a field removed directly, or a captured one a branch hides
+  (`if show { {field} }`). A field the hidden branch *built*
+  (`if show { input { onchange: … } }`) has had its handlers freed before it
+  goes, and commits nothing;
 - a handler those events run may use any `NodeHandle`, and the node it is
-  about is still where it was;
+  about is still where it was. A handler that keeps putting the focus back
+  inside the part that goes is stopped the fourth time: that part is held
+  `inert` for the last blur, so the focus cannot return to it;
+- a verb the browser refuses (an `insert_before` whose reference is not a child
+  of the parent, a node appended into itself) moves nothing and keeps the
+  focus;
 - **a moved node loses the focus**, as it does in a browser. Desktop keeps the
   focus across a move. Call `focus()` on it again after the move if it should
   keep the keyboard on the web too.
