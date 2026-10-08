@@ -138,7 +138,18 @@ issue #661, a re-measure of the boxes a change actually reached
 after the root compute and is what lets a width that needs the containing
 block's — a percentage, `fit-content`/`stretch`, or an `auto` width, which is
 shrink-to-fit and so capped at that block (#658) — resolve against a containing
-block that only has a width once the compute has run. A component
+block that only has a width once the compute has run. The inline formatting
+context around such a box is *measured* before that, and asked about widths
+the box is never laid out at; a measure lines an `auto`-width box up at what it
+contributes to the width asked about (`ifc::AtomicContributions`, #1476): its
+max-content size, its min-content size, or the shrink-to-fit of the two. That
+is what lets a container sized from its content — a flex item, a grid `auto`
+track, a shrink-to-fit absolute box, another `auto` atomic inline — come out
+narrower than the box, so the cap can bind. The min-content size is measured
+only when a line narrower than the box asks for it, after the compute that
+asked (a measure cannot start a compute), and the compute then runs again;
+the pass and the compute alternate until the pass changes nothing, four times
+at most. A component
 that declares `display: inline-flex` —
 `Badge`, `Button` and the rest of the list in CLAUDE.md — is one of these
 whenever it sits beside text rather than inside a `Stack`.
