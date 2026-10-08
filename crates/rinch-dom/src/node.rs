@@ -2842,13 +2842,22 @@ pub struct NodeTree {
     /// Do not swap it back for a `HashSet`. The set holds a handful of entries
     /// and its `O(log n)` insert is not on any path the cost harness measures.
     pub dirty_atomic_inlines: BTreeSet<RawNodeId>,
-    /// An atomic inline sized by a `fit-content`/`stretch` width (#691), and
-    /// the containing-block inner width it was last sized at by
+    /// An atomic inline sized by a `fit-content`/`stretch` width (#691), or
+    /// by an `auto` one, which is shrink-to-fit (#658), and the
+    /// containing-block inner width it was last sized at by
     /// `resolve_percentage_inline_blocks`. Any other measure of the box (all
     /// of which measure it with no containing-block width, as `auto`) removes
     /// its entry, so an entry still here at the same width means nothing that
     /// sizes the box moved and it need not be measured again.
     pub(crate) keyword_inline_cb_width: HashMap<RawNodeId, f32>,
+    /// The `auto`-width atomic inlines whose own Taffy subtree holds a
+    /// percentage that resolves against the box's width (#662), as found
+    /// the last time the box was measured with no containing-block width.
+    /// Measured that way the percentage had no basis, so even a box whose
+    /// max-content width fits its containing block — which
+    /// `resolve_percentage_inline_blocks` otherwise leaves alone — has to be
+    /// laid out again at the width it has.
+    pub(crate) auto_inline_percent_content: HashSet<RawNodeId>,
     /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
     /// to clear after the frame's style pass.
     pub styled_unrendered: Vec<RawNodeId>,
@@ -3079,6 +3088,7 @@ impl NodeTree {
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
+            auto_inline_percent_content: HashSet::new(),
             styled_unrendered: Vec::new(),
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),

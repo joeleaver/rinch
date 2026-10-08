@@ -135,8 +135,10 @@ and three passes give one a size, all through `measure_inline_blocks`: the
 `ifc_dirty` pass, which measures every atomic inline in the document; since
 issue #661, a re-measure of the boxes a change actually reached
 (`dirty_atomic_inlines`); and `resolve_percentage_inline_blocks`, which runs
-after the root compute and is what lets a percentage inline size resolve against
-a containing block that only has a width once the compute has run. A component
+after the root compute and is what lets a width that needs the containing
+block's — a percentage, `fit-content`/`stretch`, or an `auto` width, which is
+shrink-to-fit and so capped at that block (#658) — resolve against a containing
+block that only has a width once the compute has run. A component
 that declares `display: inline-flex` —
 `Badge`, `Button` and the rest of the list in CLAUDE.md — is one of these
 whenever it sits beside text rather than inside a `Stack`.
