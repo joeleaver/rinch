@@ -5773,11 +5773,16 @@ impl RinchDocument {
     ///   auto-width box 700 wide. An atomic inline is shrink-to-fit
     ///   (CSS 2.1 §10.3.5). Measured: `min-width: 50%` of a 700px cell with the
     ///   text `"hi"` came out **700** where it must be 350.
-    ///   The repair is to measure the content's own width at max-content first
-    ///   and **pin** it as `size.width` for the definite pass, because
-    ///   `clamped_style_size` is `.or`'d ahead of `available_space_based_size`
-    ///   while percentage `min-`/`max-width` still resolve against the
-    ///   containing block. Only for an auto-width box: an explicit `width` is
+    ///   The repair is to **pin** a width as `size.width` for the definite
+    ///   pass, because `clamped_style_size` is `.or`'d ahead of
+    ///   `available_space_based_size` while percentage `min-`/`max-width`
+    ///   still resolve against the containing block. Since #658 that width is
+    ///   the box's shrink-to-fit width, which
+    ///   [`Self::resolve_root_width_keyword`] resolves for `auto` as for
+    ///   `fit-content` (it used to be a separate "pass A" pinning the
+    ///   max-content width, never capped); an `auto` box that fits is
+    ///   measured under max-content space instead. Only for an auto-width
+    ///   box: an explicit `width` is
     ///   already the answer that branch reaches for.
     /// - **A leaf's min/max clamp is applied *after* its measure ran.** So a
     ///   `max-width` that bites leaves the box narrow with an interior laid out
@@ -5882,7 +5887,8 @@ impl RinchDocument {
             // nothing across `-p rinch-dom -p rinch` — a whole extra compute per
             // percentage-sized atomic inline, buying nothing any test can see.
             if block_root && clampable {
-                // Unrounded, for the reason pass A gives.
+                // Unrounded: a rounded-down width is one the content does
+                // not fit in (a 580.37px line pinned at 580 re-broke).
                 let used = self.tree.taffy.unrounded_layout(taffy_id).size.width;
                 let mut style = original.clone();
                 style.size.width = taffy::Dimension::length(used);
@@ -5941,8 +5947,8 @@ impl RinchDocument {
     ///   [`Self::resolve_percentage_inline_blocks`] measures them again once
     ///   the containing block has a width.
     ///
-    /// Widths are the unrounded border-box widths, for the reason pass A pins
-    /// unrounded: a rounded-down width is one the content does not fit in.
+    /// Widths are the unrounded border-box widths: a rounded-down width is one
+    /// the content does not fit in (a 580.37px line pinned at 580 re-broke).
     /// (rinch hands Taffy no `box-sizing`, so every box is border-box to it.)
     fn resolve_root_width_keyword(
         &mut self,
@@ -6110,18 +6116,23 @@ impl RinchDocument {
             || matches!(style.max_width, Percent(_))
     }
 
-    /// Re-measure inline-blocks whose inline size is a percentage, now that their
-    /// containing block has a computed width (issue #120).
+    /// Size the atomic inlines whose width needs their containing block's —
+    /// a percentage (#120), a `fit-content`/`stretch` keyword (#691), or
+    /// `auto`, which is shrink-to-fit (#658) — now that the containing block
+    /// has a computed width.
     ///
-    /// `compute_inline_block_layouts` runs *before* the root Taffy compute, so a
-    /// percentage width has nothing to resolve against and collapses to
-    /// min-content. This runs *after* that compute, when the containing block's
-    /// width is real, and re-measures against it.
+    /// `compute_inline_block_layouts` runs *before* the root Taffy compute, so
+    /// such a width has nothing to resolve against (a percentage collapses to
+    /// min-content, `auto` comes out at max-content). This runs *after* that
+    /// compute, when the containing block's width is real, and re-measures
+    /// against it.
     ///
-    /// Returns `true` if any inline-block changed size — the caller must then
+    /// Returns `true` if any atomic inline changed size — the caller must then
     /// re-run the root compute so the enclosing IFCs line-break against the
-    /// corrected boxes. Returns `false` (doing no work) when no inline-block has a
-    /// percentage inline size, which is the overwhelmingly common case.
+    /// corrected boxes. **It looks at every `auto`-width atomic inline on
+    /// every pass**: one measured as `auto` that fits its block (the
+    /// overwhelmingly common case — a button, a badge) costs a
+    /// containing-block lookup and one comparison, and is not measured.
     ///
     /// Only the *inline* axis is corrected. A percentage height on an inline-block
     /// resolves against a containing-block height that is itself usually content-

@@ -662,9 +662,13 @@ differs, each with its issue:
   container is not capped by it (#1277).
 - An `inline-block` (or `inline-flex`, `inline-grid`) whose width is
   **`auto`** is shrink-to-fit since #658, as in a browser: capped at its
-  containing block, so wider content wraps there. Two such boxes **nested**
-  are not capped yet: the outer one is lined up with the inner one at its
-  full width, so neither wraps (#1476).
+  containing block, so wider content wraps there — when that block's width
+  does not itself depend on the box. Inside a **flex item**, a **grid item
+  with an `auto` track**, a **shrink-to-fit absolute box** or **another
+  `auto` atomic inline**, it is not capped yet: that container is sized from
+  the box at its full width, so neither wraps (#1476). `min-width: 0` on
+  the flex item, or `left: 0; right: 0` on the absolute box, gives the
+  container a width of its own and the browser's answer.
 
 For `min-*`/`max-*` rinch prints one line on stderr per property and keyword
 per process, so the substitution is visible rather than silent:
