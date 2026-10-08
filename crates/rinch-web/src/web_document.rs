@@ -38,6 +38,11 @@ pub struct WebDocument {
     root_id: NodeId,
     /// The body wrapper element (`<div id="rinch-body">`).
     body_id: NodeId,
+    /// Browser focus work queued by the focus methods, handed to the caller by
+    /// [`DomDocument::take_after_borrow`] to run once its borrow is released:
+    /// a browser `focus()`/`blur()` runs focus listeners synchronously, and
+    /// rinch's own listeners touch this document.
+    after_borrow: Vec<Box<dyn FnOnce()>>,
 }
 
 thread_local! {
@@ -1057,6 +1062,7 @@ impl WebDocument {
             nodes: HashMap::new(),
             root_id: NodeId(0),
             body_id: NodeId(0),
+            after_borrow: Vec::new(),
         };
 
         // Create root element
@@ -1103,6 +1109,7 @@ impl WebDocument {
             nodes: HashMap::new(),
             root_id: NodeId(0),
             body_id: NodeId(0),
+            after_borrow: Vec::new(),
         };
 
         let host_node: web_sys::Node = host.into();
@@ -1305,6 +1312,45 @@ fn utf8_byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
         utf16_offset += ch.len_utf16();
     }
     utf16_offset
+}
+
+/// [`WebDocument::restore_focus`]'s browser half, run with no document
+/// borrowed ([`DomDocument::take_after_borrow`]).
+fn restore_focus_now(
+    browser_doc: &web_sys::Document,
+    root_el: &web_sys::Element,
+    opener: Option<web_sys::HtmlElement>,
+) {
+    let active = browser_doc.active_element();
+    // `<body>` is the browser's spelling of "nothing is focused", and a
+    // browser restores from it too, so it counts as inside.
+    let body = browser_doc.body();
+    let nowhere = match (&active, &body) {
+        (None, _) => true,
+        (Some(a), Some(b)) => a.is_same_node(Some(b.unchecked_ref())),
+        (Some(_), None) => false,
+    };
+    let inside = nowhere
+        || active
+            .as_ref()
+            .is_some_and(|a| root_el.contains(Some(a.unchecked_ref())));
+    if !inside {
+        return;
+    }
+
+    if let Some(el) = opener {
+        let _ = el.focus();
+        if browser_doc
+            .active_element()
+            .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
+        {
+            return;
+        }
+    }
+
+    if let Some(el) = active.and_then(|a| a.dyn_into::<web_sys::HtmlElement>().ok()) {
+        el.blur().ok();
+    }
 }
 
 impl DomDocument for WebDocument {
@@ -2002,12 +2048,28 @@ impl DomDocument for WebDocument {
         })
     }
 
+    /// The `focus()` runs after the caller's borrow is released
+    /// ([`DomDocument::take_after_borrow`]).
     fn focus_element(&mut self, node_id: NodeId) {
         if let Some(n) = self.nodes.get(&node_id.0)
             && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>()
         {
-            el.focus().ok();
+            self.after_borrow.push(Box::new(move || {
+                el.focus().ok();
+            }));
         }
+    }
+
+    fn take_after_borrow(&mut self) -> Option<Box<dyn FnOnce()>> {
+        if self.after_borrow.is_empty() {
+            return None;
+        }
+        let work = std::mem::take(&mut self.after_borrow);
+        Some(Box::new(move || {
+            for job in work {
+                job();
+            }
+        }))
     }
 
     /// `HTMLInputElement`/`HTMLTextAreaElement.setSelectionRange(start, end,
@@ -2093,16 +2155,23 @@ impl DomDocument for WebDocument {
             rinch_core::dom::FocusIntoPolicy::FirstFocusable => items.len(),
             rinch_core::dom::FocusIntoPolicy::AutofocusOnly => start + 1,
         };
-        for el in items[..limit].iter().skip(start) {
-            let _ = el.focus();
-            if self
-                .browser_doc
-                .active_element()
-                .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
-            {
-                return;
+        // The focus-then-verify loop runs once the caller's borrow is released
+        // (`take_after_borrow`): each `focus()` dispatches listeners that touch
+        // this document.
+        let browser_doc = self.browser_doc.clone();
+        let candidates: Vec<web_sys::HtmlElement> =
+            items.into_iter().take(limit).skip(start).collect();
+        self.after_borrow.push(Box::new(move || {
+            for el in candidates {
+                let _ = el.focus();
+                if browser_doc
+                    .active_element()
+                    .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
+                {
+                    return;
+                }
             }
-        }
+        }));
     }
 
     /// The close half (issue #695): hand the keyboard back to `opener`, or let
@@ -2127,40 +2196,16 @@ impl DomDocument for WebDocument {
         else {
             return;
         };
-        let active = self.browser_doc.active_element();
-        // `<body>` is the browser's spelling of "nothing is focused", and a
-        // browser restores from it too, so it counts as inside.
-        let body = self.browser_doc.body();
-        let nowhere = match (&active, &body) {
-            (None, _) => true,
-            (Some(a), Some(b)) => a.is_same_node(Some(b.unchecked_ref())),
-            (Some(_), None) => false,
-        };
-        let inside = nowhere
-            || active
-                .as_ref()
-                .is_some_and(|a| root_el.contains(Some(a.unchecked_ref())));
-        if !inside {
-            return;
-        }
-
-        if let Some(el) = opener
+        let opener = opener
             .and_then(|o| self.nodes.get(&o.0))
-            .and_then(|n| n.clone().dyn_into::<web_sys::HtmlElement>().ok())
-        {
-            let _ = el.focus();
-            if self
-                .browser_doc
-                .active_element()
-                .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
-            {
-                return;
-            }
-        }
-
-        if let Some(el) = active.and_then(|a| a.dyn_into::<web_sys::HtmlElement>().ok()) {
-            el.blur().ok();
-        }
+            .and_then(|n| n.clone().dyn_into::<web_sys::HtmlElement>().ok());
+        let browser_doc = self.browser_doc.clone();
+        // Decided and done once the caller's borrow is released
+        // (`take_after_borrow`): the `focus()`/`blur()` dispatch listeners that
+        // touch this document.
+        self.after_borrow.push(Box::new(move || {
+            restore_focus_now(&browser_doc, &root_el, opener)
+        }));
     }
 
     /// `root` is ignored here: the browser owns the wheel, so there is nothing to

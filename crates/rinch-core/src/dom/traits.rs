@@ -671,6 +671,32 @@ pub trait DomDocument {
     /// Defaulted to a no-op.
     fn restore_focus(&mut self, _opener: Option<NodeId>, _root: NodeId) {}
 
+    /// Work the last call left to run **once the caller has released its
+    /// borrow of this document**, or `None`.
+    ///
+    /// [`NodeHandle::focus`], [`NodeHandle::focus_into`] and
+    /// [`NodeHandle::restore_focus`] take this inside their `borrow_mut`, drop
+    /// the borrow, then run it before they return — so the call is still
+    /// complete when the handle method returns (an `active_element()` right
+    /// after it answers the new focus), but nothing the work triggers sees the
+    /// document borrowed.
+    ///
+    /// `rinch-web` needs it because a browser `focus()` / `blur()` runs every
+    /// `focus`, `blur`, `focusin` and `focusout` listener synchronously, and
+    /// rinch's own listeners touch the document (the editor repaints its caret
+    /// on `blur`; `focusin` asks each key entry's owner for `active_element()`,
+    /// which flushes pending effects). Called under the borrow, each of those
+    /// panicked with "RefCell already borrowed" and, since wasm does not unwind,
+    /// left the document borrowed for good. Desktop posts focus as a request
+    /// the runtime applies later, outside any borrow, and answers `None`.
+    ///
+    /// [`NodeHandle::focus`]: super::NodeHandle::focus
+    /// [`NodeHandle::focus_into`]: super::NodeHandle::focus_into
+    /// [`NodeHandle::restore_focus`]: super::NodeHandle::restore_focus
+    fn take_after_borrow(&mut self) -> Option<Box<dyn FnOnce()>> {
+        None
+    }
+
     /// Lock or unlock document-level scrolling on behalf of `root` (issue #474).
     ///
     /// This is what `Modal`/`Drawer`'s `lock_scroll` reaches. An overlay calls it

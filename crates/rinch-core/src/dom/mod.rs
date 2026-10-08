@@ -512,8 +512,25 @@ impl NodeHandle {
     /// This sets the element as the currently focused element, allowing it to
     /// receive keyboard input. For input/textarea elements, this enables text input.
     pub fn focus(&self) {
-        if let Some(doc) = self.accessed_doc() {
-            doc.borrow_mut().focus_element(self.node_id);
+        self.focus_op(|doc, id| doc.focus_element(id));
+    }
+
+    /// Run a focus-moving backend call, then whatever it left to run once the
+    /// document is no longer borrowed ([`DomDocument::take_after_borrow`]).
+    ///
+    /// A browser runs its focus listeners synchronously inside `focus()`, and
+    /// those listeners touch the document; run under the borrow, they panic.
+    fn focus_op(&self, op: impl FnOnce(&mut dyn DomDocument, NodeId)) {
+        let Some(doc) = self.accessed_doc() else {
+            return;
+        };
+        let after = {
+            let mut doc = doc.borrow_mut();
+            op(&mut *doc, self.node_id);
+            doc.take_after_borrow()
+        };
+        if let Some(after) = after {
+            after();
         }
     }
 
@@ -580,9 +597,7 @@ impl NodeHandle {
     /// See [`DomDocument::focus_into`], including why desktop applies it after
     /// the next layout rather than immediately.
     pub fn focus_into(&self, policy: FocusIntoPolicy) {
-        if let Some(doc) = self.accessed_doc() {
-            doc.borrow_mut().focus_into(self.node_id, policy);
-        }
+        self.focus_op(|doc, id| doc.focus_into(id, policy));
     }
 
     /// Give the keyboard back now that this overlay has closed, or let it go
@@ -592,10 +607,8 @@ impl NodeHandle {
     /// moment an effect calls this: see [`DomDocument::restore_focus`] for the
     /// three questions and why a `blur()` verb would not have been enough.
     pub fn restore_focus(&self, opener: Option<&NodeHandle>) {
-        if let Some(doc) = self.accessed_doc() {
-            doc.borrow_mut()
-                .restore_focus(opener.map(|o| o.node_id), self.node_id);
-        }
+        let opener = opener.map(|o| o.node_id);
+        self.focus_op(|doc, id| doc.restore_focus(opener, id));
     }
 
     /// Lock or unlock document-level scrolling, with **this node as the locking

@@ -2114,7 +2114,12 @@ that applies to, and **a consumer that has not run a layout re-parks them** —
 the two synchronous drains after `dispatch_event` (`click_handling` and
 `activate_focused_node`) otherwise consumed the slot and lost the move for good,
 which is every overlay opened by a click or by Enter. `rinch-web` answers on the
-spot and lets the browser refuse what it should refuse. "Still there" means
+spot and lets the browser refuse what it should refuse — after `NodeHandle`
+has released its document borrow and before the call returns
+(`DomDocument::take_after_borrow`), because a browser `focus()`/`blur()` runs
+every focus listener synchronously and rinch's own listeners touch the document
+(an editor's caret on `blur`, the key entries on `focusin`); under the borrow
+they panicked "RefCell already borrowed". "Still there" means
 **can still take focus**, not merely attached: a `disabled` opener, or one
 inside an outer overlay closed first, releases the keyboard instead. Identity is
 not checked, so a recycled node id (issue #304, live on desktop through

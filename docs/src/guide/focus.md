@@ -377,7 +377,9 @@ Three things to know about the machinery:
   question about boxes. The desktop backend therefore parks the request and
   resolves it after the next layout, which is the turn a signal write already
   triggers. `rinch-web` answers on the spot, because the browser lays out on
-  demand and refuses a `focus()` it should refuse.
+  demand and refuses a `focus()` it should refuse. The browser's focus
+  listeners run inside that call, with the document free: a `blur` or
+  `focusin` handler of yours may use any `NodeHandle`.
 - **"Still there" means it can still take focus**, not merely that it is
   attached. An opener that went `disabled` while the dialog worked, or one that
   lives inside an *outer* overlay closed before this one, is connected and
