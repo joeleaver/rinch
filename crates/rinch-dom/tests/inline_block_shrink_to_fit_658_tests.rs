@@ -348,3 +348,16 @@ fn a_fit_content_box_that_fits_is_one_line_in_any_face() {
         assert_eq!(size(&doc, "t").1, 22.0, "{text:?}");
     }
 }
+
+/// From the review of #1477 (p32): a box that fits the block but not the
+/// block less its own margins is capped there. Its content (~381) is
+/// narrower than the 400px block, so only the margins in the fit test send
+/// it to be resolved; without them it stays one 381px line.
+#[test]
+fn a_box_that_fits_the_block_but_not_its_margins_is_capped() {
+    let doc = in_cb(
+        "",
+        r#"<span data-m="t" style="display: inline-block; margin: 0 30px">Wavy milliliters WWW mmm Wavy milliliters WWW</span>"#,
+    );
+    assert_size(&doc, "t", (340.0, 40.0));
+}

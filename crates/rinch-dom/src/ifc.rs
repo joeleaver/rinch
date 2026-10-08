@@ -6155,12 +6155,10 @@ impl RinchDocument {
                     .is_some_and(|n| n.ifc_root.is_some() && n.display_mode.is_atomic_inline())
             });
         }
-        // `auto` boxes the fit test below left alone, in case one holds a
-        // box sized against its containing block (see `holds_resolved`).
-        let mut fitting: Vec<(usize, usize)> = Vec::new();
         // Whether any percentage-sized atomic inline is in the registry.
         let mut any_percent = false;
         let percent_content = !self.tree.auto_inline_percent_content.is_empty();
+        let any_keyword = !self.tree.keyword_inline_cb_width.is_empty();
         for &id in &self.tree.atomic_inline_registry {
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
@@ -6190,7 +6188,7 @@ impl RinchDocument {
             // margins from its computed style when they are lengths.
             if !percent
                 && matches!(style.width, crate::computed_style::DimensionValue::Auto)
-                && !self.tree.keyword_inline_cb_width.contains_key(&id)
+                && !(any_keyword && self.tree.keyword_inline_cb_width.contains_key(&id))
                 && !(percent_content && self.tree.auto_inline_percent_content.contains(&id))
             {
                 use crate::computed_style::LengthPercentageAutoValue as M;
@@ -6211,7 +6209,6 @@ impl RinchDocument {
                     }
                 };
                 if node.layout.width <= inner_width - margins + 0.5 {
-                    fitting.push((id, root_id));
                     continue;
                 }
             }
@@ -6223,6 +6220,7 @@ impl RinchDocument {
             // three computes. (A percentage size is left re-measured every
             // pass, as before.)
             if !percent
+                && any_keyword
                 && self
                     .tree
                     .keyword_inline_cb_width
@@ -6248,7 +6246,7 @@ impl RinchDocument {
         // whole-document pass widened both again. Built only when there can
         // be such a box: usually there is none, and it costs a walk up from
         // each.
-        if !fitting.is_empty() && (any_percent || !self.tree.keyword_inline_cb_width.is_empty()) {
+        if any_percent || any_keyword {
             let mut holds_resolved: std::collections::HashSet<usize> =
                 std::collections::HashSet::new();
             {
@@ -6278,10 +6276,22 @@ impl RinchDocument {
                     }
                 }
             }
-            for (id, _) in fitting {
-                if holds_resolved.contains(&id)
-                    && let Some(depth) = self.depth_if_connected(id)
+            for id in holds_resolved {
+                // The boxes the fit test can have left alone: an `auto`
+                // width with no entry of its own. (One already queued is
+                // queued once.)
+                let Some(n) = self.tree.nodes.get(id) else {
+                    continue;
+                };
+                if n.ifc_root.is_none()
+                    || n.taffy_id.is_none()
+                    || !matches!(n.computed_style.width, crate::computed_style::DimensionValue::Auto)
+                    || Self::has_percentage_inline_size(&n.computed_style)
+                    || self.tree.keyword_inline_cb_width.contains_key(&id)
                 {
+                    continue;
+                }
+                if let Some(depth) = self.depth_if_connected(id) {
                     pending.insert((depth, id));
                 }
             }
