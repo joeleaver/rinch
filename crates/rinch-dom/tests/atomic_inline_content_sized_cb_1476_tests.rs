@@ -225,6 +225,81 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;right:0"><span data-m="o" style="display:inline-block"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></span></div></div>"##,
         "o=400.0x40.0 f=400.0x40.0 t=400.0x40.0",
     ),
+    (
+        "d01_capped_within_a_pixel",
+        r##"<div data-m="f" style="width:543px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div>"##,
+        "f=543.0x40.0 t=543.0x40.0",
+    ),
+    (
+        "d02_pct_box_inside_in_flex_item",
+        r##"<div style="width:300px;display:flex"><div data-m="f"><span data-m="o" style="display:inline-block">Wavy milliliters WWW mmm <span data-m="t" style="display:inline-block;width:50%">Wavy milliliters</span> Wavy milliliters</span></div></div>"##,
+        "o=300.0x40.0 f=300.0x40.0 t=150.0x20.0",
+    ),
+    (
+        "d03_pct_max_width_in_flex_item",
+        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;max-width:80%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x40.0 t=320.0x40.0",
+    ),
+    (
+        "d04_fit_content_in_flex_item",
+        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;width:fit-content">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x40.0 t=400.0x40.0",
+    ),
+    (
+        "d06_button_in_narrow_item",
+        r##"<div style="width:100px;display:flex"><div data-m="f">Label <span data-m="t" style="display:inline-flex;padding:0 8px">Add item now</span></div></div>"##,
+        "f=100.0x60.0 t=100.0x40.0",
+    ),
+    (
+        "d07_in_span_in_flex_item",
+        r##"<div style="width:400px;display:flex"><div data-m="f">ab <span>cd <span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span> ef</span> gh</div></div>"##,
+        "f=400.0x80.0 t=400.0x40.0",
+    ),
+    (
+        "d08_two_long_in_one_item",
+        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span> <span data-m="u" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x80.0 t=400.0x40.0 u=400.0x40.0",
+    ),
+    (
+        "d09_scroll_flex_item",
+        r##"<div style="width:400px;display:flex"><div data-m="f" style="overflow:hidden"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x40.0 t=400.0x40.0",
+    ),
+    (
+        "d10_padded_outer",
+        r##"<div style="width:400px"><span data-m="o" style="display:inline-block;padding:0 10px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></span></div>"##,
+        "o=400.0x40.0 t=380.0x40.0",
+    ),
+    (
+        "d11_inline_flex_row_of_boxes",
+        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="o" style="display:inline-flex"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy</span><span data-m="u" style="display:inline-block">milliliters WWW mmm Wavy milliliters</span></span></div></div>"##,
+        "o=400.0x40.0 f=400.0x40.0 t=190.9x40.0 u=209.1x40.0",
+    ),
+    (
+        "d12_abs_right_only",
+        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;right:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=380.0x40.0 t=380.0x40.0",
+    ),
+    (
+        "d14_column_start_margins",
+        r##"<div style="width:400px;display:flex;flex-direction:column;align-items:flex-start"><div data-m="f"><span data-m="t" style="display:inline-block;margin:0 30px">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x40.0 t=340.0x40.0",
+    ),
+    (
+        "d15_abs_margins",
+        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute"><span data-m="t" style="display:inline-block;margin:0 30px">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x40.0 t=340.0x40.0",
+    ),
+    (
+        "d16_pct_inside_eligible",
+        r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters<span data-m="i" style="display:inline-block;width:50%">Wavy milliliters</span> Wavy</span></div></div>"##,
+        "f=400.0x60.0 t=400.0x60.0 i=200.0x20.0",
+    ),
+    (
+        "d13_column_center",
+        r##"<div style="width:400px;display:flex;flex-direction:column;align-items:center"><div data-m="f">ab <span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x60.0 t=400.0x40.0",
+    ),
 ];
 
 /// (name, html, rinch today, Chrome 153, why) — not Chrome's yet, for a
@@ -299,6 +374,10 @@ const SHAPES: &[(&str, &str)] = &[
     (
         "fit_content_block",
         r#"<div data-m="c" style="width:{W}px"><div data-m="f" style="width:fit-content">ab <span data-m="t" style="display:inline-block">{T}</span></div></div>"#,
+    ),
+    (
+        "percentage_box_inside",
+        r#"<div data-m="c" style="width:{W}px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block">{T}<span data-m="i" style="display:inline-block;width:50%">Wavy milliliters</span> Wavy</span></div></div>"#,
     ),
     (
         "inside_an_abs_inside_a_box",
