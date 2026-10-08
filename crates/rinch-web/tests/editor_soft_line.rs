@@ -964,8 +964,10 @@ fn scroll_line_away_in_host(f: &Fixture, caret: u32) {
     let host = f.host.get_bounding_client_rect();
     let line = f.char_rect(caret);
     assert!(
-        // Asked for 300, and Chrome scrolls that far. Firefox stops at 231: it sizes the
-        // scrollable overflow of a padded scroller differently.
+        // Asked for 300. How far the host scrolls depends on the browser window,
+        // not the engine: 231 in Firefox 157 under geckodriver and in Chromium's
+        // headless shell at 1000x800, 300 in Chrome under chromedriver and in
+        // either at 1000x3000. The line is clipped above the host at all of them.
         f.host.scroll_top() >= 200 && line.bottom() < host.top(),
         "positive control: the caret's line ({}..{}) is scrolled above the host ({}), scrollTop {} of {}",
         line.top(),
