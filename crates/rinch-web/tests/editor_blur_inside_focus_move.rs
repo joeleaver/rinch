@@ -4,11 +4,13 @@
 //! Reported from Pimble: File > "New Store..." (or its Ctrl+N) with a note's
 //! editor focused panicked the page with "RefCell already borrowed" and left
 //! every editor dead. The modal's focus effect moves focus with
-//! `NodeHandle::focus_into`, which holds the document borrowed while it calls
+//! `NodeHandle::focus_into`, which held the document borrowed while it called
 //! the browser's `focus()`. The browser dispatches the capture textarea's
 //! `blur` synchronously inside that call, and the editor's blur handler
-//! repainted the caret there, writing styles into the borrowed document. The
-//! repaint is now queued for a microtask.
+//! repaints the caret there, writing styles into the document. The browser
+//! work now runs once the borrow is released (`DomDocument::take_after_borrow`),
+//! so the repaint happens in the `blur`, as for a press or Tab.
+//! `focus_move_listener_reentry.rs` covers the other listeners.
 //!
 //! ```text
 //! CHROMEDRIVER=/path/to/chromedriver \
@@ -132,6 +134,23 @@ fn mounted() -> F {
     }
 }
 
+fn caret_visible() -> bool {
+    let Some(c) = document()
+        .query_selector("[data-pm-editor] [data-pm-caret]")
+        .unwrap()
+    else {
+        return false;
+    };
+    let st = web_sys::window()
+        .unwrap()
+        .get_computed_style(&c)
+        .unwrap()
+        .unwrap();
+    st.get_property_value("display").unwrap() != "none"
+        && st.get_property_value("visibility").unwrap() == "visible"
+        && c.get_client_rects().length() > 0
+}
+
 fn active_id() -> String {
     document()
         .active_element()
@@ -142,12 +161,19 @@ fn active_id() -> String {
 #[wasm_bindgen_test]
 async fn a_modal_opening_while_an_editor_holds_the_keyboard_takes_it() {
     let f = mounted();
+    microtask().await;
+    assert!(
+        caret_visible(),
+        "positive control: the focused editor draws a caret"
+    );
     // The modal's focus effect runs inside this `set`, and its `focus()` blurs
-    // the editor's capture textarea with the document borrowed.
+    // the editor's capture textarea.
     f.open.set(true);
     assert_eq!(active_id(), "in-modal", "the modal took the keyboard");
-    // The queued caret repaint runs here, with nothing borrowed.
-    microtask().await;
+    assert!(
+        !caret_visible(),
+        "the blur repainted the caret before `set` returned"
+    );
 
     // Closing hands it back, and the editor still takes typing afterwards:
     // nothing was left borrowed by a panic.
