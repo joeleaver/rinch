@@ -134,6 +134,22 @@ impl RinchApp {
             self.close_text_context_menu();
             actions.push(AppAction::RequestRedraw);
         }
+        // Focus work parked by the handler of an earlier event (an `on_key`,
+        // an `oninput`, an interceptor or a menu shortcut that called
+        // `focus()` or `blur()`) is applied before the next key, press or
+        // composition is routed. The frame clock's drain comes only after
+        // every event the platform already has queued, so without this a key
+        // queued behind an Escape whose handler blurred the editor was still
+        // typed into it (review of #1481, F2). No layout has run, so a
+        // request that needs one stays parked, with the releases around it.
+        if matches!(
+            event,
+            PlatformEvent::KeyDown { .. } | PlatformEvent::Ime(_) | PlatformEvent::MouseDown { .. }
+        ) && self.drain_focus_requests(false)
+        {
+            self.drain_pending_text_selection();
+            actions.push(AppAction::RequestRedraw);
+        }
         // Where the pointer is, before anything can take the move: the desktop
         // shell reads a press's position back out of `cursor_pos` (the move it
         // flushed just before is what set it). The text menu below takes every
@@ -1760,8 +1776,7 @@ impl RinchApp {
                 }
                 // Process any pending input focus request (e.g., from an Effect
                 // triggered by run_on_main_thread that called request_focus).
-                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
-                    self.apply_focus_request(request);
+                if self.drain_focus_requests(true) {
                     actions.push(AppAction::RequestRedraw);
                 }
                 // And any pending set_selection_range()/select() (issue #552),
@@ -1904,8 +1919,7 @@ impl RinchApp {
                 }
 
                 // Process any pending input focus request from effects
-                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
-                    self.apply_focus_request(request);
+                if self.drain_focus_requests(true) {
                     actions.push(AppAction::RequestRedraw);
                 }
                 // And any pending set_selection_range()/select() (issue #552),
