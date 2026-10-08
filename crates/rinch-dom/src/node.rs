@@ -840,6 +840,15 @@ pub struct Node {
     pub taffy_id: Option<taffy::NodeId>,
     /// Computed layout result.
     pub layout: LayoutResult,
+    /// For an atomic inline: the size it had the last time it was measured
+    /// with no containing-block width — as `auto`, under max-content space —
+    /// which for an `auto`-width box is its **max-content contribution**
+    /// (#1476). `layout` is the size it has now, which
+    /// `resolve_percentage_inline_blocks` may since have capped at its
+    /// containing block; an inline formatting context asked how wide it
+    /// *could* be must line the box up at this one, or a container sized
+    /// from that answer stays as narrow as the cap made it.
+    pub(crate) natural_inline_size: (f32, f32),
     /// The box this node was last **painted** in, for dirty-region
     /// computation: where its old pixels are, and so what a frame that moves it
     /// has to clear.
@@ -1407,6 +1416,7 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            natural_inline_size: (0.0, 0.0),
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Block,
@@ -1477,6 +1487,7 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            natural_inline_size: (0.0, 0.0),
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode,
@@ -1546,6 +1557,7 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            natural_inline_size: (0.0, 0.0),
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Inline,
@@ -1613,6 +1625,7 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            natural_inline_size: (0.0, 0.0),
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Inline,
@@ -2858,6 +2871,21 @@ pub struct NodeTree {
     /// `resolve_percentage_inline_blocks` otherwise leaves alone — has to be
     /// laid out again at the width it has.
     pub(crate) auto_inline_percent_content: HashSet<RawNodeId>,
+    /// The **min-content** size (unrounded width, height at that width) of
+    /// an `auto`-width atomic inline, measured the first time an inline
+    /// formatting context was asked for a width the box does not fit in
+    /// (#1476) — its min-content contribution, and the floor of its
+    /// shrink-to-fit width. Absent until asked for: a box that fits every
+    /// width it is lined up in never pays the compute. Dropped when anything
+    /// inside the box changes ([`RinchDocument::mark_atomic_inline_dirty`],
+    /// and the passes that measure a changed box).
+    pub(crate) atomic_min_content: HashMap<RawNodeId, (f32, f32)>,
+    /// The boxes a measure function wanted an `atomic_min_content` entry
+    /// for and did not find. A measure runs inside a Taffy compute and
+    /// cannot start another, so it lines the box up at its max-content size
+    /// and asks here; `resolve_percentage_inline_blocks` measures them after
+    /// the compute and has it run again.
+    pub(crate) atomic_min_requests: std::cell::RefCell<Vec<RawNodeId>>,
     /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
     /// to clear after the frame's style pass.
     pub styled_unrendered: Vec<RawNodeId>,
@@ -3089,6 +3117,8 @@ impl NodeTree {
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
             auto_inline_percent_content: HashSet::new(),
+            atomic_min_content: HashMap::new(),
+            atomic_min_requests: std::cell::RefCell::new(Vec::new()),
             styled_unrendered: Vec::new(),
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
@@ -3397,6 +3427,17 @@ impl NodeTree {
             self.ifc_measure_cache.remove(node_id);
             // Nor a freshness flag meant for a now-gone `<select>` (#757).
             self.select_value_fresh.remove(node_id);
+            // Nor what was recorded about a now-gone atomic inline (#1476;
+            // the first two leaked until then, review of #1477).
+            if !self.keyword_inline_cb_width.is_empty() {
+                self.keyword_inline_cb_width.remove(node_id);
+            }
+            if !self.auto_inline_percent_content.is_empty() {
+                self.auto_inline_percent_content.remove(node_id);
+            }
+            if !self.atomic_min_content.is_empty() {
+                self.atomic_min_content.remove(node_id);
+            }
         }
         for node_id in to_remove {
             self.nodes.remove(node_id);

@@ -166,11 +166,6 @@ const CHROME: &[(&str, &str, &str)] = &[
         "f=400.0x40.0 t=340.0x40.0",
     ),
     (
-        "c17_abs_left",
-        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;left:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=380.0x40.0 t=380.0x40.0",
-    ),
-    (
         "c18_padding_in_flex_item",
         r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;padding:0 10px">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
         "f=400.0x40.0 t=400.0x40.0",
@@ -232,6 +227,19 @@ const CHROME: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// (name, html, rinch today, Chrome 153, why) — not Chrome's yet, for a
+/// reason that is not this issue's. Each pins rinch's current answer so a
+/// fix has to come here and move the row up.
+const GAPS: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "c17_abs_left",
+        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;left:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=400.0x40.0 t=400.0x40.0",
+        "f=380.0x40.0 t=380.0x40.0",
+        "#1404: Taffy shrinks an auto-width absolute box to fit its parent's width, not that width less its insets",
+    ),
+];
+
 #[test]
 fn content_sized_containing_blocks_match_chrome_153() {
     let bad: Vec<_> = CHROME
@@ -239,6 +247,19 @@ fn content_sized_containing_blocks_match_chrome_153() {
         .filter_map(|(n, h, want)| {
             let got = dump(&lay_out(h));
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn known_gaps_pin_rinchs_current_answer() {
+    let bad: Vec<_> = GAPS
+        .iter()
+        .filter_map(|(n, h, now, chrome, why)| {
+            let got = dump(&lay_out(h));
+            (!close(now, &got))
+                .then(|| format!("{n} ({why}): pinned[{now}] got[{got}] chrome[{chrome}]"))
         })
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");
