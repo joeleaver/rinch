@@ -470,7 +470,15 @@ pub fn reload_image(src: &str) {
         let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut reloads = PENDING_RELOADS.lock().unwrap_or_else(|e| e.into_inner());
         for &doc_key in live.iter() {
-            if !reloads.iter().any(|(key, s)| *key == doc_key && s == src) {
+            let mut queued = false;
+            for (key, s) in reloads.iter() {
+                note_reload_queue_step();
+                if *key == doc_key && s == src {
+                    queued = true;
+                    break;
+                }
+            }
+            if !queued {
                 reloads.push((doc_key, src.to_string()));
             }
         }
@@ -478,6 +486,35 @@ pub fn reload_image(src: &str) {
     // Promptness only, as for a finished decode: `has_pending` is what makes
     // every host's frame gate come round to the drain.
     rinch_core::run_on_main_thread(|| {});
+}
+
+thread_local! {
+    /// See [`reload_queue_steps`].
+    static RELOAD_QUEUE_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn note_reload_queue_step() {
+    RELOAD_QUEUE_STEPS.with(|steps| steps.set(steps.get() + 1));
+}
+
+/// How many queue entries [`reload_image`] has looked at on the calling
+/// thread to decide whether a source was already queued: the cost of its
+/// de-duplication, as a count (issue #1473). One per live document per call.
+#[doc(hidden)]
+pub fn reload_queue_steps() -> u64 {
+    RELOAD_QUEUE_STEPS.with(|steps| steps.get())
+}
+
+/// How many sources [`reload_image`] has queued for this document and its
+/// drain has not taken yet.
+#[doc(hidden)]
+pub fn pending_reload_count(doc_key: u64) -> usize {
+    PENDING_RELOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(key, _)| *key == doc_key)
+        .count()
 }
 
 /// Take the sources [`reload_image`] queued for this document.
