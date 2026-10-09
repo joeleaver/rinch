@@ -4,8 +4,8 @@
 //! Images are loaded asynchronously on background threads and decoded into
 //! RGBA8 pixel data suitable for Vello rendering.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 
@@ -141,7 +141,37 @@ static PENDING_IMAGES: Mutex<Vec<PendingImage>> = Mutex::new(Vec::new());
 
 /// Sources [`reload_image`] named, one entry per live document, waiting for
 /// that document's next [`RinchDocument::drain_pending_images`](crate::RinchDocument::drain_pending_images).
-static PENDING_RELOADS: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+///
+/// Keyed by document, so asking whether a document has any, taking them and
+/// purging them touch that document's entry alone, and each entry carries the
+/// set of what it holds, so [`reload_image`] answers "is this source queued
+/// already" with one lookup however many are (issue #1473: it scanned the
+/// whole queue per live document, under this mutex). A document with nothing
+/// queued has no entry: only [`reload_image`] makes one, only for a document
+/// in [`LIVE_DOCUMENTS`], and the drain and [`purge_pending`] remove it whole.
+static PENDING_RELOADS: LazyLock<Mutex<HashMap<u64, ReloadQueue>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// One document's undrained reloads: the sources in the order they were first
+/// named, and the same sources as a set. Both are written by [`Self::push`]
+/// alone and leave together, so they cannot disagree.
+#[derive(Default)]
+struct ReloadQueue {
+    order: Vec<Arc<str>>,
+    queued: HashSet<Arc<str>>,
+}
+
+impl ReloadQueue {
+    /// Queue `src` unless it is queued already.
+    fn push(&mut self, src: &str) {
+        note_reload_queue_step();
+        if !self.queued.contains(src) {
+            let src: Arc<str> = Arc::from(src);
+            self.queued.insert(src.clone());
+            self.order.push(src);
+        }
+    }
+}
 
 /// The `doc_key` of every live [`RinchDocument`](crate::RinchDocument), so a
 /// reload asked for from any thread reaches each document's cache and no
@@ -430,8 +460,7 @@ pub fn has_pending(doc_key: u64) -> bool {
         || PENDING_RELOADS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|(key, _)| *key == doc_key)
+            .contains_key(&doc_key)
 }
 
 /// Ask every document to load `src` again: the way a picture that failed to
@@ -470,9 +499,7 @@ pub fn reload_image(src: &str) {
         let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut reloads = PENDING_RELOADS.lock().unwrap_or_else(|e| e.into_inner());
         for &doc_key in live.iter() {
-            if !reloads.iter().any(|(key, s)| *key == doc_key && s == src) {
-                reloads.push((doc_key, src.to_string()));
-            }
+            reloads.entry(doc_key).or_default().push(src);
         }
     }
     // Promptness only, as for a finished decode: `has_pending` is what makes
@@ -480,14 +507,46 @@ pub fn reload_image(src: &str) {
     rinch_core::run_on_main_thread(|| {});
 }
 
-/// Take the sources [`reload_image`] queued for this document.
-pub(crate) fn take_pending_reloads(doc_key: u64) -> Vec<String> {
+thread_local! {
+    /// See [`reload_queue_steps`].
+    static RELOAD_QUEUE_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn note_reload_queue_step() {
+    RELOAD_QUEUE_STEPS.with(|steps| steps.set(steps.get() + 1));
+}
+
+/// How many times [`reload_image`] has asked, on the calling thread, whether
+/// a source was already queued for a document: the cost of its
+/// de-duplication as a count (issue #1473). One set lookup per live document
+/// per call, where it was one per queue entry scanned.
+#[doc(hidden)]
+pub fn reload_queue_steps() -> u64 {
+    RELOAD_QUEUE_STEPS.with(|steps| steps.get())
+}
+
+/// How many sources [`reload_image`] has queued for this document and its
+/// drain has not taken yet.
+#[doc(hidden)]
+pub fn pending_reload_count(doc_key: u64) -> usize {
     PENDING_RELOADS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .extract_if(.., |(key, _)| *key == doc_key)
-        .map(|(_, src)| src)
-        .collect()
+        .get(&doc_key)
+        .map_or(0, |queue| queue.order.len())
+}
+
+/// Take the sources [`reload_image`] queued for this document.
+///
+/// In the order they were first named. The document's entry goes whole, so a
+/// source named again after this is queued again.
+pub(crate) fn take_pending_reloads(doc_key: u64) -> Vec<Arc<str>> {
+    PENDING_RELOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&doc_key)
+        .map(|queue| queue.order)
+        .unwrap_or_default()
 }
 
 /// Note a document as live, so [`reload_image`] reaches it. Undone by
@@ -522,7 +581,7 @@ pub fn purge_pending(doc_key: u64) {
     PENDING_RELOADS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .retain(|(key, _)| *key != doc_key);
+        .remove(&doc_key);
 }
 
 /// Decode a `data:` URI into raw bytes.
@@ -538,6 +597,89 @@ pub fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
         base64::engine::general_purpose::STANDARD.decode(data).ok()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod reload_queue_tests {
+    //! The reload queue's own contract (issue #1473), on document keys no
+    //! `RinchDocument` has: other tests' documents are live in this binary.
+    //! A reload reaches every live document, so these run one at a time and
+    //! each reads back only the sources it named (`q<n>:`).
+    use super::*;
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    /// A key registered as live for the test, and purged when it ends.
+    struct Live(u64, &'static str);
+    impl Live {
+        fn new(n: u64, mine: &'static str) -> Self {
+            let key = u64::MAX - 0x1473_0000 - n;
+            register_document(key);
+            Live(key, mine)
+        }
+        fn taken(&self) -> Vec<String> {
+            take_pending_reloads(self.0)
+                .iter()
+                .filter(|s| s.starts_with(self.1))
+                .map(|s| s.to_string())
+                .collect()
+        }
+        fn queued(&self) -> usize {
+            let reloads = PENDING_RELOADS.lock().unwrap_or_else(|e| e.into_inner());
+            reloads.get(&self.0).map_or(0, |queue| {
+                assert_eq!(queue.order.len(), queue.queued.len(), "in step");
+                queue.order.iter().filter(|s| s.starts_with(self.1)).count()
+            })
+        }
+    }
+    impl Drop for Live {
+        fn drop(&mut self) {
+            purge_pending(self.0);
+        }
+    }
+
+    #[test]
+    fn sources_are_taken_in_the_order_first_named_each_once() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let doc = Live::new(1, "q1:");
+        for src in ["q1:c", "q1:a", "q1:c", "q1:b", "q1:a", "q1:c"] {
+            reload_image(src);
+        }
+        assert_eq!(doc.queued(), 3);
+        assert_eq!(doc.taken(), ["q1:c", "q1:a", "q1:b"]);
+        assert!(!has_pending(doc.0), "the take empties it");
+        assert_eq!(doc.taken(), Vec::<String>::new());
+    }
+
+    /// The set leaves with the queue: a source taken by one drain and named
+    /// again is queued again, not mistaken for still queued.
+    #[test]
+    fn a_source_named_again_after_a_drain_is_queued_again() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let doc = Live::new(2, "q2:");
+        reload_image("q2:a");
+        reload_image("q2:b");
+        assert_eq!(doc.taken(), ["q2:a", "q2:b"]);
+        reload_image("q2:b");
+        assert!(has_pending(doc.0));
+        assert_eq!(doc.taken(), ["q2:b"]);
+    }
+
+    #[test]
+    fn each_document_holds_and_gives_up_its_own() {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let a = Live::new(3, "q3:");
+        let b = Live::new(4, "q3:");
+        reload_image("q3:x");
+        assert_eq!(b.queued(), 1, "control: it was queued for both");
+        let gone = b.0;
+        drop(b);
+        assert_eq!(pending_reload_count(gone), 0, "purged with the document");
+        assert!(!has_pending(gone));
+        reload_image("q3:y");
+        assert_eq!(pending_reload_count(gone), 0, "and never queued for again");
+        assert_eq!(a.taken(), ["q3:x", "q3:y"]);
     }
 }
 
