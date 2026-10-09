@@ -341,7 +341,6 @@ pub(crate) fn break_lines_hanging_spaces(
     stats
 }
 
-
 /// Whether an atomic inline whose max-content width is `max` fits a line
 /// `stretch` wide — the first half of its shrink-to-fit width
 /// `min(max-content, max(min-content, stretch))` (#658). See
@@ -6577,8 +6576,7 @@ impl RinchDocument {
                 continue;
             }
             let keyword_only = !Self::has_percentage_inline_size(&node.computed_style);
-            for (inner_depth, inner) in self.reset_resolved_atomic_inlines_inside(id, depth, true)
-            {
+            for (inner_depth, inner) in self.reset_resolved_atomic_inlines_inside(id, depth, true) {
                 pending.insert((inner_depth, inner));
             }
             let Some(available) = self.containing_block_inner_width(root_id) else {
