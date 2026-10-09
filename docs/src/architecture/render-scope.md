@@ -443,6 +443,13 @@ that node is detached by then, and after a `discard()` the backend may have
 retired it — there is nothing left to walk. A **move** fires both halves, unless
 it is a reorder inside one parent, which fires only the insertion.
 
+`NodeHandle::set_text` on an element that has children, and
+`NodeHandle::set_inner_html`, replace the node's whole child list: each fires
+the removal half once, for that node (issue #1440), and neither fires the
+insertion half for the text or the parsed markup. `UpdateBatch::apply` calls the
+backend with the document already borrowed and fires neither half, so a
+`DomUpdate::SetText` should target a text node.
+
 `crates/rinch-components/src/late_children.rs` wraps both with the
 boundary rule a nested container of the same kind needs.
 
