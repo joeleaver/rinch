@@ -10,7 +10,6 @@
 //! This file is its own test binary and its tests run one at a time, so the
 //! only live documents are the ones a test made.
 
-use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::{has_pending, pending_reload_count, reload_image, reload_queue_steps};
 use std::sync::Mutex;
