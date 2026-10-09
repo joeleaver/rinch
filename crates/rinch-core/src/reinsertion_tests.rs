@@ -2608,3 +2608,232 @@ mod lazy_memo_733 {
         assert_eq!(__retired_view_returns(), (0, 0));
     }
 }
+
+// ── #1487: text written over an element's children ──────────────────────────
+
+/// Issue #1487. `NodeHandle::set_text` on an element orphans every child, and
+/// an orphan is under no root: the hide of the branch that built it walks the
+/// branch's subtree and never meets it, so it stayed in the backend's node
+/// table and in the minting table for the life of the document. The write
+/// itself now decides, by the rule a hide uses: a child the written element's
+/// render built is discarded, a child that render was handed is only detached.
+mod text_over_children_1487 {
+    use super::*;
+    use crate::dom::__minted_by_len;
+
+    /// `(nodes, minting records)` grown over `cycles` show/hide pairs, after a
+    /// warm-up pair.
+    fn cycle_growth(
+        doc: &Rc<RefCell<MockDomDocument>>,
+        visible: Signal<bool>,
+        cycles: usize,
+    ) -> (isize, isize) {
+        visible.set(true);
+        visible.set(false);
+        let base = (node_count(doc), __minted_by_len() as isize);
+        for _ in 0..cycles {
+            visible.set(true);
+            visible.set(false);
+        }
+        (node_count(doc) - base.0, __minted_by_len() as isize - base.1)
+    }
+
+    /// The issue's table, row two: `div > (span > text, span)` built by the
+    /// branch, then written over.
+    #[test]
+    fn text_over_branch_built_children_does_not_grow_the_document() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let visible = Signal::new(false);
+        let shown = Rc::new(RefCell::new(0usize));
+        let seen = shown.clone();
+        let probe = doc.clone();
+        show_dom(
+            &mut sc,
+            &body,
+            move || visible.get(),
+            move |s: &mut RenderScope| {
+                let before = probe.borrow().__node_count();
+                let wrap = s.create_element("div");
+                let a = s.create_element("span");
+                a.append_child(&s.create_text("a"));
+                wrap.append_child(&a);
+                wrap.append_child(&s.create_element("span"));
+                // Positive control for the count below: the branch really
+                // mints four nodes a show.
+                *seen.borrow_mut() = probe.borrow().__node_count() - before;
+                wrap.set_text("over");
+                wrap
+            },
+            None::<fn(&mut RenderScope) -> NodeHandle>,
+        );
+        let grown = cycle_growth(&doc, visible, 200);
+        assert_eq!(
+            *shown.borrow(),
+            4,
+            "control: a show mints the wrapper and three nodes under it"
+        );
+        assert_eq!(
+            grown,
+            (0, 0),
+            "#1487: the children a text write orphaned were built by the same \
+             render as the element written to, and nothing can show them \
+             again — (nodes, minting records) grown over 200 cycles"
+        );
+    }
+
+    /// Outside any branch too: a long-lived element whose scope-built children
+    /// are replaced by text, over and over.
+    #[test]
+    fn text_over_scope_built_children_leaves_nothing_behind() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let host = sc.create_element("div");
+        body.append_child(&host);
+        let base = (node_count(&doc), __minted_by_len());
+        for i in 0..50 {
+            let c = sc.create_element("p");
+            c.append_child(&sc.create_text(&i.to_string()));
+            host.append_child(&c);
+            if i == 0 {
+                assert_eq!(node_count(&doc), base.0 + 2, "control: two nodes minted");
+            }
+            host.set_text("cleared");
+        }
+        assert_eq!((node_count(&doc), __minted_by_len()), base);
+    }
+
+    /// The other direction: a handle the branch was **handed** is the
+    /// caller's. Written over, it is detached with its subtree and comes back
+    /// when it is appended again.
+    #[test]
+    fn text_over_a_captured_handle_only_detaches_it() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let panel = sc.create_element("article");
+        let panel_text = sc.create_text("kept");
+        panel.append_child(&panel_text);
+
+        let visible = Signal::new(false);
+        let fresh: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let (handed, built) = (panel.clone(), fresh.clone());
+        show_dom(
+            &mut sc,
+            &body,
+            move || visible.get(),
+            move |s: &mut RenderScope| {
+                let wrap = s.create_element("div");
+                let own = s.create_element("span");
+                wrap.append_child(&own);
+                wrap.append_child(&handed);
+                *built.borrow_mut() = Some(own);
+                wrap.set_text("over");
+                wrap
+            },
+            None::<fn(&mut RenderScope) -> NodeHandle>,
+        );
+        visible.set(true);
+
+        let own = fresh.borrow().clone().expect("the branch rendered");
+        {
+            let d = doc.borrow();
+            assert!(
+                d.is_retired(own.node_id()),
+                "control: the span the branch built beside it was discarded"
+            );
+            assert!(
+                !d.is_retired(panel.node_id()) && !d.is_retired(panel_text.node_id()),
+                "the captured panel and its text are still the caller's"
+            );
+            assert_eq!(d.parent_node(panel.node_id()), None, "detached by the write");
+            assert_eq!(d.get_children(panel.node_id()), vec![panel_text.node_id()]);
+        }
+        body.append_child(&panel);
+        assert!(
+            doc.borrow()
+                .get_children(doc.borrow().body())
+                .contains(&panel.node_id()),
+            "and it re-inserts"
+        );
+        panel.remove();
+
+        let grown = cycle_growth(&doc, visible, 200);
+        assert_eq!(grown, (0, 0), "with the panel kept, nothing else accumulates");
+        assert!(!doc.borrow().is_retired(panel.node_id()));
+    }
+
+    /// A captured handle **nested** in markup the write discards comes out
+    /// first, as it does when a branch hides (#732).
+    #[test]
+    fn a_captured_handle_nested_under_a_written_over_child_survives() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let panel = sc.create_element("article");
+
+        let mut branch = RenderScope::with_parent(doc.clone(), body.node_id(), Some(sc.id()));
+        let wrap = branch.create_element("div");
+        let inner = branch.create_element("section");
+        inner.append_child(&panel);
+        wrap.append_child(&inner);
+        body.append_child(&wrap);
+
+        wrap.set_text("over");
+
+        let d = doc.borrow();
+        assert!(d.is_retired(inner.node_id()), "the branch built `inner`");
+        assert!(
+            !d.is_retired(panel.node_id()),
+            "the panel was handed in: detached from the discarded wrapper, kept"
+        );
+        assert_eq!(d.parent_node(panel.node_id()), None);
+    }
+
+    /// The owner is the scope that built the element written to. A child built
+    /// by a scope that is not that one, nor descended from it, was handed in —
+    /// here by a parentless cache scope (#733) — and is kept; one built by a
+    /// descendant scope (a row, a nested branch) goes.
+    #[test]
+    fn ownership_is_asked_of_the_written_elements_scope() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let wrap = sc.create_element("div");
+        body.append_child(&wrap);
+
+        let mut row = RenderScope::with_parent(doc.clone(), body.node_id(), Some(sc.id()));
+        let from_row = row.create_element("li");
+        let mut cache = sc.cache_scope();
+        let cached = cache.create_element("aside");
+        wrap.append_child(&from_row);
+        wrap.append_child(&cached);
+
+        wrap.set_text("over");
+
+        let d = doc.borrow();
+        assert!(d.is_retired(from_row.node_id()), "a descendant scope's node");
+        assert!(!d.is_retired(cached.node_id()), "a cache scope's node");
+    }
+
+    /// A node minted by raw backend access has no record, so the write cannot
+    /// say whose it is: it is detached, as before, and still re-inserts.
+    #[test]
+    fn a_child_with_no_minting_record_is_only_detached() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let wrap = sc.create_element("div");
+        body.append_child(&wrap);
+        let raw = doc.borrow_mut().create_element("i");
+        let raw = NodeHandle::new(raw, Rc::downgrade(&doc) as _);
+        wrap.append_child(&raw);
+
+        wrap.set_text("over");
+        assert!(!doc.borrow().is_retired(raw.node_id()));
+        body.append_child(&raw);
+        assert_eq!(doc.borrow().parent_node(raw.node_id()), Some(body.node_id()));
+    }
+}
