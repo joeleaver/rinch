@@ -5,6 +5,7 @@
 //! painting natively. The reactive system (Signal/Effect) and all components work
 //! through NodeHandle -> DomDocument, so everything works automatically.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1056,6 +1057,7 @@ impl WebDocument {
     /// as body, appending root to `document.body()`.
     pub fn new(browser_doc: web_sys::Document) -> Self {
         crate::images::install_reloader();
+        watch_focus(&browser_doc);
         let mut doc = Self {
             doc_key: rinch_core::dom::next_doc_key(),
             browser_doc,
@@ -1103,6 +1105,7 @@ impl WebDocument {
     /// any number of islands can coexist on one page without id collisions.
     pub fn new_into(browser_doc: web_sys::Document, host: web_sys::Element) -> Self {
         crate::images::install_reloader();
+        watch_focus(&browser_doc);
         let mut doc = Self {
             doc_key: rinch_core::dom::next_doc_key(),
             browser_doc,
@@ -1350,6 +1353,73 @@ fn restore_focus_now(
 
     if let Some(el) = active.and_then(|a| a.dyn_into::<web_sys::HtmlElement>().ok()) {
         el.blur().ok();
+    }
+}
+
+thread_local! {
+    /// Whether an element other than `<body>` may hold the page's focus
+    /// (issue #1478). `true` until [`watch_focus`] has looked.
+    ///
+    /// [`WebDocument::release_focus_within`] is asked before every structural
+    /// verb and every text write; while this is `false` it answers without
+    /// asking the browser anything. Raised by every `focusin` on the document,
+    /// and lowered by a `focusout` that leaves `activeElement` at `<body>` or
+    /// nothing (a window losing the focus fires one too, and leaves it where
+    /// it was). It errs towards `true`, and is wrong only for a focus the
+    /// browser reports with no `focusin` in this document: the focus moving
+    /// into an `<iframe>`, and a `focus()` made while the page itself is not
+    /// focused in a browser that holds its events back until it is. A node
+    /// removed around such a focus is not blurred first.
+    static FOCUS_MAY_BE_HELD: Cell<bool> = const { Cell::new(true) };
+    static FOCUS_WATCHED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether `doc`'s focus is nowhere: no active element, or `<body>`.
+fn focus_is_nowhere(doc: &web_sys::Document) -> bool {
+    match (doc.active_element(), doc.body()) {
+        (None, _) => true,
+        (Some(a), Some(b)) => a.is_same_node(Some(b.unchecked_ref())),
+        (Some(_), None) => false,
+    }
+}
+
+/// Start keeping [`FOCUS_MAY_BE_HELD`] for the page, once.
+fn watch_focus(doc: &web_sys::Document) {
+    if FOCUS_WATCHED.with(|w| w.replace(true)) {
+        return;
+    }
+    let listen = |kind: &str, f: Box<dyn FnMut(web_sys::Event)>| {
+        let cb = Closure::wrap(f);
+        let _ =
+            doc.add_event_listener_with_callback_and_bool(kind, cb.as_ref().unchecked_ref(), true);
+        cb.forget();
+    };
+    listen(
+        "focusin",
+        Box::new(|_| FOCUS_MAY_BE_HELD.with(|f| f.set(true))),
+    );
+    let d = doc.clone();
+    listen(
+        "focusout",
+        Box::new(move |_| {
+            if focus_is_nowhere(&d) {
+                FOCUS_MAY_BE_HELD.with(|f| f.set(false));
+            }
+        }),
+    );
+    FOCUS_MAY_BE_HELD.with(|f| f.set(!focus_is_nowhere(doc)));
+}
+
+/// `blur()` on whatever kind of element holds the focus: an `HTMLElement`, or
+/// an SVG or MathML one (focusable through `tabindex`), which has the method
+/// without being one.
+fn blur_now(active: &web_sys::Element) {
+    if let Some(el) = active.dyn_ref::<web_sys::HtmlElement>() {
+        el.blur().ok();
+    } else if let Ok(blur) = js_sys::Reflect::get(active, &JsValue::from_str("blur"))
+        && let Some(blur) = blur.dyn_ref::<js_sys::Function>()
+    {
+        blur.call0(active).ok();
     }
 }
 
@@ -2069,6 +2139,87 @@ impl DomDocument for WebDocument {
             for job in work {
                 job();
             }
+        }))
+    }
+
+    /// The focused element, when it is inside the part of `node` that is about
+    /// to go: its `blur()` (issue #1478).
+    ///
+    /// No JS call while nothing on the page holds the focus
+    /// ([`FOCUS_MAY_BE_HELD`]), which is the whole of a mount and every
+    /// update made from a timer or a network reply. With the focus somewhere:
+    /// one (`nodeType`) for a text write to a text node, which can hold no
+    /// focused child, and otherwise `activeElement` and `contains`.
+    fn release_focus_within(
+        &self,
+        node: NodeId,
+        children_only: bool,
+        last_round: bool,
+    ) -> Option<Box<dyn FnOnce()>> {
+        if !FOCUS_MAY_BE_HELD.with(Cell::get) {
+            return None;
+        }
+        let n = self.nodes.get(&node.0)?;
+        if children_only && n.node_type() != web_sys::Node::ELEMENT_NODE {
+            return None;
+        }
+        let active = self.browser_doc.active_element()?;
+        if !n.contains(Some(active.unchecked_ref())) {
+            return None;
+        }
+        if children_only && n.is_same_node(Some(active.unchecked_ref())) {
+            return None;
+        }
+        // `<body>` is the browser's spelling of "nothing is focused" (an
+        // island mounted into it contains it), and blurring it does nothing.
+        if self
+            .browser_doc
+            .body()
+            .is_some_and(|b| b.is_same_node(Some(active.unchecked_ref())))
+        {
+            return None;
+        }
+        if !last_round {
+            return Some(Box::new(move || blur_now(&active)));
+        }
+        // A listener has put the focus back inside the part that goes on every
+        // round so far. Make that part unfocusable for the length of this last
+        // blur: `focus()` into an inert subtree is refused, so when the blur
+        // returns nothing in there holds the focus and no listener is running.
+        // The attribute is gone again before the mutation.
+        let holder = n.dyn_ref::<web_sys::Element>().cloned();
+        Some(Box::new(move || {
+            let added = holder
+                .as_ref()
+                .filter(|el| !el.has_attribute("inert"))
+                .map(|el| el.set_attribute("inert", "").is_ok())
+                .unwrap_or(false);
+            blur_now(&active);
+            if added && let Some(el) = &holder {
+                el.remove_attribute("inert").ok();
+            }
+        }))
+    }
+
+    /// For the focused element: the literal browser write, which is what
+    /// `set_attribute` / `remove_attribute` make for these names (issue #1478).
+    fn before_attribute_write(
+        &self,
+        node: NodeId,
+        name: &str,
+        value: Option<&str>,
+    ) -> Option<Box<dyn FnOnce()>> {
+        let el = self.nodes.get(&node.0)?.dyn_ref::<web_sys::Element>()?;
+        let active = self.browser_doc.active_element()?;
+        if !el.is_same_node(Some(active.unchecked_ref())) {
+            return None;
+        }
+        let (el, name, value) = (el.clone(), name.to_owned(), value.map(str::to_owned));
+        Some(Box::new(move || {
+            match value {
+                Some(value) => el.set_attribute(&name, &value).ok(),
+                None => el.remove_attribute(&name).ok(),
+            };
         }))
     }
 

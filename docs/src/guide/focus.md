@@ -378,8 +378,11 @@ Three things to know about the machinery:
   resolves it after the next layout, which is the turn a signal write already
   triggers. `rinch-web` answers on the spot, because the browser lays out on
   demand and refuses a `focus()` it should refuse. The browser's focus
-  listeners run inside that call, with the document free: a `blur` or
-  `focusin` handler of yours may use any `NodeHandle`.
+  listeners run inside these focus moves (`NodeHandle::focus`, an overlay
+  opening or closing) with the document free: a `blur`, `focusin` or
+  `onchange` handler of yours that they run may use any `NodeHandle`. The same
+  holds when a `NodeHandle` verb takes the focused element out of place (see
+  [When the focused element goes](#when-the-focused-element-goes)).
 - **"Still there" means it can still take focus**, not merely that it is
   attached. An opener that went `disabled` while the dialog worked, or one that
   lives inside an *outer* overlay closed before this one, is connected and
@@ -759,6 +762,48 @@ Register it **at open** and release it at close and on unmount —
 `rinch_components::overlay_dismiss::arm_keys_while_open` is that policy.
 Decline Escape in it and give Escape its own dismiss entry, so "which overlay is
 on top" stays one question.
+
+### When the focused element goes
+
+On the web, a `NodeHandle` verb that removes or moves the focused element, or
+an element around it, **lets the focus go first**: `remove`, `discard`,
+`remove_child`, `replace_with` (for either node), `set_inner_html` and
+`set_text` over it, and `append_child` / `insert_before` / `insert_after` of a
+node that is already in the document. That covers a reactive `if` hiding a
+panel, a keyed `for` moving a row, and unmounting a root. The focused element
+is blurred, with the document free, and then the node goes. So:
+
+- a key entry whose owner is in the part that goes gets its `on_focus_leave`
+  (an open `Select` in a hidden panel closes). Chrome fires the focus events by
+  itself when a focused node is removed; Firefox fires nothing, and rinch's own
+  `blur()` makes the two agree;
+- a modified field in it gets its `onchange` **only while its handler is still
+  alive**: a field removed directly, or a captured one a branch hides
+  (`if show { {field} }`). A field the hidden branch *built*
+  (`if show { input { onchange: … } }`) has had its handlers freed before it
+  goes, and commits nothing;
+- a handler those events run may use any `NodeHandle`, and the node it is
+  about is still where it was. A handler that keeps putting the focus back
+  inside the part that goes is stopped the fourth time: that part is held
+  `inert` for the last blur, so the focus cannot return to it;
+- a verb the browser refuses (an `insert_before` whose reference is not a child
+  of the parent, a node appended into itself) moves nothing and keeps the
+  focus;
+- **a moved node loses the focus**, as it does in a browser. Desktop keeps the
+  focus across a move. Call `focus()` on it again after the move if it should
+  keep the keyboard on the web too.
+
+Three attribute writes can cost the focused element its focus in place:
+`hidden` on it, and removing the `tabindex` or `contenteditable` that made it
+focusable (Chrome blurs inside the write; `disabled`, `inert` and
+`display: none` fire nothing there). `set_attribute`, `write_attribute` and
+`remove_attribute` make those writes with the document free too. A `tabindex`
+write that leaves the element focusable (a roving tabindex) keeps the focus.
+
+Not covered: `UpdateBatch::apply`, which is handed the document already
+borrowed, and any other code that calls a `DomDocument` method directly. A
+`SetText` or attribute write there that unfocuses an element still runs the
+browser's listeners under that borrow.
 
 [`DismissHandle`]: https://docs.rs/rinch/latest/rinch/struct.DismissHandle.html
 

@@ -2119,7 +2119,45 @@ has released its document borrow and before the call returns
 (`DomDocument::take_after_borrow`), because a browser `focus()`/`blur()` runs
 every focus listener synchronously and rinch's own listeners touch the document
 (an editor's caret on `blur`, the key entries on `focusin`); under the borrow
-they panicked "RefCell already borrowed". "Still there" means
+they panicked "RefCell already borrowed" inside the listener, which aborted it.
+**A `NodeHandle` verb that takes the focused element out of place lets the
+focus go first** (#1478): Chrome fires `focusout`/`blur`/`change` inside
+`removeChild`, a move, `innerHTML =` and `textContent =` over a focused node,
+so `remove`, `discard`, `remove_child`, `replace_with`, `set_inner_html`,
+`set_text` and the insertion verbs (for a child that is already somewhere) ask
+`DomDocument::release_focus_within(node, children_only)` with no borrow held
+(`rinch_core::dom::release_focus_within`, up to `FOCUS_RELEASE_ROUNDS` times,
+since a listener may focus something else in there) and `rinch-web` answers a
+`blur()` of the focused element inside the part that goes; then the verb
+borrows and mutates as before. The last round's blur is made with the
+departing node held `inert`, so a listener that refocuses in there every time
+(a field that refocuses itself on blur) cannot: run under the removal's borrow
+it was aborted with the runtime's flush guard set, and later signal writes
+stopped reaching the DOM. The verb does not ask for a mutation the backend
+will refuse (`can_take`: a reference that is not the parent's child, a node
+into its own subtree), which moves nothing and keeps the focus. The ask is
+free while nothing is focused: `FOCUS_MAY_BE_HELD` (`web_document.rs`, raised
+by `focusin`, lowered by a `focusout` that leaves `activeElement` at `<body>`)
+answers with no JS call, and a text write to a text node asks only `nodeType`.
+A modified field's `onchange` runs from that blur only while its handler is
+alive: a field the hidden branch built has had it freed first (#141 order). The listeners see the node still in place and
+not yet retired, the mutation and the document's maps stay one synchronous
+step, and Firefox, which fires nothing for a removed node, gets the same
+`focusout`. A moved node loses the focus on the web, as in a browser (desktop
+keeps it). Chrome also blurs inside three attribute writes on the focused
+element itself — `hidden`, and `tabindex` / `contenteditable` removed from an
+element focusable only through it (measured in 153; `disabled`, `inert`,
+`display: none` and any of them on an ancestor fire nothing inside the write)
+— and only the browser knows which write is one, so for those names
+(`is_focus_revoking_attribute`) `NodeHandle::set_attribute` /
+`remove_attribute` first run `DomDocument::before_attribute_write`, which on
+the web is the literal browser write made outside the borrow; the write under
+the borrow repeats it and changes nothing. `RootHandle::unmount` releases the
+focus itself (`NodeHandle::release_focus_before_detach`). **A direct
+`DomDocument` caller gets none of this** (`UpdateBatch::apply` is one), and a
+new `WebDocument` method whose browser call can unfocus an element needs one of
+the two hooks. Pins: `rinch-web/tests/focused_node_displaced_1478.rs`.
+"Still there" means
 **can still take focus**, not merely attached: a `disabled` opener, or one
 inside an outer overlay closed first, releases the keyboard instead. Identity is
 not checked, so a recycled node id (issue #304, live on desktop through
