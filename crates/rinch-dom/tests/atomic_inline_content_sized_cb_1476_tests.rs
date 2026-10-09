@@ -409,7 +409,8 @@ const TEXTS: &[&str] = &[
     L,
 ];
 
-/// Incremental layout equals a fresh layout of the same document, through
+/// Incremental layout equals a fresh layout of the same document — and a
+/// second layout with nothing changed equals the first — through
 /// container resizes (wider, where a capped box has to come back to its
 /// max-content width, and narrower than its longest word) and text edits
 /// (which change the box's min-content width, so the one that was measured
@@ -429,6 +430,14 @@ fn a_history_of_resizes_and_edits_equals_a_fresh_layout() {
             let (inc, fresh) = (dump(doc), dump(&lay_out(&shape(template, width, text))));
             if inc != fresh {
                 bad.push(format!("{name} {what}: incremental[{inc}] fresh[{fresh}]"));
+            }
+            // A layout is a fixpoint: laid out again with nothing changed
+            // (another viewport height, so the layout runs), nothing moves.
+            tick += 1.0;
+            doc.resolve_layout(800.0, 600.0 + tick);
+            let again = dump(doc);
+            if again != inc {
+                bad.push(format!("{name} {what}: first[{inc}] laid out again[{again}]"));
             }
         };
         for width in [600, 300, 700, 60, 400, 545, 543, 400] {
@@ -522,4 +531,101 @@ fn a_box_that_becomes_an_atomic_inline_by_a_restyle_is_lined_up_at_its_size() {
     let fresh = dump(&lay_out(&html("display:inline-block; padding:1px")));
     assert_eq!(dump(&doc), fresh);
     assert!(close("o=43.7x22.0 t=41.7x20.0", &fresh), "{fresh}");
+}
+
+/// A fresh layout is a fixpoint too: every Chrome shape and every pinned gap
+/// laid out a second time, with nothing changed, is where the first layout
+/// left it.
+#[test]
+fn a_second_layout_with_nothing_changed_moves_nothing() {
+    let mut bad = vec![];
+    let shapes = CHROME
+        .iter()
+        .map(|r| (r.0, r.1))
+        .chain(GAPS.iter().map(|r| (r.0, r.1)));
+    for (name, html) in shapes {
+        // The cyclic percentage `max-width` shrinks on every layout, on
+        // main as here (the #1293 class).
+        if name == "d03_pct_max_width_in_flex_item" {
+            continue;
+        }
+        let mut doc = lay_out(html);
+        let first = dump(&doc);
+        doc.resolve_layout(800.0, 601.0);
+        let second = dump(&doc);
+        if first != second {
+            bad.push(format!("{name}: first[{first}] second[{second}]"));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A whole-document pass measures every box again, so no min-content width
+/// measured before it stands. Here the box's text grows a long word while
+/// the next layout is a whole-document one: used again, the old width (the
+/// longest word of the old text) would leave the flex item narrower than
+/// the new word.
+#[test]
+fn a_whole_document_pass_drops_the_min_content_widths() {
+    let html = |text: &str| {
+        format!(
+            r#"<div style="width:100px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block">{text}</span></div></div>"#
+        )
+    };
+    let mut doc = lay_out(&html("Wavy WWW mmm"));
+    let t = id(&doc, "t");
+    let text_node = rinch_core::dom::NodeId(doc.tree.get(t.0).unwrap().children[0]);
+    doc.set_text_content(text_node, "Wavy WWW mmm Wavymillilitersunbroken");
+    // After the edit's own marks, so the pass is what has to drop the entry.
+    doc.tree.atomic_min_content_for_tests().insert(t.0, 37.0);
+    doc.tree.request_full_ifc_for_tests();
+    doc.resolve_layout(800.0, 601.0);
+    assert_eq!(
+        dump(&doc),
+        dump(&lay_out(&html("Wavy WWW mmm Wavymillilitersunbroken")))
+    );
+}
+
+/// A removed box's min-content width goes with it: the slab hands its id to
+/// the next node made, and a box that got it would be capped from the width
+/// of text it never held.
+#[test]
+fn a_removed_box_leaves_no_min_content_width_behind() {
+    let html = |text: &str| {
+        format!(
+            r#"<div style="width:100px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block">{text}</span></div></div>"#
+        )
+    };
+    let mut doc = lay_out(&html("Wavy WWW mmm"));
+    let (f, t) = (id(&doc, "f"), id(&doc, "t"));
+    assert!(doc.tree.atomic_min_content_for_tests().contains_key(&t.0));
+    doc.set_inner_html(
+        f,
+        r#"<span data-m="t" style="display:inline-block">Wavy WWW mmm Wavymillilitersunbroken</span>"#,
+    );
+    assert!(
+        doc.tree.atomic_min_content_for_tests().is_empty(),
+        "the entry of the freed box is gone before anything is laid out"
+    );
+    doc.resolve_layout(800.0, 601.0);
+    assert_eq!(
+        dump(&doc),
+        dump(&lay_out(&html("Wavy WWW mmm Wavymillilitersunbroken")))
+    );
+}
+
+/// The pass and the compute alternate after the **absolute** fixpoint's
+/// compute as well: a box in a flex item inside an absolute box whose
+/// containing block is not its parent (so its size is baked, and the layout
+/// computed again, after the first compute) is capped by the first layout.
+#[test]
+fn a_box_in_a_flex_item_in_an_ancestor_resolved_absolute_is_capped_at_once() {
+    let html = format!(
+        r#"<div style="position:relative;width:400px;height:100px"><div style="height:50px"><div data-m="f" style="position:absolute;inset:0;display:flex"><div data-m="u"><span data-m="t" style="display:inline-block">{L}</span></div></div></div></div>"#
+    );
+    let mut doc = lay_out(&html);
+    let first = dump(&doc);
+    assert!(close("f=400.0x100.0 t=400.0x40.0 u=400.0x100.0", &first), "{first}");
+    doc.resolve_layout(800.0, 601.0);
+    assert_eq!(dump(&doc), first);
 }

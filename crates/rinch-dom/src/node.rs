@@ -3422,6 +3422,19 @@ impl NodeTree {
         }
     }
 
+    /// Test access to [`Self::atomic_min_content`] (#1476): the fixtures that
+    /// pin where an entry is dropped have to see, and plant, one.
+    #[doc(hidden)]
+    pub fn atomic_min_content_for_tests(&mut self) -> &mut HashMap<RawNodeId, f32> {
+        &mut self.atomic_min_content
+    }
+
+    /// Test access: have the next layout run the whole-document IFC pass.
+    #[doc(hidden)]
+    pub fn request_full_ifc_for_tests(&mut self) {
+        self.ifc_dirty = true;
+    }
+
     /// Remove a node and all its descendants from the slab.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
         self.hit_cache.invalidate();
